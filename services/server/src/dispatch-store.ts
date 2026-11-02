@@ -1,4 +1,4 @@
-import { assertBuilderExecution, assertDispatchExecution, latestBuilderHandover } from "./builder-authority.js";
+import { assertBuilderExecution, assertDispatchExecution, latestBuilderHandover, hasOngoingItemExecution, hasPriorProcessing } from "./builder-authority.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import {
@@ -698,7 +698,10 @@ export class DispatchStore {
           .prepare("SELECT id, item_key, status, product_id FROM work_items WHERE item_key = ?")
           .get(key) as unknown as { id: string; item_key: string; status: string; product_id: string } | undefined;
         if (!row) throw notFound(`Work item ${key}`);
+        if ((this.database.connection.prepare("SELECT archived_at FROM products WHERE id=?").get(row.product_id) as {archived_at:string|null})?.archived_at) throw conflict("project_archived","归档项目只读。");
+        if (this.database.connection.prepare("SELECT 1 FROM item_transfers WHERE source_item_id=?").get(row.id)) throw conflict("item_transferred","已迁移条目只读。");
         assertBuilderExecution(this.database,row.id,input.accountId);
+        if (hasPriorProcessing(this.database,row.id) && hasOngoingItemExecution(this.database,row.id)) throw conflict("execution_stop_unconfirmed","原执行仍在运行或停止待确认，请先核实原执行。");
         const handover = latestBuilderHandover(this.database,row.id);
         if (row.status !== "ready" && !(row.status === "in_progress" && handover?.status === "completed"
           && handover.to_account_id === input.accountId && !handover.claimed_at)) {
@@ -1102,7 +1105,7 @@ export class DispatchStore {
    * delivered inside the same transaction is what keeps two polls from starting
    * the same batch twice.
    */
-  claimNextDispatch(nodeId: string, availableAgentKinds?: readonly AgentKind[]): DispatchJob | undefined {
+  claimNextDispatch(nodeId: string, availableAgentKinds?: readonly AgentKind[], authorizeProduct?: (productId:string)=>void): DispatchJob | undefined {
     if (availableAgentKinds?.length === 0) return undefined;
     return this.database.transaction(() => {
       const agentFilter = availableAgentKinds
@@ -1114,6 +1117,9 @@ export class DispatchStore {
            FROM dispatches d JOIN nodes n ON n.id = d.node_id
            WHERE d.node_id = ? AND d.status = 'queued'
              AND NOT EXISTS (SELECT 1 FROM builder_revoked_dispatches r WHERE r.dispatch_id=d.id)
+             AND NOT EXISTS (SELECT 1 FROM dispatch_items i JOIN work_items w ON w.id=i.item_id JOIN products p ON p.id=w.product_id
+               WHERE i.dispatch_id=d.id AND (p.archived_at IS NOT NULL OR EXISTS(SELECT 1 FROM item_transfers t WHERE t.source_item_id=w.id)
+                 OR w.status!='ready' AND NOT EXISTS(SELECT 1 FROM builder_handovers h WHERE h.item_id=w.id AND h.status='completed' AND h.resume_dispatch_id=d.id AND w.status='in_progress')))
              AND (d.retry_not_before IS NULL OR d.retry_not_before <= ?)${agentFilter}
            ORDER BY d.created_at LIMIT 1`,
         )
@@ -1123,6 +1129,7 @@ export class DispatchStore {
             repo_path: string; node_name: string;
           } | undefined;
       if (!row) return undefined;
+      if (authorizeProduct) for (const product of this.database.connection.prepare("SELECT DISTINCT w.product_id FROM dispatch_items i JOIN work_items w ON w.id=i.item_id WHERE i.dispatch_id=?").all(row.id) as Array<{product_id:string}>) authorizeProduct(product.product_id);
       const now = new Date().toISOString();
       this.database.connection
         .prepare("UPDATE dispatches SET status = 'delivered', delivered_at = ? WHERE id = ?")

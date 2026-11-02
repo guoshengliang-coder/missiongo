@@ -80,7 +80,8 @@ const TRANSITIONS: Readonly<
   },
   on_hold: {
     in_progress: rule(["human"], ["resume"]),
-    ready: rule(["human"], ["reopened"]),
+    ready: rule(["human"], ["resume"]),
+    inbox: rule(["human"], ["resume"]),
     cancelled: rule(["human"], ["cancelled"]),
   },
   pending_verification: {
@@ -129,26 +130,18 @@ export function transitionRequiresNote(from: WorkItemStatus, to: WorkItemStatus)
   // that somebody gave up on it, never why. Every way in counts, whatever the
   // item was doing before.
   if (to === "cancelled") return from !== "cancelled";
+  if (to === "on_hold" || from === "on_hold" || from === "cancelled") return true;
   return to === "ready" && NOTE_REQUIRED_FROM.has(from);
 }
 
-/**
- * The table above is the pipeline: it is what an agent may do, and it is how a
- * person moves an item when the pipeline describes what actually happened. But
- * a person also knows things the pipeline does not — an item was already fixed,
- * or was filed under the wrong status — and making them walk three transitions
- * to say so is busywork. `manual_override` lets a person move an item straight
- * to any other status, and names itself in the timeline so a jump is never
- * mistaken for a step that was really taken. Agents and the system stay bound
- * by the table, so "only a person closes verification" still holds.
- */
+/** A human correction still requires a reason and the server's current manager role; terminal decisions keep their normal exit. */
 function isManualOverride(request: WorkItemTransitionRequest): boolean {
   return request.actor === "human" && request.reason === "manual_override" && request.from !== request.to;
 }
 
 /** The note this edge needs and did not get. */
 function noteMissing(request: WorkItemTransitionRequest): boolean {
-  return transitionRequiresNote(request.from, request.to) && !(request.note ?? "").trim();
+  return (request.reason === "manual_override" || transitionRequiresNote(request.from, request.to)) && !(request.note ?? "").trim();
 }
 
 const NOTE_REQUIRED = (request: WorkItemTransitionRequest): WorkItemTransitionDecision => ({
@@ -162,7 +155,7 @@ const NOTE_REQUIRED = (request: WorkItemTransitionRequest): WorkItemTransitionDe
 export function evaluateWorkItemTransition(request: WorkItemTransitionRequest): WorkItemTransitionDecision {
   const transition = TRANSITIONS[request.from]?.[request.to];
 
-  if (isManualOverride(request)) {
+  if (isManualOverride(request) && !(request.from === "done" && request.to !== "ready") && !(request.from === "cancelled" && request.to !== "inbox")) {
     // Checked here too, and not once at the top, so that an edge an actor may not
     // walk at all still says so rather than complaining about a missing note. The
     // requirement belongs to the edge, not to the reason written on it: leaving

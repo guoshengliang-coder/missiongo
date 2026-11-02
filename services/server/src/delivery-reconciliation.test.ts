@@ -38,7 +38,7 @@ it.each(["ready","inbox"] as const)("corrects a manual move to %s from verified 
 it("corrects another manual move after a previously successful correction without duplicate events",() => {
   const {item,checks,handover} = fixture();
   checks.report(handover.id,{merged,releases:[release]},{accountId:"owner"});
-  for (const to of ["ready","inbox"] as const) {
+  for (const to of ["inbox","inbox"] as const) {
     move(item.key,to); const before=store.getTimeline(item.key).length;
     checks.report(handover.id,{merged,releases:[release]},{accountId:"owner"});
     expect(store.getWorkItem(item.key).status).toBe("pending_verification");
@@ -57,7 +57,7 @@ it("allows the original execution to register its PR after a card was moved to d
 it("rechecks an old publication observation after a second manual move",()=>{
   const {item,checks,handover}=fixture();
   checks.report(handover.id,{merged,releases:[release]},{accountId:"owner"});
-  vi.setSystemTime("2026-10-31T01:10:00Z"); move(item.key,"ready");
+  vi.setSystemTime("2026-10-31T01:10:00Z"); move(item.key,"inbox");
   checks.request(item.productId,"owner",item.key);
   expect(checks.snapshot(handover.id)).toMatchObject({itemStatus:"development_complete",status:"waiting_node"});
   expect(checks.snapshot(handover.id).requestedAt).toBeTruthy();

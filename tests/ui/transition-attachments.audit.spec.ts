@@ -1,3 +1,4 @@
+import { postItemCommand } from "./item-command";
 import { readFileSync } from "node:fs";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { expectUsableControl } from "./visible-control";
@@ -8,7 +9,7 @@ async function create(request: APIRequestContext, status = "pending_verification
   const response = await request.post("/api/v1/items", { data: { productId: fixture.productId, title: "Reason attachment regression", description: "", type: "requirement", priority: "normal", status: "ready", environment: { platform: "web" } } });
   expect(response.ok()).toBeTruthy();
   const item = await response.json() as { key: string };
-  expect((await request.post(`/api/v1/items/${item.key}/transitions`, { data: { to: status, reason: "manual_override" } })).ok()).toBeTruthy();
+  expect((await postItemCommand(request,`/api/v1/items/${item.key}/transitions`, { data: { to: status, reason: "manual_override" } })).ok()).toBeTruthy();
   return item;
 }
 async function openReason(page: Page, key: string, source: "list" | "detail" = "list", cancel = false) {
@@ -16,7 +17,7 @@ async function openReason(page: Page, key: string, source: "list" | "detail" = "
   const menu = source === "list" ? page.locator(".item-row .row-more-menu") : page.locator(".detail-pane .detail-more-menu");
   await menu.locator(":scope > summary").click();
   if (cancel) await menu.locator("button.danger").click();
-  else await menu.getByRole("button", { name: "需要继续处理", exact: true }).click();
+  else await menu.getByRole("button", { name: "验收打回", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.locator(".transition-note-form")).toBeVisible();
   return dialog;

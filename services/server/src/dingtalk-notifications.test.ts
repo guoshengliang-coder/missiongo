@@ -38,7 +38,7 @@ async function fixture(cardTemplateId?:string) {
   const bind=()=>service.saveBinding(member.id,{userId:"employee-one",name:"测试人员",department:"测试部门"},null,"admin");
   const enable=()=>service.saveProject(product.id,accounts.getAccount("admin"),true,false);
   const create=(accountId:string|undefined=member.id)=>store.createWorkItem({productId:product.id,title:"A verification item",description:"Details",type:"requirement",priority:"normal",...(accountId?{attribution:{accountId}}:{})});
-  const verify=(itemKey:string)=>store.transitionWorkItem({itemKey,to:"pending_verification",actor:"human",reason:"manual_override"});
+  const verify=(itemKey:string)=>store.transitionWorkItem({itemKey,to:"pending_verification",actor:"human",note:"Test fixture: explicit administrative correction", reason:"manual_override"});
   const due=()=>db.prepare("UPDATE dingtalk_notifications SET next_at='2000-01-01T00:00:00.000Z'").run();
   return {app,store,accounts,db,service,product,member,memberCookie,requests,fetchImpl,call,config,bind,enable,create,verify,due,setSend:(value:typeof send)=>{send=value;},setResult:(value:typeof result)=>{result=value;}};
 }
@@ -96,7 +96,7 @@ describe("DingTalk configuration and mappings",()=>{
     const f=await fixture();f.config();f.bind();
     const url=`/api/v1/products/${f.product.id}/dingtalk`;
     expect((await f.call("PUT",url,{enabled:true,expectedEnabled:false},f.memberCookie)).statusCode).toBe(403);
-    f.accounts.replaceProjectAdministrators(f.product.id,[f.member.id],[],"admin");
+    f.accounts.replaceProjectAdministrators(f.product.id,[f.member.id],f.accounts.projectAdministratorIds(f.product.id),"admin");
     expect((await f.call("PUT",url,{enabled:true,expectedEnabled:false},f.memberCookie)).statusCode).toBe(200);
     expect((await f.call("PUT",url,{enabled:false,expectedEnabled:false})).statusCode).toBe(409);
     const first=await f.call("POST",`/api/v1/dingtalk/bindings/${f.member.id}/test`);expect(first.statusCode).toBe(200);
@@ -222,7 +222,7 @@ describe("durable verification notification delivery",()=>{
     expect(f.service.list(item.id)[0]?.status).toBe("skipped");f.enable();await f.service.drain();expect(f.requests).toHaveLength(0);
     f.store.transitionWorkItem({itemKey:item.key,to:"ready",actor:"human",reason:"verification_failed",note:"Needs another round"});f.verify(item.key);
     await Promise.all([f.service.drain(),f.service.drain()]);
-    expect(f.requests.filter(r=>r.url.includes("asyncsend_v2"))).toHaveLength(1);
+    expect(f.requests.filter(r=>r.url.includes("asyncsend_v2"))).toHaveLength(2);
     const message=f.requests.at(-1)!.body.msg as {action_card:{title:string;single_url:string;markdown:string}};
     expect(message.action_card.title).toBe(`已交付 ${item.key} ｜ 请验收`);expect(message.action_card.single_url).toContain(`item=${item.key}`);
     expect(message.action_card.markdown).toContain("Notice project | **A verification item**");expect(message.action_card.markdown).toContain("**验收方式**");
@@ -230,11 +230,11 @@ describe("durable verification notification delivery",()=>{
     f.setResult({errcode:0,send_result:{}});f.due();await f.service.drain();expect(f.service.list(item.id)[0]?.status).toBe("accepted");
     f.setResult({errcode:0,send_result:{unread_user_id_list:["employee-one"]}});f.due();await f.service.drain();expect(f.service.list(item.id)[0]?.status).toBe("sent");
     expect(()=>f.service.retry(item.key,f.service.list(item.id)[0]!.id,"admin")).toThrow(/只能补发/);
-    expect(()=>f.verify(item.key)).toThrow();expect(f.service.list(item.id)).toHaveLength(2);
+    expect(()=>f.verify(item.key)).toThrow();expect(f.service.list(item.id)).toHaveLength(3);
   });
   it("uses release evidence for platform-specific acceptance instructions",async()=>{
     const f=await fixture();f.config();f.bind();f.enable();const item=f.create();
-    f.store.transitionWorkItem({itemKey:item.key,to:"in_progress",actor:"human",reason:"manual_override"});
+    f.store.transitionWorkItem({itemKey:item.key,to:"in_progress",actor:"human",note:"Test fixture: explicit administrative correction", reason:"manual_override"});
     const completion={kind:"commit" as const,commit:"a".repeat(40),targetBranch:"main"};
     f.store.submitDevelopmentComplete({itemKey:item.key,completion,requiredArtifacts:["web","androidApp","macosApp","windowsApp","gateway"],summary:"Fixed the reported behavior",idempotencyKey:"synthetic-completion"});
     f.store.submitForVerification({itemKey:item.key,completion,deployedCommit:"b".repeat(40),receiptDigest:"c".repeat(64),releases:["web","androidApp","macosApp","windowsApp","gateway"].map(artifact=>({artifact,version:"synthetic-v1",sourceCommit:"b".repeat(40)})),idempotencyKey:"synthetic-verification"});
@@ -277,7 +277,7 @@ describe("durable verification notification delivery",()=>{
     let service=new DingTalkNotifications(store,accounts,secret,"https://example.test",async()=>Response.json({errcode:0,access_token:"synthetic-token",expires_in:7200}) as never);
     service.saveSettings({corpId:"synthetic-corp",clientId:"synthetic-app",agentId:"123",clientSecret:"synthetic-client-secret",expectedRevision:0},admin.id);
     service.saveBinding(admin.id,{userId:"persistent-user",name:"",department:""},null,admin.id);service.saveProject(product.id,admin,true,false);
-    const item=store.createWorkItem({productId:product.id,type:"task",priority:"normal",title:"Persistent queue",description:"Details",attribution:{accountId:admin.id}});store.transitionWorkItem({itemKey:item.key,to:"pending_verification",actor:"human",reason:"manual_override"});
+    const item=store.createWorkItem({productId:product.id,type:"task",priority:"normal",title:"Persistent queue",description:"Details",attribution:{accountId:admin.id}});store.transitionWorkItem({itemKey:item.key,to:"pending_verification",actor:"human",note:"Test fixture: explicit administrative correction", reason:"manual_override"});
     store.close();expect(readFileSync(path).includes(Buffer.from("synthetic-client-secret"))).toBe(false);
     // Recreate the previously shipped settings shape before reopening: the
     // upgrade must preserve encrypted credentials, bindings and pending jobs.

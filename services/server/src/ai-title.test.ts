@@ -1,3 +1,4 @@
+import { TEST_CONSOLE_ACCOUNT, testConsoleHeaders } from "./testing-fixtures.js";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,9 +22,9 @@ describe("DeepSeek title generation", () => {
     const databasePath = join(directory, "data.sqlite");
     const provider = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
       new Response(JSON.stringify({ choices: [{ message: { content: "  登录页面偶发空白  " } }] }), { status: 200 }));
-    const app = buildApp({ databasePath, adminToken: "admin-test-token", aiProviderFetch: provider as typeof fetch });
+    const app = buildApp({ databasePath, adminAccount:TEST_CONSOLE_ACCOUNT, adminToken: "admin-test-token", aiProviderFetch: provider as typeof fetch });
     apps.push(app);
-    const headers = { authorization: "Bearer admin-test-token" };
+    const headers = await testConsoleHeaders(app);
     const created = await app.inject({ method: "POST", url: "/api/v1/products", headers, payload: { name: "Test", keyPrefix: "TEST" } });
     expect(created.statusCode, created.body).toBe(201);
     const product = created.json<{ id: string }>();
@@ -71,9 +72,9 @@ describe("DeepSeek title generation", () => {
 
   it("refuses untrusted callers and hides provider error bodies", async () => {
     const provider = vi.fn(async () => new Response("provider secret details", { status: 401 }));
-    const app = buildApp({ adminToken: "admin-test-token", aiProviderFetch: provider as typeof fetch });
+    const app = buildApp({ adminAccount:TEST_CONSOLE_ACCOUNT, adminToken: "admin-test-token", aiProviderFetch: provider as typeof fetch });
     apps.push(app);
-    const headers = { authorization: "Bearer admin-test-token" };
+    const headers = await testConsoleHeaders(app);
     const created = await app.inject({ method: "POST", url: "/api/v1/products", headers, payload: { name: "Test", keyPrefix: "TEST" } });
     expect(created.statusCode, created.body).toBe(201);
     const product = created.json<{ id: string }>();

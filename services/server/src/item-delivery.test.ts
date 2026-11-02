@@ -29,12 +29,12 @@ async function fixture() {
 describe("Builder delivery responsibility",()=>{
   it("lets only system administrators grant project roles and rejects stale or invalid assignments",async()=>{
     const f=await fixture(); const url=`/api/v1/products/${f.product.id}/administrators`;
-    expect((await f.call("GET",url)).json()).toEqual({accountIds:[]});
+    expect((await f.call("GET",url)).json()).toEqual({accountIds:["admin"]});
     // Even a product creator or a future project administrator cannot grant roles.
     const owned=f.store.createProduct({name:"Member owned",keyPrefix:"MO",createdByAccountId:f.a.id});
     f.accounts.replacePermissions(f.a.id,[{productId:owned.id,canView:true,canOperate:true,canUseAi:true}]);
     expect((await f.call("PUT",`/api/v1/products/${owned.id}/administrators`,{accountIds:[f.a.id],expectedAccountIds:[]},f.aCookie)).statusCode).toBe(404);
-    expect((await f.call("PUT",url,{accountIds:[f.viewer.id],expectedAccountIds:[]})).statusCode).toBe(200);
+    expect((await f.call("PUT",url,{accountIds:[f.viewer.id],expectedAccountIds:["admin"]})).statusCode).toBe(200);
     expect((await f.call("GET",url,undefined,f.viewerCookie)).statusCode).toBe(404);
     expect((await f.call("PUT",url,{accountIds:[f.b.id],expectedAccountIds:[f.viewer.id]},f.viewerCookie)).statusCode).toBe(404);
     expect((await f.call("PUT",url,{accountIds:[],expectedAccountIds:[]})).statusCode).toBe(409);
@@ -44,26 +44,26 @@ describe("Builder delivery responsibility",()=>{
     expect((await f.call("GET",url)).json()).toEqual({accountIds:[f.viewer.id]});
     expect((await f.app.inject({method:"PUT",url,payload:{accountIds:[],expectedAccountIds:[f.viewer.id]}})).statusCode).toBe(401);
   });
-  it("scopes project administrators to Builder assignments without granting operate or AI capabilities",async()=>{
+  it("grants project administrators project governance without granting AI access",async()=>{
     const f=await fixture();const roleUrl=`/api/v1/products/${f.product.id}/administrators`;
     f.accounts.replacePermissions(f.viewer.id,[]);
     const first=f.create(), second=f.create();const delivery=`/api/v1/items/${first.key}`;
     expect((await f.call("GET",`${delivery}/delivery`,undefined,f.viewerCookie)).statusCode).toBe(404);
-    await f.call("PUT",roleUrl,{accountIds:[f.viewer.id],expectedAccountIds:[]});
+    await f.call("PUT",roleUrl,{accountIds:[f.viewer.id],expectedAccountIds:["admin"]});
     const products=(await f.call("GET","/api/v1/products",undefined,f.viewerCookie)).json();
-    expect(products).toHaveLength(1);expect(products[0]).toMatchObject({id:f.product.id,access:{canOperate:false,canUseAi:false,isProjectAdmin:true}});
+    expect(products).toHaveLength(1);expect(products[0]).toMatchObject({id:f.product.id,access:{canOperate:true,canUseAi:false,isProjectAdmin:true}});
     expect(f.accounts.reachableProductIds(f.viewer,"view")).toEqual([f.product.id]);
-    expect(f.accounts.reachableProductIds(f.viewer,"operate")).toEqual([]);
+    expect(f.accounts.reachableProductIds(f.viewer,"operate")).toEqual([f.product.id]);
     const bootstrap=(await f.call("GET",`/api/v1/bootstrap?productId=${f.product.id}`,undefined,f.viewerCookie)).json();
     expect(bootstrap.products).toHaveLength(1);expect(bootstrap.items).toHaveLength(2);
     const info=(await f.call("GET",`${delivery}/delivery`,undefined,f.viewerCookie)).json();
-    expect(info).toMatchObject({canManageBuilder:true,canManage:false});
-    expect(info.candidates.map((row:{id:string})=>row.id)).not.toContain(f.viewer.id);
+    expect(info).toMatchObject({canManageBuilder:true,canManage:true});
+    expect(info.candidates.map((row:{id:string})=>row.id)).toContain(f.viewer.id);
     for(const item of [first,second]) expect((await f.call("POST",`/api/v1/items/${item.key}/builder`,{accountId:f.a.id,expectedBuilderAccountId:null,note:"Allocate delivery"},f.viewerCookie)).statusCode).toBe(200);
     expect((await f.call("PUT",f.moduleUrl,{accountId:f.b.id},f.viewerCookie)).statusCode).toBe(200);
     expect(f.create(f.component.id).builderAccountId).toBe(f.b.id);
-    expect((await f.call("POST",`${delivery}/executions`,{accountId:f.a.id,scope:"Unrelated permission"},f.viewerCookie)).statusCode).toBe(403);
-    expect((await f.call("PATCH",delivery,{title:"Unauthorized edit"},f.viewerCookie)).statusCode).toBe(404);
+    expect((await f.call("POST",`${delivery}/executions`,{accountId:f.a.id,scope:"Arrange scoped work"},f.viewerCookie)).statusCode).toBe(409);
+    expect((await f.call("PATCH",delivery,{title:"Manager confirmed scope"},f.viewerCookie)).statusCode).toBe(200);
     expect((await f.call("GET","/api/v1/accounts",undefined,f.viewerCookie)).statusCode).toBe(404);
     expect((await f.call("GET",`/api/v1/products/${f.other.id}/builders`,undefined,f.viewerCookie)).statusCode).toBe(404);
     const roster=(await f.call("GET","/api/v1/accounts")).json().accounts;
@@ -132,7 +132,7 @@ describe("Builder delivery responsibility",()=>{
     const bootstrap=await f.call("GET",`/api/v1/bootstrap?productId=${f.product.id}&builder=mine`,undefined,f.aCookie);expect(bootstrap.json().items).toHaveLength(2);expect(bootstrap.json().summary.total).toBe(2);
   });
   it("preserves parallel and sequential execution history independently of item status and Builder",async()=>{
-    const f=await fixture();await f.call("PUT",f.moduleUrl,{accountId:f.a.id});const item=f.create(f.component.id);const url=`/api/v1/items/${item.key}`;
+    const f=await fixture();await f.call("PUT",f.moduleUrl,{accountId:f.a.id});const item=f.create(f.component.id);f.store.transitionWorkItem({itemKey:item.key,to:"ready",reason:"triaged",actor:"human"});const url=`/api/v1/items/${item.key}`;
     const assign=await f.call("POST",`${url}/executions`,{accountId:f.a.id,scope:"Frontend implementation"},f.aCookie);expect(assign.statusCode).toBe(201);const first=assign.json().executions[0];
     expect((await f.call("POST",`${url}/executions`,{accountId:f.b.id,scope:"Parallel backend"},f.aCookie)).statusCode).toBe(201);
     expect((await f.call("PATCH",`${url}/executions/${first.id}`,{status:"working"},f.bCookie)).statusCode).toBe(403);
@@ -147,7 +147,7 @@ describe("Builder delivery responsibility",()=>{
     const followUp=await f.call("POST",`${url}/executions`,{accountId:f.a.id,scope:"Fix verification feedback",previousId:second.id,followUp:true,note:"New findings after this round completed"},f.aCookie);
     expect(followUp.statusCode).toBe(201);expect(followUp.json().executions).toHaveLength(4);
     expect(followUp.json().executions.find((row:{id:string})=>row.id===second.id)).toMatchObject({status:"completed",result:"Integration ready"});
-    expect(f.store.getWorkItem(item.key)).toMatchObject({builderAccountId:f.a.id,status:"inbox"});
+    expect(f.store.getWorkItem(item.key)).toMatchObject({builderAccountId:f.a.id,status:"ready"});
     expect((await f.call("POST",`${url}/builder`,{accountId:f.b.id,expectedBuilderAccountId:f.a.id,note:"Own delivery now"},f.aCookie)).statusCode).toBe(200);
     expect((await f.call("GET",`${url}/delivery`)).json().executions).toHaveLength(4);
   });

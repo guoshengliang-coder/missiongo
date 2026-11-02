@@ -1,3 +1,4 @@
+import { itemRoles } from "./item-policy.js";
 import { ReleaseObservations } from "./release-observations.js";
 import { assertBuilderExecution, latestBuilderHandover } from "./builder-authority.js";
 import { completionFields, normalizeCompletion, sameCompletion } from "./completion.js";
@@ -19,8 +20,8 @@ export const handoverRegistrationSchema = z.object({
   try { normalizeCompletion(input); } catch { ctx.addIssue({ code: "custom", message: "Provide a valid completion reference." }); }
 });
 export const humanConfirmationSchema = z.discriminatedUnion("stage", [
-  z.object({ stage: z.literal("integration"), note: z.string().trim().min(1).max(2000), commit: sha }),
-  z.object({ stage: z.literal("release"), note: z.string().trim().min(1).max(2000),
+  z.object({ expectedItemRevision:z.number().int().optional(), expectedHandoverRevision:z.number().int().optional(), idempotencyKey:z.string().min(1).max(150).optional(), stage: z.literal("integration"), note: z.string().trim().min(1).max(2000), commit: sha }),
+  z.object({ expectedItemRevision:z.number().int().optional(), expectedHandoverRevision:z.number().int().optional(), idempotencyKey:z.string().min(1).max(150).optional(), stage: z.literal("release"), note: z.string().trim().min(1).max(2000),
     releases: z.array(z.object({ artifact: z.string().refine(isReleaseArtifactId), version: z.string().trim().min(1).max(100), sourceCommit: sha })).max(MAX_RELEASE_ARTIFACTS) }),
 ]);
 export const handoverEvidenceSchema = z.object({
@@ -71,12 +72,12 @@ export class StatusChecks {
   private completion(row: Row): CompletionReference {
     return normalizeCompletion(row.completion_json ? { completion: JSON.parse(row.completion_json) as CompletionReference } : { pullRequestUrl: row.pull_request_url });
   }
-  private valid(row: Row): boolean {
+  private valid(row: Row, includeHold = false): boolean {
     const item = this.db.prepare("SELECT status,product_id FROM work_items WHERE id=?").get(row.item_id) as { status: string; product_id: string } | undefined;
     const builder = latestBuilderHandover(this.store.database,row.item_id);
-    return Boolean((!builder || builder.status === "completed" && (builder.to_account_id === null || builder.to_account_id === row.account_id))
+    return Boolean((!builder || builder.status === "completed")
       && item && !this.store.getProduct(item.product_id).archivedAt && this.round(row.item_id) === row.round_key
-      && ["inbox", "ready", "in_progress", "development_complete"].includes(item.status) && !this.db.prepare("SELECT 1 FROM item_transfers WHERE source_item_id=?").get(row.item_id));
+      && ["inbox", "ready", "in_progress", "development_complete", ...(includeHold ? ["on_hold"] : [])].includes(item.status) && !this.db.prepare("SELECT 1 FROM item_transfers WHERE source_item_id=?").get(row.item_id));
   }
   private state(row: Row, status: string, reason = messages[status] ?? status, now = new Date().toISOString()) {
     this.db.prepare("UPDATE status_handovers SET check_status=?,reason=?,checked_at=?,checked_revision=revision WHERE id=?").run(status, reason, now, row.id);
@@ -87,11 +88,11 @@ export class StatusChecks {
     const pullRequestUrl = "url" in completion ? completion.url : "";
     this.store.assertWorkItemWritable(itemKey);
     const item = this.store.getWorkItem(itemKey);
-    assertBuilderExecution(this.store.database,item.id,accountId);
-    if (!["inbox", "ready", "in_progress", "development_complete"].includes(item.status)) throw conflict("handover_not_active", "Register a handover for active work only.");
+    assertBuilderExecution(this.store.database,item.id,accountId,!itemRoles(this.store.database,item,accountId).manager);
+    if (!["inbox", "ready", "in_progress", "development_complete","on_hold"].includes(item.status)) throw conflict("handover_not_active", "Register a handover for active work only.");
     if (item.status === "development_complete") {
       const current = [...this.store.getTimeline(itemKey)].reverse().find(e => !e.historySourceKey && e.eventType === "status_changed" && e.toStatus === "development_complete");
-      if (current && !sameCompletion(normalizeCompletion(current.payload), completion)) throw conflict("handover_pr_conflict","Reopen the item before replacing a completed integration reference.");
+      if (current && (current.payload.roundKey === undefined || current.payload.roundKey === this.round(item.id)) && (current.payload.contentVersion === undefined || current.payload.contentVersion === item.contentVersion) && !sameCompletion(normalizeCompletion(current.payload), completion)) throw conflict("handover_pr_conflict","Reopen the item before replacing a completed integration reference.");
     }
     const round = this.round(item.id);
     if (!round) throw conflict("handover_round_missing", "The processing round has no recorded start.");
@@ -142,7 +143,7 @@ export class StatusChecks {
     const row = this.row(id);
     const item = this.db.prepare("SELECT item_key,product_id,status FROM work_items WHERE id=?").get(row.item_id) as {item_key: string; product_id: string; status: string};
     const evidence = JSON.parse(row.evidence_json) as HandoverEvidence;
-    return { id, itemKey: item.item_key, productId: item.product_id, itemStatus: item.status, pullRequestUrl: row.pull_request_url, completion: this.completion(row),
+    return { id, revision:row.revision, itemRevision:this.store.getWorkItem(item.item_key).revision, itemKey: item.item_key, productId: item.product_id, itemStatus: item.status, pullRequestUrl: row.pull_request_url, completion: this.completion(row),
       requiredArtifacts: row.required_json ? JSON.parse(row.required_json) as string[] : null, noReleaseReason: row.no_release_reason,
       status: this.round(row.item_id) !== row.round_key ? "stale" : row.check_status,
       reason: this.round(row.item_id) !== row.round_key ? messages.stale! : row.reason, checkedAt: row.checked_at, lastResultAt: row.last_report_at, requestedAt: row.requested_at,
@@ -171,7 +172,7 @@ export class StatusChecks {
       || !this.db.prepare("SELECT 1 FROM node_product_repos r JOIN work_items w ON w.product_id=r.product_id WHERE w.id=? AND r.node_id=? AND r.repo_path=?").get(row.item_id,source.nodeId,row.lease_repo_path))) {
       throw conflict("status_check_lease_expired","The lease or repository mapping changed; perform a fresh check.");
     }
-    if (!this.valid(row)) { this.reconcile(id); return this.snapshot(id); }
+    if (!this.valid(row,true)) { this.reconcile(id); return this.snapshot(id); }
     for (const date of [evidence.merged?.occurredAt, ...(evidence.releases ?? []).map(r => r.verifiedAt)]) {
       if (date && Date.parse(date) > Date.parse(now) + 60_000) throw invalidInput("Evidence cannot be dated in the future.");
     }
@@ -236,6 +237,9 @@ export class StatusChecks {
     return this.snapshot(id);
   }
   reconcile(id: string) {
+    return this.store.database.transaction(()=>this.reconcileCurrent(id));
+  }
+  private reconcileCurrent(id: string) {
     const row = this.row(id);
     if (!this.valid(row)) {
       if (this.round(row.item_id) !== row.round_key) this.state(row,"stale");
@@ -248,7 +252,9 @@ export class StatusChecks {
     const reporter = JSON.parse(row.evidence_source_json) as {accountId?:string;kind?:string};
     const actor = reporter.kind === "human_confirmation" ? "human" as const : "system" as const;
     let item = this.store.getWorkItem(this.snapshot(id).itemKey);
-    if (["inbox", "ready", "in_progress"].includes(item.status)) {
+    const development=[...this.store.getTimeline(item.key)].reverse().find(e=>e.eventType === "status_changed" && e.toStatus === "development_complete" && !e.historySourceKey);
+    const refreshDevelopment = item.status === "development_complete" && (development?.payload.roundKey !== row.round_key || development?.payload.contentVersion !== item.contentVersion);
+    if (["inbox", "ready", "in_progress"].includes(item.status) || refreshDevelopment) {
       // A new manual move needs its own correction receipt; replaying the first
       // receipt would return a stale snapshot without updating the card again.
       const revision = this.db.prepare(`SELECT id FROM work_item_events WHERE item_id=? AND to_status IS NOT NULL
@@ -279,7 +285,7 @@ export class StatusChecks {
       ORDER BY timeline_seq DESC LIMIT 1`).get(item.id) as {id:string};
     this.store.submitForVerification({ itemKey: item.key, completion: this.completion(row),
       releases: verified.map(({artifact,version,sourceCommit}) => ({artifact,version,sourceCommit})),
-      deployedCommit: evidence.merged.commit,
+      deployedCommit: verified.find(r => r.artifact === "web")?.sourceCommit ?? verified[0]!.sourceCommit,
       receiptDigest: createHash("sha256").update(JSON.stringify(verified)).digest("hex"),
       idempotencyKey: `status-check:${row.id}:verification:${revision.id}`, attribution: { accountId: reporter.accountId ?? row.account_id } },
       { actor, occurredAt, handoverId: row.id, requiredArtifacts: required });
@@ -290,12 +296,21 @@ export class StatusChecks {
     const input = humanConfirmationSchema.parse(raw);
     return this.store.database.transaction(() => {
       const row = this.row(id);
+      const policyItem = this.store.getWorkItem(this.snapshot(id).itemKey);
+      const roles = itemRoles(this.store.database,policyItem,accountId);
+      if (!roles.manager && !(roles.builder && roles.operate)) throw conflict("delivery_not_permitted","仅管理者或当前 Builder 可人工确认交付。");
+      const digest = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+      const receipt = input.idempotencyKey ? this.db.prepare("SELECT digest,result_json FROM item_decision_receipts WHERE account_id=? AND command_key=?").get(accountId,input.idempotencyKey) as {digest:string;result_json:string}|undefined : undefined;
+      if (receipt) { if (receipt.digest !== digest) throw conflict("idempotency_conflict","此重试键已用于其他操作。"); return JSON.parse(receipt.result_json) as ReturnType<StatusChecks["snapshot"]>; }
+      if (input.expectedItemRevision !== undefined && input.expectedItemRevision !== policyItem.revision
+        || input.expectedHandoverRevision !== undefined && input.expectedHandoverRevision !== row.revision) throw conflict("transition_revision_changed","条目或交付依据已变化，请刷新后重新确认。");
+      const save = (result:ReturnType<StatusChecks["snapshot"]>) => {if (input.idempotencyKey) this.db.prepare("INSERT INTO item_decision_receipts VALUES (?,?,?,?)").run(accountId,input.idempotencyKey,digest,JSON.stringify(result));return result;};
       if (!this.valid(row)) throw conflict("handover_not_active", "This handover is no longer active.");
       const now = new Date().toISOString();
       if (input.stage === "integration") {
         const result = this.report(id, { merged: { commit: input.commit, occurredAt: now } }, { accountId, human: true, note: input.note }, now);
         this.store.appendSystemEvent(row.item_id, "handover_human_confirmed", { stage: input.stage, accountId, note: input.note, commit: input.commit, handoverId: id });
-        return result;
+        return save(result);
       }
       const evidence = JSON.parse(row.evidence_json) as HandoverEvidence;
       const required = row.required_json ? JSON.parse(row.required_json) as string[] : null;
@@ -304,18 +319,22 @@ export class StatusChecks {
         throw invalidInput("Confirm integration and provide a version and source commit for every required artifact.");
       }
       if (!required?.length) {
-        this.store.transitionWorkItem({ itemKey: this.snapshot(id).itemKey, to: "pending_verification", actor: "human", reason: "release_verified", note: input.note, attribution: { accountId } });
+        if (required === null) {
+          this.db.prepare("UPDATE status_handovers SET required_json='[]',no_release_reason=?,revision=revision+1 WHERE id=?").run(input.note,id);
+          this.store.appendSystemEvent(row.item_id,"handover_scope_confirmed",{accountId,requiredArtifacts:[],noReleaseReason:input.note,handoverId:id,roundKey:row.round_key});
+        }
+        this.store.transitionWorkItem({ itemKey: this.snapshot(id).itemKey, to: "pending_verification", actor: "human", reason: "release_verified", note: input.note, attribution: { accountId }, confirmedHandoverId:id });
         this.db.prepare("UPDATE status_handovers SET evidence_source_json=?,updated_at=?,requested_at=NULL,lease_token=NULL,lease_until=NULL WHERE id=?")
           .run(JSON.stringify({accountId,kind:"human_confirmation",note:input.note,recordedAt:now}),now,id);
         this.state(this.row(id), "checked", "已由用户安排人工验证。", now);
         this.store.appendSystemEvent(row.item_id, "handover_human_confirmed", { stage: "verification_arranged", accountId, note: input.note, handoverId: id });
-        return this.snapshot(id);
+        return save(this.snapshot(id));
       }
-      const digest = createHash("sha256").update(JSON.stringify({ input, accountId, recordedAt: now })).digest("hex");
-      const result = this.report(id, { releases: input.releases.map(r => ({ ...r, containsMergeCommit: evidence.merged!.commit, verifiedAt: now, receiptDigest: digest })) },
+      const releaseDigest = createHash("sha256").update(JSON.stringify({ input, accountId, recordedAt: now })).digest("hex");
+      const result = this.report(id, { releases: input.releases.map(r => ({ ...r, containsMergeCommit: evidence.merged!.commit, verifiedAt: now, receiptDigest: releaseDigest })) },
         { accountId, human: true, note: input.note }, now);
       this.store.appendSystemEvent(row.item_id, "handover_human_confirmed", { stage: input.stage, accountId, note: input.note, releases: input.releases, handoverId: id });
-      return result;
+      return save(result);
     });
   }
   request(productId: string, accountId: string, itemKey?: string) {

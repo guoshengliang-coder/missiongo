@@ -1,3 +1,4 @@
+import { postItemCommand } from "./item-command";
 import { test, expect } from "@playwright/test";
 import { AUDIT_SOURCE } from "./audit-page.mjs";
 
@@ -9,7 +10,7 @@ for (const viewport of [{name:"desktop",width:1440,height:900},{name:"phone",wid
     const product=await (await request.post("/api/v1/products",{data:{name:`Handover ${suffix}`,keyPrefix:`HO${viewport.name[0]!.toUpperCase()}${theme[0]!.toUpperCase()}${Date.now().toString(36).slice(-4).toUpperCase()}`}})).json();
     const item=await (await request.post("/api/v1/items",{data:{productId:product.id,status:"ready",type:"task",priority:"normal",title:"First pickup and handover",description:"Check explicit recovery",environment:{platform:"web"}}})).json();
     expect(item.builderAccountId).toBeUndefined();
-    const started=await request.post(`/api/v1/items/${item.key}/transitions`,{data:{to:"in_progress",reason:"claim"}});
+    const started=await postItemCommand(request,`/api/v1/items/${item.key}/transitions`,{data:{to:"in_progress",reason:"claim"}});
     expect(started.ok()).toBe(true);
     const stored=await started.json();
     const realDelivery=await (await request.get(`/api/v1/items/${item.key}/delivery`)).json();

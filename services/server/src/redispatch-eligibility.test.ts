@@ -1,3 +1,4 @@
+import { seedStoreActors } from "./testing-fixtures.js";
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MissionGoStore } from "./store.js";
@@ -5,7 +6,7 @@ import { DispatchStore } from "./dispatch-store.js";
 import { AgentSessionStore } from "./agent-session-store.js";
 
 let store: MissionGoStore;
-beforeEach(()=>{vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime("2026-10-31T01:00:00Z");store=new MissionGoStore(":memory:");});
+beforeEach(()=>{vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime("2026-10-31T01:00:00Z");store=new MissionGoStore(":memory:");seedStoreActors(store,["owner","other"]);});
 afterEach(()=>{store.close();vi.useRealTimers();});
 function fixture() {
   const product=store.createProduct({name:"Example",keyPrefix:"EX"});

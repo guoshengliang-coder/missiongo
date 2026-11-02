@@ -1,3 +1,4 @@
+import { TEST_CONSOLE_ACCOUNT, testConsoleHeaders } from "./testing-fixtures.js";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
@@ -14,7 +15,7 @@ import { buildApp } from "./app.js";
 const run = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const ADMIN_TOKEN = "backup-drill-token";
-const headers = { authorization: `Bearer ${ADMIN_TOKEN}` };
+
 
 const apps: FastifyInstance[] = [];
 const directories: string[] = [];
@@ -25,7 +26,7 @@ afterEach(async () => {
 });
 
 function open(databasePath: string, attachmentsPath: string): FastifyInstance {
-  const app = buildApp({ databasePath, attachmentsPath, adminToken: ADMIN_TOKEN });
+  const app = buildApp({ databasePath, attachmentsPath, adminAccount:TEST_CONSOLE_ACCOUNT, adminToken: ADMIN_TOKEN });
   apps.push(app);
   return app;
 }
@@ -41,6 +42,7 @@ it("backs up and restores the database together with its attachments", async () 
   const paths = ["--database", databasePath, "--attachments", attachmentsPath];
 
   const seeded = open(databasePath, attachmentsPath);
+  const headers = await testConsoleHeaders(seeded);
   const product = (
     await seeded.inject({ method: "POST", url: "/api/v1/products", headers, payload: { name: "Hermes Go", keyPrefix: "HG" } })
   ).json<{ id: string }>();

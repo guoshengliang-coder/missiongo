@@ -1,0 +1,54 @@
+import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { expect,test } from "@playwright/test";
+import { chooseOption } from "./select-helpers";
+import { expectUsableControl } from "./visible-control";
+const fixture=JSON.parse(readFileSync(new URL("./.auth/fixture.json",import.meta.url),"utf8")) as {productId:string};
+for(const [width,theme] of [[320,"light"],[375,"dark"],[1440,"dark"]] as const){
+ test(`explicit AI scope persists and protects a scope-only draft at ${width}px ${theme}`,async({page,request})=>{
+  const account=await (await request.post("/api/v1/accounts",{data:{email:`scope-${randomUUID()}@example.test`,password:"fixture policy password",role:"member"}})).json();
+  await request.put(`/api/v1/accounts/${account.id}/products`,{data:{aiScope:"selected",permissions:[{productId:fixture.productId,canView:true,canOperate:true,canUseAi:true}]}});
+  await page.setViewportSize({width,height:900});await page.emulateMedia({colorScheme:theme});
+  await page.goto(`/settings/admin/accounts?settingsProduct=${fixture.productId}&product=${fixture.productId}`);
+  await page.getByRole("searchbox",{name:"搜索账号",exact:true}).fill(account.email);
+  const row=page.locator(".account-row").filter({hasText:account.email});
+  await row.getByRole("button",{name:"修改权限",exact:true}).click();
+  const dialog=page.getByRole("dialog"),scope=dialog.getByRole("combobox",{name:"AI 授权范围",exact:true});
+  await expect(scope).toHaveAttribute("data-value","selected");
+  await chooseOption(scope,"none");await scope.scrollIntoViewIfNeeded();await expectUsableControl(scope,width<1280);
+  await page.keyboard.press("Escape");await dialog.getByRole("button",{name:"继续编辑",exact:true}).click();
+  await expect(scope).toHaveAttribute("data-value","none");
+  expect(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
+  await dialog.locator(".account-permissions-footer").getByRole("button",{name:"保存",exact:true}).click();
+  await expect(dialog).toHaveCount(0);
+  let saved=(await (await request.get("/api/v1/accounts")).json()).accounts.find((a:{id:string})=>a.id===account.id);expect(saved.aiScope).toBe("none");
+  await row.getByRole("button",{name:"修改权限",exact:true}).click();
+  await chooseOption(page.getByRole("combobox",{name:"AI 授权范围",exact:true}),"selected");
+  const projectName=(await (await request.get("/api/v1/products")).json()).find((p:{id:string})=>p.id===fixture.productId).name;
+  await page.getByRole("checkbox",{name:`${projectName} · AI 调用`,exact:true}).uncheck();
+  await page.locator(".account-permissions-footer").getByRole("button",{name:"保存",exact:true}).click();
+  saved=(await (await request.get("/api/v1/accounts")).json()).accounts.find((a:{id:string})=>a.id===account.id);
+  expect(saved.aiScope).toBe("selected");expect(saved.permissions.some((p:{canUseAi:boolean})=>p.canUseAi)).toBe(false);
+ });
+ test(`a human Builder without AI can hold and restore the card without restarting execution at ${width}px ${theme}`,async({page,request})=>{
+  const email=`builder-${randomUUID()}@example.test`,password="fixture policy password";
+  const account=await (await request.post("/api/v1/accounts",{data:{email,password,role:"member"}})).json();
+  await request.put(`/api/v1/accounts/${account.id}/products`,{data:{aiScope:"none",permissions:[{productId:fixture.productId,canView:true,canOperate:true,canUseAi:false}]}});
+  const item=await (await request.post("/api/v1/items",{data:{productId:fixture.productId,title:"Human Builder policy",description:"",type:"task",priority:"normal",status:"ready",environment:{platform:"web"}}})).json();
+  expect((await request.post(`/api/v1/items/${item.key}/builder`,{data:{accountId:account.id,expectedBuilderAccountId:null,note:"Assign human work"}})).ok()).toBeTruthy();
+  await page.request.post("/api/v1/auth/login",{data:{username:email,password}});
+  await page.setViewportSize({width,height:900});await page.emulateMedia({colorScheme:theme});await page.goto(`/?product=${fixture.productId}&item=${item.key}`);
+  await page.locator(".detail-toolbar .toolbar-primary-action").click();await page.getByRole("button",{name:/人工处理/}).click();
+  await expect(page.locator(".detail-toolbar .status-pill")).toHaveText("处理中");
+  await page.locator(".detail-toolbar .detail-more-menu > summary").click();await page.locator(".detail-toolbar").getByRole("button",{name:"暂缓处理",exact:true}).click();
+  let dialog=page.getByRole("dialog");await expect(dialog.getByRole("heading",{name:"说明状态变更原因",exact:true})).toBeVisible();
+  const disposition=dialog.getByRole("combobox",{name:"在途执行处置",exact:true});await chooseOption(disposition,"stop_requested");
+  await disposition.scrollIntoViewIfNeeded();await expectUsableControl(disposition,width<1280);await dialog.getByRole("textbox").fill("Waiting for a decision; check execution separately");await dialog.locator("button[type=submit]").click();
+  await expect(page.locator(".detail-toolbar .status-pill")).toHaveText("暂缓");
+  const held=await (await request.get(`/api/v1/items/${item.key}`)).json();expect(held.heldFrom).toBe("in_progress");
+  await page.locator(".detail-toolbar .toolbar-primary-action").click();dialog=page.getByRole("dialog");await dialog.getByRole("textbox").fill("Restore the card, execution remains separate");await dialog.locator("button[type=submit]").click();
+  await expect(page.locator(".detail-toolbar .status-pill")).toHaveText("处理中");
+  const timeline=(await (await request.get(`/api/v1/items/${item.key}/timeline`)).json()).events;
+  expect(timeline.at(-1).payload).toMatchObject({reason:"resume",executionResumed:false});
+ });
+}

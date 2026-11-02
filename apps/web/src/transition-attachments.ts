@@ -3,11 +3,22 @@ import type { MessageKey } from "./i18n";
 import { api } from "./api";
 import type { TransitionAction, WorkItem, WorkItemStatus } from "./types";
 
+/** Preserve the command identity while a displayed snapshot is retried after a lost response. */
+export class TransitionCommandKeys {
+  private readonly keys=new Map<string,string>();
+  options(item:WorkItem,action:TransitionAction) {
+    const intent=JSON.stringify([item.key,item.revision,item.status,action.to,action.reason]);
+    let key=this.keys.get(intent);if (!key) {key=crypto.randomUUID();this.keys.set(intent,key);}
+    return {expectedRevision:item.revision,expectedStatus:item.status,idempotencyKey:key};
+  }
+}
+
 /** One dialog owns the upload receipts and write keys, including lost-response retries. */
 export class TransitionAttachmentAttempt {
   private readonly uploads = new Map<string, Map<File, { key: string; id?: string }>>();
   private readonly attempts = new Map<string, { fingerprint: string; key: string; expectedStatus: WorkItemStatus }>();
   readonly confirmed = new Map<string, WorkItem>();
+  executionDisposition: "keep_running" | "stop_requested" | undefined;
 
   capacity(items: readonly WorkItem[], files: readonly File[]): number {
     return Math.max(0, Math.min(...items.map(item => {
@@ -25,7 +36,7 @@ export class TransitionAttachmentAttempt {
     return [...this.uploads.values()].some(files => [...files.values()].some(file => file.id));
   }
 
-  async submit(itemKey: string, from: WorkItemStatus, action: TransitionAction, note: string, files: readonly File[]): Promise<WorkItem> {
+  async submit(itemKey: string, from: WorkItemStatus, action: TransitionAction, note: string, files: readonly File[], expectedRevision?: number): Promise<WorkItem> {
     const confirmed = this.confirmed.get(itemKey);
     if (confirmed) return confirmed;
     let uploads = this.uploads.get(itemKey);
@@ -34,13 +45,13 @@ export class TransitionAttachmentAttempt {
     for (const file of files) {
       let upload = uploads.get(file);
       if (!upload) { upload = { key: crypto.randomUUID() }; uploads.set(file, upload); }
-      if (!upload.id) upload.id = (await api.uploadAttachment(itemKey, file, upload.key)).id;
+      if (!upload.id) upload.id = (await api.uploadAttachment(itemKey, file, upload.key, undefined, true)).id;
       attachmentIds.push(upload.id);
     }
-    const fingerprint = JSON.stringify([action.to, action.reason, note.trim(), attachmentIds]);
+    const fingerprint = JSON.stringify([action.to, action.reason, note.trim(), attachmentIds, expectedRevision, this.executionDisposition]);
     let attempt = this.attempts.get(itemKey);
     if (attempt?.fingerprint !== fingerprint) { attempt = { fingerprint, key: crypto.randomUUID(), expectedStatus: from }; this.attempts.set(itemKey, attempt); }
-    const result = await api.transitionItem(itemKey, action, note, { attachmentIds, idempotencyKey: attempt!.key, expectedStatus: attempt!.expectedStatus });
+    const result = await api.transitionItem(itemKey, action, note, { attachmentIds, idempotencyKey: attempt!.key, expectedStatus: attempt!.expectedStatus, ...(expectedRevision !== undefined ? {expectedRevision} : {}), ...(this.executionDisposition ? {executionDisposition:this.executionDisposition} : {}) });
     this.confirmed.set(itemKey, result);
     return result;
   }

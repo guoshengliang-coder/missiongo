@@ -1,3 +1,4 @@
+import { versionedTestRequest } from "./testing-fixtures.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -158,7 +159,7 @@ describe("Agent chat attachments", () => {
       .json<{ sessions: Array<{ id: string }> }>().sessions[0]!.id;
     const uploadUrl = `/api/v1/agent-sessions/${sessionId}/attachments`;
     const payload = Buffer.from("photo bytes");
-    const upload = () => app.inject({ method: "POST", url: uploadUrl, headers: { cookie,
+    const upload = () => versionedTestRequest(app, { method: "POST", url: uploadUrl, headers: { cookie,
       "content-type": "application/octet-stream", "x-missiongo-content-type": "image/png", "x-missiongo-filename": "photo.png" }, payload });
     expect((await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${sessionId}`, headers: { cookie } }))
       .json<{ canAttach: boolean }>().canAttach).toBe(false);
@@ -187,11 +188,11 @@ describe("Agent chat attachments", () => {
       .json<{ sessions: Array<{ command?: { attachments?: Array<{ id: string }> } }> }>().sessions[0]!;
     expect(nodeSession.command?.attachments).toMatchObject([{ id: attachment.id }]);
     const contentPath = `/api/v1/node/agent-sessions/${sessionId}/attachments/${attachment.id}/content`;
-    expect((await app.inject({ method: "GET", url: contentPath, headers: nodeHeaders(node.token) })).body).toBe(payload.toString());
+    expect((await versionedTestRequest(app, { method: "GET", url: contentPath, headers: nodeHeaders(node.token) })).body).toBe(payload.toString());
     expect((await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${sessionId}/attachments/${attachment.id}/content`,
       headers: { cookie } })).body).toBe(payload.toString());
-    expect((await app.inject({ method: "GET", url: contentPath, headers: nodeHeaders(otherNode.token) })).statusCode).toBe(404);
-    expect((await app.inject({ method: "GET", url: contentPath, headers: { cookie } })).statusCode).toBe(401);
+    expect((await versionedTestRequest(app, { method: "GET", url: contentPath, headers: nodeHeaders(otherNode.token) })).statusCode).toBe(404);
+    expect((await versionedTestRequest(app, { method: "GET", url: contentPath, headers: { cookie } })).statusCode).toBe(401);
     expect((await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${sessionId}`, headers: { cookie } }))
       .json<{ attachmentMessages: Array<{ attachments: Array<{ id: string }> }> }>().attachmentMessages[0]?.attachments)
       .toMatchObject([{ id: attachment.id }]);
@@ -702,8 +703,8 @@ describe("Dispatching the same item twice", () => {
     try {
       db.prepare("UPDATE agent_sessions SET status='failed',last_error='old cycle error' WHERE dispatch_id=?").run(old);
       for (const [to, reason] of [["in_progress", "claim"], ["ready", "manual_override"]]) {
-        const moved = await f.app.inject({ method: "POST", url: `/api/v1/items/${f.mission.itemKey}/transitions`, headers: { cookie: f.cookie },
-          payload: { to, reason, note: "new work round" } });
+        const moved = await versionedTestRequest(f.app, { method: "POST", url: `/api/v1/items/${f.mission.itemKey}/transitions`, headers: { cookie: f.cookie },
+          payload: { to, reason: ["development_complete","pending_verification"].includes(to) ? "manual_override" : reason, note: "new work round" } });
         expect(moved.statusCode, moved.body).toBe(200);
         expect((await currentView(f)).current).toBeUndefined();
       }
@@ -712,6 +713,7 @@ describe("Dispatching the same item twice", () => {
       expect((await currentView(f)).current).toBeUndefined();
       expect((await currentView(f)).dispatches[0].id).toBe(old);
       db.prepare("UPDATE dispatches SET status='failed' WHERE id=?").run(old);
+      db.prepare("UPDATE item_executions SET status='completed' WHERE item_id=(SELECT id FROM work_items WHERE item_key=?)").run(f.mission.itemKey);
       const retryResponse = await dispatchTo(f.app, f.cookie, f.laptop.nodeId, [f.mission.itemKey]);
       expect(retryResponse.statusCode, retryResponse.body).toBe(201);
       const retry = retryResponse.json<{ id: string }>().id;
@@ -846,11 +848,11 @@ describe("Dispatching the same item twice", () => {
     const resultUrl = `/api/v1/node/dispatches/${id}/result`;
     await app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers });
     const payload = { status: "failed", failureCode: "future_failure", error: "Original startup failure" };
-    expect((await app.inject({ method: "POST", url: resultUrl,
+    expect((await versionedTestRequest(app, { method: "POST", url: resultUrl,
       headers: { authorization: `Bearer ${laptop.token}` }, payload })).statusCode).toBe(404);
     const history = () => app.inject({ method: "GET", url: `/api/v1/items/${mission.itemKey}/dispatches`, headers: { cookie } });
     expect((await history()).body).not.toContain("resultRejection");
-    expect((await app.inject({ method: "POST", url: resultUrl, headers, payload })).statusCode).toBe(400);
+    expect((await versionedTestRequest(app, { method: "POST", url: resultUrl, headers, payload })).statusCode).toBe(400);
     const rejected = (await history()).json().dispatches[0];
     expect(rejected).toMatchObject({ status: "delivered", diagnosticSnapshot: { resultRejection: {
       launchError: "Original startup failure", reason: "Unsupported dispatch failure code.", receivedAt: expect.any(String),
@@ -861,10 +863,10 @@ describe("Dispatching the same item twice", () => {
     expect((await sessions()).json()).toMatchObject({ sessions: [{ dispatchId: id, dispatchStatus: "delivered",
       dispatchResultRejected: true, status: "failed", retryable: false, lastError: expect.stringContaining("Original startup failure") }] });
     // Malformed fields are also retained, even before recordDispatchResult is reached.
-    expect((await app.inject({ method: "POST", url: resultUrl, headers,
+    expect((await versionedTestRequest(app, { method: "POST", url: resultUrl, headers,
       payload: { status: "retry", retryAfterSeconds: 1, error: "Retry could not start" } })).statusCode).toBe(400);
     expect((await history()).body).toContain("Retry could not start");
-    expect((await app.inject({ method: "POST", url: resultUrl, headers,
+    expect((await versionedTestRequest(app, { method: "POST", url: resultUrl, headers,
       payload: { status: "launched", sessionName: "Recovered", sessionUrl: "codex://threads/recovered-thread", sessionRef: "recovered-thread" },
     })).statusCode).toBe(204);
     const recovered = (await history()).json().dispatches[0];
@@ -873,7 +875,7 @@ describe("Dispatching the same item twice", () => {
     expect(recovered.diagnosticSnapshot.resultRejection).toBeUndefined();
     expect((await sessions()).json().sessions[0].dispatchResultRejected).toBeUndefined();
     // A late malformed receipt cannot overwrite the accepted result.
-    expect((await app.inject({ method: "POST", url: resultUrl, headers, payload })).statusCode).toBe(400);
+    expect((await versionedTestRequest(app, { method: "POST", url: resultUrl, headers, payload })).statusCode).toBe(400);
     expect((await history()).body).not.toContain("resultRejection");
   });
 
@@ -929,7 +931,7 @@ describe("Dispatching the same item twice", () => {
     });
 
     // The session claims the item: it is no longer ready, so there is nothing to warn about.
-    const claimed = await app.inject({
+    const claimed = await versionedTestRequest(app, {
       method: "POST",
       url: `/api/v1/items/${mission.itemKey}/transitions`,
       headers: { cookie },
@@ -981,7 +983,7 @@ describe("Dispatching the same item twice", () => {
       payload: { status: "launched" },
     });
     // The launch is still unclaimed when the person picks the item up themselves.
-    const started = await app.inject({
+    const started = await versionedTestRequest(app, {
       method: "POST",
       url: `/api/v1/items/${mission.itemKey}/transitions`,
       headers: { cookie },
@@ -1012,11 +1014,11 @@ describe("Dispatching the same item twice", () => {
       payload: { status: "launched", sessionName: `Mac mini-${mission.itemKey}` },
     });
     for (const [to, reason] of [["in_progress", "claim"], ["development_complete", "resolution_submitted"], ["pending_verification", "release_verified"], ["ready", "verification_failed"]]) {
-      const moved = await app.inject({
+      const moved = await versionedTestRequest(app, {
         method: "POST",
         url: `/api/v1/items/${mission.itemKey}/transitions`,
         headers: { cookie },
-        payload: { to, reason, note: "按钮在暗色模式下看不见" },
+        payload: { to, reason: ["development_complete","pending_verification"].includes(to) ? "manual_override" : reason, note: "按钮在暗色模式下看不见" },
       });
       expect(moved.statusCode, moved.body).toBe(200);
     }
@@ -1029,6 +1031,10 @@ describe("Dispatching the same item twice", () => {
       latest: [{ itemKey: mission.itemKey, status: "launched" }],
       handlers: [],
     });
+    expect((await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).statusCode).toBe(409);
+    const observed=new AgentSessionStore(app.missionGoStore.database).createForDispatch({dispatchId:first.id,nodeId:mini.nodeId,sessionRef:"source-finished-before-rework"});
+    app.missionGoStore.database.connection.prepare("UPDATE agent_sessions SET status='idle',turn_state_json='{}' WHERE id=?").run(observed);
+    app.missionGoStore.database.connection.prepare("UPDATE item_executions SET status='completed' WHERE item_id=(SELECT id FROM work_items WHERE item_key=?)").run(mission.itemKey);
     expect((await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).statusCode).toBe(201);
 
     // The machine hears that this is a second session, and on reworked work.
@@ -2333,43 +2339,43 @@ describe("Claiming a dispatch on the node", () => {
     expect(stop.statusCode).toBe(202);
     expect(stop.json()).toMatchObject({ command: { kind: "interrupt", turnId: "turn-1", status: "queued" } });
 
-    expect((await app.inject({
+    expect((await versionedTestRequest(app, {
       method: "POST",
       url: `/api/v1/items/${mission.itemKey}/transitions`,
       headers: { cookie },
       payload: { to: "in_progress", reason: "claim" },
     })).statusCode).toBe(200);
-    expect((await app.inject({
+    expect((await versionedTestRequest(app, {
       method: "POST",
       url: `/api/v1/items/${mission.itemKey}/transitions`,
       headers: { cookie },
-      payload: { to: "development_complete", reason: "resolution_submitted" },
+      payload: { to: "development_complete", reason: "manual_override",note:"Fixture: verified integration" },
     })).statusCode).toBe(200);
-    expect((await app.inject({
+    expect((await versionedTestRequest(app, {
       method: "POST",
       url: `/api/v1/items/${mission.itemKey}/transitions`,
       headers: { cookie },
-      payload: { to: "pending_verification", reason: "release_verified" },
+      payload: { to: "pending_verification", reason: "manual_override",note:"Fixture: verified publication" },
     })).statusCode).toBe(200);
-    expect((await app.inject({
+    expect((await versionedTestRequest(app, {
       method: "POST",
       url: `/api/v1/items/${secondKey}/transitions`,
       headers: { cookie },
       payload: { to: "in_progress", reason: "claim" },
     })).statusCode).toBe(200);
-    expect((await app.inject({
+    expect((await versionedTestRequest(app, {
       method: "POST",
       url: `/api/v1/items/${secondKey}/transitions`,
       headers: { cookie },
-      payload: { to: "development_complete", reason: "resolution_submitted" },
+      payload: { to: "development_complete", reason: "manual_override",note:"Fixture: verified integration" },
     })).statusCode).toBe(200);
-    expect((await app.inject({
+    expect((await versionedTestRequest(app, {
       method: "POST",
       url: `/api/v1/items/${secondKey}/transitions`,
       headers: { cookie },
-      payload: { to: "pending_verification", reason: "release_verified" },
+      payload: { to: "pending_verification", reason: "manual_override",note:"Fixture: verified publication" },
     })).statusCode).toBe(200);
-    expect((await app.inject({
+    expect((await versionedTestRequest(app, {
       method: "POST",
       url: `/api/v1/items/${mission.itemKey}/transitions`,
       headers: { cookie },
@@ -2398,7 +2404,7 @@ describe("Claiming a dispatch on the node", () => {
       sessions: [{ id: mirrored.id, lifecycle: "keep", occupiesExecutionSlot: true }],
     });
 
-    expect((await app.inject({
+    expect((await versionedTestRequest(app, {
       method: "POST",
       url: `/api/v1/items/${secondKey}/transitions`,
       headers: { cookie },
@@ -3726,11 +3732,11 @@ describe("Unread conversations (AND-135)", () => {
 describe("Archiving a finished hand-off (AND-129)", () => {
   async function move(app: FastifyInstance, cookie: string, itemKey: string, steps: Array<[string, string]>) {
     for (const [to, reason] of steps) {
-      const moved = await app.inject({
+      const moved = await versionedTestRequest(app, {
         method: "POST",
         url: `/api/v1/items/${itemKey}/transitions`,
         headers: { cookie },
-        payload: { to, reason, note: `Moved to ${to} by the AND-129 test.` },
+        payload: { to, reason: ["development_complete","pending_verification"].includes(to) ? "manual_override" : reason, note: `Moved to ${to} by the AND-129 test.` },
       });
       if (moved.statusCode !== 200) throw new Error(`${itemKey} → ${to}: ${moved.statusCode} ${moved.body}`);
     }
@@ -3849,6 +3855,9 @@ describe("Archiving a finished hand-off (AND-129)", () => {
       payload: { archived: false },
     });
     expect(restored.statusCode).toBe(200);
+    // Acceptance does not stop the underlying execution. This fixture now reports it ended before re-opening.
+    app.missionGoStore.database.connection.prepare("UPDATE item_executions SET status='completed' WHERE item_id=(SELECT id FROM work_items WHERE item_key=?)").run(mission.itemKey);
+    app.missionGoStore.database.connection.prepare("UPDATE agent_sessions SET status='idle',turn_state_json='{}' WHERE dispatch_id IN (SELECT dispatch_id FROM dispatch_items WHERE item_id=(SELECT id FROM work_items WHERE item_key=?))").run(mission.itemKey);
     await move(app, cookie, mission.itemKey, [["ready", "reopened"], ...toDone]);
     expect((await listed(app, cookie, mission.productId)).archivedAt).toBeUndefined();
   });

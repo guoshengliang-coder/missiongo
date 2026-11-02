@@ -1,3 +1,4 @@
+import { postItemCommand } from "./item-command";
 import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 import { expectUsableControl } from "./visible-control";
@@ -17,7 +18,7 @@ for (const [width, theme] of [[1280, "light"], [375, "dark"]] as const) {
       const response = await request.post("/api/v1/items", { data: { productId: fixture.productId, title, description: "", type: "requirement", priority: "normal", status: "ready", environment: { platform: "web" } } });
       expect(response.ok()).toBeTruthy();
       const item = await response.json();
-      expect((await request.post(`/api/v1/items/${item.key}/transitions`, { data: { to: "pending_verification", reason: "manual_override" } })).ok()).toBeTruthy();
+      expect((await postItemCommand(request,`/api/v1/items/${item.key}/transitions`, { data: { to: "pending_verification", reason: "manual_override" } })).ok()).toBeTruthy();
       return item;
     };
     const other = await create(`Acceptance peer ${width}`);
@@ -29,13 +30,14 @@ for (const [width, theme] of [[1280, "light"], [375, "dark"]] as const) {
     await expect(row.locator('input[type="checkbox"]')).toHaveCount(0);
     await row.locator(".row-more-menu > summary").click();
     await expect(row.getByRole("button", { name: "验证通过", exact: true })).toHaveCount(0);
-    await expect(row.getByRole("button", { name: "需要继续处理", exact: true })).toBeVisible();
+    await expect(row.getByRole("button", { name: "验收打回", exact: true })).toHaveCount(0);
     await page.goto(`/?product=${fixture.productId}&status=pending_verification&item=${other.key}`);
     await expect(page.locator(".detail-pane").getByText(/只有系统管理员、项目管理员或该条目提需者/)).toBeVisible();
     await expect(page.locator(".detail-pane .toolbar-primary-action")).toHaveCount(0);
 
     // Project role grants acceptance independently of operation permissions.
-    expect((await request.put(`/api/v1/products/${fixture.productId}/administrators`, { data: { accountIds: [account.id], expectedAccountIds: [] } })).ok()).toBeTruthy();
+    const originalAdmins=(await (await request.get(`/api/v1/products/${fixture.productId}/administrators`)).json()).accountIds;
+    expect((await request.put(`/api/v1/products/${fixture.productId}/administrators`, { data: { accountIds: [account.id], expectedAccountIds: originalAdmins } })).ok()).toBeTruthy();
     expect((await request.put(`/api/v1/accounts/${account.id}/products`, { data: { permissions: [] } })).ok()).toBeTruthy();
     await page.reload();
     await expect(page.locator(".detail-pane .toolbar-primary-action")).toHaveText("验证通过");
@@ -52,6 +54,6 @@ for (const [width, theme] of [[1280, "light"], [375, "dark"]] as const) {
     await dialog.locator(".bulk-verify .primary-button").click();
     await expect(dialog).toHaveCount(0);
     expect((await (await request.get(`/api/v1/items/${other.key}`)).json()).status).toBe("done");
-    expect((await request.put(`/api/v1/products/${fixture.productId}/administrators`, { data: { accountIds: [], expectedAccountIds: [account.id] } })).ok()).toBeTruthy();
+    expect((await request.put(`/api/v1/products/${fixture.productId}/administrators`, { data: { accountIds: originalAdmins, expectedAccountIds: [account.id] } })).ok()).toBeTruthy();
   });
 }

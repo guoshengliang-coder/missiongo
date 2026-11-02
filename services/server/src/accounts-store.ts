@@ -94,6 +94,7 @@ export interface AccountSummary {
 
 /** One account's standing on one product, as the product-side editor shows it. */
 export interface ProductAccessEntry {
+  readonly aiScope: "all" | "selected" | "none";
   readonly account: AccountSummary;
   readonly permission: ProductPermission;
   /** True for an administrator, who reaches the product whatever the row says. */
@@ -109,6 +110,7 @@ export interface ProductAccessEntry {
 }
 
 export interface AccountSnapshot {
+  readonly aiScope: "all" | "selected" | "none";
   readonly id: string;
   readonly email: string;
   /** What this account calls itself. Absent means "use the address". */
@@ -131,6 +133,7 @@ export interface AccountSnapshot {
 }
 
 interface AccountRow {
+  ai_scope: "all" | "selected" | "none";
   id: string;
   email: string;
   nickname: string | null;
@@ -274,11 +277,13 @@ export class AccountStore {
            VALUES (?, ?, ?, 'admin', ?, ?, ?)`,
         )
         .run(input.id, input.email.trim(), input.passwordScrypt, now, now, now);
+      this.database.connection.prepare("UPDATE accounts SET ai_scope=? WHERE id=?").run(input.authorizedProductIds ? "selected" : "all",input.id);
       // Everything already in the database was created by the only account that
       // existed, so it owns all of it.
       this.database.connection
         .prepare("UPDATE products SET created_by_account_id = ? WHERE created_by_account_id IS NULL")
         .run(input.id);
+      this.database.connection.prepare("INSERT OR IGNORE INTO product_administrators SELECT id,?,?,? FROM products WHERE created_by_account_id=?").run(input.id,input.id,now,input.id);
       // ADMIN_AUTHORIZED_PRODUCT_IDS narrowed what AI clients could read. It
       // becomes permission rows and stops being consulted; leaving it in two
       // places is how the two drift apart. An unset variable meant every
@@ -606,6 +611,7 @@ export class AccountStore {
       .map((account) => {
         const row = byAccount.get(account.id);
         return {
+          aiScope: account.aiScope,
           effective: {
             canView: this.allows(account, productId, "view"),
             canOperate: this.allows(account, productId, "operate"),
@@ -654,9 +660,12 @@ export class AccountStore {
    * the way the account-side editor does -- would silently revoke permissions
    * that were never on screen.
    */
-  replaceProductAccess(productId: string, entries: readonly { accountId: string; permission: Omit<ProductPermission, "productId"> }[]): void {
+  replaceProductAccess(productId: string, entries: readonly { accountId: string; permission: Omit<ProductPermission, "productId"> }[], actorId?:string): void {
     const now = new Date().toISOString();
     this.database.transaction(() => {
+      const accessSnapshot=()=>({permissions:this.database.connection.prepare("SELECT account_id,can_view,can_operate,can_use_ai FROM account_products WHERE product_id=? ORDER BY account_id").all(productId),
+        scopes:entries.map(entry=>({accountId:entry.accountId,aiScope:this.getAccount(entry.accountId).aiScope}))});
+      const before=accessSnapshot();
       for (const entry of entries) {
         this.getAccount(entry.accountId);
         const canOperate = entry.permission.canOperate;
@@ -681,14 +690,16 @@ export class AccountStore {
           )
           .run(entry.accountId, productId, canOperate ? 1 : 0, canUseAi ? 1 : 0, now, now);
       }
+      this.auditAccess("product",productId,before,accessSnapshot(),actorId);
     });
   }
 
   /** Replace an account's whole permission set. Rows not listed are removed. */
-  replacePermissions(accountId: string, permissions: readonly ProductPermission[]): readonly ProductPermission[] {
-    this.getAccount(accountId);
+  replacePermissions(accountId: string, permissions: readonly ProductPermission[], aiScope: "all" | "selected" | "none" = "selected", actorId?:string): readonly ProductPermission[] {
+    const before={aiScope:this.getAccount(accountId).aiScope,permissions:this.listPermissions(accountId)};
     const now = new Date().toISOString();
     this.database.transaction(() => {
+      this.database.connection.prepare("UPDATE accounts SET ai_scope=? WHERE id=?").run(aiScope,accountId);
       this.database.connection.prepare("DELETE FROM account_products WHERE account_id = ?").run(accountId);
       for (const permission of permissions) {
         // Operating on a product you cannot see, or reading it through an AI
@@ -705,8 +716,14 @@ export class AccountStore {
           )
           .run(accountId, permission.productId, 1, canOperate ? 1 : 0, canUseAi ? 1 : 0, now, now);
       }
+      this.auditAccess("account",accountId,before,{aiScope,permissions:this.listPermissions(accountId)},actorId);
     });
     return this.listPermissions(accountId);
+  }
+
+  private auditAccess(kind:string,id:string,before:unknown,after:unknown,actorId?:string):void {
+    if (JSON.stringify(before) === JSON.stringify(after)) return;
+    this.database.connection.prepare("INSERT INTO account_access_audit VALUES (?,?,?,?,?,?,?,?)").run(randomUUID(),actorId ? "human" : "system",actorId ?? null,kind,id,JSON.stringify(before),JSON.stringify(after),new Date().toISOString());
   }
 
   /**
@@ -717,6 +734,8 @@ export class AccountStore {
    */
   grantCreatorPermissions(accountId: string, productId: string): void {
     const now = new Date().toISOString();
+    this.database.connection.prepare("INSERT OR IGNORE INTO product_administrators VALUES (?,?,?,?)").run(productId,accountId,accountId,now);
+    if (this.getAccount(accountId).role === "admin") return;
     this.database.connection
       .prepare(
         `INSERT INTO account_products
@@ -748,7 +767,9 @@ export class AccountStore {
       if (JSON.stringify(this.projectAdministratorIds(productId)) !== JSON.stringify([...new Set(expectedAccountIds)].sort())) {
         throw conflict("project_administrators_changed", "项目管理员已发生变化，请刷新后重试。");
       }
+      const before = this.projectAdministratorIds(productId);
       const ids = [...new Set(accountIds)].sort();
+      this.database.connection.prepare("INSERT INTO project_role_audit VALUES (?,?,?,?,?,?)").run(randomUUID(),productId,grantedBy,JSON.stringify(before),JSON.stringify(ids),new Date().toISOString());
       for (const id of ids) if (!this.findActive(id) && !this.projectAdministratorIds(productId).includes(id)) throw invalidInput("请选择未停用的账号作为项目管理员。");
       this.database.connection.prepare("DELETE FROM product_administrators WHERE product_id=?").run(productId);
       const insert = this.database.connection.prepare("INSERT INTO product_administrators(product_id,account_id,granted_by,created_at) VALUES (?,?,?,?)");
@@ -757,25 +778,15 @@ export class AccountStore {
     });
   }
 
-  /**
-   * Whether this account reaches this product with this capability.
-   *
-   * An administrator reaches every product in the console: that is what the role
-   * is for, and writing a permission row per administrator per product would
-   * mean a new product is invisible to its own creator until someone remembers
-   * to tick the boxes.
-   *
-   * AI reach is the exception, and deliberately so. `ADMIN_AUTHORIZED_PRODUCT_IDS`
-   * let a deployment say "an AI client signed in as me may only read these
-   * products", and the seed turns that setting into `can_use_ai` rows. If the
-   * role short-circuited those too, upgrading would silently hand every AI
-   * client the whole workspace. So: an administrator with no AI rows reaches
-   * everything -- which is what an unset variable always meant -- and an
-   * administrator with AI rows is bounded by them.
-   */
+  /** Current roles grant project governance; AI scope is an explicit independent setting. */
   allows(account: AccountSnapshot, productId: string, capability: ProductCapability): boolean {
+    if (account.disabledAt) return false;
+    if (capability === "ai") {
+      if (account.aiScope === "none") return false;
+      if (account.aiScope === "all") return this.allows(account,productId,"view");
+    }
     if (account.role === "admin" && !(capability === "ai" && this.hasAiLimit(account.id))) return true;
-    if (capability === "view" && this.isProjectAdministrator(account,productId)) return true;
+    if (capability !== "ai" && this.isProjectAdministrator(account,productId)) return true;
     const row = this.database.connection
       .prepare("SELECT can_view, can_operate, can_use_ai FROM account_products WHERE account_id = ? AND product_id = ?")
       .get(account.id, productId) as unknown as PermissionRow | undefined;
@@ -787,22 +798,22 @@ export class AccountStore {
 
   /** The products this account reaches, or `"*"` for everything. See `allows`. */
   reachableProductIds(account: AccountSnapshot, capability: ProductCapability): "*" | readonly string[] {
-    if (account.role === "admin" && !(capability === "ai" && this.hasAiLimit(account.id))) return "*";
+    if (account.disabledAt) return [];
+    if (capability === "ai" && account.aiScope === "none") return [];
+    if (capability === "ai" && account.aiScope === "all") return this.reachableProductIds(account,"view");
+    if (account.role === "admin" && capability !== "ai") return "*";
     const column = capability === "operate" ? "can_operate" : capability === "ai" ? "can_use_ai" : "can_view";
     const rows = this.database.connection
       .prepare(`SELECT product_id FROM account_products WHERE account_id = ? AND ${column} = 1`)
       .all(account.id) as unknown as Array<{ product_id: string }>;
-    const administered = capability === "view" && !account.disabledAt
+    const administered = capability !== "ai" && !account.disabledAt
       ? this.database.connection.prepare("SELECT product_id FROM product_administrators WHERE account_id=?").all(account.id) as unknown as Array<{product_id:string}> : [];
     return [...new Set([...rows,...administered].map(row => row.product_id))];
   }
 
-  /** Whether this account has said anything at all about which products its AI clients may read. */
+  /** Explicitly bounded AI scope, including an empty selection or a complete prohibition. */
   hasAiLimit(accountId: string): boolean {
-    const row = this.database.connection
-      .prepare("SELECT 1 AS present FROM account_products WHERE account_id = ? AND can_use_ai = 1 LIMIT 1")
-      .get(accountId) as unknown as { present: number } | undefined;
-    return row !== undefined;
+    return this.getAccount(accountId).aiScope !== "all";
   }
 
   /** Record an authorization as it is handed out, so it can later be listed and revoked. */
@@ -1135,6 +1146,7 @@ function mapAccount(row: AccountRow): AccountSnapshot {
     // handing an unknown size to the console.
     consoleFontScale: isFontScale(row.console_font_scale) ? row.console_font_scale : DEFAULT_CONSOLE_FONT_SCALE,
     role: row.role,
+    aiScope: row.ai_scope,
     ...(row.disabled_at ? { disabledAt: row.disabled_at } : {}),
     credentialsChangedAt: row.credentials_changed_at,
     createdAt: row.created_at,

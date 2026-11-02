@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { randomUUID } from "node:crypto";
 //
 // Fill a MissionGo instance with the same console, every time.
 //
@@ -94,10 +95,16 @@ export async function seedFixture({ baseUrl, cookie, fetchImpl = fetch }) {
   }));
 
   const createItem = (body) => call("/api/v1/items", { method: "POST", body: JSON.stringify({ productId: product.id, ...body }) });
-  const move = (key, to, reason, note) => call(`/api/v1/items/${key}/transitions`, {
-    method: "POST",
-    body: JSON.stringify({ to, reason, ...(note ? { note } : {}) }),
-  });
+  const move = async (key, to, reason, note) => {
+    const item=await call(`/api/v1/items/${key}`);
+    const fixtureCorrection=["development_complete","pending_verification"].includes(to);
+    return call(`/api/v1/items/${key}/transitions`, {
+      method: "POST",
+      body: JSON.stringify({ to, reason:fixtureCorrection ? "manual_override" : reason,
+        note:note ?? "UI fixture state", expectedRevision:item.revision,expectedStatus:item.status,
+        idempotencyKey:randomUUID(), ...(["on_hold","cancelled"].includes(to) ? {executionDisposition:"keep_running"} : {}) }),
+    });
+  };
   const attach = (key, name, type, body) => fetchImpl(new URL(`/api/v1/items/${key}/attachments`, baseUrl), {
     method: "POST",
     headers: {

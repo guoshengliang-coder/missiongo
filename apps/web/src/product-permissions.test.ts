@@ -27,8 +27,9 @@ describe("mayAdministerProduct", () => {
     expect(mayAdministerProduct(user({ role: "admin" }), product({ createdByAccountId: "somebody-else" }))).toBe(true);
   });
 
-  it("lets a member administer what they created", () => {
-    expect(mayAdministerProduct(user(), product({ createdByAccountId: "account-1" }))).toBe(true);
+  it("uses the current project role and preserves creator attribution separately", () => {
+    expect(mayAdministerProduct(user(), product({ createdByAccountId: "account-1" }))).toBe(false);
+    expect(mayAdministerProduct(user(), product({ access:{canOperate:true,canUseAi:false,isProjectAdmin:true} }))).toBe(true);
   });
 
   it("does not let a member administer a product shared with them", () => {

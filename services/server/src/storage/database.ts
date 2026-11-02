@@ -2068,5 +2068,71 @@ export class MissionGoDatabase {
       });
     }
     this.connection.exec("PRAGMA optimize;");
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611020744").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611020744").get()) return;
+        this.connection.exec(`
+          ALTER TABLE work_items ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+          ALTER TABLE work_items ADD COLUMN content_version INTEGER NOT NULL DEFAULT 1;
+          ALTER TABLE work_items ADD COLUMN held_from TEXT;
+          ALTER TABLE work_items ADD COLUMN execution_disposition TEXT;
+          UPDATE work_items SET held_from=COALESCE((SELECT e.from_status FROM work_item_events e WHERE e.item_id=work_items.id
+            AND e.to_status='on_hold' AND e.history_source_key IS NULL ORDER BY e.timeline_seq DESC LIMIT 1),'ready') WHERE status='on_hold';
+          ALTER TABLE item_executions ADD COLUMN authorization_revoked INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE item_executions ADD COLUMN origin TEXT NOT NULL DEFAULT 'assigned' CHECK(origin IN ('assigned','claim'));
+          ALTER TABLE builder_execution_authorizations ADD COLUMN round_key TEXT;
+          UPDATE builder_execution_authorizations SET round_key=(SELECT e.id FROM work_item_events e WHERE e.item_id=builder_execution_authorizations.item_id
+            AND e.history_source_key IS NULL AND (e.event_type='status_changed' AND e.to_status='in_progress' AND e.from_status!='on_hold'
+              AND (json_extract(e.payload_json,'$.reason')!='manual_override' OR NOT EXISTS(SELECT 1 FROM work_item_events previous WHERE previous.item_id=e.item_id AND previous.to_status='in_progress' AND previous.timeline_seq<e.timeline_seq AND previous.history_source_key IS NULL))
+              OR e.event_type='execution_taken_over' OR e.event_type='builder_changed' AND json_extract(e.payload_json,'$.handoverId') IS NOT NULL)
+            ORDER BY e.timeline_seq DESC LIMIT 1);
+          UPDATE builder_execution_authorizations SET revoked=1 WHERE round_key IS NULL
+            OR created_at<(SELECT created_at FROM work_item_events WHERE id=round_key)
+            OR EXISTS(SELECT 1 FROM work_item_events e WHERE e.item_id=builder_execution_authorizations.item_id
+              AND e.timeline_seq>(SELECT timeline_seq FROM work_item_events WHERE id=round_key) AND e.history_source_key IS NULL
+              AND e.event_type='status_changed' AND (json_extract(e.payload_json,'$.reason')='verification_failed' OR e.from_status='done' OR e.to_status='cancelled'));
+          ALTER TABLE accounts ADD COLUMN ai_scope TEXT NOT NULL DEFAULT 'selected' CHECK(ai_scope IN ('all','selected','none'));
+          UPDATE accounts SET ai_scope='all' WHERE role='admin' AND NOT EXISTS
+            (SELECT 1 FROM account_products p WHERE p.account_id=accounts.id AND p.can_use_ai=1);
+          INSERT OR IGNORE INTO product_administrators(product_id,account_id,granted_by,created_at)
+            SELECT p.id,p.created_by_account_id,p.created_by_account_id,p.created_at FROM products p
+            JOIN accounts a ON a.id=p.created_by_account_id;
+          CREATE TABLE item_content_versions (
+            item_id TEXT NOT NULL REFERENCES work_items(id), version INTEGER NOT NULL,
+            content_json TEXT NOT NULL, account_id TEXT, created_at TEXT NOT NULL,
+            PRIMARY KEY(item_id,version)
+          ) STRICT;
+          INSERT INTO item_content_versions SELECT id,1,json_object('title',title,'description',description,'report',json(report_json),'type',type,'sourceComponentId',source_component_id,'environment',json(environment_json),'affectedComponentIds',json((SELECT json_group_array(component_id) FROM work_item_affected_components WHERE item_id=work_items.id))),NULL,updated_at FROM work_items;
+          CREATE TRIGGER item_policy_revision AFTER UPDATE OF status,title,description,report_json,builder_account_id ON work_items
+          WHEN NEW.status IS NOT OLD.status OR NEW.title IS NOT OLD.title OR NEW.description IS NOT OLD.description
+            OR NEW.report_json IS NOT OLD.report_json OR NEW.builder_account_id IS NOT OLD.builder_account_id
+          BEGIN UPDATE work_items SET revision=OLD.revision+1 WHERE id=NEW.id; END;
+          CREATE TABLE dingtalk_policy_notifications (
+            id TEXT PRIMARY KEY, event_id TEXT REFERENCES work_item_events(id) ON DELETE CASCADE,
+            item_id TEXT REFERENCES work_items(id) ON DELETE CASCADE, account_id TEXT,
+            comment_id TEXT REFERENCES work_item_comments(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL CHECK(kind IN('verification','test','comment','decision')),
+            status TEXT NOT NULL CHECK(status IN('queued','sending','accepted','sent','failed','skipped','uncertain')),
+            reason TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0,
+            task_id TEXT, recipient TEXT, config_revision INTEGER, binding_revision TEXT,
+            next_at TEXT NOT NULL, lease_until TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            UNIQUE(comment_id,account_id), UNIQUE(event_id,account_id)
+          ) STRICT;
+          INSERT INTO dingtalk_policy_notifications SELECT * FROM dingtalk_notifications;
+          DROP TABLE dingtalk_notifications;
+          ALTER TABLE dingtalk_policy_notifications RENAME TO dingtalk_notifications;
+          CREATE INDEX dingtalk_notifications_pending ON dingtalk_notifications(status,next_at);
+          CREATE INDEX dingtalk_notifications_item ON dingtalk_notifications(item_id,created_at);
+          CREATE TABLE account_access_audit(id TEXT PRIMARY KEY,actor_kind TEXT NOT NULL,actor_account_id TEXT,
+            subject_kind TEXT NOT NULL,subject_id TEXT NOT NULL,before_json TEXT NOT NULL,after_json TEXT NOT NULL,created_at TEXT NOT NULL) STRICT;
+          CREATE TABLE item_decision_receipts(account_id TEXT NOT NULL,command_key TEXT NOT NULL,digest TEXT NOT NULL,result_json TEXT NOT NULL,
+            PRIMARY KEY(account_id,command_key)) STRICT;
+          CREATE TABLE project_role_audit(id TEXT PRIMARY KEY,product_id TEXT NOT NULL,actor_account_id TEXT NOT NULL,
+            before_json TEXT NOT NULL,after_json TEXT NOT NULL,created_at TEXT NOT NULL) STRICT;
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202611020744,new Date().toISOString());
+      });
+    }
+
   }
 }

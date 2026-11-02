@@ -104,20 +104,20 @@ describe("work item state machine", () => {
 describe("manual override", () => {
   it("lets a person move an item straight to a status the pipeline cannot reach", () => {
     expect(
-      evaluateWorkItemTransition({ from: "ready", to: "done", actor: "human", reason: "manual_override" }),
+      evaluateWorkItemTransition({ from: "ready", to: "done", actor: "human", reason: "manual_override",note:"Audited correction" }),
     ).toMatchObject({ allowed: true, code: "allowed" });
     expect(
-      evaluateWorkItemTransition({ from: "inbox", to: "in_progress", actor: "human", reason: "manual_override" }),
+      evaluateWorkItemTransition({ from: "inbox", to: "in_progress", actor: "human", reason: "manual_override",note:"Audited correction" }),
     ).toMatchObject({ allowed: true });
     expect(
-      evaluateWorkItemTransition({ from: "cancelled", to: "done", actor: "human", reason: "manual_override" }),
-    ).toMatchObject({ allowed: true });
+      evaluateWorkItemTransition({ from: "cancelled", to: "done", actor: "human", reason: "manual_override",note:"Audited correction" }),
+    ).toMatchObject({ allowed: false });
   });
 
   it("is closed to agents and to the system, so only a person can still close verification", () => {
     for (const actor of ["agent", "system"] as const) {
       expect(
-        evaluateWorkItemTransition({ from: "ready", to: "done", actor, reason: "manual_override" }),
+        evaluateWorkItemTransition({ from: "ready", to: "done", actor, reason: "manual_override",note:"Audited correction" }),
       ).toMatchObject({ allowed: false, code: "invalid_transition" });
     }
     expect(
@@ -127,7 +127,7 @@ describe("manual override", () => {
 
   it("refuses a move that goes nowhere", () => {
     expect(
-      evaluateWorkItemTransition({ from: "ready", to: "ready", actor: "human", reason: "manual_override" }),
+      evaluateWorkItemTransition({ from: "ready", to: "ready", actor: "human", reason: "manual_override",note:"Audited correction" }),
     ).toMatchObject({ allowed: false, code: "invalid_transition" });
   });
 
@@ -143,7 +143,7 @@ describe("transition notes", () => {
     ["in_progress", "released"],
     ["development_complete", "released"],
     ["pending_verification", "verification_failed"],
-    ["on_hold", "reopened"],
+    ["on_hold", "resume"],
     ["done", "reopened"],
   ] as const;
 
@@ -176,12 +176,12 @@ describe("transition notes", () => {
   it("asks only on the way back to ready and on the way out to cancelled", () => {
     for (const from of WORK_ITEM_STATUSES) {
       for (const to of WORK_ITEM_STATUSES) {
-        if (to !== "ready" && to !== "cancelled") expect(transitionRequiresNote(from, to)).toBe(false);
+        if (to !== "ready" && to !== "cancelled" && to !== "on_hold" && from !== "on_hold" && from !== "cancelled") expect(transitionRequiresNote(from, to)).toBe(false);
       }
     }
     // cancelled -> ready is not a retreat from work; it is a restore, and the
     // pipeline does not even offer it.
-    expect(transitionRequiresNote("cancelled", "ready")).toBe(false);
+    expect(transitionRequiresNote("cancelled", "ready")).toBe(true);
     expect(transitionRequiresNote("ready", "ready")).toBe(false);
   });
 
@@ -214,7 +214,7 @@ describe("transition notes", () => {
     // Done has no pipeline edge to cancelled, so the override is the only way
     // there -- and it must not be the silent one.
     expect(evaluateWorkItemTransition({ from: "done", to: "cancelled", actor: "human", reason: "manual_override" }))
-      .toMatchObject({ allowed: false, code: "note_required" });
+      .toMatchObject({ allowed: false, code: "invalid_transition" });
     expect(transitionRequiresNote("cancelled", "cancelled")).toBe(false);
   });
 

@@ -21,7 +21,7 @@ async function seed() {
   const product = store.createProduct({ name: "Transitions", keyPrefix: "TR" });
   const create = () => store.createWorkItem({ productId: product.id, title: "Reason files", description: "", type: "requirement", priority: "normal", status: "ready", environment: { platform: "web" } });
   const item = create();
-  store.transitionWorkItem({ itemKey: item.key, to: "pending_verification", actor: "human", reason: "manual_override" });
+  store.transitionWorkItem({ itemKey: item.key, to: "pending_verification", actor: "human", note:"Test fixture: explicit administrative correction", reason: "manual_override" });
   const upload = async (key = item.key) => {
     const response = await app.inject({ method: "POST", url: `/api/v1/items/${key}/attachments`, payload: Buffer.from("Evidence"),
       headers: { "content-type": "application/octet-stream", "x-missiongo-content-type": "text/plain", "x-missiongo-filename": "reason.log" } });
@@ -55,7 +55,7 @@ describe("attachments in human transition reasons", () => {
     expect((await transition(input)).statusCode).toBe(200);
     expect(store.getTimeline(item.key).filter(event => event.payload.attachmentIds)).toHaveLength(1);
     expect((await transition({ ...input, note: "Changed reason" })).statusCode).toBe(409);
-    store.transitionWorkItem({ itemKey: item.key, to: "on_hold", actor: "human", reason: "request_human_input" });
+    store.transitionWorkItem({ itemKey: item.key, to: "on_hold", actor: "human", reason: "request_human_input", note:"Awaiting further input" });
     expect((await transition(input)).json().status).toBe("on_hold");
   });
 
@@ -80,7 +80,7 @@ describe("attachments in human transition reasons", () => {
     expect((await transition({ attachmentIds: [owned.id] })).statusCode).toBe(400);
     const free = await upload();
     expect((await transition({ attachmentIds: [free] })).statusCode).toBe(200);
-    store.transitionWorkItem({ itemKey: item.key, to: "pending_verification", actor: "human", reason: "manual_override" });
+    store.transitionWorkItem({ itemKey: item.key, to: "pending_verification", actor: "human", note:"Test fixture: explicit administrative correction", reason: "manual_override" });
     expect((await transition({ attachmentIds: [free] })).statusCode).toBe(400);
     expect(() => store.createComment({ itemKey: item.key, actorKind: "human", bodyKind: "free", body: { text: "Steal", attachmentIds: [free] } })).toThrow("transition");
   });
