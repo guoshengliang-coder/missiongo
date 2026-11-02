@@ -36,6 +36,7 @@ export class JsonProcess {
       this.pending.clear(); this.onClose();
     };
     this.child.on("error", closed); this.child.on("exit", closed);
+    this.child.stdin.on("error", closed);
   }
   write(value: unknown): void {
     if (this.child.stdin.destroyed || !this.child.stdin.writable) throw new Error("Agent input is closed");

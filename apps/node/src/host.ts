@@ -109,7 +109,8 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
           }
           if (session.archiveInSource || session.restoreInSource) {
             try {
-              if (adapter.archive) await adapter.archive(session.restoreInSource === true);
+              if (!adapter.archive) throw new InputRejected("Source archiving is not supported by this Agent");
+              await adapter.archive(session.restoreInSource === true);
               state.snapshot.sourceArchived = !session.restoreInSource;
               if (session.restoreInSource) state.snapshot.sourceRestored = true;
             } catch (error) { state.snapshot.sourceArchiveError = safeError(error); }

@@ -23,7 +23,7 @@ agent enable <claude_code|codex|opencode> [--executable <absolute-path>]
 agent disable <kind> | agent check          Only enabled agents are probed
 status | doctor                            Show node state / recheck enabled agents
 run                                        Foreground node (flock singleton)
-service install | service uninstall         Print explicit systemctl user commands
+service install | service uninstall         Optional systemd user service; print systemctl commands
 --version | --help
 
 Agents keep their existing accounts, models, gateways and MCP authorization.
