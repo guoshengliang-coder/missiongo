@@ -1,7 +1,7 @@
 import { useRef, useState, type ReactNode } from "react";
 import { Bot, Check, ClipboardCheck, Download, Laptop, Smartphone } from "lucide-react";
 
-import { ANDROID_APK_DOWNLOAD_PATH, MACOS_CLIENT_DOWNLOAD_PATH, SKILL_DOWNLOAD_PATH, skillDownloadUrl } from "./downloads";
+import { ANDROID_APK_DOWNLOAD_PATH, MACOS_CLIENT_DOWNLOAD_PATH, LINUX_CLIENT_DOWNLOAD_PATH, LINUX_CLIENT_MANIFEST_PATH, SKILL_DOWNLOAD_PATH, skillDownloadUrl } from "./downloads";
 import { useI18n } from "./i18n";
 
 /**
@@ -39,6 +39,17 @@ export function DownloadsPanel() {
             <p>{t("downloadMacSignInHelp")}</p>
           </li>
         </ol>
+      </DownloadCard>
+
+      <DownloadCard icon={<Laptop size={18} />} title={t("downloadLinuxTitle")} description={t("downloadLinuxDescription")}>
+        <a className="secondary-button download-link" href={LINUX_CLIENT_DOWNLOAD_PATH} download>
+          <Download size={15} /> {t("downloadLinux")}
+        </a>
+        <p className="node-requirements">{t("downloadLinuxRequirements")}</p>
+        <code className="download-skill-url">npm install --global ./missiongo-linux-latest.tgz</code>
+        <a className="secondary-button download-link" href={LINUX_CLIENT_MANIFEST_PATH} download>
+          <Download size={15} /> {t("downloadLinuxManifest")}
+        </a>
       </DownloadCard>
 
       <DownloadCard icon={<Bot size={18} />} title={t("downloadSkillTitle")} description={t("downloadSkillDescription")}>

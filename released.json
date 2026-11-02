@@ -7,6 +7,13 @@
     "scripts/release-state.mjs reads this; the publish scripts update it."
   ],
   "artifacts": {
+    "linuxCli": {
+      "version": null,
+      "commit": null,
+      "versionFile": "product.json",
+      "versionJsonPath": "linuxNode.version",
+      "paths": ["apps/node", "packages/domain", "scripts/build-node.mjs"]
+    },
     "androidApp": {
       "version": "0.1.18",
       "commit": "9c26f3e277d310c71c788db8520ddeb824d105d8",

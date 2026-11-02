@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readLinuxSnapshot, verifyLinuxPublic } from "./linux-release-tools.mjs";
 
 const SHA = /^[0-9a-f]{40}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
@@ -112,7 +113,7 @@ export function readSnapshot({ host, currentLink, downloadsDir }) {
     ? { version: sdkVersion, pomSha256: pomSha, sourceCommit: SHA.test(sdkRecord.commit ?? "") ? sdkRecord.commit : null }
     : null;
 
-  return { web, androidApp, androidSdk, macosApp };
+  return { web, androidApp, androidSdk, macosApp, linuxCli: readLinuxSnapshot({ host, currentLink }) };
 }
 
 async function readPublic(origin, path, method = "GET") {
@@ -162,11 +163,12 @@ export async function verifyPublic(origin, after) {
     return pom.includes(`<version>${version}</version>`)
       && createHash("sha256").update(pom).digest("hex") === after.androidSdk.pomSha256;
   });
+  await check("linuxCli", () => verifyLinuxPublic(origin, after.linuxCli));
   return { checks, errors };
 }
 
 export function buildReceipt(before, after, publicEvidence) {
-  const artifacts = ["web", "androidApp", "androidSdk", "macosApp"];
+  const artifacts = ["web", "androidApp", "androidSdk", "macosApp", "linuxCli"];
   const changes = artifacts.flatMap((artifact) => {
     const old = before[artifact];
     const current = after[artifact];

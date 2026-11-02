@@ -21,7 +21,13 @@
       "label": "MissionGo"
     }
   },
+  "linuxNode": {
+    "path": "apps/node",
+    "npmPackage": "@missiongo/node",
+    "command": "missiongo-node",
+    "version": "0.1.0"
+  },
   "web": {
-    "version": "1.1.7"
+    "version": "1.1.8"
   }
 }

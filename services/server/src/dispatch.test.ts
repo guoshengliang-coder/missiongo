@@ -3608,6 +3608,25 @@ async function launchedCodexSession(
   return { node, mission, dispatchId, sessionId };
 }
 
+describe("Linux node native approvals (AND-359)", () => {
+  it("preserves source choices through the snapshot API and refuses invented grants", async () => {
+    const { app, cookie } = await signedInApp();
+    const { node, mission, sessionId } = await launchedCodexSession(app, cookie);
+    const options = [{ id: "choice-0", kind: "choice", label: "Proceed once" }, { id: "decline", kind: "decline" }];
+    const snapshot = await app.inject({ method: "POST", url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` }, payload: { status: "active", messages: [], approval: {
+        id: "native-prompt", kind: "manual", status: "pending", turnId: "turn", action: "Confirm native request", startedAtMs: Date.now(), options,
+      } } });
+    expect(snapshot.statusCode).toBe(204);
+    const listed = await app.inject({ method: "GET", url: `/api/v1/agent-sessions?productId=${mission.productId}`, headers: { cookie } });
+    expect(listed.json().sessions.find((session: { id: string }) => session.id === sessionId).approval.options).toEqual(options);
+    const decide = (choice: string) => app.inject({ method: "POST", url: `/api/v1/agent-sessions/${sessionId}/approvals/native-prompt/decision`,
+      headers: { cookie }, payload: { decision: choice } });
+    expect((await decide("acceptForSession")).statusCode).toBe(400);
+    expect((await decide("choice-0")).statusCode).toBe(200);
+  });
+});
+
 describe("Unread conversations (AND-135)", () => {
   type Row = { id: string; unread: boolean; unreadAt?: string };
 

@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 
 import { defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
+import { LINUX_CLIENT_DOWNLOAD_PATH, LINUX_CLIENT_MANIFEST_PATH } from "./src/downloads";
 
 const repositoryRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "../..");
 const androidDownloadPath = "/downloads/missiongo-android-latest.apk";
@@ -80,6 +81,23 @@ function macosDownload(): Plugin {
       server.middlewares.use(middleware);
     },
   };
+}
+
+function linuxDownload(): Plugin {
+  const middleware = (request: IncomingMessage, response: ServerResponse, next: () => void): void => {
+    const path = request.url?.split("?", 1)[0];
+    if (path !== LINUX_CLIENT_DOWNLOAD_PATH && path !== LINUX_CLIENT_MANIFEST_PATH) { next(); return; }
+    const file = resolve(repositoryRoot, "apps/web/public", path.slice(1));
+    response.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    if (!existsSync(file)) {
+      response.statusCode = 404; response.setHeader("Content-Type", "text/plain; charset=utf-8");
+      response.end("Linux package has not been published. Use missiongo-release publish:linux.\n"); return;
+    }
+    response.setHeader("Content-Type", path === LINUX_CLIENT_MANIFEST_PATH ? "application/json" : "application/gzip");
+    if (path === LINUX_CLIENT_DOWNLOAD_PATH) response.setHeader("Content-Disposition", 'attachment; filename="missiongo-linux-latest.tgz"');
+    response.end(readFileSync(file));
+  };
+  return { name: "missiongo-linux-download", configureServer(server) { server.middlewares.use(middleware); }, configurePreviewServer(server) { server.middlewares.use(middleware); } };
 }
 
 function androidDownloadHeaders(): Plugin {
@@ -314,6 +332,7 @@ export default defineConfig(({ mode }) => {
       consoleChunkPreload(),
       androidDownloadHeaders(),
       macosDownload(),
+      linuxDownload(),
       markdownDownload("missiongo-skill-download", skillDownloadPath, skillSourcePath, publicOrigin),
       markdownDownload(
         "missiongo-sdk-integration-download",
