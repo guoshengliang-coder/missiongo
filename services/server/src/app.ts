@@ -3412,6 +3412,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           action: stringField(approval, "action")!,
           ...(stringField(approval, "reason", false) ? { reason: approval.reason as string } : {}),
           startedAtMs: Number(approval.startedAtMs),
+          // Preserve the native list, including an explicit empty list. The
+          // store validates it before persisting or accepting any decision.
+          ...(approval.options !== undefined ? { options: approval.options as NonNullable<AgentApproval["options"]> } : {}),
         } satisfies AgentApproval);
       }
       if (body.approvalRetryId !== undefined) {
