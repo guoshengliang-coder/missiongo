@@ -191,6 +191,12 @@ if (macosApp) {
 }
 
 // --- Report --------------------------------------------------------------
+if (product.linuxNode) {
+  check(/^[0-9]+\.[0-9]+\.[0-9]+$/.test(product.linuxNode.version), "linuxNode.version must be declared in product.json");
+  check(/^@[a-z0-9-]+\/[a-z0-9-]+$/.test(product.linuxNode.npmPackage), "linuxNode.npmPackage must be a valid scoped npm name");
+  check(/^[a-z0-9-]+$/.test(product.linuxNode.command), "linuxNode.command must be a CLI name");
+}
+
 if (failures.length > 0) {
   console.error(`Product identity does not match product.json:\n`);
   for (const failure of failures) console.error(`  - ${failure}`);

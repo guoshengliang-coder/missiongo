@@ -50,8 +50,9 @@ if (checkArtifact && !ledger.artifacts[checkArtifact]) {
 
 const git = (...gitArgs) => execFileSync("git", gitArgs, { cwd: root, encoding: "utf8" }).trim();
 
-function declaredVersion({ versionFile, versionProperty }) {
+function declaredVersion({ versionFile, versionProperty, versionJsonPath }) {
   const source = readFileSync(join(root, versionFile), "utf8");
+  if (versionJsonPath) return versionJsonPath.split(".").reduce((value, key) => value[key], JSON.parse(source));
   const match = new RegExp(`^${versionProperty}=(.+)$`, "m").exec(source);
   if (!match) throw new Error(`${versionProperty} is not declared in ${versionFile}`);
   return match[1].trim();
@@ -60,6 +61,10 @@ function declaredVersion({ versionFile, versionProperty }) {
 function stateOf(name) {
   const artifact = ledger.artifacts[name];
   const current = declaredVersion(artifact);
+  if (artifact.commit === null && artifact.version === null) {
+    return { artifact: name, publishedVersion: null, currentVersion: current, publishedFrom: null,
+      commitsSince: 0, changed: true, bumped: true, verdict: "ready to publish", note: "No publication recorded yet" };
+  }
 
   // A commit that is no longer reachable -- a rebased or pruned branch -- would
   // make every comparison below meaningless, so say so rather than guess.

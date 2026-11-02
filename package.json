@@ -16,7 +16,9 @@
     "admin:hash-password": "node ./scripts/create-admin-password-hash.mjs",
     "backup": "node ./scripts/backup.mjs",
     "restore": "node ./scripts/restore.mjs",
-    "build": "npm run build:types && npm run build:web",
+    "build": "npm run build:types && npm run build:node && npm run build:web",
+    "build:node": "node scripts/build-node.mjs",
+    "publish:linux": "./scripts/publish-linux.sh",
     "build:types": "tsc -b",
     "build:web": "npm run build --workspace @missiongo/web",
     "publish:android-internal": "./scripts/publish-android-internal.sh",
@@ -43,6 +45,7 @@
   "devDependencies": {
     "@playwright/test": "^1.63.0",
     "@types/node": "^26.4.1",
+    "esbuild": "^0.28.2",
     "oxlint": "^1.81.0",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2",
