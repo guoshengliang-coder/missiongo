@@ -308,3 +308,13 @@ it("bounds external native activity payloads", () => {
   expect(() => f.report({ activities: [{ id: "tool", title: "x".repeat(501) }] })).toThrow("Invalid native activities");
   expect(() => f.report({ activities: [{ id: "tool", title: "Tool", startedAt: "invalid" }] })).toThrow("Invalid native activities");
 });
+
+it.each(["disconnected", "archived"])("does not raise a stale-observation warning after monitoring was deliberately %s", (state) => {
+  const f = fixture(); f.native.connect("owner", f.id, "node");
+  const stamp = new Date().toISOString();
+  f.report({ status: "active", turnState: { turnActive: true, observedAt: stamp, lastProgressAt: stamp } });
+  if (state === "disconnected") f.native.disconnect("owner", f.id);
+  else f.progress.setArchived("owner", f.id, true);
+  vi.advanceTimersByTime(20 * 60_000);
+  expect(f.progress.listForAccount("owner")[0]?.needsAttention).toBe(false);
+});

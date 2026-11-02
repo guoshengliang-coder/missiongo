@@ -694,7 +694,7 @@ export class AgentSessionStore {
       }>;
     const command = this.latestCommand(sessionId);
     const turnState = JSON.parse(row.turn_state_json) as AgentSessionTurnState;
-    const health = sessionHealth(offlineDegradedStatus(row.status, row.node_last_seen_at, Boolean(row.node_revoked_at)).status, turnState);
+    const health = sessionHealth(offlineDegradedStatus(row.status, row.node_last_seen_at, Boolean(row.node_revoked_at)).status, row.archived_at ? {} : turnState);
     return {
       id: row.id,
       dispatchId: row.dispatch_id,
@@ -815,7 +815,7 @@ export class AgentSessionStore {
         row.session_status ?? inferredStatus, row.node_last_seen_at, Boolean(row.node_revoked_at),
       );
       const turnState = row.session_turn_state_json ? JSON.parse(row.session_turn_state_json) as AgentSessionTurnState : {};
-      const health = sessionHealth(offlineDegraded.status, turnState);
+      const health = sessionHealth(offlineDegraded.status, row.session_archived_at || row.dispatch_archived_at ? {} : turnState);
       const status = health.status;
       const updatedAt = row.session_updated_at ?? row.dispatch_archived_at
         ?? row.completed_at ?? row.delivered_at ?? row.created_at;

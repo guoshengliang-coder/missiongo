@@ -104,7 +104,7 @@ export class ExternalNativeSessionStore {
     const node = row.native_node_id ? this.db.prepare("SELECT COALESCE(nickname,name) AS name,last_seen_at,revoked_at FROM nodes WHERE id=? AND account_id=?")
       .get(row.native_node_id, accountId) as { name: string; last_seen_at: string | null; revoked_at: string | null } | undefined : undefined;
     const online = node && !node.revoked_at && nodeConnectionState(node.last_seen_at ?? undefined) === "online";
-    const health = snapshot ? sessionHealth(snapshot.status, snapshot.turnState) : undefined;
+    const health = snapshot ? sessionHealth(snapshot.status, row.native_node_id && !row.archived_at && !snapshot.sourceArchived ? snapshot.turnState : {}) : undefined;
     const connected = Boolean(row.native_node_id && online && snapshot && !["failed", "unavailable", "suspended"].includes(health!.status) && !snapshot.sourceArchived);
     const nativeConnection: ExternalNativeConnection | undefined = row.native_generation === 0 && !row.native_auto_connect ? undefined : {
       state: !row.native_node_id ? row.native_auto_connect ? "pending" : "disconnected" : !snapshot ? "pending" : connected ? "connected" : "unavailable",
