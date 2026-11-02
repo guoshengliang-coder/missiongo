@@ -253,7 +253,7 @@ test.describe("attachments a browser cannot read natively", () => {
     await page.waitForLoadState("networkidle");
     // The thumbnail is mounted lazily; scroll its card before waiting for the
     // image, including when the persistent composer reduces the reading area.
-    const card = page.locator(".attachment-card", { has: page.getByRole("button", { name: "下载 iphone.heic", exact: true }) });
+    const card = page.locator(".attachment-card", { has: page.locator(".media-number-badge", { hasText: "图片 3" }) });
     await card.scrollIntoViewIfNeeded();
     const thumbnail = card.locator('.attachment-media-open img[alt="iphone.heic"]');
     await expect(thumbnail).toBeVisible();
@@ -265,7 +265,7 @@ test.describe("attachments a browser cannot read natively", () => {
   test("a video this browser cannot play says so and offers the file", async ({ page }) => {
     await page.goto(`/?product=${fixture.productId}&status=all&item=${fixture.detailKey}`);
     await page.waitForLoadState("networkidle");
-    const card = page.locator(".attachment-card", { has: page.getByRole("button", { name: "下载 screen-recording.mov", exact: true }) });
+    const card = page.locator(".attachment-card", { has: page.locator(".media-number-badge", { hasText: "视频 1" }) });
     await card.scrollIntoViewIfNeeded();
     await card.locator(".attachment-load-button").click();
     const notice = page.locator(".selected-media-lightbox .video-unplayable");
@@ -309,7 +309,7 @@ test.describe("item media gallery on touch", () => {
     await page.goto(`/?product=${fixture.productId}&status=all&item=${fixture.detailKey}`);
     // Image pixels are loaded near the viewport. Scroll the card, which is
     // always present, before waiting for its thumbnail below the delivery panel.
-    await page.locator(".attachment-card").filter({ has: page.getByRole("button", { name: "下载 screen-a.png", exact: true }) }).scrollIntoViewIfNeeded();
+    await page.locator(".attachment-card").filter({ has: page.locator(".media-number-badge", { hasText: "图片 1" }) }).scrollIntoViewIfNeeded();
     await page.locator('.attachment-media-open img[alt="screen-a.png"]').click();
     const gallery = page.locator(".selected-media-lightbox[open]");
     const bounds = await gallery.locator(".media-gallery-stage").boundingBox();
