@@ -53,6 +53,8 @@ for (const viewport of viewports) for (const theme of ["light", "dark"] as const
           const button = card.getByRole("button", { name: "回复", exact: true });
           await button.scrollIntoViewIfNeeded();
           await expectUsableControl(button, viewport.touch);
+          await expectUsableControl(card.locator(".comment-author-name"), viewport.touch);
+          await expectUsableControl(card.locator(".comment-more-actions > summary"), viewport.touch);
           await expect(button.locator("svg")).toHaveCount(1);
           const geometry = await card.evaluate(node => {
             const message = node.querySelector(".comment-message")!;
@@ -60,13 +62,34 @@ for (const viewport of viewports) for (const theme of ["light", "dark"] as const
             const replyBox = node.querySelector(".comment-reply-button")!.getBoundingClientRect();
             const bodyBox = node.querySelector(".comment-body")!.getBoundingClientRect();
             const style = getComputedStyle(message);
-            return { background: style.backgroundColor, radius: parseFloat(style.borderRadius), rightGap: box.right - replyBox.right, aboveBody: replyBox.bottom <= bodyBox.top + 1, overflow: message.scrollWidth - message.clientWidth };
+            const authorBox = node.querySelector(".comment-author-name")!.getBoundingClientRect();
+            const moreBox = node.querySelector(".comment-more-actions > summary")!.getBoundingClientRect();
+            const timeBox = node.querySelector(".comment-byline time")!.getBoundingClientRect();
+            const controls = [authorBox, replyBox, moreBox];
+            return {
+              background: style.backgroundColor, radius: parseFloat(style.borderRadius),
+              rightGap: box.right - replyBox.right, aboveBody: replyBox.bottom <= bodyBox.top + 1,
+              overflow: message.scrollWidth - message.clientWidth,
+              topInset: authorBox.top - box.top - parseFloat(style.borderTopWidth),
+              controlTops: controls.map(control => control.top),
+              controlBottoms: controls.map(control => control.bottom),
+              metadataBelow: timeBox.top >= authorBox.bottom - 1,
+              replyGap: parseFloat(getComputedStyle(node).marginBlockStart),
+            };
           });
           expect(geometry.background).not.toBe("rgba(0, 0, 0, 0)");
           expect(geometry.radius).toBeGreaterThan(0);
           expect(geometry.aboveBody).toBe(true);
           expect(geometry.rightGap).toBeGreaterThanOrEqual(0);
           expect(geometry.overflow).toBeLessThanOrEqual(1);
+          // Measure all three controls, not just the wrapper's top edge: the
+          // previous 44px reply beside 36px controls passed that weaker check.
+          expect(geometry.topInset).toBeGreaterThanOrEqual(0);
+          expect(geometry.topInset).toBeLessThanOrEqual(4);
+          expect(Math.max(...geometry.controlTops) - Math.min(...geometry.controlTops)).toBeLessThanOrEqual(1);
+          expect(Math.max(...geometry.controlBottoms) - Math.min(...geometry.controlBottoms)).toBeLessThanOrEqual(1);
+          expect(geometry.metadataBelow).toBe(true);
+          if (card === cards[1]) expect(geometry.replyGap).toBe(14);
           if (card !== cards[1]) {
             const folded = card.locator(".comment-collapsible");
             await expect(folded).not.toHaveAttribute("open", "");
@@ -84,6 +107,32 @@ for (const viewport of viewports) for (const theme of ["light", "dark"] as const
         }
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       }
+      const firstReply = cards[0]!.getByRole("button", { name: "回复", exact: true });
+      const firstMore = cards[0]!.locator(".comment-more-actions > summary");
+      await cards[0]!.locator(".comment-author-name").focus();
+      await page.keyboard.press("Tab");
+      await expect(firstReply).toBeFocused();
+      await expect(firstReply).toHaveCSS("outline-style", "solid");
+      await expect(firstReply).toHaveCSS("outline-width", "2px");
+      await page.keyboard.press("Tab");
+      await expect(firstMore).toBeFocused();
+      await expect(firstMore).toHaveCSS("outline-style", "solid");
+      await page.keyboard.press("Escape");
+      if (!viewport.touch) {
+        // Real mouse input exercises the hover media query and pressed state.
+        await firstMore.blur();
+        for (const control of [firstReply, firstMore]) {
+          await page.mouse.move(0, 0);
+          const idle = await control.evaluate(node => getComputedStyle(node).backgroundColor);
+          await control.hover();
+          await expect.poll(() => control.evaluate(node => getComputedStyle(node).backgroundColor)).not.toBe(idle);
+          const hovered = await control.evaluate(node => getComputedStyle(node).backgroundColor);
+          await page.mouse.down();
+          await expect.poll(() => control.evaluate(node => getComputedStyle(node).backgroundColor)).not.toBe(hovered);
+          await page.mouse.move(0, 0);
+          await page.mouse.up();
+        }
+      }
       await cards[1]!.getByRole("button", { name: "回复", exact: true }).click();
       await expect(page.locator(".comment-reply-source span")).toHaveText("我已核对原评论，下面补充检查结果。");
       await cards[0]!.locator(".comment-author-name").click();
@@ -95,6 +144,11 @@ for (const viewport of viewports) for (const theme of ["light", "dark"] as const
         const group = page.locator(".comment-discussion").filter({ has: cards[0]! });
         await group.scrollIntoViewIfNeeded();
         await group.screenshot({ path: testInfo.outputPath(`cards-collapsed-${viewport.width}-${theme}.png`) });
+        if (!viewport.touch) {
+          await firstReply.hover();
+          await group.screenshot({ path: testInfo.outputPath(`cards-hover-${viewport.width}-${theme}.png`) });
+          await page.mouse.move(0, 0);
+        }
         await cards[0]!.locator(".comment-collapsible > summary").click();
         // The expanded card can exceed the scroll viewport. Capture both ends
         // instead of an element screenshot clipped by the fixed composer.
