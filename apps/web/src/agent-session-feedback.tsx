@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ChevronDown, CircleCheck, Clock3, Pencil, Send } from "lucide-react";
+import { ChevronDown, CircleCheck, Clock3, LoaderCircle, Pencil } from "lucide-react";
 import { useI18n } from "./i18n";
 import type { OutgoingReply } from "./agent-session-view";
 
@@ -11,9 +11,9 @@ export function AgentReplyFeedback({ status, cancelling = false, onEdit }: {
   if (status === "failed" || status === "delivery_unknown") return null;
   const key = { sending: "agentReplySendingShort", queued: "agentReplyQueuedShort",
     delivering: "agentReplyDeliveringShort", delivered: "agentReplyDeliveredShort" } as const;
-  const Icon = status === "delivered" ? CircleCheck : status === "queued" ? Clock3 : Send;
+  const Icon = status === "delivered" ? CircleCheck : status === "queued" ? Clock3 : LoaderCircle;
   return <footer className="agent-reply-feedback">
-    <span className="agent-reply-state" role="status"><Icon size={12} aria-hidden="true" />{t(key[status])}</span>
+    <span className="agent-reply-state" role="status"><Icon className={status === "delivered" ? undefined : status === "queued" ? "agent-reply-queued" : "agent-reply-sending"} size={12} aria-hidden="true" />{t(key[status])}</span>
     {status === "queued" && onEdit && <button type="button" className="agent-reply-edit" disabled={cancelling} onClick={onEdit}>
       <Pencil size={12} aria-hidden="true" />{t(cancelling ? "agentSessionCancelling" : "agentReplyEditShort")}
     </button>}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveLocale, translate } from "./i18n";
+import { resolveLocale, translate, translateTransition } from "./i18n";
 
 describe("MissionGo interface language", () => {
   it("defaults to Simplified Chinese", () => {
@@ -79,5 +79,16 @@ describe("MissionGo interface language", () => {
     expect(translate("zh-CN", "consoleFontSize")).toBe("Agent 控制台聊天字号");
     expect(translate("en", "consoleFontSize")).toBe("Agent console chat text size");
     expect(translate("zh-CN", "consoleFontSizeHelp")).toContain("互不影响");
+  });
+});
+
+
+describe("manual transition labels", () => {
+  it("localizes every destination without changing semantic action names", () => {
+    const statuses = { inbox: "草稿", ready: "待处理", in_progress: "处理中", development_complete: "开发完成", on_hold: "暂缓", pending_verification: "待验证", done: "已完成", cancelled: "已取消" };
+    for (const [status, label] of Object.entries(statuses)) expect(translateTransition("zh-CN", status)).toBe(`移至${label}`);
+    expect(translateTransition("en", "pending_verification")).toBe("Move to Pending verification");
+    expect(translateTransition("zh-CN", "Verify & close")).toBe("验证通过并关闭");
+    expect(translateTransition("zh-CN", "Unknown action")).toBe("Unknown action");
   });
 });

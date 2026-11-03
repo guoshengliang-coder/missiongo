@@ -1,7 +1,7 @@
 import { COLLABORATION_EN, COLLABORATION_ZH } from "./collaboration-messages";
 import { createContext, useContext, useEffect, useMemo, type ReactNode } from "react";
 
-import type { WorkItemPriority, WorkItemStatus, WorkItemType } from "./types";
+import { ITEM_STATUSES, type WorkItemPriority, type WorkItemStatus, type WorkItemType } from "./types";
 
 export type Locale = "zh-CN" | "en";
 
@@ -2879,6 +2879,15 @@ export function translate(
   return interpolate(messages[key], variables);
 }
 
+/** Manual moves carry a destination status; semantic workflow actions keep their own wording. */
+export function translateTransition(locale: Locale, label: string): string {
+  if (ITEM_STATUSES.includes(label as WorkItemStatus)) {
+    const destination = STATUS_LABELS[locale][label as WorkItemStatus];
+    return locale === "zh-CN" ? `移至${destination}` : `Move to ${destination}`;
+  }
+  return TRANSITION_LABELS[locale][label] ?? label;
+}
+
 export function I18nProvider({ children }: { children: ReactNode }) {
   const locale = resolveLocale(null);
 
@@ -2895,7 +2904,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
       statusLabel: (status) => STATUS_LABELS[locale][status],
       typeLabel: (type) => TYPE_LABELS[locale][type],
       priorityLabel: (priority) => PRIORITY_LABELS[locale][priority],
-      transitionLabel: (label) => TRANSITION_LABELS[locale][label] ?? label,
+      transitionLabel: (label) => translateTransition(locale, label),
       actorLabel: (actor) => ACTOR_LABELS[locale][actor] ?? actor,
       eventLabel: (event) => EVENT_LABELS[locale][event] ?? event.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase()),
       formatTime: (value) => {

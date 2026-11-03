@@ -8,7 +8,7 @@ import { sourceFiles } from "./check-styles.mjs";
 // lifecycle. New surfaces should use OverlayDialog/Modal rather than join this
 // list. Exact counts prevent a second dialog silently inheriting an exemption.
 const nativeSurfaces = new Map([
-  ["App.tsx", 1], ["modal.tsx", 1], ["ImageAnnotator.tsx", 1], ["AndroidUpdateNotice.tsx", 1],
+  ["modal.tsx", 1], ["ImageAnnotator.tsx", 1], ["AndroidUpdateNotice.tsx", 1],
 ]);
 
 export function uiContractViolations(file, source) {

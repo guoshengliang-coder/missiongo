@@ -1,3 +1,4 @@
+import { ChatAttachments } from "./chat-attachments";
 import type { ReactNode } from "react";
 import { OverlayDialog } from "./overlay";
 import { WebVersion } from "./web-version";
@@ -14,8 +15,6 @@ import {
   CircleAlert,
   CircleCheck,
   CircleDot,
-  Download,
-  FileText,
   Image as ImageIcon,
   LoaderCircle,
   MessageSquare,
@@ -89,38 +88,6 @@ import { useFileDropZone } from "./file-drop";
 import { useMediaQuery } from "./use-media-query";
 
 const CHAT_FILE_ACCEPT = ".png,.jpg,.jpeg,.webp,.gif,.heic,.mp4,.mov,.webm,.log,.txt,.json,.md,.csv,.pdf";
-
-function ChatAttachments({ sessionId, attachments }: { sessionId: string; attachments: readonly AgentSessionAttachment[] }) {
-  const { t } = useI18n();
-  const [error, setError] = useState<string | null>(null);
-  const download = async (attachment: AgentSessionAttachment) => {
-    try {
-      const response = await fetch(api.agentSessionAttachmentUrl(sessionId, attachment.id), { credentials: "same-origin" });
-      if (!response.ok) throw new Error("Download failed");
-      const url = URL.createObjectURL(await response.blob());
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = attachment.filename;
-      anchor.click();
-      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    } catch { setError(t("attachmentFailed")); }
-  };
-  return <div className="agent-chat-attachments">
-    {attachments.map((attachment) => {
-      const src = api.agentSessionAttachmentUrl(sessionId, attachment.id);
-      const preview = api.agentSessionAttachmentPreviewUrl(sessionId, attachment.id);
-      return <div className="agent-chat-attachment" key={attachment.id}>
-        {attachment.kind === "image" && <a href={preview} target="_blank" rel="noreferrer"><img src={preview} alt={attachment.filename} loading="lazy" /></a>}
-        {attachment.kind === "video" && <video controls preload="metadata" src={src} aria-label={attachment.filename} />}
-        {(attachment.kind === "document" || attachment.kind === "log") && <FileText size={17} />}
-        <span title={attachment.filename}>{attachment.filename}</span>
-        <a href={attachment.kind === "image" ? preview : src} target="_blank" rel="noreferrer" aria-label={`${t("preview")} ${attachment.filename}`}><FileText size={16} /></a>
-        <button type="button" onClick={() => void download(attachment)} aria-label={`${t("download")} ${attachment.filename}`}><Download size={16} /></button>
-      </div>;
-    })}
-    {error && <p className="inline-error" role="alert">{error}</p>}
-  </div>;
-}
 
 function statusLabel(status: AgentSessionStatus, t: ReturnType<typeof useI18n>["t"]): string {
   if (status === "active") return t("agentSessionActive");
@@ -1052,8 +1019,10 @@ export function AgentSessionConsole({
                   ))}</div>
                 </div>
               </div>
-              <span className={`status-pill agent-session-status-${visualStatus}`}>{selected.archivedAt ? t("archived") : selected.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected)) : claudeBackgroundOnly ? t("agentSessionBackgroundStatus") : agentWaiting ? t(selected.agentKind === "codex" ? "agentSessionWaitingApprovalStatus" : "agentSessionWaitingStatus") : statusLabel(sessionStatus, t)}</span>
-              {!showRecovery && sessionActions}
+              <div className="agent-console-toolbar">
+                <span className={`status-pill agent-session-status-${visualStatus}`}>{selected.archivedAt ? t("archived") : selected.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected)) : claudeBackgroundOnly ? t("agentSessionBackgroundStatus") : agentWaiting ? t(selected.agentKind === "codex" ? "agentSessionWaitingApprovalStatus" : "agentSessionWaitingStatus") : statusLabel(sessionStatus, t)}</span>
+                {!showRecovery && sessionActions}
+              </div>
             </header>
             <div className="agent-console-message-stage">
               <div
@@ -1135,7 +1104,7 @@ export function AgentSessionConsole({
                       {message.text && (selected.agentSessionId && ["agent", "plan"].includes(message.role)
                         ? <AgentArtifactMarkdown text={message.text} sessionId={selected.agentSessionId} messageId={message.id} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />
                         : <MarkdownText>{message.text}</MarkdownText>)}
-                      {message.attachmentData && selected.agentSessionId && <ChatAttachments sessionId={selected.agentSessionId} attachments={message.attachmentData} />}
+                      {message.attachmentData && selected.agentSessionId && <ChatAttachments sessionId={selected.agentSessionId} attachments={message.attachmentData} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />}
                       {message.questions && (
                         <AgentSessionQuestions
                           questions={message.questions}
@@ -1195,7 +1164,7 @@ export function AgentSessionConsole({
                     </header>
                     <MarkdownText>{outgoing.text}</MarkdownText>
                     {command && command.id === outgoing.commandId && command.attachments && selected.agentSessionId
-                      && <ChatAttachments sessionId={selected.agentSessionId} attachments={command.attachments} />}
+                      && <ChatAttachments sessionId={selected.agentSessionId} attachments={command.attachments} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />}
                     {sendingSelected && send.variables?.files.length ? <div className="agent-chat-draft-files">
                       {send.variables.files.map((file, index) => <DraftChatFile key={`${file.name}-${index}`} file={file} disabled />)}
                     </div> : null}

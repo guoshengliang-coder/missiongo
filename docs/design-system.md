@@ -238,6 +238,14 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 - 图片必须有加载、失败和重试反馈；预览可查看原图并下载，关闭恢复触发器焦点。已保存的图片可在原节点离线后查看；尚未保存时仍需要原节点和原文件，旧版节点需更新才能同步图片生成事件。Linux 节点的图片产物读取同样校验精确原生会话引用、文件类型、大小和符号链接。
 - 回归来源：`and-371-session-feedback.audit.spec.ts`、`agent-artifacts.audit.spec.ts`、`and-360-session-health.audit.spec.ts`、`agent-approval-visibility.audit.spec.ts`，以及 `AgentArtifactTests`、`CodexProtocolTests` 和 Linux `artifacts.test.ts`。浏览器覆盖明暗、320px窄屏、触控、三档字号、状态变化、撤回附件恢复与图片加载/失败/重试。
 
+### 聊天图片与状态反馈（AND-377/378/379/380）
+
+- 用户聊天图片只展示缩略图，下载与文件名留在图片详情。下载及解码期间保留灰色占位，加载失败提供常驻重试；历史消息与待投递消息共用 `ChatAttachments`。全屏预览复用 `MediaLightbox`、`OverlayDialog` 与 `ZoomableImage`，关闭恢复焦点及底层聊天上下文。
+- 消息排队图标轻微闪动，发送及送达中图标旋转，终态静止；文字仍区分投递与执行，系统减少动态效果时停止图标动画。控制台与条目内面板共用 `AgentReplyFeedback`。
+- 会话头部状态与操作组成同一工具栏，同行外框最小高度 44px 并垂直对齐；窄屏沿用图标操作及现有状态信息布局。
+- 手动状态流转的确认按钮使用“移至＋目标状态中文名”，语义流转继续保留“验收打回”等动作文案；共用 `translateTransition`，列表、详情及确认弹窗不直接展示状态枚举值。
+- 回归来源：`and-377-380-console.audit.spec.ts`、`external-attachments.audit.spec.ts`、`and-371-session-feedback.audit.spec.ts`、`i18n.test.ts`；共用灯箱同时由既有媒体与缩放回归约束。
+
 ### 单选控件（AND-322）
 
 - Web、Android/macOS 内嵌 Web 页面及反馈 SDK 页统一使用 `Select`（`apps/web/src/select.tsx`），提供可访问的 select-only combobox。独立原生选择器保留系统行为，详见[覆盖清单](and-322-select-audit.md)。
