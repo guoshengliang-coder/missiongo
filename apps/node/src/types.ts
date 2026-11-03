@@ -5,7 +5,7 @@ export interface Dispatch {
   dispatchId: string; itemKeys: string[]; repoPath: string; agentKind: Kind; mode: string;
   nodeName?: string; model?: string; effort?: string; reworkItemKeys?: string[];
 }
-export interface AgentConfig { executable?: string }
+export interface AgentConfig { executable?: string; environmentScript?: string; checkRevision?: string }
 export interface RepoMapping { productId: string; repoPath: string; productKey?: string }
 export interface Config {
   installationId: string; server?: string; nodeId?: string; name?: string; token?: string;

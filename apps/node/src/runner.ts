@@ -9,17 +9,18 @@ import { launchPrompt } from "./prompt.js";
 import { probe } from "./process.js";
 import { syncSkill } from "./skills.js";
 import { OpenCodeAPI } from "./opencode.js";
-import type { Config, Dispatch, HostState, Kind, RepoMapping, Session, Snapshot } from "./types.js";
+import { ClaudeEnvironmentCache, resolveClaudeLaunch } from "./environment.js";
+import type { Config, Dispatch, HostState, Kind, RepoMapping, Session, Snapshot, AgentConfig } from "./types.js";
 
 declare const NODE_VERSION: string;
 export const version = typeof NODE_VERSION === "string" ? NODE_VERSION : "development";
-export async function detectAgents(config: Config, expected?: string) {
+export async function detectAgents(config: Config, expected?: string, resolveClaude = resolveClaudeLaunch) {
   const agents = [];
-  for (const [kind, settings] of Object.entries(config.agents) as [Kind, { executable?: string }][]) {
+  for (const [kind, settings] of Object.entries(config.agents) as [Kind, AgentConfig][]) {
     try {
-      const executable = settings.executable ?? (kind === "claude_code" ? "claude" : kind);
-      const text = kind === "opencode" ? (await new OpenCodeAPI().call("GET", "/api/info")).version : await probe(executable, ["--version"]);
-      const skill = await syncSkill(kind, config.server!, expected);
+      const launch = kind === "claude_code" ? await resolveClaude(settings) : { executable: settings.executable ?? kind, env: process.env };
+      const text = kind === "opencode" ? (await new OpenCodeAPI().call("GET", "/api/info")).version : await probe(launch.executable, ["--version"], undefined, launch.env);
+      const skill = await syncSkill(kind, config.server!, expected, launch.env);
       agents.push({ kind, version: String(text).replace(/[^0-9a-zA-Z. _-]/g, "").slice(0, 100), ready: true, skill });
     } catch (error) { agents.push({ kind, ready: false, unavailableReason: safeError(error) }); }
   }
@@ -61,6 +62,7 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
   const healthPath = join(root, "status.json");
   let repos: RepoMapping[] = [];
   let agents: Awaited<ReturnType<typeof detectAgents>> = [];
+  const claudeEnvironment = new ClaudeEnvironmentCache();
   const pause = (ms: number) => delay(ms, undefined, { signal });
   const retry = async (work: () => Promise<void>, ms: number) => {
     while (!signal.aborted) {
@@ -114,7 +116,7 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
     const heartbeat = async () => {
       const reply = await api.call("POST", "/api/v1/node/heartbeat", { agents, clientVersion: version, supportsChatAttachments: false, repoCandidates: [] });
       repos = reply.repos ?? [];
-      agents = await detectAgents(loadConfig(root), reply.expectedSkillVersion);
+      agents = await detectAgents(loadConfig(root), reply.expectedSkillVersion, claudeEnvironment.resolve);
       await api.call("POST", "/api/v1/node/heartbeat", { agents, clientVersion: version, supportsChatAttachments: false, repoCandidates: [] });
       savePrivate(healthPath, { state: "online", checkedAt: new Date().toISOString(), pid: process.pid, agents });
     };
