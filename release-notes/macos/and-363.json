@@ -1,0 +1,9 @@
+{
+  "pullRequest": 364,
+  "items": [
+    {
+      "key": "AND-363",
+      "title": "支持向已连接的外部 Agent 会话发送图片和文件"
+    }
+  ]
+}
