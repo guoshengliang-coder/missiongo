@@ -225,6 +225,24 @@ test.describe("item list alignment", () => {
     expect(Math.abs(creator!.y - title!.y)).toBeLessThanOrEqual(2);
     expect(Math.abs(source!.x - title!.x)).toBeLessThanOrEqual(1);
   });
+
+  test("aligns the narrow pane's thumbnails with the title", async ({ page }) => {
+    await page.goto(`/?product=${fixture.productId}&status=all&item=${fixture.detailKey}`);
+    // Narrow enough for the container-query card, which stacks the tiles under
+    // the text rather than beside it. AND-372: there they started at the card's
+    // padding edge while the title sat after the selection box, so they stuck
+    // out 30px to the left of everything else on the row.
+    await page.locator(".workspace.detail-open").evaluate((element: HTMLElement) => {
+      element.style.setProperty("--list-pane-width", "400px");
+    });
+    const row = page.locator(".item-row.has-select", { has: page.locator("code", { hasText: new RegExp(`^${fixture.detailKey}$`) }) }).first();
+    await row.scrollIntoViewIfNeeded();
+    const title = await row.locator(".item-title").boundingBox();
+    const thumb = await row.locator(".item-media-thumb").first().boundingBox();
+    expect(title).not.toBeNull();
+    expect(thumb).not.toBeNull();
+    expect(Math.abs(thumb!.x - title!.x)).toBeLessThanOrEqual(1);
+  });
 });
 
 test.describe("the more button on a compact card", () => {
