@@ -343,6 +343,34 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
   line-height: 1;
 }
 .ai-console-toggle .agent-unread-badge { background: var(--surface-strong); }
+/* AND-374: on a phone the list topbar gives the console entry up to a floating
+   button above the capture button. It keeps the icon, and the count is drawn
+   only when there is something unread. Shown by the 520px block below. */
+.ai-console-fab {
+  position: fixed;
+  right: calc(18px + var(--safe-right));
+  bottom: calc(82px + var(--safe-bottom));
+  z-index: 30;
+  width: 52px;
+  height: 52px;
+  display: none;
+  place-items: center;
+  padding: 0;
+  color: var(--navy);
+  background: var(--mint);
+  border: 1px solid var(--navy);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+}
+@media (hover: hover) { .ai-console-fab:hover { transform: translateY(-1px); } }
+.ai-console-fab .agent-unread-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  background: var(--surface-strong);
+  border-color: var(--navy);
+}
 
 .product-switcher-wrap { position: relative; display: flex; align-items: center; }
 .product-switcher {
@@ -2382,10 +2410,21 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 
 /* Below 520px the console toggle keeps its icon and gives its label's width to
    the product name, which was being squeezed to "Mis…" at 375px and to nothing
-   at 320px. The button keeps its accessible name through aria-label. */
+   at 320px. On the list that button leaves the topbar entirely (AND-374) and
+   floats above the capture button; the detail page has no capture button to
+   float above, so it keeps the topbar entry. The button keeps its accessible
+   name through aria-label either way. */
 @media (max-width: 520px) {
   .ai-console-toggle > span { display: none; }
   .ai-console-toggle { min-width: 44px; justify-content: center; }
+  .topbar:not(.detail-view) .ai-console-toggle { display: none; }
+  .ai-console-fab { display: grid; }
+  /* Room for both stacked buttons, so the upper one does not sit on the last
+     row's actions when the list is scrolled to the end. A notice would land on
+     the console button at its old height, so the stack moves up with it. */
+  .workspace { padding-bottom: calc(146px + var(--safe-bottom)); }
+  .toast { bottom: calc(146px + var(--safe-bottom)); }
+  .update-banner { bottom: calc(202px + var(--safe-bottom)); }
 }
 
 /* Windows high contrast replaces every colour, so anything told apart only by a

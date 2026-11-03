@@ -7,19 +7,32 @@ const consoleSource = readFileSync(fileURLToPath(new URL("./agent-session-consol
 const panelSource = readFileSync(fileURLToPath(new URL("./agent-session-panel.tsx", import.meta.url)), "utf8");
 const appSource = readFileSync(fileURLToPath(new URL("./App.tsx", import.meta.url)), "utf8");
 
-function mediaBlock(maxWidth: number): string {
+function mediaBlocks(maxWidth: number): string[] {
   const marker = `@media (max-width: ${maxWidth}px) {`;
-  const start = styles.indexOf(marker);
+  const blocks: string[] = [];
+  let start = styles.indexOf(marker);
   if (start < 0) throw new Error(`Missing ${marker}`);
 
-  let depth = 0;
-  for (let index = start; index < styles.length; index += 1) {
-    if (styles[index] === "{") depth += 1;
-    if (styles[index] !== "}") continue;
-    depth -= 1;
-    if (depth === 0) return styles.slice(start, index + 1);
+  while (start >= 0) {
+    let depth = 0;
+    let end = -1;
+    for (let index = start; index < styles.length; index += 1) {
+      if (styles[index] === "{") depth += 1;
+      if (styles[index] !== "}") continue;
+      depth -= 1;
+      if (depth === 0) { end = index + 1; break; }
+    }
+    if (end < 0) throw new Error(`Unclosed ${marker}`);
+    blocks.push(styles.slice(start, end));
+    start = styles.indexOf(marker, end);
   }
-  throw new Error(`Unclosed ${marker}`);
+  return blocks;
+}
+
+function mediaBlock(maxWidth: number): string {
+  const [first] = mediaBlocks(maxWidth);
+  if (first === undefined) throw new Error(`Missing @media (max-width: ${maxWidth}px)`);
+  return first;
 }
 
 describe("agent console responsive layout", () => {
@@ -29,6 +42,22 @@ describe("agent console responsive layout", () => {
     expect(tablet).toMatch(/\.agent-console-page \{[^}]*grid-template-columns: minmax\(230px, 290px\) minmax\(0, 1fr\);/);
     expect(tablet).toContain(".agent-console-filters { display: none; }");
     expect(tablet).toContain(".agent-console-mobile-filters { display: flex;");
+  });
+
+  it("moves the console entry above the capture button on a phone (AND-374)", () => {
+    const phone = mediaBlocks(520).find((block) => block.includes(".ai-console-fab"));
+    expect(phone).toBeDefined();
+
+    expect(styles).toMatch(/\.ai-console-fab \{[^}]*position: fixed;[^}]*bottom: calc\(82px \+ var\(--safe-bottom\)\);/);
+    expect(phone).toContain(".topbar:not(.detail-view) .ai-console-toggle { display: none; }");
+    expect(phone).toContain(".ai-console-fab { display: grid; }");
+    // Only when there is something to count: unlike the topbar badge, a
+    // floating "0" would be a second thing competing with the capture button.
+    expect(appSource).toContain("agentSessionsQuery.data !== undefined && unreadCounts.total > 0");
+    // The list keeps the floating entry; a detail page has no capture button to
+    // sit above, so it keeps the topbar toggle instead.
+    expect(appSource).toContain("!agentConsoleOpen && !selectedItemKey && products.length > 0 && (");
+    expect(appSource).toContain('${selectedItemKey ? "detail-view" : ""}');
   });
 
   it("keeps the project switcher in the phone console header", () => {

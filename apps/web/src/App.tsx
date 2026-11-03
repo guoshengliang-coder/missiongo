@@ -1417,7 +1417,7 @@ export function App() {
     <div className={`app-shell ${agentConsoleOpen ? "agent-console-open" : ""} ${
       agentConsoleOpen && agentConsoleSinglePane && (agentConversationOpen || newSessionOpen) ? "agent-conversation-open" : ""
     }`}>
-      <header className={`topbar ${agentConsoleOpen ? "agent-console-topbar" : ""} ${mobileSearchOpen ? "searching" : ""}`} inert={sidebarIsDrawer && sidebarOpen}>
+      <header className={`topbar ${agentConsoleOpen ? "agent-console-topbar" : ""} ${mobileSearchOpen ? "searching" : ""} ${selectedItemKey ? "detail-view" : ""}`} inert={sidebarIsDrawer && sidebarOpen}>
         {!agentConsoleOpen && <button ref={sidebarTriggerRef} className="icon-button mobile-only" onClick={() => openSidebar()} aria-label={t("openNavigation")}>
           <Menu size={20} />
         </button>}
@@ -1820,6 +1820,24 @@ export function App() {
       )}
 
       {!agentConsoleOpen && !selectedItemKey && <button className="mobile-fab mobile-only" disabled={!selectedProductCanCapture} title={!selectedProductCanCapture ? t("captureReadOnly") : undefined} onClick={openCapture} aria-label={t("captureNewItem")}><Plus size={24} /></button>}
+
+      {/* AND-374: below 520px the list topbar has no room for the console entry.
+          It becomes a floating icon above the capture button, and the count is
+          only drawn when there is something unread to draw attention to. */}
+      {!agentConsoleOpen && !selectedItemKey && products.length > 0 && (
+        <button
+          type="button"
+          className="ai-console-fab"
+          aria-label={t("agentConsoleOpen")}
+          title={t("agentConsoleOpen")}
+          onClick={openAgentConsole}
+        >
+          <Sparkles size={22} />
+          {agentSessionsQuery.data !== undefined && unreadCounts.total > 0 && (
+            <small className="agent-unread-badge">{unreadCounts.total}</small>
+          )}
+        </button>
+      )}
 
       {messageCenterOpen && <MessageCenter accountId={bootstrapQuery.data?.user.id ?? ""} products={products} onClose={()=>setMessageCenterOpen(false)}
         renderItem={(key,commentId,close,open)=><DetailPane accountId={bootstrapQuery.data?.user.id ?? ""} itemKey={key} initialCommentId={commentId} openInEdit={false}
