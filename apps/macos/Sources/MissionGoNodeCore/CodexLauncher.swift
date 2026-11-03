@@ -676,7 +676,7 @@ public struct CodexLauncher: AgentAdapter {
         var settingsError: String?
         // Settings change only between turns: a running turn keeps what it
         // started with, so an active thread gets the change at a later idle poll.
-        if session.managedExecution == nil, let desired = session.pendingSettings, !session.archiveInSource, !snapshot.archived,
+        if session.externalBindingGeneration == nil, session.managedExecution == nil, let desired = session.pendingSettings, !session.archiveInSource, !snapshot.archived,
            snapshot.status == "idle" {
             settingsRevision = desired.revision
             do {
@@ -694,9 +694,12 @@ public struct CodexLauncher: AgentAdapter {
             activities: snapshot.execution.activities, revision: snapshot.execution.revision,
             turnStartedAt: snapshot.execution.turnStartedAt, lastOutputAt: snapshot.execution.lastOutputAt,
             waitingForInput: snapshot.waitingOnApproval || snapshot.waitingOnUserInput || ["pending", "inProgress"].contains(approval?.status ?? "")
-        ).reportingSettings(
-            model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
         )
+        report = report.reportingSettings(model: report.model ?? model, effort: report.effort ?? effort,
+            settingsRevision: report.settingsRevision ?? settingsRevision, settingsError: report.settingsError ?? settingsError)
+        if session.externalBindingGeneration != nil {
+            report = report.reportingExternalSettings(supportedFields: ["model", "effort"])
+        }
         var retryId: String?
         var retryStatus: String?
         var retryError: String?
@@ -996,7 +999,8 @@ public struct CodexLauncher: AgentAdapter {
                 )
             } else if session.externalBindingGeneration != nil {
                 try await control.sendExternalMessage(socketPath: location.controlSocketPath, threadId: session.sessionRef,
-                    text: command.promptText, clientUserMessageId: command.id, imagePaths: imagePaths)
+                    text: command.promptText, clientUserMessageId: command.id, imagePaths: imagePaths,
+                    overrides: try session.pendingSettings.map { try CodexTurnOverrides(desired: $0) })
             } else {
                 try await control.sendMessage(
                     socketPath: location.controlSocketPath,
@@ -1030,6 +1034,11 @@ public struct CodexLauncher: AgentAdapter {
             sourceArchived: false,
             activityAt: snapshot.activityAt,
             turnActive: true
+        ).reportingSettings(
+            model: session.externalBindingGeneration != nil ? session.pendingSettings?.model : nil,
+            effort: session.externalBindingGeneration != nil ? session.pendingSettings?.effort : nil,
+            settingsRevision: session.externalBindingGeneration != nil ? session.pendingSettings?.revision : nil,
+            settingsError: nil
         )
     }
 }

@@ -791,8 +791,9 @@ final class OpenCodeTests: XCTestCase {
             id: "session-1", agentKind: "opencode", sessionRef: "ses_test", status: "idle",
             desiredSettings: AgentSessionSettings(revision: 3, mode: "plan", model: "zai-coding-plan/glm-5.3",
                                                   effort: "high"),
-            appliedSettingsRevision: 2
+            appliedSettingsRevision: 2, externalBindingGeneration: 1
         ))
+        XCTAssertEqual(report.mode, "plan")
         XCTAssertEqual(report.settingsRevision, 3)
         XCTAssertNil(report.settingsError)
         let appliedAgents = await control.appliedAgents

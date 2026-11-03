@@ -793,6 +793,8 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     public let activityAt: String?
     /// The model and effort actually in use as far as this machine knows;
     /// nil when it does not know (an effort left to the agent's own default).
+    public let mode: String?
+    public let settingsSupport: [String]?
     public let model: String?
     public let effort: String?
     /// Host of the custom endpoint the agent's requests are routed to (AND-161).
@@ -809,7 +811,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     public let approvalRetryStatus: String?
     public let approvalRetryError: String?
 
-    public init(status: String, observedAt: String? = nil, lastProgressAt: String? = nil, progressRevision: String? = nil, messages: [AgentSessionMessage], activities: [AgentSessionActivity] = [], error: String? = nil, failure: CodexSessionFailure? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil, sourceArchiveError: String? = nil, sourceRestored: Bool? = nil, sessionUrl: String? = nil, clearSessionUrl: Bool? = nil, activityAt: String? = nil, model: String? = nil, effort: String? = nil, modelEndpoint: String? = nil, settingsRevision: Int? = nil, settingsError: String? = nil, turnActive: Bool? = nil, waitingForInput: Bool? = nil, turnStartedAt: String? = nil, lastOutputAt: String? = nil, thinkingStartedAt: String? = nil, thinkingTokens: Int? = nil, thinkingDurationSeconds: Int? = nil, approval: CodexApprovalSnapshot? = nil, approvalRetryId: String? = nil, approvalRetryStatus: String? = nil, approvalRetryError: String? = nil) {
+    public init(status: String, observedAt: String? = nil, lastProgressAt: String? = nil, progressRevision: String? = nil, messages: [AgentSessionMessage], activities: [AgentSessionActivity] = [], error: String? = nil, failure: CodexSessionFailure? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil, sourceArchiveError: String? = nil, sourceRestored: Bool? = nil, sessionUrl: String? = nil, clearSessionUrl: Bool? = nil, activityAt: String? = nil, mode: String? = nil, settingsSupport: [String]? = nil, model: String? = nil, effort: String? = nil, modelEndpoint: String? = nil, settingsRevision: Int? = nil, settingsError: String? = nil, turnActive: Bool? = nil, waitingForInput: Bool? = nil, turnStartedAt: String? = nil, lastOutputAt: String? = nil, thinkingStartedAt: String? = nil, thinkingTokens: Int? = nil, thinkingDurationSeconds: Int? = nil, approval: CodexApprovalSnapshot? = nil, approvalRetryId: String? = nil, approvalRetryStatus: String? = nil, approvalRetryError: String? = nil) {
         self.observedAt = observedAt
         self.lastProgressAt = lastProgressAt
         self.progressRevision = progressRevision
@@ -834,6 +836,8 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
         self.sessionUrl = sessionUrl
         self.clearSessionUrl = clearSessionUrl
         self.activityAt = activityAt
+        self.mode = mode
+        self.settingsSupport = settingsSupport
         self.model = model
         self.effort = effort
         self.modelEndpoint = modelEndpoint
@@ -843,6 +847,19 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
         self.approvalRetryId = approvalRetryId
         self.approvalRetryStatus = approvalRetryStatus
         self.approvalRetryError = approvalRetryError
+    }
+
+    public func reportingExternalSettings(supportedFields: [String], mode: String? = nil) -> AgentSessionReport {
+        AgentSessionReport(status: status, observedAt: observedAt, lastProgressAt: lastProgressAt, progressRevision: progressRevision,
+            messages: messages, activities: activities, error: error, failure: failure,
+            commandId: commandId, commandStatus: commandStatus, commandError: commandError,
+            sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError, sourceRestored: sourceRestored,
+            sessionUrl: sessionUrl, clearSessionUrl: clearSessionUrl, activityAt: activityAt,
+            mode: mode ?? self.mode, settingsSupport: supportedFields,
+            model: model, effort: effort, modelEndpoint: modelEndpoint, settingsRevision: settingsRevision, settingsError: settingsError,
+            turnActive: turnActive, waitingForInput: waitingForInput, turnStartedAt: turnStartedAt, lastOutputAt: lastOutputAt,
+            thinkingStartedAt: thinkingStartedAt, thinkingTokens: thinkingTokens, thinkingDurationSeconds: thinkingDurationSeconds,
+            approval: approval, approvalRetryId: approvalRetryId, approvalRetryStatus: approvalRetryStatus, approvalRetryError: approvalRetryError)
     }
 
     public func reportingObservation(observedAt: String, lastProgressAt: String) -> AgentSessionReport {
@@ -871,13 +888,13 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
 
     /// The same report carrying the session's settings. Kept apart so every
     /// branch that decides status and commands need not repeat them.
-    public func reportingSettings(model: String?, effort: String?, modelEndpoint: String? = nil, settingsRevision: Int?, settingsError: String?, clearSessionUrl: Bool? = nil) -> AgentSessionReport {
+    public func reportingSettings(mode: String? = nil, model: String?, effort: String?, modelEndpoint: String? = nil, settingsRevision: Int?, settingsError: String?, clearSessionUrl: Bool? = nil) -> AgentSessionReport {
         AgentSessionReport(
             status: status, observedAt: observedAt, lastProgressAt: lastProgressAt, progressRevision: progressRevision, messages: messages, activities: activities, error: error, failure: failure,
             commandId: commandId, commandStatus: commandStatus, commandError: commandError,
             sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError, sourceRestored: sourceRestored,
             sessionUrl: sessionUrl, clearSessionUrl: clearSessionUrl, activityAt: activityAt,
-            model: model, effort: effort, modelEndpoint: modelEndpoint, settingsRevision: settingsRevision, settingsError: settingsError,
+            mode: mode ?? self.mode, settingsSupport: settingsSupport, model: model, effort: effort, modelEndpoint: modelEndpoint, settingsRevision: settingsRevision, settingsError: settingsError,
             turnActive: turnActive, waitingForInput: waitingForInput, turnStartedAt: turnStartedAt,
             lastOutputAt: lastOutputAt, thinkingStartedAt: thinkingStartedAt, thinkingTokens: thinkingTokens,
             thinkingDurationSeconds: thinkingDurationSeconds,
@@ -892,7 +909,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
             commandId: commandId, commandStatus: commandStatus, commandError: commandError,
             sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError, sourceRestored: sourceRestored,
             sessionUrl: sessionUrl, clearSessionUrl: clearSessionUrl, activityAt: activityAt,
-            model: model, effort: effort, modelEndpoint: modelEndpoint,
+            mode: mode, settingsSupport: settingsSupport, model: model, effort: effort, modelEndpoint: modelEndpoint,
             settingsRevision: settingsRevision, settingsError: settingsError,
             turnActive: turnActive, waitingForInput: waitingForInput, turnStartedAt: turnStartedAt,
             lastOutputAt: lastOutputAt, thinkingStartedAt: thinkingStartedAt,
@@ -910,7 +927,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
             commandId: commandId, commandStatus: commandStatus, commandError: commandError,
             sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError, sourceRestored: sourceRestored,
             sessionUrl: sessionUrl, clearSessionUrl: clearSessionUrl, activityAt: activityAt,
-            model: model, effort: effort, modelEndpoint: modelEndpoint, settingsRevision: settingsRevision, settingsError: settingsError,
+            mode: mode, settingsSupport: settingsSupport, model: model, effort: effort, modelEndpoint: modelEndpoint, settingsRevision: settingsRevision, settingsError: settingsError,
             turnActive: turnActive, waitingForInput: waitingForInput, turnStartedAt: turnStartedAt,
             lastOutputAt: lastOutputAt, thinkingStartedAt: thinkingStartedAt, thinkingTokens: thinkingTokens,
             thinkingDurationSeconds: thinkingDurationSeconds,
@@ -925,7 +942,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
             commandId: commandId, commandStatus: commandStatus, commandError: commandError,
             sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError, sourceRestored: sourceRestored,
             sessionUrl: sessionUrl, clearSessionUrl: clearSessionUrl, activityAt: activityAt,
-            model: model, effort: effort, modelEndpoint: modelEndpoint,
+            mode: mode, settingsSupport: settingsSupport, model: model, effort: effort, modelEndpoint: modelEndpoint,
             settingsRevision: settingsRevision, settingsError: settingsError,
             turnActive: running && state.turnActive,
             waitingForInput: status == "idle" || running ? state.waitingForInput : false,
@@ -1583,7 +1600,7 @@ public struct APIClient: Sendable {
         struct Reply: Decodable { let sessions: [NodeAgentSession] }
         let response = try await send(
             "GET", "/api/v1/node/agent-sessions", body: Optional<String>.none, bearer: try nodeToken(),
-            extraHeaders: ["X-MissionGo-Chat-Attachments": "1", "X-MissionGo-External-Sessions": "1", "X-MissionGo-External-Attachments": "1", "X-MissionGo-External-Worker": externalWorkerId, "X-MissionGo-External-Auto-Connect": "1"]
+            extraHeaders: ["X-MissionGo-Chat-Attachments": "1", "X-MissionGo-External-Sessions": "1", "X-MissionGo-External-Settings": "1", "X-MissionGo-External-Attachments": "1", "X-MissionGo-External-Worker": externalWorkerId, "X-MissionGo-External-Auto-Connect": "1"]
         )
         // During a rolling update the Mac can reach a server from before
         // mirrored sessions. Dispatching must keep working until that server is

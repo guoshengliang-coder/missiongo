@@ -35,8 +35,13 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
   useOverlay(moreOpen, () => { closeMore(); moreRef.current?.focus({ preventScroll: true }); });
   const queryClient = useQueryClient();
   const settings = session.settings;
-  const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes, enabled: Boolean(session.nodeId) });
-  const models = session.agentKind === "other" ? undefined : agentModels(nodesQuery.data?.nodes.find((node) => node.id === session.nodeId), session.agentKind);
+  const external = session.source === "external";
+  const nodeId = session.nodeId ?? session.nativeConnection?.nodeId;
+  const replyPending = external && ["queued", "delivering", "delivery_unknown"].includes(session.command?.status ?? "");
+  const canChange = (field: "mode" | "model" | "effort") => settings.adjustable
+    && (!external || !replyPending && Boolean(session.canReply) && Boolean(settings.supportedFields?.includes(field)));
+  const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes, enabled: Boolean(nodeId) });
+  const models = session.agentKind === "other" ? undefined : agentModels(nodesQuery.data?.nodes.find((node) => node.id === nodeId), session.agentKind);
 
   const apply = useMutation({
     mutationFn: (change: { mode?: string; model?: string; effort?: string }) =>
@@ -48,14 +53,14 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
 
   const modeLabel = (value: string) => {
     const key = dispatchModeLabelKey(session.agentKind, value);
-    return key ? t(key) : value;
+    return key ? t(key) : value === "external" ? t("agentSettingsSourceMode") : value;
   };
   const effortLabel = (value: string) => {
     const key = effortLabelKey(value);
     return key ? t(key) : value;
   };
   const endpointNote = settings.modelEndpoint ? ` · ${t("customModelEndpoint", { host: settings.modelEndpoint })}` : "";
-  const requestedModel = settings.pending?.model ?? settings.requestedModel ?? "";
+  const requestedModel = settings.pending?.model ?? settings.requestedModel ?? (external ? settings.model : undefined) ?? "";
   // A refused change leaves the request in the server's history. Show the
   // Mac's previous value in the picker so the person can choose that code
   // again; the error explains why the requested change was refused.
@@ -65,7 +70,8 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
     return entry ? modelDisplayLabel(entry, models ?? []) : id || t("dispatchModelLocal");
   };
   const selectedModelLabel = modelLabel(modelValue);
-  const shownEffort = settings.effort
+  const availableEfforts = external && !models?.some(entry => entry.id === modelValue) ? [] : effortOptions(models, modelValue);
+  const shownEffort = settings.pending?.effort ? effortLabel(settings.pending.effort) : settings.effort
     ? effortLabel(settings.effort)
     : settings.requestedEffort
       ? `${effortLabel(settings.requestedEffort)}（${t("agentSettingsRequested")}）`
@@ -96,14 +102,14 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
     closeMore();
   };
 
-  if (!settings.adjustable || !session.agentSessionId) {
+  if ((!settings.adjustable || !session.agentSessionId) && !external) {
     return (
       <div className="agent-session-quick-settings">
         <p className="agent-session-quick-settings-summary">
           {modeLabel(settings.mode)} · {shownEffort}
         </p>
         <p className="agent-session-settings-note" title={selectedModelLabel}>{modelLabel(settings.model ?? settings.requestedModel)}{endpointNote}</p>
-        {settings.pending && <p className="agent-session-settings-note">{t("agentSettingsPending", { change: pendingText })}</p>}
+        {settings.pending && <p className="agent-session-settings-note" role="status">{t(external && settings.applyOn === "next_reply" ? "agentSettingsNextReply" : "agentSettingsPending", { change: pendingText })}</p>}
         {settings.error && <p className="agent-session-settings-note error">{t("agentSettingsError", { error: settings.error })}</p>}
       </div>
     );
@@ -116,10 +122,11 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
           className="agent-settings-mode"
           aria-label={t("dispatchMode")}
           value={modeValue}
-          disabled={apply.isPending}
+          disabled={apply.isPending || !canChange("mode")}
           onChange={(event) => changeMode(event.target.value)}
         >
-          {(session.agentKind === "other" ? [] : DISPATCH_MODES_BY_AGENT[session.agentKind]).map((value) => (
+          {external && <option value={modeValue}>{modeLabel(modeValue)}</option>}
+          {(session.agentKind === "other" ? [] : DISPATCH_MODES_BY_AGENT[session.agentKind]).filter(value => !external || value !== modeValue).map((value) => (
             <option key={value} value={value}>{modeLabel(value)}</option>
           ))}
         </Select>
@@ -128,7 +135,7 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
           aria-label={t("dispatchModel")}
           value={modelValue}
           title={selectedModelLabel}
-          disabled={apply.isPending || !models}
+          disabled={apply.isPending || !models || !canChange("model")}
           onChange={(event) => {
             const model = event.target.value;
             if (model && model !== modelValue) apply.mutate({ model });
@@ -154,12 +161,12 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
           className="agent-settings-effort"
           aria-label={t("dispatchEffort")}
           value={effortValue}
-          disabled={apply.isPending || !models}
+          disabled={apply.isPending || !models || !canChange("effort") || availableEfforts.length === 0}
           onChange={(event) => changeEffort(event.target.value)}
         >
           {effortValue && <option value={effortValue}>{shownEffort}</option>}
           {!effortValue && <option value="">{shownEffort}</option>}
-          {effortOptions(models, modelValue).filter((value) => value !== effortValue).map((value) => (
+          {availableEfforts.filter((value) => value !== effortValue).map((value) => (
             <option key={value} value={value}>{effortLabel(value)}</option>
           ))}
         </Select>
@@ -167,29 +174,37 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
           <button ref={moreRef} type="button" className="secondary-button" aria-label={t("moreActions")} aria-expanded={moreOpen} onClick={() => (moreOpen ? closeMore() : openMore())}><MoreHorizontal size={18} /></button>
           {moreOpen && <div className="agent-settings-more-panel">
             <label>{t("dispatchMode")}
-              <Select value={modeValue} disabled={apply.isPending} onChange={(event) => changeMode(event.target.value)}>
-                {(session.agentKind === "other" ? [] : DISPATCH_MODES_BY_AGENT[session.agentKind]).map((value) => <option key={value} value={value}>{modeLabel(value)}</option>)}
+              <Select value={modeValue} disabled={apply.isPending || !canChange("mode")} onChange={(event) => changeMode(event.target.value)}>
+                {external && <option value={modeValue}>{modeLabel(modeValue)}</option>}
+                {(session.agentKind === "other" ? [] : DISPATCH_MODES_BY_AGENT[session.agentKind]).filter(value => !external || value !== modeValue).map((value) => <option key={value} value={value}>{modeLabel(value)}</option>)}
               </Select>
             </label>
             <label>{t("dispatchEffort")}
-              <Select value={effortValue} disabled={apply.isPending || !models} onChange={(event) => changeEffort(event.target.value)}>
+              <Select value={effortValue} disabled={apply.isPending || !models || !canChange("effort") || availableEfforts.length === 0} onChange={(event) => changeEffort(event.target.value)}>
                 {effortValue && <option value={effortValue}>{shownEffort}</option>}
                 {!effortValue && <option value="">{shownEffort}</option>}
-                {effortOptions(models, modelValue).filter((value) => value !== effortValue).map((value) => <option key={value} value={value}>{effortLabel(value)}</option>)}
+                {availableEfforts.filter((value) => value !== effortValue).map((value) => <option key={value} value={value}>{effortLabel(value)}</option>)}
               </Select>
             </label>
           </div>}
         </div>
         {apply.isPending && <LoaderCircle className="spin" size={13} aria-hidden="true" />}
       </div>
+      {external && <p className="agent-session-settings-note">{t(!session.canReply && !settings.unavailableReason
+        ? "agentSettingsExternalUnavailable"
+        : settings.unavailableReason === "connect" ? "agentSettingsExternalConnect"
+        : settings.unavailableReason === "upgrade" ? "agentSettingsExternalUpgrade"
+        : settings.unavailableReason === "source" ? "agentSettingsExternalSource"
+        : "agentSettingsExternalSupported")}</p>}
+      {external && settings.adjustable && !settings.supportedFields?.includes("mode") && <p className="agent-session-settings-note">{t("agentSettingsExternalMode")}</p>}
       {endpointNote && <p className="agent-session-settings-note">{t("customModelEndpoint", { host: settings.modelEndpoint! })}</p>}
-      {settings.pending && <p className="agent-session-settings-note">{t("agentSettingsPending", { change: pendingText })}</p>}
+      {settings.pending && <p className="agent-session-settings-note" role="status">{t(external && settings.applyOn === "next_reply" ? "agentSettingsNextReply" : "agentSettingsPending", { change: pendingText })}</p>}
       {settings.error && <p className="agent-session-settings-note error">{t("agentSettingsError", { error: settings.error })}</p>}
       {apply.isError && (
         <p className="agent-session-settings-note error">
           {apply.error instanceof ApiError && apply.error.code === "node_upgrade_required"
             ? t("agentSettingsUpgrade")
-            : apply.error instanceof Error ? apply.error.message : t("somethingWentWrong")}
+            : external ? t("agentSettingsExternalFailed") : apply.error instanceof Error ? apply.error.message : t("somethingWentWrong")}
         </p>
       )}
       {showEffortNote && <p className="agent-session-settings-note" role="status">{t("agentSettingsCodexEffortNote")}</p>}

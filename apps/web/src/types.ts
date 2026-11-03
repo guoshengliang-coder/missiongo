@@ -313,6 +313,11 @@ export interface DispatchDefaults {
 
 /** A conversation's mode, model and effort, and any change still on its way. */
 export interface AgentSessionSettings {
+  /** External sessions advertise individual controls; absent means a legacy dispatch. */
+  readonly supportedFields?: readonly ("mode" | "model" | "effort")[];
+  readonly unavailableReason?: "connect" | "upgrade" | "source";
+  readonly applyOn?: "next_reply" | "idle";
+
   readonly mode: string;
   readonly model?: string;
   readonly effort?: string;

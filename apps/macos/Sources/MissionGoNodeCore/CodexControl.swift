@@ -26,6 +26,7 @@ public protocol CodexControl: Sendable {
     /// Codex keeps turn-level overrides for the turns after it too.
     func sendExternalMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws
     func sendExternalMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, imagePaths: [String]) async throws
+    func sendExternalMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, imagePaths: [String], overrides: CodexTurnOverrides?) async throws
     func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, overrides: CodexTurnOverrides?) async throws
     func steerMessage(socketPath: String, threadId: String, turnId: String, text: String, clientUserMessageId: String) async throws
     func steerMessage(socketPath: String, threadId: String, turnId: String, text: String, clientUserMessageId: String, imagePaths: [String]) async throws
@@ -73,6 +74,10 @@ public extension CodexControl {
     func sendExternalMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, imagePaths: [String]) async throws {
         guard imagePaths.isEmpty else { throw CodexControlError.messageNotSent("这个控制器不支持图片输入，请更新本机节点。") }
         try await sendExternalMessage(socketPath: socketPath, threadId: threadId, text: text, clientUserMessageId: clientUserMessageId)
+    }
+    func sendExternalMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, imagePaths: [String], overrides: CodexTurnOverrides?) async throws {
+        guard overrides == nil else { throw CodexControlError.messageNotSent("当前控制器不支持外部会话设置，请更新本机节点。") }
+        try await sendExternalMessage(socketPath: socketPath, threadId: threadId, text: text, clientUserMessageId: clientUserMessageId, imagePaths: imagePaths)
     }
     func steerMessage(socketPath: String, threadId: String, turnId: String, text: String, clientUserMessageId: String, imagePaths: [String]) async throws {
         guard imagePaths.isEmpty else { throw CodexControlError.messageNotSent("这个控制器不支持图片输入，请更新本机节点。") }
@@ -864,6 +869,15 @@ public struct CodexAppServerControl: CodexControl {
     }
 
     public func sendExternalMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, imagePaths: [String]) async throws {
+        try await sendExternalMessage(socketPath: socketPath, threadId: threadId, text: text, clientUserMessageId: clientUserMessageId, imagePaths: imagePaths, overrides: nil)
+    }
+
+    public func sendExternalMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, imagePaths: [String], overrides: CodexTurnOverrides?) async throws {
+        // External plan/default/auto modes cannot be faithfully mapped by the
+        // turn API. Keep the source's permissions and collaboration mode.
+        guard overrides?.settings == nil else {
+            throw CodexControlError.messageNotSent("外部 Codex 模式请在原客户端调整。")
+        }
         let timeout = self.timeout
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async {
@@ -879,11 +893,12 @@ public struct CodexAppServerControl: CodexControl {
                         guard ((source["thread"] as? [String: Any])?["status"] as? [String: Any])?["type"] as? String == "idle" else {
                             throw CodexControlError.rpc(method: "turn/start", message: "原会话状态已变化，请等待同步后再回复。")
                         }
-                        // Never resume an external conversation or override its
-                        // model, permissions or original client's approval channel.
+                        // Keep the source loaded and its approval channel intact.
+                        // Only explicit console choices ride on this new turn;
+                        // an ordinary reply leaves every source setting alone.
                         inputAttempted = true
                         _ = try connection.call("turn/start", CodexProtocol.turnStartParams(threadId: threadId, prompt: text,
-                            clientUserMessageId: clientUserMessageId, overrides: nil, imagePaths: imagePaths))
+                            clientUserMessageId: clientUserMessageId, overrides: overrides, imagePaths: imagePaths))
                     } catch {
                         if inputAttempted { throw error }
                         throw CodexControlError.messageNotSent(CodexSessionFailure.redact(error.localizedDescription))

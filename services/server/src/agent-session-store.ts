@@ -205,6 +205,11 @@ export function agentSessionCountsAsUnread(
 }
 
 export interface AgentSessionSettings {
+  /** External sessions advertise individual controls; absent means a legacy dispatch. */
+  readonly supportedFields?: readonly ("mode" | "model" | "effort")[];
+  readonly unavailableReason?: "connect" | "upgrade" | "source";
+  readonly applyOn?: "next_reply" | "idle";
+
   /** The mode in effect: the last change the Mac confirmed, else the dispatch's. */
   readonly mode: string;
   /** What the agent reported using; absent until it says. */

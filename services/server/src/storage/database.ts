@@ -2193,5 +2193,14 @@ export class MissionGoDatabase {
       });
     }
 
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611031220").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611031220").get()) return;
+        this.connection.exec("ALTER TABLE external_agent_sessions ADD COLUMN native_settings_json TEXT;");
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611031220,new Date().toISOString());
+      });
+    }
+
   }
 }

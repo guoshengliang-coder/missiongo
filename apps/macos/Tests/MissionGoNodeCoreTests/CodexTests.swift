@@ -674,6 +674,35 @@ final class CodexAppServerControlTests: XCTestCase {
         for key in ["model", "effort", "approvalPolicy", "approvalsReviewer", "sandbox"] { XCTAssertNil(params?[key]) }
     }
 
+    func testExternalReplyRejectsModeOverridesBeforeTouchingTheRuntime() async throws {
+        do {
+            try await CodexAppServerControl(timeout: 1).sendExternalMessage(socketPath: "/synthetic/missing.sock",
+                threadId: "external", text: "Continue", clientUserMessageId: "reply", imagePaths: [],
+                overrides: CodexTurnOverrides(settings: CodexModes.threadSettings(for: "plan")))
+            XCTFail("An external mode cannot be represented faithfully by turn/start")
+        } catch let CodexControlError.messageNotSent(reason) {
+            XCTAssertTrue(reason.contains("模式请在原客户端"))
+        }
+    }
+
+    func testExternalReplyCarriesOnlyExplicitChoicesWithoutResumingTheSource() async throws {
+        let server = try FakeAppServer { message in
+            guard let id = message["id"] else { return [] }
+            let result: [String: Any] = message["method"] as? String == "thread/read"
+                ? ["thread": ["id": "external-exact", "status": ["type": "idle"], "turns": []]] : [:]
+            return [["jsonrpc": "2.0", "id": id, "result": result]]
+        }
+        try await CodexAppServerControl(timeout: 5).sendExternalMessage(socketPath: server.path,
+            threadId: "external-exact", text: "Continue", clientUserMessageId: "reply-exact", imagePaths: [],
+            overrides: CodexTurnOverrides(model: "picked-model", effort: "high"))
+        server.waitUntilDone()
+        XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/read", "turn/start"])
+        let params = server.params(of: "turn/start")
+        XCTAssertEqual(params?["model"] as? String, "picked-model")
+        XCTAssertEqual(params?["effort"] as? String, "high")
+        for key in ["approvalPolicy", "approvalsReviewer", "sandbox"] { XCTAssertNil(params?[key]) }
+    }
+
     func testExternalReplyRejectsAThreadUnloadedAfterTheFirstSyncWithoutSendingInput() async throws {
         let server = try FakeAppServer { message in
             guard let id = message["id"] else { return [] }
@@ -1344,6 +1373,7 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
     let replies = Locked<[(String, String)]>([])
     let externalReplies = Locked<[(String, String)]>([])
     let externalImagePaths = Locked<[[String]]>([])
+    let externalOverrides = Locked<[CodexTurnOverrides?]>([])
     let approvalReads = Locked(0)
     var pendingApproval: CodexApprovalSnapshot?
     let cancelledApprovals = Locked<[String]>([])
@@ -1354,6 +1384,11 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
     }
     func cancelApprovals(threadId: String, turnId: String) {
         cancelledApprovals.withLock { $0.append(turnId) }
+    }
+    func sendExternalMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, imagePaths: [String], overrides: CodexTurnOverrides?) async throws {
+        externalOverrides.withLock { $0.append(overrides) }
+        if let replyError { throw replyError }
+        try await sendExternalMessage(socketPath: socketPath, threadId: threadId, text: text, clientUserMessageId: clientUserMessageId, imagePaths: imagePaths)
     }
     func sendExternalMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, imagePaths: [String]) async throws {
         externalImagePaths.withLock { $0.append(imagePaths) }
@@ -1788,6 +1823,46 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertEqual(control.approvalReads.current, 0)
         XCTAssertTrue(control.replies.current.isEmpty)
         XCTAssertEqual(control.externalReplies.current.map { [$0.0, $0.1] }, [["reply", "Continue"]])
+    }
+
+    func testExternalSettingsWaitForExplicitReplyAndAcknowledgeOnlyAfterAcceptedTurn() async throws {
+        let control = RecordingControl(threadId: "external-exact")
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        let desired = AgentSessionSettings(revision: 2, model: "model-choice", effort: "high")
+        let pending = NodeAgentSession(id: "external", sessionRef: "external-exact", status: "idle",
+            desiredSettings: desired, appliedSettingsRevision: 1, externalBindingGeneration: 1)
+        let waiting = try await launcher.synchronize(pending)
+        XCTAssertNil(waiting.settingsRevision)
+        XCTAssertTrue(control.appliedSettings.current.isEmpty)
+        XCTAssertTrue(control.externalReplies.current.isEmpty)
+        let delivered = try await launcher.synchronize(NodeAgentSession(id: "external", sessionRef: "external-exact", status: "idle",
+            command: AgentSessionCommand(id: "reply", text: "Continue", status: "delivering"),
+            desiredSettings: desired, appliedSettingsRevision: 1, externalBindingGeneration: 1))
+        XCTAssertEqual(delivered.commandStatus, "delivered")
+        XCTAssertEqual(delivered.settingsRevision, 2)
+        XCTAssertEqual(delivered.model, "model-choice")
+        XCTAssertEqual(delivered.effort, "high")
+        XCTAssertNil(delivered.mode)
+        XCTAssertEqual(control.externalOverrides.current.first!, try CodexTurnOverrides(desired: desired))
+        XCTAssertTrue(control.appliedSettings.current.isEmpty)
+        XCTAssertTrue(control.replies.current.isEmpty)
+        XCTAssertEqual(control.approvalReads.current, 0)
+        let trimmed = try APIClient.uploadableSnapshot(delivered)
+        XCTAssertEqual(trimmed.settingsSupport, ["model", "effort"])
+        XCTAssertNil(trimmed.mode)
+    }
+
+    func testRejectedExternalReplyDoesNotAcknowledgeSettings() async throws {
+        let control = RecordingControl(threadId: "external-exact")
+        control.replyError = CodexControlError.messageNotSent("source unavailable")
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        let report = try await launcher.synchronize(NodeAgentSession(id: "external", sessionRef: "external-exact", status: "idle",
+            command: AgentSessionCommand(id: "reply", text: "Continue", status: "delivering"),
+            desiredSettings: AgentSessionSettings(revision: 1, model: "choice"), externalBindingGeneration: 1))
+        XCTAssertEqual(report.commandStatus, "failed")
+        XCTAssertNil(report.settingsRevision)
     }
 
     func testExternalImagesUseNativeVisionAndKeepOtherOriginalFileReferences() async throws {

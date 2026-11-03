@@ -1023,6 +1023,7 @@ public struct OpenCodeLauncher: AgentAdapter {
         // info must not fail the sync — the report then just says nothing
         // about the model, as it did before settings existed.
         let info = try? await control.sessionInfo(id: session.sessionRef)
+        var mode = info?.agent == "plan" ? "plan" : info?.agent == "build" ? "default" : info?.agent
         var model = info?.model?.compoundId
         var effort = info?.model?.variant
         var settingsRevision: Int?
@@ -1030,11 +1031,12 @@ public struct OpenCodeLauncher: AgentAdapter {
         if let desired = session.pendingSettings, snapshot.status == "idle" {
             settingsRevision = desired.revision
             do {
-                if let mode = desired.mode {
-                    guard OpenCodeModes.isAllowed(mode) else {
-                        throw LaunchError("不支持的 OpenCode 模式：\(JSONValues.quote(mode))")
+                if let chosenMode = desired.mode {
+                    guard OpenCodeModes.isAllowed(chosenMode) else {
+                        throw LaunchError("不支持的 OpenCode 模式：\(JSONValues.quote(chosenMode))")
                     }
-                    try await control.setAgent(id: session.sessionRef, agent: mode == "plan" ? "plan" : "build")
+                    try await control.setAgent(id: session.sessionRef, agent: chosenMode == "plan" ? "plan" : "build")
+                    mode = chosenMode
                 }
                 if desired.model != nil || desired.effort != nil {
                     if let problem = AgentModelSettings.problem(model: desired.model, effort: desired.effort) {
@@ -1056,6 +1058,8 @@ public struct OpenCodeLauncher: AgentAdapter {
                         try await control.setModel(id: session.sessionRef, model: ref)
                         model = ref.compoundId
                         effort = ref.variant
+                    } else if session.externalBindingGeneration != nil {
+                        throw LaunchError("无法确认原会话的模型，未应用设置。")
                     }
                 }
             } catch {
@@ -1076,7 +1080,7 @@ public struct OpenCodeLauncher: AgentAdapter {
                                         turnActive: turnActive, waitingForInput: waitingForInput)
             return report.reportingExecution(activities: execution.activities, revision: execution.revision,
             turnStartedAt: execution.turnStartedAt, lastOutputAt: execution.lastOutputAt).reportingSettings(
-                model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
+                mode: mode, model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
             )
         }
         if command.status == "queued" {
@@ -1085,7 +1089,7 @@ public struct OpenCodeLauncher: AgentAdapter {
                                         turnActive: turnActive, waitingForInput: waitingForInput)
             return report.reportingExecution(activities: execution.activities, revision: execution.revision,
                 turnStartedAt: execution.turnStartedAt, lastOutputAt: execution.lastOutputAt).reportingSettings(
-                model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
+                mode: mode, model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
             )
         }
         guard command.status == "delivering" else {
@@ -1093,7 +1097,7 @@ public struct OpenCodeLauncher: AgentAdapter {
                                         turnActive: turnActive, waitingForInput: waitingForInput)
             return report.reportingExecution(activities: execution.activities, revision: execution.revision,
                 turnStartedAt: execution.turnStartedAt, lastOutputAt: execution.lastOutputAt).reportingSettings(
-                model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
+                mode: mode, model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
             )
         }
         pruneDeliveredPrompts()
@@ -1110,7 +1114,7 @@ public struct OpenCodeLauncher: AgentAdapter {
                 commandId: command.id, commandStatus: "failed", commandError: "授权请求已变化，请重新选择当前请求的授权范围。",
                 turnActive: turnActive, waitingForInput: waitingForInput)
             return report.reportingExecution(activities: execution.activities, revision: execution.revision,
-                turnStartedAt: execution.turnStartedAt, lastOutputAt: execution.lastOutputAt).reportingSettings(model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError)
+                turnStartedAt: execution.turnStartedAt, lastOutputAt: execution.lastOutputAt).reportingSettings(mode: mode, model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError)
         }
         // How many copies of this reply's text the session already held before
         // this delivery attempt: the proof a re-read offers after a failed POST
@@ -1139,7 +1143,7 @@ public struct OpenCodeLauncher: AgentAdapter {
                     )
                     return report.reportingExecution(activities: execution.activities, revision: execution.revision,
                         turnStartedAt: execution.turnStartedAt, lastOutputAt: execution.lastOutputAt).reportingSettings(
-                        model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
+                        mode: mode, model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
                     )
                 }
             }
@@ -1169,7 +1173,7 @@ public struct OpenCodeLauncher: AgentAdapter {
                                     waitingForInput: deliveredWaiting)
         return report.reportingExecution(activities: execution.activities, revision: execution.revision,
                 turnStartedAt: execution.turnStartedAt, lastOutputAt: execution.lastOutputAt).reportingSettings(
-            model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
+            mode: mode, model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
         )
     }
 

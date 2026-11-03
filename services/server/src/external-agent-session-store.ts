@@ -188,7 +188,6 @@ export class ExternalAgentSessionStore {
           reason: latest?.text ?? "请在原 Agent 客户端查看并处理。" } : {}),
           ...(revision ? { revision } : {}), ...(row.dismissed_revision === revision ? { dismissed: true } : {}) },
         needsAttention, waitingForReply: needsAttention, retryable: false, stoppable: false,
-        settings: { mode: "external", adjustable: false },
         unread: Boolean(row.unread_at && (!row.read_at || row.unread_at > row.read_at)),
         ...(row.unread_at ? { unreadAt: row.unread_at } : {}),
         ...native,
