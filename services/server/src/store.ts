@@ -14,6 +14,7 @@ import {
   ATTACHMENT_KINDS,
   createWorkItemKey,
   evaluateWorkItemTransition,
+  MAX_ITEM_ATTACHMENTS,
   TRANSITION_NOTE_MAX_LENGTH,
   WORK_ITEM_OCCURRENCE_FREQUENCIES,
   WORK_ITEM_PRIORITIES,
@@ -1236,7 +1237,7 @@ export class MissionGoStore {
     const count = this.database.connection
       .prepare("SELECT COUNT(*) AS count FROM work_item_attachments WHERE item_id = ?")
       .get(item.id) as unknown as { count: number };
-    if (count.count >= 10) throw conflict("attachment_limit_reached", "A work item can have at most 10 attachments.");
+    if (count.count >= MAX_ITEM_ATTACHMENTS) throw conflict("attachment_limit_reached", `A work item can have at most ${MAX_ITEM_ATTACHMENTS} attachments.`);
 
     const id = randomUUID();
     const now = new Date().toISOString();
