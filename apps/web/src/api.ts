@@ -186,7 +186,7 @@ export class ApiError extends Error {
 const REQUEST_TIMEOUT_MS = 30_000;
 const TRANSFER_TIMEOUT_MS = 300_000;
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     ...init,
     credentials: "same-origin",
@@ -570,7 +570,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ itemKeys, to: "ready", reason: "released", note, expectedRevisions, idempotencyKey }),
     }),
-  transitionItem: (itemKey: string, action: TransitionAction, note?: string, options?: { attachmentIds?: readonly string[]; idempotencyKey?: string; expectedStatus?: WorkItemStatus; expectedRevision?: number | undefined; executionDisposition?: "keep_running" | "stop_requested" }) =>
+  transitionItem: (itemKey: string, action: TransitionAction, note?: string, options?: { attachmentIds?: readonly string[]; idempotencyKey?: string; expectedStatus?: WorkItemStatus; expectedRevision?: number | undefined; executionDisposition?: "keep_running" | "stop_requested"; collaborationDisposition?: {mode:"withdraw"|"keep";successorAccountId?:string} }) =>
     request<WorkItem>(`/api/v1/items/${encodeURIComponent(itemKey)}/transitions`, {
       method: "POST",
       body: JSON.stringify({

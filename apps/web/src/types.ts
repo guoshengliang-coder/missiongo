@@ -112,13 +112,14 @@ export interface Component {
 }
 
 export interface WorkItem {
+  collaboration?: {sent:number;received:number;blocking:number};
   readonly revision?: number;
   readonly contentVersion?: number;
   readonly heldFrom?: WorkItemStatus;
   readonly executionDisposition?: string;
   readonly transitionDecisions?: readonly {to:WorkItemStatus;reason:string;allowed:boolean;code:string}[];
   /** Server-computed rights for the signed-in person; acceptance is separate from operation. */
-  readonly access?: { readonly canOperate: boolean; readonly canVerify: boolean };
+  readonly access?: { readonly canOperate: boolean; readonly canVerify: boolean; readonly canRequestCollaboration?:boolean };
   readonly hasProcessingRound?: boolean;
   readonly deliveryProgress?: import("@missiongo/domain").WorkItemSnapshot["deliveryProgress"];
   /** A migrated original is permanently read-only. */

@@ -81,10 +81,13 @@ export function parseItemFilters(
       throw invalidInput("Invalid proposer filter.");
     return JSON.stringify(value);
   });
+  const collaborations = list("collaborations",["sent","received","waiting","verification"]);
   const types = list("types", WORK_ITEM_TYPES);
   const priorities = list("priorities", WORK_ITEM_PRIORITIES);
   const sourceComponentIds = list("sourceComponentIds");
   return {
+    ...(collaborations?.includes("verification") ? {collaborationVerifierAccountId:accountId()} : {}),
+    ...(collaborations ? {collaborations:collaborations as NonNullable<ItemFilters["collaborations"]>} : {}),
     ...(types ? { types: types as NonNullable<ItemFilters["types"]> } : {}),
     ...(priorities
       ? { priorities: priorities as NonNullable<ItemFilters["priorities"]> }

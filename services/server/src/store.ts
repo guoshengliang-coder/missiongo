@@ -1,3 +1,6 @@
+import { collaborationBlockers } from "./collaboration-policy.js";
+import { Collaborations } from "./collaboration.js";
+import { collaborationTransitionDenial } from "./collaboration-policy.js";
 import { assertTransitionPolicy, itemRoles } from "./item-policy.js";
 import { resolveCommentAudience, enqueueCommentNotifications } from "./comment-discussions.js";
 import { assertBuilderExecution, assertDispatchExecution, latestBuilderHandover, hasOngoingItemExecution, hasPriorProcessing } from "./builder-authority.js";
@@ -371,6 +374,10 @@ export class MissionGoStore {
     let archivedAt = current.archivedAt ?? null;
     if (input.archived !== undefined) {
       if (input.archived && !archivedAt) {
+        if (this.database.connection.prepare(`SELECT 1 FROM collaboration_requests r JOIN work_items s ON s.id=r.source_item_id JOIN work_items t ON t.id=r.target_item_id
+          WHERE (s.product_id=? OR t.product_id=?) AND r.withdrawn_at IS NULL AND t.status NOT IN ('done','cancelled') LIMIT 1`).get(productId,productId)) {
+          throw conflict("collaboration_archive_blocked","项目仍有未结束协作，请先处理或撤回相关依赖。");
+        }
         // Leaving no product to switch to would strand the workspace on an
         // empty picker with no way back.
         const remaining = this.listProducts().filter((product) => product.id !== productId);
@@ -994,6 +1001,12 @@ export class MissionGoStore {
       clauses.push(`${column} IN (${entries.map(() => "?").join(",")})`);
       values.push(...entries);
     };
+    if(input.collaborations?.length) {
+      if(input.collaborations.some(v=>!["sent","received","waiting","verification"].includes(v)))throw invalidInput("Invalid collaboration filter.");
+      if(input.collaborations.includes("verification")&&!input.collaborationVerifierAccountId)throw invalidInput("Verification filter needs an account.");
+      const verification="EXISTS (SELECT 1 FROM collaboration_requests r JOIN work_items t ON t.id=r.target_item_id WHERE (r.source_item_id=work_items.id OR r.target_item_id=work_items.id) AND r.withdrawn_at IS NULL AND r.access_revoked_at IS NULL AND r.verifier_account_id=? AND t.status='pending_verification')";
+      clauses.push("("+input.collaborations.map(v=>v==="verification"?(values.push(input.collaborationVerifierAccountId!),verification):v==="received"?"EXISTS (SELECT 1 FROM collaboration_requests r WHERE r.target_item_id=work_items.id)":v==="sent"?"EXISTS (SELECT 1 FROM collaboration_requests r WHERE r.source_item_id=work_items.id)":"EXISTS (SELECT 1 FROM collaboration_requests r JOIN work_items t ON t.id=r.target_item_id WHERE r.source_item_id=work_items.id AND r.withdrawn_at IS NULL AND t.status NOT IN ('done','cancelled'))").join(" OR ")+")");
+    }
     addValues("type", input.types, WORK_ITEM_TYPES);
     addValues("priority", input.priorities, WORK_ITEM_PRIORITIES);
     addValues("source_component_id", input.sourceComponentIds);
@@ -1396,7 +1409,7 @@ export class MissionGoStore {
     if (ids.length && (input.actor !== "human" || !input.note?.trim())) throw invalidInput("Transition attachments require a human reason.");
     const key = input.idempotencyKey ? this.validateIdempotencyKey(input.idempotencyKey) : undefined;
     const fingerprint = createHash("sha256").update(JSON.stringify([input.itemKey.toUpperCase(), input.to, input.reason,
-      input.actor, input.note?.trim() ?? "", ids, input.expectedStatus, input.expectedRevision, input.executionDisposition, input.attribution ?? {}])).digest("hex");
+      input.actor, input.note?.trim() ?? "", ids, input.expectedStatus, input.expectedRevision, input.executionDisposition, input.collaborationDisposition, input.attribution ?? {}])).digest("hex");
     const operation = `transition_item:${fingerprint}`;
     this.database.transaction(() => {
       if (key && this.getIdempotentResult<boolean>(key, operation)) return;
@@ -1435,7 +1448,7 @@ export class MissionGoStore {
         if (attachment.commentId || attachment.transitionEventId) throw invalidInput("Attachment already belongs to another operation.");
       }
       this.applyTransition(current, input.to, input.actor, input.reason, input.note, now, input.attribution ?? {},
-        { ...(ids.length ? { attachmentIds: ids } : {}), ...(input.executionDisposition ? {executionDisposition:input.executionDisposition} : {}), ...(input.confirmedHandoverId ? {handoverId:input.confirmedHandoverId,evidenceSource:"human_confirmation"} : {}) });
+        { ...(input.collaborationDisposition ? {collaborationDisposition:input.collaborationDisposition} : {}), ...(ids.length ? { attachmentIds: ids } : {}), ...(input.executionDisposition ? {executionDisposition:input.executionDisposition} : {}), ...(input.confirmedHandoverId ? {handoverId:input.confirmedHandoverId,evidenceSource:"human_confirmation"} : {}) });
       if (key) this.saveIdempotentResult(key, operation, true, now);
     });
     return this.getWorkItem(input.itemKey);
@@ -2064,6 +2077,10 @@ export class MissionGoStore {
     if (current.status === "done" && to === "ready") reason = "reopened";
     if (current.status === "cancelled" && to === "inbox") reason = "restored";
     const snapshot = {...this.getWorkItem(current.item_key),...(typeof payloadExtra.dispatchId === "string" ? {executionDispatchId:payloadExtra.dispatchId} : {})};
+    const collaborationDenied = collaborationTransitionDenial(this.database,snapshot,to,actor,attribution.accountId);
+    if (collaborationDenied) throw conflict(collaborationDenied,"协作依赖未结束或当前用户不是指定验收人。");
+    new Collaborations(this).beforeTransition(snapshot,to,actor,attribution.accountId,note,
+      payloadExtra.collaborationDisposition as {mode:"withdraw"|"keep";successorAccountId?:string}|undefined);
     const evidenceRefresh = current.status === "development_complete" && to === "development_complete" && Boolean(payloadExtra.handoverId && payloadExtra.evidenceSource);
     const authorization = attribution.accountId
       ? assertTransitionPolicy(this.database,evidenceRefresh ? {...snapshot,status:"in_progress"} : snapshot,attribution.accountId,to,reason,actor)
@@ -2145,6 +2162,7 @@ export class MissionGoStore {
       enqueueDecisionNotifications(this.database,eventId,current.id,current.product_id,
         creator && creator.kind !== "sdk" ? creator.accountId : undefined,current.builder_account_id ?? undefined,now);
     }
+    new Collaborations(this).afterTransition(snapshot,to,attribution.accountId,text,actor);
     // Every status write passes here, so this is the one place a hand-off can
     // notice that its last open item just finished (AND-129).
     if (to === "done" || to === "cancelled") autoArchiveForItem(this.database, current.id, now);
@@ -2308,6 +2326,10 @@ export class MissionGoStore {
       )
       .get(itemId, itemId) as unknown as { seq: number | null };
     return (row.seq ?? 0) + 1;
+  }
+
+  recordCollaborationEvent(itemId:string,payload:Readonly<Record<string,unknown>>,accountId:string,actor:ActorKind,createdAt:string):string {
+    return this.insertEvent(itemId,"collaboration_updated",actor,null,null,payload,createdAt,accountId === "system" ? {} : {accountId});
   }
 
   private insertEvent(
@@ -2617,6 +2639,10 @@ export class MissionGoStore {
       sourceComponentId:row.source_component_id,affectedComponentIds:this.getAffectedComponentIds(row.id),environment:parseEnvironment(row.environment_json)};
   }
 
+  private collaborationCounts(id:string): Pick<WorkItemSnapshot,"collaboration"> {
+    const counts=this.database.connection.prepare("SELECT sum(source_item_id=?) AS sent,sum(target_item_id=?) AS received FROM collaboration_requests WHERE source_item_id=? OR target_item_id=?").get(id,id,id,id) as {sent:number|null;received:number|null};
+    return counts.sent||counts.received ? {collaboration:{sent:counts.sent??0,received:counts.received??0,blocking:collaborationBlockers(this.database,id)}} : {};
+  }
   private mapWorkItem(row: WorkItemRow): WorkItemSnapshot {
     const environment = parseEnvironment(row.environment_json);
     const report = parseReport(row.report_json);
@@ -2629,6 +2655,7 @@ export class MissionGoStore {
       ...(row.held_from ? {heldFrom:row.held_from} : {}),
       ...(row.execution_disposition ? {executionDisposition:row.execution_disposition} : {}),
       ...this.builderOf(row),
+      ...this.collaborationCounts(row.id),
       ...this.builderHandoverOf(row),
       productId: row.product_id,
       ...(row.source_component_id ? { sourceComponentId: row.source_component_id } : {}),

@@ -1,3 +1,4 @@
+import { collaborationTransitionDenial, collaborationVerifier } from "./collaboration-policy.js";
 import { hasPriorProcessing, hasOngoingItemExecution } from "./builder-authority.js";
 import { evaluateWorkItemTransition, type ActorKind, type TransitionReason, type WorkItemStatus } from "@missiongo/domain";
 import { AccountStore } from "./accounts-store.js";
@@ -28,9 +29,19 @@ export function transitionPolicy(database: MissionGoDatabase,item: PolicyItem,ac
   if (item.status === "done" && to === "ready") reason="reopened";
   if (item.status === "cancelled" && to === "inbox") reason="restored";
   const result = (allowed:boolean,code:string) => ({allowed,code:allowed ? "allowed" : code,roles:roles.roles,basis:reason === "manual_override" ? "manager_correction" : roles.roles.join("+")});
+  const denied=collaborationTransitionDenial(database,item,to,actor,accountId);
+  if(denied)return result(false,denied);
   if (item.transferred) return result(false,"item_transferred");
   const isArchived = archived ?? Boolean((database.connection.prepare("SELECT archived_at FROM products WHERE id=?").get(item.productId) as {archived_at:string|null}|undefined)?.archived_at);
   if (isArchived) return result(false,"project_archived");
+  const verifier=collaborationVerifier(database,item.id);
+  if(verifier && actor === "human" && accountId === verifier && item.status === "pending_verification" && ["done","ready"].includes(to)) {
+    const source=database.connection.prepare("SELECT s.product_id FROM collaboration_requests r JOIN work_items s ON s.id=r.source_item_id WHERE r.target_item_id=? AND r.access_revoked_at IS NULL AND r.verifier_account_id=? LIMIT 1").get(item.id,accountId) as {product_id:string}|undefined;
+    const accounts=new AccountStore(database),account=accounts.findActive(accountId);
+    if(source && account && accounts.allows(account,source.product_id,"view")) return result(true,"allowed");
+    return result(false,"item_not_accessible");
+  }
+  if (verifier && to === "cancelled" && (!roles.operate || !roles.manager && !roles.builder)) return result(false,"collaboration_receiver_required");
   if (to === "in_progress" && reason === "claim" && hasPriorProcessing(database,item.id) && hasOngoingItemExecution(database,item.id,item.executionDispatchId)) return result(false,"execution_stop_unconfirmed");
   if (actor !== "human") {
     if (actor === "system") return result(

@@ -20,6 +20,7 @@ export class TransitionAttachmentAttempt {
   private readonly uploads = new Map<string, Map<File, { key: string; id?: string }>>();
   private readonly attempts = new Map<string, { fingerprint: string; key: string; expectedStatus: WorkItemStatus }>();
   readonly confirmed = new Map<string, WorkItem>();
+  collaborationDisposition: {mode:"withdraw"|"keep";successorAccountId?:string} | undefined;
   executionDisposition: "keep_running" | "stop_requested" | undefined;
 
   capacity(items: readonly WorkItem[], files: readonly File[]): number {
@@ -51,10 +52,10 @@ export class TransitionAttachmentAttempt {
       if (!upload.id) upload.id = (await api.uploadAttachment(itemKey, file, upload.key, undefined, true)).id;
       attachmentIds.push(upload.id);
     }
-    const fingerprint = JSON.stringify([action.to, action.reason, note.trim(), attachmentIds, expectedRevision, this.executionDisposition]);
+    const fingerprint = JSON.stringify([action.to, action.reason, note.trim(), attachmentIds, expectedRevision, this.executionDisposition, this.collaborationDisposition]);
     let attempt = this.attempts.get(itemKey);
     if (attempt?.fingerprint !== fingerprint) { attempt = { fingerprint, key: crypto.randomUUID(), expectedStatus: from }; this.attempts.set(itemKey, attempt); }
-    const result = await api.transitionItem(itemKey, action, note, { attachmentIds, idempotencyKey: attempt!.key, expectedStatus: attempt!.expectedStatus, ...(expectedRevision !== undefined ? {expectedRevision} : {}), ...(this.executionDisposition ? {executionDisposition:this.executionDisposition} : {}) });
+    const result = await api.transitionItem(itemKey, action, note, { attachmentIds, idempotencyKey: attempt!.key, expectedStatus: attempt!.expectedStatus, ...(expectedRevision !== undefined ? {expectedRevision} : {}), ...(this.collaborationDisposition ? {collaborationDisposition:this.collaborationDisposition} : {}), ...(this.executionDisposition ? {executionDisposition:this.executionDisposition} : {}) });
     this.confirmed.set(itemKey, result);
     return result;
   }

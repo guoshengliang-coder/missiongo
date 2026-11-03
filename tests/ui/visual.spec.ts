@@ -52,6 +52,9 @@ for (const viewport of VIEWPORTS) {
           // Lazy thumbnails start after IntersectionObserver, sometimes after
           // networkidle. Never accept a temporarily stable loading placeholder.
           if (pageUnderTest.name === "detail") {
+            // Collaboration data loads independently of the item. A stable
+            // screenshot must show this fixture's resolved empty state.
+            await expect(page.locator(".collaboration-panel .section-empty")).toBeVisible();
             await expect.poll(() => page.locator(".attachment-image").evaluateAll(cards =>
               cards.filter(card => {
                 const box = card.getBoundingClientRect();

@@ -1,3 +1,6 @@
+import { useQuery } from "@tanstack/react-query";
+import { collaborationApi } from "./collaboration-api";
+import { api } from "./api";
 import { Select } from "./select";
 import { TransitionFiles, useTransitionFiles } from "./transition-files";
 import type { TransitionAttachmentAttempt } from "./transition-attachments";
@@ -58,9 +61,15 @@ export function TransitionNoteDialog({
 
   const copy = transitionNoteCopy(action.to,action.reason);
   const cancelling = action.to === "cancelled";
+  const collaboration = useQuery({queryKey:["collaboration",item.key],queryFn:()=>collaborationApi.context(item.key),enabled:cancelling});
+  const [collaborationMode,setCollaborationMode]=useState<"withdraw"|"keep">("withdraw");
+  const [successor,setSuccessor]=useState("");
+  const unfinished=collaboration.data?.requests.filter(r=>r.direction==="outgoing"&&r.blocking)??[];
+  const people=useQuery({queryKey:["builders",item.productId],queryFn:()=>api.listBuilders(item.productId),enabled:cancelling&&unfinished.length>0&&collaborationMode==="keep"});
+  const collaborationReady=!cancelling||collaboration.isSuccess&&(!unfinished.length||collaborationMode==="withdraw"||!!successor);
   const executionDecision = cancelling || action.to === "on_hold";
   const [disposition,setDisposition] = useState<"keep_running"|"stop_requested">("keep_running");
-  useDialogDraft(Boolean(note) || draft.files.length > 0 || disposition !== "keep_running", pending);
+  useDialogDraft(Boolean(note) || draft.files.length > 0 || disposition !== "keep_running" || collaborationMode !== "withdraw" || !!successor, pending);
   const quickReasons = ["cancelReasonSentByMistake", "cancelReasonDuplicate", "cancelReasonNoLongerNeeded"] as const;
 
   return (
@@ -70,7 +79,7 @@ export function TransitionNoteDialog({
       onPaste={draft.onPaste}
       onSubmit={(event) => {
         event.preventDefault();
-        if (!pending && note.trim()) { draft.attempt.executionDisposition = executionDecision ? disposition : undefined; onSubmit(note, draft.files, draft.attempt); }
+        if (!pending && note.trim() && collaborationReady) { draft.attempt.collaborationDisposition = unfinished.length ? {mode:collaborationMode,...(collaborationMode==="keep"?{successorAccountId:successor}:{})} : undefined; draft.attempt.executionDisposition = executionDecision ? disposition : undefined; onSubmit(note, draft.files, draft.attempt); }
       }}
     >
       <div className="transition-note-field">
@@ -109,6 +118,17 @@ export function TransitionNoteDialog({
           <option value="keep_running">{t("executionKeepRunning")}</option><option value="stop_requested">{t("executionStopRequested")}</option>
         </Select>
       </div>}
+      {cancelling&&collaboration.isPending&&<p role="status">{t("settingsLoading")}</p>}
+      {cancelling&&collaboration.isError&&<div role="alert"><p>{t("collaborationReadError")}</p><button type="button" className="secondary-button" onClick={()=>void collaboration.refetch()}>{t("retry")}</button></div>}
+      {unfinished.length>0&&<div className="transition-note-field">
+        <p>{t("collaborationCancelHelp")}</p>
+        <ul>{unfinished.map(r=><li key={r.id}>{r.restricted?t("collaborationRestricted"):`${r.targetKey} · ${r.targetTitle}`}</li>)}</ul>
+        <label htmlFor={`${helpId}-collaboration`}>{t("collaborationRelations")}</label>
+        <Select id={`${helpId}-collaboration`} disabled={pending} value={collaborationMode} onChange={e=>setCollaborationMode(e.target.value as "withdraw"|"keep")}>
+          <option value="withdraw">{t("collaborationCancelWithdraw")}</option><option value="keep">{t("collaborationCancelKeep")}</option>
+        </Select>
+        {collaborationMode==="keep"&&<label>{t("collaborationSuccessor")}<Select required disabled={pending} value={successor} onChange={e=>setSuccessor(e.target.value)}><option value="">{t("collaborationChoose")}</option>{people.data?.builders.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</Select>{people.isError&&<span role="alert">{t("collaborationReadError")}</span>}</label>}
+      </div>}
       <TransitionFiles draft={draft} disabled={pending} />
 
       {/* A dialog sits in the top layer and covers the page's toast, so the
@@ -119,7 +139,7 @@ export function TransitionNoteDialog({
 
       <div className="form-footer">
         <button type="button" className="secondary-button" disabled={pending} onClick={onCancel}>{t("cancel")}</button>
-        <button type="submit" className="primary-button" disabled={!note.trim() || pending}>
+        <button type="submit" className="primary-button" disabled={!note.trim() || pending || !collaborationReady}>
           {pending ? <LoaderCircle className="spin" size={16} /> : cancelling ? <CircleX size={16} /> : <Undo2 size={16} />}
           {transitionLabel(action.label)}
         </button>

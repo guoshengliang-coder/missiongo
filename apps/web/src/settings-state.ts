@@ -1,7 +1,7 @@
 /** Settings have their own URLs; workspace query parameters survive the round trip. */
 export const SETTINGS_DEPTH = "missiongo:settings-depth";
 export const SETTINGS_INDEX = "missiongo:settings-index";
-export const PRODUCT_SETTINGS = ["product", "components", "builders", "artifacts", "tokens", "notifications"] as const;
+export const PRODUCT_SETTINGS = ["product", "components", "builders", "artifacts", "tokens", "notifications", "collaboration"] as const;
 export type ProductSettingsSection = typeof PRODUCT_SETTINGS[number];
 export type SettingsSection = ProductSettingsSection | "index" | "profile" | "display" | "agent" | "connections" | "devices" | "dispatch" | "products" | "overview" | "access" | "accounts" | "project-admins" | "ai" | "dingtalk" | "new-product";
 export interface SettingsRoute { section: SettingsSection; productId?: string | undefined; nodeId?: string | undefined; componentId?: string | undefined; accountId?: string | undefined; filterProductId?: string | undefined }

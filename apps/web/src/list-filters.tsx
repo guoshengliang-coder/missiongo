@@ -12,7 +12,7 @@ import { useI18n } from "./i18n";
 import { Modal } from "./modal";
 import { ITEM_PRIORITIES, ITEM_TYPES } from "./types";
 
-type Dimension = "builder" | "proposerKeys" | "types" | "priorities" | "sourceComponentIds" | "created" | "updated";
+type Dimension = "collaborations" | "builder" | "proposerKeys" | "types" | "priorities" | "sourceComponentIds" | "created" | "updated";
 
 interface FilterState extends ItemFilters {
   builder: string;
@@ -82,6 +82,7 @@ export function ListFilters({
     delete next[key];
     onChange(next);
   };
+  const collaborationChoices=[{id:"sent",name:word("已发出协作","Sent collaboration")},{id:"received",name:word("收到的协作","Received collaboration")},{id:"waiting",name:word("等待协作","Waiting on dependencies")},{id:"verification",name:word("待我验收协作","Awaiting my verification")}];
   const groups: Array<{
     key: keyof ItemFilters | "search";
     label: string;
@@ -100,6 +101,7 @@ export function ListFilters({
         clear: () => without(key),
       });
   };
+  add("collaborations",word("协作","Collaboration"),(value.collaborations??[]).map(v=>collaborationChoices.find(c=>c.id===v)?.name).join("、"));
   add(
     "priorities",
     word("优先级", "Priority"),
@@ -175,7 +177,7 @@ export function ListFilters({
     </>
   );
   const editArray = (
-    key: "types" | "priorities" | "sourceComponentIds" | "proposerKeys",
+    key: "collaborations" | "types" | "priorities" | "sourceComponentIds" | "proposerKeys",
     id: string,
     checked: boolean,
   ) => {
@@ -189,7 +191,7 @@ export function ListFilters({
     });
   };
   const checks = (
-    key: "types" | "priorities" | "sourceComponentIds" | "proposerKeys",
+    key: "collaborations" | "types" | "priorities" | "sourceComponentIds" | "proposerKeys",
     entries: readonly { id: string; name: string }[],
   ) => (
     <div className="list-filter-choices">
@@ -219,6 +221,7 @@ export function ListFilters({
     { key: "sourceComponentIds", label: word("模块", "Module"), summary: (draft?.sourceComponentIds ?? []).map(id => modules.data?.find(m => m.id === id)?.name ?? word("已选模块", "Selected module")).join("、") },
     ...(["created", "updated"] as const).map(key => ({ key, label: key === "created" ? word("创建时间", "Created") : word("更新时间", "Updated"),
       summary: draft?.[`${key}From`] || draft?.[`${key}To`] ? `${draft?.[`${key}From`] || "…"} ~ ${draft?.[`${key}To`] || "…"}` : "" })),
+    {key:"collaborations",label:word("项目协作","Collaboration"),summary:(draft?.collaborations??[]).map(v=>collaborationChoices.find(c=>c.id===v)?.name).join("、")},
   ];
   const currentDimension = dimensions.find(entry => entry.key === dimension);
   const clearDimension = () => {
@@ -432,6 +435,7 @@ export function ListFilters({
                 {builderOptions()}
               </Select>
             </label>}
+            {dimension === "collaborations"&&<fieldset><legend>{word("项目协作","Collaboration")}</legend>{checks("collaborations",collaborationChoices)}</fieldset>}
             {dimension === "types" && <fieldset>
               <legend>{word("类型", "Type")}</legend>
               {checks(

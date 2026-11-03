@@ -1,4 +1,7 @@
 import { FreeSessionStore } from "./free-session-store.js";
+import { registerCollaborationRoutes } from "./collaboration-routes.js";
+import { collaborationVerifier } from "./collaboration-policy.js";
+import { z } from "zod";
 import { registerPersonalNotificationRoutes } from "./personal-notifications.js";
 import { evaluateWorkItemTransition } from "@missiongo/domain";
 import type { WorkItemStatus, TransitionReason } from "@missiongo/domain";
@@ -1834,6 +1837,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (unauthenticatedDeployment) return true; // The local console's synthetic administrator.
     const account = sessionAccount(request);
     if (!account) return false; // A deployment/AI token is not a human account.
+    const verifier=collaborationVerifier(store.database,item.id);
+    if(verifier)return verifier===account.id;
     const creator = item.createdBy;
     return account.role === "admin"
       || accountStore.isProjectAdministrator(account, item.productId)
@@ -2327,6 +2332,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
 
   registerItemDeliveryRoutes(app, { store, accounts: accountStore, requireAccount });
+  registerCollaborationRoutes(app,{store,requireAccount,storage:attachmentStorage});
   registerPersonalNotificationRoutes(app,{store,accounts:accountStore,requireAccount});
   registerDingTalkRoutes(app,{store,accounts:accountStore,service:dingtalk,requireAccount});
   registerManagedDecisionRoutes(app, { db: store.database, accounts: accountStore, requireAccount,
@@ -4151,6 +4157,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         ...(unauthenticatedDeployment ? {allowed:true,code:"allowed"} : transitionPolicy(store.database,item,accountId,to,reason,"human",roles,archived))}))),
       access: {
         canOperate: !archived && (unauthenticatedDeployment || roles.operate),
+        canRequestCollaboration: !archived && !item.transferred && roles.operate && (roles.builder || roles.manager) && ["ready","in_progress","on_hold"].includes(item.status),
         canVerify: !item.transferred && canVerifyItem(request, item),
       },
       ...store.transferReferences(item.key, (id) => bearerAuthorized(request)
@@ -4199,9 +4206,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     requireTransitionPermission(request,itemKey,to,reason,body.expectedStatus as WorkItemStatus|undefined);
     if (["development_complete","pending_verification"].includes(to) && reason !== "manual_override") throw conflict("delivery_evidence_required","请通过交付状态检查提报。");
     if (!unauthenticatedDeployment && (!Number.isSafeInteger(body.expectedRevision) || !body.idempotencyKey)) throw invalidInput("expectedRevision and idempotencyKey are required.","transition_version_required");
+    const collaborationDisposition=z.object({mode:z.enum(["withdraw","keep"]),successorAccountId:z.string().min(1).max(100).optional()}).optional().safeParse(body.collaborationDisposition);
+    if(!collaborationDisposition.success)throw invalidInput("协作处置格式无效。","collaboration_input_invalid");
     return withTransferReferences(request, store.transitionWorkItem({
       itemKey: requireTransitionPermission(request, itemKey, to, reason,body.expectedStatus as WorkItemStatus|undefined),
       to,
+      ...(collaborationDisposition.data ? {collaborationDisposition:collaborationDisposition.data} : {}),
       actor: "human",
       reason,
       ...(typeof body.expectedRevision === "number" ? {expectedRevision:body.expectedRevision} : {}),
