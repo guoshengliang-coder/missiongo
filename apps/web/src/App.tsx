@@ -4079,7 +4079,10 @@ function WorkItemFields({
       </section>
       <details className="diagnostic-input-block" open={diagnosticsOpen}>
         <summary className="diagnostic-input-heading">
-          <span><strong>{t("diagnostics")}</strong><small>{t("diagnosticsHelp")}</small></span>
+          <span className="diagnostic-input-title">
+            <ChevronRight size={16} />
+            <span><strong>{t("diagnostics")}</strong><small>{t("diagnosticsHelp")}</small></span>
+          </span>
           <FilePicker
             files={selectedLogFiles}
             onFiles={(nextLogFiles) => onFiles(withLogFiles(nextLogFiles))}
@@ -4088,6 +4091,7 @@ function WorkItemFields({
             accept=".log,text/plain"
             allowedExtensions={["log"]}
             buttonLabel={t("uploadLog")}
+            addIcon
           />
         </summary>
         <label><FieldLabel>{t("diagnosticLog")}</FieldLabel>
