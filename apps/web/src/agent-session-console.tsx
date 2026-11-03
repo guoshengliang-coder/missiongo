@@ -232,6 +232,8 @@ export function AgentSessionConsole({
 }) {
   const confirm = useConfirm();
   const { locale, t } = useI18n();
+  // A re-dispatched session keeps the item's name and adds the round (AND-365).
+  const roundLabel = (round: number) => t("agentSessionRound", { round });
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState<AgentSessionFilter>(initialFilter ?? DEFAULT_AGENT_SESSION_FILTER);
   const [agentFilter, setAgentFilter] = useState<AgentKindFilter>(DEFAULT_AGENT_KIND_FILTER);
@@ -477,7 +479,7 @@ export function AgentSessionConsole({
       const failureDetails = failures.map((entry) => {
         const session = visibleSessions.find((candidate) => candidate.id === entry.sessionId);
         const reason = entry.result.status === "rejected" ? localizedErrorText(entry.result.reason, t) : "";
-        return `${session ? sessionTitle(session) : entry.sessionId}: ${reason}`;
+        return `${session ? sessionTitle(session, roundLabel) : entry.sessionId}: ${reason}`;
       }).join("; ");
       setSelectedForArchive((current) => {
         const next = new Set(current);
@@ -983,7 +985,7 @@ export function AgentSessionConsole({
                   </span>
                   <span className="agent-console-session-copy">
                     <span className="agent-console-session-heading">
-                      <strong>{sessionTitle(session)}</strong>
+                      <strong>{sessionTitle(session, roundLabel)}</strong>
                       <time>{formatAgentMessageTime(session.activityAt ?? session.updatedAt, locale)}</time>
                     </span>
                     <small>{session.source === "external" ? t("agentExternalSource") : session.nodeName} · {agentLabel(session, t)}</small>
@@ -1008,7 +1010,7 @@ export function AgentSessionConsole({
               <BackButton className="agent-console-conversation-back" label={t("agentConsoleBackToSessions")} onClick={onBackToSessions} />
               <span className="agent-console-avatar"><AgentIcon kind={selected.agentKind} size={18} /></span>
               <div className="agent-console-heading">
-                <h2>{sessionTitle(selected)}</h2>
+                <h2>{sessionTitle(selected, roundLabel)}</h2>
                 {/* The items this session is working on stay in the head, where
                     scrolling the conversation cannot lose them (AND-159). */}
                 <div className="agent-console-dispatch agent-console-dispatch-head">

@@ -29,9 +29,21 @@ export function compactItemKeys(keys: readonly string[]): string {
     .join("、");
 }
 
-/** The session list row and conversation heading: compact keys, then the first item's title. */
-export function sessionTitle(session: Pick<AgentSessionSummary, "items" | "sessionName" | "id">): string {
+/**
+ * The session list row and conversation heading: compact keys, then the first item's title.
+ *
+ * A session dispatched after the item was sent back carries the attempt number
+ * (AND-365) so it is told apart from the first go, matching the name the machine
+ * gives its own session. The first round stays unlabelled, and a caller that
+ * has no wording for the number (or a session MissionGo did not dispatch) just
+ * gets the old title.
+ */
+export function sessionTitle(
+  session: Pick<AgentSessionSummary, "items" | "sessionName" | "id" | "round">,
+  roundLabel?: (round: number) => string,
+): string {
   const keys = compactItemKeys(session.items.map((item) => item.key));
   const firstTitle = session.items[0]?.title;
-  return firstTitle ? `${keys} · ${firstTitle}` : session.sessionName ?? session.id;
+  const title = firstTitle ? `${keys} · ${firstTitle}` : session.sessionName ?? session.id;
+  return roundLabel && session.round && session.round > 1 ? `${title} ${roundLabel(session.round)}` : title;
 }

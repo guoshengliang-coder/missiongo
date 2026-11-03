@@ -581,6 +581,8 @@ export interface AgentSessionSummary {
   readonly mode: string;
   readonly dispatchStatus: DispatchStatus | "external";
   readonly dispatchResultRejected?: boolean;
+  /** Which dispatch on these items this is; absent for sessions MissionGo did not dispatch. */
+  readonly round?: number;
   readonly sessionName?: string;
   readonly sessionUrl?: string;
   readonly createdAt: string;

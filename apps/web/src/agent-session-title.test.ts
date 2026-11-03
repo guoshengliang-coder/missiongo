@@ -33,4 +33,16 @@ describe("how a dispatch session's title writes out its item keys", () => {
     expect(sessionTitle(session([], "派单会话"))).toBe("派单会话");
     expect(sessionTitle(session([]))).toBe("session-1");
   });
+
+  it("names the dispatch round from the second attempt on, when the caller has wording for it", () => {
+    const roundLabel = (round: number) => `第${round}轮`;
+    const first = { ...session([{ key: "AND-169" }]), round: 1 };
+    const second = { ...session([{ key: "AND-169" }]), round: 2 };
+    expect(sessionTitle(first, roundLabel)).toBe("AND-169 · 条目标题");
+    expect(sessionTitle(second, roundLabel)).toBe("AND-169 · 条目标题 第2轮");
+    // Without a label the title is unchanged, and a session MissionGo did not
+    // dispatch has no round to show.
+    expect(sessionTitle(second)).toBe("AND-169 · 条目标题");
+    expect(sessionTitle(session([{ key: "AND-169" }]), roundLabel)).toBe("AND-169 · 条目标题");
+  });
 });

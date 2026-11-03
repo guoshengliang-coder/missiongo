@@ -484,7 +484,11 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .sidebar-utilities { display: flex; flex-direction: column; gap: 2px; padding-top: 10px; border-top: 1px solid var(--line); }
 .sidebar-utility-button { min-height: 34px; justify-content: flex-start; gap: 7px; margin: 0 5px; text-align: left; }
 
-.workspace { min-width: 0; min-height: 0; display: block; padding: 30px 34px 34px; overflow-y: auto; overscroll-behavior: contain; }
+/* The scroll container's top padding is also where a sticky child stops: a
+   `top: 0` bar pins that far below the topbar. Keep the value in one place so
+   the filter bar can cancel it out (AND-366) instead of leaving a transparent
+   strip between the two bars. */
+.workspace { --workspace-top-inset: 30px; min-width: 0; min-height: 0; display: block; padding: var(--workspace-top-inset) 34px 34px; overflow-y: auto; overscroll-behavior: contain; }
 .workspace.detail-open { padding: 0; overflow: hidden; }
 .app-shell.agent-console-open { grid-template-columns: minmax(0, 1fr); }
 .app-shell.agent-console-open > .sidebar,
@@ -1688,7 +1692,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 
 @media (max-width: 1080px) {
   .brand-tagline, .topbar-divider { display: none; }
-  .workspace { padding: 25px 24px 28px; }
+  .workspace { --workspace-top-inset: 25px; padding: var(--workspace-top-inset) 24px 28px; }
   .agent-console-page { grid-template-columns: 180px minmax(260px, 310px) minmax(0, 1fr); }
   .list-columns, .item-row { grid-template-columns: minmax(205px, 1.25fr) minmax(95px, .5fr) minmax(110px, .65fr) minmax(76px, .42fr) minmax(142px, 1fr) 34px; gap: 9px; }
   .list-surface.without-media .list-columns, .list-surface.without-media .item-row { grid-template-columns: minmax(220px, 1.4fr) minmax(105px, .58fr) minmax(76px, .42fr) minmax(142px, 1fr) 34px; }
@@ -1723,7 +1727,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .sidebar { position: fixed; inset: 0 auto 0 0; z-index: 40; width: min(300px, 86vw); padding: calc(20px + var(--safe-top)) 14px calc(18px + var(--safe-bottom)) calc(14px + var(--safe-left)); transform: translateX(-102%); transition: transform 180ms ease; box-shadow: 20px 0 55px rgba(18,24,37,0.15); }
   .sidebar.open { transform: translateX(0); }
   .sidebar-mobile-head { display: flex; }
-  .workspace { min-height: calc(100vh - 64px - var(--safe-top)); min-height: calc(100dvh - 64px - var(--safe-top)); padding: 23px calc(15px + var(--safe-right)) calc(84px + var(--safe-bottom)) calc(15px + var(--safe-left)); overflow: visible; }
+  .workspace { --workspace-top-inset: 0px; min-height: calc(100vh - 64px - var(--safe-top)); min-height: calc(100dvh - 64px - var(--safe-top)); padding: 23px calc(15px + var(--safe-right)) calc(84px + var(--safe-bottom)) calc(15px + var(--safe-left)); overflow: visible; }
   /* The rest of the app is already in its compact shell at this width. Keep
      the console on the same breakpoint so an unfolded phone does not retain a
      third navigation column just because it is wider than an ordinary phone. */
@@ -2825,10 +2829,13 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 }
 .modal-fields { min-width: 0; margin: 0; padding: 0; border: 0; }
 .product-icon-draft { width: 80px; height: 80px; object-fit: contain; border-radius: var(--radius-md); }
-/* AND-308: list-local filters stay reachable while either pane scrolls. */
+/* AND-308: list-local filters stay reachable while either pane scrolls.
+   AND-366: pinned, the bar joins the topbar above it instead of floating a
+   scroll-container-padding's width below and letting rows show through. */
 .list-page { container-type: inline-size; container-name: list-pane; }
-.list-filter-bar { position: sticky; top: 0; z-index: 3; flex: 0 0 auto; margin-bottom: 10px; padding: 4px 0 8px; background: var(--canvas); }
-.workspace.detail-open .list-filter-bar { background: var(--surface-strong); }
+.list-filter-bar { position: sticky; top: calc(-1 * var(--workspace-top-inset, 0px)); z-index: 3; flex: 0 0 auto; margin-bottom: 10px; padding: 4px 0 8px; background: var(--canvas); }
+/* The detail pane is its own scroller with its own 16px inset. */
+.workspace.detail-open .list-filter-bar { top: -16px; background: var(--surface-strong); }
 .list-filter-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .list-filter-builder, .list-filter-type { display: flex; flex-direction: row; align-items: center; gap: 6px; min-width: 0; max-width: 220px; padding-left: 9px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--muted); font-size: var(--text-sm); }
 .list-filter-builder :is(select, .single-select), .list-filter-type :is(select, .single-select) { width: auto; min-width: 0; max-width: 150px; min-height: 34px; margin: 0; padding: 4px 6px; color: var(--ink); background: transparent; border: 0; font-size: var(--text-sm); }
