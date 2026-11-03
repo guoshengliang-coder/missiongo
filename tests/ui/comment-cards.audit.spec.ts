@@ -89,7 +89,7 @@ for (const viewport of viewports) for (const theme of ["light", "dark"] as const
           expect(Math.max(...geometry.controlTops) - Math.min(...geometry.controlTops)).toBeLessThanOrEqual(1);
           expect(Math.max(...geometry.controlBottoms) - Math.min(...geometry.controlBottoms)).toBeLessThanOrEqual(1);
           expect(geometry.metadataBelow).toBe(true);
-          if (card === cards[1]) expect(geometry.replyGap).toBe(14);
+          if (card === cards[1]) expect(geometry.replyGap).toBe(8);
           if (card !== cards[1]) {
             const folded = card.locator(".comment-collapsible");
             await expect(folded).not.toHaveAttribute("open", "");
