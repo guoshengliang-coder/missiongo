@@ -576,11 +576,13 @@ export function AgentSessionConsole({
   const activities = sessionQuery.data?.activities ?? [];
   const turnState = sessionQuery.data?.turnState ?? selected?.turnState;
   const approval = sessionQuery.data ? sessionQuery.data.approval : selected?.approval;
+  const showPermissionApproval = Boolean(approval && (approvalNeedsAction(approval)
+    || (approval.kind === "manual" && approval.status === "pending")));
   const showPlanApproval = selected?.needsAttention && !selected.attention.dismissed && selected.attention.kind === "approval";
   const planApproval = sessionQuery.data?.planApproval;
   const planApprovalStatus = pending || sendingSelected ? { code: "reply_pending" }
     : sessionQuery.data?.planApprovalStatus;
-  const canApprovePlan = Boolean(planApproval && planApprovalStatus?.code === "ready"
+  const canApprovePlan = Boolean(!showPermissionApproval && planApproval && planApprovalStatus?.code === "ready"
     && sessionQuery.data?.canReply && selected?.canReply && !pending && !sendingSelected);
   const approvePlan = () => {
     if (!canApprovePlan || !planApproval || !selected?.agentSessionId) return;
@@ -1110,7 +1112,7 @@ export function AgentSessionConsole({
                     </article>
                   );
                 })}
-                {(selected.needsAttention || selected.attention.dismissed) && selected.attention.reason && (
+                {!showPermissionApproval && (selected.needsAttention || selected.attention.dismissed) && selected.attention.reason && (
                   <div className={`agent-console-attention-banner ${selected.attention.dismissed ? "dismissed" : ""}${showPlanApproval ? " agent-console-attention-banner--approval" : ""}`} role="status">
                     <BellRing size={16} />
                     <details>
@@ -1265,36 +1267,46 @@ export function AgentSessionConsole({
                     {selected.canArchive && <small>{t("agentRecoveryArchiveHint")}</small>}
                   </section>
                 )}
-                {approval && (approvalNeedsAction(approval) || (approval.kind === "manual" && approval.status === "pending")) && (
-                  <section className="agent-console-approval" role="alert" aria-label={t("agentApprovalTitle") }>
-                    <strong>{approval.kind === "auto" ? t("agentApprovalAutoTitle") : t("agentApprovalTitle")}</strong>
-                    <p>{approval.action}</p>
-                    <small>{approval.status === "inProgress" ? t("agentApprovalReviewing")
+                {approval && showPermissionApproval && (
+                  <section className="agent-console-attention-banner agent-console-approval" role="alert" aria-label={t("agentApprovalTitle") }>
+                    <header>
+                      <BellRing size={16} />
+                      <strong>{approval.kind === "auto" ? t("agentApprovalAutoTitle") : t("agentApprovalTitle")}</strong>
+                      <span>{approval.status === "inProgress" ? t("agentApprovalReviewing")
                       : approval.status === "pending" ? t("agentApprovalWaiting")
                         : approval.status === "denied" ? t("agentApprovalDenied")
                           : approval.status === "approved" ? t("agentApprovalApproved")
                             : approval.status === "reconnecting" ? t("agentApprovalReconnecting")
-                            : approval.status === "unavailable" ? t("agentApprovalUnavailable") : approval.status}</small>
-                    {approval.reason && <small>{approval.reason}</small>}
+                            : approval.status === "unavailable" ? t("agentApprovalUnavailable") : approval.status}</span>
+                    </header>
+                    <details className="agent-console-approval-detail" key={approval.id}>
+                      <summary><span>{approval.action}</span></summary>
+                      <div>
+                        {approval.reason && <p>{approval.reason}</p>}
+                      </div>
+                    </details>
                     {approval.kind === "manual" && approval.status === "pending" && selected.canReply
                       && selected.agentSessionId && (
                       <div className="agent-console-approval-actions">
-                        {(approval.options ?? [{ id: "accept", kind: "once" }, { id: "decline", kind: "decline" }]).map((option) => (
-                          <div key={option.id}>
-                            <button type="button" className={["decline", "cancel", "networkDeny"].includes(option.kind) ? "text-button" : "primary-button"}
+                        {(approval.options ?? [{ id: "accept", kind: "once" }, { id: "decline", kind: "decline" }]).map((option, index, options) => {
+                          const label = option.kind === "choice" ? option.label : t(({ once: "agentApprovalAccept", turn: "agentApprovalTurn", session: "agentApprovalSession",
+                            always: "agentApprovalAlways", rule: "agentApprovalRule", networkAllow: "agentApprovalNetworkAllow", networkDeny: "agentApprovalNetworkDeny",
+                            decline: "agentApprovalDecline", cancel: "agentApprovalCancel" } as const)[option.kind]);
+                          const detailId = `approval-${approval.id}-option-${index}-detail`;
+                          return (
+                            <button key={option.id} type="button" aria-label={label} aria-describedby={option.detail ? detailId : undefined}
+                              className={option.kind === "once" && index === options.findIndex(candidate => candidate.kind === "once")
+                              ? "primary-button" : "secondary-button"}
                               disabled={Boolean(approval.decision) || decideApproval.isPending}
                               onClick={() => chooseApproval({ sessionId: selected.agentSessionId!, approvalId: approval.id, decision: option.id })}>
-                              {option.kind === "choice" ? option.label : t(({ once: "agentApprovalAccept", turn: "agentApprovalTurn", session: "agentApprovalSession",
-                                always: "agentApprovalAlways",
-                                rule: "agentApprovalRule", networkAllow: "agentApprovalNetworkAllow", networkDeny: "agentApprovalNetworkDeny",
-                                decline: "agentApprovalDecline", cancel: "agentApprovalCancel" } as const)[option.kind])}
+                              <span>{label}</span>
+                              {option.detail && <small id={detailId}>{option.detail}</small>}
                             </button>
-                            {option.detail && <small>{option.detail}</small>}
-                          </div>
-                        ))}
-                        {approval.decision && <small>{t("agentApprovalDecisionQueued")}</small>}
+                          );
+                        })}
                       </div>
                     )}
+                    {approval.kind === "manual" && approval.decision && <small role="status">{t("agentApprovalDecisionQueued")}</small>}
                     {approval.kind === "auto" && approval.status === "denied" && selected.canReply
                       && selected.agentSessionId && (
                       <div className="agent-console-approval-actions">
