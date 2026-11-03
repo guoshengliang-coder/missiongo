@@ -40,10 +40,16 @@ describe("reason attachment retries", () => {
     const attempt = new TransitionAttachmentAttempt(), selected = new File(["x"], "evidence.txt");
     vi.spyOn(api, "uploadAttachment").mockResolvedValue({ id: "new" } as WorkItemAttachment);
     vi.spyOn(api, "transitionItem").mockRejectedValue(new Error("offline"));
-    const originals = Array.from({ length: 9 }, (_, index) => ({ id: `old-${index}` } as WorkItemAttachment));
+    const originals = Array.from({ length: 99 }, (_, index) => ({ id: `old-${index}` } as WorkItemAttachment));
     await expect(attempt.submit("TR-1", "pending_verification", action, "Reason", [selected])).rejects.toThrow();
     expect(attempt.capacity([item(originals)], [selected])).toBe(1);
     expect(attempt.capacity([item([...originals, { id: "new" } as WorkItemAttachment])], [selected])).toBe(1);
     expect(attempt.capacity([item(originals)], [])).toBe(0);
+  });
+
+  it("caps one transition at 10 references even with item budget to spare", () => {
+    const attempt = new TransitionAttachmentAttempt();
+    expect(attempt.capacity([item()], [])).toBe(10);
+    expect(attempt.capacity([item(Array.from({ length: 95 }, (_, index) => ({ id: `old-${index}` } as WorkItemAttachment)))], [])).toBe(5);
   });
 });

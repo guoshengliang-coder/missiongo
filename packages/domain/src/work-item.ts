@@ -50,6 +50,11 @@ export interface WorkItemEnvironment {
 export const ATTACHMENT_KINDS = ["image", "video", "log", "document", "archive"] as const;
 export type AttachmentKind = (typeof ATTACHMENT_KINDS)[number];
 
+// Per-item attachment budget shared by the web forms, MCP uploads and feedback
+// drafts. Per-file size caps and per-comment/per-transition reference limits
+// stay separate; this only bounds how many attachments one item can accumulate.
+export const MAX_ITEM_ATTACHMENTS = 100;
+
 export interface WorkItemAttachment {
   readonly id: string;
   readonly itemKey: string;
