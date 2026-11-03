@@ -1084,7 +1084,7 @@ describe("Commenting over MCP", () => {
     expect(app.missionGoStore.getWorkItem("HG-1").status).toBe("in_progress");
     for (const [path, payload] of [["commands", { text: "Do not execute" }], ["settings", { mode: "auto" }]] as const) {
       const rejected = await app.inject({ method: path === "settings" ? "PATCH" : "POST", url: `/api/v1/agent-sessions/${sessionId}/${path}`, headers, payload });
-      expect(rejected.statusCode).toBe(path === "commands" ? 409 : 404);
+      expect(rejected.statusCode).toBe(409);
     }
     expect((await app.inject({ method: "POST", url: `/api/v1/agent-sessions/${sessionId}/read`, headers, payload: { through: listed[0].unreadAt } })).statusCode).toBe(204);
     expect((await app.inject({ method: "GET", url: "/api/v1/agent-sessions", headers })).json().sessions[0].unread).toBe(false);
@@ -1107,7 +1107,7 @@ describe("Commenting over MCP", () => {
     const bound = await app.inject({ method: "PUT", url: `/api/v1/agent-sessions/${id}/native-connection`, headers, payload: { nodeId: node.nodeId } });
     expect(bound.statusCode).toBe(200); expect(bound.json()).toMatchObject({ nativeConnection: { state: "pending" }, canReply: false });
     expect((await app.inject({ method: "GET", url: "/api/v1/node/agent-sessions", headers: { authorization: `Bearer ${node.token}` } })).json().sessions).toEqual([]);
-    const nodeHeaders = { authorization: `Bearer ${node.token}`, "x-missiongo-external-sessions": "1", "x-missiongo-external-worker": "fixture-worker-one" };
+    const nodeHeaders = { authorization: `Bearer ${node.token}`, "x-missiongo-external-sessions": "1", "x-missiongo-external-worker": "fixture-worker-one", "x-missiongo-external-settings": "1" };
     const polled = await app.inject({ method: "GET", url: "/api/v1/node/agent-sessions", headers: nodeHeaders });
     expect(polled.json().sessions).toMatchObject([{ id, sessionRef: "exact-native-thread", externalBindingGeneration: 1, occupiesExecutionSlot: false }]);
     const snapshotHeaders = { ...nodeHeaders, "x-missiongo-external-generation": "1" };
@@ -1119,6 +1119,20 @@ describe("Commenting over MCP", () => {
     const detail = (await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${id}`, headers })).json();
     expect(detail).toMatchObject({ canReply: true, canAttach: false, nativeConnection: { state: "connected" } });
     expect(detail.messages.map((message: { role: string }) => message.role)).toEqual(["agent", "user", "agent"]);
+    const changeSettings = (payload: object) => app.inject({ method: "PATCH", url: `/api/v1/agent-sessions/${id}/settings`, headers, payload });
+    expect((await changeSettings({ mode: "plan" })).statusCode).toBe(409); // old node
+    expect((await post({ ...snapshot, settingsSupport: ["unknown"] })).statusCode).toBe(400);
+    expect((await post({ ...snapshot, settingsSupport: kind === "claude_code" ? [] : ["mode"] })).statusCode).toBe(204);
+    const settingResult = await changeSettings({ mode: "plan" });
+    expect(settingResult.statusCode).toBe(kind === "claude_code" ? 409 : 200);
+    if (kind !== "claude_code") {
+      expect(settingResult.json()).toMatchObject({ pending: { revision: 1, mode: "plan" } });
+      expect((await app.inject({ method: "GET", url: "/api/v1/node/agent-sessions", headers: nodeHeaders })).json().sessions[0])
+        .toMatchObject({ desiredSettings: { revision: 1, mode: "plan" } });
+      expect((await post({ ...snapshot, settingsSupport: ["mode"], settingsRevision: 1, mode: "plan" })).statusCode).toBe(204);
+      const afterSettings = (await app.inject({ method: "GET", url: "/api/v1/agent-sessions", headers })).json().sessions[0].settings;
+      expect(afterSettings.mode).toBe("plan"); expect(afterSettings.pending).toBeUndefined();
+    }
     const queued = await app.inject({ method: "POST", url: `/api/v1/agent-sessions/${id}/commands`, headers, payload: { text: "Continue in this same conversation" } });
     expect(queued.statusCode).toBe(201); const command = queued.json(); expect(command.status).toBe("queued");
     expect((await post({ ...snapshot, commandId: command.id, commandStatus: "delivering" })).statusCode).toBe(204);

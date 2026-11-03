@@ -7,6 +7,9 @@ import { nodeConnectionState } from "@missiongo/domain";
 import { sessionHealth } from "./agent-session-health.js";
 
 import type { AgentSessionActivity, AgentSessionCommand, AgentSessionMessageInput, AgentSessionStatus, AgentSessionTurnState } from "./agent-session-store.js";
+import { parseAgentModels, requireOfferedModel, type AgentRunSettings } from "./agent-settings.js";
+import type { AgentSessionSettings } from "./agent-session-store.js";
+import type { AgentKind } from "@missiongo/domain";
 import { conflict, invalidInput, notFound } from "./errors.js";
 import type { MissionGoStore } from "./store.js";
 import { autoArchiveFinishedConversations } from "./auto-archive.js";
@@ -24,8 +27,15 @@ interface Row {
   native_snapshot_json: string | null; archived_at: string | null;
   dismissed_revision: string | null;
   native_auto_connect: number;
+  native_settings_json: string | null;
+}
+type SettingsField = "mode" | "model" | "effort";
+interface SettingsState {
+  revision: number; settled: number; desired?: AgentRunSettings;
+  values?: AgentRunSettings; error?: string;
 }
 interface NativeSnapshot {
+  settingsSupport?: readonly SettingsField[]; model?: string; effort?: string; mode?: string;
   status: AgentSessionStatus; turnState: AgentSessionTurnState; activities?: readonly AgentSessionActivity[]; error?: string; sourceArchived?: boolean; supportsAttachments?: boolean;
 }
 interface CommandRow {
@@ -106,14 +116,14 @@ export class ExternalNativeSessionStore {
       if (this.alreadyBound(row, nodeId)) {
         throw conflict("external_native_already_bound", "This native conversation is already connected to another console record.");
       }
-      this.db.prepare("UPDATE external_agent_sessions SET native_node_id=?, native_generation=native_generation+1, native_snapshot_json=NULL, native_synced_at=NULL WHERE id=?").run(nodeId, id);
+      this.db.prepare("UPDATE external_agent_sessions SET native_node_id=?, native_generation=native_generation+1, native_snapshot_json=NULL, native_synced_at=NULL, native_settings_json=NULL WHERE id=?").run(nodeId, id);
     });
   }
   disconnect(accountId: string, id: string): void {
     this.store.database.transaction(() => {
       this.row(accountId, id);
       this.requireNoPending(id);
-      this.db.prepare("UPDATE external_agent_sessions SET native_node_id=NULL, native_auto_connect=0, native_generation=native_generation+1 WHERE id=?").run(id);
+      this.db.prepare("UPDATE external_agent_sessions SET native_node_id=NULL, native_auto_connect=0, native_generation=native_generation+1, native_settings_json=NULL WHERE id=?").run(id);
     });
   }
   beforeArchive(accountId: string, id: string): void { this.row(accountId, id); this.requireNoPending(id); }
@@ -150,6 +160,7 @@ export class ExternalNativeSessionStore {
         return attachments ? [{ commandId: entry.id, text: entry.text, status: entry.status, createdAt: entry.created_at, attachments }] : [];
       }) : [];
     return { ...(nativeConnection ? { nativeConnection } : {}), nativeMessages, attachmentMessages,
+      settings: this.settings(row, snapshot, connected),
       ...(snapshot ? { status: !row.native_node_id || !online ? "unavailable" as const : health!.status, turnState: snapshot.turnState, activities: snapshot.activities ?? [],
         ...(row.native_synced_at ? { updatedAt: row.native_synced_at } : {}),
         ...(health?.reason || snapshot.error ? { lastError: health?.reason ?? snapshot.error } : {}) } : {}),
@@ -158,6 +169,50 @@ export class ExternalNativeSessionStore {
         ...(needed ? { kind: "action" as const, reason: health?.reason ?? snapshot?.error ?? nativeMessages.at(-1)?.text ?? "请查看原生会话。" } : {}),
         ...(row.dismissed_revision === revision && !health?.reason ? { dismissed: true } : {}) }, needsAttention: needed, waitingForReply: needed } : {}),
     };
+  }
+  private settings(row: Row, snapshot: NativeSnapshot | undefined, connected: boolean): AgentSessionSettings {
+    const state = this.settingsState(row);
+    const fields = snapshot?.settingsSupport ?? [];
+    const values = { ...state.values, ...(snapshot?.mode ? { mode: snapshot.mode } : {}),
+      ...(snapshot?.model ? { model: snapshot.model } : {}), ...(snapshot?.effort ? { effort: snapshot.effort } : {}) };
+    return { ...values, mode: values.mode ?? "external", supportedFields: fields,
+      adjustable: connected && !row.archived_at && fields.length > 0 && this.items(row.id).some((item) => item.status !== "done"),
+      applyOn: row.agent_kind === "codex" ? "next_reply" : "idle",
+      ...(!connected ? { unavailableReason: "connect" as const } : snapshot?.settingsSupport === undefined
+        ? { unavailableReason: "upgrade" as const } : fields.length === 0 ? { unavailableReason: "source" as const } : {}),
+      ...(state.revision > state.settled && state.desired?.model ? { requestedModel: state.desired.model } : {}),
+      ...(state.revision > state.settled ? { pending: { ...state.desired, revision: state.revision } } : {}),
+      ...(state.error ? { error: state.error } : {}) };
+  }
+  private settingsState(row: Row): SettingsState {
+    return row.native_settings_json ? JSON.parse(row.native_settings_json) as SettingsState : { revision: 0, settled: 0 };
+  }
+  requestSettings(accountId: string, id: string, change: AgentRunSettings): AgentSessionSettings {
+    return this.store.database.transaction(() => {
+      assertExternalExecution(this.store.database, id);
+      const row = this.row(accountId, id);
+      const overlay = this.overlay(accountId, id, false);
+      if (!overlay.settings.adjustable) throw conflict("external_settings_unavailable", "This source cannot adjust settings right now.");
+      this.requireNoPending(id);
+      const fields = Object.keys(change) as SettingsField[];
+      if (!fields.length) throw invalidInput("Choose a mode, model or effort to change.");
+      if (fields.some((field) => !overlay.settings.supportedFields?.includes(field))) {
+        throw conflict("external_settings_unsupported", "This source does not support the selected setting.");
+      }
+      const node = this.db.prepare("SELECT agents_json FROM nodes WHERE id=? AND account_id=? AND revoked_at IS NULL")
+        .get(row.native_node_id!, accountId) as { agents_json: string } | undefined;
+      const agent = node && (JSON.parse(node.agents_json) as { kind: string; models?: unknown }[]).find((entry) => entry.kind === row.agent_kind);
+      const state = this.settingsState(row);
+      // Carry only still-pending fields. Settled settings belong to the source,
+      // which may have changed them in its own client in the meantime.
+      const next = { ...(state.revision > state.settled ? state.desired : {}), ...change };
+      if (next.effort && !next.model && !overlay.settings.model) throw invalidInput("Choose a model before changing its effort.");
+      requireOfferedModel(row.agent_kind as AgentKind, parseAgentModels(agent?.models), {
+        ...next, ...(next.effort && !next.model && overlay.settings.model ? { model: overlay.settings.model } : {}) });
+      this.db.prepare("UPDATE external_agent_sessions SET native_settings_json=? WHERE id=?")
+        .run(JSON.stringify({ ...state, desired: next, revision: state.revision + 1, error: undefined }), id);
+      return this.overlay(accountId, id, false).settings;
+    });
   }
   enqueue(accountId: string, id: string, textValue: string, attachmentIds: readonly string[] = []): AgentSessionCommand {
     assertExternalExecution(this.store.database,id);
@@ -196,7 +251,7 @@ export class ExternalNativeSessionStore {
       return command;
     });
   }
-  listForNode(accountId: string, nodeId: string, workerId: string, authorizeProduct: (id: string, execute: boolean) => void, allowAutomatic = false) {
+  listForNode(accountId: string, nodeId: string, workerId: string, authorizeProduct: (id: string, execute: boolean) => void, allowAutomatic = false, allowSettings = false) {
     const node = this.db.prepare("SELECT agents_json FROM nodes WHERE id=? AND account_id=? AND revoked_at IS NULL").get(nodeId, accountId) as { agents_json: string } | undefined;
     if (!node) return [];
     const enabled = new Set((JSON.parse(node.agents_json) as { kind: string }[]).map((agent) => agent.kind));
@@ -223,16 +278,29 @@ export class ExternalNativeSessionStore {
       }
       if (this.items(row.id).every((item) => item.status === "done")) command = undefined;
       const snapshot = row.native_snapshot_json ? JSON.parse(row.native_snapshot_json) as NativeSnapshot : undefined;
+      const settings = this.settingsState(row);
+      // A downgraded worker must not send a reply while silently dropping the
+      // person's pending choices. The reply remains cancellable in the console.
+      if (!allowSettings && settings.revision > settings.settled) command = undefined;
+      let mayAdjust = allowSettings && !automatic && enabled.has(row.agent_kind) && settings.revision > settings.settled
+        && this.overlay(accountId, row.id, false).settings.adjustable;
+      if (mayAdjust) {
+        try { assertExternalExecution(this.store.database, row.id); this.items(row.id).forEach((item) => authorizeProduct(item.product_id, true)); }
+        catch { mayAdjust = false; }
+      }
       return [{ id: row.id, agentKind: row.agent_kind, sessionRef: row.session_ref, status: snapshot?.status ?? "unavailable",
         lifecycle: "keep", occupiesExecutionSlot: false, externalBindingGeneration: row.native_generation,
         ...(automatic ? { externalAutoConnect: true } : {}),
+        ...(mayAdjust ? { desiredSettings: { ...settings.desired, revision: settings.revision }, appliedSettingsRevision: settings.settled } : {}),
         ...(command ? { command } : {}) }];
     });
   }
   recordSnapshot(input: { accountId: string; nodeId: string; sessionId: string; generation: number; workerId: string;
     status: AgentSessionStatus; messages: readonly AgentSessionMessageInput[]; activities?: readonly AgentSessionActivity[]; turnState: AgentSessionTurnState;
     error?: string; sourceArchived?: boolean; commandId?: string; commandStatus?: "delivering" | "delivery_unknown" | "delivered" | "failed"; commandError?: string;
-    autoConnect?: boolean; nativeSessionRef?: string; supportsAttachments?: boolean },
+    autoConnect?: boolean; nativeSessionRef?: string; supportsAttachments?: boolean;
+    settingsSupport?: readonly SettingsField[]; mode?: string; model?: string; effort?: string;
+    settingsRevision?: number; settingsError?: string },
   authorizeProduct: (id: string, execute: boolean) => void): void {
     this.store.database.transaction(() => {
       let row = this.row(input.accountId, input.sessionId);
@@ -295,7 +363,27 @@ export class ExternalNativeSessionStore {
         || !activity.title || activity.title.length > 500 || (activity.detail?.length ?? 0) > 500
         || (activity.startedAt !== undefined && (!Number.isFinite(Date.parse(activity.startedAt))
           || Date.parse(activity.startedAt) > Date.now() + 60_000)))) throw invalidInput("Invalid native activities.");
-      const snapshot = JSON.stringify({ supportsAttachments: input.supportsAttachments === true, status: input.status, turnState: input.turnState, activities, ...(input.error ? { error: input.error } : {}), ...(input.sourceArchived ? { sourceArchived: true } : {}) });
+      if (input.settingsSupport !== undefined && (!Array.isArray(input.settingsSupport) || input.settingsSupport.length > 3
+        || input.settingsSupport.some((field) => !["mode", "model", "effort"].includes(field)))) throw invalidInput("Invalid settings support.");
+      const settings = this.settingsState(row);
+      if (input.settingsRevision !== undefined) {
+        if (!Number.isSafeInteger(input.settingsRevision) || input.settingsRevision < 1 || input.settingsRevision > settings.revision) throw invalidInput("Invalid settings revision.");
+        this.items(row.id).forEach((item) => authorizeProduct(item.product_id, true));
+        assertExternalExecution(this.store.database, row.id);
+        if (input.settingsRevision > settings.settled) {
+          settings.settled = input.settingsRevision;
+          if (input.settingsError) settings.error = input.settingsError; else delete settings.error;
+          // Acknowledgement is not proof that omitted values equal the request.
+          // Sources may normalize a variant or change in their original client.
+          if (!input.settingsError && input.settingsRevision === settings.revision) settings.values = {
+            ...(input.mode ? { mode: input.mode } : {}), ...(input.model ? { model: input.model } : {}),
+            ...(input.effort ? { effort: input.effort } : {}),
+          };
+          this.db.prepare("UPDATE external_agent_sessions SET native_settings_json=? WHERE id=?").run(JSON.stringify(settings), row.id);
+        }
+      }
+      const snapshot = JSON.stringify({ ...(input.settingsSupport ? { settingsSupport: input.settingsSupport } : {}),
+        ...(input.mode ? { mode: input.mode } : {}), ...(input.model ? { model: input.model } : {}), ...(input.effort ? { effort: input.effort } : {}), supportsAttachments: input.supportsAttachments === true, status: input.status, turnState: input.turnState, activities, ...(input.error ? { error: input.error } : {}), ...(input.sourceArchived ? { sourceArchived: true } : {}) });
       const clocks = this.db.prepare("SELECT activity_at,unread_at FROM external_agent_sessions WHERE id=?").get(row.id) as { activity_at: string; unread_at: string | null };
       const clock = new Date(Math.max(Date.now(), Date.parse(clocks.activity_at) + 1, clocks.unread_at ? Date.parse(clocks.unread_at) + 1 : 0)).toISOString();
       this.db.prepare(`UPDATE external_agent_sessions SET native_snapshot_json=?,native_synced_at=?,

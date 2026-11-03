@@ -352,3 +352,101 @@ it.each(["codex", "claude_code", "opencode"] as const)("isolates %s originals an
     expect(f.store.database.connection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+it.each(["codex", "opencode", "claude_code"] as const)("shows connection, upgrade and source limitations for %s settings", (kind) => {
+  const f = fixture(kind);
+  expect(f.native.overlay("owner", f.id).settings).toMatchObject({ adjustable: false, unavailableReason: "connect" });
+  f.native.connect("owner", f.id, "node"); f.report();
+  expect(f.native.overlay("owner", f.id).settings).toMatchObject({ adjustable: false, unavailableReason: "upgrade" });
+  f.report({ settingsSupport: [], model: "local-model" });
+  expect(f.native.overlay("owner", f.id).settings).toMatchObject({ model: "local-model", adjustable: false, unavailableReason: "source" });
+  expect(() => f.native.requestSettings("owner", f.id, { model: "other" })).toThrow(/cannot adjust/);
+});
+
+function settingsFixture(kind: "codex" | "opencode" = "codex") {
+  const f = fixture(kind);
+  f.store.database.connection.prepare("UPDATE nodes SET agents_json=? WHERE id='node'").run(JSON.stringify([{ kind,
+    models: [{ id: "model-a", label: "A", efforts: ["low", "high"] }, { id: "model-b", label: "B", efforts: [] }] }]));
+  f.native.connect("owner", f.id, "node");
+  f.report({ settingsSupport: ["mode", "model", "effort"], model: "model-a", effort: "low", mode: "default" });
+  return f;
+}
+
+it.each(["codex", "opencode"] as const)("keeps %s choices pending until the exact bound source acknowledges them", (kind) => {
+  const f = settingsFixture(kind);
+  const requested = f.native.requestSettings("owner", f.id, { mode: "plan", effort: "high" });
+  expect(requested).toMatchObject({ mode: "default", effort: "low", pending: { revision: 1, mode: "plan", effort: "high" } });
+  expect(f.native.listForNode("owner", "node", "worker-one", () => {})[0]).not.toHaveProperty("desiredSettings");
+  const offers = f.native.listForNode("owner", "node", "worker-one", () => {}, false, true);
+  expect(offers[0]).toMatchObject({ desiredSettings: { revision: 1, mode: "plan", effort: "high" }, appliedSettingsRevision: 0 });
+  expect(f.native.listForNode("owner", "node", "worker-one", () => { throw new Error("denied"); })).toEqual([]);
+  f.report({ settingsSupport: ["mode", "model", "effort"], status: "active", settingsRevision: 1, mode: "plan", model: "model-a", effort: "high" });
+  expect(f.progress.listForAccount("owner")[0]!.settings).toMatchObject({ mode: "plan", model: "model-a", effort: "high", adjustable: true });
+  expect(f.native.overlay("owner", f.id).settings.pending).toBeUndefined();
+  expect(f.native.listForNode("owner", "node", "worker-one", () => {}, false, true)[0]).not.toHaveProperty("desiredSettings");
+  // The original client can change the model after our request settled.
+  f.report({ settingsSupport: ["model"], model: "model-b" });
+  expect(f.native.overlay("owner", f.id).settings.model).toBe("model-b");
+  expect(f.native.overlay("owner", f.id).settings.requestedModel).toBeUndefined();
+});
+
+it("validates individual capabilities and the current model's effort, not another model's catalog", () => {
+  const f = settingsFixture();
+  f.report({ settingsSupport: ["model"], model: "model-a" });
+  expect(() => f.native.requestSettings("owner", f.id, { mode: "plan" })).toThrow(/does not support/);
+  expect(() => f.native.requestSettings("owner", f.id, { model: "unlisted" })).toThrow(/does not offer/);
+  f.report({ settingsSupport: ["model", "effort"], model: "model-b" });
+  expect(() => f.native.requestSettings("owner", f.id, { effort: "high" })).toThrow(/not offered/);
+  expect(() => f.native.requestSettings("owner", f.id, {})).toThrow(/Choose/);
+  expect(() => f.report({ settingsSupport: ["model", "unknown"] as never })).toThrow(/Invalid settings support/);
+});
+
+it("retains actual values after rejection, allows retry, rejects future/stale acknowledgements and clears reconnect requests", () => {
+  const f = settingsFixture();
+  f.native.requestSettings("owner", f.id, { model: "model-b" });
+  expect(() => f.report({ settingsRevision: 2 })).toThrow(/Invalid settings revision/);
+  f.report({ settingsSupport: ["mode", "model", "effort"], settingsRevision: 1, settingsError: "Source refused", model: "model-a" });
+  expect(f.native.overlay("owner", f.id).settings).toMatchObject({ model: "model-a", error: "Source refused" });
+  expect(f.native.overlay("owner", f.id).settings.pending).toBeUndefined();
+  f.native.requestSettings("owner", f.id, { model: "model-b" });
+  expect(f.native.overlay("owner", f.id).settings.pending?.revision).toBe(2);
+  // An old result must not settle the newer revision.
+  f.report({ settingsSupport: ["model"], settingsRevision: 1, model: "model-a" });
+  expect(f.native.overlay("owner", f.id).settings.pending?.revision).toBe(2);
+  f.native.disconnect("owner", f.id);
+  expect(f.native.overlay("owner", f.id).settings.pending).toBeUndefined();
+  f.native.connect("owner", f.id, "node");
+  expect(() => f.report({ settingsRevision: 2 })).toThrow(/Native binding/);
+  expect(f.native.listForNode("owner", "node", "worker-one", () => {}, false, true)[0]).not.toHaveProperty("desiredSettings");
+});
+
+it("does not change settings after a reply has been reserved, or when the node is offline", () => {
+  const f = settingsFixture();
+  f.native.enqueue("owner", f.id, "Continue");
+  expect(() => f.native.requestSettings("owner", f.id, { model: "model-b" })).toThrow(/pending reply/);
+  vi.advanceTimersByTime(5 * 60_000);
+  expect(f.native.overlay("owner", f.id).settings.adjustable).toBe(false);
+  expect(() => f.native.requestSettings("owner", f.id, { model: "model-b" })).toThrow(/cannot adjust/);
+});
+
+
+it("does not let an old worker silently drop pending settings from a queued reply", () => {
+  const f = settingsFixture();
+  f.native.requestSettings("owner", f.id, { model: "model-b" });
+  f.native.enqueue("owner", f.id, "Continue");
+  const old = f.native.listForNode("owner", "node", "worker-one", () => {})[0];
+  expect(old).not.toHaveProperty("desiredSettings"); expect(old).not.toHaveProperty("command");
+  expect(f.native.listForNode("owner", "node", "worker-one", () => {}, false, true)[0])
+    .toMatchObject({ desiredSettings: { model: "model-b", revision: 1 }, command: { status: "queued" } });
+});
+
+
+it("never invents confirmed values from a request when the source omits or normalizes them", () => {
+  const f = settingsFixture();
+  f.native.requestSettings("owner", f.id, { effort: "high" });
+  f.report({ settingsSupport: ["model", "effort"], settingsRevision: 1, model: "model-b" });
+  const actual = f.native.overlay("owner", f.id).settings;
+  expect(actual.model).toBe("model-b");
+  expect(actual.effort).toBeUndefined();
+  expect(actual.pending).toBeUndefined();
+});

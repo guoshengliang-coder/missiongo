@@ -24,11 +24,11 @@ const node = {
   }],
 } satisfies DispatchNode;
 
-function render(settings: AgentSessionSettings): string {
+function render(settings: AgentSessionSettings, overrides: Partial<AgentSessionSummary> = {}): string {
   const queryClient = new QueryClient();
   queryClient.setQueryData(["nodes"], { nodes: [node] });
   const session = {
-    agentSessionId: "session-1", agentKind: "claude_code", nodeId: node.id, settings,
+    agentSessionId: "session-1", agentKind: "claude_code", nodeId: node.id, settings, ...overrides,
   } as AgentSessionSummary;
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
@@ -86,5 +86,36 @@ describe("Claude Code session model choice", () => {
     expect(html).not.toContain("所选模型代号");
     expect(html).not.toContain("Mac 报告模型");
     expect(html).toContain("切换模型失败");
+  });
+});
+
+
+describe("external session settings capabilities", () => {
+  const external = { source: "external", canReply: true } as const;
+  it("reads the bound node catalog and disables unsupported fields independently", () => {
+    const html = render({ mode: "external", model: "gateway-glm", adjustable: true, supportedFields: ["model"] },
+      { ...external, nodeId: undefined, nativeConnection: { state: "connected", nodeId: node.id } } as unknown as Partial<AgentSessionSummary>);
+    expect(html).toContain("GLM-5.3（公司）");
+    expect(html).toMatch(/agent-settings-mode[^>]*disabled/);
+    expect(html).not.toMatch(/agent-settings-model[^>]*disabled/);
+    expect(html).toMatch(/agent-settings-effort[^>]*disabled/);
+  });
+  it.each(["connect", "upgrade", "source"] as const)("shows the %s limitation with visible disabled controls", (reason) => {
+    const html = render({ mode: "external", model: "local-model", adjustable: false, supportedFields: [], unavailableReason: reason }, external);
+    expect(html).toContain("local-model");
+    expect(html).toMatch(/agent-settings-model[^>]*disabled/);
+    expect(html).toContain(reason === "connect" ? "连接原生会话" : reason === "upgrade" ? "请更新节点" : "请在原客户端修改");
+  });
+  it("does not offer settings when operation permission is missing", () => {
+    const html = render({ mode: "default", model: "gateway-glm", adjustable: true, supportedFields: ["model"] }, { ...external, canReply: false });
+    expect(html).toMatch(/agent-settings-model[^>]*disabled/);
+    expect(html).toContain("检查操作权限");
+  });
+  it("explains next-reply activation and labels the pending effort instead of the old effort", () => {
+    const html = render({ mode: "default", adjustable: true, supportedFields: ["effort"], applyOn: "next_reply", effort: "low",
+      pending: { revision: 1, effort: "high" } }, external);
+    expect(html).toContain("待下次从控制台回复时应用");
+    expect(html).toContain("来源确认前尚未生效");
+    expect(html).toMatch(/<option value="high"[^>]*>高<\/option>/);
   });
 });

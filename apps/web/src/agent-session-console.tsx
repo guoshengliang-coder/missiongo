@@ -1415,7 +1415,7 @@ export function AgentSessionConsole({
                   </div>}
                   {replyFileError && <p className="inline-error" role="alert">{replyFileError}</p>}
                   <div className="agent-console-reply-actions">
-                    {selected.source !== "external" && <AgentSessionQuickSettings session={selected} />}
+                    <AgentSessionQuickSettings session={selected} />
                     <div className="agent-chat-send-actions">
                       <input ref={fileInputRef} type="file" accept={CHAT_FILE_ACCEPT} multiple hidden
                         onChange={(event) => addFiles(event.target.files)} />
@@ -1442,7 +1442,7 @@ export function AgentSessionConsole({
                     : t("agentConsoleNoInlineReply")}
                 </p>
               )}
-              {selected.source !== "external" && (!selected.canReply || !selected.agentSessionId) && <AgentSessionQuickSettings session={selected} />}
+              {(!selected.canReply || !selected.agentSessionId) && <AgentSessionQuickSettings session={selected} />}
               {cancel.isError && <p className="inline-error">{localizedErrorText(cancel.error, t)}</p>}
             </footer>
           </>

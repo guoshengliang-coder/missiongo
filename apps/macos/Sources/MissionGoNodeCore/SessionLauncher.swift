@@ -700,6 +700,7 @@ public struct SessionLauncher: AgentAdapter {
                 error: error ?? state.error, commandId: commandStatus == nil ? nil : session.command?.id,
                 commandStatus: commandStatus, commandError: commandError,
                 turnActive: state.turnActive, waitingForInput: state.waitingForInput)
+                .reportingSettings(mode: state.mode, model: state.model, effort: state.effort, settingsRevision: nil, settingsError: nil)
         }
         if let command = session.command, let result = state.commandResults[command.id] {
             return report(running && state.launchReady ? nil : "unavailable",

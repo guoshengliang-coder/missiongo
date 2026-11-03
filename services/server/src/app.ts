@@ -2805,13 +2805,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // applies it on its next poll and reports which revision it is on.
   app.patch("/api/v1/agent-sessions/:sessionId/settings", async (request) => {
     const { sessionId } = request.params as { sessionId: string };
-    authorizedAgentSession(request, sessionId, true);
     const body = objectBody(request.body);
-    return agentSessionStore.requestSettings(requireAccountId(request), sessionId, {
+    const change = {
       ...(optionalName(body, "mode") ? { mode: optionalName(body, "mode")! } : {}),
       ...(optionalName(body, "model") ? { model: optionalName(body, "model")! } : {}),
       ...(optionalName(body, "effort") ? { effort: optionalName(body, "effort")! } : {}),
-    });
+    };
+    if (externalSessionStore.has(sessionId)) {
+      loadExternalSession(request, sessionId, true, true);
+      return externalNativeStore.requestSettings(requireAccountId(request), sessionId, change);
+    }
+    authorizedAgentSession(request, sessionId, true);
+    return agentSessionStore.requestSettings(requireAccountId(request), sessionId, change);
   });
 
   // What the dispatch dialog starts from, per account (AND-130). Stored as the
@@ -3322,7 +3327,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     });
     const external = request.headers["x-missiongo-external-sessions"] === "1"
       ? externalNativeStore.listForNode(node.accountId, node.nodeId, externalWorker(request),
-        (productId, execute) => requireNodeAccountPermission(node.accountId, productId, execute), request.headers["x-missiongo-external-auto-connect"] === "1") : [];
+        (productId, execute) => requireNodeAccountPermission(node.accountId, productId, execute), request.headers["x-missiongo-external-auto-connect"] === "1", request.headers["x-missiongo-external-settings"] === "1") : [];
     const externalAttachments = request.headers["x-missiongo-external-attachments"] === "1";
     return { sessions: [...dispatchSessions, ...external.map((session) => !externalAttachments && session.command?.attachments?.length
       ? { ...session, command: undefined } : session)] };
@@ -3444,6 +3449,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         if (!Number.isSafeInteger(generation) || generation < (autoConnect ? 0 : 1)) throw invalidInput("An external binding generation is required.");
         externalNativeStore.recordSnapshot({ accountId: node.accountId, nodeId: node.nodeId, sessionId, generation, workerId: externalWorker(request),
           ...(autoConnect ? { autoConnect: true, nativeSessionRef: typeof request.headers["x-missiongo-external-ref"] === "string" ? request.headers["x-missiongo-external-ref"] : "" } : {}),
+          ...(body.settingsSupport !== undefined ? { settingsSupport: body.settingsSupport as readonly ("mode" | "model" | "effort")[] } : {}),
+          ...(optionalName(body, "mode") ? { mode: optionalName(body, "mode")! } : {}),
+          ...(optionalName(body, "model") ? { model: optionalName(body, "model")! } : {}),
+          ...(optionalName(body, "effort") ? { effort: optionalName(body, "effort")! } : {}),
+          ...(body.settingsRevision !== undefined ? { settingsRevision: body.settingsRevision as number } : {}),
+          ...(stringField(body, "settingsError", false) ? { settingsError: (body.settingsError as string).slice(0, 500) } : {}),
           status, messages, activities, turnState, supportsAttachments: request.headers["x-missiongo-external-attachments"] === "1",
           ...(stringField(body, "error", false) ? { error: body.error as string } : {}),
           ...(body.sourceArchived === true ? { sourceArchived: true } : {}),

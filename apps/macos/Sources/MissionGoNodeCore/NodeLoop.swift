@@ -707,6 +707,10 @@ public final class NodeLoop: @unchecked Sendable {
         // No fingerprint means the report cannot be encoded at
         // all; uploading it unconditionally errs on the side of
         // the server hearing about the session.
+        var report = report
+        if session.externalBindingGeneration != nil {
+            report = report.reportingExternalSettings(supportedFields: session.agentKind == "claude_code" ? [] : session.agentKind == "codex" ? ["model", "effort"] : ["mode", "model", "effort"])
+        }
         let fingerprint = Self.fingerprint(of: report)
         // A reconnect clears the server snapshot even when the native transcript
         // is unchanged. Its new generation must receive its own first report.
