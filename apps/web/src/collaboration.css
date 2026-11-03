@@ -1,0 +1,91 @@
+.collaboration-panel {
+  border-bottom: 1px solid var(--line);
+  padding: 20px 0;
+}
+.collaboration-heading,
+.collaboration-tabs {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.collaboration-heading h3 {
+  margin: 0;
+  font-size: var(--text-base);
+}
+.collaboration-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface-strong);
+  padding: 12px;
+  margin: 12px 0;
+  overflow-wrap: anywhere;
+}
+.collaboration-card small {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+.collaboration-card .status-badge {
+  margin-inline-start: 12px;
+}
+.collaboration-warning {
+  background: var(--warn-bg);
+  color: var(--warn-text);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-md);
+  padding: 12px;
+}
+.collaboration-form,
+.collaboration-shared {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+.collaboration-form fieldset {
+  display: grid;
+  gap: 16px;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.collaboration-form label {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.collaboration-form input:not([type="checkbox"]),
+.collaboration-form textarea {
+  width: 100%;
+  min-width: 0;
+}
+.collaboration-form .collaboration-check {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  gap: 10px;
+  overflow-wrap: anywhere;
+}
+.collaboration-check input {
+  flex: none;
+}
+.collaboration-prose {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.collaboration-actions {
+  flex-wrap: wrap;
+}
+.collaboration-settings {
+  display: grid;
+  gap: 16px;
+}
+.collaboration-tabs {
+  justify-content: flex-start;
+}
+.collaboration-tabs [aria-pressed="true"] {
+  background: var(--accent-bg);
+  color: var(--accent-text);
+  border-color: var(--accent-line);
+}

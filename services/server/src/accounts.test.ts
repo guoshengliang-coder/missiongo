@@ -2131,7 +2131,7 @@ describe("Acceptance permissions (AND-356)", () => {
 
   it("refuses an ordinary operator on another person's item, including manual completion, without changing events", async () => {
     const f = await fixture();
-    expect((await f.read(f.other)).access).toEqual({ canOperate: true, canVerify: false });
+    expect((await f.read(f.other)).access).toEqual({ canOperate: true, canVerify: false, canRequestCollaboration:false });
     const events = f.app.missionGoStore.getTimeline(f.other).length;
     for (const reason of ["verification_passed", "manual_override"]) {
       const refused = await f.move(f.other, f.memberCookie, reason);
@@ -2152,10 +2152,10 @@ describe("Acceptance permissions (AND-356)", () => {
     f.app.missionGoStore.transitionWorkItem({ itemKey: agent.key, to: "pending_verification", actor: "human", note:"Test fixture: explicit administrative correction", reason: "manual_override" });
     expect((await f.permissions(true, false)).statusCode).toBe(200);
     for (const key of [f.own, agent.key]) {
-      expect((await f.read(key)).access).toEqual({ canOperate: false, canVerify: true });
+      expect((await f.read(key)).access).toEqual({ canOperate: false, canVerify: true, canRequestCollaboration:false });
       const accepted = await f.move(key);
       expect(accepted.statusCode, accepted.body).toBe(200);
-      expect(accepted.json().access).toEqual({ canOperate: false, canVerify: true });
+      expect(accepted.json().access).toEqual({ canOperate: false, canVerify: true, canRequestCollaboration:false });
       expect(f.app.missionGoStore.getTimeline(key).at(-1)).toMatchObject({ actorKind: "human", accountId: f.member.id, toStatus: "done" });
     }
     // This right must not grant unrelated mutations.
@@ -2166,7 +2166,7 @@ describe("Acceptance permissions (AND-356)", () => {
     const f = await fixture();
     await f.permissions(false, false);
     f.app.missionGoAccounts.replaceProjectAdministrators(f.shared.id, [f.member.id], f.app.missionGoAccounts.projectAdministratorIds(f.shared.id), adminAccount().id);
-    expect((await f.read(f.other)).access).toEqual({ canOperate: true, canVerify: true });
+    expect((await f.read(f.other)).access).toEqual({ canOperate: true, canVerify: true, canRequestCollaboration:false });
     expect((await f.move(f.other)).statusCode).toBe(200);
     f.app.missionGoAccounts.replaceProjectAdministrators(f.shared.id, [], [f.member.id], adminAccount().id);
     await f.permissions(true, true);

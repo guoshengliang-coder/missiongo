@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { beforeCollaboration } from "../test-fixtures/before-collaboration.js";
 import { beforeManagedExecution } from "../test-fixtures/before-managed-execution.js";
 import { MissionGoDatabase } from "./database.js";
 
@@ -60,6 +61,7 @@ describe("database migrations", () => {
     seeded.close();
 
     const legacy = new DatabaseSync(path);
+    beforeCollaboration(legacy);
     beforeManagedExecution(legacy);
     legacy.exec("PRAGMA foreign_keys = OFF;");
     const row = legacy.prepare("SELECT sql FROM sqlite_master WHERE name = 'work_items'").get() as { sql: string };
@@ -109,6 +111,7 @@ describe("database migrations", () => {
     seeded.close();
 
     const legacy = new DatabaseSync(path);
+    beforeCollaboration(legacy);
     beforeManagedExecution(legacy);
     legacy.exec("PRAGMA foreign_keys = OFF;");
     for (const [name, current, old] of [
@@ -174,6 +177,7 @@ describe("database migrations", () => {
     seeded.close();
 
     const legacy = new DatabaseSync(path);
+    beforeCollaboration(legacy);
     beforeManagedExecution(legacy);
     legacy.exec(`
       ALTER TABLE agent_session_messages DROP COLUMN occurred_at;
@@ -213,6 +217,7 @@ describe("database migrations", () => {
     seeded.close();
 
     const legacy = new DatabaseSync(path);
+    beforeCollaboration(legacy);
     beforeManagedExecution(legacy);
     legacy.exec(`
       DROP INDEX IF EXISTS idx_dispatches_archived;
@@ -241,6 +246,7 @@ describe("database migrations", () => {
     seeded.close();
 
     const legacy = new DatabaseSync(path);
+    beforeCollaboration(legacy);
     beforeManagedExecution(legacy);
     legacy.exec(`
       ALTER TABLE ai_provider_settings RENAME TO ai_provider_settings_current;
@@ -298,6 +304,7 @@ describe("database migrations", () => {
     seeded.close();
 
     const legacy = new DatabaseSync(path);
+    beforeCollaboration(legacy);
     beforeManagedExecution(legacy);
     legacy.exec(`
       ALTER TABLE agent_session_attention DROP COLUMN dismissed_by_account_id;
@@ -342,6 +349,7 @@ describe("database migrations", () => {
     seeded.close();
 
     const legacy = new DatabaseSync(path);
+    beforeCollaboration(legacy);
     beforeManagedExecution(legacy);
     legacy.exec(`
       PRAGMA foreign_keys = OFF;
@@ -428,6 +436,7 @@ describe("database migrations", () => {
     `);
     seeded.close();
     const legacy = new DatabaseSync(path);
+    beforeCollaboration(legacy);
     beforeManagedExecution(legacy);
     legacy.exec(`
       PRAGMA foreign_keys = OFF;
@@ -493,6 +502,7 @@ describe("database migrations", () => {
     `);
     seeded.close();
     const legacy = new DatabaseSync(path);
+    beforeCollaboration(legacy);
     beforeManagedExecution(legacy);
     legacy.exec(`
       PRAGMA foreign_keys = OFF;

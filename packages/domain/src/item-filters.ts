@@ -3,6 +3,9 @@ import type { WorkItemPriority, WorkItemType } from "./work-item.js";
 /** Additional list filters; dates are inclusive local calendar days in the UI,
  * and UTC instants (exclusive upper bounds) at the HTTP/store boundary. */
 export interface ItemFilters {
+  readonly collaborations?: readonly ("sent"|"received"|"waiting"|"verification")[];
+  /** Server-resolved current viewer, used only by the verification filter. */
+  readonly collaborationVerifierAccountId?: string;
   readonly types?: readonly WorkItemType[];
   readonly priorities?: readonly WorkItemPriority[];
   readonly proposerKeys?: readonly string[];
@@ -13,6 +16,7 @@ export interface ItemFilters {
   readonly updatedTo?: string;
 }
 export const ITEM_FILTER_ARRAYS = [
+  "collaborations",
   "types",
   "priorities",
   "proposerKeys",

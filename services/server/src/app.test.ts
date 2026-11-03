@@ -463,7 +463,7 @@ describe("Commenting over MCP", () => {
     const writer = await call(writeToken, 2, "tools/call", { name: "get_current_account", arguments: {} });
     expect(writer.result?.structuredContent).toMatchObject({
       capabilities: {
-        writeTools: ["append_comment", "claim_item", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session", "register_item_handover", "report_handover_evidence"],
+        writeTools: ["prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "claim_item", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session", "register_item_handover", "report_handover_evidence"],
         canComment: true,
         canCreateItems: true,
       },
@@ -1628,6 +1628,7 @@ describe("MissionGo REST API", () => {
     const tools = await call(2, "tools/list");
     const names = (tools.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name);
     expect(names).toEqual([
+      "get_item_collaborations", "list_collaboration_targets", "get_collaboration",
       "get_current_account",
       "list_products",
       "get_project_insights",
@@ -1639,6 +1640,7 @@ describe("MissionGo REST API", () => {
       "get_item_context",
       "get_item_timeline",
       "get_attachment",
+      "get_collaboration_attachment",
       "get_comment_candidates",
     ]);
     expect(names.some((name) => name.toLowerCase().includes("sql"))).toBe(false);
