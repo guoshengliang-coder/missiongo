@@ -25,8 +25,10 @@ public protocol CodexControl: Sendable {
     /// `overrides` carry the settings a person chose for this conversation;
     /// Codex keeps turn-level overrides for the turns after it too.
     func sendExternalMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws
+    func sendExternalMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, imagePaths: [String]) async throws
     func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, overrides: CodexTurnOverrides?) async throws
     func steerMessage(socketPath: String, threadId: String, turnId: String, text: String, clientUserMessageId: String) async throws
+    func steerMessage(socketPath: String, threadId: String, turnId: String, text: String, clientUserMessageId: String, imagePaths: [String]) async throws
     func interruptTurn(socketPath: String, threadId: String, turnId: String) async throws
     func archiveThread(socketPath: String, threadId: String) async throws
     func unarchiveThread(socketPath: String, threadId: String) async throws
@@ -67,6 +69,14 @@ public extension CodexControl {
 
     func sendExternalMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws {
         throw CodexControlError.rpc(method: "turn/start", message: "这个 Codex 控制器不支持向原生外部会话直接回复。")
+    }
+    func sendExternalMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, imagePaths: [String]) async throws {
+        guard imagePaths.isEmpty else { throw CodexControlError.messageNotSent("这个控制器不支持图片输入，请更新本机节点。") }
+        try await sendExternalMessage(socketPath: socketPath, threadId: threadId, text: text, clientUserMessageId: clientUserMessageId)
+    }
+    func steerMessage(socketPath: String, threadId: String, turnId: String, text: String, clientUserMessageId: String, imagePaths: [String]) async throws {
+        guard imagePaths.isEmpty else { throw CodexControlError.messageNotSent("这个控制器不支持图片输入，请更新本机节点。") }
+        try await steerMessage(socketPath: socketPath, threadId: threadId, turnId: turnId, text: text, clientUserMessageId: clientUserMessageId)
     }
     func sendMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, overrides: CodexTurnOverrides?) async throws {
         throw CodexControlError.rpc(method: "turn/start", message: "这个 Codex 控制器不支持回复会话。")
@@ -388,13 +398,18 @@ public enum CodexProtocol {
         return ["threadId": threadId, "name": name]
     }
 
+    private static func userInput(prompt: String, imagePaths: [String]) -> [[String: Any]] {
+        [["type": "text", "text": prompt]] + imagePaths.map { ["type": "localImage", "path": $0] }
+    }
+
     public static func turnStartParams(
         threadId: String,
         prompt: String,
         clientUserMessageId: String? = nil,
-        overrides: CodexTurnOverrides? = nil
+        overrides: CodexTurnOverrides? = nil,
+        imagePaths: [String] = []
     ) -> [String: Any] {
-        var params: [String: Any] = ["threadId": threadId, "input": [["type": "text", "text": prompt]]]
+        var params: [String: Any] = ["threadId": threadId, "input": userInput(prompt: prompt, imagePaths: imagePaths)]
         if let clientUserMessageId { params["clientUserMessageId"] = clientUserMessageId }
         if let model = overrides?.model { params["model"] = model }
         if let effort = overrides?.effort { params["effort"] = effort }
@@ -409,12 +424,13 @@ public enum CodexProtocol {
         threadId: String,
         turnId: String,
         prompt: String,
-        clientUserMessageId: String
+        clientUserMessageId: String,
+        imagePaths: [String] = []
     ) -> [String: Any] {
         return [
             "threadId": threadId,
             "expectedTurnId": turnId,
-            "input": [["type": "text", "text": prompt]],
+            "input": userInput(prompt: prompt, imagePaths: imagePaths),
             "clientUserMessageId": clientUserMessageId,
         ]
     }
@@ -844,6 +860,10 @@ public struct CodexAppServerControl: CodexControl {
     }
 
     public func sendExternalMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws {
+        try await sendExternalMessage(socketPath: socketPath, threadId: threadId, text: text, clientUserMessageId: clientUserMessageId, imagePaths: [])
+    }
+
+    public func sendExternalMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, imagePaths: [String]) async throws {
         let timeout = self.timeout
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async {
@@ -863,7 +883,7 @@ public struct CodexAppServerControl: CodexControl {
                         // model, permissions or original client's approval channel.
                         inputAttempted = true
                         _ = try connection.call("turn/start", CodexProtocol.turnStartParams(threadId: threadId, prompt: text,
-                            clientUserMessageId: clientUserMessageId, overrides: nil))
+                            clientUserMessageId: clientUserMessageId, overrides: nil, imagePaths: imagePaths))
                     } catch {
                         if inputAttempted { throw error }
                         throw CodexControlError.messageNotSent(CodexSessionFailure.redact(error.localizedDescription))
@@ -996,6 +1016,10 @@ public struct CodexAppServerControl: CodexControl {
     }
 
     public func steerMessage(socketPath: String, threadId: String, turnId: String, text: String, clientUserMessageId: String) async throws {
+        try await steerMessage(socketPath: socketPath, threadId: threadId, turnId: turnId, text: text, clientUserMessageId: clientUserMessageId, imagePaths: [])
+    }
+
+    public func steerMessage(socketPath: String, threadId: String, turnId: String, text: String, clientUserMessageId: String, imagePaths: [String]) async throws {
         let timeout = self.timeout
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async {
@@ -1010,7 +1034,7 @@ public struct CodexAppServerControl: CodexControl {
                             threadId: threadId,
                             turnId: turnId,
                             prompt: text,
-                            clientUserMessageId: clientUserMessageId
+                            clientUserMessageId: clientUserMessageId, imagePaths: imagePaths
                         )
                     )
                 })

@@ -1,3 +1,4 @@
+import { AgentSessionAttachments, type AgentSessionAttachment } from "./agent-session-attachments.js";
 import { assertExternalExecution } from "./builder-authority.js";
 import { createHash, randomUUID } from "node:crypto";
 
@@ -25,7 +26,7 @@ interface Row {
   native_auto_connect: number;
 }
 interface NativeSnapshot {
-  status: AgentSessionStatus; turnState: AgentSessionTurnState; activities?: readonly AgentSessionActivity[]; error?: string; sourceArchived?: boolean;
+  status: AgentSessionStatus; turnState: AgentSessionTurnState; activities?: readonly AgentSessionActivity[]; error?: string; sourceArchived?: boolean; supportsAttachments?: boolean;
 }
 interface CommandRow {
   id: string; text: string; status: AgentSessionCommand["status"]; created_at: string;
@@ -34,7 +35,24 @@ interface CommandRow {
 
 /** An explicit binding to one account-owned node and one exact native ID. No discovery or dispatch. */
 export class ExternalNativeSessionStore {
-  constructor(private readonly store: MissionGoStore) {}
+  private readonly attachments: AgentSessionAttachments;
+  constructor(private readonly store: MissionGoStore, attachments?: AgentSessionAttachments) {
+    this.attachments = attachments ?? new AgentSessionAttachments(store.database, "./data/attachments", true);
+  }
+  supportsAttachments(accountId: string, id: string): boolean {
+    const row = this.row(accountId, id);
+    return Boolean(row.native_snapshot_json && (JSON.parse(row.native_snapshot_json) as NativeSnapshot).supportsAttachments);
+  }
+  authorizeAttachment(accountId: string, nodeId: string, id: string, commandId: string, workerId: string,
+    authorizeProduct: (id: string, execute: boolean) => void): void {
+    assertExternalExecution(this.store.database, id);
+    const row = this.row(accountId, id);
+    const command = this.command(id);
+    const reserved = this.db.prepare("SELECT worker_id FROM external_native_commands WHERE id=? AND session_id=?").get(commandId, id) as { worker_id: string } | undefined;
+    if (row.archived_at || row.native_node_id !== nodeId || command?.id !== commandId || command.status !== "delivering"
+      || reserved?.worker_id !== workerId) throw notFound("Agent session attachment");
+    this.items(id).forEach((item) => authorizeProduct(item.product_id, true));
+  }
   private get db() { return this.store.database.connection; }
   private row(accountId: string, id: string): Row {
     const row = this.db.prepare("SELECT * FROM external_agent_sessions WHERE id=? AND account_id=?").get(id, accountId) as Row | undefined;
@@ -53,7 +71,9 @@ export class ExternalNativeSessionStore {
   private command(id: string): AgentSessionCommand | undefined {
     this.expireCommands(id);
     const row = this.db.prepare("SELECT * FROM external_native_commands WHERE session_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(id) as CommandRow | undefined;
+    const attachments = row ? this.attachments.listForCommand(row.id) : [];
     return row ? { id: row.id, kind: "message", text: row.text, status: row.status, createdAt: row.created_at,
+      ...(attachments.length ? { attachments } : {}),
       ...(row.error ? { error: row.error } : {}), ...(row.delivering_at ? { deliveringAt: row.delivering_at } : {}),
       ...(row.delivered_at ? { deliveredAt: row.delivered_at } : {}), ...(row.cancelled_at ? { cancelledAt: row.cancelled_at } : {}) } : undefined;
   }
@@ -119,7 +139,17 @@ export class ExternalNativeSessionStore {
     const command = this.command(id);
     const revision = snapshot && row.native_node_id ? createHash("sha256").update(JSON.stringify([nativeMessages.at(-1), snapshot.status, snapshot.turnState.waitingForInput, snapshot.error])).digest("hex") : undefined;
     const needed = Boolean(revision && (snapshot?.turnState.waitingForInput || snapshot?.status === "failed" || snapshot?.error || health?.reason) && (health?.reason || row.dismissed_revision !== revision));
-    return { ...(nativeConnection ? { nativeConnection } : {}), nativeMessages,
+    const filesByCommand = new Map<string, AgentSessionAttachment[]>();
+    if (includeMessages) for (const { commandId, ...file } of this.attachments.listForSession(id)) {
+      const files = filesByCommand.get(commandId) ?? [];
+      files.push(file); filesByCommand.set(commandId, files);
+    }
+    const attachmentMessages = filesByCommand.size ? (this.db.prepare("SELECT id,text,status,created_at FROM external_native_commands WHERE session_id=? ORDER BY created_at,rowid").all(id) as unknown as CommandRow[])
+      .flatMap((entry) => {
+        const attachments = filesByCommand.get(entry.id);
+        return attachments ? [{ commandId: entry.id, text: entry.text, status: entry.status, createdAt: entry.created_at, attachments }] : [];
+      }) : [];
+    return { ...(nativeConnection ? { nativeConnection } : {}), nativeMessages, attachmentMessages,
       ...(snapshot ? { status: !row.native_node_id || !online ? "unavailable" as const : health!.status, turnState: snapshot.turnState, activities: snapshot.activities ?? [],
         ...(row.native_synced_at ? { updatedAt: row.native_synced_at } : {}),
         ...(health?.reason || snapshot.error ? { lastError: health?.reason ?? snapshot.error } : {}) } : {}),
@@ -129,15 +159,17 @@ export class ExternalNativeSessionStore {
         ...(row.dismissed_revision === revision && !health?.reason ? { dismissed: true } : {}) }, needsAttention: needed, waitingForReply: needed } : {}),
     };
   }
-  enqueue(accountId: string, id: string, textValue: string): AgentSessionCommand {
+  enqueue(accountId: string, id: string, textValue: string, attachmentIds: readonly string[] = []): AgentSessionCommand {
     assertExternalExecution(this.store.database,id);
     const text = textValue.trim();
-    if (!text || text.length > 20_000) throw invalidInput("Reply text must contain 1 to 20000 characters.");
+    if ((!text && !attachmentIds.length) || text.length > 20_000) throw invalidInput("Reply text or attachments are required (at most 20000 characters).");
+    if (attachmentIds.length && !this.supportsAttachments(accountId, id)) throw conflict("agent_node_attachments_unsupported", "Update the MissionGo node before sending attachments.");
     return this.store.database.transaction(() => {
       if (!this.overlay(accountId, id, false).replyable) throw conflict("external_native_not_ready", "Connect the native conversation and wait for a successful node sync before replying.");
       this.requireNoPending(id);
       const commandId = randomUUID(); const now = new Date().toISOString();
       this.db.prepare("INSERT INTO external_native_commands(id,session_id,text,status,created_at) VALUES (?,?,?,'queued',?)").run(commandId, id, text, now);
+      this.attachments.bind(id, accountId, commandId, attachmentIds);
       this.db.prepare("UPDATE external_agent_sessions SET activity_at=? WHERE id=?").run(now, id);
       return this.command(id)!;
     });
@@ -200,7 +232,7 @@ export class ExternalNativeSessionStore {
   recordSnapshot(input: { accountId: string; nodeId: string; sessionId: string; generation: number; workerId: string;
     status: AgentSessionStatus; messages: readonly AgentSessionMessageInput[]; activities?: readonly AgentSessionActivity[]; turnState: AgentSessionTurnState;
     error?: string; sourceArchived?: boolean; commandId?: string; commandStatus?: "delivering" | "delivery_unknown" | "delivered" | "failed"; commandError?: string;
-    autoConnect?: boolean; nativeSessionRef?: string },
+    autoConnect?: boolean; nativeSessionRef?: string; supportsAttachments?: boolean },
   authorizeProduct: (id: string, execute: boolean) => void): void {
     this.store.database.transaction(() => {
       let row = this.row(input.accountId, input.sessionId);
@@ -263,7 +295,7 @@ export class ExternalNativeSessionStore {
         || !activity.title || activity.title.length > 500 || (activity.detail?.length ?? 0) > 500
         || (activity.startedAt !== undefined && (!Number.isFinite(Date.parse(activity.startedAt))
           || Date.parse(activity.startedAt) > Date.now() + 60_000)))) throw invalidInput("Invalid native activities.");
-      const snapshot = JSON.stringify({ status: input.status, turnState: input.turnState, activities, ...(input.error ? { error: input.error } : {}), ...(input.sourceArchived ? { sourceArchived: true } : {}) });
+      const snapshot = JSON.stringify({ supportsAttachments: input.supportsAttachments === true, status: input.status, turnState: input.turnState, activities, ...(input.error ? { error: input.error } : {}), ...(input.sourceArchived ? { sourceArchived: true } : {}) });
       const clocks = this.db.prepare("SELECT activity_at,unread_at FROM external_agent_sessions WHERE id=?").get(row.id) as { activity_at: string; unread_at: string | null };
       const clock = new Date(Math.max(Date.now(), Date.parse(clocks.activity_at) + 1, clocks.unread_at ? Date.parse(clocks.unread_at) + 1 : 0)).toISOString();
       this.db.prepare(`UPDATE external_agent_sessions SET native_snapshot_json=?,native_synced_at=?,

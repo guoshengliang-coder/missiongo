@@ -580,7 +580,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const agentSessionAttachments = new AgentSessionAttachments(store.database, options.attachmentsPath ?? "./data/attachments");
   const agentSessionStore = new AgentSessionStore(store.database, agentSessionAttachments);
   const externalSessionStore = new ExternalAgentSessionStore(store);
-  const externalNativeStore = new ExternalNativeSessionStore(store);
+  const externalSessionAttachments = new AgentSessionAttachments(store.database, options.attachmentsPath ?? "./data/attachments", true);
+  const externalNativeStore = new ExternalNativeSessionStore(store, externalSessionAttachments);
   const consoleSessions = new AgentConsoleSessions(store, agentSessionStore, externalSessionStore);
   const agentApprovalStore = new AgentApprovalStore(store.database);
   const listConsoleSessions = (accountId: string) => consoleSessions.list(accountId).map((session) => agentApprovalStore.withAttention(session));
@@ -2536,7 +2537,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const reason = session.nativeConnection ? agentSessionReplyBlockedReason({ hasSession: true, replyable: items.some((item) => item.status !== "done"),
       ...(session.archivedAt ? { archivedAt: session.archivedAt } : {}), nodeRevoked: false, canOperate, canUseAi })
       ?? (session.replyable ? undefined : "external_native_unavailable" as const) : "external_progress_only" as const;
-    return { ...session, canReply: session.replyable && !reason, canAttach: false, canResolveDelivery: Boolean(session.nativeConnection) && canOperate && canUseAi,
+    return { ...session, canReply: session.replyable && !reason, canAttach: session.replyable && !reason && externalNativeStore.supportsAttachments(account.id, sessionId), canResolveDelivery: Boolean(session.nativeConnection) && canOperate && canUseAi,
       ...(reason ? { replyBlockedReason: reason } : {}) };
   };
 
@@ -2829,8 +2830,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (externalSessionStore.has(sessionId)) {
       loadExternalSession(request, sessionId, true, true);
       const body = objectBody(request.body);
-      if (body.attachmentIds !== undefined && (!Array.isArray(body.attachmentIds) || body.attachmentIds.length)) throw invalidInput("External native replies support text only.");
-      return reply.status(201).send(externalNativeStore.enqueue(requireAccountId(request), sessionId, stringField(body, "text")!));
+      const attachmentIds = stringArrayField(body, "attachmentIds") ?? [];
+      return reply.status(201).send(externalNativeStore.enqueue(requireAccountId(request), sessionId, stringField(body, "text", false) ?? "", attachmentIds));
     }
     authorizedAgentSession(request, sessionId, true);
     const body = objectBody(request.body);
@@ -2850,37 +2851,49 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return reply.status(201).send(command);
   });
 
+  const sessionAttachments = (request: FastifyRequest, sessionId: string, operate = false) => {
+    if (externalSessionStore.has(sessionId)) {
+      loadExternalSession(request, sessionId, operate, operate);
+      return externalSessionAttachments;
+    }
+    authorizedAgentSession(request, sessionId, operate);
+    return agentSessionAttachments;
+  };
+  const requireAttachmentSupport = (request: FastifyRequest, sessionId: string) => {
+    const supported = externalSessionStore.has(sessionId)
+      ? loadExternalSession(request, sessionId, true, true).canAttach
+      : agentSessionStore.supportsAttachments(sessionId);
+    if (!supported) throw conflict("agent_node_attachments_unsupported", "Update the MissionGo node before sending attachments to this session.");
+  };
   app.post("/api/v1/agent-sessions/:sessionId/attachments", async (request, reply) => {
     const { sessionId } = request.params as { sessionId: string };
-    authorizedAgentSession(request, sessionId, true);
-    if (!agentSessionStore.supportsAttachments(sessionId)) {
-      throw conflict("agent_node_attachments_unsupported", "Update the MissionGo Mac app before sending attachments to this session.");
-    }
+    const attachments = sessionAttachments(request, sessionId, true);
+    requireAttachmentSupport(request, sessionId);
     if (!Buffer.isBuffer(request.body)) throw invalidInput("Attachment body must be binary data.");
     const filename = headerText(request.headers["x-missiongo-filename"], "X-MissionGo-Filename");
     const contentType = headerText(request.headers["x-missiongo-content-type"], "X-MissionGo-Content-Type");
-    const attachment = await agentSessionAttachments.upload(sessionId, requireAccountId(request), filename, contentType, request.body);
+    const attachment = await attachments.upload(sessionId, requireAccountId(request), filename, contentType, request.body);
     return reply.status(201).send(attachment);
   });
 
   app.delete("/api/v1/agent-sessions/:sessionId/attachments/:attachmentId", async (request, reply) => {
     const { sessionId, attachmentId } = request.params as { sessionId: string; attachmentId: string };
-    authorizedAgentSession(request, sessionId, true);
-    await agentSessionAttachments.removeDraft(sessionId, requireAccountId(request), attachmentId);
+    const attachments = sessionAttachments(request, sessionId, true);
+    await attachments.removeDraft(sessionId, requireAccountId(request), attachmentId);
     return reply.status(204).send();
   });
 
   app.get("/api/v1/agent-sessions/:sessionId/attachments/:attachmentId/content", async (request, reply) => {
     const { sessionId, attachmentId } = request.params as { sessionId: string; attachmentId: string };
-    authorizedAgentSession(request, sessionId);
-    const { attachment, path } = agentSessionAttachments.get(sessionId, attachmentId);
+    const attachments = sessionAttachments(request, sessionId);
+    const { attachment, path } = attachments.get(sessionId, attachmentId);
     return sendAgentSessionAttachment(request, reply, attachment, path);
   });
 
   app.get("/api/v1/agent-sessions/:sessionId/attachments/:attachmentId/preview", async (request, reply) => {
     const { sessionId, attachmentId } = request.params as { sessionId: string; attachmentId: string };
-    authorizedAgentSession(request, sessionId);
-    const { attachment, path } = agentSessionAttachments.get(sessionId, attachmentId);
+    const attachments = sessionAttachments(request, sessionId);
+    const { attachment, path } = attachments.get(sessionId, attachmentId);
     if (attachment.kind !== "image") throw notFound("Agent session image");
     if (!BROWSER_UNREADABLE_IMAGE_TYPES.has(attachment.contentType)) {
       return sendAgentSessionAttachment(request, reply, attachment, path);
@@ -3105,9 +3118,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.get("/api/v1/node/agent-sessions/:sessionId/attachments/:attachmentId/content", async (request, reply) => {
     const node = requireNode(request);
     const { sessionId, attachmentId } = request.params as { sessionId: string; attachmentId: string };
-    if (!agentSessionStore.belongsToNode(sessionId, node.nodeId)) throw notFound("Agent session attachment");
-    const { attachment, path, commandId } = agentSessionAttachments.get(sessionId, attachmentId);
+    const external = externalSessionStore.has(sessionId);
+    if (!external && !agentSessionStore.belongsToNode(sessionId, node.nodeId)) throw notFound("Agent session attachment");
+    const { attachment, path, commandId } = (external ? externalSessionAttachments : agentSessionAttachments).get(sessionId, attachmentId);
     if (!commandId) throw notFound("Agent session attachment");
+    if (external) externalNativeStore.authorizeAttachment(node.accountId, node.nodeId, sessionId, commandId, externalWorker(request),
+      (productId, execute) => requireNodeAccountPermission(node.accountId, productId, execute));
     return sendAgentSessionAttachment(request, reply, attachment, path);
   });
 
@@ -3252,7 +3268,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const external = request.headers["x-missiongo-external-sessions"] === "1"
       ? externalNativeStore.listForNode(node.accountId, node.nodeId, externalWorker(request),
         (productId, execute) => requireNodeAccountPermission(node.accountId, productId, execute), request.headers["x-missiongo-external-auto-connect"] === "1") : [];
-    return { sessions: [...dispatchSessions, ...external] };
+    const externalAttachments = request.headers["x-missiongo-external-attachments"] === "1";
+    return { sessions: [...dispatchSessions, ...external.map((session) => !externalAttachments && session.command?.attachments?.length
+      ? { ...session, command: undefined } : session)] };
   });
 
   app.post(
@@ -3371,7 +3389,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         if (!Number.isSafeInteger(generation) || generation < (autoConnect ? 0 : 1)) throw invalidInput("An external binding generation is required.");
         externalNativeStore.recordSnapshot({ accountId: node.accountId, nodeId: node.nodeId, sessionId, generation, workerId: externalWorker(request),
           ...(autoConnect ? { autoConnect: true, nativeSessionRef: typeof request.headers["x-missiongo-external-ref"] === "string" ? request.headers["x-missiongo-external-ref"] : "" } : {}),
-          status, messages, activities, turnState,
+          status, messages, activities, turnState, supportsAttachments: request.headers["x-missiongo-external-attachments"] === "1",
           ...(stringField(body, "error", false) ? { error: body.error as string } : {}),
           ...(body.sourceArchived === true ? { sourceArchived: true } : {}),
           ...(stringField(body, "commandId", false) ? { commandId: body.commandId as string } : {}),

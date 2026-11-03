@@ -159,13 +159,17 @@ final class ClaudeExternalBridgeTests: XCTestCase {
             lifecycle: "close", command: command, externalBindingGeneration: 1)
         let reservation = try await launcher.synchronize(session)
         XCTAssertEqual(reservation.commandStatus, "delivering")
+        let attachment = AgentSessionAttachment(id: UUID().uuidString, filename: "note.txt", kind: "document", contentType: "text/plain",
+            sizeBytes: 13, sha256: "fixture", localPath: config.cwd + "/note.txt")
+        try Data("original note".utf8).write(to: URL(fileURLWithPath: attachment.localPath!))
         let delivering = NodeAgentSession(id: "external", agentKind: "claude_code", sessionRef: config.sessionRef, status: "idle",
-            command: AgentSessionCommand(id: id, text: "Web reply", status: "delivering"), externalBindingGeneration: 1)
+            command: AgentSessionCommand(id: id, text: "Web reply", status: "delivering", attachments: [attachment]), externalBindingGeneration: 1)
         _ = try await launcher.synchronize(delivering)
         let received = try waitState(config.statePath) { $0.commandResults[id]?.status == "delivered" && $0.status == "idle" }
         let result = try await launcher.synchronize(delivering)
         XCTAssertEqual(result.commandStatus, "delivered")
         XCTAssertEqual(received.messages.filter { $0.sourceId == id }.count, 1)
+        XCTAssertTrue(received.messages.first { $0.sourceId == id }?.text.contains(attachment.localPath!) == true)
         _ = try await launcher.synchronize(delivering)
         let payload = String(data: try JSONEncoder().encode(received), encoding: .utf8)!
         XCTAssertFalse(payload.contains("synthetic-secret"))

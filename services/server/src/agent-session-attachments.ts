@@ -41,8 +41,10 @@ function publicAttachment(row: AttachmentRow): AgentSessionAttachment {
 export class AgentSessionAttachments {
   readonly rootPath: string;
 
-  constructor(private readonly database: MissionGoDatabase, rootPath: string) {
-    this.rootPath = resolve(rootPath, "agent-sessions");
+  private readonly table: "agent_session_attachments" | "external_session_attachments";
+  constructor(private readonly database: MissionGoDatabase, rootPath: string, external = false) {
+    this.table = external ? "external_session_attachments" : "agent_session_attachments";
+    this.rootPath = resolve(rootPath, external ? "external-sessions" : "agent-sessions");
   }
 
   async upload(sessionId: string, accountId: string, encodedFilename: string, contentType: string, bytes: Buffer): Promise<AgentSessionAttachment> {
@@ -54,7 +56,7 @@ export class AgentSessionAttachments {
       throw invalidInput("Unsupported agent session attachment extension.");
     }
     const count = this.database.connection.prepare(
-      "SELECT COUNT(*) AS count FROM agent_session_attachments WHERE session_id = ? AND account_id = ? AND command_id IS NULL",
+      `SELECT COUNT(*) AS count FROM ${this.table} WHERE session_id = ? AND account_id = ? AND command_id IS NULL`,
     ).get(sessionId, accountId) as unknown as { count: number };
     if (count.count >= 10) throw invalidInput("A message can have at most 10 attachments.");
     const id = randomUUID();
@@ -66,7 +68,7 @@ export class AgentSessionAttachments {
     const sha256 = createHash("sha256").update(bytes).digest("hex");
     try {
       this.database.connection.prepare(
-        `INSERT INTO agent_session_attachments
+        `INSERT INTO ${this.table}
           (id, session_id, account_id, command_id, filename, storage_filename, kind, content_type, size_bytes, sha256, created_at)
          VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(id, sessionId, accountId, validated.filename, storageFilename, kind,
@@ -86,7 +88,7 @@ export class AgentSessionAttachments {
       throw invalidInput("Attachments must be unused uploads from this account.");
     }
     const update = this.database.connection.prepare(
-      "UPDATE agent_session_attachments SET command_id = ? WHERE id = ? AND session_id = ? AND account_id = ? AND command_id IS NULL",
+      `UPDATE ${this.table} SET command_id = ? WHERE id = ? AND session_id = ? AND account_id = ? AND command_id IS NULL`,
     );
     rows.forEach((row) => update.run(commandId, row.id, sessionId, accountId));
     return rows.map(publicAttachment);
@@ -94,13 +96,13 @@ export class AgentSessionAttachments {
 
   listForCommand(commandId: string): readonly AgentSessionAttachment[] {
     return (this.database.connection.prepare(
-      "SELECT * FROM agent_session_attachments WHERE command_id = ? ORDER BY created_at, rowid",
+      `SELECT * FROM ${this.table} WHERE command_id = ? ORDER BY created_at, rowid`,
     ).all(commandId) as unknown as AttachmentRow[]).map(publicAttachment);
   }
 
   listForSession(sessionId: string): readonly (AgentSessionAttachment & { readonly commandId: string })[] {
     return (this.database.connection.prepare(
-      "SELECT * FROM agent_session_attachments WHERE session_id = ? AND command_id IS NOT NULL ORDER BY created_at, rowid",
+      `SELECT * FROM ${this.table} WHERE session_id = ? AND command_id IS NOT NULL ORDER BY created_at, rowid`,
     ).all(sessionId) as unknown as AttachmentRow[]).map((row) => ({ ...publicAttachment(row), commandId: row.command_id! }));
   }
 
@@ -113,7 +115,7 @@ export class AgentSessionAttachments {
     const row = this.row(sessionId, id);
     if (row.account_id !== accountId || row.command_id !== null) throw notFound("Agent session attachment");
     this.database.connection.prepare(
-      "DELETE FROM agent_session_attachments WHERE id = ? AND session_id = ? AND account_id = ? AND command_id IS NULL",
+      `DELETE FROM ${this.table} WHERE id = ? AND session_id = ? AND account_id = ? AND command_id IS NULL`,
     ).run(id, sessionId, accountId);
     await unlink(this.resolveStoredFile(row.storage_filename)).catch(() => undefined);
   }
@@ -121,11 +123,11 @@ export class AgentSessionAttachments {
   private async pruneDrafts(): Promise<void> {
     const before = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
     const rows = this.database.connection.prepare(
-      "SELECT * FROM agent_session_attachments WHERE command_id IS NULL AND created_at < ? LIMIT 100",
+      `SELECT * FROM ${this.table} WHERE command_id IS NULL AND created_at < ? LIMIT 100`,
     ).all(before) as unknown as AttachmentRow[];
     for (const row of rows) {
       const removed = this.database.connection.prepare(
-        "DELETE FROM agent_session_attachments WHERE id = ? AND command_id IS NULL",
+        `DELETE FROM ${this.table} WHERE id = ? AND command_id IS NULL`,
       ).run(row.id);
       if (removed.changes) await unlink(this.resolveStoredFile(row.storage_filename)).catch(() => undefined);
     }
@@ -133,7 +135,7 @@ export class AgentSessionAttachments {
 
   private row(sessionId: string, id: string): AttachmentRow {
     const row = this.database.connection.prepare(
-      "SELECT * FROM agent_session_attachments WHERE id = ? AND session_id = ?",
+      `SELECT * FROM ${this.table} WHERE id = ? AND session_id = ?`,
     ).get(id, sessionId) as unknown as AttachmentRow | undefined;
     if (!row) throw notFound("Agent session attachment");
     return row;

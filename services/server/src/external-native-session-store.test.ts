@@ -1,3 +1,7 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AgentSessionAttachments } from "./agent-session-attachments.js";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { AgentSessionStore } from "./agent-session-store.js";
@@ -317,4 +321,34 @@ it.each(["disconnected", "archived"])("does not raise a stale-observation warnin
   else f.progress.setArchived("owner", f.id, true);
   vi.advanceTimersByTime(20 * 60_000);
   expect(f.progress.listForAccount("owner")[0]?.needsAttention).toBe(false);
+});
+
+// The session and command FKs must isolate this storage from dispatch chat.
+it.each(["codex", "claude_code", "opencode"] as const)("isolates %s originals and never replays them after worker loss", async kind => {
+  const f = fixture(kind);
+  const root = await mkdtemp(join(tmpdir(), "external-files-"));
+  try {
+    const files = new AgentSessionAttachments(f.store.database, root, true);
+    const native = new ExternalNativeSessionStore(f.store, files);
+    native.connect("owner", f.id, "node"); f.report({ supportsAttachments: true });
+    const other = f.progress.register({ accountId: "owner", clientId: "client" }, { ...f.identity, sessionRef: "other-native" }, f.item.key);
+    const foreignSession = await files.upload(other, "owner", "foreign.txt", "text/plain", Buffer.from("other session"));
+    const foreignAccount = await files.upload(f.id, "another-account", "foreign.txt", "text/plain", Buffer.from("other account"));
+    const own = await files.upload(f.id, "owner", "note.txt", "text/plain", Buffer.from("original bytes"));
+    expect(() => native.enqueue("owner", f.id, "", [foreignSession.id])).toThrow(/not found/);
+    expect(() => native.enqueue("owner", f.id, "", [foreignAccount.id])).toThrow(/this account/);
+    expect(() => native.enqueue("owner", f.id, "", [own.id, own.id])).toThrow(/distinct/);
+    expect(native.overlay("owner", f.id).command).toBeUndefined();
+    const queued = native.enqueue("owner", f.id, "", [own.id]);
+    expect(queued.attachments).toEqual([own]);
+    f.report({ commandId: queued.id, commandStatus: "delivering", supportsAttachments: true });
+    expect(() => native.authorizeAttachment("owner", "node", f.id, queued.id, "worker-one", () => { throw new Error("permission revoked"); })).toThrow(/permission revoked/);
+    native.authorizeAttachment("owner", "node", f.id, queued.id, "worker-one", () => {});
+    const restart = native.listForNode("owner", "node", "worker-two", () => {});
+    expect(restart[0]?.command).toBeUndefined();
+    expect(native.overlay("owner", f.id).command?.status).toBe("delivery_unknown");
+    expect(() => native.authorizeAttachment("owner", "node", f.id, queued.id, "worker-one", () => {})).toThrow(/not found/);
+    expect(() => native.enqueue("owner", f.id, "Retry automatically", [own.id])).toThrow(/pending reply/);
+    expect(f.store.database.connection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

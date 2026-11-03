@@ -64,7 +64,7 @@ for (const width of [375, 768, 1440]) {
       await page.locator(".agent-console-reply textarea").fill("继续核对结果");
       await page.getByRole("button", { name: "发送回复", exact: true }).click();
       await expect.poll(() => replyText).toBe("继续核对结果");
-      await expect(page.getByText("此连接目前支持文字回复。")).toBeVisible();
+      await expect(page.getByText("请更新 MissionGo Mac 应用后发送附件")).toBeVisible();
       await expect(page.getByRole("button", { name: "添加文件" })).toHaveCount(0);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
       await page.screenshot({ path: test.info().outputPath(`external-native-${kind}-${width}.png`) });
