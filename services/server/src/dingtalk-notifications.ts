@@ -1,3 +1,4 @@
+import { enqueuePersonalNotification } from "./personal-notifications.js";
 import { DingTalkCardStream } from "./dingtalk-card-stream.js";
 import { cardText, limitCardText } from "./dingtalk-verification-card.js";
 import { z } from "zod";
@@ -40,11 +41,12 @@ function identifier(value: unknown, label: string): string {
 }
 /** Called inside the status transaction, never from HTTP hooks or a history scan. */
 export function enqueueVerificationNotification(database: MissionGoDatabase, eventId: string, itemId: string, productId: string, accountId: string | undefined, at: string): void {
+  const notificationId = accountId ? enqueuePersonalNotification(database,{itemId,productId,accountId,kind:"verification",businessEventId:eventId,createdAt:at}) : undefined;
   const enabled = database.connection.prepare("SELECT enabled FROM dingtalk_projects WHERE product_id=?").get(productId) as {enabled:number} | undefined;
   database.connection.prepare(`INSERT INTO dingtalk_notifications
-    (id,event_id,item_id,account_id,kind,status,reason,next_at,created_at,updated_at)
-    VALUES (?,?,?,?,'verification',?,?,?,?,?)`).run(randomUUID(),eventId,itemId,accountId ?? null,
-      enabled?.enabled ? "queued" : "skipped",enabled?.enabled ? "" : "项目未开启通知",at,at,at);
+    (id,event_id,item_id,account_id,kind,status,reason,next_at,created_at,updated_at,personal_notification_id)
+    VALUES (?,?,?,?,'verification',?,?,?,?,?,?)`).run(randomUUID(),eventId,itemId,accountId ?? null,
+      enabled?.enabled ? "queued" : "skipped",enabled?.enabled ? "" : "项目未开启通知",at,at,at,notificationId ?? null);
 }
 
 /** Business decisions notify responsible people; a missing proposer falls back to project administrators. */
@@ -59,9 +61,12 @@ export function enqueueDecisionNotifications(database: MissionGoDatabase,eventId
   if (!recipients.size) database.connection.prepare(`INSERT INTO dingtalk_notifications
     (id,event_id,item_id,kind,status,reason,next_at,created_at,updated_at) VALUES (?,?,?,'decision','skipped',?,?,?,?)`)
     .run(randomUUID(),eventId,itemId,"提需者和 Builder 不可访问，且没有可接收的项目管理员",at,at,at);
-  for (const id of recipients) database.connection.prepare(`INSERT OR IGNORE INTO dingtalk_notifications
-    (id,event_id,item_id,account_id,kind,status,reason,next_at,created_at,updated_at) VALUES (?,?,?,?,'decision',?,?,?,?,?)`)
-    .run(randomUUID(),eventId,itemId,id,enabled ? "queued" : "skipped",enabled ? "" : "项目未开启通知",at,at,at);
+  for (const id of recipients) {
+    const notificationId=enqueuePersonalNotification(database,{itemId,productId,accountId:id,kind:"decision",businessEventId:eventId,createdAt:at});
+    database.connection.prepare(`INSERT OR IGNORE INTO dingtalk_notifications
+    (id,event_id,item_id,account_id,kind,status,reason,next_at,created_at,updated_at,personal_notification_id) VALUES (?,?,?,?,'decision',?,?,?,?,?,?)`)
+    .run(randomUUID(),eventId,itemId,id,enabled ? "queued" : "skipped",enabled ? "" : "项目未开启通知",at,at,at,notificationId ?? null);
+  }
 }
 
 /** One-way work notices or robot DMs. Provider response bodies never enter logs. */
@@ -171,16 +176,17 @@ export class DingTalkNotifications {
   project(productId: string, account: AccountSnapshot): DingTalkProjectSettings {
     this.store.getProduct(productId);
     if (!this.accounts.allows(account,productId,"view")) throw notFound("Product");
-    const row=this.db.prepare("SELECT enabled FROM dingtalk_projects WHERE product_id=?").get(productId) as {enabled:number}|undefined;
-    return {enabled:Boolean(row?.enabled),canConfigure:account.role==="admin" || this.accounts.isProjectAdministrator(account,productId),integrationConfigured:this.settings().configured};
+    const row=this.db.prepare("SELECT enabled,comments_enabled FROM dingtalk_projects WHERE product_id=?").get(productId) as {enabled:number;comments_enabled:number}|undefined;
+    return {enabled:Boolean(row?.enabled),commentsEnabled:row?.comments_enabled !== 0,canConfigure:account.role==="admin" || this.accounts.isProjectAdministrator(account,productId),integrationConfigured:this.settings().configured};
   }
-  saveProject(productId: string, account: AccountSnapshot, enabled: boolean, expectedEnabled: boolean): DingTalkProjectSettings {
+  saveProject(productId: string, account: AccountSnapshot, enabled: boolean, expectedEnabled: boolean, commentsEnabled?: boolean, expectedCommentsEnabled?: boolean): DingTalkProjectSettings {
     return this.store.database.transaction(()=>{
       const current=this.project(productId,account);
       if (!current.canConfigure) throw new MissionGoError("dingtalk_configuration_required","需要项目管理权限。",403);
-      if (current.enabled !== expectedEnabled) throw conflict("dingtalk_project_changed","项目通知开关已变化，请刷新后重试。");
+      if (current.enabled !== expectedEnabled || expectedCommentsEnabled !== undefined && current.commentsEnabled !== expectedCommentsEnabled) throw conflict("dingtalk_project_changed","项目通知开关已变化，请刷新后重试。");
       this.db.prepare("INSERT INTO dingtalk_projects(product_id,enabled,updated_at) VALUES(?,?,?) ON CONFLICT(product_id) DO UPDATE SET enabled=excluded.enabled,updated_at=excluded.updated_at").run(productId,enabled?1:0,now());
-      this.audit(account.id,"project_switch",productId,{enabled});return this.project(productId,account);
+      if (commentsEnabled !== undefined) this.db.prepare("UPDATE dingtalk_projects SET comments_enabled=? WHERE product_id=?").run(commentsEnabled?1:0,productId);
+      this.audit(account.id,"project_switch",productId,{enabled,commentsEnabled:commentsEnabled ?? current.commentsEnabled});return this.project(productId,account);
     });
   }
   private snapshot(row: JobRow): DingTalkNotification {
@@ -240,7 +246,7 @@ export class DingTalkNotifications {
     if (job.item_id) {
       const item=this.db.prepare("SELECT product_id FROM work_items WHERE id=?").get(job.item_id) as {product_id:string}|undefined;
       if (!item || !this.accounts.allows(account,item.product_id,"view")) return `${recipientLabel}没有项目查看权限`;
-      if (job.kind!=="comment" && !(this.db.prepare("SELECT enabled FROM dingtalk_projects WHERE product_id=?").get(item.product_id) as {enabled:number}|undefined)?.enabled) return "项目未开启通知";
+      // Channel choices are captured when enqueued; current access is checked on every attempt.
       if (!this.current(job)) return job.kind==="comment" ? "评论已撤回或不可回复" : "条目已离开本轮待验证";
     }
     if (!this.settings().configured) return "钉钉应用未配置";

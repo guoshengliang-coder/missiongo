@@ -45,7 +45,8 @@ export function registerDingTalkRoutes(app: FastifyInstance,{store,accounts,serv
   app.put("/api/v1/products/:productId/dingtalk",async request=>{
     const account=requireAccount(request),{productId}=request.params as {productId:string},value=body(request);
     if(typeof value.enabled!=="boolean" || typeof value.expectedEnabled!=="boolean")throw invalidInput("通知开关格式无效。");
-    return service.saveProject(productId,account,value.enabled,value.expectedEnabled);
+    if (value.commentsEnabled !== undefined && (typeof value.commentsEnabled !== "boolean" || typeof value.expectedCommentsEnabled !== "boolean")) throw invalidInput("评论通知开关格式无效。");
+    return service.saveProject(productId,account,value.enabled,value.expectedEnabled,value.commentsEnabled as boolean|undefined,value.expectedCommentsEnabled as boolean|undefined);
   });
   const visible=(request:FastifyRequest)=>{
     const account=requireAccount(request),{itemKey}=request.params as {itemKey:string},item=store.getWorkItem(itemKey);

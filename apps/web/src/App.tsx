@@ -1,3 +1,4 @@
+import { MessageButton, MessageCenter } from "./message-center";
 import { TransitionCommandKeys } from "./transition-attachments";
 import { TransitionFiles, useTransitionFiles } from "./transition-files";
 import { transitionErrorText, type TransitionAttachmentAttempt } from "./transition-attachments";
@@ -25,7 +26,7 @@ import { useModalSurface, OverlayMenu } from "./overlay";
 import { Modal } from "./modal";
 import { StatusCheckButton, StatusCheckPanel } from "./status-check-panel";
 import { localizedErrorText } from "./error-text";
-import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type Dispatch as ReactDispatch, type FormEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type SetStateAction } from "react";
+import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type Dispatch as ReactDispatch, type FormEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type SetStateAction } from "react";
 import { useInfiniteQuery, useIsFetching, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LoginForm } from "./login-form";
 import {
@@ -146,7 +147,7 @@ import { environmentFields, environmentSummary, platformName, type EnvironmentFi
 import { ErrorBoundary, LoadFailureNotice } from "./ErrorBoundary";
 import { useI18n } from "./i18n";
 import { DownloadsPanel } from "./downloads-panel";
-import { afterHistoryBack } from "./overlay";
+import { afterOverlaysClose, afterHistoryBack } from "./overlay";
 import { SettingsPage } from "./settings-page";
 import { useSettingsNavigation } from "./settings-navigation";
 import { useSettingsDraft } from "./settings-drafts";
@@ -472,6 +473,8 @@ export function App() {
   const sidebarRef = useRef<HTMLElement>(null);
   const sidebarTriggerRef = useRef<HTMLButtonElement>(null);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
+  const [messageCenterOpen,setMessageCenterOpen]=useState(false);
+  const searchTriggerRef=useRef<HTMLButtonElement>(null);
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -1117,7 +1120,10 @@ export function App() {
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
-      if (!statisticsOpen && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      if (event.key === "Escape" && mobileSearchOpen && !document.querySelector("dialog[open]")) {
+        setMobileSearchOpen(false); requestAnimationFrame(()=>searchTriggerRef.current?.focus());
+      }
+      if (!statisticsOpen && !messageCenterOpen && !document.querySelector("dialog[open]") && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         setMobileSearchOpen(true);
         requestAnimationFrame(() => searchInputRef.current?.focus());
@@ -1125,7 +1131,7 @@ export function App() {
     };
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, [statisticsOpen]);
+  }, [statisticsOpen,messageCenterOpen,mobileSearchOpen]);
 
   const buildersQuery = useQuery({ queryKey: ["builders", selectedProductId], queryFn: () => api.listBuilders(selectedProductId), enabled: bootstrapQuery.isSuccess && Boolean(selectedProductId) });
   const deferredSearch = useDeferredValue(search.trim());
@@ -1487,21 +1493,23 @@ export function App() {
         )}
         {!agentConsoleOpen && (
           <>
-            <div className="header-search">
+            <div className="header-search-slot">
+            {mobileSearchOpen ? <div className="header-search">
               <Search size={17} />
               <input
                 ref={searchInputRef}
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === "Escape") setMobileSearchOpen(false);
+                  if (event.key === "Escape") {setMobileSearchOpen(false);requestAnimationFrame(()=>searchTriggerRef.current?.focus());}
                 }}
-                placeholder={t("searchItems")}
+                placeholder={t("searchItems")} aria-label={t("searchItems")} autoFocus
               />
               <kbd>{SEARCH_SHORTCUT}</kbd>
-              <button className="icon-button mobile-only mobile-search-close" onClick={() => setMobileSearchOpen(false)} aria-label={t("closeSearch")}><X size={18} /></button>
+              <button className="icon-button mobile-search-close" onClick={() => setMobileSearchOpen(false)} aria-label={t("closeSearch")}><X size={18} /></button>
+            </div> : <button ref={searchTriggerRef} className="icon-button search-icon-trigger" onClick={() => setMobileSearchOpen(true)} aria-label={t("searchItems")} title={`${t("searchItems")} (${SEARCH_SHORTCUT})`}><Search size={19} /></button>}
             </div>
-            <button className="icon-button mobile-only mobile-search-trigger" onClick={() => setMobileSearchOpen(true)} aria-label={t("searchItems")}><Search size={19} /></button>
+            <MessageButton accountId={bootstrapQuery.data?.user.id ?? ""} onOpen={()=>setMessageCenterOpen(true)} />
             <button className="primary-button capture-button" disabled={!selectedProductCanCapture} title={!selectedProductCanCapture ? t("captureReadOnly") : undefined} onClick={openCapture}>
               <Plus size={18} /> <span>{t("capture")}</span>
             </button>
@@ -1767,6 +1775,10 @@ export function App() {
 
       {!agentConsoleOpen && !selectedItemKey && <button className="mobile-fab mobile-only" disabled={!selectedProductCanCapture} title={!selectedProductCanCapture ? t("captureReadOnly") : undefined} onClick={openCapture} aria-label={t("captureNewItem")}><Plus size={24} /></button>}
 
+      {messageCenterOpen && <MessageCenter accountId={bootstrapQuery.data?.user.id ?? ""} products={products} onClose={()=>setMessageCenterOpen(false)}
+        renderItem={(key,commentId,close,open)=><DetailPane accountId={bootstrapQuery.data?.user.id ?? ""} itemKey={key} initialCommentId={commentId} openInEdit={false}
+          onClose={close} onItemLoaded={()=>{}} onNotice={setNotice} onOpenItem={open} onStartWork={setStartWorkItem} onTakeOver={item=>setDispatchBatch([item])}
+          onOpenConsoleSession={id=>{setMessageCenterOpen(false);afterOverlaysClose(()=>openAgentSession(id));}} />} />}
       {captureOpen && selectedProduct && (
         <Modal title={t("captureWork")} subtitle={t("addToProduct", { product: selectedProduct.name })} onClose={closeCapture}>
           <CaptureForm
@@ -2607,6 +2619,7 @@ function quickActionLabel(status: WorkItemStatus, t: ReturnType<typeof useI18n>[
 
 function DetailPane({
   accountId,
+  initialCommentId,
   itemKey,
   openInEdit,
   onClose,
@@ -2618,6 +2631,7 @@ function DetailPane({
   onOpenConsoleSession,
 }: {
   accountId:string;
+  initialCommentId?: string | null;
   itemKey: string | null;
   openInEdit: boolean;
   onClose: () => void;
@@ -2636,12 +2650,13 @@ function DetailPane({
       && (query.state.data?.deliveryProgress || query.state.data?.status === "in_progress") ? 15_000 : false });
   const timelineQuery = useQuery({ queryKey: ["timeline", itemKey], queryFn: () => api.getTimeline(itemKey!), enabled: Boolean(itemKey), refetchInterval: 5_000 });
   const notificationsQuery=useItemDingTalkNotifications(itemKey);
-  const {draft:commentDraft,update:updateCommentDraft,storageFailed}=useCommentDraft(accountId,itemKey);
+  const {draft:commentDraft,update:updateCommentDraft,storageFailed}=useCommentDraft(accountId,itemKey,initialCommentId===undefined?undefined:"messages");
+  const commentIdPrefix=initialCommentId===undefined?"":"message-";
   const replyTo=timelineQuery.data?.events.find(event=>event.eventType==="comment_added" && event.id===commentDraft.replyToCommentId && !event.payload.withdrawnAt) ?? null;
   const setReplyTo=(event:WorkItemEvent|null)=>{
     updateCommentDraft(current=>({...current,replyToCommentId:event?.id ?? null}));
     const url=new URL(window.location.href);
-    if(url.searchParams.get("item")===itemKey && url.searchParams.has("comment")){
+    if(initialCommentId===undefined && url.searchParams.get("item")===itemKey && url.searchParams.has("comment")){
       url.searchParams.delete("comment");history.replaceState(history.state,"",url);
     }
   };
@@ -2650,11 +2665,11 @@ function DetailPane({
   const replyUnavailable=Boolean(commentDraft.replyToCommentId && timelineQuery.isSuccess && !replyTo);
   const locateComment=(id:string)=>{setTimelineView("discussion");setFocusedCommentId(id);};
   const handledCommentLink=useRef("");
-  useEffect(()=>{setFocusedCommentId(null);},[itemKey]);
+  useEffect(()=>{handledCommentLink.current="";setFocusedCommentId(null);},[itemKey,initialCommentId]);
   useEffect(()=>{
     if(!focusedCommentId)return;
     const frame=requestAnimationFrame(()=>{
-      const target=document.getElementById(`comment-${focusedCommentId}`);
+      const target=detailPaneRef.current?.querySelector<HTMLElement>(`[data-comment-id="${CSS.escape(focusedCommentId)}"]`);
       target?.querySelector(".comment-collapsible")?.setAttribute("open","");
       target?.scrollIntoView({block:"center"});target?.focus({preventScroll:true});
     });
@@ -2663,14 +2678,14 @@ function DetailPane({
   },[focusedCommentId,timelineView]);
   useEffect(()=>{
     if(!accountId)return;
-    const commentId=new URL(window.location.href).searchParams.get("comment");
+    const commentId=initialCommentId===undefined ? new URL(window.location.href).searchParams.get("comment") : initialCommentId;
     if(!commentId || handledCommentLink.current===`${itemKey}:${commentId}`)return;
     const event=timelineQuery.data?.events.find(event=>event.id===commentId && event.eventType==="comment_added");
     if(!event)return;
     handledCommentLink.current=`${itemKey}:${commentId}`;
-    if(!event.payload.withdrawnAt)updateCommentDraft(current=>({...current,replyToCommentId:event.id}));
+    if(initialCommentId===undefined && !event.payload.withdrawnAt)updateCommentDraft(current=>({...current,replyToCommentId:event.id}));
     setTimelineView("discussion");setFocusedCommentId(commentId);
-  },[accountId,itemKey,timelineQuery.data,updateCommentDraft]);
+  },[accountId,itemKey,initialCommentId,timelineQuery.data,updateCommentDraft]);
   // History and current-stage attention arrive together, so an error always
   // belongs to the dispatch whose target and console link the header shows.
   const dispatchesQuery = useQuery({
@@ -3095,7 +3110,7 @@ function DetailPane({
                       </p>}
                       {filenames.length > 0 && <p className="timeline-files">{filenames.join("、")}</p>}
                       {event.eventType === "comment_added" && (
-                        <CommentGroup root={event} replies={replies} item={item} onReply={setReplyTo} onNotice={onNotice} notificationsQuery={notificationsQuery}
+                        <CommentGroup idPrefix={commentIdPrefix} root={event} replies={replies} item={item} onReply={setReplyTo} onNotice={onNotice} notificationsQuery={notificationsQuery}
                           focusedCommentId={focusedCommentId} onClearFocus={()=>setFocusedCommentId(null)}
                           onWithdraw={async commentId=>{if(await confirm(t("withdrawCommentConfirm")))withdrawMutation.mutate(commentId);}} />
                       )}
@@ -3106,7 +3121,7 @@ function DetailPane({
             </section>
         </>
       </div>
-      {!item.transferred && accountId && <CommentComposer key={`${accountId}:${item.key}`} item={item} draft={commentDraft} onDraftChange={updateCommentDraft} storageFailed={storageFailed} replyUnavailable={replyUnavailable}
+      {!item.transferred && accountId && <CommentComposer idPrefix={commentIdPrefix} key={`${accountId}:${item.key}`} item={item} draft={commentDraft} onDraftChange={updateCommentDraft} storageFailed={storageFailed} replyUnavailable={replyUnavailable}
         replyTo={replyTo} onLocateReply={()=>replyTo && locateComment(replyTo.id)} onCancelReply={()=>setReplyTo(null)} onPosted={refreshItem} onNotice={onNotice} />}
       {transferring && <TransferItemDialog item={item} onClose={() => setTransferring(false)} />}
       {statusChecksOpen && <StatusCheckPanel key={`status-checks:${item.key}`} productId={item.productId} itemKey={item.key} canOperate={!item.transferred && item.access?.canOperate !== false} onClose={() => setStatusChecksOpen(false)} />}
@@ -3232,8 +3247,8 @@ function commentHeading(event: WorkItemEvent, analysisLabel: string, commentLabe
   return event.actorKind === "agent" && event.payload.bodyKind === "structured" ? analysisLabel : commentLabel;
 }
 
-function CommentGroup({root,replies,item,onReply,onWithdraw,onNotice,notificationsQuery,focusedCommentId,onClearFocus}:{
-  root:WorkItemEvent;replies:readonly WorkItemEvent[];item:WorkItem;onReply:(event:WorkItemEvent)=>void;onWithdraw:(id:string)=>void;
+function CommentGroup({idPrefix="",root,replies,item,onReply,onWithdraw,onNotice,notificationsQuery,focusedCommentId,onClearFocus}:{
+  idPrefix?:string;root:WorkItemEvent;replies:readonly WorkItemEvent[];item:WorkItem;onReply:(event:WorkItemEvent)=>void;onWithdraw:(id:string)=>void;
   onNotice:(message:string)=>void;notificationsQuery:ReturnType<typeof useItemDingTalkNotifications>;
   focusedCommentId:string|null;onClearFocus:()=>void;
 }) {
@@ -3244,7 +3259,7 @@ function CommentGroup({root,replies,item,onReply,onWithdraw,onNotice,notificatio
   useEffect(()=>{if(focusedReply)setExpanded(true);},[focusedReply]);
   const showAll=expanded || focusedReply || replies.length<=3;
   const events=[root,...replies],names=new Map(events.map(event=>[event.id,commentAuthor({...event,agentName:eventAgentName(event.payload)},actorLabel(event.actorKind))]));
-  const renderComment=(event:WorkItemEvent,isReply:boolean)=><div id={`comment-${event.id}`} key={event.id} className={`${isReply?"comment-thread-reply":"comment-thread-root"}${focusedCommentId===event.id?" comment-focus-target":""}`} tabIndex={-1}>
+  const renderComment=(event:WorkItemEvent,isReply:boolean)=><div id={`${idPrefix}comment-${event.id}`} data-comment-id={event.id} key={event.id} className={`${isReply?"comment-thread-reply":"comment-thread-root"}${focusedCommentId===event.id?" comment-focus-target":""}`} tabIndex={-1}>
       <span className="comment-avatar" aria-hidden="true">{Array.from(names.get(event.id) ?? "")[0]}</span>
       <div className="comment-message">
         <div className="comment-heading">
@@ -3268,23 +3283,30 @@ function CommentGroup({root,replies,item,onReply,onWithdraw,onNotice,notificatio
   return <div className="comment-discussion" aria-label={t("commentDiscussion")}>
     {authorName!==null && <Modal title={t("commentAuthor")} subtitle="" onClose={()=>setAuthorName(null)}><p className="comment-author-full">{authorName}</p></Modal>}
     {renderComment(root,false)}
-    <div id={`comment-replies-${root.id}`}>{(showAll?replies:replies.slice(-2)).map(reply=>renderComment(reply,true))}</div>
+    <div id={`${idPrefix}comment-replies-${root.id}`}>{(showAll?replies:replies.slice(-2)).map(reply=>renderComment(reply,true))}</div>
     {replies.length>0 && <div className="comment-discussion-footer">
-      {replies.length>3 && <button type="button" className="text-button" aria-expanded={showAll} aria-controls={`comment-replies-${root.id}`}
+      {replies.length>3 && <button type="button" className="text-button" aria-expanded={showAll} aria-controls={`${idPrefix}comment-replies-${root.id}`}
         onClick={()=>{onClearFocus();setExpanded(!showAll);}}>{t(showAll?"commentRepliesCollapse":"commentRepliesExpand",{count:replies.length})}</button>}
       <small>{t(showAll?"commentReplyActivity":"commentLatestReplyActivity",{count:replies.length,time:formatTime(replies.at(-1)!.createdAt)})}</small>
     </div>}
   </div>;
 }
 
-function CommentComposer({ item, onPosted, onNotice, replyTo, onCancelReply,onLocateReply,draft,onDraftChange,storageFailed,replyUnavailable }: {
-  replyTo: WorkItemEvent|null; onCancelReply:()=>void;onLocateReply:()=>void;
+function CommentComposer({ idPrefix="", item, onPosted, onNotice, replyTo, onCancelReply,onLocateReply,draft,onDraftChange,storageFailed,replyUnavailable }: {
+  idPrefix?:string;replyTo: WorkItemEvent|null; onCancelReply:()=>void;onLocateReply:()=>void;
   draft:CommentDraft;onDraftChange:(change:CommentDraft|((previous:CommentDraft)=>CommentDraft))=>void;storageFailed:boolean;replyUnavailable:boolean;
   item: WorkItem; onPosted: () => Promise<void>; onNotice: (message: string) => void;
 }) {
   const { t } = useI18n();
   const {text,mentions}=draft;
   const [cursor,setCursor]=useState(0);
+  const mentionCaret=useRef<number|null>(null);
+  useLayoutEffect(()=>{
+    const position=mentionCaret.current;if(position===null)return;
+    mentionCaret.current=null;
+    const field=document.getElementById(`${idPrefix}comment-draft`) as HTMLTextAreaElement|null;
+    field?.focus();field?.setSelectionRange(position,position);
+  },[text,idPrefix]);
   const [mentionClosed,setMentionClosed]=useState(false);
   const [activeMention,setActiveMention]=useState(0);
   const query=mentionClosed ? null : mentionQuery(text,cursor);
@@ -3300,10 +3322,10 @@ function CommentComposer({ item, onPosted, onNotice, replyTo, onCancelReply,onLo
     const changed=editMentions(text,value,mentions);
     onDraftChange(current=>({...current,text:value,mentions:[...changed,{start:query.start,end:query.start+token.length,label:choice.label,
       ...("accountId" in choice ? {accountId:choice.accountId} : {target:"all" as const})}]}));
-    setCursor(query.start+token.length+1);setMentionClosed(true);
-    requestAnimationFrame(()=>{const field=document.getElementById("comment-draft") as HTMLTextAreaElement|null;field?.focus();field?.setSelectionRange(query.start+token.length+1,query.start+token.length+1);});
+    mentionCaret.current=query.start+token.length+1;
+    setCursor(mentionCaret.current);setMentionClosed(true);
   };
-  useEffect(()=>{if(replyTo)document.getElementById("comment-draft")?.focus();},[replyTo]);
+  useEffect(()=>{if(replyTo)document.getElementById(`${idPrefix}comment-draft`)?.focus();},[replyTo,idPrefix]);
   const { actorLabel }=useI18n();
   const replyName=replyTo ? commentAuthor({...replyTo,agentName:eventAgentName(replyTo.payload)},actorLabel(replyTo.actorKind)) : "";
   const replyExcerpt=replyTo ? deriveSummary(typeof replyTo.payload.summary==="string" && replyTo.payload.summary.trim()
@@ -3354,6 +3376,7 @@ function CommentComposer({ item, onPosted, onNotice, replyTo, onCancelReply,onLo
   };
   useBeforeUnloadGuard(mutation.isPending || files.length>0 || storageFailed && Boolean(text));
   const { isDraggingFiles, dropHandlers } = useFileDropZone(addFiles, { canAccept: remaining > 0 && !mutation.isPending });
+  useDialogDraft(files.length>0 || storageFailed && Boolean(text),mutation.isPending);
   return <form className="comment-form detail-composer" aria-label={t("addComment")} {...dropHandlers}
     onPaste={event => { const incoming = Array.from(event.clipboardData.files); if (incoming.length) { event.preventDefault(); addFiles(incoming); } }}
     onSubmit={event => { event.preventDefault(); if (!mutation.isPending && !missingDraftFiles && (!draft.replyToCommentId || replyTo) && (text.trim() || files.length)) mutation.mutate(); }}>
@@ -3363,23 +3386,23 @@ function CommentComposer({ item, onPosted, onNotice, replyTo, onCancelReply,onLo
         <button type="button" className="comment-reply-source" onClick={onLocateReply} title={t("viewOriginalComment")}><strong>{t("commentReplyTo",{name:replyName})}</strong><span>{replyExcerpt}</span></button>
         <button type="button" className="comment-cancel-reply" aria-label={t("cancelReply")} title={t("cancelReply")} onClick={onCancelReply}><X size={16} aria-hidden="true" /></button>
       </div>}
-      <label className="sr-only" htmlFor="comment-draft">{t("addComment")}</label>
+      <label className="sr-only" htmlFor={`${idPrefix}comment-draft`}>{t("addComment")}</label>
       {files.length > 0 && <div className="agent-chat-draft-files">
         {files.map((file, index) => <DraftChatFile key={`${file.name}-${file.lastModified}-${index}`} file={file} disabled={mutation.isPending}
           onRemove={() => {const next=files.filter((_,fileIndex)=>fileIndex!==index);setFiles(next);onDraftChange(current=>({...current,attachmentNames:next.map(file=>file.name)}));}} />)}
       </div>}
-          {query && <div className="comment-mention-menu" role="listbox" id="comment-mention-list" aria-label={t("mentionPeople")}>
-            {candidates.isPending?<p role="status">{t("mentionLoading")}</p>:candidates.isError?<p role="alert">{t("mentionLoadFailed")}</p>:choices.length?choices.map((choice,index)=><button type="button" role="option" id={`mention-option-${index}`} aria-selected={index===activeMention} key={choice.key}
+          {query && <div className="comment-mention-menu" role="listbox" id={`${idPrefix}comment-mention-list`} aria-label={t("mentionPeople")}>
+            {candidates.isPending?<p role="status">{t("mentionLoading")}</p>:candidates.isError?<p role="alert">{t("mentionLoadFailed")}</p>:choices.length?choices.map((choice,index)=><button type="button" role="option" id={`${idPrefix}mention-option-${index}`} aria-selected={index===activeMention} key={choice.key}
               onMouseDown={event=>event.preventDefault()} onClick={()=>chooseMention(choice)}><strong>{choice.label}</strong>{choice.detail && <small>{choice.detail}</small>}</button>):<p>{t("mentionNoPeople")}</p>}
           </div>}
       <div className="detail-composer-row">
         <button type="button" className="secondary-button agent-chat-icon-button" disabled={remaining < 1 || mutation.isPending}
           title={t("addAttachments")} aria-label={t("addAttachments")} onClick={() => fileInputRef.current?.click()}><Plus size={18} /></button>
-        <div className="comment-input-wrap" role="combobox" aria-label={t("mentionPeople")} aria-expanded={Boolean(query)} aria-controls={query?"comment-mention-list":undefined}>
-          <AutoGrowTextarea id="comment-draft" value={text} onChange={event=>updateText(event.target.value,event.target.selectionStart)}
+        <div className="comment-input-wrap" role="combobox" aria-label={t("mentionPeople")} aria-expanded={Boolean(query)} aria-controls={query?`${idPrefix}comment-mention-list`:undefined}>
+          <AutoGrowTextarea id={`${idPrefix}comment-draft`} value={text} onChange={event=>updateText(event.target.value,event.target.selectionStart)}
             onSelect={event=>setCursor(event.currentTarget.selectionStart)} placeholder={t("commentMentionPlaceholder")} rows={1} maximumHeight={240} maxLength={20_000} submitOnEnter
-            aria-autocomplete="list" aria-controls={query?"comment-mention-list":undefined}
-            aria-activedescendant={query && choices[activeMention]?`mention-option-${activeMention}`:undefined}
+            aria-autocomplete="list" aria-controls={query?`${idPrefix}comment-mention-list`:undefined}
+            aria-activedescendant={query && choices[activeMention]?`${idPrefix}mention-option-${activeMention}`:undefined}
             onKeyDown={event=>{
               if(!query || event.nativeEvent.isComposing)return;
               if(event.key==="Escape"){event.preventDefault();setMentionClosed(true);}

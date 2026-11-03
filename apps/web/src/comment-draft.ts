@@ -49,8 +49,8 @@ export function saveCommentDraft(key:string|null,draft:CommentDraft,storage?:Dra
 }
 
 /** Persist at input time, before a route change or unload can discard the component. */
-export function useCommentDraft(accountId:string,itemKey:string|null) {
-  const key=itemKey && accountId?commentDraftKey(accountId,itemKey):null;
+export function useCommentDraft(accountId:string,itemKey:string|null,scope?:string) {
+  const key=itemKey && accountId?commentDraftKey(accountId,itemKey)+(scope?`:${scope}`:""):null;
   const [state,setState]=useState(()=>({key,draft:readCommentDraft(key),failed:false}));
   const current=state.key===key?state:{key,draft:readCommentDraft(key),failed:false};
   if(state.key!==key)setState(current);

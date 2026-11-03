@@ -22,6 +22,11 @@ it("upgrades existing owners, held cards, content and claim credentials once wit
   for(const [id,date] of [[live,at],[old,"2000-01-01T00:00:00.000Z"]]) db.prepare("INSERT INTO builder_execution_authorizations(id,item_id,account_id,client_id,created_at) VALUES (?,?,?,'client',?)").run(id!,item.id,"owner",date!);
   const held=store.createWorkItem({productId:product.id,title:"Paused before start",description:"",type:"task",priority:"normal",status:"ready",environment:{platform:"web"}});
   store.transitionWorkItem({itemKey:held.key,to:"on_hold",actor:"human",reason:"request_human_input",note:"Await prioritization"});
+  // Remove later additive schemas before reconstructing this historical version.
+  db.exec(`ALTER TABLE dingtalk_notifications DROP COLUMN personal_notification_id;
+    DROP TABLE personal_notifications; DROP TABLE notification_events;
+    ALTER TABLE dingtalk_projects DROP COLUMN comments_enabled;
+    DELETE FROM schema_migrations WHERE version=202611030125;`);
   // Reconstruct the schema immediately preceding AND-357, retaining real rows and history.
   db.exec(`DROP TRIGGER item_policy_revision;
     DROP TABLE item_content_versions; DROP TABLE project_role_audit; DROP TABLE item_decision_receipts; DROP TABLE account_access_audit;

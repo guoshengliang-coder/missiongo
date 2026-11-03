@@ -5,11 +5,13 @@ import { useI18n } from "./i18n";
 import { DialogDraftContext, type DialogDraft } from "./dialog-state";
 import { useModalSurface } from "./overlay";
 
-export function Modal({ title, subtitle, onClose, children, wide = false, scrolls = false, dirty: ownDirty = false, pending: ownPending = false, closeWarning }: {
+export function Modal({ className = "", fullScreenOnCompact = false, title, subtitle, onClose, children, wide = false, scrolls = false, dirty: ownDirty = false, pending: ownPending = false, closeWarning }: {
   title: string;
   subtitle: string;
   onClose: () => void;
-  children: ReactNode;
+  children: ReactNode | ((requestClose: () => void) => ReactNode);
+  className?: string;
+  fullScreenOnCompact?: boolean;
   closeWarning?: string | undefined;
   dirty?: boolean;
   pending?: boolean;
@@ -54,7 +56,7 @@ export function Modal({ title, subtitle, onClose, children, wide = false, scroll
       dialog.style.height = `${height}px`;
       dialog.style.top = `${viewport?.offsetTop ?? 0}px`;
       const panel = dialog.querySelector<HTMLElement>(".modal");
-      if (panel) panel.style.maxHeight = `${Math.max(120, height - 36)}px`;
+      if (panel) panel.style.maxHeight = `${Math.max(120, height - (fullScreenOnCompact && window.innerWidth<=1023 ? 0 : 36))}px`;
       requestAnimationFrame(() => {
         if (document.activeElement instanceof HTMLElement && document.activeElement.matches("input, textarea, [role=combobox]")) document.activeElement.scrollIntoView({ block: "nearest" });
       });
@@ -67,7 +69,7 @@ export function Modal({ title, subtitle, onClose, children, wide = false, scroll
     if (dialog && !dialog.contains(document.activeElement)) dialog.querySelector<HTMLElement>("[data-initial-focus], input:not([type=hidden]), textarea, [role=combobox], button")?.focus();
   }, [title]);
   return (
-    <dialog ref={dialogRef} className="modal-layer" aria-labelledby={titleId} aria-busy={pending}
+    <dialog ref={dialogRef} className={`modal-layer ${className}`} aria-labelledby={titleId} aria-busy={pending}
       onMouseDown={event => { if (event.target === event.currentTarget) close.current(); }}>
       <section className={`modal ${wide ? "wide" : ""} ${scrolls ? "scrolls" : ""}`}>
         <header><div><p className="eyebrow">{subtitle}</p><h2 id={titleId}>{discarding ? t(closeWarning ? "confirmAction" : "discardDialogTitle") : title}</h2></div><button type="button" className="icon-button" disabled={pending} onClick={() => close.current()} aria-label={t("close")}><X size={20} /></button></header>
@@ -80,7 +82,7 @@ export function Modal({ title, subtitle, onClose, children, wide = false, scroll
           </div>
         </div>}
         <div className="modal-content" hidden={discarding}>
-          <DialogDraftContext.Provider value={update}><fieldset className="modal-fields" disabled={pending}>{children}</fieldset></DialogDraftContext.Provider>
+          <DialogDraftContext.Provider value={update}><fieldset className="modal-fields" disabled={pending}>{typeof children==="function" ? children(()=>{close.current();}) : children}</fieldset></DialogDraftContext.Provider>
         </div>
       </section>
     </dialog>
