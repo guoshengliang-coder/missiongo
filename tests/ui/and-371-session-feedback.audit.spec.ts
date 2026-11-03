@@ -54,7 +54,7 @@ for (const width of [320, 768, 1440]) for (const theme of ["light", "dark"] as c
     await expect(bubble.locator(".markdown-text")).toHaveCSS("font-size", "12px");
     await expect(bubble.locator(".markdown-text")).toHaveCSS("line-height", "19.2px");
     await expect(bubble.locator(".agent-reply-feedback")).toHaveCSS("margin-top", "8px");
-    await expect(bubble.locator(".spin")).toHaveCount(0);
+    await expect(bubble.locator(".agent-reply-queued")).toHaveCSS("animation-name", "pulse");
     await expect(bubble).not.toContainText("详情");
     await expect(bubble).not.toContainText("送达与开始执行");
     await expect(details).not.toHaveAttribute("open", "");

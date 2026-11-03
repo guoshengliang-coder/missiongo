@@ -627,7 +627,8 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-console-session time { color: var(--muted); font-size: var(--text-xs); white-space: nowrap; }
 
 .agent-console-conversation { min-width: 0; min-height: 0; position: relative; display: flex; flex-direction: column; overflow: hidden; background: var(--surface); container-type: inline-size; }
-.agent-console-conversation-head { min-height: 64px; flex: 0 0 auto; display: flex; align-items: flex-start; gap: 10px; padding: 9px 18px; background: var(--surface-strong); border-bottom: 1px solid var(--line); }
+.agent-console-conversation-head { min-height: 64px; flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 9px 18px; background: var(--surface-strong); border-bottom: 1px solid var(--line); }
+.agent-console-toolbar > .status-pill { min-height: 44px; box-sizing: border-box; }
 .agent-console-conversation-back { display: none; }
 .agent-console-avatar { width: 32px; height: 32px; flex: 0 0 auto; display: grid; place-items: center; margin-top: 2px; color: var(--status-ready-fg); background: var(--status-ready-bg); border-radius: var(--radius-md); }
 .agent-console-heading { min-width: 0; flex: 1; }
@@ -649,9 +650,10 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-session-settings-note { margin: 5px 0 0; color: var(--muted); font-size: var(--text-xs); }
 .agent-session-settings-note.error { color: var(--danger); }
 .agent-console-dispatch-head { width: fit-content; max-width: 100%; margin-top: 6px; padding: 4px 8px; gap: 7px; }
+.agent-console-toolbar { grid-area: var(--agent-toolbar-area, auto); flex: 0 0 auto; display: flex; align-items: center; gap: 7px; }
 .agent-console-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 7px; margin-left: auto; }
-.agent-console-actions button { min-height: 34px; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; white-space: nowrap; }
-.agent-console-actions .dispatch-session-link a { min-height: 34px; display: inline-flex; align-items: center; padding: 0 10px; text-decoration: none; white-space: nowrap; }
+.agent-console-actions button { min-height: 44px; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; white-space: nowrap; }
+.agent-console-actions .dispatch-session-link a { min-height: 44px; display: inline-flex; align-items: center; padding: 0 10px; text-decoration: none; white-space: nowrap; }
 .agent-console-message-stage { min-height: 0; flex: 1; position: relative; }
 .agent-console-messages { height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 12px; padding: 18px 22px; overflow-y: auto; overscroll-behavior: contain; }
 .agent-console-dispatch { display: flex; align-items: center; gap: 9px; padding: 9px 11px; color: var(--muted); background: var(--surface-sunken); border: 1px solid var(--line); border-radius: var(--radius-md); font-size: var(--text-xs); }
@@ -757,6 +759,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
   .agent-console-avatar { grid-column: 1; }
   .agent-console-heading { grid-column: 2; }
   .agent-console-conversation-head .status-pill { grid-column: 3; justify-self: start; }
+  .agent-console-toolbar { grid-area: var(--agent-toolbar-area, auto / 2 / auto / -1); justify-self: end; }
   .agent-console-actions { grid-column: 2 / -1; flex-wrap: wrap; justify-content: flex-end; }
 }
 @container (max-width: 640px) {
@@ -1963,6 +1966,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
      layout is untouched. The agent's name line is gone too (AND-198): the
      avatar carries that agent's own mark instead. */
   .agent-console-conversation-head {
+    --agent-toolbar-area: actions;
     display: grid;
     grid-template-columns: 32px minmax(0, 1fr) auto;
     grid-template-areas:
@@ -3311,3 +3315,19 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .agent-run-status { display: flex; flex-direction: column; align-items: center; align-self: center; gap: 8px; max-width: 100%; }
 .agent-run-warning { margin: 0; padding: 8px 12px; border: 1px solid var(--warn-line); border-radius: var(--radius-md); background: var(--warn-bg); color: var(--warn-text); font-size: var(--text-sm); overflow-wrap: anywhere; }
 .agent-run-diagnostics .agent-console-background { width: 100%; margin: 0; }
+
+/* Chat image attachments share the media lightbox, with a stable loading tile. */
+.agent-chat-image { position: relative; width: 180px; max-width: 100%; }
+.agent-chat-image-open { position: relative; display: block; width: 100%; min-height: 140px; padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--skeleton); color: var(--muted); cursor: zoom-in; }
+.agent-chat-image-open:disabled { cursor: default; }
+.agent-chat-image-open img { display: block; width: 100%; height: 140px; object-fit: contain; }
+.agent-chat-image:not([data-image-state="ready"]) img { visibility: hidden; }
+.agent-chat-image-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 8px; font-size: var(--text-xs); }
+.agent-chat-image-error { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 8px; color: var(--muted); font-size: var(--text-sm); }
+.agent-chat-image-error button { min-height: 44px; }
+.agent-chat-image-download-error { position: absolute; left: var(--safe-left); right: var(--safe-right); bottom: calc(64px + var(--safe-bottom)); margin: 12px; padding: 12px; color: var(--danger); background: var(--danger-bg); border-radius: var(--radius-md); font-size: var(--text-base); }
+.agent-reply-queued { animation: pulse 1.4s ease-in-out infinite; }
+.agent-reply-sending { animation: spin 0.8s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .agent-reply-queued, .agent-reply-sending { animation: none; }
+}

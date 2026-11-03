@@ -1,3 +1,4 @@
+import { MediaLightbox } from "./media-lightbox";
 import { NewSessionDraft, type NewConversationDraft } from "./new-session-draft";
 import { CollaborationPanel } from "./collaboration";
 import { MessageButton, MessageCenter } from "./message-center";
@@ -25,7 +26,7 @@ import { COMMENT_CATEGORIES, useCommentFilters } from "./comment-filters";
 import {EMPTY_COMMENT_DRAFT,useCommentDraft,type CommentDraft} from "./comment-draft";
 import {useBeforeUnloadGuard} from "./unsaved-changes";
 import { statisticsIsOpen, statisticsUrl, statisticsExitUrl } from "./statistics-state";
-import { useModalSurface, useOverlay, OverlayMenu } from "./overlay";
+import { useOverlay, OverlayMenu } from "./overlay";
 import { Modal } from "./modal";
 import { StatusCheckButton, StatusCheckPanel } from "./status-check-panel";
 import { localizedErrorText } from "./error-text";
@@ -43,7 +44,6 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
-  ChevronLeft,
   ChevronRight,
   CircleDot,
   CirclePause,
@@ -5502,78 +5502,6 @@ function PlayableVideo({
   );
 }
 
-function MediaLightbox({
-  title,
-  onClose,
-  onPrevious,
-  onNext,
-  showNavigation = false,
-  children,
-}: {
-  title: string;
-  onClose: () => void;
-  onPrevious?: (() => void) | undefined;
-  onNext?: (() => void) | undefined;
-  showNavigation?: boolean;
-  children: ReactNode;
-}) {
-  const { t } = useI18n();
-  const dialogRef = useRef<HTMLDialogElement>(null);
-  const touchStart = useRef<{ x: number; y: number } | null>(null);
-  useModalSurface(dialogRef, onClose);
-  return (
-    <dialog
-      ref={dialogRef}
-      className="selected-media-lightbox"
-      aria-label={title}
-      onMouseDown={(event) => {
-        event.stopPropagation();
-        if (event.target === event.currentTarget) onClose();
-      }}
-      onClick={(event) => event.stopPropagation()}
-      onKeyDown={(event) => {
-        if (!showNavigation || event.target instanceof HTMLVideoElement) return;
-        const navigate = event.key === "ArrowLeft" ? onPrevious : event.key === "ArrowRight" ? onNext : undefined;
-        if (navigate) {
-          event.preventDefault();
-          navigate();
-        }
-      }}
-      onTouchStart={(event) => {
-        const zoomed = event.target instanceof Element && event.target.closest('[data-zoomed="true"]');
-        if (!showNavigation || event.touches.length !== 1 || zoomed || (event.target instanceof Element && Boolean(event.target.closest("button, video, input, a")))) { touchStart.current = null; return; }
-        touchStart.current = { x: event.touches[0]!.clientX, y: event.touches[0]!.clientY };
-      }}
-      onTouchMove={(event) => {
-        if (event.touches.length > 1 || (event.target instanceof Element && event.target.closest('[data-zoomed="true"]'))) touchStart.current = null;
-      }}
-      onTouchCancel={() => { touchStart.current = null; }}
-      onTouchEnd={(event) => {
-        const start = touchStart.current;
-        touchStart.current = null;
-        if (!start || !showNavigation || event.changedTouches.length !== 1) return;
-        const dx = event.changedTouches[0]!.clientX - start.x;
-        const dy = event.changedTouches[0]!.clientY - start.y;
-        if (Math.abs(dx) < 55 || Math.abs(dx) < Math.abs(dy) * 1.25) return;
-        (dx > 0 ? onPrevious : onNext)?.();
-      }}
-    >
-      <section>
-        <header>
-          <strong>{title}</strong>
-          <button type="button" onClick={onClose} aria-label={t("closePreview")}><X size={20} /></button>
-        </header>
-        {showNavigation ? (
-          <div className="media-gallery-stage">
-            {children}
-            <button type="button" className="media-gallery-nav previous" disabled={!onPrevious} onClick={onPrevious} aria-label={t("previousMedia")}><ChevronLeft size={24} /></button>
-            <button type="button" className="media-gallery-nav next" disabled={!onNext} onClick={onNext} aria-label={t("nextMedia")}><ChevronRight size={24} /></button>
-          </div>
-        ) : children}
-      </section>
-    </dialog>
-  );
-}
 
 function InlineError({ message, role }: { message: string; role?: "alert" }) {
   return <div className="inline-error" role={role}><CirclePause size={16} /><span>{message}</span></div>;

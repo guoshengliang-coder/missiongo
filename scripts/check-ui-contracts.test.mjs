@@ -11,7 +11,7 @@ test("new native dialogs and extra dialogs in a registered file fail", () => {
   assert.ok(uiContractViolations("preview.tsx", '<dialog />').length);
   assert.ok(uiContractViolations("App.tsx", 'useModalSurface(dialogRef, close); <dialog /><dialog />').length);
   assert.ok(uiContractViolations("App.tsx", 'dialog.showModal(); <dialog />').length);
-  assert.equal(uiContractViolations("App.tsx", 'useModalSurface(dialogRef, close); <dialog />').length, 0);
+  assert.ok(uiContractViolations("App.tsx", 'useModalSurface(dialogRef, close); <dialog />').length);
 });
 test("action menus share lifecycle while inline disclosures remain native", () => {
   assert.ok(uiContractViolations("actions.tsx", '<details className="new-action-menu">').length);

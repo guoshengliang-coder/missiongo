@@ -68,8 +68,8 @@ for (const kind of ["codex", "claude_code", "opencode"] as const) {
         await page.reload();
         await expect(page.locator(".agent-chat-attachments")).toHaveCount(1);
         await expect(page.getByText("暂时还没有可显示的消息。")).toHaveCount(0);
-        await expect(page.locator(".agent-chat-attachment")).toHaveCount(2);
-        await expect.poll(() => page.locator('.agent-chat-attachment img').evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(160);
+        await expect(page.locator(".agent-chat-attachment")).toHaveCount(1);
+        await expect.poll(() => page.locator('.agent-chat-image img').evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(160);
         const picker = await page.getByRole("button", { name: "添加图片、文件或视频", exact: true }).boundingBox();
         expect(picker!.width).toBeGreaterThanOrEqual(44); expect(picker!.height).toBeGreaterThanOrEqual(44);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
