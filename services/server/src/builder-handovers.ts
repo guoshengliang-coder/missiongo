@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { isNodeOnline } from "@missiongo/domain";
 import { AccountStore } from "./accounts-store.js";
 import { latestBuilderHandover, type BuilderHandover } from "./builder-authority.js";
+import { itemExecutionBlockers } from "./item-execution-blockers.js";
 import { conflict, invalidInput } from "./errors.js";
 import type { MissionGoStore } from "./store.js";
 
@@ -57,8 +58,14 @@ export class BuilderHandovers {
       const previous = latestBuilderHandover(this.store.database,item.id);
       if (previous && previous.status !== "completed") throw conflict("builder_handover_pending","已有交接正在进行，请查看进度或重试。");
       if ((item.builderAccountId ?? null) === targetId) throw invalidInput("请选择不同的 Builder。");
-      const executions = this.executions(item.id);
-      const external = this.external(item.id);
+      // A human's item-scoped stop check also settles this old execution for Builder handover.
+      // Always recompute blockers: new activity or a command must defeat an older confirmation.
+      const blockers = new Set(itemExecutionBlockers(this.store.database,item.id).map(row=>row.id));
+      const confirmed = new Set((this.db.prepare(`SELECT source,execution_id FROM item_execution_stop_confirmations
+        WHERE item_id=? AND invalidated_at IS NULL`).all(item.id) as {source:string;execution_id:string}[])
+        .map(row=>`${row.source}:${row.execution_id}`).filter(id=>!blockers.has(id)));
+      const executions = this.executions(item.id).filter(row=>!confirmed.has(`dispatch:${row.id}`));
+      const external = this.external(item.id).filter(row=>!confirmed.has(`external:${row.id}`));
       // Preflight the whole scope before cancelling even one queue or revoking one authorization.
       for (const execution of executions) {
         const scope = this.db.prepare("SELECT COUNT(*) AS count FROM dispatch_items WHERE dispatch_id=?").get(execution.id) as {count:number};

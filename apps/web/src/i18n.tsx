@@ -6,6 +6,22 @@ import type { WorkItemPriority, WorkItemStatus, WorkItemType } from "./types";
 export type Locale = "zh-CN" | "en";
 
 const EN_MESSAGES = {
+  executionStopBlocked: "An earlier execution has not been confirmed stopped. Close dispatch and check Execution records in the item details.",
+  executionStopHeading: "Check the earlier execution before starting again",
+  executionStopActive: "The source still reports activity. Stop it in the original client and wait for a new observation.",
+  executionStopCommands: "A command is queued, being delivered, or has an unknown delivery result. Resolve it in the original conversation first.",
+  executionStopUnknown: "The original conversation is unavailable or its observation is stale. A completion report alone cannot confirm it stopped.",
+  executionStopOpen: "This execution has not ended. Check its execution record or the original client.",
+  executionStopVerify: "Verify stopped",
+  executionStopHelp: "Check this exact execution in the original client or on its device. Confirm only after verifying that it has stopped. This records your check for this item; it does not stop a process or verify delivery. New activity or commands invalidate the confirmation.",
+  executionStopAttestation: "I checked this execution on its device or in the original client and confirmed it stopped.",
+  executionStopNote: "How you verified it stopped",
+  executionStopConfirm: "Record stop confirmation",
+  executionObservationChanged: "The item or execution observation changed. Refresh the item and check the original session again before confirming.",
+  executionStopStatus: "Source: {status} · Progress report: {progress}",
+  executionStopObserved: "Last observation: {time}",
+  executionStopDiagnostic: "Sync diagnostic",
+  executionStopSession: "Conversation / execution: {id}",
   ...COLLABORATION_EN,
   attention: "Needs attention",
   attentionCount: "{count} items need attention",
@@ -1396,6 +1412,22 @@ const EN_MESSAGES = {
 export type MessageKey = keyof typeof EN_MESSAGES;
 
 const ZH_MESSAGES: Record<MessageKey, string> = {
+  executionStopBlocked: "原执行尚未确认结束。请关闭派单窗口，在条目详情的执行记录中核对阻塞原因。",
+  executionStopHeading: "启动新执行前，请核实原执行",
+  executionStopActive: "来源仍上报活动，请先在原客户端停止，并等待新的状态回报。",
+  executionStopCommands: "仍有排队中、送达中或送达结果不确定的命令，请先在原会话处理。",
+  executionStopUnknown: "原会话不可用或状态已过期；仅凭完成上报无法确认它已停止。",
+  executionStopOpen: "此执行尚未结束，请检查对应执行记录或原客户端。",
+  executionStopVerify: "核实停止",
+  executionStopHelp: "请在原客户端或执行设备核实这条执行已经停止，再提交确认。本操作只记录你对本条目的核实，不会停止进程，也不代表交付或验收完成。出现新活动或新命令后，确认自动失效。",
+  executionStopAttestation: "我已在执行设备或原客户端核实这条执行已经停止。",
+  executionStopNote: "停止核实依据",
+  executionStopConfirm: "记录停止确认",
+  executionObservationChanged: "条目或执行状态已变更，请刷新条目并重新核实原会话后再确认。",
+  executionStopStatus: "来源状态：{status} · 进展上报：{progress}",
+  executionStopObserved: "最后状态回报：{time}",
+  executionStopDiagnostic: "同步诊断",
+  executionStopSession: "会话／执行：{id}",
   ...COLLABORATION_ZH,
   attention: "待处理",
   attentionCount: "{count} 项待处理",
@@ -2843,8 +2875,8 @@ const ACTOR_LABELS: Record<Locale, Record<string, string>> = {
 };
 
 const EVENT_LABELS: Record<Locale, Record<string, string>> = {
-  en: { collaboration_updated: "Collaboration update", builder_handover_started: "Builder handover started", builder_handover_blocked: "Builder handover blocked", execution_taken_over: "Execution taken over", handover_human_confirmed: "Human handover confirmation", item_created: "Item created", item_updated: "Item updated", item_transferred_in: "Item transferred in", item_transferred_out: "Item transferred out", attachment_added: "Attachment added", attachment_removed: "Attachment deleted", attachment_replaced: "Attachment edited", derived_item_created: "Split off an item", comment_added: "Comment", comment_withdrawn: "Comment withdrawn", dispatched: "Dispatched to an agent" },
-  "zh-CN": { collaboration_updated: "协作进展", builder_handover_started: "开始交接 Builder", builder_handover_blocked: "Builder 交接受阻", execution_taken_over: "接手执行", builder_changed: "Builder 变更", execution_assigned: "安排执行", execution_handed_over: "执行交接", execution_follow_up: "后续或返工执行", execution_updated: "执行进展", handover_human_confirmed: "人工确认交接", item_created: "已创建条目", item_updated: "已更新详情", item_transferred_in: "条目已迁入", item_transferred_out: "条目已迁出", attachment_added: "已添加附件", attachment_removed: "已删除附件", attachment_replaced: "已编辑附件", derived_item_created: "已衍生条目", comment_added: "评论", comment_withdrawn: "已撤回评论", dispatched: "已派给 Agent" },
+  en: { execution_stop_confirmed: "Human stop confirmation", collaboration_updated: "Collaboration update", builder_handover_started: "Builder handover started", builder_handover_blocked: "Builder handover blocked", execution_taken_over: "Execution taken over", handover_human_confirmed: "Human handover confirmation", item_created: "Item created", item_updated: "Item updated", item_transferred_in: "Item transferred in", item_transferred_out: "Item transferred out", attachment_added: "Attachment added", attachment_removed: "Attachment deleted", attachment_replaced: "Attachment edited", derived_item_created: "Split off an item", comment_added: "Comment", comment_withdrawn: "Comment withdrawn", dispatched: "Dispatched to an agent" },
+  "zh-CN": { execution_stop_confirmed: "人工核实执行停止", collaboration_updated: "协作进展", builder_handover_started: "开始交接 Builder", builder_handover_blocked: "Builder 交接受阻", execution_taken_over: "接手执行", builder_changed: "Builder 变更", execution_assigned: "安排执行", execution_handed_over: "执行交接", execution_follow_up: "后续或返工执行", execution_updated: "执行进展", handover_human_confirmed: "人工确认交接", item_created: "已创建条目", item_updated: "已更新详情", item_transferred_in: "条目已迁入", item_transferred_out: "条目已迁出", attachment_added: "已添加附件", attachment_removed: "已删除附件", attachment_replaced: "已编辑附件", derived_item_created: "已衍生条目", comment_added: "评论", comment_withdrawn: "已撤回评论", dispatched: "已派给 Agent" },
 };
 
 interface I18nValue {

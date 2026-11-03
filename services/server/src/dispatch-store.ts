@@ -1,4 +1,4 @@
-import { assertBuilderExecution, assertDispatchExecution, latestBuilderHandover, hasOngoingItemExecution, hasPriorProcessing } from "./builder-authority.js";
+import { assertBuilderExecution, assertDispatchExecution, latestBuilderHandover, hasOngoingItemExecution, requiresExecutionStopCheck } from "./builder-authority.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
@@ -742,7 +742,7 @@ export class DispatchStore {
         if ((this.database.connection.prepare("SELECT archived_at FROM products WHERE id=?").get(row.product_id) as {archived_at:string|null})?.archived_at) throw conflict("project_archived","归档项目只读。");
         if (this.database.connection.prepare("SELECT 1 FROM item_transfers WHERE source_item_id=?").get(row.id)) throw conflict("item_transferred","已迁移条目只读。");
         assertBuilderExecution(this.database,row.id,input.accountId);
-        if (hasPriorProcessing(this.database,row.id) && hasOngoingItemExecution(this.database,row.id)) throw conflict("execution_stop_unconfirmed","原执行仍在运行或停止待确认，请先核实原执行。");
+        if (requiresExecutionStopCheck(this.database,row.id) && hasOngoingItemExecution(this.database,row.id)) throw conflict("execution_stop_unconfirmed","原执行仍在运行或停止待确认，请先核实原执行。");
         const handover = latestBuilderHandover(this.database,row.id);
         if (row.status !== "ready" && !(row.status === "in_progress" && handover?.status === "completed"
           && handover.to_account_id === input.accountId && !handover.claimed_at)) {
@@ -940,7 +940,8 @@ export class DispatchStore {
       if (!row) throw notFound("Work item"); return row.id;
     });
     const active = this.dispatchesFor(itemIds);
-    const reason = this.redispatchBlockReason(accountId,keys,active);
+    const reason = this.redispatchBlockReason(accountId,keys,active)
+      ?? (itemIds.some(id => requiresExecutionStopCheck(this.database,id) && hasOngoingItemExecution(this.database,id)) ? "execution_unconfirmed" as const : null);
     const conflicts = active.map(({accountId:owner,...entry}) => {
       const session = owner === accountId ? this.database.connection.prepare("SELECT id FROM agent_sessions WHERE dispatch_id=?").get(entry.dispatchId) as {id:string}|undefined : undefined;
       return {...entry,...(session ? {agentSessionId:session.id} : {})};

@@ -1,6 +1,7 @@
 import { itemRoles } from "./item-policy.js";
 import { BuilderHandovers } from "./builder-handovers.js";
-import { assertBuilderExecution } from "./builder-authority.js";
+import { assertBuilderExecution, requiresExecutionStopCheck } from "./builder-authority.js";
+import { confirmItemExecutionStopped, itemExecutionBlockers } from "./item-execution-blockers.js";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { AccountSnapshot, AccountStore } from "./accounts-store.js";
@@ -92,8 +93,34 @@ export function registerItemDeliveryRoutes(app: FastifyInstance, {store, account
       builderNeedsReassignment: item.builderNeedsReassignment ?? false, canManage: manages(account,item), canManageBuilder: managesBuilder(account,item), currentAccountId: account.id,
       candidates: candidates(item.productId).map(row => ({id:row.id,name:name(row.id)})),
       performers: accounts.listAccounts().filter(row => !row.disabledAt && accounts.allows(row,item.productId,"operate"))
-        .map(row => ({id:row.id,name:name(row.id)})), executions: list(itemKey) };
+        .map(row => ({id:row.id,name:name(row.id)})), executions: list(itemKey),
+      executionBlockers: (requiresExecutionStopCheck(store.database,item.id) ? itemExecutionBlockers(store.database,item.id) : []).map(blocker => ({...blocker,
+        canConfirmStopped: blocker.canConfirmStopped && manages(account,item) && !store.getProduct(item.productId).archivedAt && ["ready","inbox"].includes(item.status)})) };
   });
+  // Deliberately cookie-only: an Agent report or MCP call cannot attest a human's physical stop check.
+  app.post("/api/v1/items/:itemKey/execution-blockers/:blockerId/confirm-stopped", async request => store.database.transaction(() => {
+    const {itemKey,blockerId} = request.params as {itemKey:string;blockerId:string};
+    const {item,account} = writable(request,itemKey);
+    const input = body(request);
+    const note = text(input.note,"Stop verification note");
+    if (input.confirmedStopped !== true) throw invalidInput("Explicit stop confirmation is required.","execution_confirmation_required");
+    const blocker = itemExecutionBlockers(store.database,item.id).find(row => row.id === blockerId);
+    if (!blocker || !blocker.canConfirmStopped || !["ready","inbox"].includes(item.status) || input.revision !== blocker.revision) {
+      throw conflict("execution_observation_changed","Execution evidence changed. Refresh and check the original session again.");
+    }
+    const now = new Date().toISOString();
+    confirmItemExecutionStopped(store.database,item.id,blocker,account.id,note,now);
+    // Never release another performer, command or managed run in the same item.
+    const remaining = itemExecutionBlockers(store.database,item.id);
+    if (!remaining.length && item.executionDisposition === "stop_requested") {
+      db.prepare("UPDATE work_items SET execution_disposition=NULL WHERE id=?").run(item.id);
+    }
+    store.recordDeliveryEvent(itemKey,account.id,"execution_stop_confirmed",{
+      source:blocker.source,executionId:blocker.executionId,sessionId:blocker.sessionId,note,
+      observationRevision:blocker.revision,observedStatus:blocker.status,progressStatus:blocker.progressStatus,
+    });
+    return {executionBlockers:remaining};
+  }));
   app.post("/api/v1/items/:itemKey/builder", async request => store.database.transaction(() => {
     const {itemKey} = request.params as {itemKey:string}; const {item,account} = writable(request,itemKey,true);
     const input = body(request);

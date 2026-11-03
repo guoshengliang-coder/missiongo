@@ -310,6 +310,7 @@ export function DispatchDialog({
         </ul>
       </div>}
 
+      {!conflicts.length && eligibility.data?.reason === "execution_unconfirmed" && <p className="dispatch-conflict" role="alert">{t("executionStopBlocked")}</p>}
       {conflicts.length > 0 && (
         <div className="dispatch-conflict" role="alert">
           <p className="dispatch-conflict-heading"><TriangleAlert size={15} aria-hidden="true" /> {t("dispatchConflictHeading")}</p>
