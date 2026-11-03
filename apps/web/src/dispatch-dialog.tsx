@@ -33,7 +33,7 @@ import {
 import { SessionLink } from "./session-link";
 import { agentConsoleUrl } from "./navigation";
 import { useI18n } from "./i18n";
-import type { Dispatch, DispatchDefaults, DispatchNode, Product, WorkItem } from "./types";
+import type { Dispatch, DispatchDefaults, DispatchNode, FreeSessionConfig, Product, WorkItem } from "./types";
 
 /**
  * Says why a machine cannot take this batch, in words that name the fix.
@@ -83,22 +83,25 @@ export function DispatchDialog({
   products,
   onDispatched,
   onClose,
+  newSession,
 }: {
   items: readonly WorkItem[];
   products: readonly Product[];
   onDispatched: (dispatch: Dispatch) => void;
   onClose: () => void;
+  newSession?: { productId: string; initialConfig?: FreeSessionConfig; onConfigured: (config: FreeSessionConfig) => void };
 }) {
   const { formatTime, t } = useI18n();
   const queryClient = useQueryClient();
+  const [projectId, setProjectId] = useState(newSession?.productId ?? "");
   const [touched, setTouched] = useState(false);
-  const [agentKind, setAgentKind] = useState<AgentKind>("claude_code");
-  const [mode, setMode] = useState<string>(dispatchModeOrDefault("claude_code"));
-  const [nodeId, setNodeId] = useState("");
+  const [agentKind, setAgentKind] = useState<AgentKind>(newSession?.initialConfig?.agentKind ?? "claude_code");
+  const [mode, setMode] = useState<string>(newSession?.initialConfig?.mode ?? dispatchModeOrDefault("claude_code"));
+  const [nodeId, setNodeId] = useState(newSession?.initialConfig?.nodeId ?? "");
   // Empty means "as configured on the Mac" (AND-130).
-  const [model, setModel] = useState("");
-  const [effort, setEffort] = useState("");
-  const [defaultsApplied, setDefaultsApplied] = useState(false);
+  const [model, setModel] = useState(newSession?.initialConfig?.model ?? "");
+  const [effort, setEffort] = useState(newSession?.initialConfig?.effort ?? "");
+  const [defaultsApplied, setDefaultsApplied] = useState(Boolean(newSession?.initialConfig));
   // Held here rather than read back from the selection: dispatching clears the
   // selection, and the confirmation has to keep saying what was sent.
   const [created, setCreated] = useState<Dispatch | null>(null);
@@ -114,7 +117,8 @@ export function DispatchDialog({
     // (AND-151).
     refetchInterval: NODE_LIST_REFETCH_MS,
   });
-  const nodes = nodesQuery.data?.nodes ?? [];
+  const isNewSession = Boolean(newSession);
+  const nodes = useMemo(() => (nodesQuery.data?.nodes ?? []).filter(node => !isNewSession || node.supportsFreeSessions), [nodesQuery.data, isNewSession]);
   const defaultsQuery = useQuery({ queryKey: ["dispatch-defaults"], queryFn: api.getDispatchDefaults });
 
   // Start from the account's saved defaults once, before the person touches
@@ -136,7 +140,7 @@ export function DispatchDialog({
     if (defaults.nodeId) setNodeId(defaults.nodeId);
   }, [agentKind, defaultsApplied, defaultsQuery.data, defaultsQuery.isFetched, touched]);
   const itemKeys = useMemo(() => items.map((item) => item.key), [items]);
-  const productIds = useMemo(() => [...new Set(items.map((item) => item.productId))], [items]);
+  const productIds = useMemo(() => isNewSession ? [projectId] : [...new Set(items.map((item) => item.productId))], [items, isNewSession, projectId]);
   const eligibility = useQuery({
     queryKey: [...ACTIVE_DISPATCHES_QUERY_KEY,"eligibility",...itemKeys],
     queryFn: () => api.checkRedispatch(itemKeys),
@@ -267,7 +271,7 @@ export function DispatchDialog({
         {created.sessionUrl && <SessionLink url={created.sessionUrl} />}
         {created.error && <div className="inline-error"><CirclePause size={16} /><span>{created.error}</span></div>}
         <p className="dispatch-note">{t("dispatchSessionPending")}</p>
-        <p className="dispatch-note">{t("dispatchDoesNotClaim")}</p>
+        <p className="dispatch-note">{t(newSession ? "newSessionDraftHint" : "dispatchDoesNotClaim")}</p>
         <div className="form-footer">
           <button type="button" className="primary-button" onClick={onClose}>{t("close")}</button>
         </div>
@@ -278,25 +282,33 @@ export function DispatchDialog({
   const selectedReason = nodeId ? ineligibility.get(nodeId) ?? null : null;
   const modes = DISPATCH_MODES_BY_AGENT[agentKind];
   const modeHelp = dispatchModeHelpKey(agentKind, mode);
-  const blocked = !nodeId || Boolean(selectedReason) || itemKeys.length === 0 || !eligibility.isSuccess
-    || !eligibility.data.allowed || (eligibility.data.requiresConfirmation && !redispatchConfirmed);
+  const blocked = !nodeId || Boolean(selectedReason) || (newSession ? !products.some(product => product.id === projectId) || !nodes.some(node => node.id === nodeId) : itemKeys.length === 0 || !eligibility.isSuccess
+    || !eligibility.data.allowed || (eligibility.data.requiresConfirmation && !redispatchConfirmed));
 
   return (
     <form
       className="dispatch-form" onChangeCapture={() => setTouched(true)}
       onSubmit={(event) => {
         event.preventDefault();
-        if (!blocked) mutation.mutate();
+        if (blocked) return;
+        if (newSession) newSession.onConfigured({productId:projectId,nodeId,agentKind,mode,
+          ...(model ? {model} : {}), ...(effort ? {effort} : {}),
+          nodeName:nodes.find(node => node.id === nodeId)?.name ?? "",
+          canAttach:nodes.find(node => node.id === nodeId)?.supportsChatAttachments === true});
+        else mutation.mutate();
       }}
     >
-      <div className="dispatch-items">
+      {newSession && <label>{t("newSessionProject")}<Select value={projectId} onChange={event => setProjectId(event.target.value)}>
+        {products.map(product => <option key={product.id} value={product.id}>{product.name}</option>)}
+      </Select></label>}
+      {!newSession && <div className="dispatch-items">
         <p className="eyebrow">{t("dispatchItemsLabel")}</p>
         <ul>
           {items.map((item) => (
             <li key={item.key}><code>{item.key}</code><span>{item.title}</span></li>
           ))}
         </ul>
-      </div>
+      </div>}
 
       {conflicts.length > 0 && (
         <div className="dispatch-conflict" role="alert">
@@ -352,7 +364,7 @@ export function DispatchDialog({
           </button>
         </p>
       )}
-      {!nodesQuery.isLoading && !nodesQuery.isError && nodes.length === 0 && <p className="section-empty">{t("dispatchNoNodes")}</p>}
+      {!nodesQuery.isLoading && !nodesQuery.isError && nodes.length === 0 && <p className="section-empty">{t(newSession ? "newSessionNodeUpdate" : "dispatchNoNodes")}</p>}
       {/* The reason is on the option too, but a select shows one line at a time:
           without this the submit button is disabled with the explanation hidden
           inside a closed dropdown. */}
@@ -395,7 +407,7 @@ export function DispatchDialog({
           </Select>
         </label>
       </div>
-      {modeHelp && <p className="dispatch-note">{t(modeHelp)}</p>}
+      {modeHelp && <p className="dispatch-note">{t(newSession ? "newSessionModeHelp" : modeHelp)}</p>}
       <div className="field-row">
         <label>{t("dispatchModel")}
           <Select value={model} onChange={(event) => setModel(event.target.value)} disabled={!models}>
@@ -425,7 +437,7 @@ export function DispatchDialog({
         </label>
       </div>
       {nodeId && !models && nodesQuery.isFetched && <p className="dispatch-note">{t("dispatchModelUnsupported")}</p>}
-      <p className="dispatch-note">{t("dispatchDoesNotClaim")}</p>
+      <p className="dispatch-note">{t(newSession ? "newSessionDraftHint" : "dispatchDoesNotClaim")}</p>
 
       {mutation.isError && (
         <div className="inline-error"><CirclePause size={16} /><span>{dispatchErrorMessage(mutation.error, t, agentLabel(agentKind))}</span></div>
@@ -444,7 +456,7 @@ export function DispatchDialog({
         <button type="button" className="secondary-button" disabled={mutation.isPending || saveDefaults.isPending} onClick={onClose}>{t("cancel")}</button>
         <button type="submit" className="primary-button" disabled={blocked || !defaultsApplied || mutation.isPending || saveDefaults.isPending}>
           {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <Rocket size={16} />}
-          {t("dispatchSubmit")}
+          {t(newSession ? "newSessionEnter" : "dispatchSubmit")}
         </button>
       </div>
     </form>

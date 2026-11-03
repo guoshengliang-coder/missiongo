@@ -16,6 +16,7 @@ export interface WidgetSummarySession {
   readonly unread: boolean;
   readonly archivedAt?: string;
   readonly command?: { readonly status: string };
+  readonly productId?: string;
   readonly items: readonly { readonly productId: string; readonly key?: string }[];
   /** What the notification shows for a conversation waiting on the person (AND-150). */
   readonly attention?: {
@@ -100,12 +101,12 @@ export function widgetSummary(
   for (const session of attention) {
     // One conversation can cover several items from the same product; it is
     // still one conversation there.
-    for (const productId of new Set(session.items.map((item) => item.productId))) {
+    for (const productId of new Set([...(session.productId ? [session.productId] : []), ...session.items.map((item) => item.productId)])) {
       attentionByProduct.set(productId, (attentionByProduct.get(productId) ?? 0) + 1);
     }
   }
   for (const session of unread) {
-    for (const productId of new Set(session.items.map((item) => item.productId))) {
+    for (const productId of new Set([...(session.productId ? [session.productId] : []), ...session.items.map((item) => item.productId)])) {
       unreadByProduct.set(productId, (unreadByProduct.get(productId) ?? 0) + 1);
     }
   }
@@ -133,7 +134,7 @@ export function widgetSummary(
       return {
         sessionId: session.id,
         itemKeys,
-        productId: session.items[0]?.productId ?? null,
+        productId: session.productId ?? session.items[0]?.productId ?? null,
         kind: session.attention?.kind ?? "uncertain",
         ...(session.attention?.reason ? { reason: session.attention.reason } : {}),
         excerpt: excerpt(session.latestMessageText),

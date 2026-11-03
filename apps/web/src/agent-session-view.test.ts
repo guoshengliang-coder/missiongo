@@ -4,6 +4,7 @@ import {
   activityLabelKey,
   dispatchActivityLabelKey,
   agentChatMessages,
+  projectConversationMessages,
   approvalNeedsAction,
   agentUnreadCounts,
   agentSessionDetailRefetchInterval,
@@ -578,4 +579,17 @@ it("keeps a freshly observed idle runtime idle while a reply waits for delivery"
   expect(effectiveAgentSessionStatus("idle", { status: "queued" }, false, true)).toBe("idle");
   expect(effectiveAgentSessionStatus("idle", { status: "delivering" }, false, true)).toBe("idle");
   expect(effectiveAgentSessionStatus("idle", { status: "queued" })).toBe("active");
+});
+
+
+it("keeps project-only unread attribution and hides only the launch instruction", () => {
+  const counts = agentUnreadCounts([{ id: "project-session", productId: "p1", status: "idle", unread: true, items: [] }]);
+  expect(counts.total).toBe(1);
+  expect(counts.byProduct.get("p1")).toBe(1);
+  const bootstrap = { role: "user", text: "这是用户从 MissionGo 控制台发起的项目会话，不关联工作条目。\n本条是启动说明" };
+  const human = { role: "user", text: "先讨论方案" };
+  const messages = [bootstrap, { role: "agent", text: "准备就绪" }, human, bootstrap];
+  expect(projectConversationMessages(messages, true)).toEqual(messages.slice(1));
+  expect(projectConversationMessages(messages, false)).toBe(messages);
+  expect(projectConversationMessages([human], true)).toEqual([human]);
 });

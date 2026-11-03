@@ -2,6 +2,17 @@ import XCTest
 @testable import MissionGoNodeCore
 
 final class LaunchPromptTests: XCTestCase {
+    func testProjectConversationWaitsForUserWithoutClaimingAnItem() throws {
+        let prompt = try LaunchPrompt.build(itemKeys: [], dispatchId: "free-session", mode: "plan", freeSession: true)
+        XCTAssertTrue(prompt.contains("等待用户消息"))
+        XCTAssertTrue(prompt.contains("不得自动创建、领取条目"))
+        XCTAssertTrue(prompt.contains("独立 worktree"))
+        XCTAssertTrue(prompt.contains("原生计划模式"))
+        XCTAssertFalse(prompt.contains("claim_item"))
+        XCTAssertThrowsError(try LaunchPrompt.build(itemKeys: ["AND-1"], dispatchId: "free-session", freeSession: true))
+        XCTAssertThrowsError(try LaunchPrompt.build(itemKeys: [], dispatchId: "invalid id", freeSession: true))
+    }
+
     func testNamesTheItemsTheDispatchAndTheOneBranchRule() throws {
         let prompt = try LaunchPrompt.build(itemKeys: ["AND-37", "AND-38"], dispatchId: "d1f2a3b4")
         XCTAssertTrue(prompt.contains("missiongo skill"))

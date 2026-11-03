@@ -528,7 +528,7 @@ public struct CodexLauncher: AgentAdapter {
         }
         let prompt = try LaunchPrompt.build(
             itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode, reworkItemKeys: job.reworkItemKeys,
-            client: .codex, worktreePath: worktreePath
+            client: .codex, worktreePath: worktreePath, freeSession: job.freeSession
         )
         let sessionName = SessionLauncher.sessionName(nodeName: job.nodeName, itemKeys: job.itemKeys, round: job.round)
         let request = CodexThreadRequest(

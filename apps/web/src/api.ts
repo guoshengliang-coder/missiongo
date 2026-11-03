@@ -618,6 +618,12 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ repos }),
     }),
+  prepareProjectConversation: (input: import("./types").FreeSessionConfig & { requestKey: string; text: string; attachmentCount: number }) =>
+    request<Dispatch>("/api/v1/project-conversations", { method: "POST", body: JSON.stringify(input) }),
+  startProjectConversation: (dispatchId: string, attachmentIds: readonly string[]) =>
+    request<Dispatch>(`/api/v1/project-conversations/${encodeURIComponent(dispatchId)}/start`, {
+      method: "POST", body: JSON.stringify({attachmentIds}),
+    }),
   createDispatch: (input: CreateDispatchInput) =>
     request<Dispatch>("/api/v1/dispatches", { method: "POST", body: JSON.stringify(input) }),
   checkRedispatch: (itemKeys: readonly string[]) =>
