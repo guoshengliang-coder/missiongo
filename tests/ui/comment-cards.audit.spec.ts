@@ -64,7 +64,7 @@ for (const viewport of viewports) for (const theme of ["light", "dark"] as const
             const style = getComputedStyle(message);
             const authorBox = node.querySelector(".comment-author-name")!.getBoundingClientRect();
             const moreBox = node.querySelector(".comment-more-actions > summary")!.getBoundingClientRect();
-            const timeBox = node.querySelector(".comment-byline time")!.getBoundingClientRect();
+            const timeBox = node.querySelector(".comment-metadata time")!.getBoundingClientRect();
             const controls = [authorBox, replyBox, moreBox];
             return {
               background: style.backgroundColor, radius: parseFloat(style.borderRadius),

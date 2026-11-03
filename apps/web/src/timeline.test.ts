@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { dispatchedEvent, groupDiscussionTimeline, groupTimeline, statusChangeNote, recentDiscussions } from "./timeline";
+import { filterDiscussionTimeline, timelineCategory, dispatchedEvent, groupDiscussionTimeline, groupTimeline, statusChangeNote, recentDiscussions } from "./timeline";
 import type { WorkItemEvent } from "./types";
 
 const event = (
@@ -252,5 +252,42 @@ describe("attachment operation grouping", () => {
 
   it("does not merge standalone attachment actions by different people", () => {
     expect(groupTimeline([{ ...upload("a"), accountId: "one" }, { ...upload("b"), accountId: "two" }])).toHaveLength(2);
+  });
+});
+
+
+describe("comment display filters", () => {
+  const mixed = [
+    event("root", "comment_added", "2026-11-01T00:00:00Z", {}, "agent"),
+    event("human", "comment_added", "2026-11-01T00:01:00Z", {threadRootCommentId:"root",replyToCommentId:"root"}),
+    event("agent", "comment_added", "2026-11-01T00:02:00Z", {threadRootCommentId:"root",replyToCommentId:"human"}, "agent"),
+    event("status", "status_changed", "2026-11-01T00:03:00Z", {}, "human"),
+    event("other", "comment_added", "2026-11-01T00:04:00Z", {}, "system"),
+  ];
+  it("classifies by event kind before actor, retaining future activity kinds", () => {
+    expect(mixed.map(timelineCategory)).toEqual(["agent","human","agent","activity","activity"]);
+    expect(timelineCategory(event("future","future_event","now",{},"agent"))).toBe("activity");
+  });
+  it("filters mixed threads without losing the root or direct parent evidence", () => {
+    const result = filterDiscussionTimeline(mixed,"discussion",["human"]);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.id).toBe("root");
+    expect(result[0]?.visibleCommentIds).toEqual(["human"]);
+    expect(result[0]?.replies.map(reply=>reply.id)).toEqual(["human","agent"]);
+    expect(mixed).toHaveLength(5);
+  });
+  it("keeps transitions under activity even when a person or an agent moved the card", () => {
+    expect(filterDiscussionTimeline(mixed,"all",["activity"]).map(entry=>entry.id)).toEqual(["other","status"]);
+    expect(filterDiscussionTimeline(mixed,"discussion",["activity"])).toEqual([]);
+    expect(filterDiscussionTimeline(mixed,"all",[])).toEqual([]);
+  });
+  it("temporarily reveals only the linked comment without changing saved filters", () => {
+    const categories = ["human"] as const;
+    expect(filterDiscussionTimeline(mixed,"discussion",categories,"agent")[0]?.visibleCommentIds).toEqual(["human","agent"]);
+    expect(categories).toEqual(["human"]);
+  });
+  it("sorts discussions by matching activity, not hidden replies", () => {
+    const newer=event("newer","comment_added","2026-11-01T00:01:30Z");
+    expect(filterDiscussionTimeline([...mixed,newer],"discussion",["human"]).map(entry=>entry.id)).toEqual(["newer","root"]);
   });
 });

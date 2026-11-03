@@ -3086,7 +3086,16 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .comment-reply-source span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; color: var(--muted); font-size: var(--text-sm); line-height: 1.45; }
 .comment-cancel-reply { display: grid; place-items: center; flex: none; width: 44px; min-height: 44px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--muted); cursor: pointer; }
 .comment-discussion { min-width: 0; container-type: inline-size; }
-.comment-view-switch { display: flex; gap: 16px; margin-bottom: 14px; border-bottom: 1px solid var(--line-soft); }
+.comment-view-switch { display: flex; flex-wrap: wrap; gap: 0 16px; min-width: 0; }
+.comment-toolbar { align-items: center; flex-wrap: wrap; gap: 4px 12px; margin-bottom: 14px; border-bottom: 1px solid var(--line-soft); }
+.comment-toolbar .comment-filter-trigger { margin-inline-start: auto; min-height: 44px; font-size: var(--text-sm); }
+.comment-filter-choices { grid-template-columns: minmax(0, 1fr); }
+.comment-filter-choices label { min-height: 44px; }
+.comment-filter-empty { display: grid; justify-items: start; gap: 8px; padding: 12px 0; color: var(--muted); font-size: var(--text-sm); }
+.comment-filter-reveal { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; color: var(--muted); font-size: var(--text-sm); }
+.comment-filter-reveal button { min-height: 44px; }
+.comment-filter-context { display: grid; gap: 4px; width: 100%; min-width: 0; min-height: 44px; padding: 8px; border: 1px solid var(--line-soft); border-radius: var(--radius-sm); color: var(--muted); background: var(--surface-sunken); text-align: start; font-size: var(--text-xs); cursor: pointer; }
+.comment-filter-context > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .comment-view-switch button { min-height: 44px; padding: 6px 0; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font-size: var(--text-sm); cursor: pointer; }
 .comment-view-switch button[aria-pressed="true"] { border-bottom-color: var(--mint-dark); color: var(--ink); font-weight: 600; }
 .comment-discussion-footer { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 12px; margin: 4px 0 0 38px; }
@@ -3101,14 +3110,14 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .comment-avatar { position: relative; z-index: 1; display: grid; place-items: center; width: 28px; height: 28px; margin-top: 4px; border-radius: 50%; background: var(--surface-sunken); color: var(--ink-2); font-size: var(--text-xs); }
 .comment-message { min-width: 0; padding: 4px 12px 12px; border: 1px solid var(--line-soft); border-radius: var(--radius-lg); background: var(--surface-sunken); }
 .comment-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 4px 8px; }
-.comment-header-actions { display: flex; align-items: start; }
+.comment-header-actions { display: flex; grid-column: 2; grid-row: 1; align-items: start; }
 .comment-header-actions .comment-more-actions { margin-inline-start: 0; }
 .comment-byline { display: flex; align-items: center; flex-wrap: wrap; gap: 0 8px; min-width: 0; }
 .timeline-event .comment-byline > strong { display: block; flex: 1 1 100%; min-width: 0; font-size: var(--text-md); font-weight: 650; overflow-wrap: anywhere; }
 .comment-byline time, .comment-actor-label { max-width: 100%; color: var(--muted); font-size: var(--text-xs); overflow-wrap: anywhere; }
 .comment-byline time { white-space: normal; }
+.comment-metadata { display: flex; grid-column: 1 / -1; align-items: center; flex-wrap: wrap; gap: 0 8px; min-width: 0; color: var(--muted); font-size: var(--text-xs); }
 .comment-actor-label { padding: 1px 4px; border-radius: var(--radius-xs); background: var(--surface-sunken); }
-.timeline-event .comment-reply-byline { margin-top: 0; font-size: var(--text-xs); color: var(--muted); overflow-wrap: anywhere; }
 .timeline-event .comment-mentioned { margin-top: 6px; color: var(--muted); font-size: var(--text-xs); overflow-wrap: anywhere; }
 .timeline-event--comment { grid-template-columns: minmax(0, 1fr); }
 .timeline-event--comment:first-child::before { top: 18px; }
@@ -3159,8 +3168,8 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .agent-console-attention-banner--approval button { min-height: 44px; }
 }
 
-.comment-reply-author { display: block; max-width: 100%; min-height: 28px; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; background: none; border: 0; font: inherit; text-align: start; cursor: pointer; }
-@media (pointer: coarse) { .comment-reply-author { min-height: 44px; } }
+.comment-reply-author { display: inline-block; max-width: 100%; min-height: 28px; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; background: none; border: 0; font: inherit; text-align: start; cursor: pointer; }
+@media (pointer: coarse) { .comment-reply-author { min-width: 44px; min-height: 44px; } }
 
 /* Browsing tiles devote their space to evidence; forms keep edit controls. */
 .attachment-grid:has(> .media-tile) { grid-template-columns: repeat(auto-fill, minmax(min(100%, 128px), 1fr)); gap: 8px; }

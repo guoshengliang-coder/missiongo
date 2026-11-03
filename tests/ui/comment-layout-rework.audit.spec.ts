@@ -67,7 +67,7 @@ for (const viewport of [{ width: 353, height: 850 }, { width: 812, height: 375 }
       // AND-346: identity now has an author row and a metadata row; reply and
       // secondary actions stay together at the top right of that identity.
       const authorBox = (await header.locator(":scope > strong").boundingBox())!;
-      const timeBox = (await header.locator("time").boundingBox())!;
+      const timeBox = (await root.locator(".comment-metadata time").boundingBox())!;
       const headerBox = (await header.boundingBox())!;
       const actionsBox = (await root.locator(".comment-header-actions").boundingBox())!;
       expect(timeBox.y).toBeGreaterThanOrEqual(authorBox.y + authorBox.height - 1);
