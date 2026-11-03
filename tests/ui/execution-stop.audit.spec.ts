@@ -5,6 +5,16 @@ import { MissionGoStore } from "../../services/server/dist/store.js";
 import { DispatchStore } from "../../services/server/dist/dispatch-store.js";
 import { ExternalAgentSessionStore } from "../../services/server/dist/external-agent-session-store.js";
 
+const fixtureNodes: string[] = [];
+test.afterEach(()=>{
+  if (!fixtureNodes.length) return;
+  const store=isolatedStore();
+  try {
+    const nodes=new DispatchStore(store.database);
+    for (const id of fixtureNodes.splice(0)) nodes.revokeNode("ui-fixture",id);
+  } finally {store.close();}
+});
+
 function isolatedStore() {
   const directory=process.env.MISSIONGO_UI_FIXTURE_DATA;
   if(!directory) throw new Error("Isolated UI fixture is required");
@@ -22,6 +32,7 @@ function setup() {
     const sessionId=external.register(owner,{agentKind:"codex",refKind:"native",sessionRef:randomUUID()},item.key);
     const dispatches=new DispatchStore(store.database);
     const node=dispatches.registerNode({accountId,installationId:randomUUID(),name:"Fixture node"});
+    fixtureNodes.push(node.nodeId);
     dispatches.recordHeartbeat(node.nodeId,[{kind:"codex",ready:true}]);
     external.report(owner,sessionId,item.key,"completed","Handling ended",randomUUID());
     store.transitionWorkItem({itemKey:item.key,to:"pending_verification",reason:"manual_override",actor:"human",note:"Fixture delivery",attribution:{accountId}});
