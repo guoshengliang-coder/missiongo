@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { CodexAdapter, codexPolicy } from "./codex.js";
+import { CodexAdapter, codexPolicy, codexMessages } from "./codex.js";
 import { ClaudeAdapter, claudeAnswer, claudeArguments } from "./claude.js";
 import { OpenCodeAdapter, OpenCodeAPI } from "./opencode.js";
 import { launchPrompt } from "./prompt.js";
@@ -68,6 +68,14 @@ describe("headless configuration and scope", () => {
   });
 });
 describe("Codex native control", () => {
+  it("mirrors completed generated images as explicit references without prompts or base64", () => {
+    expect(codexMessages({ turns: [{ id: "turn", items: [
+      { id: "image", type: "imageGeneration", status: "completed", savedPath: "/tmp/fixture-output/my image.png", result: "private-base64", revisedPrompt: "private prompt" },
+      { id: "pending", type: "imageGeneration", status: "inProgress", savedPath: "/tmp/fixture-output/pending.png" },
+      { id: "failed", type: "imageGeneration", status: "completed", failure: {}, savedPath: "/tmp/fixture-output/failed.png" },
+      { id: "other", type: "imageGeneration", status: "completed", savedPath: "/tmp/fixture-output/private.txt" },
+    ] }] })).toEqual([{ sourceId: "turn:image", turnId: "turn", role: "agent", text: "![image](<file:///tmp/fixture-output/my%20image.png>)" }]);
+  });
   it("starts with a verified narrow policy and sends only a bound human decision", async () => {
     const adapter = new CodexAdapter(job(temporary()), fixture); adapters.push(adapter);
     expect(await adapter.start("approval requested")).toBe("thread-1"); await delay(30);

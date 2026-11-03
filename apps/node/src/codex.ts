@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { JsonProcess } from "./process.js";
+import { localArtifactPath } from "@missiongo/domain";
+import { pathToFileURL } from "node:url";
 import { worktreePath } from "./prompt.js";
 import type { Adapter, Approval, Command, Dispatch, Message, Session, Snapshot, Wire } from "./types.js";
 import { id, object, InputRejected } from "./types.js";
@@ -26,6 +28,10 @@ export function codexMessages(thread: Wire): Message[] {
     if (item.type === "userMessage") {
       const text = (item.content ?? []).filter((c: Wire) => c.type === "text").map((c: Wire) => c.text).join("\n");
       if (text.trim()) messages.push({ sourceId, turnId: turn.id, role: "user", text });
+    } else if (item.type === "imageGeneration" && item.status === "completed" && !item.failure
+      && typeof item.savedPath === "string" && localArtifactPath(item.savedPath)
+      && /\.(?:png|jpe?g|gif|webp|svg)$/i.test(item.savedPath)) {
+      messages.push({ sourceId, turnId: turn.id, role: "agent", text: `![image](<${pathToFileURL(item.savedPath).href}>)` });
     } else if (["agentMessage", "plan"].includes(item.type) && item.text?.trim()) {
       messages.push({ sourceId, turnId: turn.id, role: item.type === "plan" ? "plan" : "agent", text: item.text });
     }

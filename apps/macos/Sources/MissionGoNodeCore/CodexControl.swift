@@ -602,6 +602,14 @@ public enum CodexProtocol {
                             questions: questions
                         ))
                     }
+                case "imageGeneration":
+                    if item["status"] as? String == "completed", item["failure"] == nil || item["failure"] is NSNull,
+                       let path = item["savedPath"] as? String, AgentArtifactReader.path(path) != nil,
+                       ["png", "jpg", "jpeg", "gif", "webp", "svg"].contains(URL(fileURLWithPath: path).pathExtension.lowercased()) {
+                        let href = URL(fileURLWithPath: path).absoluteString
+                        messages.append(AgentSessionMessage(sourceId: sourceId, turnId: turnId, role: "agent",
+                            text: "![image](<\(href)>)", occurredAt: occurredAt))
+                    }
                 case "plan":
                     let text = (item["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                     if !text.isEmpty {

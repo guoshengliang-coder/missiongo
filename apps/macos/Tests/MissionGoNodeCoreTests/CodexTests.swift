@@ -343,6 +343,23 @@ final class CodexProtocolTests: XCTestCase {
         XCTAssertEqual(snapshot.activityAt, "2026-12-20T23:10:00.123Z")
     }
 
+    func testGeneratedImageBecomesAnExplicitPreviewReferenceWithoutToolPayloads() throws {
+        let snapshot = try CodexProtocol.threadSnapshot(fromRead: ["thread": [
+            "status": ["type": "idle"], "turns": [["id": "turn", "items": [
+                ["id": "image", "type": "imageGeneration", "status": "completed", "savedPath": "/tmp/fixture-output/my image.png", "result": "private-base64", "revisedPrompt": "private prompt"],
+                ["id": "pending", "type": "imageGeneration", "status": "inProgress", "savedPath": "/tmp/fixture-output/pending.png"],
+                ["id": "failure", "type": "imageGeneration", "status": "completed", "failure": ["type": "error"], "savedPath": "/tmp/fixture-output/failed.png"],
+                ["id": "other", "type": "imageGeneration", "status": "completed", "savedPath": "/tmp/fixture-output/private.txt"],
+                ["id": "view", "type": "imageView", "path": "/tmp/fixture-output/input.png"]
+            ]]]
+        ]])
+        XCTAssertEqual(snapshot.messages.count, 1)
+        XCTAssertEqual(snapshot.messages.first?.sourceId, "image")
+        XCTAssertEqual(snapshot.messages.first?.turnId, "turn")
+        XCTAssertEqual(snapshot.messages.first?.text, "![image](<file:///tmp/fixture-output/my%20image.png>)")
+        XCTAssertFalse(snapshot.messages[0].text.contains("private"))
+    }
+
     func testThreadReadRestoresAnsweredQuestionFromExistingTranscript() throws {
         let snapshot = try CodexProtocol.threadSnapshot(fromRead: ["thread": [
             "status": ["type": "idle"],

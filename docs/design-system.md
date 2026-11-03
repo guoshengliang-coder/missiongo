@@ -228,6 +228,16 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 - 按容器宽度排列可换行按钮，使用统一字号令牌；触控按钮和详情展开入口至少 44px。长来源文本和选项说明不能撑宽会话。
 - 提交期间保留原请求和排队反馈，禁止重复提交；失败保留选项可重试，重连不展示旧操作。复查入口包括手动授权、自动拒绝后的人工重试及普通计划批准。验证来源为 `and-361-unified-approval.audit.spec.ts`、`agent-approval-visibility.audit.spec.ts`、`and-349-approval-banner.audit.spec.ts` 与 `plan-approval.audit.spec.ts`。
 
+### 会话消息反馈与图片产物（AND-371）
+
+- 消息正文与投递反馈分层：时间置于顶部，底部只显示发送中、排队中、送达中或已送达待执行。送达不能表示已经执行；失败与送达不确定继续明确展示恢复操作。
+- 可取消的排队消息使用常驻的小号“铅笔图标＋撤回编辑”，无边框，悬停、按下和焦点有反馈。取消成功后恢复文字与附件，取消失败保留原消息；恢复中的草稿不能再次发送，切换会话不串入附件。
+- 消息级详情合并到唯一的“运行详情”。默认按内容收宽，只显示简短运行状态；等待原因、耗时、同步诊断和活动明细原位展开。权限请求及异常恢复提示不放进折叠区。复用 `AgentReplyFeedback`、`AgentRunDetails`，控制台和条目内会话面板共用。
+- 正文沿用 `--console-text-sm`（默认12px、行高1.6），时间与状态使用 `--text-xs`，编辑操作使用 `--text-sm`；独立会话字号与全局字号均保持现有缩放和11px下限。气泡内边距上下12px、左右16px，正文至状态行8px，消息间12px，图标文字4px。触控操作至少44×44；气泡按内容收宽并保持用户消息右边缘一致。
+- 完成的 Codex 图片生成记录通过同一条原生记录明确给出的 `savedPath` 生成图片产物引用，不转发生成提示词、Base64或无关工具日志。普通 Agent 明确输出的本地图片链接也自动显示缩略图；普通文档继续按需预览。复用既有账号/会话/节点绑定、产物存储和预览弹层，不把本机路径交给浏览器直接读取。
+- 图片必须有加载、失败和重试反馈；预览可查看原图并下载，关闭恢复触发器焦点。已保存的图片可在原节点离线后查看；尚未保存时仍需要原节点和原文件，旧版节点需更新才能同步图片生成事件。Linux 节点的图片产物读取同样校验精确原生会话引用、文件类型、大小和符号链接。
+- 回归来源：`and-371-session-feedback.audit.spec.ts`、`agent-artifacts.audit.spec.ts`、`and-360-session-health.audit.spec.ts`、`agent-approval-visibility.audit.spec.ts`，以及 `AgentArtifactTests`、`CodexProtocolTests` 和 Linux `artifacts.test.ts`。浏览器覆盖明暗、320px窄屏、触控、三档字号、状态变化、撤回附件恢复与图片加载/失败/重试。
+
 ### 单选控件（AND-322）
 
 - Web、Android/macOS 内嵌 Web 页面及反馈 SDK 页统一使用 `Select`（`apps/web/src/select.tsx`），提供可访问的 select-only combobox。独立原生选择器保留系统行为，详见[覆盖清单](and-322-select-audit.md)。

@@ -17,6 +17,17 @@ export function localArtifactLinks(text: string): string[] {
   return [...new Set(links)];
 }
 
+/** Only explicit local image references are fetched automatically; documents stay opt-in. */
+export function localArtifactImageLinks(text: string): string[] {
+  const paths = new Set<string>();
+  return localArtifactLinks(text).filter((href) => {
+    const path = localArtifactPath(href)!;
+    if (!/\.(?:png|jpe?g|gif|webp|svg)$/i.test(path) || paths.has(path)) return false;
+    paths.add(path);
+    return true;
+  });
+}
+
 export interface AgentArtifactFile { name: string; contentType: string; base64: string }
 export interface AgentArtifactBundle { entry: string; files: AgentArtifactFile[] }
 export interface AgentArtifactState {
