@@ -1,3 +1,4 @@
+import { assertNoCollaborationTransfer } from "./collaboration-policy.js";
 import { randomUUID } from "node:crypto";
 import { chmodSync, copyFileSync, statSync, unlinkSync } from "node:fs";
 import { constants } from "node:fs";
@@ -31,6 +32,7 @@ export function transferWorkItem(store: MissionGoStore, storage: AttachmentStora
       }
       store.assertWorkItemWritable(key);
       const source = store.getWorkItem(key);
+      assertNoCollaborationTransfer(store.database,source.id);
       const targetProduct = store.getProduct(input.targetProductId);
       if (source.productId === targetProduct.id) throw conflict("transfer_same_product", "Choose a different target product.");
       if (targetProduct.archivedAt) throw conflict("transfer_target_archived", "Restore the target product before transferring.");

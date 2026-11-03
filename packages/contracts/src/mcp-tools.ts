@@ -14,6 +14,12 @@ export interface McpToolDefinition {
 }
 
 export const MCP_TOOL_DEFINITIONS = [
+  {name:"get_collaboration_attachment",access:"read",purpose:"Read explicitly shared unchanged attachment evidence without source project access."},
+  {name:"get_item_collaborations",access:"read",purpose:"Read scoped dependencies and approval drafts for one item."},
+  {name:"list_collaboration_targets",access:"read",purpose:"List directed receiving grants without project or Git access."},
+  {name:"get_collaboration",access:"read",purpose:"Read only approved request context, shared evidence and results."},
+  {name:"prepare_collaboration_request",access:"write",purpose:"Prepare an idempotent draft for explicit human approval; creates no target item or dependency."},
+  {name:"append_collaboration_discussion",access:"write",purpose:"Append shared discussion or receiving-side delivery evidence without state changes."},
   { name: "get_current_account", access: "read", purpose: "Confirm the connected account, its product read scope, and the expected Skill version." },
   { name: "list_products", access: "read", purpose: "List products visible to the connected account." },
   { name: "get_project_insights", access: "read", purpose: "Summarize authorized projects with explicit calendar periods and metric definitions." },

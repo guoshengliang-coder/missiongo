@@ -1,3 +1,4 @@
+import { CollaborationPanel } from "./collaboration";
 import { MessageButton, MessageCenter } from "./message-center";
 import { TransitionCommandKeys } from "./transition-attachments";
 import { TransitionFiles, useTransitionFiles } from "./transition-files";
@@ -2102,6 +2103,7 @@ function ItemRow({
               {progress && <small className="item-phase">{progress}</small>}
               {item.derivedFrom && <small className="item-derived-badge" title={item.derivedFrom.title}>{t("derivedFromBadge", { key: item.derivedFrom.key })}</small>}
               {item.verificationReturn && <VerificationReturnBadge />}
+              {item.collaboration && <small className="item-derived-badge">{t(item.collaboration.blocking?"collaborationAwaiting":item.collaboration.received?"collaborationReceived":"collaborationSent")}{item.collaboration.blocking?` · ${item.collaboration.blocking}`:""}</small>}
               <span className="item-evidence-summary">
                 {item.type === "bug" && item.report?.reproductionSteps && <small className="evidence-strong">{t("hasReproduction")}</small>}
                 {logCount > 0 && <small>{t("logCount", { count: logCount })}</small>}
@@ -2746,6 +2748,7 @@ function DetailPane({
   }, [itemKey, item?.key]);
   const [transferBuilderOpen, setTransferBuilderOpen] = useState(false);
   const [statusChecksOpen, setStatusChecksOpen] = useState(false);
+  const [collaborationAction,setCollaborationAction]=useState<"request"|"associate"|undefined>(undefined);
   const { toolbarRef, overflow: toolbarOverflow } = useToolbarOverflow();
   const moreActionsRef = useRef<HTMLDetailsElement>(null);
 
@@ -2896,6 +2899,7 @@ function DetailPane({
             <div className="detail-more-menu-popover detail-actions-popover">
               {(deliveryQuery.data?.canManageBuilder || (!item.transferred && item.access?.canOperate !== false)) && <div className="detail-action-group">
                 <p className="detail-action-heading">{t("actionGroupCollaboration")}</p>
+                {item.access?.canRequestCollaboration && <><button type="button" onClick={()=>{moreActionsRef.current?.removeAttribute("open");setCollaborationAction("request");}}>{t("collaborationRequest")}</button><button type="button" onClick={()=>{moreActionsRef.current?.removeAttribute("open");setCollaborationAction("associate");}}>{t("collaborationAssociate")}</button></>}
                 {deliveryQuery.data?.canManageBuilder && <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); setTransferBuilderOpen(true); }}><UserRoundCog size={17} aria-hidden="true" />{t("transferBuilder")}</button>}
                 {!item.transferred && item.access?.canOperate !== false && <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); setTransferring(true); }}><ArrowRight size={17} aria-hidden="true" />{t("transferItem")}</button>}
               </div>}
@@ -2989,6 +2993,7 @@ function DetailPane({
               </div>
             </div>
             <ItemDeliveryPanel key={item.key} item={item} summarizedSessionId={jumpSessionId} dispatches={dispatchesQuery.data?.dispatches ?? []} dispatchesFailed={dispatchesQuery.isError} notificationsQuery={notificationsQuery} renderDispatch={dispatch => <DispatchRow dispatch={dispatch} itemKey={item.key} />} />
+            <CollaborationPanel key={`collaboration-${item.key}`} item={item} requestedAction={collaborationAction} onActionHandled={()=>setCollaborationAction(undefined)} />
             <ItemRelations item={item} onOpenItem={onOpenItem} />
             {item.verificationReturn && <VerificationReturnCallout info={item.verificationReturn} />}
             {/* Read the item, then the evidence a person went and looked at --
@@ -3111,6 +3116,7 @@ function DetailPane({
                         </p>
                       )}
                       {event.eventType.startsWith("builder_handover_") && <p>{String(event.payload.reason ?? event.payload.note ?? "正在停止旧执行并交接 Builder")}</p>}
+                      {event.eventType === "collaboration_updated" && typeof event.payload.note === "string" && <p>{event.payload.note}</p>}
                       {event.eventType === "builder_changed" && <p>{String(event.payload.fromName ?? "待分配")} → {String(event.payload.toName ?? "待分配")}：{String(event.payload.note ?? "")}</p>}
                       {["execution_assigned","execution_handed_over","execution_follow_up","execution_updated"].includes(event.eventType) && <p>{String(event.payload.performer ?? "")}{event.payload.scope ? ` · ${String(event.payload.scope)}` : ""}{event.payload.status ? ` · ${String(event.payload.status)}` : ""} {String(event.payload.note ?? event.payload.result ?? "")}</p>}
                       {event.eventType === "handover_human_confirmed" && <p>{typeof event.payload.note === "string" ? event.payload.note : ""}</p>}

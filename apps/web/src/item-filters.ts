@@ -21,7 +21,7 @@ export function readItemFilters(params: URLSearchParams): ItemFilters {
     try {
       const values: unknown = JSON.parse(params.get(key) ?? "[]");
       const allowed =
-        key === "types"
+        key === "collaborations" ? ["sent","received","waiting","verification"] : key === "types"
           ? WORK_ITEM_TYPES
           : key === "priorities"
             ? WORK_ITEM_PRIORITIES

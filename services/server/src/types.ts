@@ -188,6 +188,7 @@ export interface AttachmentRecord extends WorkItemAttachment {
 }
 
 export interface TransitionWorkItemInput {
+  readonly collaborationDisposition?: {mode:"withdraw"|"keep";successorAccountId?:string|undefined};
   readonly expectedRevision?: number;
   readonly executionDisposition?: "keep_running" | "stop_requested";
   readonly confirmedHandoverId?: string;

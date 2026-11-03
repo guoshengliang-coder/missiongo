@@ -25,6 +25,12 @@ export function errorMessageKey(error: unknown): MessageKey | null {
     if (error.status === 401 || error.code === "authentication_required") return "errorSignedOut";
     if (error.code === "product_operation_not_permitted") return "captureReadOnly";
     if (error.code === "verification_not_permitted") return "verificationNotPermitted";
+    if (error.code === "collaboration_stale" || error.code === "collaboration_evidence_changed") return "collaborationStale";
+    if (error.code === "collaboration_delivery_required") return "collaborationDeliveryRequired";
+    if (error.code === "collaboration_blocked") return "collaborationBlocked";
+    if (error.code === "collaboration_cycle") return "collaborationCycle";
+    if (error.code === "collaboration_disposition_required") return "collaborationCancelHelp";
+    if (error.code.startsWith("collaboration_")) return "collaborationError";
     if (error.status === 403) return "errorForbidden";
     if (error.status === 404) return "errorNotFound";
     if (error.status === 429 || error.code === "rate_limit_exceeded") return "errorRateLimited";

@@ -106,6 +106,7 @@ export type WorkItemCreator =
   };
 
 export interface WorkItemSnapshot {
+  readonly collaboration?: {readonly sent:number;readonly received:number;readonly blocking:number};
   readonly revision?: number;
   readonly contentVersion?: number;
   readonly heldFrom?: WorkItemStatus;

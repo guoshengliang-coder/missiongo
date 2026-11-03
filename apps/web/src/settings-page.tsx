@@ -1,3 +1,4 @@
+import { CollaborationSettings } from "./collaboration";
 import { BackButton } from "./back-button";
 import { DingTalkSettingsPage, DingTalkProjectSettings } from "./dingtalk-settings";
 import { useEffect, useRef, type ReactNode, type RefObject } from "react";
@@ -21,7 +22,7 @@ const LABELS: Record<SettingsSection, MessageKey> = {
   dingtalk:"settingsDingTalk",notifications:"settingsNotifications",
   "project-admins": "settingsProjectAdministrators", builders: "settingsBuilderAllocation",
   agent: "settingsAgent", products: "settingsProducts", overview: "settingsProductOverview",
-  index: "settingsEntry", profile: "settingsProfile", display: "displaySettings", connections: "settingsConnections",
+  index: "settingsEntry", collaboration:"collaborationTitle", profile: "settingsProfile", display: "displaySettings", connections: "settingsConnections",
   devices: "settingsDevices", dispatch: "dispatchDefaultsTitle", product: "settingsBasicDetails", components: "moduleManagement",
   artifacts: "settingsReleaseConfig", tokens: "settingsSdk", access: "settingsAccountsPermissions", accounts: "settingsAccountsPermissions", ai: "settingsModels", "new-product": "addProduct",
 };
@@ -112,6 +113,7 @@ export function SettingsPage({ route, user, products, canUseAi, navigate, guard,
 
       <div className="settings-hub-list">
         {entry("product", "settingsBasicHelp", { section: "product", productId: product.id })}
+        {entry("collaboration", "collaborationHelp", {section:"collaboration",productId:product.id})}
         {entry("components", "settingsComponentsHelp", { section: "components", productId: product.id })}
         {isAdmin && entry("project-admins", "settingsProductAdministratorsDetailHelp", { section: "project-admins", productId: product.id })}
         {(isAdmin || product.access?.isProjectAdmin || mayAdministerProduct(user,product)) && entry("builders", "settingsBuilderAllocationHelp", {section:"builders",productId:product.id})}
@@ -162,6 +164,7 @@ export function SettingsPage({ route, user, products, canUseAi, navigate, guard,
                 : route.section === "profile" ? <AccountSettings user={user} products={products} onLoggedOut={onLoggedOut} />
                 : route.section === "display" ? <DisplaySettings user={user} />
                 : route.section === "dingtalk" ? <DingTalkSettingsPage />
+                : route.section === "collaboration" && product ? <CollaborationSettings product={product} products={catalog} canManage={isAdmin || Boolean(product.access?.isProjectAdmin)} />
                 : route.section === "notifications" && product ? <DingTalkProjectSettings productId={product.id} />
                 : route.section === "project-admins" ? route.productId && product ? <ProjectAdministratorsSettings productId={product.id} />
                   : <>{administrators.isError && <div role="alert"><p>{t("somethingWentWrong")}</p><button type="button" className="secondary-button" onClick={() => void administrators.refetch()}>{t("retry")}</button></div>}{productList(catalog, value => navigate({ section: "project-admins", productId: value.id }), administratorSummary)}</>
