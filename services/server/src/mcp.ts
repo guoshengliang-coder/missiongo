@@ -11,7 +11,7 @@ import { open, readFile, stat } from "node:fs/promises";
 
 import { McpServer, createMcpHandler, type McpHttpHandler, type ServerContext } from "@modelcontextprotocol/server";
 import { skillVersionInfo } from "@missiongo/contracts";
-import { INSIGHT_METRICS, WORK_ITEM_PRIORITIES, WORK_ITEM_STATUSES, WORK_ITEM_TYPES } from "@missiongo/domain";
+import { INSIGHT_METRICS, MAX_ITEM_ATTACHMENTS, WORK_ITEM_PRIORITIES, WORK_ITEM_STATUSES, WORK_ITEM_TYPES } from "@missiongo/domain";
 import sharp from "sharp";
 import { z } from "zod";
 
@@ -842,7 +842,7 @@ export function createMissionGoMcpServer(
         platform: z.enum(["android", "macos", "web", "server", "shared", "other"]).optional(),
         agentName: z.string().min(1).max(100).optional(),
         summary: z.string().min(1).max(300).optional(),
-        attachmentUploadIds: z.array(z.string().uuid()).max(10).optional(),
+        attachmentUploadIds: z.array(z.string().uuid()).max(MAX_ITEM_ATTACHMENTS).optional(),
         idempotencyKey: z.string().min(1).max(200),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },

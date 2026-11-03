@@ -13,7 +13,7 @@ import { BuilderBadge } from "./builder-badge";
 import { BackButton } from "./back-button";
 import { useDialogDraft } from "./dialog-state";
 import { useConfirm } from "./confirm-dialog";
-import { itemFilterKey, type ItemFilters } from "@missiongo/domain";
+import { itemFilterKey, MAX_ITEM_ATTACHMENTS, type ItemFilters } from "@missiongo/domain";
 import { ListFilters } from "./list-filters";
 import { pickItemFilters } from "./item-filters";
 import { BuilderHandoverNotice, ItemDeliveryPanel, ModuleBuilderSetting, TransferBuilderModal, useItemDelivery, executionStatusLabel } from "./item-delivery";
@@ -3381,7 +3381,8 @@ function CommentComposer({ idPrefix="", item, onPosted, onNotice, replyTo, onCan
   const attempt = useRef(draft.attempt ?? { fingerprint: "", key: "" });
   const existingIds = new Set(item.attachments.map(attachment => attachment.id));
   const selectedAlreadyCounted = files.filter(file => existingIds.has(uploaded.current.get(file) ?? "")).length;
-  const capacity = Math.max(0, 10 - item.attachments.length + selectedAlreadyCounted);
+  // Server caps one comment at 10 attachment references; uploads also draw on the item budget.
+  const capacity = Math.max(0, Math.min(10, MAX_ITEM_ATTACHMENTS - item.attachments.length + selectedAlreadyCounted));
   const remaining = Math.max(0, capacity - files.length);
   const missingDraftFiles=draft.attachmentNames.length>0 && files.length===0;
   const mutation = useMutation({
@@ -3716,16 +3717,16 @@ function EditItemForm({ item, onSaved, onCancel }: { item: WorkItem; onCancel: (
 
   const addIncomingFiles = (incoming: readonly File[]) => {
     const diagnosticSlots = draft.diagnosticLog.trim() ? 1 : 0;
-    const result = validateIncomingFiles(files, incoming, t, Math.max(0, 10 - remainingAttachments.length - diagnosticSlots));
+    const result = validateIncomingFiles(files, incoming, t, Math.max(0, MAX_ITEM_ATTACHMENTS - remainingAttachments.length - diagnosticSlots));
     setFiles(result.files);
     setFileError(result.error ?? null);
   };
-  const remainingDropSlots = Math.max(0, 10 - remainingAttachments.length - (draft.diagnosticLog.trim() ? 1 : 0) - files.length);
+  const remainingDropSlots = Math.max(0, MAX_ITEM_ATTACHMENTS - remainingAttachments.length - (draft.diagnosticLog.trim() ? 1 : 0) - files.length);
   const { isDraggingFiles, dropHandlers } = useFileDropZone(addIncomingFiles, { canAccept: remainingDropSlots > 0 });
 
   const mutation = useMutation({
     mutationFn: async () => {
-      const attachmentLimit = Math.max(0, 10 - remainingAttachments.length);
+      const attachmentLimit = Math.max(0, MAX_ITEM_ATTACHMENTS - remainingAttachments.length);
       if (files.length + (draft.diagnosticLog.trim() ? 1 : 0) > attachmentLimit) {
         throw new Error(t("tooManyFiles", { count: attachmentLimit }));
       }
@@ -3794,7 +3795,7 @@ function EditItemForm({ item, onSaved, onCancel }: { item: WorkItem; onCancel: (
         files={files}
         onFiles={setFiles}
         fileError={fileError}
-        attachmentLimit={Math.max(0, 10 - remainingAttachments.length)}
+        attachmentLimit={Math.max(0, MAX_ITEM_ATTACHMENTS - remainingAttachments.length)}
         existingItemKey={item.key}
         existingAttachments={remainingAttachments}
         onDeleteExistingAttachment={attachmentId => setRemovedAttachments(previous => [...previous, attachmentId])}
@@ -3820,7 +3821,7 @@ function WorkItemFields({
   files,
   onFiles,
   fileError,
-  attachmentLimit = 10,
+  attachmentLimit = MAX_ITEM_ATTACHMENTS,
   existingItemKey,
   existingAttachments = [],
   onDeleteExistingAttachment,
@@ -4177,18 +4178,18 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
 
   const addIncomingFiles = (incoming: readonly File[]) => {
     const diagnosticSlots = draft.diagnosticLog.trim() ? 1 : 0;
-    const result = validateIncomingFiles(files, incoming, t, 10 - diagnosticSlots);
+    const result = validateIncomingFiles(files, incoming, t, MAX_ITEM_ATTACHMENTS - diagnosticSlots);
     setFiles(result.files);
     setFileError(result.error ?? null);
   };
-  const remainingDropSlots = Math.max(0, 10 - (draft.diagnosticLog.trim() ? 1 : 0) - files.length);
+  const remainingDropSlots = Math.max(0, MAX_ITEM_ATTACHMENTS - (draft.diagnosticLog.trim() ? 1 : 0) - files.length);
   const { isDraggingFiles, dropHandlers } = useFileDropZone(addIncomingFiles, { canAccept: remainingDropSlots > 0 });
 
   const mutation = useMutation({
     mutationFn: async (status: "inbox" | "ready") => {
       if (!canOperate) throw new Error(t("captureReadOnly"));
-      if (files.length + (draft.diagnosticLog.trim() ? 1 : 0) > 10) {
-        throw new Error(t("tooManyFiles", { count: 10 }));
+      if (files.length + (draft.diagnosticLog.trim() ? 1 : 0) > MAX_ITEM_ATTACHMENTS) {
+        throw new Error(t("tooManyFiles", { count: MAX_ITEM_ATTACHMENTS }));
       }
       if (diagnosticLogBytes(draft.diagnosticLog) > MAX_DIAGNOSTIC_LOG_BYTES) {
         throw new Error(t("diagnosticTooLarge"));

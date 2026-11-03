@@ -2,6 +2,8 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { closeSync, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readSync, readdirSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { extname } from "node:path";
 
+import { MAX_ITEM_ATTACHMENTS } from "@missiongo/domain";
+
 import { conflict, invalidInput, MissionGoError, notFound } from "./errors.js";
 import { validateUploadMetadata, validateZipSignature, type AttachmentStorage } from "./attachment-storage.js";
 import type { MissionGoStore } from "./store.js";
@@ -255,8 +257,8 @@ export class McpAttachmentUploads {
   }
 
   private checkedUploads(ids: readonly string[], owner: Owner, productId: string): UploadRow[] {
-    if (ids.length < 1 || ids.length > 10 || new Set(ids).size !== ids.length) {
-      throw invalidInput("Give 1 to 10 distinct attachment upload IDs.");
+    if (ids.length < 1 || ids.length > MAX_ITEM_ATTACHMENTS || new Set(ids).size !== ids.length) {
+      throw invalidInput(`Give 1 to ${MAX_ITEM_ATTACHMENTS} distinct attachment upload IDs.`);
     }
     return ids.map((id) => {
       const row = this.upload(id);
