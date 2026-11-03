@@ -47,8 +47,8 @@ export class ClaudeAdapter implements Adapter {
   private state: Snapshot = { status: "idle", messages: [], turnActive: false };
   private requests: Wire[] = [];
   private waits = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
-  constructor(job: Dispatch, executable: string) {
-    this.process = new JsonProcess(executable, claudeArguments(job, this.ref), job.repoPath);
+  constructor(job: Dispatch, executable: string, env = process.env) {
+    this.process = new JsonProcess(executable, claudeArguments(job, this.ref), job.repoPath, env);
     this.process.onEvent = (event) => this.event(event);
     this.process.onClose = () => {
       this.state.status = "unavailable"; this.state.error = "Claude host stopped; no automatic restart";

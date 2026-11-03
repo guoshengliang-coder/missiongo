@@ -1,4 +1,5 @@
 import type { WorkItemEvent } from "./types";
+import type { CommentCategory } from "./comment-filters";
 
 export interface TimelineEntry {
   readonly id: string;
@@ -139,4 +140,26 @@ export function recentDiscussions(events:readonly WorkItemEvent[]) {
 
 export function discussionActivity(entry:TimelineEntry & {replies:readonly WorkItemEvent[]}):string {
   return entry.replies.reduce((latest,reply)=>reply.createdAt>latest?reply.createdAt:latest,entry.event.createdAt);
+}
+
+export function timelineCategory(event: WorkItemEvent): CommentCategory {
+  return event.eventType === "comment_added" && (event.actorKind === "human" || event.actorKind === "agent")
+    ? event.actorKind : "activity";
+}
+
+/** Group the complete evidence first, so filtering cannot orphan replies or uploads. */
+export function filterDiscussionTimeline(events: readonly WorkItemEvent[], view: "all" | "discussion",
+  categories: readonly CommentCategory[], revealedCommentId: string | null = null) {
+  const entries = groupDiscussionTimeline(events).map(entry => ({ ...entry,
+    visibleCommentIds: [entry.event, ...entry.replies].filter(event => event.eventType === "comment_added"
+      && (event.id === revealedCommentId || categories.includes(timelineCategory(event))
+        && (view === "all" || timelineCategory(event) !== "activity"))).map(event => event.id),
+  })).filter(entry => entry.event.eventType === "comment_added" ? entry.visibleCommentIds.length > 0
+    : view === "all" && categories.includes("activity"));
+  if (view === "discussion") {
+    const activity = (entry: typeof entries[number]) => [entry.event, ...entry.replies]
+      .filter(event => entry.visibleCommentIds.includes(event.id)).reduce((latest, event) => event.createdAt > latest ? event.createdAt : latest, "");
+    entries.sort((a, b) => activity(b).localeCompare(activity(a)));
+  }
+  return entries;
 }

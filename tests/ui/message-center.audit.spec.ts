@@ -102,6 +102,27 @@ test("protects pending submissions and attachment drafts in the reused business 
   await page.keyboard.press("Escape");await expect(business).toHaveCount(0);
 });
 
+test("reveals a filtered notification target without clearing the underlying comment link",async({page})=>{
+  const {item,notification}=await seed(page);
+  const account=(await(await page.request.get("/api/v1/bootstrap")).json()).user;
+  await page.addInitScript(id=>localStorage.setItem(`missiongo.comment-filters.v1:${encodeURIComponent(id)}`,JSON.stringify(["agent"])),account.id);
+  await page.goto(`/?product=${fixture.productId}&status=all&item=${item.key}&comment=${notification.commentId}`);
+  const originalUrl=page.url(),original=page.locator(`#comment-${notification.commentId}`);
+  await expect(original).toBeFocused();
+  await page.locator("#comment-draft").fill("筛选前的工作区草稿");
+  await page.getByRole("button",{name:"消息",exact:true}).click();
+  await page.locator(".message-list-row").filter({hasText:item.key}).click();
+  await page.getByRole("button",{name:"前往评论 / 回复",exact:true}).click();
+  const business=page.locator(".message-business-modal"),target=business.locator(`#message-comment-${notification.commentId}`);
+  await expect(target).toBeFocused();
+  await expect(business.locator(".comment-filter-reveal")).toBeVisible();
+  await business.getByRole("button",{name:"恢复筛选显示",exact:true}).click();
+  await expect(target).toHaveCount(0);await expect(page).toHaveURL(originalUrl);
+  await page.keyboard.press("Escape");await expect(business).toHaveCount(0);
+  await page.keyboard.press("Escape");await expect(page.locator(".message-center-layer")).toHaveCount(0);
+  await expect(original).toBeVisible();await expect(page.locator("#comment-draft")).toHaveValue("筛选前的工作区草稿");
+});
+
 test("all-read updates another tab, keeps the zero badge entry, and search shortcuts retain the filter",async({page,context})=>{
   await seed(page);await page.goto(`/?product=${fixture.productId}&status=all`);
   const other=await context.newPage();await other.goto(`/?product=${fixture.productId}&status=all`);
