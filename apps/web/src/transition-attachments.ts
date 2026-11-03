@@ -1,3 +1,5 @@
+import { MAX_ITEM_ATTACHMENTS } from "@missiongo/domain";
+
 import { errorMessageKey } from "./error-text";
 import type { MessageKey } from "./i18n";
 import { api } from "./api";
@@ -21,13 +23,14 @@ export class TransitionAttachmentAttempt {
   executionDisposition: "keep_running" | "stop_requested" | undefined;
 
   capacity(items: readonly WorkItem[], files: readonly File[]): number {
-    return Math.max(0, Math.min(...items.map(item => {
+    // Server caps one transition at 10 attachment references; uploads also draw on each item's budget.
+    return Math.max(0, Math.min(10, ...items.map(item => {
       const counted = new Set(item.attachments.map(file => file.id));
       const uploads = this.uploads.get(item.key);
       const selected = files.filter(file => counted.has(uploads?.get(file)?.id ?? "")).length;
       // A partial upload can precede a refreshed item snapshot.
       const uncounted = [...(uploads?.values() ?? [])].filter(upload => upload.id && !counted.has(upload.id)).length;
-      return 10 - item.attachments.length - uncounted + selected
+      return MAX_ITEM_ATTACHMENTS - item.attachments.length - uncounted + selected
         + files.filter(file => { const id = uploads?.get(file)?.id; return id && !counted.has(id); }).length;
     })));
   }
