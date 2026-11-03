@@ -211,6 +211,8 @@ remote() { ssh "$host" "$@"; }
 # describe artifacts staged locally for this deployment.
 before_snapshot="$(node scripts/release-receipt.mjs snapshot \
   --host "$host" --current-link "$current_link" --downloads-dir "$downloads_dir")"
+source "${MISSIONGO_RELEASE_TOOLS:?Use missiongo-release}/release-coverage-guard.sh"
+check_release_coverage
 node scripts/web-version.mjs check --previous-json "$before_snapshot"
 web_version="$(node -p 'JSON.parse(require("fs").readFileSync("product.json", "utf8")).web.version')"
 
@@ -558,12 +560,14 @@ fi
 
 if [ -n "$notice_origin" ]; then
   echo "==> Release notice receipt (JSON)"
-  node scripts/release-receipt.mjs compare \
+  release_receipt="$(node scripts/release-receipt.mjs compare \
     --host "$host" --current-link "$current_link" --downloads-dir "$downloads_dir" \
-    --before-json "$before_snapshot" --origin "$notice_origin" || {
+    --before-json "$before_snapshot" --origin "$notice_origin")" || {
     echo "Deployment finished, but the release receipt is unavailable; do not advance work items." >&2
     exit 1
   }
+  printf '%s\n' "$release_receipt"
+  reconcile_release_coverage "$release_receipt"
 fi
 
 echo "==> Done"

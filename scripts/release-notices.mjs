@@ -8,6 +8,9 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+import { releaseCandidatesFromPages } from "./release-candidates.mjs";
+export { releaseCandidatesFromPages } from "./release-candidates.mjs";
+
 const ARTIFACT_NAMES = {
   web: "Web/Server",
   androidApp: "Android App",
@@ -138,38 +141,6 @@ export function matchCandidates(receipt, candidates, resolvePr, ancestor = isAnc
   return { comments, skipped };
 }
 
-/** Refuse a partial candidate scan: an empty MCP page can still have a cursor. */
-export function releaseCandidatesFromPages(input) {
-  if (!Array.isArray(input?.pages) || input.pages.length === 0) {
-    throw new Error("Release candidates need every list_release_candidates page");
-  }
-  let productId;
-  let expectedCursor = null;
-  const candidates = [];
-  const seen = new Set();
-  for (const page of input.pages) {
-    if (!page || page.requestedBeforeSequence !== expectedCursor
-      || typeof page.productId !== "string" || !page.productId
-      || !Array.isArray(page.candidates)) {
-      throw new Error("Release candidate pages have a missing or incorrect cursor");
-    }
-    productId ??= page.productId;
-    if (page.productId !== productId) throw new Error("Release candidate pages span products");
-    for (const candidate of page.candidates) {
-      if (seen.has(candidate?.itemKey)) throw new Error("Release candidate pages repeat an item");
-      seen.add(candidate?.itemKey);
-      candidates.push(candidate);
-    }
-    const next = page.nextBeforeSequence ?? null;
-    if (next !== null && (!Number.isSafeInteger(next) || next <= 0
-      || (expectedCursor !== null && next >= expectedCursor))) {
-      throw new Error("Release candidate cursor is invalid");
-    }
-    expectedCursor = next;
-  }
-  if (expectedCursor !== null) throw new Error("Release candidate scan stopped before the final page");
-  return { productId, candidates };
-}
 
 function main() {
   const args = process.argv.slice(2);
