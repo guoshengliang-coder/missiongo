@@ -1,4 +1,4 @@
-import type { PersonalNotificationDetail, PersonalNotificationFilter, PersonalNotificationPage } from "@missiongo/domain";
+import type { PersonalAttentionCount, PersonalTodoPage, PersonalNotificationDetail, PersonalNotificationFilter, PersonalNotificationPage } from "@missiongo/domain";
 import type { CommentAudienceInput, CommentCandidate } from "@missiongo/domain";
 import type { ItemFilters } from "@missiongo/domain";
 import { appendItemFilters } from "./item-filters";
@@ -279,6 +279,11 @@ function insightSearch(input: InsightQuery & {productIds?: string[]} & Partial<I
 }
 
 export const api = {
+  personalAttentionCount: () => request<PersonalAttentionCount>("/api/v1/attention/count"),
+  personalTodos: (filter:{productId?:string;beforeSequence?:number}={}) => {
+    const query=new URLSearchParams();for(const [key,value] of Object.entries(filter))if(value!==undefined)query.set(key,String(value));
+    return request<PersonalTodoPage>(`/api/v1/attention/todos?${query}`);
+  },
   personalNotifications: (filter:PersonalNotificationFilter={}) => {
     const query=new URLSearchParams();for(const [key,value] of Object.entries(filter))if(value!==undefined)query.set(key,String(value));
     return request<PersonalNotificationPage>(`/api/v1/notifications?${query}`);
