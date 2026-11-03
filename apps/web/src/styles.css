@@ -667,12 +667,25 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-console-background li { margin-top: 4px; }
 .agent-console-background li small { margin-left: 8px; color: var(--muted); }
 .agent-console-background li button, .agent-session-background li button { margin-left: 8px; }
-.agent-console-approval { align-self: center; width: min(680px, 92%); padding: 12px; border: 1px solid var(--accent-line); border-radius: var(--radius-md); background: var(--status-progress-bg); overflow-wrap: anywhere; }
-.agent-console-approval p { margin: 8px 0; white-space: pre-wrap; }
-.agent-console-approval small { color: var(--muted); }
-.agent-console-approval-actions > div { display: grid; gap: 4px; max-width: 100%; }
-.agent-console-approval-actions > div small { overflow-wrap: anywhere; }
-.agent-console-approval-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.agent-console-approval { display: grid; grid-template-columns: minmax(0, 1fr); align-self: stretch; min-width: 0; font-size: var(--text-sm); overflow-wrap: anywhere; }
+.agent-console-approval header { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.agent-console-approval header > svg { flex: 0 0 auto; }
+.agent-console-approval header strong { font-size: var(--text-sm); }
+.agent-console-approval header span { margin-left: auto; font-size: var(--text-xs); }
+.agent-console-approval .agent-console-approval-detail { min-width: 0; }
+.agent-console-approval-detail summary { display: flex; align-items: center; gap: 6px; min-height: 32px; color: var(--ink-2); list-style: none; }
+.agent-console-approval-detail summary::-webkit-details-marker { display: none; }
+.agent-console-approval-detail summary::before { content: "▸"; flex: 0 0 auto; color: var(--warn-text); }
+.agent-console-approval-detail[open] summary::before { content: "▾"; }
+.agent-console-approval-detail summary > span { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: pre-wrap; line-height: 1.5; font-weight: 500; }
+.agent-console-approval-detail[open] summary > span { -webkit-line-clamp: unset; }
+.agent-console-approval-detail p { white-space: pre-wrap; }
+.agent-console-approval-detail > div { min-width: 0; }
+.agent-console-approval-detail:not([open]) > div { display: none; }
+.agent-console-approval small { display: block; color: var(--muted); font-size: var(--text-xs); line-height: 1.5; }
+.agent-console-approval-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); align-items: stretch; gap: 8px; }
+.agent-console-approval-actions button { min-width: 0; width: 100%; flex-direction: column; gap: 4px; min-height: 32px; padding: 6px 10px; font-size: var(--text-sm); white-space: normal; overflow-wrap: anywhere; box-shadow: none; }
+.agent-console-approval-actions button small { color: inherit; font-weight: 400; }
 .agent-console-dispatch-state { align-self: center; max-width: 520px; display: grid; justify-items: center; gap: 7px; padding: 18px; color: var(--muted); background: var(--surface-sunken); border: 1px solid var(--line); border-radius: var(--radius-lg); text-align: center; }
 .agent-console-dispatch-state strong { color: var(--ink); font-size: var(--text-sm); }
 .agent-console-dispatch-state p { margin: 0; font-size: var(--text-xs); }
@@ -3157,6 +3170,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .agent-console-attention-banner--approval summary { min-height: 44px; line-height: 44px; }
   .agent-console-attention-banner--approval > svg { margin-top: 14px; }
   .agent-console-attention-banner--approval button { min-height: 44px; }
+  .agent-console-approval-detail summary, .agent-console-approval-actions button { min-height: 44px; }
 }
 
 .comment-reply-author { display: block; max-width: 100%; min-height: 28px; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; background: none; border: 0; font: inherit; text-align: start; cursor: pointer; }

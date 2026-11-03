@@ -202,6 +202,13 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 触屏上「查看详情」与「复制诊断」均常驻，点击区域至少 44px；复制失败提示展开后手动选取。
 详情长行可以换行，不撑宽会话窗格。后续回合运行或成功时卡片消失，旧列表缓存不得使它复现。
 
+### 会话权限请求（AND-361）
+
+- 权限请求复用 `agent-console-attention-banner` 的黄色警告令牌、字号与圆角，在同一权限区展示状态、请求详情和来源提供的授权范围。请求期间不再同时显示通用计划批准或“无需处理”入口；来源请求消失后，独立的计划批准流程恢复。
+- 原生 `details` 默认展示两行请求摘要，点击或键盘展开可读完整请求与说明。授权选项始终在折叠区外；单次批准最多一个主按钮，其他范围和拒绝使用次级按钮，不替用户选择范围。
+- 按容器宽度排列可换行按钮，使用统一字号令牌；触控按钮和详情展开入口至少 44px。长来源文本和选项说明不能撑宽会话。
+- 提交期间保留原请求和排队反馈，禁止重复提交；失败保留选项可重试，重连不展示旧操作。复查入口包括手动授权、自动拒绝后的人工重试及普通计划批准。验证来源为 `and-361-unified-approval.audit.spec.ts`、`agent-approval-visibility.audit.spec.ts`、`and-349-approval-banner.audit.spec.ts` 与 `plan-approval.audit.spec.ts`。
+
 ### 单选控件（AND-322）
 
 - Web、Android/macOS 内嵌 Web 页面及反馈 SDK 页统一使用 `Select`（`apps/web/src/select.tsx`），提供可访问的 select-only combobox。独立原生选择器保留系统行为，详见[覆盖清单](and-322-select-audit.md)。
