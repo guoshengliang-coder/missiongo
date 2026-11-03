@@ -806,6 +806,20 @@ final class OpenCodeTests: XCTestCase {
         XCTAssertEqual(report.effort, "high")
     }
 
+    func testExternalEffortChangeRefusesAChangedSourceModelInsteadOfClaimingAnUnsupportedVariant() async throws {
+        let catalog = OpenCodeModelCatalog(models: [AgentModelOption(id: "provider/changed", label: "Changed", efforts: [])], defaultRef: nil)
+        let control = StubOpenCodeControl(mcpStatus: "connected", catalog: catalog,
+            info: ("build", OpenCodeModelRef(modelId: "changed", providerId: "provider")))
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(
+            id: "external", agentKind: "opencode", sessionRef: "ses_test", status: "idle",
+            desiredSettings: AgentSessionSettings(revision: 1, effort: "high"), externalBindingGeneration: 1))
+        XCTAssertEqual(report.settingsRevision, 1)
+        XCTAssertTrue(report.settingsError?.contains("当前模型不提供此强度") == true)
+        XCTAssertNil(report.effort)
+        let applied = await control.appliedModels
+        XCTAssertTrue(applied.isEmpty)
+    }
+
     func testSynchronizeKeepsTheSessionsModelForAnEffortOnlyChange() async throws {
         let catalog = OpenCodeModelCatalog(
             models: [AgentModelOption(id: "deepseek/deepseek-v4", label: "DeepSeek V4", efforts: ["high"])],

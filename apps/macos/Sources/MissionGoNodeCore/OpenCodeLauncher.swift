@@ -1054,6 +1054,10 @@ public struct OpenCodeLauncher: AgentAdapter {
                         base = catalog?.defaultRef
                     }
                     if let base {
+                        if session.externalBindingGeneration != nil, let requestedEffort = desired.effort,
+                           catalog?.efforts(forCompoundId: base.compoundId)?.contains(requestedEffort) != true {
+                            throw LaunchError("原会话当前模型不提供此强度，未应用设置。")
+                        }
                         let ref = base.withVariant(desired.effort, efforts: catalog?.efforts(forCompoundId: base.compoundId))
                         try await control.setModel(id: session.sessionRef, model: ref)
                         model = ref.compoundId

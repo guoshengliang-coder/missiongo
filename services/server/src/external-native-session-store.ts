@@ -373,7 +373,12 @@ export class ExternalNativeSessionStore {
         if (input.settingsRevision > settings.settled) {
           settings.settled = input.settingsRevision;
           if (input.settingsError) settings.error = input.settingsError; else delete settings.error;
-          if (!input.settingsError && input.settingsRevision === settings.revision) settings.values = { ...settings.values, ...settings.desired };
+          // Acknowledgement is not proof that omitted values equal the request.
+          // Sources may normalize a variant or change in their original client.
+          if (!input.settingsError && input.settingsRevision === settings.revision) settings.values = {
+            ...(input.mode ? { mode: input.mode } : {}), ...(input.model ? { model: input.model } : {}),
+            ...(input.effort ? { effort: input.effort } : {}),
+          };
           this.db.prepare("UPDATE external_agent_sessions SET native_settings_json=? WHERE id=?").run(JSON.stringify(settings), row.id);
         }
       }

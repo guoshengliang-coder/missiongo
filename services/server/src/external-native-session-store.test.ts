@@ -439,3 +439,14 @@ it("does not let an old worker silently drop pending settings from a queued repl
   expect(f.native.listForNode("owner", "node", "worker-one", () => {}, false, true)[0])
     .toMatchObject({ desiredSettings: { model: "model-b", revision: 1 }, command: { status: "queued" } });
 });
+
+
+it("never invents confirmed values from a request when the source omits or normalizes them", () => {
+  const f = settingsFixture();
+  f.native.requestSettings("owner", f.id, { effort: "high" });
+  f.report({ settingsSupport: ["model", "effort"], settingsRevision: 1, model: "model-b" });
+  const actual = f.native.overlay("owner", f.id).settings;
+  expect(actual.model).toBe("model-b");
+  expect(actual.effort).toBeUndefined();
+  expect(actual.pending).toBeUndefined();
+});
