@@ -1,5 +1,6 @@
 import { chooseOption } from "./select-helpers";
 import {readFileSync} from "node:fs";
+import {randomUUID} from "node:crypto";
 import {expect,test} from "@playwright/test";
 import {AUDIT_SOURCE} from "./audit-page.mjs";
 const fixture=JSON.parse(readFileSync(new URL("./.auth/fixture.json",import.meta.url),"utf8")) as {productId:string};
@@ -7,9 +8,15 @@ for(const width of [375,1440])for(const theme of ["light","dark"] as const){
  test.describe(`${width}px ${theme} statistics`,()=>{
   test.use({viewport:{width,height:900},hasTouch:width===375,isMobile:width===375,colorScheme:theme});
   test("renders shared totals, expands chart points and preserves filters through item navigation",async({page,request})=>{
-   const result=await request.get(`/api/v1/project-insights?period=today&productIds=${fixture.productId}`);expect(result.status()).toBe(200);
+   // The full suite can cross midnight in Asia/Shanghai. Global fixtures may
+   // then have zero items "today"; seed this navigation test at its own start.
+   const createdProduct=await request.post("/api/v1/products",{data:{name:`Statistics navigation ${width} ${theme}`,keyPrefix:`S${randomUUID().replaceAll("-", "").slice(0,5).toUpperCase()}`}});
+   expect(createdProduct.status()).toBe(201);const productId=(await createdProduct.json()).id as string;
+   const createdItem=await request.post("/api/v1/items",{data:{productId,title:"Statistics navigation fixture",description:"Isolated report navigation item",type:"task",priority:"normal",status:"inbox",environment:{platform:"web"}}});
+   expect(createdItem.status()).toBe(201);
+   const result=await request.get(`/api/v1/project-insights?period=today&productIds=${productId}`);expect(result.status()).toBe(200);
    const data=await result.json();
-   await page.goto(`/?statistics=1&statsProject=${fixture.productId}&statsPeriod=today`);
+   await page.goto(`/?statistics=1&statsProject=${productId}&statsPeriod=today`);
    await expect(page.getByRole("heading",{name:"产品统计",exact:true})).toBeVisible();
    await expect(page.locator(".statistics-metric").filter({has:page.getByRole("heading",{name:"新增条目",exact:true})}).getByRole("button")).toHaveText(String(data.aggregate.counts.created));
    await page.waitForLoadState("networkidle");
@@ -26,7 +33,7 @@ for(const width of [375,1440])for(const theme of ["light","dark"] as const){
    await details.locator(".statistics-item-link").first().click();
    await expect(page.locator(".detail-toolbar")).toBeVisible();await page.goBack();
    await expect(page.getByRole("heading",{name:"产品统计",exact:true})).toBeVisible();
-   await expect(page.getByRole("combobox",{name:"产品范围",exact:true})).toHaveAttribute("data-value", fixture.productId);
+   await expect(page.getByRole("combobox",{name:"产品范围",exact:true})).toHaveAttribute("data-value", productId);
    await expect(page.getByRole("combobox",{name:"统计时间",exact:true})).toHaveAttribute("data-value", "today");
    await expect(page).toHaveURL(/statsDay=/);
   });
