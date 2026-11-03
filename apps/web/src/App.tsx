@@ -18,6 +18,7 @@ import { pickItemFilters } from "./item-filters";
 import { BuilderHandoverNotice, ItemDeliveryPanel, ModuleBuilderSetting, TransferBuilderModal, useItemDelivery, executionStatusLabel } from "./item-delivery";
 import { CommentDingTalkNotifications, useItemDingTalkNotifications } from "./dingtalk-settings";
 import { CommentMoreActions } from "./comment-actions";
+import { COMMENT_CATEGORIES, useCommentFilters } from "./comment-filters";
 import {EMPTY_COMMENT_DRAFT,useCommentDraft,type CommentDraft} from "./comment-draft";
 import {useBeforeUnloadGuard} from "./unsaved-changes";
 import { statisticsIsOpen, statisticsUrl, statisticsExitUrl } from "./statistics-state";
@@ -47,6 +48,7 @@ import {
   Download,
   ExternalLink,
   FileText,
+  Filter,
   Highlighter,
   ImageIcon,
   Inbox,
@@ -154,7 +156,7 @@ import { settingsRoute as readSettingsRoute, type ProductSettingsSection } from 
 import { applyConsoleFontScale, applyFontScale, readStoredConsoleFontScale, readStoredFontScale, storeConsoleFontScale, storeFontScale } from "./font-scale";
 import { mayAdministerProduct } from "./product-permissions";
 import { parseFeedbackLog, transitionRequiresNote, TRANSITION_NOTE_MAX_LENGTH } from "@missiongo/domain";
-import { statusChangeNote, dispatchedEvent, groupDiscussionTimeline, recentDiscussions } from "./timeline";
+import { statusChangeNote, dispatchedEvent, filterDiscussionTimeline } from "./timeline";
 import { TransitionNoteDialog, transitionNoteCopy } from "./transition-note-dialog";
 import { VerificationReturnBadge, VerificationReturnCallout, VerificationReturnSummary } from "./verification-return";
 import { StartWorkDialog } from "./start-work-dialog";
@@ -2645,12 +2647,21 @@ function DetailPane({
       url.searchParams.delete("comment");history.replaceState(history.state,"",url);
     }
   };
+  const {categories:commentCategories,update:updateCommentCategories,storageFailed:filterStorageFailed}=useCommentFilters(accountId);
+  const [commentFiltersOpen,setCommentFiltersOpen]=useState(false);
+  const [revealedCommentId,setRevealedCommentId]=useState<string|null>(null);
   const [timelineView,setTimelineView]=useState<"all"|"discussion">("all");
+  const timelineEntries=filterDiscussionTimeline(timelineQuery.data?.events ?? [],timelineView,commentCategories,revealedCommentId);
   const [focusedCommentId,setFocusedCommentId]=useState<string|null>(null);
   const replyUnavailable=Boolean(commentDraft.replyToCommentId && timelineQuery.isSuccess && !replyTo);
-  const locateComment=(id:string)=>{setTimelineView("discussion");setFocusedCommentId(id);};
+  const locateComment=(id:string)=>{setTimelineView("discussion");setRevealedCommentId(id);setFocusedCommentId(id);};
+  const clearCommentReveal=()=>{
+    setRevealedCommentId(null);setFocusedCommentId(null);
+    const url=new URL(window.location.href);
+    if(url.searchParams.has("comment")){url.searchParams.delete("comment");history.replaceState(history.state,"",url);}
+  };
   const handledCommentLink=useRef("");
-  useEffect(()=>{setFocusedCommentId(null);},[itemKey]);
+  useEffect(()=>{setFocusedCommentId(null);setRevealedCommentId(null);},[itemKey]);
   useEffect(()=>{
     if(!focusedCommentId)return;
     const frame=requestAnimationFrame(()=>{
@@ -2669,7 +2680,7 @@ function DetailPane({
     if(!event)return;
     handledCommentLink.current=`${itemKey}:${commentId}`;
     if(!event.payload.withdrawnAt)updateCommentDraft(current=>({...current,replyToCommentId:event.id}));
-    setTimelineView("discussion");setFocusedCommentId(commentId);
+    setTimelineView("discussion");setRevealedCommentId(commentId);setFocusedCommentId(commentId);
   },[accountId,itemKey,timelineQuery.data,updateCommentDraft]);
   // History and current-stage attention arrive together, so an error always
   // belongs to the dispatch whose target and console link the header shows.
@@ -3022,19 +3033,40 @@ function DetailPane({
                 </details>
               )}
             </section>
-            <section className="timeline-block">
-              <header className="timeline-head">
-                <h3>{t("timeline")}</h3>
+            <section className="timeline-block" aria-label={t("commentFilterTitle")}>
+              <header className="timeline-head comment-toolbar">
+                <div className="comment-view-switch" role="group" aria-label={t("commentRecordView")}>
+                  <button type="button" aria-pressed={timelineView==="discussion"} onClick={()=>{setTimelineView("discussion");clearCommentReveal();}}>{t("commentDiscussionView")}</button>
+                  <button type="button" aria-pressed={timelineView==="all"} onClick={()=>{setTimelineView("all");clearCommentReveal();}}>{t("commentAllActivity")}</button>
+                </div>
                 <small>{t(timelineView==="discussion"?"discussionRecentFirst":"newestFirst")}</small>
+                <button type="button" className="secondary-button comment-filter-trigger" onClick={()=>setCommentFiltersOpen(true)}>
+                  <Filter size={16} aria-hidden="true" />{t("commentFilterCount",{count:commentCategories.filter(category=>timelineView==="all" || category!=="activity").length,total:timelineView==="all"?3:2})}
+                </button>
               </header>
-              <div className="comment-view-switch" role="group" aria-label={t("commentRecordView")}>
-                <button type="button" aria-pressed={timelineView==="discussion"} onClick={()=>setTimelineView("discussion")}>{t("commentDiscussionView")}</button>
-                <button type="button" aria-pressed={timelineView==="all"} onClick={()=>setTimelineView("all")}>{t("commentAllActivity")}</button>
-              </div>
+              {commentFiltersOpen && <Modal title={t("commentFilterTitle")} subtitle={t("commentFilterSaved")} onClose={()=>setCommentFiltersOpen(false)}>
+                <div className="list-filter-choices comment-filter-choices">
+                  {COMMENT_CATEGORIES.filter(category=>timelineView==="all" || category!=="activity").map(category=><label key={category}>
+                    <input type="checkbox" checked={commentCategories.includes(category)} onChange={event=>{
+                      clearCommentReveal();
+                      updateCommentCategories(event.target.checked?[...commentCategories,category]:commentCategories.filter(value=>value!==category));
+                    }} />{t(category==="human"?"commentFilterHuman":category==="agent"?"commentFilterAgent":"commentFilterActivity")}
+                  </label>)}
+                </div>
+                <p className="field-help">{t("commentFilterAgentHelp")}</p>
+                {filterStorageFailed && <p role="alert">{t("commentFilterSaveFailed")}</p>}
+                <button type="button" className="secondary-button" onClick={()=>{updateCommentCategories(COMMENT_CATEGORIES);clearCommentReveal();}}>{t("commentFilterReset")}</button>
+              </Modal>}
+              {revealedCommentId && <p className="comment-filter-reveal" role="status">{t("commentFilterRevealed")} <button type="button" className="text-button" onClick={clearCommentReveal}>{t("commentFilterRestore")}</button></p>}
               {timelineQuery.isLoading && <LoaderCircle className="spin" size={18} />}
-              {timelineView==="discussion" && timelineQuery.isSuccess && !recentDiscussions(timelineQuery.data.events).length && <p className="comment-empty">{t("commentDiscussionEmpty")}</p>}
+              {timelineQuery.isError && <div role="alert"><p>{t("commentFilterLoadFailed")}</p><button type="button" className="secondary-button" onClick={()=>void timelineQuery.refetch()}>{t("retry")}</button></div>}
+              {timelineQuery.isSuccess && !timelineEntries.length && <div className="comment-filter-empty">
+                <MessageSquarePlus size={22} aria-hidden="true" /><strong>{t("commentFilterEmpty")}</strong>
+                <p>{t("commentFilterEmptyHelp")}</p>
+                <button type="button" className="secondary-button" onClick={()=>updateCommentCategories(COMMENT_CATEGORIES)}>{t("commentFilterReset")}</button>
+              </div>}
               <div className="timeline">
-                {(timelineView==="discussion"?recentDiscussions(timelineQuery.data?.events ?? []):groupDiscussionTimeline(timelineQuery.data?.events ?? [])).map(({ id, event, count, filenames, replies }) => (
+                {timelineEntries.map(({ id, event, count, filenames, replies, visibleCommentIds }) => (
                   <div
                     className={`timeline-event${event.actorKind === "agent" ? " timeline-event--agent" : ""}${event.eventType === "comment_added" ? " timeline-event--comment" : ""}`}
                     key={id}
@@ -3095,7 +3127,7 @@ function DetailPane({
                       </p>}
                       {filenames.length > 0 && <p className="timeline-files">{filenames.join("、")}</p>}
                       {event.eventType === "comment_added" && (
-                        <CommentGroup root={event} replies={replies} item={item} onReply={setReplyTo} onNotice={onNotice} notificationsQuery={notificationsQuery}
+                        <CommentGroup root={event} replies={replies} visibleCommentIds={visibleCommentIds} item={item} onReply={setReplyTo} onNotice={onNotice} notificationsQuery={notificationsQuery}
                           focusedCommentId={focusedCommentId} onClearFocus={()=>setFocusedCommentId(null)}
                           onWithdraw={async commentId=>{if(await confirm(t("withdrawCommentConfirm")))withdrawMutation.mutate(commentId);}} />
                       )}
@@ -3232,31 +3264,37 @@ function commentHeading(event: WorkItemEvent, analysisLabel: string, commentLabe
   return event.actorKind === "agent" && event.payload.bodyKind === "structured" ? analysisLabel : commentLabel;
 }
 
-function CommentGroup({root,replies,item,onReply,onWithdraw,onNotice,notificationsQuery,focusedCommentId,onClearFocus}:{
-  root:WorkItemEvent;replies:readonly WorkItemEvent[];item:WorkItem;onReply:(event:WorkItemEvent)=>void;onWithdraw:(id:string)=>void;
+function CommentGroup({root,replies,visibleCommentIds,item,onReply,onWithdraw,onNotice,notificationsQuery,focusedCommentId,onClearFocus}:{
+  root:WorkItemEvent;replies:readonly WorkItemEvent[];visibleCommentIds:readonly string[];item:WorkItem;onReply:(event:WorkItemEvent)=>void;onWithdraw:(id:string)=>void;
   onNotice:(message:string)=>void;notificationsQuery:ReturnType<typeof useItemDingTalkNotifications>;
   focusedCommentId:string|null;onClearFocus:()=>void;
 }) {
   const {t,actorLabel,formatTime}=useI18n();
   const [expanded,setExpanded]=useState(false);
   const [authorName,setAuthorName]=useState<string|null>(null);
-  const focusedReply=replies.some(reply=>reply.id===focusedCommentId);
+  const [contextCommentId,setContextCommentId]=useState<string|null>(null);
+  const contextComment=[root,...replies].find(event=>event.id===contextCommentId);
+  const visibleReplies=replies.filter(reply=>visibleCommentIds.includes(reply.id));
+  const focusedReply=visibleReplies.some(reply=>reply.id===focusedCommentId);
   useEffect(()=>{if(focusedReply)setExpanded(true);},[focusedReply]);
-  const showAll=expanded || focusedReply || replies.length<=3;
+  const showAll=expanded || focusedReply || visibleReplies.length<=3;
   const events=[root,...replies],names=new Map(events.map(event=>[event.id,commentAuthor({...event,agentName:eventAgentName(event.payload)},actorLabel(event.actorKind))]));
   const renderComment=(event:WorkItemEvent,isReply:boolean)=><div id={`comment-${event.id}`} key={event.id} className={`${isReply?"comment-thread-reply":"comment-thread-root"}${focusedCommentId===event.id?" comment-focus-target":""}`} tabIndex={-1}>
       <span className="comment-avatar" aria-hidden="true">{Array.from(names.get(event.id) ?? "")[0]}</span>
       <div className="comment-message">
         <div className="comment-heading">
-        <header className="comment-byline"><strong><button type="button" className="comment-author-name" title={names.get(event.id)} onClick={()=>setAuthorName(names.get(event.id) ?? "")}>{names.get(event.id)}</button></strong><time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time>
-          {event.actorKind==="agent" && <span className="comment-actor-label">{commentHeading(event,t("agentAnalysis"),actorLabel("agent"))}</span>}
+        <header className="comment-byline"><strong><button type="button" className="comment-author-name" title={names.get(event.id)} onClick={()=>setAuthorName(names.get(event.id) ?? "")}>{names.get(event.id)}</button></strong>
         </header>
         {!item.transferred && !event.payload.withdrawnAt && <div className="comment-header-actions">
           <button type="button" className="text-button comment-reply-button" onClick={()=>onReply(event)}><MessageCircleReply size={16} aria-hidden="true" />{t("replyComment")}</button>
           <CommentMoreActions itemKey={item.key} commentId={event.id} onWithdraw={()=>onWithdraw(event.id)} onNotice={onNotice} />
         </div>}
+        <span className="comment-metadata"><time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time>
+          {event.actorKind==="agent" && <span className="comment-actor-label">{commentHeading(event,t("agentAnalysis"),actorLabel("agent"))}</span>}
+          {isReply && <button type="button" className="comment-reply-author" onClick={()=>setAuthorName(names.get(String(event.payload.replyToCommentId)) ?? t("originalComment"))}>{t("commentReplyTo",{name:names.get(String(event.payload.replyToCommentId)) ?? t("originalComment")})}</button>}
+          </span>
         </div>
-        {isReply && <p className="comment-reply-byline"><button type="button" className="comment-reply-author" onClick={()=>setAuthorName(names.get(String(event.payload.replyToCommentId)) ?? t("originalComment"))}>{t("commentReplyTo",{name:names.get(String(event.payload.replyToCommentId)) ?? t("originalComment")})}</button></p>}
+        {isReply && event.payload.replyToCommentId!==root.id && !visibleCommentIds.includes(String(event.payload.replyToCommentId)) && renderContext(events.find(parent=>parent.id===event.payload.replyToCommentId))}
         <CommentBody payload={event.payload} item={item} />
         <div className="comment-actions">
           <CommentDingTalkNotifications itemKey={item.key} commentId={event.id} query={notificationsQuery}
@@ -3265,14 +3303,19 @@ function CommentGroup({root,replies,item,onReply,onWithdraw,onNotice,notificatio
         </div>
       </div>
     </div>;
+  const renderContext=(event:WorkItemEvent|undefined)=>event && <button type="button" className="comment-filter-context" onClick={()=>setContextCommentId(event.id)}>
+    <span>{t("commentFilterContext",{name:names.get(event.id) ?? t("originalComment")})}</span>
+    <span>{event.payload.withdrawnAt?t("commentWithdrawn"):deriveSummary(typeof event.payload.summary==="string"?event.payload.summary:commentPlainText(event.payload.bodyKind,event.payload.body && typeof event.payload.body==="object"?event.payload.body as Record<string,unknown>:{})) || t("originalComment")}</span>
+  </button>;
   return <div className="comment-discussion" aria-label={t("commentDiscussion")}>
     {authorName!==null && <Modal title={t("commentAuthor")} subtitle="" onClose={()=>setAuthorName(null)}><p className="comment-author-full">{authorName}</p></Modal>}
-    {renderComment(root,false)}
-    <div id={`comment-replies-${root.id}`}>{(showAll?replies:replies.slice(-2)).map(reply=>renderComment(reply,true))}</div>
-    {replies.length>0 && <div className="comment-discussion-footer">
-      {replies.length>3 && <button type="button" className="text-button" aria-expanded={showAll} aria-controls={`comment-replies-${root.id}`}
-        onClick={()=>{onClearFocus();setExpanded(!showAll);}}>{t(showAll?"commentRepliesCollapse":"commentRepliesExpand",{count:replies.length})}</button>}
-      <small>{t(showAll?"commentReplyActivity":"commentLatestReplyActivity",{count:replies.length,time:formatTime(replies.at(-1)!.createdAt)})}</small>
+    {contextComment && <Modal title={t("originalComment")} subtitle={`${names.get(contextComment.id)} · ${formatTime(contextComment.createdAt)}`} onClose={()=>setContextCommentId(null)}><CommentBody payload={contextComment.payload} item={item} /></Modal>}
+    {visibleCommentIds.includes(root.id)?renderComment(root,false):renderContext(root)}
+    <div id={`comment-replies-${root.id}`}>{(showAll?visibleReplies:visibleReplies.slice(-2)).map(reply=>renderComment(reply,true))}</div>
+    {visibleReplies.length>0 && <div className="comment-discussion-footer">
+      {visibleReplies.length>3 && <button type="button" className="text-button" aria-expanded={showAll} aria-controls={`comment-replies-${root.id}`}
+        onClick={()=>{onClearFocus();setExpanded(!showAll);}}>{t(showAll?"commentRepliesCollapse":"commentRepliesExpand",{count:visibleReplies.length})}</button>}
+      <small>{t(showAll?"commentReplyActivity":"commentLatestReplyActivity",{count:visibleReplies.length,time:formatTime(visibleReplies.at(-1)!.createdAt)})}</small>
     </div>}
   </div>;
 }
