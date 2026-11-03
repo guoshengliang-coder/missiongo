@@ -318,15 +318,16 @@ export function createMissionGoMcpServer(
       title: "List development-complete work awaiting a verified release",
       description:
         "For one authorized product, list development-complete items whose handover records an integration reference and "
-        + "nonempty required artifacts. Explicit no-release work is excluded. The release client must verify all current public artifacts and the item before writing.",
+        + "nonempty required artifacts. With includeUnscoped, also return work missing scope/integration evidence, explicit no-release exclusions, and a timestamped coverageVersion=1 page for pre-deploy planning. The release client must verify integration and every required artifact.",
       inputSchema: z.object({
         productId: z.string().min(1),
         limit: z.number().int().min(1).max(100).default(50),
         beforeSequence: z.number().int().positive().optional(),
+        includeUnscoped: z.boolean().default(false),
       }),
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ productId, limit, beforeSequence }, ctx) => {
+    async ({ productId, limit, beforeSequence, includeUnscoped }, ctx) => {
       requireProductAccess(ctx, productId);
       const items = store.listWorkItems({
         productId,
@@ -334,22 +335,25 @@ export function createMissionGoMcpServer(
         limit,
         ...(beforeSequence ? { beforeSequence } : {}),
       });
+      const noReleaseItems: Array<{ itemKey: string; noReleaseReason: string }> = [];
       const candidates = items.flatMap((item) => {
         const handover = [...store.getTimeline(item.key)].reverse()
           .find((event) => !event.historySourceKey && event.toStatus === "development_complete" && event.eventType === "status_changed");
-        if (!handover) return [];
         let completion;
-        try { completion = normalizeCompletion(handover.payload); } catch { return []; }
-        const requiredArtifacts = store.getDevelopmentReleaseScope(item.key);
-        return Array.isArray(requiredArtifacts) && requiredArtifacts.length > 0
-          ? [{ itemKey: item.key, ...completionPayload(completion), requiredArtifacts }]
-          : [];
+        try { completion = normalizeCompletion(handover?.payload ?? {}); } catch { /* Coverage mode must report missing evidence. */ }
+        const { requiredArtifacts, noReleaseReason } = store.getDevelopmentReleaseDecision(item.key);
+        if (Array.isArray(requiredArtifacts) && !requiredArtifacts.length && typeof noReleaseReason === "string" && noReleaseReason.trim()) {
+          noReleaseItems.push({ itemKey: item.key, noReleaseReason }); return [];
+        }
+        if (!includeUnscoped && (!completion || !Array.isArray(requiredArtifacts) || !requiredArtifacts.length)) return [];
+        return [{ itemKey: item.key, ...(completion ? completionPayload(completion) : {}), ...(requiredArtifacts !== null ? { requiredArtifacts } : {}) }];
       });
       const lastKey = items.at(-1)?.key;
       const lastSequence = lastKey ? Number(lastKey.slice(lastKey.lastIndexOf("-") + 1)) : undefined;
       return textResult({
         productId,
         candidates,
+        ...(includeUnscoped ? { coverageVersion: 1, generatedAt: new Date().toISOString(), noReleaseItems } : {}),
         ...(items.length === limit && Number.isSafeInteger(lastSequence) ? { nextBeforeSequence: lastSequence } : {}),
       });
     },

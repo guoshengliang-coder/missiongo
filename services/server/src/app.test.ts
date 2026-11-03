@@ -339,6 +339,12 @@ describe("Commenting over MCP", () => {
     });
     // Filtering an entire page must preserve its cursor, so later release work is not lost.
     expect(candidates.result?.structuredContent).toMatchObject({ candidates: [], nextBeforeSequence: 1 });
+    const coverage = await call(readToken, 7, "tools/call", {
+      name: "list_release_candidates", arguments: { productId, limit: 1, includeUnscoped: true },
+    });
+    expect(coverage.result?.structuredContent).toMatchObject({ productId, coverageVersion: 1, candidates: [], nextBeforeSequence: 1,
+      noReleaseItems: [{ itemKey: "HG-1", noReleaseReason: reason }] });
+    expect(Date.parse(coverage.result?.structuredContent?.generatedAt as string)).not.toBeNaN();
     const published = await call(writeToken, 6, "tools/call", {
       name: "submit_for_verification", arguments: {
         itemKey: "HG-1", pullRequestUrl: base.pullRequestUrl,
@@ -387,6 +393,21 @@ describe("Commenting over MCP", () => {
     expect(after.result?.structuredContent).toMatchObject({ candidates: [] });
   });
 
+  it("keeps human-completed work with missing integration evidence visible in coverage mode", async () => {
+    const { app, call, readToken, productId } = await commentingApp();
+    for (const payload of [{ to: "ready", reason: "triaged" }, { to: "in_progress", reason: "claim" },
+      { to: "development_complete", reason: "manual_override", note: "Completed outside the agent workflow" }]) {
+      const response = await versionedTestRequest(app, { method: "POST", url: "/api/v1/items/HG-1/transitions",
+        headers: { cookie: fixtureCookies.get(app)! }, payload });
+      expect(response.statusCode).toBe(200);
+    }
+    const legacy = await call(readToken, 1, "tools/call", { name: "list_release_candidates", arguments: { productId } });
+    expect(legacy.result?.structuredContent).toMatchObject({ candidates: [] });
+    const coverage = await call(readToken, 2, "tools/call", { name: "list_release_candidates", arguments: { productId, includeUnscoped: true } });
+    expect(coverage.result?.structuredContent).toMatchObject({ coverageVersion: 1, candidates: [{ itemKey: "HG-1" }], noReleaseItems: [] });
+    expect(coverage.result?.structuredContent?.candidates).toEqual([{ itemKey: "HG-1" }]);
+  });
+
   it("learns task artifacts without manual product configuration and rejects clearing the inventory", async () => {
     const { app, call, readToken, writeToken, productId } = await commentingApp();
     app.missionGoStore.setProductReleaseArtifacts(productId, []);
@@ -410,9 +431,16 @@ describe("Commenting over MCP", () => {
     await call(writeToken,1,"tools/call",{name:"claim_item",arguments:{itemKey:"HG-1",agentId:"agent",idempotencyKey:"no-scope-claim"}});
     const result = await call(writeToken,2,"tools/call",{name:"submit_development_complete",arguments:{itemKey:"HG-1",pullRequestUrl:"https://github.com/owner/repo/pull/504",idempotencyKey:"no-scope-complete"}});
     expect(result.result?.structuredContent).toMatchObject({item:{status:"development_complete"}});
+    const unscoped = await call(readToken, 5, "tools/call", {name:"list_release_candidates",arguments:{productId,includeUnscoped:true}});
+    expect(unscoped.result?.structuredContent).toMatchObject({ coverageVersion: 1, noReleaseItems: [],
+      candidates:[{itemKey:"HG-1",pullRequestUrl:"https://github.com/owner/repo/pull/504"}] });
+    expect(unscoped.result?.structuredContent?.candidates).not.toContainEqual(expect.objectContaining({requiredArtifacts:[]}));
     await call(writeToken,3,"tools/call",{name:"register_item_handover",arguments:{itemKey:"HG-1",pullRequestUrl:"https://github.com/owner/repo/pull/504",requiredArtifacts:["gateway"]}});
     const candidates = await call(readToken,4,"tools/call",{name:"list_release_candidates",arguments:{productId}});
     expect(candidates.result?.structuredContent).toMatchObject({candidates:[{itemKey:"HG-1",requiredArtifacts:["gateway"]}]});
+    await call(writeToken,6,"tools/call",{name:"register_item_handover",arguments:{itemKey:"HG-1",pullRequestUrl:"https://github.com/owner/repo/pull/504",requiredArtifacts:[],noReleaseReason:"Confirmed test-only scope"}});
+    const excluded = await call(readToken,7,"tools/call",{name:"list_release_candidates",arguments:{productId,includeUnscoped:true}});
+    expect(excluded.result?.structuredContent).toMatchObject({candidates:[],noReleaseItems:[{itemKey:"HG-1",noReleaseReason:"Confirmed test-only scope"}]});
   });
 
   it("refuses a handover without an https pull request", async () => {
