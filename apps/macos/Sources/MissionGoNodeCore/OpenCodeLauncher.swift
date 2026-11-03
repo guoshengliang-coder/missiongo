@@ -982,7 +982,7 @@ public struct OpenCodeLauncher: AgentAdapter {
         }
         let prompt = try LaunchPrompt.build(
             itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode,
-            reworkItemKeys: job.reworkItemKeys, client: .openCode
+            reworkItemKeys: job.reworkItemKeys, client: .openCode, freeSession: job.freeSession
         )
         let name = SessionLauncher.sessionName(nodeName: job.nodeName, itemKeys: job.itemKeys, round: job.round)
         let catalog = await lastCatalog()

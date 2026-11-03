@@ -375,6 +375,7 @@ public struct RegisteredNode: Codable, Equatable, Sendable {
 }
 
 public struct DispatchRequest: Codable, Equatable, Sendable {
+    public let freeSession: Bool?
     public let dispatchId: String
     public let itemKeys: [String]
     public let repoPath: String
@@ -405,8 +406,10 @@ public struct DispatchRequest: Codable, Equatable, Sendable {
         round: Int? = nil,
         reworkItemKeys: [String]? = nil,
         model: String? = nil,
-        effort: String? = nil
+        effort: String? = nil,
+        freeSession: Bool? = nil
     ) {
+        self.freeSession = freeSession
         self.dispatchId = dispatchId
         self.itemKeys = itemKeys
         self.repoPath = repoPath
@@ -1465,6 +1468,7 @@ public struct APIClient: Sendable {
             let agents: [DetectedAgent]
             let repoCandidates: [RepoCandidate]
             let clientVersion: String
+            let supportsFreeSessions: Bool
             let supportsChatAttachments: Bool
         }
         struct Reply: Decodable {
@@ -1480,6 +1484,7 @@ public struct APIClient: Sendable {
                 agents: agents,
                 repoCandidates: repoCandidates,
                 clientVersion: AppUpdater.currentVersion() ?? "development",
+                supportsFreeSessions: true,
                 supportsChatAttachments: true
             ),
             bearer: try nodeToken()

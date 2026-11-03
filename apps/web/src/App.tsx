@@ -1,3 +1,4 @@
+import { NewSessionDraft, type NewConversationDraft } from "./new-session-draft";
 import { MessageButton, MessageCenter } from "./message-center";
 import { TransitionCommandKeys } from "./transition-attachments";
 import { TransitionFiles, useTransitionFiles } from "./transition-files";
@@ -23,7 +24,7 @@ import { COMMENT_CATEGORIES, useCommentFilters } from "./comment-filters";
 import {EMPTY_COMMENT_DRAFT,useCommentDraft,type CommentDraft} from "./comment-draft";
 import {useBeforeUnloadGuard} from "./unsaved-changes";
 import { statisticsIsOpen, statisticsUrl, statisticsExitUrl } from "./statistics-state";
-import { useModalSurface, OverlayMenu } from "./overlay";
+import { useModalSurface, useOverlay, OverlayMenu } from "./overlay";
 import { Modal } from "./modal";
 import { StatusCheckButton, StatusCheckPanel } from "./status-check-panel";
 import { localizedErrorText } from "./error-text";
@@ -467,6 +468,21 @@ export function App() {
   const [agentConsoleBulkMode, setAgentConsoleBulkMode] = useState(false);
   const [agentConsoleBulkAvailable, setAgentConsoleBulkAvailable] = useState(false);
   const agentConsoleMoreRef = useRef<HTMLDetailsElement>(null);
+  const [newSessionConfigOpen, setNewSessionConfigOpen] = useState(false);
+  const [newSessionOpen, setNewSessionOpen] = useState(false);
+  const [newSessionPending, setNewSessionPending] = useState(false);
+  const [newSessionDraft, setNewSessionDraft] = useState<NewConversationDraft | null>(null);
+  const closeNewSession = () => { if (newSessionPending) return false; setNewSessionOpen(false); };
+  useOverlay(newSessionOpen && agentConsoleOpen, closeNewSession);
+  useBeforeUnloadGuard(Boolean(newSessionDraft?.text.trim() || newSessionDraft?.files.length || newSessionPending));
+  const beginNewSession = () => {
+    agentConsoleMoreRef.current?.removeAttribute("open");
+    if (newSessionDraft) {
+      setSelectedProductId(newSessionDraft.config.productId);
+      setNewSessionOpen(true);
+    } else setNewSessionConfigOpen(true);
+  };
+
   const [sidebarOpen, setSidebarOpen] = useState(false);
   // Below the two-pane breakpoint the sidebar is a drawer, and a closed drawer
   // is only moved off-screen: without inert, Tab still walked through every
@@ -1004,6 +1020,7 @@ export function App() {
   const selectedProductCanUseAi = productAllowsAi(selectedProduct);
   const selectedProductCanCapture = selectedProduct?.access?.canOperate === true;
   const hasAnyAiPermission = products.some(productAllowsAi);
+  const newSessionProducts = products.filter(product => productAllowsAi(product) && product.access?.canOperate !== false);
 
   // The account's type size is the source of truth (AND-247). The boot script
   // already replayed this browser's cached copy before the first paint; once
@@ -1038,6 +1055,16 @@ export function App() {
       query.state.fetchFailureCount,
     ),
   });
+  const draftAccountId = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const accountId = bootstrapQuery.data?.user.id;
+    if (accountId && draftAccountId.current && accountId !== draftAccountId.current) {
+      setNewSessionDraft(null);
+      setNewSessionOpen(false);
+      setNewSessionConfigOpen(false);
+    }
+    if (accountId) draftAccountId.current = accountId;
+  }, [bootstrapQuery.data?.user.id]);
   const allAgentSessions = agentSessionsQuery.data?.sessions ?? [];
   useEffect(() => {
     if (!agentConsoleOpen || !agentSessionId) return;
@@ -1048,8 +1075,8 @@ export function App() {
     const linked = allAgentSessions.find((session) => session.id === agentSessionId);
     if (!linked) return;
     agentConsoleProductAlignedRef.current = agentSessionId;
-    if (!linked.items.some((item) => item.productId === selectedProductId)) {
-      const productId = linked.items[0]?.productId;
+    if (linked.productId !== selectedProductId && !linked.items.some((item) => item.productId === selectedProductId)) {
+      const productId = linked.productId ?? linked.items[0]?.productId;
       if (productId) setSelectedProductId(productId);
     }
   }, [agentConsoleOpen, agentSessionId, allAgentSessions, selectedProductId]);
@@ -1387,14 +1414,14 @@ export function App() {
 
   return (
     <div className={`app-shell ${agentConsoleOpen ? "agent-console-open" : ""} ${
-      agentConsoleOpen && agentConsoleSinglePane && agentConversationOpen ? "agent-conversation-open" : ""
+      agentConsoleOpen && agentConsoleSinglePane && (agentConversationOpen || newSessionOpen) ? "agent-conversation-open" : ""
     }`}>
       <header className={`topbar ${agentConsoleOpen ? "agent-console-topbar" : ""} ${mobileSearchOpen ? "searching" : ""}`} inert={sidebarIsDrawer && sidebarOpen}>
         {!agentConsoleOpen && <button ref={sidebarTriggerRef} className="icon-button mobile-only" onClick={() => openSidebar()} aria-label={t("openNavigation")}>
           <Menu size={20} />
         </button>}
         {agentConsoleOpen ? (
-          <BackButton className="agent-console-topbar-back" onClick={closeAgentConsole} label={t("agentConsoleBack")} />
+          <BackButton className="agent-console-topbar-back" onClick={newSessionOpen ? closeNewSession : closeAgentConsole} label={t("agentConsoleBack")} />
         ) : (
           <>
             <Brand compact />
@@ -1414,6 +1441,8 @@ export function App() {
               if (agentConsoleOpen && agentSessionId) {
                 agentConsoleProductAlignedRef.current = agentSessionId;
               }
+              if (newSessionPending) return;
+              setNewSessionOpen(false);
               setSelectedProductId(productId);
               setAgentConsoleBulkMode(false);
               // A filter chosen for one product says nothing about the next one,
@@ -1454,8 +1483,10 @@ export function App() {
           </button>
         )}
         {agentConsoleOpen && (
-          <div className={`agent-console-topbar-actions ${agentConsoleBulkAvailable && !agentConversationOpen ? "has-bulk" : ""}`}>
-            {agentConsoleBulkAvailable && !agentConversationOpen && (
+          <div className="agent-console-topbar-actions has-bulk">
+            {newSessionProducts.length > 0 && <button type="button" className="secondary-button agent-console-topbar-new" disabled={newSessionPending}
+              onClick={beginNewSession}><Plus size={17} />{t(newSessionDraft ? "newSessionResume" : "newSession")}</button>}
+            {agentConsoleBulkAvailable && !agentConversationOpen && !newSessionOpen && (
               <button
                 type="button"
                 className={`secondary-button agent-console-topbar-bulk ${agentConsoleBulkMode ? "active" : ""}`}
@@ -1476,21 +1507,20 @@ export function App() {
             >
               <RefreshCw className={agentConsoleRefreshing ? "spin" : ""} size={18} />
             </button>
-            {agentConsoleBulkAvailable && !agentConversationOpen && (
-              <OverlayMenu className="agent-console-topbar-more" ref={agentConsoleMoreRef}>
+            <OverlayMenu className="agent-console-topbar-more" ref={agentConsoleMoreRef}>
                 <summary className="secondary-button" aria-label={t("moreActions")} title={t("moreActions")}><MoreVertical size={18} /></summary>
                 <div className="agent-console-topbar-more-menu">
-                  <button type="button" onClick={() => {
+                  {newSessionProducts.length > 0 && <button type="button" disabled={newSessionPending} onClick={beginNewSession}><Plus size={16} />{t(newSessionDraft ? "newSessionResume" : "newSession")}</button>}
+                  {agentConsoleBulkAvailable && !agentConversationOpen && !newSessionOpen && <button type="button" onClick={() => {
                     agentConsoleMoreRef.current?.removeAttribute("open");
                     setAgentConsoleBulkMode((current) => !current);
-                  }}><CheckCircle2 size={16} />{t(agentConsoleBulkMode ? "agentConsoleBulkDone" : "agentConsoleBulkMode")}</button>
+                  }}><CheckCircle2 size={16} />{t(agentConsoleBulkMode ? "agentConsoleBulkDone" : "agentConsoleBulkMode")}</button>}
                   <button type="button" onClick={() => {
                     agentConsoleMoreRef.current?.removeAttribute("open");
                     void refreshAgentConsole();
                   }}><RefreshCw size={16} />{t("refresh")}</button>
                 </div>
               </OverlayMenu>
-            )}
           </div>
         )}
         {!agentConsoleOpen && (
@@ -1766,11 +1796,24 @@ export function App() {
           sessionsLoaded={agentSessionsQuery.data !== undefined}
           sessionsError={agentSessionsQuery.error}
           selectedSessionId={agentSessionId}
-          conversationOpen={agentConversationOpen}
+          conversationOpen={agentConversationOpen || newSessionOpen}
+          draftView={newSessionOpen && newSessionDraft ? <NewSessionDraft draft={newSessionDraft}
+            projectName={products.find(p => p.id === newSessionDraft.config.productId)?.name ?? ""}
+            onChange={setNewSessionDraft} onBack={closeNewSession} onConfigure={() => setNewSessionConfigOpen(true)}
+            onPending={setNewSessionPending} onStarted={async dispatch => {
+              await queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
+              setNewSessionOpen(false);
+              setNewSessionDraft(null);
+              afterOverlaysClose(() => openAgentSession(dispatch.agentSessionId!));
+            }} /> : undefined}
           bulkMode={agentConsoleBulkMode}
           onBulkModeChange={setAgentConsoleBulkMode}
           onBulkAvailabilityChange={setAgentConsoleBulkAvailable}
-          onSelectSession={selectAgentSession}
+          onSelectSession={(id, show) => {
+            if (newSessionPending) return;
+            if (newSessionOpen) { setNewSessionOpen(false); afterOverlaysClose(() => selectAgentSession(id, show)); }
+            else selectAgentSession(id, show);
+          }}
           onBackToSessions={closeAgentConversation}
         />
       )}
@@ -1886,6 +1929,16 @@ export function App() {
           />
         </Modal>
       )}
+      {newSessionConfigOpen && <Modal title={t("newSession")} subtitle={t("newSessionSubtitle")} onClose={() => setNewSessionConfigOpen(false)}>
+        <DispatchDialog items={[]} products={newSessionProducts} onClose={() => setNewSessionConfigOpen(false)}
+          onDispatched={() => {}} newSession={{ ...(newSessionDraft ? { initialConfig: newSessionDraft.config } : {}), productId: newSessionDraft?.config.productId ?? (newSessionProducts.some(product => product.id === selectedProductId) ? selectedProductId : newSessionProducts[0]?.id ?? ""),
+            onConfigured: config => {
+              setNewSessionDraft(previous => ({ config, text: previous?.text ?? "", files: previous?.files ?? [] }));
+              setSelectedProductId(config.productId);
+              setNewSessionConfigOpen(false);
+              if (!newSessionOpen) afterOverlaysClose(() => setNewSessionOpen(true));
+            } }} />
+      </Modal>}
       {dispatchBatch && dispatchBatch.every((item) => productAllowsAi(products.find((product) => product.id === item.productId))) && (
         <Modal
           title={t("dispatchTitle")}

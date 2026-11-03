@@ -6,9 +6,19 @@ export function worktreePath(job: Dispatch): string {
   return join(dirname(job.repoPath), `missiongo-${job.dispatchId}`);
 }
 export function launchPrompt(job: Dispatch): string {
-  if (!/^[A-Za-z0-9_-]{1,150}$/.test(job.dispatchId) || !job.itemKeys.length || job.itemKeys.length > 100
+  if (!/^[A-Za-z0-9_-]{1,150}$/.test(job.dispatchId) || (!job.itemKeys.length && !job.freeSession) || job.itemKeys.length > 100
     || job.itemKeys.some((key) => !/^[A-Z][A-Z0-9]*-[0-9]+$/.test(key))
     || !isSupportedDispatchMode(job.agentKind, job.mode)) throw new Error("Invalid dispatch scope or mode");
+  if (job.freeSession) {
+    if (job.itemKeys.length) throw new Error("Project conversation must not carry work items");
+    return [
+      "这是用户从 MissionGo 控制台发起的项目会话，不关联工作条目。",
+      "本条是启动说明。现在只简短确认就绪并等待用户首条消息，不自行开始任务。首条消息将通过同一会话紧接着送达。",
+      "后续按用户消息讨论或执行；不得自动创建或领取条目，不套用条目处理 Skill 的领取前提。",
+      "读取并遵守项目规则；修改前创建独立 worktree，不直接修改主工作区。原生计划模式、权限审批及 push、merge、发布授权仍须遵守。",
+      ...(job.agentKind === "codex" ? [`本会话可写 worktree 路径（尚未创建）：${JSON.stringify(worktreePath(job))}。不得扩大到父目录。`] : []),
+    ].join("\n\n");
+  }
   const lines = [
     `使用 missiongo skill 处理这些工作条目：${job.itemKeys.join("、")}。`,
     `本会话由 MissionGo 派单 ${job.dispatchId} 发起，这些编号等同于用户给出的范围。`,

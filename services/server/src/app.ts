@@ -1,3 +1,4 @@
+import { FreeSessionStore } from "./free-session-store.js";
 import { registerPersonalNotificationRoutes } from "./personal-notifications.js";
 import { evaluateWorkItemTransition } from "@missiongo/domain";
 import type { WorkItemStatus, TransitionReason } from "@missiongo/domain";
@@ -579,6 +580,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const agentArtifacts = new AgentArtifacts(store.database, join(options.attachmentsPath ?? "./data/attachments", "agent-artifacts"));
   const agentSessionAttachments = new AgentSessionAttachments(store.database, options.attachmentsPath ?? "./data/attachments");
   const agentSessionStore = new AgentSessionStore(store.database, agentSessionAttachments);
+  const freeSessionStore = new FreeSessionStore(store.database, dispatchStore, agentSessionStore);
+  const sessionProducts = (session: {productId?: string; items: readonly {productId:string}[]}) => [...new Set([...(session.productId ? [session.productId] : []), ...session.items.map(item => item.productId)])];
   const externalSessionStore = new ExternalAgentSessionStore(store);
   const externalSessionAttachments = new AgentSessionAttachments(store.database, options.attachmentsPath ?? "./data/attachments", true);
   const externalNativeStore = new ExternalNativeSessionStore(store, externalSessionAttachments);
@@ -599,8 +602,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const widgetDevices = new WidgetDeviceStore(store.database);
   const visibleAgentSessionsFor = (account: AccountSnapshot) =>
     listConsoleSessions(account.id)
-      .filter((session) => session.items.length > 0
-        && session.items.every((item) => accountStore.allows(account, item.productId, "view")));
+      .filter((session) => sessionProducts(session).length > 0
+        && sessionProducts(session).every((productId) => accountStore.allows(account, productId, "view")));
   const widgetSummaryFor = (account: AccountSnapshot): WidgetSummary => {
     const sessions = visibleAgentSessionsFor(account);
     const reachable = accountStore.reachableProductIds(account, "view");
@@ -616,6 +619,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       unread: session.unread,
       ...(session.archivedAt ? { archivedAt: session.archivedAt } : {}),
       ...(session.command ? { command: { status: session.command.status } } : {}),
+      ...(session.productId ? { productId: session.productId } : {}),
       items: session.items.map((item) => ({ productId: item.productId, key: item.key })),
       attention: session.attention,
       ...(session.latestMessage ? { latestMessageText: session.latestMessage.text } : {}),
@@ -2452,6 +2456,20 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return reply.status(201).send(dispatch);
   });
 
+  app.post("/api/v1/project-conversations", async (request, reply) => {
+    const body = objectBody(request.body);
+    const productId = stringField(body,"productId")!;
+    requireProductPermission(request,productId,"operate");
+    requireProductPermission(request,productId,"ai");
+    const dispatch = freeSessionStore.prepare(requireAccountId(request), stringField(body,"requestKey")!, {
+      productId, nodeId:stringField(body,"nodeId")!, agentKind:stringField(body,"agentKind")! as AgentKind,
+      mode:stringField(body,"mode")!,
+      ...(optionalName(body,"model") ? {model:optionalName(body,"model")!} : {}),
+      ...(optionalName(body,"effort") ? {effort:optionalName(body,"effort")!} : {}),
+    }, stringField(body,"text",false) ?? "", body.attachmentCount === undefined ? 0 : Number(body.attachmentCount));
+    return reply.status(201).send(dispatch);
+  });
+
   app.get("/api/v1/items/:itemKey/dispatches", async (request) => {
     const { itemKey } = request.params as { itemKey: string };
     const key = requireItemPermission(request, itemKey);
@@ -2464,6 +2482,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const authorizedDispatch = (request: FastifyRequest, dispatchId: string, operate = false) => {
     const account = requireAccount(request);
     const dispatch = dispatchStore.getDispatch(account.id, dispatchId);
+    if (dispatch.productId) {
+      requireProductPermission(request, dispatch.productId, operate ? "operate" : "view");
+      if (operate) requireProductPermission(request, dispatch.productId, "ai");
+    }
     if (operate) assertDispatchExecution(store.database,dispatchId);
     for (const itemKey of new Set(consoleSessions.members(account.id, dispatchId).flatMap((row) => row.items.map((item) => item.key)))) {
       const key = requireItemPermission(request, itemKey, operate ? "operate" : "view");
@@ -2487,6 +2509,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (!session.dispatchId) throw notFound("Dispatch");
     const dispatch = dispatchStore.getDispatch(account.id, session.dispatchId);
     const productIds: string[] = [];
+    if (dispatch.productId) {
+      requireProductPermission(request,dispatch.productId,operate ? "operate" : "view");
+      if (requireAi) requireProductPermission(request,dispatch.productId,"ai");
+      productIds.push(dispatch.productId);
+    }
     for (const itemKey of new Set(consoleSessions.members(account.id, sessionId).flatMap((row) => row.items.map((item) => item.key)))) {
       const key = requireItemPermission(request, itemKey, operate ? "operate" : "view");
       const productId = store.getWorkItem(key).productId;
@@ -2582,6 +2609,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
   const authorizeArtifactNode = (accountId: string, sessionId: string) => {
     const members = consoleSessions.members(accountId, sessionId);
+    for (const productId of new Set(members.flatMap(sessionProducts))) requireNodeAccountPermission(accountId, productId);
     for (const key of new Set(members.flatMap((member) => member.items.map((item) => item.key)))) {
       requireNodeAccountPermission(accountId, store.getWorkItem(key).productId, false);
     }
@@ -2672,13 +2700,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const selectedProductId = productId?.trim();
     if (selectedProductId) requireProductPermission(request, selectedProductId, "view");
     const sessions = listConsoleSessions(account.id)
-      .filter((session) => session.items.length > 0
-        && session.items.every((item) => accountStore.allows(account, item.productId, "view")))
+      .filter((session) => sessionProducts(session).length > 0
+        && sessionProducts(session).every((productId) => accountStore.allows(account, productId, "view")))
       .filter((session) => !selectedProductId
-        || session.items.some((item) => item.productId === selectedProductId))
+        || sessionProducts(session).includes(selectedProductId))
       .map((session) => {
-        const canOperate = session.items.every((item) => accountStore.allows(account, item.productId, "operate"));
-        const canUseAi = session.items.every((item) => accountStore.allows(account, item.productId, "ai"));
+        const canOperate = sessionProducts(session).every((productId) => accountStore.allows(account, productId, "operate"));
+        const canUseAi = sessionProducts(session).every((productId) => accountStore.allows(account, productId, "ai"));
         const replyBlockedReason = session.source === "external" && !session.nativeConnection ? "external_progress_only" as const : agentSessionReplyBlockedReason({
           hasSession: Boolean(session.agentSessionId),
           replyable: session.source === "external" ? session.items.some((item) => store.getWorkItem(item.key).status !== "done") : session.replyable,
@@ -2833,7 +2861,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const attachmentIds = stringArrayField(body, "attachmentIds") ?? [];
       return reply.status(201).send(externalNativeStore.enqueue(requireAccountId(request), sessionId, stringField(body, "text", false) ?? "", attachmentIds));
     }
-    authorizedAgentSession(request, sessionId, true);
+    const session = authorizedAgentSession(request, sessionId, true);
+    if (session.productId && !session.replyable) throw conflict("agent_session_starting", "Wait for this conversation to start.");
     const body = objectBody(request.body);
     const attachmentIds = body.attachmentIds === undefined ? [] : body.attachmentIds;
     if (!Array.isArray(attachmentIds) || attachmentIds.some((id) => typeof id !== "string")) {
@@ -2902,10 +2931,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return reply.send(await heicToJpeg(await readFile(path)));
   });
 
+  app.post("/api/v1/project-conversations/:dispatchId/start", async (request) => {
+    const {dispatchId} = request.params as {dispatchId:string};
+    const dispatch = authorizedDispatch(request,dispatchId,true);
+    if (!dispatch.productId || !dispatch.agentSessionId) throw notFound("Project conversation");
+    const attachmentIds = stringArrayField(objectBody(request.body),"attachmentIds") ?? [];
+    if (attachmentIds.length) requireAttachmentSupport(request,dispatch.agentSessionId);
+    return freeSessionStore.finish(requireAccountId(request),dispatchId,attachmentIds);
+  });
+
   app.post("/api/v1/dispatches/:dispatchId/retry", async (request, reply) => {
     const { dispatchId } = request.params as { dispatchId: string };
-    authorizedDispatch(request, dispatchId, true);
-    const dispatch = dispatchStore.retryDispatch(requireAccountId(request), dispatchId);
+    const previous = authorizedDispatch(request, dispatchId, true);
+    const dispatch = previous.productId ? freeSessionStore.retry(requireAccountId(request), dispatchId) : dispatchStore.retryDispatch(requireAccountId(request), dispatchId);
     for (const itemId of dispatchStore.listDispatchItemIds(dispatch.id)) {
       store.appendSystemEvent(itemId, "dispatched", {
         dispatchId: dispatch.id,
@@ -2924,7 +2962,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const { dispatchId } = request.params as { dispatchId: string };
     const dispatch = authorizedDispatch(request, dispatchId, true);
     if (dispatch.status === "queued") {
-      return { dispatch: dispatchStore.cancelQueuedDispatch(requireAccountId(request), dispatchId) };
+      return { dispatch: dispatch.productId ? freeSessionStore.stop(requireAccountId(request), dispatchId) : dispatchStore.cancelQueuedDispatch(requireAccountId(request), dispatchId) };
     }
     if (dispatch.agentSessionId) {
       authorizedAgentSession(request, dispatch.agentSessionId, true);
@@ -3120,6 +3158,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const { sessionId, attachmentId } = request.params as { sessionId: string; attachmentId: string };
     const external = externalSessionStore.has(sessionId);
     if (!external && !agentSessionStore.belongsToNode(sessionId, node.nodeId)) throw notFound("Agent session attachment");
+    if (!external) {
+      const session = agentSessionStore.getForAccount(node.accountId,sessionId);
+      if (session.productId) requireNodeAccountPermission(node.accountId,session.productId,true);
+    }
     const { attachment, path, commandId } = (external ? externalSessionAttachments : agentSessionAttachments).get(sessionId, attachmentId);
     if (!commandId) throw notFound("Agent session attachment");
     if (external) externalNativeStore.authorizeAttachment(node.accountId, node.nodeId, sessionId, commandId, externalWorker(request),
@@ -3227,7 +3269,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.get("/api/v1/node/dispatches", async (request) => {
     const node = requireNode(request);
-    return { dispatches: dispatchStore.listDispatchesForNode(node.nodeId) };
+    return { dispatches: dispatchStore.listDispatchesForNode(node.nodeId).filter(dispatch => {
+      if (!dispatch.productId) return true;
+      try { requireNodeAccountPermission(node.accountId, dispatch.productId, true); return true; } catch { return false; }
+    }) };
   });
 
   const externalWorker = (request: FastifyRequest): string => {
@@ -3243,7 +3288,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       for (const intent of active) new ManagedExecutionStore(store.database).stopForNode(node, intent.id, intent.generation);
     }
     const acceptsAttachments = request.headers["x-missiongo-chat-attachments"] === "1";
-    const dispatchSessions = agentSessionStore.listForNode(node.nodeId).map((session) => {
+    const dispatchSessions = agentSessionStore.listForNode(node.nodeId).filter(session => {
+      const dispatch = session.dispatchId ? dispatchStore.getDispatch(node.accountId,session.dispatchId) : undefined;
+      if (!dispatch?.productId) return true;
+      try { requireNodeAccountPermission(node.accountId,dispatch.productId,true); return true; } catch { return false; }
+    }).map((session) => {
       if (session.managedExecution) {
         try {
           new ManagedExecutionStore(store.database, options.managedExecution?.enabled === true).authorizeSessionInput((productId) => {
@@ -3398,6 +3447,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         }, (productId, execute) => requireNodeAccountPermission(node.accountId, productId, execute));
         return reply.status(204).send();
       }
+      const projectSession = store.database.connection.prepare(`SELECT f.product_id FROM free_session_starts f
+        JOIN agent_sessions s ON s.dispatch_id=f.dispatch_id WHERE s.id=? AND f.account_id=?`).get(sessionId, node.accountId) as { product_id: string } | undefined;
+      if (projectSession) requireNodeAccountPermission(node.accountId, projectSession.product_id, true);
       const settingsRevisionValue = body.settingsRevision ?? undefined;
       if (settingsRevisionValue !== undefined
         && (typeof settingsRevisionValue !== "number" || !Number.isInteger(settingsRevisionValue) || settingsRevisionValue < 0)) {
@@ -3556,7 +3608,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         }),
         nodeProductScope(node.accountId),
         { ...(clientVersion ? { clientVersion } : {}), expectedSkillVersion,
-          supportsChatAttachments: body.supportsChatAttachments === true },
+          supportsChatAttachments: body.supportsChatAttachments === true, supportsFreeSessions: body.supportsFreeSessions === true },
       ),
     };
   });
@@ -3622,6 +3674,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         throw invalidInput("diagnosticSnapshot must be an object.");
       }
       sessionRef = stringField(body, "sessionRef", false);
+      const projectDispatch = dispatchStore.getDispatch(node.accountId, dispatchId);
+      if (projectDispatch.productId) {
+        requireNodeAccountPermission(node.accountId, projectDispatch.productId, true);
+        if (status === "launched" && (!sessionRef || sessionRef.startsWith("pending:"))) throw invalidInput("A native session reference is required.");
+      }
       dispatchStore.recordDispatchResult({
         nodeId: node.nodeId,
         dispatchId,

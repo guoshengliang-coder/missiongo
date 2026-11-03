@@ -2164,5 +2164,25 @@ export class MissionGoDatabase {
       });
     }
 
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611030950").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611030950").get()) return;
+        this.connection.exec(`
+          ALTER TABLE nodes ADD COLUMN supports_free_sessions INTEGER NOT NULL DEFAULT 0;
+          CREATE TABLE free_session_starts (
+            dispatch_id TEXT PRIMARY KEY REFERENCES dispatches(id),
+            account_id TEXT NOT NULL, request_key TEXT NOT NULL,
+            product_id TEXT NOT NULL REFERENCES products(id),
+            initial_text TEXT NOT NULL, config_json TEXT NOT NULL,
+            attachment_count INTEGER NOT NULL DEFAULT 0 CHECK(attachment_count BETWEEN 0 AND 10),
+            ready INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(account_id, request_key)
+          ) STRICT;
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611030950,new Date().toISOString());
+      });
+    }
+
   }
 }

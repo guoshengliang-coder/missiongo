@@ -58,8 +58,23 @@ public enum LaunchPrompt {
         mode: String? = nil,
         reworkItemKeys: [String] = [],
         client: Client = .claudeCode,
-        worktreePath: String? = nil
+        worktreePath: String? = nil,
+        freeSession: Bool = false
     ) throws -> String {
+        if freeSession {
+            guard itemKeys.isEmpty, dispatchIdPattern.matches(dispatchId) else {
+                throw ValidationError.invalidDispatchId(dispatchId)
+            }
+            var lines = [
+                "这是用户从 MissionGo 控制台发起的项目会话，不关联工作条目。",
+                "本条是启动说明，用户首条消息将通过同一会话紧接着送达。现在只简短确认就绪，等待用户消息，不自行开始任务。",
+                "后续按用户消息讨论或执行；不得自动创建、领取条目，不套用条目处理 Skill 的领取前提。",
+                "读取并遵守当前项目规则；修改代码前创建独立 worktree，不直接修改主工作区。",
+                "是否动手由用户指令决定；原生计划模式、权限审批、push、merge 和发布授权仍须遵守。"
+            ]
+            if let worktreePath { lines.append("本会话可写 worktree 路径（尚未创建）：\(JSONValues.quote(worktreePath))。遵守项目规则，不扩大到父目录。") }
+            return lines.joined(separator: "\n")
+        }
         if itemKeys.isEmpty {
             throw ValidationError.emptyBatch
         }
