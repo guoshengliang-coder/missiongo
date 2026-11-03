@@ -1720,16 +1720,23 @@ export class MissionGoStore {
 
   /** Read the task scope, including corrections made after development completion. */
   getDevelopmentReleaseScope(itemKey: string): readonly string[] | null {
+    return this.getDevelopmentReleaseDecision(itemKey).requiredArtifacts;
+  }
+
+  getDevelopmentReleaseDecision(itemKey: string): { requiredArtifacts: readonly string[] | null; noReleaseReason?: string } {
     for (const event of [...this.getTimeline(itemKey)].reverse()) {
       if (event.historySourceKey) continue;
       if (event.eventType === "handover_scope_confirmed"
         || event.eventType === "status_changed" && event.toStatus === "development_complete") {
         const scope = event.payload.requiredArtifacts;
-        return Array.isArray(scope) && scope.every((artifact): artifact is string => typeof artifact === "string" && isReleaseArtifactId(artifact)) ? scope : null;
+        return {
+          requiredArtifacts: Array.isArray(scope) && scope.every((artifact): artifact is string => typeof artifact === "string" && isReleaseArtifactId(artifact)) ? scope : null,
+          ...(typeof event.payload.noReleaseReason === "string" ? { noReleaseReason: event.payload.noReleaseReason } : {}),
+        };
       }
-      if (event.eventType === "status_changed" && event.toStatus === "in_progress") return null;
+      if (event.eventType === "status_changed" && event.toStatus === "in_progress") return { requiredArtifacts: null };
     }
-    return null;
+    return { requiredArtifacts: null };
   }
 
   /** Accept a verified release only when every artifact recorded at merge is present. */
