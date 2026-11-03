@@ -17,6 +17,10 @@ it("upgrades existing comments and verification jobs without replaying notificat
     const before=store.database.connection.prepare("SELECT * FROM dingtalk_notifications").all();store.close();store=undefined;
     const db=new DatabaseSync(path);
     try {
+      db.exec(`ALTER TABLE dingtalk_notifications DROP COLUMN personal_notification_id;
+    DROP TABLE personal_notifications; DROP TABLE notification_events;
+    ALTER TABLE dingtalk_projects DROP COLUMN comments_enabled;
+    DELETE FROM schema_migrations WHERE version=202611030125;`);
       db.exec("DROP INDEX comments_thread; ALTER TABLE work_item_comments DROP COLUMN reply_to_comment_id; ALTER TABLE work_item_comments DROP COLUMN thread_root_comment_id; ALTER TABLE work_item_comments DROP COLUMN mentions_json;");
       db.exec("ALTER TABLE dingtalk_notifications RENAME TO notices_new; DROP INDEX dingtalk_notifications_pending; DROP INDEX dingtalk_notifications_item;");
       const start=DINGTALK_SCHEMA.indexOf("  CREATE TABLE dingtalk_notifications"),end=DINGTALK_SCHEMA.indexOf("  CREATE TABLE dingtalk_audit");

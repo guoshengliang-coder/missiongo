@@ -255,17 +255,20 @@ export function DingTalkSettingsPage() {
 }
 export function DingTalkProjectSettings({productId}:{productId:string}) {
   const client=useQueryClient();const query=useQuery({queryKey:["dingtalk-project",productId],queryFn:()=>api.dingtalkProject(productId)});
-  const [enabled,setEnabled]=useState(false);useEffect(()=>{if(query.data)setEnabled(query.data.enabled);},[query.data?.enabled]);
-  const save=useMutation({mutationFn:()=>api.saveDingtalkProject(productId,enabled,query.data!.enabled),onSuccess:data=>client.setQueryData(["dingtalk-project",productId],data)});
-  useSettingsDraft(Boolean(query.data && enabled!==query.data.enabled),save.isPending);
+  const [enabled,setEnabled]=useState(false),[commentsEnabled,setCommentsEnabled]=useState(true);
+  useEffect(()=>{if(query.data){setEnabled(query.data.enabled);setCommentsEnabled(query.data.commentsEnabled);}},[query.data]);
+  const dirty=Boolean(query.data && (enabled!==query.data.enabled || commentsEnabled!==query.data.commentsEnabled));
+  const save=useMutation({mutationFn:()=>api.saveDingtalkProject(productId,enabled,query.data!.enabled,commentsEnabled,query.data!.commentsEnabled),onSuccess:data=>client.setQueryData(["dingtalk-project",productId],data)});
+  useSettingsDraft(dirty,save.isPending);
   if(query.isPending)return <p role="status">正在加载通知配置…</p>;
   if(query.isError)return <p role="alert">{failure(query.error)}</p>;
-  return <section className="dingtalk-section"><h2>待验证通知</h2><p className="account-note">进入待验证时，通过管理员配置的钉钉通知方式提醒提需者；开启后不补发历史条目。</p>
-    {!query.data.integrationConfigured && <p role="status">钉钉应用尚未配置，请联系系统管理员。</p>}
-    <label className="project-administrator-choice"><input type="checkbox" checked={enabled} disabled={!query.data.canConfigure || save.isPending} onChange={event=>setEnabled(event.target.checked)} /><span>进入待验证时通知提需者</span></label>
-    <p className="account-note">接收人须由管理员在“管理设置 → 钉钉集成”中绑定，且具有本项目查看权限。条目详情中可查看发送结果和未发送原因。</p>
-    {query.data.canConfigure && <div className="account-form-actions"><button type="button" className="primary-button" disabled={enabled===query.data.enabled || save.isPending} onClick={()=>save.mutate()}>保存通知设置</button></div>}
-    {save.isError && <p role="alert">{failure(save.error)}</p>}{save.isSuccess && enabled===query.data.enabled && <p role="status">通知设置已保存。</p>}
+  return <section className="dingtalk-section"><h2>个人通知通道</h2><p className="account-note">通知始终保存在个人消息中心。勾选后，后续通知还会推送到钉钉；不补发历史消息。</p>
+    {!query.data.integrationConfigured && <p role="status">钉钉应用尚未配置，站内通知不受影响。</p>}
+    <label className="project-administrator-choice"><input type="checkbox" checked={commentsEnabled} disabled={!query.data.canConfigure || save.isPending} onChange={event=>setCommentsEnabled(event.target.checked)} /><span>评论 @ 与针对性回复：站内＋钉钉</span></label>
+    <label className="project-administrator-choice"><input type="checkbox" checked={enabled} disabled={!query.data.canConfigure || save.isPending} onChange={event=>setEnabled(event.target.checked)} /><span>待验证及业务决策：站内＋钉钉</span></label>
+    <p className="account-note">未勾选时仅发送站内通知。钉钉接收人须已绑定且具有当前项目查看权限；条目详情中可查看外部发送结果。</p>
+    {query.data.canConfigure && <div className="account-form-actions"><button type="button" className="primary-button" disabled={!dirty || save.isPending} onClick={()=>save.mutate()}>保存通知设置</button></div>}
+    {save.isError && <p role="alert">{failure(save.error)}</p>}{save.isSuccess && !dirty && <p role="status">通知设置已保存。</p>}
   </section>;
 }
 export function useItemDingTalkNotifications(itemKey:string|null) {

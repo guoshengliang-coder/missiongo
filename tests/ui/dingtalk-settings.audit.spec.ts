@@ -96,16 +96,21 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 375, height: 812 
       await page.screenshot({ path: info.outputPath("dingtalk-settings.png"), fullPage: true });
 
       await page.goto(`/settings/products/${product.id}/notifications`);
-      await page.getByRole("checkbox", { name: "进入待验证时通知提需者", exact: true }).check();
+      const commentsChannel = page.getByRole("checkbox", { name: "评论 @ 与针对性回复：站内＋钉钉", exact: true });
+      const verificationChannel = page.getByRole("checkbox", { name: "待验证及业务决策：站内＋钉钉", exact: true });
+      await expect(commentsChannel).toBeChecked();
+      await commentsChannel.uncheck();
+      await verificationChannel.check();
       await page.getByRole("button", { name: "保存通知设置", exact: true }).click();
       await expect(page.getByText("通知设置已保存。", { exact: true })).toBeVisible();
       await page.reload();
-      await expect(page.getByRole("checkbox", { name: "进入待验证时通知提需者", exact: true })).toBeChecked();
-      await page.getByRole("checkbox", { name: "进入待验证时通知提需者", exact: true }).uncheck();
+      await expect(commentsChannel).not.toBeChecked();
+      await expect(verificationChannel).toBeChecked();
+      await verificationChannel.uncheck();
       await page.locator(".settings-page-header").getByRole("button").click();
       await expect(dialog).toBeVisible();
       await page.getByRole("button", { name: "继续编辑", exact: true }).click();
-      await expect(page.getByRole("checkbox", { name: "进入待验证时通知提需者", exact: true })).not.toBeChecked();
+      await expect(verificationChannel).not.toBeChecked();
     });
 
     test("configures robot single-chat notifications in the same dialog and identifies the test channel", async ({ page, request }, info) => {

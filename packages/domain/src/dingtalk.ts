@@ -47,6 +47,7 @@ export interface DingTalkNotification {
 }
 export interface DingTalkProjectSettings {
   enabled: boolean;
+  commentsEnabled: boolean;
   canConfigure: boolean;
   integrationConfigured: boolean;
 }

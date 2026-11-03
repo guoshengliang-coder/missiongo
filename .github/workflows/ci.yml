@@ -66,13 +66,19 @@ jobs:
       - run: npm run build:types
       # Measured checks first: they say what is wrong, while a screenshot only
       # says that something is.
-      - run: npm run test:ui
+      - name: Audit interface behavior
+        # PRs and pushes always audit behavior. Explicit baseline generation
+        # only captures images; it is not a substitute for the PR audit.
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.update_ui_snapshots }}
+        run: npm run test:ui
       - name: Compare screenshots
         if: ${{ github.event_name != 'workflow_dispatch' }}
         run: npm run test:ui:visual
       - name: Rewrite screenshot baselines
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.update_ui_snapshots }}
-        run: npm run test:ui:visual -- --update-snapshots
+        # Refresh even images whose intentional changes fit inside the normal
+        # comparison tolerance; otherwise desktop headers can retain old UI.
+        run: npm run test:ui:visual -- --update-snapshots=all
       - uses: actions/upload-artifact@v5
         if: ${{ always() }}
         with:

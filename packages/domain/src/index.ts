@@ -16,3 +16,4 @@ export * from "./item-filters.js";
 export * from "./dingtalk.js";
 
 export * from "./comment-discussion.js";
+export * from "./personal-notifications.js";

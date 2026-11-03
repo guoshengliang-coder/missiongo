@@ -1,3 +1,4 @@
+import { registerPersonalNotificationRoutes } from "./personal-notifications.js";
 import { evaluateWorkItemTransition } from "@missiongo/domain";
 import type { WorkItemStatus, TransitionReason } from "@missiongo/domain";
 import { assertTransitionPolicy, transitionPolicy, itemRoles } from "./item-policy.js";
@@ -2321,6 +2322,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
 
   registerItemDeliveryRoutes(app, { store, accounts: accountStore, requireAccount });
+  registerPersonalNotificationRoutes(app,{store,accounts:accountStore,requireAccount});
   registerDingTalkRoutes(app,{store,accounts:accountStore,service:dingtalk,requireAccount});
   registerManagedDecisionRoutes(app, { db: store.database, accounts: accountStore, requireAccount,
     ...(options.publicOrigin ? { publicOrigin: options.publicOrigin } : {}) });

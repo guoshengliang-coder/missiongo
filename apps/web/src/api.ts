@@ -1,3 +1,4 @@
+import type { PersonalNotificationDetail, PersonalNotificationFilter, PersonalNotificationPage } from "@missiongo/domain";
 import type { CommentAudienceInput, CommentCandidate } from "@missiongo/domain";
 import type { ItemFilters } from "@missiongo/domain";
 import { appendItemFilters } from "./item-filters";
@@ -278,6 +279,14 @@ function insightSearch(input: InsightQuery & {productIds?: string[]} & Partial<I
 }
 
 export const api = {
+  personalNotifications: (filter:PersonalNotificationFilter={}) => {
+    const query=new URLSearchParams();for(const [key,value] of Object.entries(filter))if(value!==undefined)query.set(key,String(value));
+    return request<PersonalNotificationPage>(`/api/v1/notifications?${query}`);
+  },
+  personalNotificationCount: () => request<{count:number}>("/api/v1/notifications/unread-count"),
+  personalNotification: (id:string) => request<PersonalNotificationDetail>(`/api/v1/notifications/${encodeURIComponent(id)}`),
+  readPersonalNotification: (id:string) => request<{ok:boolean}>(`/api/v1/notifications/${encodeURIComponent(id)}/read`,{method:"POST"}),
+  readAllPersonalNotifications: (throughSequence:number,filter:PersonalNotificationFilter) => request<{ok:boolean}>("/api/v1/notifications/read-all",{method:"POST",body:JSON.stringify({throughSequence,filter:{...filter,unread:String(Boolean(filter.unread))}})}),
   dingtalkSettings: () => request<DingTalkSettings>("/api/v1/dingtalk/settings"),
   saveDingtalkSettings: (input: DingTalkSettingsInput) => request<DingTalkSettings>("/api/v1/dingtalk/settings",{method:"PUT",body:JSON.stringify(input)}),
   checkDingtalk: () => request<{available:boolean}>("/api/v1/dingtalk/check",{method:"POST"}),
@@ -287,7 +296,7 @@ export const api = {
   importDingtalkBindings: (rows:DingTalkImportRow[],fingerprint:string) => request<{bindings:DingTalkBinding[]}>("/api/v1/dingtalk/bindings/import",{method:"POST",body:JSON.stringify({rows,fingerprint})}),
   testDingtalkBinding: (accountId:string) => request<DingTalkNotification>(`/api/v1/dingtalk/bindings/${encodeURIComponent(accountId)}/test`,{method:"POST"}),
   dingtalkProject: (productId:string) => request<DingTalkProjectSettings>(`/api/v1/products/${encodeURIComponent(productId)}/dingtalk`),
-  saveDingtalkProject: (productId:string,enabled:boolean,expectedEnabled:boolean) => request<DingTalkProjectSettings>(`/api/v1/products/${encodeURIComponent(productId)}/dingtalk`,{method:"PUT",body:JSON.stringify({enabled,expectedEnabled})}),
+  saveDingtalkProject: (productId:string,enabled:boolean,expectedEnabled:boolean,commentsEnabled?:boolean,expectedCommentsEnabled?:boolean) => request<DingTalkProjectSettings>(`/api/v1/products/${encodeURIComponent(productId)}/dingtalk`,{method:"PUT",body:JSON.stringify({enabled,expectedEnabled,commentsEnabled,expectedCommentsEnabled})}),
   dingtalkNotifications: (itemKey:string) => request<{notifications:DingTalkNotification[];canRetry:boolean}>(`/api/v1/items/${encodeURIComponent(itemKey)}/dingtalk-notifications`),
   commentDingtalkNotifications: (itemKey:string,commentId:string) => request<{notifications:DingTalkNotification[];canRetry:boolean}>(`/api/v1/items/${encodeURIComponent(itemKey)}/comments/${encodeURIComponent(commentId)}/dingtalk-notifications`),
   retryDingtalkNotification: (itemKey:string,id:string) => request<{notifications:DingTalkNotification[];canRetry:boolean}>(`/api/v1/items/${encodeURIComponent(itemKey)}/dingtalk-notifications/${encodeURIComponent(id)}/retry`,{method:"POST"}),

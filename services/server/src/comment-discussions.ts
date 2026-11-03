@@ -1,3 +1,4 @@
+import { enqueuePersonalNotification } from "./personal-notifications.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { CommentAudienceInput, CommentCandidate, CommentMention } from "@missiongo/domain";
@@ -52,8 +53,14 @@ export function enqueueCommentNotifications(store: MissionGoStore, comment: Work
   // Explicit mentions preserve the sender's intent, including mentioning themselves.
   // Only the automatically added reply recipient excludes the current author.
   if (parent?.accountId && parent.accountId !== comment.accountId) audience.add(parent.accountId);
-  const insert = store.database.connection.prepare(`INSERT INTO dingtalk_notifications
-    (id,item_id,comment_id,account_id,kind,status,next_at,created_at,updated_at)
-    VALUES (?,?,?,?,'comment','queued',?,?,?)`);
-  for (const accountId of audience) insert.run(randomUUID(),item.id,comment.id,accountId,comment.createdAt,comment.createdAt,comment.createdAt);
+  const enabled = (store.database.connection.prepare("SELECT comments_enabled FROM dingtalk_projects WHERE product_id=?").get(item.productId) as {comments_enabled:number}|undefined)?.comments_enabled !== 0;
+  const insert = store.database.connection.prepare(`INSERT OR IGNORE INTO dingtalk_notifications
+    (id,item_id,comment_id,account_id,kind,status,reason,next_at,created_at,updated_at,personal_notification_id)
+    VALUES (?,?,?,?,'comment',?,?,?,?,?,?)`);
+  for (const accountId of audience) {
+    const notificationId=enqueuePersonalNotification(store.database,{itemId:item.id,productId:item.productId,accountId,
+      kind:comment.mentions?.some(mention=>mention.accountId===accountId) ? "mention" : "reply",commentId:comment.id,createdAt:comment.createdAt});
+    insert.run(randomUUID(),item.id,comment.id,accountId,enabled ? "queued" : "skipped",enabled ? "" : "仅站内通知",
+      comment.createdAt,comment.createdAt,comment.createdAt,notificationId ?? null);
+  }
 }

@@ -199,6 +199,14 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 - 筛选按账号在当前设备自动保存、跨条目沿用，初始全选；存储失败提示当前选择未持久化。讨论模式只提供评论类别，保留全部动态下的流转类别选择。空态提供重置入口，切换不丢失草稿。验证来源为 `comment-filters.audit.spec.ts`、`timeline.test.ts` 和 `comment-filters.test.ts`。
 - 人工与 AI 长评论共用摘要折叠，展开和收起都在原卡片内完成；全文及附件不能脱离卡片底色。复用 `CommentGroup`、`CommentBody`、原生 `details` 和主题令牌，验证来源为 `tests/ui/comment-cards.audit.spec.ts` 及既有评论、浏览、附件回归。
 
+### 个人消息中心（AND-358）
+
+- 消息入口固定在首页顶栏，未读为零只隐藏数字；搜索收为图标，展开与收起不移动桌面的消息和录入入口。
+- PC 居中双栏，紧凑外壳使用全屏消息列表与详情，采用页面返回，不使用底部半屏形式。这个全屏场景与短表单底部弹层分别适配。
+- 复用 `OverlayDialog`、`useOverlay` 管理中心与手机详情返回；业务详情复用 `Modal` 的全屏适配及关闭保护，不另外操作浏览器历史。
+- 详情内容滚动，底部处理按钮始终可达。嵌入的评论 ID 与草稿范围隔离，关闭中心不改变原工作区的草稿、筛选或焦点。
+- 行为及可达性回归见 `tests/ui/message-center.audit.spec.ts`，数据与通道规则见 [个人消息中心](personal-notifications.md)。
+
 ### Codex 会话失败卡（HG-193）
 
 失败原因、恢复指引、稳定错误标识放在一张 `--danger-*` 令牌卡内，替代重复的通用失败活动行。

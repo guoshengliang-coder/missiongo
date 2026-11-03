@@ -1,3 +1,4 @@
+import { PERSONAL_NOTIFICATIONS_SCHEMA } from "./personal-notifications-schema.js";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -2131,6 +2132,15 @@ export class MissionGoDatabase {
             before_json TEXT NOT NULL,after_json TEXT NOT NULL,created_at TEXT NOT NULL) STRICT;
         `);
         this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202611020744,new Date().toISOString());
+      });
+    }
+
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611030125").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611030125").get()) return;
+        this.connection.exec(PERSONAL_NOTIFICATIONS_SCHEMA);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611030125,new Date().toISOString());
       });
     }
 
