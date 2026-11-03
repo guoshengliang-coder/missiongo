@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { completeImageArtifacts } from "./artifacts.js";
 import { API, APIError } from "./api.js";
 import { directories, loadConfig, privateDir, readPrivate, safeError, savePrivate } from "./storage.js";
 import { hostCall, hostDirectory, socketPath } from "./host.js";
@@ -122,7 +123,7 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
     };
     await heartbeat();
     const loops = [
-      retry(heartbeat, 30_000), retry(sessions, 2000),
+      retry(heartbeat, 30_000), retry(sessions, 2000), retry(() => completeImageArtifacts(root, api), 2000),
       retry(async () => {
         const active = await api.call("GET", "/api/v1/node/agent-sessions");
         if (active.sessions.filter((s: Session) => s.occupiesExecutionSlot).length >= 10) return;

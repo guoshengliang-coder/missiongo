@@ -1,8 +1,11 @@
 import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { AgentReplyFeedback, AgentRunDetails } from "./agent-session-feedback";
+import { MarkdownText } from "./markdown-text";
+import { AgentArtifactMarkdown } from "./agent-artifact-viewer";
 import { api } from "./api";
-import { formatAgentMessageTime, isWithdrawnCard, replyBlockedLabelKey } from "./agent-session-view";
+import { activityLabelKey, formatAgentMessageTime, isWithdrawnCard, replyBlockedLabelKey } from "./agent-session-view";
 import { AgentSessionQuestions } from "./agent-session-questions";
 import { useI18n } from "./i18n";
 import { localizedErrorText } from "./error-text";
@@ -110,7 +113,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                       <small>{messageLabel(message.role, session.data.agentKind, t)}</small>
                       <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
                     </header>
-                    <p>{message.text}</p>
+                    {message.role === "user" ? <MarkdownText>{message.text}</MarkdownText> : <AgentArtifactMarkdown text={message.text} sessionId={sessionId} messageId={message.id} />}
                     {message.questions && (
                       <AgentSessionQuestions
                         questions={message.questions}
@@ -121,6 +124,11 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                     )}
                   </article>
                 ))}
+              </div>
+              <AgentRunDetails status={session.data.status} label={session.data.turnState?.waitingForInput
+                ? t(session.data.agentKind === "codex" ? "agentRunApproval" : "agentRunWaiting", { agent: agentName })
+                : session.data.status === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(session.data.status, t)}>
+                <p>{t(activityLabelKey(session.data.status, command?.status === "queued"), { agent: agentName })}</p>
                 {session.data.activities.length > 0 && (
                   <section className="agent-session-background" aria-label={t("agentSessionBackgroundTitle")}>
                     <strong>{t("agentSessionBackgroundCount", { count: session.data.activities.length })}</strong>
@@ -138,29 +146,18 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                     ))}</ul>
                   </section>
                 )}
-              </div>
+              </AgentRunDetails>
               {session.data.lastError && <p className="inline-error">{session.data.lastError}</p>}
               {command && (
                 <div className={`agent-session-command agent-session-command-${command.status}`}>
                   <span>
-                    {command.status === "queued" && t("agentSessionReplyQueued")}
-                    {command.status === "delivering" && t("agentSessionReplyDelivering")}
                     {command.status === "delivery_unknown" && t("agentSessionReplyDeliveryUnknown", { agent: agentName })}
-                    {command.status === "delivered" && t("agentSessionReplyDelivered")}
                     {command.status === "failed" && t("agentSessionReplyFailed")}
                     {command.status === "cancelled" && t("agentSessionReplyCancelled")}
                     {command.error ? `: ${command.error}` : ""}
                   </span>
-                  {command.status === "queued" && canReply && (
-                    <button
-                      type="button"
-                      className="text-button agent-session-cancel"
-                      disabled={cancel.isPending}
-                      onClick={() => cancel.mutate({ commandId: command.id, text: command.text })}
-                    >
-                      {cancel.isPending ? t("agentSessionCancelling") : t("agentSessionCancelAndEdit")}
-                    </button>
-                  )}
+                  {command.kind === "message" && command.status !== "cancelled" && <AgentReplyFeedback status={command.status} cancelling={cancel.isPending}
+                    onEdit={canReply ? () => cancel.mutate({ commandId: command.id, text: command.text }) : undefined} />}
                   {command.status === "delivery_unknown" && session.data.canResolveDelivery && (
                     <>
                       <button type="button" className="text-button" disabled={resolveDelivery.isPending}

@@ -13,7 +13,7 @@ const htmlBundle = { entry: "prototype.html", files: [
 for (const width of [375, 1440]) test(`historical artifacts preview, isolation, offline cache and errors at ${width}px`, async ({ page }) => {
   await page.setViewportSize({ width, height: 900 });
   const stamp = new Date().toISOString();
-  let kind = "html"; let missing = false; let saved = false; let requests = 0; let network = 0;
+  let missing = false; let saved = false; const requests: string[] = []; let network = 0;
   const summary = { id: "artifact-session", agentSessionId: "artifact-session", source: "external", agentKind: "codex", status: "idle",
     nodeName: "Fixture", nodeRevoked: false, mode: "external", dispatchStatus: "external", updatedAt: stamp, activityAt: stamp, createdAt: stamp,
     items: [{ key: fixture.detailKey, title: "文件预览", productId: fixture.productId }], activities: [], turnState: {}, canReply: false,
@@ -28,15 +28,16 @@ for (const width of [375, 1440]) test(`historical artifacts preview, isolation, 
   });
   await page.route(/\/api\/v1\/agent-sessions(?:\/[^?]*)?(?:\?.*)?$/, async (route) => {
     const path = new URL(route.request().url()).pathname;
+    const kind = path.match(/artifacts\/[^/]+-(html|md|pdf|png)/)?.[1] ?? "html";
     if (path.endsWith("/preview")) return route.fulfill({ contentType: "text/html", headers: { "content-security-policy": ARTIFACT_PREVIEW_POLICY, "x-frame-options": "SAMEORIGIN" }, body: ARTIFACT_PREVIEW_SHELL });
     if (path.endsWith("/bundle")) return route.fulfill({ json: kind === "html" ? htmlBundle
       : kind === "md" ? { entry: "notes.md", files: [file("notes.md", "text/markdown", "# 已保存说明\n\n**可以离线查看**\n\n![本地图](diagram.svg)"), file("diagram.svg", "image/svg+xml", '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8"/></svg>')] }
       : kind === "pdf" ? { entry: "report.pdf", files: [file("report.pdf", "application/pdf", "%PDF-1.4\n%%EOF")] }
       : { entry: "overview.png", files: [{ name: "overview.png", contentType: "image/png", base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK1cAAAAASUVORK5CYII=" }] } });
     if (path.endsWith("/artifacts")) {
-      requests++;
       const href = route.request().postDataJSON().href as string;
-      kind = href.endsWith(".md") ? "md" : href.endsWith(".pdf") ? "pdf" : href.endsWith(".png") ? "png" : "html";
+      requests.push(href);
+      const kind = href.endsWith(".md") ? "md" : href.endsWith(".pdf") ? "pdf" : href.endsWith(".png") ? "png" : "html";
       return route.fulfill({ json: { id: `${missing ? "missing" : "saved"}-${kind}`, status: missing ? "failed" : saved ? "ready" : "pending", filename: `output.${kind}`, ...(missing ? { error: "file_missing" } : {}) } });
     }
     if (path.includes("/artifacts/")) { saved = true; return route.fulfill({ json: { id: `${missing ? "missing" : "saved"}-${kind}`, status: missing ? "failed" : "ready", filename: `output.${kind}`, ...(missing ? { error: "file_missing" } : {}) } }); }
@@ -69,7 +70,7 @@ for (const width of [375, 1440]) test(`historical artifacts preview, isolation, 
   await dialog.getByRole("button", { name: "关闭", exact: true }).click();
   await page.getByRole("button", { name: "可点击原型", exact: true }).click();
   await expect(dialog.getByText("已保存，原设备离线后仍可查看。")).toBeVisible();
-  expect(requests).toBe(2);
+  expect(requests.filter((href) => href.endsWith("prototype.html"))).toHaveLength(1);
   await dialog.getByRole("button", { name: "关闭", exact: true }).click();
   await page.getByRole("button", { name: "说明", exact: true }).click();
   await expect(dialog.getByRole("heading", { name: "已保存说明" })).toBeVisible();
@@ -84,7 +85,8 @@ for (const width of [375, 1440]) test(`historical artifacts preview, isolation, 
   await expect(dialog.locator('iframe[title="report.pdf"]')).toHaveAttribute("src", /^blob:/);
   await dialog.getByRole("button", { name: "关闭", exact: true }).click();
   missing = true;
-  await page.getByRole("button", { name: "可点击原型", exact: true }).click();
+  detail.messages[0]!.text += "\n[缺失原型](/tmp/fixture-output/missing.html)";
+  await page.getByRole("button", { name: "缺失原型", exact: true }).click();
   await expect(dialog.getByRole("alert")).toContainText("原文件已删除或移动");
   expect(new URL(page.url()).pathname).toBe("/");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

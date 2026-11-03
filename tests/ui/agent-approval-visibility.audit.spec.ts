@@ -112,7 +112,7 @@ test("Simulator approval stays visible through delivery and clears after source 
     const panel = page.locator(".agent-console-approval");
     await expect(panel).toContainText('Simulator');
     await expect(panel.locator("button").first()).toBeEnabled();
-    await expect(page.locator(".agent-console-activity")).toContainText(/等待权限确认|waiting for permission/);
+    await expect(page.locator(".agent-console-activity")).toContainText(/等待审批|awaiting approval/);
     const screenshot = testInfo.outputPath(viewport.name + "-simulator-approval.png");
     await panel.scrollIntoViewIfNeeded();
     await page.screenshot({ path: screenshot, animations: "disabled" });

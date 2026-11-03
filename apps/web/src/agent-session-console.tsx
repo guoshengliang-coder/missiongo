@@ -31,6 +31,7 @@ import {
 
 import { api } from "./api";
 import { AgentSessionFailureNotice } from "./agent-session-failure-notice";
+import { AgentReplyFeedback, AgentRunDetails } from "./agent-session-feedback";
 import { AgentIcon } from "./agent-icons";
 import {
   activityLabelKey,
@@ -248,8 +249,8 @@ export function AgentSessionConsole({
     const timer = window.setInterval(() => setClock(Date.now()), 15_000);
     return () => window.clearInterval(timer);
   }, []);
-  const [replyFiles, setReplyFiles] = useState<File[]>([]);
-  const [replyFileError, setReplyFileError] = useState<string | null>(null);
+  const [replyFileDrafts, setReplyFileDrafts] = useState<Readonly<Record<string, File[]>>>({});
+  const [replyFileErrors, setReplyFileErrors] = useState<Readonly<Record<string, string | null>>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dismissedCommandId, setDismissedCommandId] = useState<string | null>(null);
   const [followLatest, setFollowLatest] = useState(true);
@@ -363,6 +364,19 @@ export function AgentSessionConsole({
   // the id the reply is actually sent to, and it is unique per conversation.
   const replySessionId = selected?.agentSessionId ?? null;
   const reply = sessionReplyDraft(replyDrafts, replySessionId);
+  const replySessionIdRef = useRef(replySessionId);
+  replySessionIdRef.current = replySessionId;
+  const replyFiles = replySessionId ? replyFileDrafts[replySessionId] ?? [] : [];
+  const replyFileError = replySessionId ? replyFileErrors[replySessionId] ?? null : null;
+  const setReplyFileErrorFor = useCallback((sessionId: string | null, error: string | null) => {
+    if (sessionId) setReplyFileErrors((current) => ({ ...current, [sessionId]: error }));
+  }, []);
+  const setReplyFileError = useCallback((error: string | null) => setReplyFileErrorFor(replySessionId, error), [replySessionId, setReplyFileErrorFor]);
+  const setReplyFilesFor = useCallback((sessionId: string | null, update: File[] | ((current: File[]) => File[])) => {
+    if (!sessionId) return;
+    setReplyFileDrafts((current) => ({ ...current, [sessionId]: typeof update === "function" ? update(current[sessionId] ?? []) : update }));
+  }, []);
+  const setReplyFiles = useCallback((update: File[] | ((current: File[]) => File[])) => setReplyFilesFor(replySessionId, update), [replySessionId, setReplyFilesFor]);
   const setReplyFor = useCallback((
     sessionId: string | null,
     update: string | ((current: string) => string),
@@ -373,10 +387,6 @@ export function AgentSessionConsole({
   const setReply = useCallback((update: string | ((current: string) => string)) => {
     setReplyFor(replySessionId, update);
   }, [replySessionId, setReplyFor]);
-  useEffect(() => {
-    setReplyFiles([]);
-    setReplyFileError(null);
-  }, [selected?.agentSessionId]);
   const sessionQuery = useQuery({
     queryKey: ["agent-session", selected?.agentSessionId],
     queryFn: async ({ queryKey }) => {
@@ -410,8 +420,8 @@ export function AgentSessionConsole({
     onSuccess: (created, input) => {
       if (!input.planApprovalRevision) {
         setReplyFor(input.sessionId, "");
-        setReplyFiles([]);
-        setReplyFileError(null);
+        setReplyFilesFor(input.sessionId, []);
+        setReplyFileErrorFor(input.sessionId, null);
       }
       queryClient.setQueryData<AgentSession>(["agent-session", input.sessionId], (current) => current
         ? { ...current, command: created, planApproval: undefined, planApprovalStatus: { code: "reply_pending" } }
@@ -500,12 +510,25 @@ export function AgentSessionConsole({
   const cancel = useMutation({
     mutationFn: ({ sessionId, commandId }: { sessionId: string; commandId: string; text: string }) =>
       api.cancelAgentSessionCommand(sessionId, commandId),
-    onSuccess: async (_command, input) => {
+    onSuccess: async (cancelled, input) => {
       setReplyFor(input.sessionId, input.text);
+      queryClient.setQueryData<AgentSession>(["agent-session", input.sessionId], (current) => current ? { ...current, command: cancelled } : current);
+      const restored = await Promise.allSettled((cancelled.attachments ?? []).map(async (attachment) => {
+        const response = await fetch(api.agentSessionAttachmentUrl(input.sessionId, attachment.id), { credentials: "same-origin" });
+        if (!response.ok) throw new Error("Attachment restore failed");
+        return new File([await response.blob()], attachment.filename, { type: attachment.contentType });
+      }));
+      setReplyFilesFor(input.sessionId, restored.flatMap((result) => result.status === "fulfilled" ? [result.value] : []));
+      setReplyFileErrorFor(input.sessionId, restored.some((result) => result.status === "rejected") ? t("agentChatRestoreFilesFailed") : null);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] }),
         queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }),
       ]);
+    },
+    onSettled: (_data, error, input) => {
+      if (!error) window.requestAnimationFrame(() => {
+        if (replySessionIdRef.current === input.sessionId) document.querySelector<HTMLTextAreaElement>(".agent-console-reply textarea")?.focus();
+      });
     },
   });
   const resolveDelivery = useMutation({
@@ -699,7 +722,7 @@ export function AgentSessionConsole({
     event.preventDefault();
     const text = reply.trim();
     if (selected?.canReply && selected.agentSessionId && (text || replyFiles.length)
-      && (!replyFiles.length || sessionQuery.data?.canAttach) && !pending && !sendingSelected) {
+      && (!replyFiles.length || sessionQuery.data?.canAttach) && !pending && !sendingSelected && !cancel.isPending) {
       send.mutate({ sessionId: selected.agentSessionId, text, files: replyFiles, occurredAt: new Date().toISOString() });
     }
   };
@@ -1105,7 +1128,7 @@ export function AgentSessionConsole({
                         <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
                       </header>
                       {message.text && (selected.agentSessionId && ["agent", "plan"].includes(message.role)
-                        ? <AgentArtifactMarkdown text={message.text} sessionId={selected.agentSessionId} messageId={message.id} />
+                        ? <AgentArtifactMarkdown text={message.text} sessionId={selected.agentSessionId} messageId={message.id} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />
                         : <MarkdownText>{message.text}</MarkdownText>)}
                       {message.attachmentData && selected.agentSessionId && <ChatAttachments sessionId={selected.agentSessionId} attachments={message.attachmentData} />}
                       {message.questions && (
@@ -1163,33 +1186,16 @@ export function AgentSessionConsole({
                 {outgoing && (
                   <article className={`agent-console-message agent-console-message-user agent-console-message-outgoing agent-console-message-outgoing-${outgoing.status}`}>
                     <header className="agent-console-message-meta">
-                      {outgoing.status === "queued" && outgoing.commandId && selected.canReply && (
-                        <button
-                          type="button"
-                          className="text-button agent-console-queued-action"
-                          disabled={cancel.isPending}
-                          onClick={() => cancel.mutate({ sessionId: selected.agentSessionId!, commandId: outgoing.commandId!, text: outgoing.text })}
-                        >
-                          {cancel.isPending ? t("agentSessionCancelling") : t("agentSessionCancelAndEdit")}
-                        </button>
-                      )}
                       <time dateTime={outgoing.occurredAt}>{formatAgentMessageTime(outgoing.occurredAt, locale)}</time>
-                      {["sending", "queued", "delivering"].includes(outgoing.status) && (
-                        <LoaderCircle className="spin agent-console-send-spinner" size={13} aria-label={t(outgoingReplyStatusKey(outgoing.status))} />
-                      )}
                     </header>
                     <MarkdownText>{outgoing.text}</MarkdownText>
-                    {["queued", "delivering", "delivered"].includes(outgoing.status) && <small role="status">
-                      {outgoing.status === "delivered"
-                        ? t("agentSessionReplyAwaitingExecution", { agent: agentName, duration: elapsed(outgoing.occurredAt, clock) ?? "–" })
-                        : t("agentSessionReplyWaitingReason", { duration: elapsed(outgoing.occurredAt, clock) ?? "–",
-                          reason: agentWaiting ? waitingText : activities.length > 0 ? t("agentSessionCurrentTool") : t("agentSessionCurrentTurn") })}
-                    </small>}
                     {command && command.id === outgoing.commandId && command.attachments && selected.agentSessionId
                       && <ChatAttachments sessionId={selected.agentSessionId} attachments={command.attachments} />}
                     {sendingSelected && send.variables?.files.length ? <div className="agent-chat-draft-files">
                       {send.variables.files.map((file, index) => <DraftChatFile key={`${file.name}-${index}`} file={file} disabled />)}
                     </div> : null}
+                    <AgentReplyFeedback status={outgoing.status} cancelling={cancel.isPending}
+                      onEdit={outgoing.commandId && selected.canReply ? () => cancel.mutate({ sessionId: selected.agentSessionId!, commandId: outgoing.commandId!, text: outgoing.text }) : undefined} />
                     {(outgoing.status === "failed" || outgoing.status === "delivery_unknown") && (
                     <footer className="agent-console-message-delivery" role="alert">
                       <CircleAlert size={14} />
@@ -1227,25 +1233,6 @@ export function AgentSessionConsole({
                   </article>
                 )}
                 {resolveDelivery.isError && <p className="inline-error">{localizedErrorText(resolveDelivery.error, t)}</p>}
-                {activities.length > 0 && (
-                  <section className="agent-console-background" aria-label={t(selected.agentKind === "claude_code" ? "agentSessionBackgroundTitle" : "agentSessionCurrentActivities")}>
-                    <header><LoaderCircle className={sessionStatus === "active" ? "spin" : undefined} size={15} /><strong>{t(selected.agentKind === "claude_code" ? "agentSessionBackgroundCount" : "agentSessionToolCount", { count: activities.length })}</strong></header>
-                    <ul>{activities.map((activity) => (
-                      <li key={activity.id}>
-                        <span>{activity.title === "等待 CI" ? t("agentSessionWaitingCI") : activity.title}</span>
-                        <small>{activity.startedAt ? t("agentSessionBackgroundElapsed", { duration: elapsed(activity.startedAt, clock) ?? "–" }) : activity.detail}</small>
-                        {selected.agentKind === "claude_code" && selected.canReply && selected.agentSessionId && !pending && !sendingSelected && (
-                          <button type="button" className="text-button" onClick={() => setReply(t("agentSessionStopTaskMessage", { title: activity.title, id: activity.id }))}>
-                            {t("agentSessionRequestTaskStop")}
-                          </button>
-                        )}
-                        {command?.kind === "message" && !["failed", "cancelled"].includes(command.status)
-                          && command.text === t("agentSessionStopTaskMessage", { title: activity.title, id: activity.id })
-                          && <small>{t("agentSessionTaskStopSent")}</small>}
-                      </li>
-                    ))}</ul>
-                  </section>
-                )}
                 {selected.source !== "external" && selected.agentKind === "codex" && sessionStatus === "failed" ? (
                   <AgentSessionFailureNotice status={sessionStatus}
                     failure={sessionQuery.data ? sessionQuery.data.failure : selected.failure}
@@ -1337,18 +1324,47 @@ export function AgentSessionConsole({
                 )}
                 {selected.agentSessionId && !sessionQuery.isLoading && !sessionQuery.isError
                   && !(selected.source !== "external" && selected.agentKind === "codex" && sessionStatus === "failed") && (
-                  <div className={`agent-console-activity agent-console-activity-${visualStatus}`} role="status">
-                    <SessionStatusIcon status={visualStatus} />
-                    <span>{activityText}</span>
-                    {(turnRunning || sessionStatus === "stalled") && (turnState?.lastProgressAt || claudeTurn) && <small>{t("agentSessionLastActivity", { duration: elapsed(turnState?.lastProgressAt ?? selected.activityAt, clock) ?? "–" })}</small>}
-                    {turnState?.observedAt && <small>{t("agentSessionLastObserved", { duration: elapsed(turnState.observedAt, clock) ?? "–" })}</small>}
-                    {turnRunning && turnState?.lastOutputAt && <small>{t("agentSessionLastOutput", { duration: elapsed(turnState.lastOutputAt, clock) ?? "–" })}</small>}
-                    {claudeTurn && (turnState?.thinkingStartedAt || (turnState?.thinkingTokens ?? 0) > 0) && <small>{t("agentSessionThinking", {
-                      duration: duration((turnState?.thinkingDurationSeconds ?? 0) + (turnState?.thinkingStartedAt
-                        ? Math.max(0, Math.floor((clock - Date.parse(turnState.thinkingStartedAt)) / 1000)) : 0)),
-                      tokens: turnState?.thinkingTokens ?? 0,
-                    })}</small>}
-                    {turnRunning && command?.status === "queued" && <small>{t("agentSessionNextTurnQueued", { agent: agentName })}</small>}
+                  <div className="agent-run-status" key={selected.id}>
+                    {["stalled", "unavailable", "failed"].includes(sessionStatus) && <p className="agent-run-warning" role="alert">{activityText}</p>}
+                    <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={visualStatus} />}
+                      label={selected.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected))
+                        : agentWaiting ? t(selected.agentKind === "codex" ? "agentRunApproval" : "agentRunWaiting", { agent: agentName })
+                          : claudeBackgroundOnly ? t("agentRunBackground") : sessionStatus === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(sessionStatus, t)}>
+                      {!["stalled", "unavailable", "failed"].includes(sessionStatus) && <p>{activityText}</p>}
+                      {outgoing && ["queued", "delivering", "delivered"].includes(outgoing.status) && <p>
+                        {outgoing.status === "delivered" ? t("agentSessionReplyAwaitingExecution", { agent: agentName, duration: elapsed(outgoing.occurredAt, clock) ?? "–" })
+                          : t("agentSessionReplyWaitingReason", { duration: elapsed(outgoing.occurredAt, clock) ?? "–",
+                            reason: agentWaiting ? waitingText : activities.length > 0 ? t("agentSessionCurrentTool") : t("agentSessionCurrentTurn") })}
+                      </p>}
+                      {(turnRunning || sessionStatus === "stalled") && (turnState?.lastProgressAt || claudeTurn) && <small>{t("agentSessionLastActivity", { duration: elapsed(turnState?.lastProgressAt ?? selected.activityAt, clock) ?? "–" })}</small>}
+                      {turnState?.observedAt && <small>{t("agentSessionLastObserved", { duration: elapsed(turnState.observedAt, clock) ?? "–" })}</small>}
+                      {turnRunning && turnState?.lastOutputAt && <small>{t("agentSessionLastOutput", { duration: elapsed(turnState.lastOutputAt, clock) ?? "–" })}</small>}
+                      {claudeTurn && (turnState?.thinkingStartedAt || (turnState?.thinkingTokens ?? 0) > 0) && <small>{t("agentSessionThinking", {
+                        duration: duration((turnState?.thinkingDurationSeconds ?? 0) + (turnState?.thinkingStartedAt
+                          ? Math.max(0, Math.floor((clock - Date.parse(turnState.thinkingStartedAt)) / 1000)) : 0)),
+                        tokens: turnState?.thinkingTokens ?? 0,
+                      })}</small>}
+                      {turnRunning && command?.status === "queued" && <small>{t("agentSessionNextTurnQueued", { agent: agentName })}</small>}
+                      {activities.length > 0 && (
+                        <section className="agent-console-background" aria-label={t(selected.agentKind === "claude_code" ? "agentSessionBackgroundTitle" : "agentSessionCurrentActivities")}>
+                          <header><LoaderCircle className={sessionStatus === "active" ? "spin" : undefined} size={15} /><strong>{t(selected.agentKind === "claude_code" ? "agentSessionBackgroundCount" : "agentSessionToolCount", { count: activities.length })}</strong></header>
+                          <ul>{activities.map((activity) => (
+                            <li key={activity.id}>
+                              <span>{activity.title === "等待 CI" ? t("agentSessionWaitingCI") : activity.title}</span>
+                              <small>{activity.startedAt ? t("agentSessionBackgroundElapsed", { duration: elapsed(activity.startedAt, clock) ?? "–" }) : activity.detail}</small>
+                              {selected.agentKind === "claude_code" && selected.canReply && selected.agentSessionId && !pending && !sendingSelected && (
+                                <button type="button" className="text-button" onClick={() => setReply(t("agentSessionStopTaskMessage", { title: activity.title, id: activity.id }))}>
+                                  {t("agentSessionRequestTaskStop")}
+                                </button>
+                              )}
+                              {command?.kind === "message" && !["failed", "cancelled"].includes(command.status)
+                                && command.text === t("agentSessionStopTaskMessage", { title: activity.title, id: activity.id })
+                                && <small>{t("agentSessionTaskStopSent")}</small>}
+                            </li>
+                          ))}</ul>
+                        </section>
+                      )}
+                    </AgentRunDetails>
                   </div>
                 )}
               </div>
@@ -1386,7 +1402,7 @@ export function AgentSessionConsole({
                       if (send.isError && send.variables?.sessionId === selected.agentSessionId) send.reset();
                     }}
                     placeholder={t("agentSessionReplyPlaceholder", { agent: agentLabel(selected, t) })}
-                    disabled={pending || sendingSelected}
+                    disabled={pending || sendingSelected || cancel.isPending}
                   />
                   {replyFiles.length > 0 && <div className="agent-chat-draft-files">
                     {replyFiles.map((file, index) => <DraftChatFile key={`${file.name}-${index}`} file={file} disabled={sendingSelected}
@@ -1399,12 +1415,12 @@ export function AgentSessionConsole({
                       <input ref={fileInputRef} type="file" accept={CHAT_FILE_ACCEPT} multiple hidden
                         onChange={(event) => addFiles(event.target.files)} />
                       {(selected.source !== "external" || canAttach) && <button type="button" className="secondary-button agent-chat-icon-button"
-                        disabled={!sessionQuery.data?.canAttach || pending || sendingSelected || replyFiles.length >= 10}
+                        disabled={!sessionQuery.data?.canAttach || pending || sendingSelected || cancel.isPending || replyFiles.length >= 10}
                         title={sessionQuery.data?.canAttach ? t("agentChatAddFile") : t("agentChatNodeUpdate")}
                         aria-label={t("agentChatAddFile")}
                         onClick={() => fileInputRef.current?.click()}><Plus size={18} /></button>}
                       <button type="submit" className="primary-button agent-chat-icon-button"
-                        disabled={(!reply.trim() && replyFiles.length === 0) || (replyFiles.length > 0 && !sessionQuery.data?.canAttach) || pending || sendingSelected}
+                        disabled={(!reply.trim() && replyFiles.length === 0) || (replyFiles.length > 0 && !sessionQuery.data?.canAttach) || pending || sendingSelected || cancel.isPending}
                         title={sendingSelected ? t("agentSessionSending") : t("agentSessionSend")}
                         aria-label={sendingSelected ? t("agentSessionSending") : t("agentSessionSend")}>
                         {sendingSelected ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />}

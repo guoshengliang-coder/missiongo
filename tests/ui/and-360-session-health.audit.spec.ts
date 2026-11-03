@@ -39,18 +39,19 @@ for (const kind of ["opencode", "codex", "claude_code"]) for (const phone of [tr
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(path === "/api/v1/agent-sessions" ? { sessions: [summary] } : detail) });
     });
     await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
+    await page.locator(".agent-run-details > summary").click();
     await expect(page.locator(".agent-console-background")).toContainText("等待 CI");
-    await expect(page.locator(".agent-console-activity")).toContainText("正在等待工具返回");
+    await expect(page.locator(".agent-run-diagnostics")).toContainText("正在等待工具返回");
     const outgoing = page.locator(".agent-console-message-outgoing");
-    await expect(outgoing).toContainText("已排队");
-    await expect(outgoing).toContainText("当前工具结束");
+    await expect(outgoing).toContainText("排队中");
+    await expect(page.locator(".agent-run-diagnostics")).toContainText("当前工具结束");
     accepted = true;
-    await expect(outgoing).toContainText("尚未确认开始处理", { timeout: 10_000 });
+    await expect(page.locator(".agent-run-diagnostics")).toContainText("尚未确认开始处理", { timeout: 10_000 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
     await page.screenshot({ path: testInfo.outputPath(`tool-wait-${kind}.png`) });
     status = "stalled";
     await expect(page.locator(".agent-console-activity-stalled")).toBeVisible({ timeout: 10_000 });
-    await expect(page.locator(".agent-console-activity-stalled")).toContainText("没有自动终止");
+    await expect(page.locator(".agent-run-warning")).toContainText("没有自动终止");
     status = "unavailable";
     await expect(page.locator(".agent-console-activity-unavailable")).toBeVisible({ timeout: 10_000 });
     // Native idle remains idle even when a reply is still waiting in MissionGo.
