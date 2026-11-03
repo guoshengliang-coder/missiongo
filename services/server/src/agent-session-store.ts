@@ -98,6 +98,9 @@ export interface ManagedSessionBinding {
   id: string; runId: string; stageId: string; generation: number; role: string; stopRequested: boolean; state: string; ownershipHeld: boolean;
 }
 export interface AgentSessionSnapshot {
+  readonly productId?: string;
+  readonly initialText?: string;
+  readonly startReady?: boolean;
   readonly nativeConnection?: ExternalNativeConnection;
   readonly managedExecution?: ManagedSessionBinding;
   readonly source?: "dispatch" | "external";
@@ -129,6 +132,9 @@ export interface AgentSessionSnapshot {
 }
 
 export interface AgentSessionListItem {
+  readonly productId?: string;
+  readonly initialText?: string;
+  readonly startReady?: boolean;
   /** Original record IDs represented by this one real conversation. */
   readonly relatedSessionIds?: readonly string[];
   readonly nativeConnection?: ExternalNativeConnection;
@@ -635,6 +641,14 @@ export function snapshotMakesUnread(
 export class AgentSessionStore {
   constructor(private readonly database: MissionGoDatabase, private readonly attachments?: AgentSessionAttachments) {}
 
+  private freeSession(dispatchId: string) {
+    return this.database.connection.prepare(`SELECT f.*,d.status AS dispatch_status,d.error FROM free_session_starts f JOIN dispatches d ON d.id=f.dispatch_id WHERE f.dispatch_id=?`)
+      .get(dispatchId) as { product_id:string;initial_text:string;ready:number;dispatch_status:string;error:string|null }|undefined;
+  }
+  private pendingNative(dispatchId: string): boolean {
+    return Boolean(this.database.connection.prepare("SELECT 1 FROM agent_sessions WHERE dispatch_id=? AND agent_session_ref=?").get(dispatchId,`pending:${dispatchId}`));
+  }
+
   managedBinding(sessionId: string): ManagedSessionBinding | undefined {
     const row = this.database.connection.prepare("SELECT i.snapshot_json FROM managed_execution_intents i JOIN agent_sessions s ON s.dispatch_id=i.id WHERE s.id=?")
       .get(sessionId) as { snapshot_json: string } | undefined;
@@ -658,7 +672,11 @@ export class AgentSessionStore {
     const existing = this.database.connection
       .prepare("SELECT id FROM agent_sessions WHERE dispatch_id = ?")
       .get(input.dispatchId) as unknown as { id: string } | undefined;
-    if (existing) return existing.id;
+    if (existing) {
+      this.database.connection.prepare("UPDATE agent_sessions SET agent_session_ref=?,status='active' WHERE id=? AND agent_session_ref=?")
+        .run(sessionRef,existing.id,`pending:${input.dispatchId}`);
+      return existing.id;
+    }
     const id = randomUUID();
     const now = new Date().toISOString();
     this.database.connection
@@ -685,6 +703,7 @@ export class AgentSessionStore {
       .get(sessionId, accountId) as unknown as
         (SessionRow & { node_last_seen_at: string | null; node_revoked_at: string | null }) | undefined;
     if (!row) throw notFound("Agent session");
+    const free = this.freeSession(row.dispatch_id);
     const messages = this.database.connection
       .prepare(
         `SELECT id, source_id, turn_id, role, phase, text, questions_json, occurred_at
@@ -699,13 +718,14 @@ export class AgentSessionStore {
     const health = sessionHealth(offlineDegradedStatus(row.status, row.node_last_seen_at, Boolean(row.node_revoked_at)).status, row.archived_at ? {} : turnState);
     return {
       id: row.id,
+      ...(free ? { productId: free.product_id, initialText: free.initial_text, startReady: free.ready === 1 } : {}),
       dispatchId: row.dispatch_id,
       ...(this.managedBinding(row.id) ? { managedExecution: this.managedBinding(row.id)! } : {}),
       agentKind: row.agent_kind,
       // Same read-time rule as the list (AND-221): a Mac nobody has heard
       // from in half an hour is not running this session.
-      status: health.status,
-      ...sessionErrorFields(health.reason ?? row.last_error),
+      status: free && row.agent_session_ref.startsWith("pending:") ? (free.dispatch_status === "failed" ? "failed" : "idle") : health.status,
+      ...sessionErrorFields(health.reason ?? row.last_error ?? free?.error),
       updatedAt: row.updated_at,
       ...(row.archived_at ? { archivedAt: row.archived_at } : {}),
       ...(row.archive_source ? { archivedSource: row.archive_source } : {}),
@@ -725,7 +745,7 @@ export class AgentSessionStore {
       })),
       ...(this.attachments ? { attachmentMessages: this.attachmentMessages(sessionId) } : {}),
       ...(command ? { command: this.mapCommand(command) } : {}),
-      replyable: !dispatchExecutionRevoked(this.database,row.dispatch_id) && !this.managedBinding(sessionId) && !this.itemsCompleted(sessionId),
+      replyable: (!free || free.dispatch_status === "launched") && !dispatchExecutionRevoked(this.database,row.dispatch_id) && !this.managedBinding(sessionId) && !this.itemsCompleted(sessionId),
     };
   }
 
@@ -766,6 +786,7 @@ export class AgentSessionStore {
          LEFT JOIN agent_sessions s ON s.dispatch_id = d.id
          JOIN nodes n ON n.id = d.node_id
          WHERE d.account_id = ?
+           AND (s.id IS NOT NULL OR NOT EXISTS (SELECT 1 FROM free_session_starts f WHERE f.dispatch_id=d.id))
          ORDER BY COALESCE(s.activity_at, d.archived_at, d.completed_at, d.delivered_at, d.created_at) DESC
          LIMIT ?`,
       )
@@ -785,6 +806,7 @@ export class AgentSessionStore {
        FROM agent_session_attention WHERE session_id = ?`,
     );
     return rows.map((row) => {
+      const free = this.freeSession(row.dispatch_id);
       const itemRows = items.all(row.dispatch_id) as unknown as Array<{
         item_key: string;
         title: string;
@@ -798,11 +820,12 @@ export class AgentSessionStore {
         } | undefined
         : undefined;
       const command = row.session_id ? this.latestCommand(row.session_id) : undefined;
-      const resultRejected = !row.session_id && row.dispatch_status === "delivered"
+      const awaitingNative = !row.session_id || Boolean(free && this.pendingNative(row.dispatch_id));
+      const resultRejected = awaitingNative && row.dispatch_status === "delivered"
         && Boolean(row.dispatch_diagnostic_json && JSON.parse(row.dispatch_diagnostic_json).resultRejection);
-      const deliveryTimedOut = !row.session_id && row.dispatch_status === "delivered"
+      const deliveryTimedOut = awaitingNative && row.dispatch_status === "delivered"
         && deliveredDispatchTimedOut(row.delivered_at);
-      const inferredStatus: AgentSessionStatus = row.dispatch_status === "failed" || deliveryTimedOut || resultRejected
+      const inferredStatus: AgentSessionStatus = free && !free.ready && row.dispatch_status === "queued" ? "idle" : row.dispatch_status === "failed" || deliveryTimedOut || resultRejected
         ? "failed"
         : row.dispatch_status === "cancelled"
           ? "unavailable"
@@ -814,7 +837,7 @@ export class AgentSessionStore {
       // server can vouch for (AND-221): read its active sessions as
       // unavailable rather than "running".
       const offlineDegraded = offlineDegradedStatus(
-        row.session_status ?? inferredStatus, row.node_last_seen_at, Boolean(row.node_revoked_at),
+        (free && this.pendingNative(row.dispatch_id) ? inferredStatus : row.session_status ?? inferredStatus), row.node_last_seen_at, Boolean(row.node_revoked_at),
       );
       const turnState = row.session_turn_state_json ? JSON.parse(row.session_turn_state_json) as AgentSessionTurnState : {};
       const health = sessionHealth(offlineDegraded.status, row.session_archived_at || row.dispatch_archived_at ? {} : turnState);
@@ -897,6 +920,7 @@ export class AgentSessionStore {
         ...(archivedAt ? { archivedAt } : {}),
         ...(archivedSource ? { archivedSource } : {}),
         nodeId: row.node_id,
+        ...(free ? { productId: free.product_id, initialText: free.initial_text, startReady: free.ready === 1 } : {}),
         nodeName: row.node_name,
         nodeConnectionState: connectionState,
         ...(row.node_last_seen_at ? { nodeLastSeenAt: row.node_last_seen_at } : {}),
@@ -904,7 +928,7 @@ export class AgentSessionStore {
         mode: row.mode,
         dispatchStatus: row.dispatch_status,
         ...(resultRejected ? { dispatchResultRejected: true } : {}),
-        ...(row.session_name ? { sessionName: row.session_name } : {}),
+        ...(free ? { sessionName: free.initial_text.slice(0, 80) || "新会话" } : row.session_name ? { sessionName: row.session_name } : {}),
         ...(row.session_url ? { sessionUrl: row.session_url } : {}),
         createdAt: row.created_at,
         items: itemRows.map((item) => ({ key: item.item_key, title: item.title, productId: item.product_id })),
@@ -920,13 +944,13 @@ export class AgentSessionStore {
           : {}),
         waitingForReply: needsAttention,
         retryable: (["failed", "cancelled"].includes(row.dispatch_status) || deliveryTimedOut)
-          && itemRows.length > 0 && itemRows.every((item) => item.status === "ready"),
+          && (free ? free.ready === 1 && ["failed", "cancelled"].includes(row.dispatch_status) && this.pendingNative(row.dispatch_id) : itemRows.length > 0 && itemRows.every((item) => item.status === "ready")),
         stoppable: row.dispatch_status === "queued"
           || Boolean(row.session_id && (row.session_status === "active" || row.session_status === "stalled")),
-        replyable: row.session_id ? !dispatchExecutionRevoked(this.database,row.dispatch_id) && !this.managedBinding(row.session_id) && !this.itemsCompleted(row.session_id) : false,
+        replyable: row.session_id && (!free || free.dispatch_status === "launched") ? !dispatchExecutionRevoked(this.database,row.dispatch_id) && !this.managedBinding(row.session_id) && !this.itemsCompleted(row.session_id) : false,
         settings: sessionSettings(
           row,
-          Boolean(row.session_id) && !archivedAt && !(row.session_id && (this.itemsCompleted(row.session_id) || this.managedBinding(row.session_id))),
+          Boolean(row.session_id) && (!free || free.dispatch_status === "launched") && !archivedAt && !(row.session_id && (this.itemsCompleted(row.session_id) || this.managedBinding(row.session_id))),
         ),
         unread: Boolean(row.unread_at && (!row.read_at || row.unread_at > row.read_at)),
         ...(row.unread_at ? { unreadAt: row.unread_at } : {}),
@@ -947,6 +971,12 @@ export class AgentSessionStore {
     if (!session) throw notFound("Agent session");
     if (!archived && session.archive_source === "source") {
       throw conflict("agent_session_source_archived", "Restore this session in Codex before continuing.");
+    }
+    if (archived) {
+      this.database.connection.prepare(`UPDATE dispatches SET status='cancelled',completed_at=?
+        WHERE id=(SELECT dispatch_id FROM agent_sessions WHERE id=?) AND status='queued'
+          AND EXISTS (SELECT 1 FROM free_session_starts f WHERE f.dispatch_id=dispatches.id AND f.ready=0)`)
+        .run(new Date().toISOString(), sessionId);
     }
     if (archived && this.pendingCommand(sessionId)) {
       throw conflict("agent_command_pending", "Cancel or deliver the queued command before archiving this session.");
@@ -1339,6 +1369,7 @@ export class AgentSessionStore {
                 COALESCE(s.mode, (SELECT d.mode FROM dispatches d WHERE d.id=s.dispatch_id)) AS approval_review_mode
          FROM agent_sessions s
          WHERE node_id = ?
+         AND s.agent_session_ref NOT LIKE 'pending:%'
          AND EXISTS (SELECT 1 FROM managed_execution_intents i WHERE i.id=s.dispatch_id) = ?
          AND (EXISTS (SELECT 1 FROM managed_execution_intents i WHERE i.id=s.dispatch_id AND (i.ownership_held=1 OR (json_extract(i.snapshot_json,'$.stopRequested')=1 AND json_extract(i.snapshot_json,'$.cleanup') IS NULL)))
            OR archived_at IS NULL OR (archive_source = 'source' AND updated_at <= ?)

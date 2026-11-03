@@ -2,6 +2,7 @@ import type { AgentKind } from "@missiongo/domain";
 
 export type Kind = Exclude<AgentKind, "hermes">;
 export interface Dispatch {
+  freeSession?: boolean;
   dispatchId: string; itemKeys: string[]; repoPath: string; agentKind: Kind; mode: string;
   nodeName?: string; model?: string; effort?: string; reworkItemKeys?: string[];
 }

@@ -85,6 +85,7 @@ public enum AgentDispatchAvailability: Equatable, Sendable {
 /// repository path — never a command line. What the session is actually told
 /// to do is decided on this machine (see `LaunchPrompt`).
 public struct DispatchJob: Equatable, Sendable {
+    public let freeSession: Bool
     public let dispatchId: String
     public let itemKeys: [String]
     public let repoPath: String
@@ -108,8 +109,10 @@ public struct DispatchJob: Equatable, Sendable {
         round: Int = 1,
         reworkItemKeys: [String] = [],
         model: String? = nil,
-        effort: String? = nil
+        effort: String? = nil,
+        freeSession: Bool = false
     ) {
+        self.freeSession = freeSession
         self.dispatchId = dispatchId
         self.itemKeys = itemKeys
         self.repoPath = repoPath
@@ -300,7 +303,7 @@ public struct SessionLauncher: AgentAdapter {
         let trimmed = nodeName.trimmingCharacters(in: .whitespacesAndNewlines)
         let machine = trimmed.isEmpty ? fallbackNodeName : trimmed
         let suffix = round > 1 ? " 第\(round)轮" : ""
-        return "\(machine)-\(itemKeyList(itemKeys))\(suffix)"
+        return "\(machine)-\(itemKeys.isEmpty ? "新会话" : itemKeyList(itemKeys))\(suffix)"
     }
 
     /// The log of one dispatch, named after the dispatch id. The id arrives over
@@ -471,7 +474,7 @@ public struct SessionLauncher: AgentAdapter {
         }
 
         let prompt = try LaunchPrompt.build(
-            itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode, reworkItemKeys: job.reworkItemKeys
+            itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode, reworkItemKeys: job.reworkItemKeys, freeSession: job.freeSession
         )
         let sessionName = SessionLauncher.sessionName(nodeName: job.nodeName, itemKeys: job.itemKeys, round: job.round)
         guard ClaudeCodeModes.isAllowed(job.mode) else {
@@ -560,7 +563,7 @@ public struct SessionLauncher: AgentAdapter {
         }
 
         let prompt = try LaunchPrompt.build(
-            itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode, reworkItemKeys: job.reworkItemKeys
+            itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode, reworkItemKeys: job.reworkItemKeys, freeSession: job.freeSession
         )
         let sessionName = SessionLauncher.sessionName(nodeName: job.nodeName, itemKeys: job.itemKeys, round: job.round)
         let command = try SessionLauncher.launchCommand(

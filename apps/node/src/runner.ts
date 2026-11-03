@@ -40,7 +40,7 @@ export async function launch(root: string, job: Dispatch, entry: string): Promis
   const directory = hostDirectory(root, job.dispatchId); privateDir(directory);
   const path = join(directory, "state.json");
   if (!existsSync(path)) {
-    const initial: HostState = { dispatch: job, pid: 0, phase: "starting", sessionName: `${job.nodeName ?? "Linux"}-${job.itemKeys.join(",")}`, commands: {}, snapshot: { status: "active", messages: [] } };
+    const initial: HostState = { dispatch: job, pid: 0, phase: "starting", sessionName: `${job.nodeName ?? "Linux"}-${job.itemKeys.length ? job.itemKeys.join(",") : "新会话"}`, commands: {}, snapshot: { status: "active", messages: [] } };
     savePrivate(path, initial);
     // Detached host survives parent/systemd restarts. There is never an automatic second launch.
     const child = spawn(process.execPath, [entry, "_host", job.dispatchId], { detached: true, stdio: "ignore", env: { ...process.env, MISSIONGO_NODE_HOME: root } });
@@ -114,10 +114,10 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
   try {
     // Establish permitted mappings and expected Skill before advertising readiness.
     const heartbeat = async () => {
-      const reply = await api.call("POST", "/api/v1/node/heartbeat", { agents, clientVersion: version, supportsChatAttachments: false, repoCandidates: [] });
+      const reply = await api.call("POST", "/api/v1/node/heartbeat", { agents, clientVersion: version, supportsChatAttachments: false, supportsFreeSessions: true, repoCandidates: [] });
       repos = reply.repos ?? [];
       agents = await detectAgents(loadConfig(root), reply.expectedSkillVersion, claudeEnvironment.resolve);
-      await api.call("POST", "/api/v1/node/heartbeat", { agents, clientVersion: version, supportsChatAttachments: false, repoCandidates: [] });
+      await api.call("POST", "/api/v1/node/heartbeat", { agents, clientVersion: version, supportsChatAttachments: false, supportsFreeSessions: true, repoCandidates: [] });
       savePrivate(healthPath, { state: "online", checkedAt: new Date().toISOString(), pid: process.pid, agents });
     };
     await heartbeat();

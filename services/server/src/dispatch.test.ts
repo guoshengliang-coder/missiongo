@@ -4707,3 +4707,136 @@ describe("First dispatch defaults (AND-343)", () => {
       .toEqual({ agents: { claude_code: { mode: "bypassPermissions" } } });
   });
 });
+
+describe("AND-369 project conversations", () => {
+  async function fixture() {
+    const { app, cookie } = await signedInApp();
+    const product = (await app.inject({ method: "POST", url: "/api/v1/products", headers: { cookie }, payload: { name: "Conversation project", keyPrefix: "CHAT" } })).json();
+    const node = await registeredNode(app);
+    const headers = { authorization: `Bearer ${node.token}` };
+    await app.inject({ method: "POST", url: "/api/v1/node/heartbeat", headers, payload: {
+      supportsFreeSessions: true, supportsChatAttachments: true, agents: [{ kind: "claude_code", ready: true,
+        skill: { localVersion: MISSIONGO_SKILL_VERSION, expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "ready" } }],
+    } });
+    await app.inject({ method: "PUT", url: "/api/v1/node/repos", headers,
+      payload: { repos: [{ productId: product.id, repoPath: join(tmpdir(), "conversation-fixture") }] } });
+    const input = { productId: product.id, nodeId: node.nodeId, agentKind: "claude_code", mode: "plan", requestKey: randomUUID(), attachmentCount: 0, text: "讨论一下交互，先别动工" };
+    const prepare = (payload = input) => app.inject({ method: "POST", url: "/api/v1/project-conversations", headers: { cookie }, payload });
+    const start = (id: string, attachmentIds: string[] = []) => app.inject({ method: "POST", url: `/api/v1/project-conversations/${id}/start`, headers: { cookie }, payload: { attachmentIds } });
+    const claim = () => app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers });
+    return { app, cookie, product, node, headers, input, prepare, start, claim };
+  }
+
+  it("reserves only on send, atomically starts once, and keeps itemless history alive after launch", async () => {
+    const f = await fixture();
+    const db = f.app.missionGoStore.database.connection;
+    expect(db.prepare("SELECT COUNT(*) AS n FROM dispatches").get()).toMatchObject({ n: 0 });
+    const [first, repeat] = await Promise.all([f.prepare(), f.prepare()]);
+    expect(first.statusCode, first.body).toBe(201);
+    const d = first.json();
+    expect(repeat.json().id).toBe(d.id);
+    expect(d).toMatchObject({ productId: f.product.id, initialText: f.input.text, startReady: false, itemKeys: [] });
+    expect((await f.prepare({ ...f.input, text: "different" })).statusCode).toBe(409);
+    expect((await f.claim()).statusCode).toBe(204);
+    expect((await f.app.inject({ method: "GET", url: "/api/v1/node/agent-sessions", headers: f.headers })).json().sessions).toEqual([]);
+    expect((await f.start(d.id)).statusCode).toBe(200);
+    expect((await f.start(d.id)).statusCode).toBe(200);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM agent_session_commands").get()).toMatchObject({ n: 1 });
+    expect((await f.claim()).json()).toMatchObject({ dispatchId: d.id, freeSession: true, itemKeys: [], mode: "plan" });
+    const result = (payload: object) => f.app.inject({ method: "POST", url: `/api/v1/node/dispatches/${d.id}/result`, headers: f.headers, payload });
+    expect((await result({ status: "launched" })).statusCode).toBe(400);
+    expect((await result({ status: "launched", sessionRef: randomUUID() })).statusCode).toBe(204);
+    const nodeSessions = (await f.app.inject({ method: "GET", url: "/api/v1/node/agent-sessions", headers: f.headers })).json().sessions;
+    expect(nodeSessions).toHaveLength(1);
+    expect(nodeSessions[0]).toMatchObject({ id: d.agentSessionId, command: { text: f.input.text, status: "queued" } });
+    expect(nodeSessions[0].sessionRef).not.toContain("pending:");
+    const sessions = (await f.app.inject({ method: "GET", url: `/api/v1/agent-sessions?productId=${f.product.id}`, headers: { cookie: f.cookie } })).json().sessions;
+    expect(sessions[0]).toMatchObject({ id: d.agentSessionId, productId: f.product.id, items: [], canReply: true });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM work_items").get()).toMatchObject({ n: 0 });
+    expect((await f.app.inject({ method: "POST", url: `/api/v1/node/agent-sessions/${d.agentSessionId}/snapshot`, headers: f.headers,
+      payload: { status: "idle", messages: [{ sourceId: "answer", role: "agent", text: "我们先讨论" }], commandId: nodeSessions[0].command.id, commandStatus: "delivered" } })).statusCode).toBe(204);
+    const detail = (await f.app.inject({ method: "GET", url: `/api/v1/agent-sessions/${d.agentSessionId}`, headers: { cookie: f.cookie } })).json();
+    expect(detail).toMatchObject({ canReply: true });
+    expect(detail.archivedAt).toBeUndefined();
+    const widget = (await f.app.inject({ method: "GET", url: "/api/v1/widget/summary", headers: { cookie: f.cookie } })).json();
+    expect(widget.agent.unreadProductId).toBe(f.product.id);
+  });
+
+  it("keeps uploaded files and the same first-message command when a confirmed launch failure is retried", async () => {
+    const f = await fixture();
+    const d = (await f.prepare({ ...f.input, text: "", attachmentCount: 1 })).json();
+    const uploaded = await f.app.inject({ method: "POST", url: `/api/v1/agent-sessions/${d.agentSessionId}/attachments`,
+      headers: { cookie: f.cookie, "content-type": "application/octet-stream", "x-missiongo-filename": "notes.txt", "x-missiongo-content-type": "text/plain" }, payload: Buffer.from("discussion context") });
+    expect(uploaded.statusCode, uploaded.body).toBe(201);
+    expect((await f.start(d.id, [uploaded.json().id])).statusCode).toBe(200);
+    await f.claim();
+    expect((await f.app.inject({ method: "POST", url: `/api/v1/dispatches/${d.id}/retry`, headers: { cookie: f.cookie } })).statusCode).toBe(409);
+    await f.app.inject({ method: "POST", url: `/api/v1/node/dispatches/${d.id}/result`, headers: f.headers, payload: { status: "failed", error: "Synthetic pre-launch failure" } });
+    const list = (await f.app.inject({ method: "GET", url: "/api/v1/agent-sessions", headers: { cookie: f.cookie } })).json().sessions;
+    expect(list[0]).toMatchObject({ status: "failed", canRetry: true });
+    const retried = await f.app.inject({ method: "POST", url: `/api/v1/dispatches/${d.id}/retry`, headers: { cookie: f.cookie } });
+    expect(retried.statusCode, retried.body).toBe(201);
+    expect(retried.json().agentSessionId).toBe(d.agentSessionId);
+    const afterRetry = (await f.app.inject({ method: "GET", url: "/api/v1/agent-sessions", headers: { cookie: f.cookie } })).json().sessions;
+    expect(afterRetry).toHaveLength(1);
+    expect(afterRetry[0].id).toBe(d.agentSessionId);
+    expect((await f.prepare({ ...f.input, text: "", attachmentCount: 1 })).json().id).toBe(retried.json().id);
+    expect((await f.claim()).json().dispatchId).toBe(retried.json().id);
+    expect(f.app.missionGoStore.database.connection.prepare("SELECT COUNT(*) AS n FROM agent_session_commands").get()).toMatchObject({ n: 1 });
+    expect(f.app.missionGoStore.database.connection.prepare("SELECT command_id FROM agent_session_attachments").get()).toMatchObject({ command_id: expect.any(String) });
+  });
+
+  it("enforces account/project scope and refuses nodes without capability", async () => {
+    const f = await fixture();
+    const other = f.app.missionGoAccounts.createAccount({ email: "free-other@example.test", password: "synthetic project password", role: "member" });
+    const login = await f.app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { username: other.email, password: "synthetic project password" } });
+    const cookie = login.headers["set-cookie"]!.toString().split(";")[0]!;
+    expect((await f.app.inject({ method: "POST", url: "/api/v1/project-conversations", headers: { cookie }, payload: f.input })).statusCode).toBeGreaterThanOrEqual(400);
+    const d = (await f.prepare()).json();
+    expect((await f.app.inject({ method: "POST", url: `/api/v1/project-conversations/${d.id}/start`, headers: { cookie }, payload: {} })).statusCode).toBe(404);
+    expect((await f.app.inject({ method: "GET", url: "/api/v1/agent-sessions", headers: { cookie } })).json().sessions).toEqual([]);
+    await heartbeat(f.app, f.node.token);
+    expect((await f.prepare({ ...f.input, requestKey: randomUUID() })).statusCode).toBe(409);
+    expect((await f.app.inject({ method: "POST", url: "/api/v1/dispatches", headers: { cookie: f.cookie }, payload: { ...f.input, itemKeys: [] } })).statusCode).toBe(400);
+  });
+  it("rejects empty sends and incomplete uploads without launching an Agent", async () => {
+    const f = await fixture();
+    expect((await f.prepare({ ...f.input, text: "" })).statusCode).toBe(400);
+    const d = (await f.prepare({ ...f.input, attachmentCount: 1 })).json();
+    expect((await f.start(d.id)).statusCode).toBe(400);
+    expect((await f.claim()).statusCode).toBe(204);
+    expect(f.app.missionGoStore.database.connection.prepare("SELECT COUNT(*) AS n FROM agent_session_commands").get()).toMatchObject({ n: 0 });
+  });
+
+  it("stops a queued first message and permits archive without leaving a runnable dispatch", async () => {
+    const f = await fixture();
+    const d = (await f.prepare()).json();
+    await f.start(d.id);
+    expect((await f.app.inject({ method: "POST", url: `/api/v1/dispatches/${d.id}/stop`, headers: { cookie: f.cookie } })).statusCode).toBe(200);
+    expect((await f.claim()).statusCode).toBe(204);
+    expect(f.app.missionGoStore.database.connection.prepare("SELECT status FROM agent_session_commands").get()).toMatchObject({ status: "cancelled" });
+    expect((await f.app.inject({ method: "PATCH", url: `/api/v1/agent-sessions/${d.agentSessionId}`, headers: { cookie: f.cookie }, payload: { archived: true } })).statusCode).toBe(200);
+    expect((await f.app.inject({ method: "POST", url: `/api/v1/dispatches/${d.id}/retry`, headers: { cookie: f.cookie } })).statusCode).toBe(409);
+  });
+
+  it("rechecks project AI permission at start, launch result and message delivery", async () => {
+    const f = await fixture();
+    const d = (await f.prepare()).json();
+    const accountId = accountsByApp.get(f.app)!.id;
+    f.app.missionGoAccounts.replacePermissions(accountId, [], "none");
+    expect((await f.start(d.id)).statusCode).toBe(404);
+    f.app.missionGoAccounts.replacePermissions(accountId, [], "all");
+    await f.start(d.id);
+    await f.claim();
+    f.app.missionGoAccounts.replacePermissions(accountId, [], "none");
+    const result = () => f.app.inject({ method: "POST", url: `/api/v1/node/dispatches/${d.id}/result`, headers: f.headers, payload: { status: "launched", sessionRef: randomUUID() } });
+    expect((await result()).statusCode).toBe(404);
+    f.app.missionGoAccounts.replacePermissions(accountId, [], "all");
+    expect((await result()).statusCode).toBe(204);
+    f.app.missionGoAccounts.replacePermissions(accountId, [], "none");
+    expect((await f.app.inject({ method: "GET", url: "/api/v1/node/agent-sessions", headers: f.headers })).json().sessions).toEqual([]);
+    expect((await f.app.inject({ method: "POST", url: `/api/v1/node/agent-sessions/${d.agentSessionId}/snapshot`, headers: f.headers,
+      payload: { status: "idle", messages: [] } })).statusCode).toBe(404);
+  });
+
+});

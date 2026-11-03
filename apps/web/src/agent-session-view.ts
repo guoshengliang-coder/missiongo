@@ -206,7 +206,7 @@ type FilterableAgentSession = Pick<
 
 type UnreadCountableSession = Pick<
   AgentSessionSummary,
-  "id" | "archivedAt" | "unread" | "status" | "items"
+  "id" | "archivedAt" | "unread" | "status" | "items" | "productId"
 >;
 
 export interface AgentUnreadCounts {
@@ -235,7 +235,7 @@ export function agentUnreadCounts(
   for (const session of sessions) {
     if (session.archivedAt || !sessionCountsAsUnread(session)) continue;
     globalSessionIds.add(session.id);
-    for (const productId of new Set(session.items.map((item) => item.productId))) {
+    for (const productId of new Set([...(session.productId ? [session.productId] : []), ...session.items.map((item) => item.productId)])) {
       const sessionIds = productSessionIds.get(productId) ?? new Set<string>();
       sessionIds.add(session.id);
       productSessionIds.set(productId, sessionIds);
@@ -678,4 +678,15 @@ export function dispatchActivityLabelKey(session: Pick<AgentSessionSummary,
   return session.agentKind === "claude_code"
     ? session.sessionUrl ? "agentConsoleClaudeManaged" : "agentConsoleClaudeLocal"
     : "agentConsoleDispatchLaunched";
+}
+
+/** Keep the node's startup instructions out of the human conversation. The
+ * original mirrored transcript stays on the server; only its first user entry
+ * can be the bootstrap, so later human messages are never hidden by a prefix. */
+export function projectConversationMessages<T extends { role: string; text: string }>(messages: readonly T[], projectConversation: boolean): readonly T[] {
+  if (!projectConversation) return messages;
+  const firstUser = messages.findIndex(message => message.role === "user");
+  const first = messages[firstUser];
+  return first?.text.startsWith("这是用户从 MissionGo 控制台发起的项目会话，不关联工作条目。")
+    && first.text.includes("本条是启动说明") ? messages.filter((_, index) => index !== firstUser) : messages;
 }

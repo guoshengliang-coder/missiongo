@@ -68,6 +68,8 @@ export interface NodeRepoMapping {
 }
 
 export interface NodeSnapshot {
+  readonly supportsFreeSessions?: boolean;
+  readonly supportsChatAttachments?: boolean;
   readonly id: string;
   /** What to call this machine: the nickname when one is set, the device name otherwise. */
   readonly name: string;
@@ -100,6 +102,9 @@ export interface DispatchDefaults {
 }
 
 export interface DispatchSnapshot {
+  readonly productId?: string;
+  readonly initialText?: string;
+  readonly startReady?: boolean;
   readonly id: string;
   readonly nodeId: string;
   readonly nodeName: string;
@@ -161,6 +166,7 @@ export interface DispatchHealthSnapshot {
 }
 
 export interface DispatchJob {
+  readonly freeSession?: boolean;
   readonly dispatchId: string;
   /** What this machine is called, for naming the session: nickname, else device name. */
   readonly nodeName: string;
@@ -187,6 +193,8 @@ export interface DispatchJob {
 }
 
 interface NodeRow {
+  supports_free_sessions: number;
+  supports_chat_attachments: number;
   id: string;
   account_id: string;
   name: string;
@@ -338,7 +346,7 @@ export class DispatchStore {
     });
   }
 
-  private wake(nodeId: string): void {
+  wake(nodeId: string): void {
     const waiting = this.waiters.get(nodeId);
     if (!waiting) return;
     this.waiters.delete(nodeId);
@@ -459,7 +467,7 @@ export class DispatchStore {
   private nodeRow(nodeId: string): NodeRow {
     const row = this.database.connection
       .prepare(
-        `SELECT id, account_id, name, nickname, hostname, client_version, expected_skill_version,
+        `SELECT id, account_id, name, nickname, hostname, client_version, expected_skill_version, supports_free_sessions, supports_chat_attachments,
                 agents_json, repo_candidates_json,
                 last_seen_at, revoked_at, created_at
          FROM nodes WHERE id = ?`,
@@ -496,7 +504,7 @@ export class DispatchStore {
     agents: readonly NodeAgentReport[],
     repoCandidates: readonly RepoCandidate[] = [],
     visibleProductIds: ProductScope = "*",
-    metadata: { readonly clientVersion?: string; readonly expectedSkillVersion?: string; readonly supportsChatAttachments?: boolean } = {},
+    metadata: { readonly clientVersion?: string; readonly expectedSkillVersion?: string; readonly supportsChatAttachments?: boolean; readonly supportsFreeSessions?: boolean } = {},
   ): readonly NodeRepoMapping[] {
     for (const agent of agents) {
       if (!AGENT_KINDS.includes(agent.kind)) throw invalidInput(`Unsupported agent kind: ${String(agent.kind)}.`);
@@ -543,14 +551,14 @@ export class DispatchStore {
     const now = new Date().toISOString();
     this.database.connection
       .prepare(
-        `UPDATE nodes SET agents_json = ?, repo_candidates_json = ?, client_version = ?, expected_skill_version = ?, supports_chat_attachments = ?,
+        `UPDATE nodes SET agents_json = ?, repo_candidates_json = ?, client_version = ?, expected_skill_version = ?, supports_chat_attachments = ?, supports_free_sessions = ?,
                           last_seen_at = ?, updated_at = ? WHERE id = ?`,
       )
       .run(
         JSON.stringify(normalizedAgents), JSON.stringify(candidates),
         metadata.clientVersion?.slice(0, 100) || null,
         metadata.expectedSkillVersion?.slice(0, 100) || null,
-        metadata.supportsChatAttachments ? 1 : 0,
+        metadata.supportsChatAttachments ? 1 : 0, metadata.supportsFreeSessions ? 1 : 0,
         now, now, nodeId,
       );
     return this.listRepos(nodeId, visibleProductIds);
@@ -559,7 +567,7 @@ export class DispatchStore {
   listNodes(accountId: string, visibleProductIds: ProductScope = "*"): readonly NodeSnapshot[] {
     const rows = this.database.connection
       .prepare(
-        `SELECT id, account_id, name, nickname, hostname, client_version, expected_skill_version,
+        `SELECT id, account_id, name, nickname, hostname, client_version, expected_skill_version, supports_free_sessions, supports_chat_attachments,
                 agents_json, repo_candidates_json,
                 last_seen_at, revoked_at, created_at
          FROM nodes WHERE account_id = ? AND revoked_at IS NULL ORDER BY created_at DESC`,
@@ -571,7 +579,7 @@ export class DispatchStore {
   getNode(accountId: string, nodeId: string): NodeSnapshot {
     const row = this.database.connection
       .prepare(
-        `SELECT id, account_id, name, nickname, hostname, client_version, expected_skill_version,
+        `SELECT id, account_id, name, nickname, hostname, client_version, expected_skill_version, supports_free_sessions, supports_chat_attachments,
                 agents_json, repo_candidates_json,
                 last_seen_at, revoked_at, created_at
          FROM nodes WHERE id = ? AND account_id = ?`,
@@ -694,6 +702,8 @@ export class DispatchStore {
     model?: string;
     effort?: string;
     itemKeys: readonly string[];
+    /** Internal project-scoped conversation; never accepted by the item dispatch endpoint. */
+    productId?: string;
     /** Dispatch again even though an earlier dispatch of these items was never claimed. */
     force?: boolean;
   }, alreadyInTransaction = false): DispatchSnapshot {
@@ -701,13 +711,16 @@ export class DispatchStore {
     if (!isSupportedDispatchMode(input.agentKind, input.mode)) {
       throw invalidInput(`Unsupported mode for this agent: ${input.mode}.`);
     }
-    if (input.itemKeys.length === 0) throw invalidInput("Select at least one work item.");
+    if (input.itemKeys.length === 0 && !input.productId) throw invalidInput("Select at least one work item.");
     if (input.itemKeys.length > 20) throw invalidInput("A dispatch can carry at most 20 work items.");
 
     const create = () => {
       const node = this.getNode(input.accountId, input.nodeId);
       if (node.revokedAt) throw conflict("node_revoked", "This node was revoked.");
       if (!node.online) throw conflict("node_offline", "This node is not currently connected.");
+      if (input.productId && (!node.supportsFreeSessions || input.itemKeys.length)) {
+        throw conflict("free_sessions_unsupported", "Update the execution node to start project conversations.");
+      }
       const agent = node.agents.find((entry) => entry.kind === input.agentKind);
       if (!agent) {
         throw conflict("agent_unavailable", "This node did not report that agent.");
@@ -757,6 +770,11 @@ export class DispatchStore {
 
       const repos = this.listRepos(node.id);
       const repoPaths = new Set<string>();
+      if (input.productId) {
+        const repo = repos.find((entry) => entry.productId === input.productId);
+        if (!repo) throw conflict("repo_unmapped", "This project has no repository on this node.");
+        repoPaths.add(repo.repoPath);
+      }
       for (const item of items) {
         const repo = repos.find((entry) => entry.productId === item.product_id);
         if (!repo) throw conflict("repo_unmapped", `${item.item_key}'s product has no repository on this node.`);
@@ -1144,6 +1162,7 @@ export class DispatchStore {
           `SELECT d.id, d.agent_kind, d.mode, d.model, d.effort, d.repo_path, COALESCE(n.nickname, n.name) AS node_name
            FROM dispatches d JOIN nodes n ON n.id = d.node_id
            WHERE d.node_id = ? AND d.status = 'queued'
+             AND NOT EXISTS (SELECT 1 FROM free_session_starts f WHERE f.dispatch_id=d.id AND (f.ready=0 OR n.supports_free_sessions!=1 OR EXISTS (SELECT 1 FROM products p WHERE p.id=f.product_id AND p.archived_at IS NOT NULL)))
              AND NOT EXISTS (SELECT 1 FROM builder_revoked_dispatches r WHERE r.dispatch_id=d.id)
              AND NOT EXISTS (SELECT 1 FROM dispatch_items i JOIN work_items w ON w.id=i.item_id JOIN products p ON p.id=w.product_id
                WHERE i.dispatch_id=d.id AND (p.archived_at IS NOT NULL OR EXISTS(SELECT 1 FROM item_transfers t WHERE t.source_item_id=w.id)
@@ -1157,6 +1176,8 @@ export class DispatchStore {
             repo_path: string; node_name: string;
           } | undefined;
       if (!row) return undefined;
+      const free = this.database.connection.prepare("SELECT product_id FROM free_session_starts WHERE dispatch_id=?").get(row.id) as {product_id:string}|undefined;
+      if (free) authorizeProduct?.(free.product_id);
       if (authorizeProduct) for (const product of this.database.connection.prepare("SELECT DISTINCT w.product_id FROM dispatch_items i JOIN work_items w ON w.id=i.item_id WHERE i.dispatch_id=?").all(row.id) as Array<{product_id:string}>) authorizeProduct(product.product_id);
       const now = new Date().toISOString();
       this.database.connection
@@ -1164,6 +1185,7 @@ export class DispatchStore {
         .run(now, row.id);
       return {
         dispatchId: row.id,
+        ...(free ? { freeSession: true } : {}),
         itemKeys: this.listDispatchItemKeys(row.id),
         repoPath: row.repo_path,
         agentKind: row.agent_kind as AgentKind,
@@ -1515,6 +1537,8 @@ export class DispatchStore {
       deviceName: row.name,
       ...(row.nickname ? { nickname: row.nickname } : {}),
       ...(row.hostname ? { hostname: row.hostname } : {}),
+      supportsFreeSessions: row.supports_free_sessions === 1,
+      supportsChatAttachments: row.supports_chat_attachments === 1,
       ...(row.client_version ? { clientVersion: row.client_version } : {}),
       ...(row.expected_skill_version ? { expectedSkillVersion: row.expected_skill_version } : {}),
       agents: JSON.parse(row.agents_json) as NodeAgentReport[],
@@ -1586,7 +1610,9 @@ export class DispatchStore {
   }
 
   private mapDispatch(row: DispatchRow): DispatchSnapshot {
+    const free = this.database.connection.prepare("SELECT product_id, initial_text, ready FROM free_session_starts WHERE dispatch_id=?").get(row.id) as {product_id:string;initial_text:string;ready:number}|undefined;
     return {
+      ...(free ? { productId: free.product_id, initialText: free.initial_text, startReady: free.ready === 1 } : {}),
       id: row.id,
       nodeId: row.node_id,
       nodeName: row.node_name,

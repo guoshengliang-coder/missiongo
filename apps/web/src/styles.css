@@ -3220,3 +3220,17 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .transition-files { display: grid; gap: 12px; min-width: 0; }
 .transition-files > button { justify-self: start; }
 .transition-results { overflow-wrap: anywhere; }
+
+/* Project conversation drafts use the console's existing pane and composer. */
+.agent-console-topbar-new { min-height: 44px; white-space: nowrap; }
+.new-session-head { display: flex; align-items: center; gap: 10px; }
+.new-session-head .agent-console-heading { display: block; flex: 1; min-width: 0; }
+.new-session-head > button { flex: 0 0 auto; white-space: nowrap; }
+.new-session-head .agent-console-heading small { color: var(--muted); }
+.new-session-head .agent-console-heading h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@container agent-console-topbar (max-width: 620px) {
+  .agent-console-topbar-actions.has-bulk > .agent-console-topbar-new,
+  .agent-console-topbar-actions.has-bulk > .agent-console-topbar-bulk,
+  .agent-console-topbar-actions.has-bulk > .agent-console-topbar-refresh { display: none; }
+  .agent-console-topbar-actions.has-bulk > .agent-console-topbar-more { display: block; }
+}

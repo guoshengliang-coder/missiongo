@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { OverlayDialog } from "./overlay";
 import { WebVersion } from "./web-version";
 import { Select } from "./select";
@@ -37,6 +38,7 @@ import {
   approvalNeedsAction,
   planApprovalStatusKey,
   agentChatMessages,
+  projectConversationMessages,
   agentSessionDetailRefetchInterval,
   agentSessionMatches,
   archivableVisibleSessionIds,
@@ -211,6 +213,7 @@ export function AgentSessionConsole({
   sessionsError,
   selectedSessionId,
   conversationOpen,
+  draftView,
   bulkMode,
   onBulkModeChange,
   onBulkAvailabilityChange,
@@ -224,6 +227,7 @@ export function AgentSessionConsole({
   sessionsError: unknown;
   selectedSessionId: string | null;
   conversationOpen: boolean;
+  draftView?: ReactNode;
   bulkMode: boolean;
   onBulkModeChange: (enabled: boolean) => void;
   onBulkAvailabilityChange: (available: boolean) => void;
@@ -274,7 +278,7 @@ export function AgentSessionConsole({
   const hasSessionsError = sessionsError !== null && sessionsError !== undefined;
 
   const productSessions = useMemo(
-    () => allSessions.filter((session) => session.items.some((item) => item.productId === productId)),
+    () => allSessions.filter((session) => session.productId === productId || session.items.some((item) => item.productId === productId)),
     [allSessions, productId],
   );
   const sessions = filter === "unread" ? allSessions : productSessions;
@@ -348,11 +352,11 @@ export function AgentSessionConsole({
   }, [bulkMode]);
 
   useEffect(() => {
-    if (selectedId === selectedSessionId) return;
+    if (draftView || selectedId === selectedSessionId) return;
     onSelectSession(selectedId, conversationOpen && Boolean(selectedId));
-  }, [conversationOpen, onSelectSession, selectedId, selectedSessionId]);
+  }, [conversationOpen, draftView, onSelectSession, selectedId, selectedSessionId]);
 
-  const selected = allSessions.find((session) => session.id === selectedId);
+  const selected = draftView ? undefined : allSessions.find((session) => session.id === selectedId);
   // The reply box belongs to the conversation it is written for: its draft is
   // kept under that session's agentSessionId, so an answer picked here never
   // follows you into another session or another product (AND-252). The key is
@@ -572,7 +576,7 @@ export function AgentSessionConsole({
     sendingSelected,
     Boolean(sessionQuery.data?.turnState?.observedAt),
   );
-  const messages = sessionQuery.data?.messages ?? [];
+  const messages = projectConversationMessages(sessionQuery.data?.messages ?? [], Boolean(selected?.productId));
   const attachmentMessages = sessionQuery.data?.attachmentMessages ?? [];
   const visibleMessages = agentChatMessages(messages, attachmentMessages, outgoing?.commandId);
   const activities = sessionQuery.data?.activities ?? [];
@@ -763,13 +767,13 @@ export function AgentSessionConsole({
         <button
           type="button"
           className="secondary-button"
-          disabled={retryDispatch.isPending || stopDispatch.isPending || pending}
+          disabled={retryDispatch.isPending || stopDispatch.isPending || (pending && !(selected.productId && ["failed", "cancelled"].includes(selected.dispatchStatus)))}
           onClick={async () => {
-            const confirmation = selected.dispatchStatus === "delivered"
+            const confirmation = selected.productId ? t("newSessionRetryConfirm") : selected.dispatchStatus === "delivered"
               ? t("agentConsoleRetryTimedOutConfirm") : t("agentConsoleRetryConfirm");
             if (await confirm(confirmation)) retryDispatch.mutate();
           }}
-        ><RotateCcw size={15} />{t("agentConsoleRetry")}</button>
+        ><RotateCcw size={15} />{t(selected.productId ? "newSessionRetry" : "agentConsoleRetry")}</button>
       )}
       {selected.canStop && (
         <button
@@ -1003,7 +1007,8 @@ export function AgentSessionConsole({
       </section>
 
       <section className="agent-console-conversation" aria-live="polite">
-        {!selected && <div className="agent-console-empty agent-console-empty-conversation"><MessageSquare size={24} /><p>{t("agentConsoleChoose")}</p></div>}
+        {draftView}
+        {!draftView && !selected && <div className="agent-console-empty agent-console-empty-conversation"><MessageSquare size={24} /><p>{t("agentConsoleChoose")}</p></div>}
         {selected && (
           <>
             <header className="agent-console-conversation-head">

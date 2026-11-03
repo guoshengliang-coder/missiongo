@@ -22,8 +22,8 @@ export class AgentConsoleSessions {
     const rows = [...this.dispatch.listForAccount(accountId, identities.length + 1),
       ...this.external.listForAccount(accountId, identities.length + 1)];
     const byId = new Map(rows.map((row) => [row.id, row]));
-    const groups = conversationIdentityGroups(identities.map((identity) => ({
-      ...identity, isolated: Boolean(byId.get(identity.id)?.managedExecution),
+    const groups = conversationIdentityGroups(identities.filter(identity => byId.has(identity.id)).map((identity) => ({
+      ...identity, isolated: Boolean(byId.get(identity.id)?.managedExecution || byId.get(identity.id)?.productId),
     })));
     return groups.map((identities) => identities.flatMap((identity) => {
       const row = byId.get(identity.id);

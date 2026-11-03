@@ -24,6 +24,17 @@ const job = (root: string, agentKind: Dispatch["agentKind"] = "codex"): Dispatch
 afterEach(async () => { for (const a of adapters.splice(0)) await a.close(); vi.unstubAllEnvs(); vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe("headless configuration and scope", () => {
+  it("starts a project conversation without claiming items and still isolates writes", () => {
+    const free = { ...job(temporary()), itemKeys: [], freeSession: true };
+    const prompt = launchPrompt(free);
+    expect(prompt).toContain("等待用户首条消息");
+    expect(prompt).toContain("不得自动创建或领取条目");
+    expect(prompt).toContain("独立 worktree");
+    expect(prompt).toContain("原生计划模式");
+    expect(prompt).not.toContain("claim_item");
+    expect(() => launchPrompt({ ...free, freeSession: false })).toThrow();
+    expect(() => launchPrompt({ ...free, itemKeys: ["EX-1"] })).toThrow();
+  });
   it("keeps recent messages and explicitly marks omitted history", () => {
     const snapshot = boundedSnapshot({ status: "idle", messages: Array.from({ length: 2200 }, (_, index) => ({ sourceId: String(index), role: "agent", text: "message" })) });
     expect(snapshot.messages).toHaveLength(2000); expect(snapshot.messages.at(-1)?.sourceId).toBe("2199"); expect(snapshot.error).toContain("仅同步最近内容");

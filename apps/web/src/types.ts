@@ -356,6 +356,8 @@ export interface RepoCandidate {
  * a clock skewed on this device must not make a silent machine look reachable.
  */
 export interface DispatchNode {
+  readonly supportsFreeSessions?: boolean;
+  readonly supportsChatAttachments?: boolean;
   readonly id: string;
   /** What to call the machine everywhere: the nickname when one is set, the device name otherwise. */
   readonly name: string;
@@ -379,7 +381,15 @@ export interface DispatchNode {
  * status here is the session's, never the items' — those still move only when
  * the session claims them.
  */
+export interface FreeSessionConfig {
+  productId: string; nodeId: string; agentKind: AgentKind; mode: string; model?: string; effort?: string;
+  nodeName?: string; canAttach?: boolean;
+}
+
 export interface Dispatch {
+  readonly productId?: string;
+  readonly initialText?: string;
+  readonly startReady?: boolean;
   readonly id: string;
   readonly nodeId: string;
   readonly nodeName: string;
@@ -554,6 +564,9 @@ export interface AgentSession {
 }
 
 export interface AgentSessionSummary {
+  readonly productId?: string;
+  readonly initialText?: string;
+  readonly startReady?: boolean;
   readonly relatedSessionIds?: readonly string[];
   readonly nativeConnection?: ExternalNativeConnection;
   readonly canConnectNative?: boolean;
