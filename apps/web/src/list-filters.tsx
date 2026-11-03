@@ -212,7 +212,6 @@ export function ListFilters({
     </div>
   );
   const dimensions: Array<{ key: Dimension; label: string; summary: string }> = [
-    {key:"collaborations",label:word("项目协作","Collaboration"),summary:(draft?.collaborations??[]).map(v=>collaborationChoices.find(c=>c.id===v)?.name).join("、")},
     { key: "builder", label: "Builder", summary: draft?.builder
       ? draft.builder === "mine" ? word("我", "Me") : draft.builder === "unassigned"
         ? word("待分配", "Unassigned") : builders.find(b => b.id === draft.builder)?.name ?? word("原 Builder（不可用）", "Previous Builder (unavailable)") : "" },
@@ -222,6 +221,7 @@ export function ListFilters({
     { key: "sourceComponentIds", label: word("模块", "Module"), summary: (draft?.sourceComponentIds ?? []).map(id => modules.data?.find(m => m.id === id)?.name ?? word("已选模块", "Selected module")).join("、") },
     ...(["created", "updated"] as const).map(key => ({ key, label: key === "created" ? word("创建时间", "Created") : word("更新时间", "Updated"),
       summary: draft?.[`${key}From`] || draft?.[`${key}To`] ? `${draft?.[`${key}From`] || "…"} ~ ${draft?.[`${key}To`] || "…"}` : "" })),
+    {key:"collaborations",label:word("项目协作","Collaboration"),summary:(draft?.collaborations??[]).map(v=>collaborationChoices.find(c=>c.id===v)?.name).join("、")},
   ];
   const currentDimension = dimensions.find(entry => entry.key === dimension);
   const clearDimension = () => {
