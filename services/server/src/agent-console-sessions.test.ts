@@ -48,6 +48,17 @@ it("unifies historical native mirrors, keeps their records and exposes both IDs"
   expect(f.store.getWorkItem(f.item.key).status).toBe("in_progress");
 });
 
+it("numbers a re-dispatched session with the round the machine names it by (AND-365)", () => {
+  const f = fixture();
+  const later = "2026-10-13T02:05:00.000Z";
+  f.db.prepare(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at,unread_at)
+    VALUES (?, 'owner', 'node', 'codex', 'default', 'launched', '/synthetic/repo', ?, ?)`).run("dispatch-2", later, later);
+  f.db.prepare("INSERT INTO dispatch_items(dispatch_id,item_id,position) VALUES (?,?,0)").run("dispatch-2", f.item.id);
+  f.dispatch.createForDispatch({ dispatchId: "dispatch-2", nodeId: "node", sessionRef: "native-thread-2" });
+  const rounds = f.console.list("owner").map((row) => [row.dispatchId, row.round]);
+  expect(rounds).toEqual(expect.arrayContaining([["dispatch", 1], ["dispatch-2", 2]]));
+});
+
 it("retains different conversations on the same item and unknown legacy tracking", () => {
   const f = fixture();
   const different = f.external.register(owner, { agentKind: "codex", sessionRef: "other-thread", refKind: "native" }, f.item.key);

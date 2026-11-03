@@ -1,5 +1,6 @@
 import { assertBuilderExecution, assertDispatchExecution, latestBuilderHandover, hasOngoingItemExecution, hasPriorProcessing } from "./builder-authority.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import type { DatabaseSync } from "node:sqlite";
 
 import {
   AGENT_KINDS,
@@ -251,6 +252,33 @@ function text(value: string | undefined, field: string, maxLength: number): stri
   if (!normalized) throw invalidInput(`${field} is required.`);
   if (normalized.length > maxLength) throw invalidInput(`${field} must be ${maxLength} characters or fewer.`);
   return normalized;
+}
+
+/**
+ * One more than the most earlier dispatches any item of this batch had that
+ * reached a machine. A queued dispatch that was cancelled, or one that failed
+ * before a session started, left no session behind to be confused with, so
+ * only delivered and launched ones count.
+ *
+ * Shared with the agent console, which names a re-dispatched session with the
+ * same number the machine puts in the session it starts (AND-365).
+ */
+export function dispatchRound(connection: DatabaseSync, dispatchId: string): number {
+  const row = connection
+    .prepare(
+      `SELECT MAX(earlier) AS earlier FROM (
+         SELECT COUNT(prior.id) AS earlier
+         FROM dispatch_items di
+         JOIN dispatches d ON d.id = di.dispatch_id
+         LEFT JOIN dispatch_items prior_item ON prior_item.item_id = di.item_id AND prior_item.dispatch_id <> d.id
+         LEFT JOIN dispatches prior ON prior.id = prior_item.dispatch_id
+           AND prior.created_at < d.created_at AND prior.status IN ('delivered', 'launched')
+         WHERE di.dispatch_id = ?
+         GROUP BY di.item_id
+       )`,
+    )
+    .get(dispatchId) as unknown as { earlier: number | null };
+  return (row.earlier ?? 0) + 1;
 }
 
 /**
@@ -1143,34 +1171,10 @@ export class DispatchStore {
         ...(row.model ? { model: row.model } : {}),
         ...(row.effort ? { effort: row.effort } : {}),
         nodeName: row.node_name,
-        round: this.dispatchRound(row.id),
+        round: dispatchRound(this.database.connection, row.id),
         reworkItemKeys: this.listReworkItemKeys(row.id),
       };
     });
-  }
-
-  /**
-   * One more than the most earlier dispatches any item of this batch had that
-   * reached a machine. A queued dispatch that was cancelled, or one that failed
-   * before a session started, left no session behind to be confused with, so
-   * only delivered and launched ones count.
-   */
-  private dispatchRound(dispatchId: string): number {
-    const row = this.database.connection
-      .prepare(
-        `SELECT MAX(earlier) AS earlier FROM (
-           SELECT COUNT(prior.id) AS earlier
-           FROM dispatch_items di
-           JOIN dispatches d ON d.id = di.dispatch_id
-           LEFT JOIN dispatch_items prior_item ON prior_item.item_id = di.item_id AND prior_item.dispatch_id <> d.id
-           LEFT JOIN dispatches prior ON prior.id = prior_item.dispatch_id
-             AND prior.created_at < d.created_at AND prior.status IN ('delivered', 'launched')
-           WHERE di.dispatch_id = ?
-           GROUP BY di.item_id
-         )`,
-      )
-      .get(dispatchId) as unknown as { earlier: number | null };
-    return (row.earlier ?? 0) + 1;
   }
 
   /** Items of this batch that were ever sent back from verification or from done, in batch order. */

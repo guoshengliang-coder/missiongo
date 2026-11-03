@@ -9,7 +9,7 @@ import type { AgentAttentionClassification, AgentAttentionKind as ClassifiedAtte
 import type { AgentSessionAttachment, AgentSessionAttachments } from "./agent-session-attachments.js";
 import { parseAgentModels, requireOfferedModel, type AgentRunSettings } from "./agent-settings.js";
 import { autoArchiveFinishedDispatches, autoArchiveFinishedConversations } from "./auto-archive.js";
-import { deliveredDispatchTimedOut } from "./dispatch-store.js";
+import { deliveredDispatchTimedOut, dispatchRound } from "./dispatch-store.js";
 import { conflict, invalidInput, notFound } from "./errors.js";
 import type { MissionGoDatabase } from "./storage/database.js";
 import type { ExternalNativeConnection } from "./external-native-session-store.js";
@@ -140,6 +140,8 @@ export interface AgentSessionListItem {
   readonly id: string;
   readonly agentSessionId?: string;
   readonly dispatchId?: string;
+  /** Which dispatch on these items this is; absent for sessions MissionGo did not dispatch. */
+  readonly round?: number;
   readonly agentKind: AgentKind | "other";
   readonly status: AgentSessionStatus;
   readonly turnState?: AgentSessionTurnState;
@@ -885,6 +887,7 @@ export class AgentSessionStore {
         id: row.session_id ?? `dispatch:${row.dispatch_id}`,
         ...(row.session_id ? { agentSessionId: row.session_id } : {}),
         dispatchId: row.dispatch_id,
+        round: dispatchRound(this.database.connection, row.dispatch_id),
         ...(row.session_id && this.managedBinding(row.session_id) ? { managedExecution: this.managedBinding(row.session_id)! } : {}),
         agentKind: row.agent_kind,
         status,

@@ -62,9 +62,13 @@ export class AgentConsoleSessions {
     const attention = [...group].filter((row) => row.needsAttention)
       .sort((a, b) => b.activityAt.localeCompare(a.activityAt))[0]?.attention ?? primary.attention;
     const unreadAt = group.flatMap((row) => row.unreadAt ? [row.unreadAt] : []).sort().at(-1);
+    // A resumed thread can carry earlier dispatches; the newest round is the
+    // one the console names (AND-365).
+    const rounds = group.flatMap((row) => row.round ? [row.round] : []);
     // Archive and reply state belong to the control channel, including old source-side archives.
     return { ...primary,
       relatedSessionIds: group.map((row) => row.id),
+      ...(rounds.length ? { round: Math.max(...rounds) } : {}),
       items: [...new Map(group.flatMap((row) => row.items).map((item) => [item.key, item])).values()],
       activityAt: latest.activityAt, updatedAt: group.map((row) => row.updatedAt).sort().at(-1)!,
       ...(latest.latestMessage ? { latestMessage: latest.latestMessage } : {}),

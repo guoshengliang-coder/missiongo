@@ -3801,10 +3801,11 @@ function WorkItemFields({
   const reportCopy = REPORT_COPY[draft.type];
   const showsBugFields = draft.type === "bug";
   const platformRequired = draft.type === "bug" || draft.type === "task";
-  // Diagnostics belong to something that runs. Keep the block available for
-  // every type, but only unfolded where a log is part of the report.
-  const diagnosticsOpen = platformRequired
-    || Boolean(draft.diagnosticLog.trim())
+  // Pasting a log or stack trace is the exception, not the rule (AND-364): the
+  // block starts folded and opens only when it already holds something, so a
+  // first-time reporter gets a short form and editing never hides a log behind
+  // a closed summary.
+  const diagnosticsOpen = Boolean(draft.diagnosticLog.trim())
     || selectedLogFiles.length > 0
     || existingLogAttachments.length > 0;
 
@@ -4050,7 +4051,10 @@ function WorkItemFields({
           ))}</div>
         )}
       </details>
-      <details className="capture-optional" open={hasOptionalEnvironmentDetails(draft.environment) || draft.environment.platform === "web"}>
+      {/* Folded by default (AND-364): the web context is attached on its own,
+          so an opened block of empty version fields only took up space. It
+          still opens when it holds manually filled details. */}
+      <details className="capture-optional" open={hasOptionalEnvironmentDetails(draft.environment)}>
         <summary><ChevronRight size={16} /> <span><strong>{t("optionalDetails")}</strong><small>{t("optionalDetailsHelp")}</small></span></summary>
         <div className="capture-optional-body">
           <EnvironmentFields value={draft.environment} onChange={(value) => updateDraft("environment", value)} />
