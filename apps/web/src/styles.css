@@ -1052,6 +1052,10 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
   /* Full width under the text so the tiles are big enough to actually read. */
   .workspace.detail-open .item-media-strip { grid-column: 1 / -1; grid-row: 2; gap: 8px; }
   .workspace.detail-open .item-media-strip.empty-slot { display: none; }
+  /* The tiles sit on the text's axis, the same as the phone card's. Without
+     the indent they start at the card's padding edge while the title starts
+     after the 20px box and its 10px gap, so they stick out to the left. */
+  .workspace.detail-open .item-row.has-select .item-media-strip { margin-left: 30px; }
   .workspace.detail-open .item-media-thumb { width: 72px; height: 84px; }
   .workspace.detail-open .item-context { grid-column: 1; grid-row: 3; }
   .workspace.detail-open .item-state { grid-column: 2; grid-row: 3; justify-self: end; }
