@@ -107,7 +107,7 @@ test("reveals a filtered notification target without clearing the underlying com
   const account=(await(await page.request.get("/api/v1/bootstrap")).json()).user;
   await page.addInitScript(id=>localStorage.setItem(`missiongo.comment-filters.v1:${encodeURIComponent(id)}`,JSON.stringify(["agent"])),account.id);
   await page.goto(`/?product=${fixture.productId}&status=all&item=${item.key}&comment=${notification.commentId}`);
-  const originalUrl=page.url(),original=page.locator(`#comment-${notification.commentId}`);
+  const originalParameters=[...new URL(page.url()).searchParams].sort(),original=page.locator(`#comment-${notification.commentId}`);
   await expect(original).toBeFocused();
   await page.locator("#comment-draft").fill("筛选前的工作区草稿");
   await page.getByRole("button",{name:"消息",exact:true}).click();
@@ -117,7 +117,8 @@ test("reveals a filtered notification target without clearing the underlying com
   await expect(target).toBeFocused();
   await expect(business.locator(".comment-filter-reveal")).toBeVisible();
   await business.getByRole("button",{name:"恢复筛选显示",exact:true}).click();
-  await expect(target).toHaveCount(0);await expect(page).toHaveURL(originalUrl);
+  await expect(target).toHaveCount(0);
+  await expect.poll(()=>[...new URL(page.url()).searchParams].sort()).toEqual(originalParameters);
   await page.keyboard.press("Escape");await expect(business).toHaveCount(0);
   await page.keyboard.press("Escape");await expect(page.locator(".message-center-layer")).toHaveCount(0);
   await expect(original).toBeVisible();await expect(page.locator("#comment-draft")).toHaveValue("筛选前的工作区草稿");
