@@ -69,3 +69,8 @@
   .message-business-modal { padding: 0; align-items: stretch; }
   .message-business-modal .modal { width: 100%; border-radius: 0; padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left); }
 }
+
+.message-center-tabs { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.message-center-tabs button { min-height: 44px; }
+.message-center-tabs small { font-size: var(--text-sm); }
+.message-center-tabs [aria-pressed=true] { background: var(--accent-bg); border-color: var(--accent-line); color: var(--accent-text-strong); }

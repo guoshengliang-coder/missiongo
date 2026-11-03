@@ -109,4 +109,89 @@ describe("personal message center",()=>{
     expect(f.service.count(f.member)).toBe(53);
   });
 
+  it("counts verification once before and after reading, but keeps independent comments",async()=>{
+    const f=await fixture();
+    f.store.transitionWorkItem({itemKey:f.item.key,to:"pending_verification",actor:"human",reason:"manual_override",note:"synthetic delivery"});
+    const notice=f.service.list(f.member,{}).notifications[0]!;
+    expect(f.service.attentionCount(f.member)).toEqual({count:1,todoCount:1,unreadCount:1,coveredUnreadCount:1});
+    expect((await f.call("GET","/api/v1/attention/todos")).json().todos).toMatchObject([{kind:"verification",itemKey:f.item.key}]);
+    f.service.markRead(f.member,notice.id);
+    expect(f.service.attentionCount(f.member)).toEqual({count:1,todoCount:1,unreadCount:0,coveredUnreadCount:0});
+    f.comment("Independent comment requiring attention");
+    expect(f.service.attentionCount(f.member).count).toBe(2);
+    f.service.markAllRead(f.member,f.service.list(f.member,{}).throughSequence,{});
+    expect(f.service.attentionCount(f.member).count).toBe(1);
+    expect(f.store.getWorkItem(f.item.key).status).toBe("pending_verification");
+    // Acceptance is a human business action, never a read API side effect.
+    f.store.transitionWorkItem({itemKey:f.item.key,to:"done",actor:"human",reason:"verification_passed",attribution:{accountId:f.member.id}});
+    expect(f.service.attentionCount(f.member).count).toBe(0);
+    expect(f.service.todos(f.member).todos).toEqual([]);
+  });
+  it("resolves only the ended verification round, preserving unread comments and history across reopening",async()=>{
+    const f=await fixture();
+    const move=(to:"pending_verification"|"done"|"ready",reason:"manual_override"|"verification_passed"|"reopened"|"verification_failed")=>
+      f.store.transitionWorkItem({itemKey:f.item.key,to,actor:"human",reason,note:"synthetic action",attribution:{accountId:"admin"}});
+    move("pending_verification","manual_override");
+    const first=f.service.list(f.member,{}).notifications[0]!;
+    f.comment("Do not silently mark this read");
+    move("done","verification_passed");
+    expect(f.service.detail(f.member,first.id)).toMatchObject({readAt:null,resolvedAt:expect.any(String)});
+    expect(f.service.list(f.member,{unread:true}).notifications.map(n=>n.kind)).toEqual(["mention"]);
+    expect(f.service.attentionCount(f.member)).toEqual({count:1,todoCount:0,unreadCount:1,coveredUnreadCount:0});
+    move("ready","reopened");move("pending_verification","manual_override");
+    expect(f.service.attentionCount(f.member)).toEqual({count:3,todoCount:1,unreadCount:3,coveredUnreadCount:1});
+    expect(f.service.detail(f.member,first.id).resolvedAt).not.toBeNull();
+    move("ready","verification_failed");
+    expect(f.service.todos(f.member).todos).toEqual([]);
+    expect(f.service.list(f.member,{unread:true}).notifications.map(n=>n.kind).sort()).toEqual(["decision","decision","mention"]);
+    expect(f.service.list(f.member,{}).notifications.filter(n=>n.kind==="verification")).toHaveLength(2);
+  });
+  it("derives old pending work without notification backfill; scopes tasks to the accessible proposer",async()=>{
+    const f=await fixture();
+    // Represents already-pending work created before notifications were installed.
+    f.db.prepare("UPDATE work_items SET status='pending_verification' WHERE id=?").run(f.item.id);
+    expect(f.service.attentionCount(f.member)).toEqual({count:1,todoCount:1,unreadCount:0,coveredUnreadCount:0});
+    expect(f.service.todos(f.accounts.getAccount("admin")).todos).toEqual([]);
+    expect(f.service.todos(f.member,{productId:"outside-scope"}).todos).toEqual([]);
+    expect((await f.app.inject({url:"/api/v1/attention/count"})).statusCode).toBe(401);
+    expect((await f.app.inject({url:"/api/v1/attention/todos"})).statusCode).toBe(401);
+    expect((await f.call("GET","/api/v1/attention/todos?beforeSequence=-1")).statusCode).toBe(400);
+    f.db.prepare("UPDATE products SET archived_at=? WHERE id=?").run(new Date().toISOString(),f.product.id);
+    expect(f.service.attentionCount(f.member).todoCount).toBe(0);
+    f.db.prepare("UPDATE products SET archived_at=NULL WHERE id=?").run(f.product.id);
+    f.accounts.replacePermissions(f.member.id,[]);
+    expect((await f.call("GET","/api/v1/attention/count")).json()).toEqual({count:0,todoCount:0,unreadCount:0,coveredUnreadCount:0});
+    expect((await f.call("GET","/api/v1/attention/todos")).json().todos).toEqual([]);
+    expect(f.service.list(f.member,{}).notifications).toEqual([]);
+  });
+  it("paginates pending tasks without capping the badge and excludes SDK ownership",async()=>{
+    const f=await fixture();
+    for(let i=0;i<52;i++)f.store.createWorkItem({productId:f.product.id,title:`Task ${i}`,description:"",type:"task",priority:"normal",attribution:{accountId:f.member.id}});
+    f.db.prepare("UPDATE work_items SET status='pending_verification' WHERE product_id=?").run(f.product.id);
+    const first=f.service.todos(f.member),second=f.service.todos(f.member,{beforeSequence:first.nextBeforeSequence});
+    expect(first.todos).toHaveLength(50);expect(second.todos).toHaveLength(3);
+    expect(new Set([...first.todos,...second.todos].map(t=>t.id)).size).toBe(53);
+    expect(f.service.attentionCount(f.member).count).toBe(53);
+    f.db.prepare("UPDATE work_item_events SET payload_json=json_set(payload_json,'$.source','android_sdk') WHERE item_id=? AND event_type='item_created'").run(f.item.id);
+    expect(f.service.attentionCount(f.member).count).toBe(52);
+  });
+
+  it("moves a todo with its business item without reviving copied notices or leaving a source task",async()=>{
+    const f=await fixture(),target=f.store.createProduct({name:"Target",keyPrefix:"DST",createdByAccountId:"admin"});
+    f.accounts.replacePermissions(f.member.id,[f.product,target].map(p=>({productId:p.id,canView:true,canOperate:true,canUseAi:false})));
+    f.store.transitionWorkItem({itemKey:f.item.key,to:"pending_verification",actor:"human",reason:"manual_override",note:"synthetic delivery"});
+    const notice=f.service.list(f.member,{}).notifications[0]!;
+    const response=await f.call("POST",`/api/v1/items/${f.item.key}/transfer`,{targetProductId:target.id,idempotencyKey:"attention-transfer"});
+    expect(response.statusCode).toBe(200);
+    const member=f.accounts.getAccount(f.member.id),moved=response.json();
+    expect(f.service.todos(member).todos.map(t=>t.itemKey)).toEqual([moved.key]);
+    expect(f.service.detail(member,notice.id)).toMatchObject({readAt:null,resolvedAt:expect.any(String)});
+    expect(f.service.attentionCount(member)).toEqual({count:1,todoCount:1,unreadCount:0,coveredUnreadCount:0});
+    // Proposer verification is allowed even without general editing permission.
+    f.accounts.replacePermissions(member.id,[{productId:target.id,canView:true,canOperate:false,canUseAi:false}]);
+    expect((await f.call("GET","/api/v1/attention/todos")).json().todos.map((t:{itemKey:string})=>t.itemKey)).toEqual([moved.key]);
+    expect((await f.call("POST",`/api/v1/items/${moved.key}/transitions`,{to:"done",reason:"verification_passed",expectedStatus:moved.status,expectedRevision:moved.revision,idempotencyKey:"attention-verify"})).statusCode).toBe(200);
+    expect((await f.call("GET","/api/v1/attention/count")).json().count).toBe(0);
+  });
+
 });
