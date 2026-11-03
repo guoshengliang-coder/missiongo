@@ -1,4 +1,5 @@
 import { COLLABORATION_SCHEMA } from "./collaboration-schema.js";
+import { EXECUTION_STOP_SCHEMA } from "./execution-stop-schema.js";
 import { PERSONAL_NOTIFICATIONS_SCHEMA } from "./personal-notifications-schema.js";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
@@ -2202,5 +2203,13 @@ export class MissionGoDatabase {
       });
     }
 
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611031536").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611031536").get()) return;
+        this.connection.exec(EXECUTION_STOP_SCHEMA);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611031536,new Date().toISOString());
+      });
+    }
   }
 }

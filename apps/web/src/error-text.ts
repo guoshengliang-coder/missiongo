@@ -39,6 +39,9 @@ export function errorMessageKey(error: unknown): MessageKey | null {
     // server's English titles are written for logs and used to land in a
     // Chinese console as-is (AND-224).
     const conflictKeys: Readonly<Record<string, MessageKey>> = {
+      execution_stop_unconfirmed: "executionStopBlocked",
+      execution_observation_changed: "executionObservationChanged",
+      execution_confirmation_required: "executionStopAttestation",
       item_transferred: "transferReadOnly",
       transfer_active_execution: "transferActiveExecution",
       transfer_same_product: "transferSameProduct",

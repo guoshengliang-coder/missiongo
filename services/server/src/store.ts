@@ -2113,7 +2113,8 @@ export class MissionGoStore {
     if (to === "cancelled") this.database.connection.prepare("UPDATE work_items SET execution_disposition=? WHERE id=?")
       .run(typeof payloadExtra.executionDisposition === "string" ? payloadExtra.executionDisposition : "stop_requested",current.id);
     if (reason === "verification_failed" || reason === "reopened" && current.status === "done" || reason === "restored") {
-      this.database.connection.prepare("UPDATE work_items SET execution_disposition='stop_requested' WHERE id=?").run(current.id);
+      this.database.connection.prepare("UPDATE work_items SET execution_disposition=? WHERE id=?")
+        .run(this.hasOngoingExecution(current.id) ? "stop_requested" : null,current.id);
     }
     if (reason === "verification_failed" || reason === "reopened" && current.status === "done" || to === "cancelled" || reason === "restored") {
       this.database.connection.prepare("UPDATE builder_execution_authorizations SET revoked=1 WHERE item_id=?").run(current.id);
@@ -2139,6 +2140,7 @@ export class MissionGoStore {
     }
     if (to === "in_progress" && reason === "claim") this.database.connection.prepare("UPDATE builder_handovers SET claimed_at=? WHERE item_id=? AND status='completed' AND claimed_at IS NULL")
       .run(now,current.id);
+    if (to === "in_progress" && reason === "claim") this.database.connection.prepare("UPDATE work_items SET execution_disposition=NULL WHERE id=?").run(current.id);
     this.database.connection.prepare("UPDATE work_items SET status = ?, updated_at = ? WHERE id = ?").run(to, now, current.id);
     const eventId = this.insertEvent(
       current.id,

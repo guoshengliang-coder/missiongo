@@ -720,6 +720,6 @@ export interface ActiveDispatch extends Omit<ItemDispatchSummary, "status"> {
 export interface RedispatchEligibility {
   readonly allowed: boolean;
   readonly requiresConfirmation: boolean;
-  readonly reason: "other_account" | "started" | "partial_batch" | null;
+  readonly reason: "other_account" | "started" | "partial_batch" | "execution_unconfirmed" | null;
   readonly conflicts: readonly ActiveDispatch[];
 }

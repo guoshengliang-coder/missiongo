@@ -10,6 +10,7 @@ import type { DingTalkNotification } from "@missiongo/domain";
 import { ItemDingTalkNotificationRecord, type ItemNotificationQuery } from "./dingtalk-settings";
 import { dispatchStatusLabelKey } from "./dispatch-eligibility";
 import { RecordDisclosure } from "./record-disclosure";
+import { ExecutionStopNotice } from "./execution-stop-notice";
 
 // 「安排执行／交接」暂时隐藏：功能与后续流转还没定，入口先不出现。
 // 改回 true 即可恢复按钮和弹窗；后端接口与执行记录展示不受影响。
@@ -163,13 +164,14 @@ export function ItemDeliveryPanel({item,summarizedSessionId,dispatches,dispatche
   for (const notice of notificationsQuery.data?.notifications ?? []) if (notice.kind!=="comment") rows.push({key:`notice:${notice.id}`,createdAt:notice.createdAt,notice});
   rows.sort((a,b) => a.createdAt.localeCompare(b.createdAt));
   const hasExecutions=rows.length>0;
-  if(!hasExecutions && !EXECUTION_ASSIGNMENT_ENABLED && !query.isError && !dispatchesFailed && !notificationsQuery.isError) return null;
+  if(!hasExecutions && !data?.executionBlockers?.length && !EXECUTION_ASSIGNMENT_ENABLED && !query.isError && !dispatchesFailed && !notificationsQuery.isError) return null;
   return <section className="delivery-panel" aria-label="执行记录">
     <div className="delivery-heading">{!hasExecutions && <h3>执行记录</h3>}
       {EXECUTION_ASSIGNMENT_ENABLED && data?.canManage && <div className="delivery-actions">
         <button type="button" className="secondary-button" onClick={()=>{setPerformer("");setScope("");setPreviousId("");setExecutionNote("");assign.reset();setMode("execution");}}>安排执行／交接</button>
       </div>}
     </div>
+    {data && ["ready","inbox"].includes(item.status) && <ExecutionStopNotice itemKey={item.key} blockers={data.executionBlockers ?? []} onRefresh={refresh} />}
     {EXECUTION_ASSIGNMENT_ENABLED && data && mode==="execution" && <Modal title="安排执行／交接" subtitle="交付与执行" onClose={()=>setMode(null)} dirty={Boolean(scope || performer || previousId || executionNote)} pending={assign.isPending}>
       <form className="delivery-form" onSubmit={event=>{event.preventDefault();assign.mutate();}}>
         <label>执行人<Select aria-label="执行人" required value={performer} onChange={event=>setPerformer(event.target.value)}><option value="">请选择执行人</option><optgroup label="人工账号">{data.performers.map(account=><option key={account.id} value={account.id}>{account.name}</option>)}</optgroup>
