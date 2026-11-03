@@ -161,7 +161,9 @@ export function effectiveAgentSessionStatus(
   status: AgentSessionStatus,
   command: Pick<AgentSessionCommand, "status"> | undefined,
   requestInFlight = false,
+  nativeObserved = false,
 ): AgentSessionStatus {
+  if (nativeObserved && !requestInFlight) return status;
   const replyInFlight = requestInFlight || command?.status === "queued" || command?.status === "delivering";
   return replyInFlight && status === "idle" ? "active" : status;
 }

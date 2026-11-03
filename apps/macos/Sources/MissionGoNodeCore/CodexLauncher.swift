@@ -690,7 +690,11 @@ public struct CodexLauncher: AgentAdapter {
                 settingsError = CodexFailure.explain(error)
             }
         }
-        var report = try await synchronize(session, snapshot: snapshot).reportingSettings(
+        var report = try await synchronize(session, snapshot: snapshot).reportingExecution(
+            activities: snapshot.execution.activities, revision: snapshot.execution.revision,
+            turnStartedAt: snapshot.execution.turnStartedAt, lastOutputAt: snapshot.execution.lastOutputAt,
+            waitingForInput: snapshot.waitingOnApproval || snapshot.waitingOnUserInput || ["pending", "inProgress"].contains(approval?.status ?? "")
+        ).reportingSettings(
             model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
         )
         var retryId: String?

@@ -3,6 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { sessionErrorFields, storedSessionError, type CodexSessionFailure, isAcceptedSessionUrl, nodeConnectionState, type AgentKind, type NodeConnectionState } from "@missiongo/domain";
 
+import { sessionHealth, executionTurnState } from "./agent-session-health.js";
+
 import type { AgentAttentionClassification, AgentAttentionKind as ClassifiedAttentionKind } from "./ai-title.js";
 import type { AgentSessionAttachment, AgentSessionAttachments } from "./agent-session-attachments.js";
 import { parseAgentModels, requireOfferedModel, type AgentRunSettings } from "./agent-settings.js";
@@ -67,6 +69,8 @@ export interface AgentSessionActivity {
 }
 
 export interface AgentSessionTurnState {
+  readonly observedAt?: string;
+  readonly lastProgressAt?: string;
   readonly turnActive?: boolean;
   readonly waitingForInput?: boolean;
   readonly turnStartedAt?: string;
@@ -463,7 +467,7 @@ function deterministicAttention(
     return {
       state: "needed",
       kind: "uncertain",
-      reason: "会话连续 30 分钟没有输出且进程树 CPU 无进展，MissionGo 未自动终止。",
+      reason: "会话疑似卡住，请核对当前活动后决定中断或继续；MissionGo 未自动中断。",
     };
   }
   if (hasQuestions(message?.questions_json)) {
@@ -689,6 +693,8 @@ export class AgentSessionStore {
         phase: string | null; text: string; questions_json: string | null; occurred_at: string;
       }>;
     const command = this.latestCommand(sessionId);
+    const turnState = JSON.parse(row.turn_state_json) as AgentSessionTurnState;
+    const health = sessionHealth(offlineDegradedStatus(row.status, row.node_last_seen_at, Boolean(row.node_revoked_at)).status, row.archived_at ? {} : turnState);
     return {
       id: row.id,
       dispatchId: row.dispatch_id,
@@ -696,15 +702,13 @@ export class AgentSessionStore {
       agentKind: row.agent_kind,
       // Same read-time rule as the list (AND-221): a Mac nobody has heard
       // from in half an hour is not running this session.
-      status: offlineDegradedStatus(
-        row.status, row.node_last_seen_at, Boolean(row.node_revoked_at),
-      ).status,
-      ...sessionErrorFields(row.last_error),
+      status: health.status,
+      ...sessionErrorFields(health.reason ?? row.last_error),
       updatedAt: row.updated_at,
       ...(row.archived_at ? { archivedAt: row.archived_at } : {}),
       ...(row.archive_source ? { archivedSource: row.archive_source } : {}),
       activities: JSON.parse(row.activities_json) as AgentSessionActivity[],
-      turnState: JSON.parse(row.turn_state_json) as AgentSessionTurnState,
+      turnState,
       messages: messages.map((message) => ({
         id: message.id,
         sourceId: message.source_id,
@@ -810,14 +814,16 @@ export class AgentSessionStore {
       const offlineDegraded = offlineDegradedStatus(
         row.session_status ?? inferredStatus, row.node_last_seen_at, Boolean(row.node_revoked_at),
       );
-      const status = offlineDegraded.status;
+      const turnState = row.session_turn_state_json ? JSON.parse(row.session_turn_state_json) as AgentSessionTurnState : {};
+      const health = sessionHealth(offlineDegraded.status, row.session_archived_at || row.dispatch_archived_at ? {} : turnState);
+      const status = health.status;
       const updatedAt = row.session_updated_at ?? row.dispatch_archived_at
         ?? row.completed_at ?? row.delivered_at ?? row.created_at;
       const activityAt = row.session_activity_at ?? row.dispatch_archived_at
         ?? row.completed_at ?? row.delivered_at ?? row.created_at;
       const archivedAt = row.session_archived_at ?? row.dispatch_archived_at;
       const archivedSource = row.session_archive_source ?? (row.dispatch_archived_at ? "missiongo" : null);
-      const lastError = row.session_last_error ?? row.dispatch_error
+      const lastError = health.reason ?? row.session_last_error ?? row.dispatch_error
         ?? (deliveryTimedOut ? "Mac 领取派单后超过 10 分钟仍未报告启动结果。请确认来源会话不存在，再手动重新派单。" : null);
       const connectionState = row.node_revoked_at
         ? "offline"
@@ -867,7 +873,9 @@ export class AgentSessionStore {
           ? "该会话所属节点已被撤销，状态不再更新；如需继续请重新派单。"
           : "节点已离线超过 30 分钟，会话状态无法确认；节点恢复后会自动更正。"
         : undefined;
-      const alertAttention: AgentSessionAttention = stuckReason
+      const alertAttention: AgentSessionAttention = health.reason
+        ? { state: "needed", kind: "uncertain", reason: health.reason }
+        : stuckReason
         ? { state: "needed", kind: "action", reason: stuckReason }
         : offlineReason
           ? { state: "needed", kind: "uncertain", reason: offlineReason }
@@ -1478,6 +1486,8 @@ export class AgentSessionStore {
     }));
     const activitiesJson = JSON.stringify(activities);
     const incomingTurnState: AgentSessionTurnState = {
+      ...(input.turnState?.observedAt ? { observedAt: normalizedSourceTimestamp(input.turnState.observedAt, now, "observedAt")! } : {}),
+      ...(input.turnState?.lastProgressAt ? { lastProgressAt: normalizedSourceTimestamp(input.turnState.lastProgressAt, now, "lastProgressAt")! } : {}),
       ...(input.turnState?.turnActive !== undefined ? { turnActive: input.turnState.turnActive } : {}),
       ...(input.turnState?.waitingForInput !== undefined ? { waitingForInput: input.turnState.waitingForInput } : {}),
       ...(input.turnState?.turnStartedAt ? { turnStartedAt: normalizedSourceTimestamp(input.turnState.turnStartedAt, now, "turnStartedAt")! } : {}),
@@ -1597,7 +1607,7 @@ export class AgentSessionStore {
     const activityChanged = (healthy && session.status !== "unavailable" && session.status !== input.status)
       || messagesChanged
       || (healthy && (session.activities_json !== nextActivitiesJson
-        || session.turn_state_json !== turnStateJson
+        || JSON.stringify(executionTurnState(storedTurnState)) !== JSON.stringify(executionTurnState(JSON.parse(turnStateJson) as AgentSessionTurnState))
         || (sourceActivityAt !== undefined && Date.parse(sourceActivityAt) > Date.parse(session.activity_at))
         || archiveChanged
         || (command !== undefined && command.status !== input.commandStatus)));

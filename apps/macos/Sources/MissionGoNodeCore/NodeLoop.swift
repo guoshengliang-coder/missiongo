@@ -207,6 +207,7 @@ public final class NodeLoop: @unchecked Sendable {
     public static let recentLaunchLimit = 20
     public static let maximumExecutingSessions = 10
 
+    private let sessionHealth = SessionHealthTracker()
     let managedRuntime: ManagedExecutionRuntime
     let managedExecutionEnabled: Bool
     let api: NodeAPI
@@ -638,7 +639,9 @@ public final class NodeLoop: @unchecked Sendable {
             do {
                 let prepared = try await self.prepareAttachments(session)
                 do {
-                    report = try await adapter.synchronize(prepared)
+                    let sourceReport = try await adapter.synchronize(prepared)
+                    let healthKey = session.externalBindingGeneration.map { "\(session.id):external:\($0)" } ?? session.id
+                    report = self.sessionHealth.observe(sourceReport, key: healthKey)
                 } catch {
                     // After the command reached Codex, a transport
                     // error cannot prove whether turn/start took it.

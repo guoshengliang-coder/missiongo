@@ -602,6 +602,16 @@ public enum OpenCodeProtocol {
     }
 }
 
+public struct OpenCodeSessionSnapshot: Sendable {
+    public let status: String
+    public let messages: [AgentSessionMessage]
+    public let failure: String?
+    public let execution: NativeExecutionProgress
+    public init(_ status: String, _ messages: [AgentSessionMessage], _ failure: String?, execution: NativeExecutionProgress = NativeExecutionProgress()) {
+        self.status = status; self.messages = messages; self.failure = failure; self.execution = execution
+    }
+}
+
 public protocol OpenCodeControlling: Sendable {
     func health() async throws -> String
     func missionGoMcpStatus(directory: String?) async throws -> String?
@@ -611,7 +621,7 @@ public protocol OpenCodeControlling: Sendable {
     /// The session's status, mirrored messages and — when the session ended
     /// badly at the source — a person-readable reason for that status.
     /// `failed` means the session is over and will not recover by itself.
-    func snapshot(id: String) async throws -> (status: String, messages: [AgentSessionMessage], failure: String?)
+    func snapshot(id: String) async throws -> OpenCodeSessionSnapshot
     func interrupt(id: String) async throws
     func deleteSession(id: String) async throws
     /// The catalog as a heartbeat reports it: one entry per model a dispatch
@@ -750,7 +760,7 @@ public struct OpenCodeHTTPControl: OpenCodeControlling {
         }
     }
 
-    public func snapshot(id: String) async throws -> (status: String, messages: [AgentSessionMessage], failure: String?) {
+    public func snapshot(id: String) async throws -> OpenCodeSessionSnapshot {
         let details: [String: Any]
         do {
             details = try await call("GET", "/api/session/\(encoded(id))")
@@ -760,10 +770,11 @@ public struct OpenCodeHTTPControl: OpenCodeControlling {
             // `failed` with a reason instead of letting the transport error
             // read as "temporarily unavailable", which the console keeps
             // promising will recover on its own (AND-222).
-            return ("failed", [], "OpenCode 会话已不存在（可能在 OpenCode 中被删除）。")
+            return OpenCodeSessionSnapshot("failed", [], "OpenCode 会话已不存在（可能在 OpenCode 中被删除）。")
         }
         let outcome = (try? OpenCodeProtocol.data(details))?["outcome"] as? String
         var messages: [AgentSessionMessage] = []
+        var executionBuilder = OpenCodeExecutionProgressBuilder()
         var cursor: String?
         for _ in 0..<Self.snapshotPageLimit {
             // OpenCode 2 rejects `order` together with a cursor
@@ -774,6 +785,7 @@ public struct OpenCodeHTTPControl: OpenCodeControlling {
             if let cursor { path += "&cursor=\(encoded(cursor))" } else { path += "&order=asc" }
             let page = try await call("GET", path)
             messages += try OpenCodeProtocol.messages(page)
+            executionBuilder.append(page["data"] as? [[String: Any]] ?? [])
             guard let next = OpenCodeProtocol.nextCursor(page), next != cursor else { cursor = nil; break }
             cursor = next
         }
@@ -791,11 +803,12 @@ public struct OpenCodeHTTPControl: OpenCodeControlling {
         }
         let active = try await call("GET", "/api/session/active")
         let running = (active["data"] as? [String: Any])?[id] != nil
-        if running { return ("active", messages, nil) }
+        let execution = executionBuilder.snapshot()
+        if running { return OpenCodeSessionSnapshot("active", messages, nil, execution: execution) }
         // `interrupted` is a person's own stop, not a failure; only a failed
         // outcome is reported as one.
-        if outcome == "failed" { return ("failed", messages, "OpenCode 报告该会话以失败结束。") }
-        return ("idle", messages, nil)
+        if outcome == "failed" { return OpenCodeSessionSnapshot("failed", messages, "OpenCode 报告该会话以失败结束。", execution: execution) }
+        return OpenCodeSessionSnapshot("idle", messages, nil, execution: execution)
     }
 
     public func interrupt(id: String) async throws {
@@ -996,6 +1009,7 @@ public struct OpenCodeLauncher: AgentAdapter {
 
     public func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
         let snapshot = try await control.snapshot(id: session.sessionRef)
+        var execution = snapshot.execution
         // A pending choice is not in the message log: OpenCode blocks on a form
         // or a permission endpoint until it is answered there. Attach the
         // pending ones so the console can show what is being asked, with the
@@ -1060,7 +1074,8 @@ public struct OpenCodeLauncher: AgentAdapter {
             report = AgentSessionReport(status: snapshot.status, messages: messages, error: snapshot.failure,
                                         sourceRestored: session.restoreInSource ? true : nil,
                                         turnActive: turnActive, waitingForInput: waitingForInput)
-            return report.reportingSettings(
+            return report.reportingExecution(activities: execution.activities, revision: execution.revision,
+            turnStartedAt: execution.turnStartedAt, lastOutputAt: execution.lastOutputAt).reportingSettings(
                 model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
             )
         }
@@ -1068,14 +1083,16 @@ public struct OpenCodeLauncher: AgentAdapter {
             report = AgentSessionReport(status: snapshot.status, messages: messages, error: snapshot.failure,
                                         commandId: command.id, commandStatus: "delivering",
                                         turnActive: turnActive, waitingForInput: waitingForInput)
-            return report.reportingSettings(
+            return report.reportingExecution(activities: execution.activities, revision: execution.revision,
+                turnStartedAt: execution.turnStartedAt, lastOutputAt: execution.lastOutputAt).reportingSettings(
                 model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
             )
         }
         guard command.status == "delivering" else {
             report = AgentSessionReport(status: snapshot.status, messages: messages, error: snapshot.failure,
                                         turnActive: turnActive, waitingForInput: waitingForInput)
-            return report.reportingSettings(
+            return report.reportingExecution(activities: execution.activities, revision: execution.revision,
+                turnStartedAt: execution.turnStartedAt, lastOutputAt: execution.lastOutputAt).reportingSettings(
                 model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
             )
         }
@@ -1092,7 +1109,8 @@ public struct OpenCodeLauncher: AgentAdapter {
             report = AgentSessionReport(status: snapshot.status, messages: messages, error: snapshot.failure,
                 commandId: command.id, commandStatus: "failed", commandError: "授权请求已变化，请重新选择当前请求的授权范围。",
                 turnActive: turnActive, waitingForInput: waitingForInput)
-            return report.reportingSettings(model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError)
+            return report.reportingExecution(activities: execution.activities, revision: execution.revision,
+                turnStartedAt: execution.turnStartedAt, lastOutputAt: execution.lastOutputAt).reportingSettings(model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError)
         }
         // How many copies of this reply's text the session already held before
         // this delivery attempt: the proof a re-read offers after a failed POST
@@ -1119,7 +1137,8 @@ public struct OpenCodeLauncher: AgentAdapter {
                         commandError: "无法确认 OpenCode 是否收到回复，请在 OpenCode 会话核实后手动确认；不会自动重发。",
                         turnActive: turnActive, waitingForInput: waitingForInput
                     )
-                    return report.reportingSettings(
+                    return report.reportingExecution(activities: execution.activities, revision: execution.revision,
+                        turnStartedAt: execution.turnStartedAt, lastOutputAt: execution.lastOutputAt).reportingSettings(
                         model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
                     )
                 }
@@ -1140,6 +1159,7 @@ public struct OpenCodeLauncher: AgentAdapter {
             // otherwise read the fallback as if every card had been cleared.
             let refreshedChoices = (try? await control.pendingChoices(id: session.sessionRef)) ?? choices
             deliveredMessages = refreshed.messages + refreshedChoices.map(\.message) + answeredTrace
+            execution = refreshed.execution
             deliveredStatus = refreshed.status
             deliveredWaiting = !refreshedChoices.isEmpty
         }
@@ -1147,7 +1167,8 @@ public struct OpenCodeLauncher: AgentAdapter {
                                     commandId: command.id, commandStatus: "delivered",
                                     turnActive: deliveredStatus == "active" && !deliveredWaiting,
                                     waitingForInput: deliveredWaiting)
-        return report.reportingSettings(
+        return report.reportingExecution(activities: execution.activities, revision: execution.revision,
+                turnStartedAt: execution.turnStartedAt, lastOutputAt: execution.lastOutputAt).reportingSettings(
             model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
         )
     }
@@ -1225,7 +1246,7 @@ public struct OpenCodeLauncher: AgentAdapter {
     static func reReadShowsReply(
         priorCount: Int,
         command: AgentSessionCommand,
-        in snapshot: (status: String, messages: [AgentSessionMessage], failure: String?)?
+        in snapshot: OpenCodeSessionSnapshot?
     ) -> Bool {
         guard let snapshot else { return false }
         let count = snapshot.messages.filter { $0.role == "user" && $0.text == command.promptText }.count

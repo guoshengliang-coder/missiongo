@@ -169,3 +169,29 @@ it("structured failure detail refreshes do not reorder the conversation; recover
   expect(store.getForAccount("owner", sessionId).failure).toBeUndefined();
   expect(row().last_error).toBeNull();
 });
+
+it("observation heartbeats do not reorder a conversation or create unread activity", () => {
+  const f = fixture();
+  vi.setSystemTime(time(2));
+  f.snapshot({ status: "active", messages: [message], turnState: { turnActive: true, observedAt: time(2), lastProgressAt: time(2) } });
+  const before = f.row().activity_at;
+  const dispatchBefore = f.db.prepare("SELECT unread_at FROM dispatches WHERE id='dispatch'").get();
+  for (const minute of [3, 5, 10, 12]) {
+    vi.setSystemTime(time(minute));
+    f.snapshot({ status: "active", messages: [message], turnState: { turnActive: true, observedAt: time(minute), lastProgressAt: time(2) } });
+    expect(f.row().activity_at).toBe(before);
+    expect(f.db.prepare("SELECT unread_at FROM dispatches WHERE id='dispatch'").get()).toEqual(dispatchBefore);
+  }
+  expect(f.store.getForAccount("owner", f.sessionId).status).toBe("stalled");
+  expect(f.store.listForAccount("owner")[0]).toMatchObject({ status: "stalled", needsAttention: true });
+  // Projection never changes runtime storage, execution capacity, or work-item state.
+  expect(f.row().status).toBe("active");
+  expect(f.store.countExecutionSlots("node")).toBe(1);
+  vi.setSystemTime(time(14));
+  expect(f.store.getForAccount("owner", f.sessionId).status).toBe("unavailable");
+  expect(f.store.listForAccount("owner")[0]).toMatchObject({ status: "unavailable", needsAttention: true });
+  f.snapshot({ status: "active", messages: [{ ...message, text: "New progress" }], turnState: { turnActive: true, observedAt: time(14), lastProgressAt: time(14) } });
+  expect(f.store.getForAccount("owner", f.sessionId).status).toBe("active");
+  f.snapshot({ status: "idle", messages: [message], turnState: { turnActive: false, observedAt: time(14), lastProgressAt: time(14) } });
+  expect(f.store.listForAccount("owner")[0]!.status).toBe("idle");
+});

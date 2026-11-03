@@ -277,3 +277,44 @@ it("lets only one account-owned enabled node win automatic connection and reject
   expect(f.native.listForNode("other-account", "node", "worker-one", () => {}, true)).toEqual([]);
   expect(f.native.overlay("owner", f.id).nativeConnection?.nodeId).toBe("node");
 });
+
+it("shows external tool waits, warning and stale sync without replaying or changing item state", () => {
+  const f = fixture("opencode");
+  f.native.connect("owner", f.id, "node");
+  const startedAt = new Date().toISOString();
+  const heartbeat = () => f.store.database.connection.prepare("UPDATE nodes SET last_seen_at=? WHERE id='node'").run(new Date().toISOString());
+  f.report({ status: "active", turnState: { turnActive: true, observedAt: startedAt, lastProgressAt: startedAt },
+    activities: [{ id: "ci", title: "等待 CI", startedAt }] });
+  const command = f.native.enqueue("owner", f.id, "Check progress");
+  f.report({ status: "active", turnState: { turnActive: true, observedAt: startedAt, lastProgressAt: startedAt },
+    commandId: command.id, commandStatus: "delivering" });
+  vi.setSystemTime(Date.parse(startedAt) + 10 * 60_000); heartbeat();
+  f.report({ status: "active", turnState: { turnActive: true, observedAt: new Date().toISOString(), lastProgressAt: startedAt },
+    activities: [{ id: "ci", title: "等待 CI", startedAt }], commandId: command.id, commandStatus: "delivered" });
+  expect(f.progress.getForAccount("owner", f.id)).toMatchObject({ status: "stalled", activities: [{ id: "ci" }] });
+  expect(f.progress.listForAccount("owner")[0]).toMatchObject({ status: "stalled", needsAttention: true });
+  expect(f.store.getWorkItem(f.item.key).status).toBe("in_progress");
+  vi.advanceTimersByTime(2 * 60_000); heartbeat();
+  expect(f.progress.getForAccount("owner", f.id).status).toBe("unavailable");
+  expect(f.native.command(f.id)?.status).toBe("delivered");
+  expect(f.native.listForNode("owner", "node", "worker-one", () => {}, true)[0]?.command).toBeUndefined();
+  f.report({ status: "idle", turnState: { turnActive: false, observedAt: new Date().toISOString(), lastProgressAt: new Date().toISOString() } });
+  expect(f.progress.getForAccount("owner", f.id)).toMatchObject({ status: "idle", activities: [] });
+});
+
+it("bounds external native activity payloads", () => {
+  const f = fixture(); f.native.connect("owner", f.id, "node");
+  expect(() => f.report({ activities: Array.from({ length: 101 }, (_, i) => ({ id: `${i}`, title: "Tool" })) })).toThrow("Invalid native activities");
+  expect(() => f.report({ activities: [{ id: "tool", title: "x".repeat(501) }] })).toThrow("Invalid native activities");
+  expect(() => f.report({ activities: [{ id: "tool", title: "Tool", startedAt: "invalid" }] })).toThrow("Invalid native activities");
+});
+
+it.each(["disconnected", "archived"])("does not raise a stale-observation warning after monitoring was deliberately %s", (state) => {
+  const f = fixture(); f.native.connect("owner", f.id, "node");
+  const stamp = new Date().toISOString();
+  f.report({ status: "active", turnState: { turnActive: true, observedAt: stamp, lastProgressAt: stamp } });
+  if (state === "disconnected") f.native.disconnect("owner", f.id);
+  else f.progress.setArchived("owner", f.id, true);
+  vi.advanceTimersByTime(20 * 60_000);
+  expect(f.progress.listForAccount("owner")[0]?.needsAttention).toBe(false);
+});
