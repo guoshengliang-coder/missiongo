@@ -980,6 +980,11 @@ public struct CodexLauncher: AgentAdapter {
             )
         }
         failureReplyReservations.withLock { $0[session.id] = nil }
+        // Send browser-readable images as native vision input; the prompt also
+        // retains local references for documents, video and other image formats.
+        let imagePaths = session.externalBindingGeneration == nil ? [] : (command.attachments ?? [])
+            .filter { $0.kind == "image" && ["image/png", "image/jpeg", "image/webp", "image/gif"].contains($0.contentType) }
+            .compactMap(\.localPath)
         do {
             if let activeTurnId = snapshot.activeTurnId, snapshot.status == "active" {
                 try await control.steerMessage(
@@ -987,11 +992,11 @@ public struct CodexLauncher: AgentAdapter {
                     threadId: session.sessionRef,
                     turnId: activeTurnId,
                     text: command.promptText,
-                    clientUserMessageId: command.id
+                    clientUserMessageId: command.id, imagePaths: imagePaths
                 )
             } else if session.externalBindingGeneration != nil {
                 try await control.sendExternalMessage(socketPath: location.controlSocketPath, threadId: session.sessionRef,
-                    text: command.promptText, clientUserMessageId: command.id)
+                    text: command.promptText, clientUserMessageId: command.id, imagePaths: imagePaths)
             } else {
                 try await control.sendMessage(
                     socketPath: location.controlSocketPath,

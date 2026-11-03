@@ -962,6 +962,25 @@ final class OpenCodeTests: XCTestCase {
         XCTAssertEqual(prompts, 1, "the same command must reach OpenCode exactly once")
     }
 
+    func testExternalAttachmentPromptKeepsOriginalPathsAndIsNotResent() async throws {
+        let control = StubOpenCodeControl(mcpStatus: nil)
+        let launcher = OpenCodeLauncher(control: control)
+        let attachment = AgentSessionAttachment(id: "file", filename: "note.txt", kind: "document", contentType: "text/plain",
+            sizeBytes: 9, sha256: "fixture", localPath: "/synthetic/note.txt")
+        let command = AgentSessionCommand(id: "file-command", text: "", status: "delivering", attachments: [attachment])
+        let session = NodeAgentSession(id: "external", agentKind: "opencode", sessionRef: "ses_test", status: "idle",
+            command: command, externalBindingGeneration: 2)
+        let first = try await launcher.synchronize(session)
+        let second = try await launcher.synchronize(session)
+        XCTAssertEqual(first.commandStatus, "delivered")
+        XCTAssertEqual(second.commandStatus, "delivered")
+        let prompt = await control.lastPrompt
+        let count = await control.promptCount
+        XCTAssertEqual(prompt, command.promptText)
+        XCTAssertTrue(prompt?.contains("/synthetic/note.txt") == true)
+        XCTAssertEqual(count, 1)
+    }
+
     /// AND-226: a prompt whose POST timed out but reached the service is
     /// recognized by the re-read — the mirrored message proves it — and
     /// confirmed delivered without a second attempt.

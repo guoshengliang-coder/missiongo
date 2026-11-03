@@ -816,7 +816,8 @@ public final class NodeLoop: @unchecked Sendable {
             sessionRef: session.sessionRef, status: session.status, lifecycle: session.lifecycle,
             occupiesExecutionSlot: session.occupiesExecutionSlot, command: readyCommand,
             archiveInSource: session.archiveInSource, restoreInSource: session.restoreInSource,
-            desiredSettings: session.desiredSettings, appliedSettingsRevision: session.appliedSettingsRevision
+            desiredSettings: session.desiredSettings, appliedSettingsRevision: session.appliedSettingsRevision,
+            externalBindingGeneration: session.externalBindingGeneration, externalAutoConnect: session.externalAutoConnect
         )
     }
 

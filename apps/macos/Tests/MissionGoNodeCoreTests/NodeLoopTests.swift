@@ -223,28 +223,33 @@ private func snapshotTiming() -> NodeLoop.Timing {
 
 final class AgentChatAttachmentDeliveryTests: XCTestCase {
     func testDownloadsVerifiedOriginalBeforeAnAdapterReceivesTheCommand() async throws {
-        let data = Data("original image bytes".utf8)
-        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        let attachmentId = UUID().uuidString.lowercased()
-        let sessionId = UUID().uuidString.lowercased()
-        let attachment = AgentSessionAttachment(id: attachmentId, filename: "reference.png", kind: "image",
-                                                contentType: "image/png", sizeBytes: data.count, sha256: digest)
-        let command = AgentSessionCommand(id: UUID().uuidString.lowercased(), text: "Inspect this",
-                                          status: "delivering", attachments: [attachment])
-        let session = NodeAgentSession(id: sessionId, agentKind: "codex", sessionRef: "thread",
-                                       status: "idle", command: command)
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("missiongo-chat-test-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
-        let api = FakeAPI(claims: [])
-        api.attachmentData.withLock { $0[attachmentId] = data }
-        let loop = NodeLoop(api: api, adapters: [], fallbackNodeName: "Mac mini",
-                            attachmentCacheRoot: root, log: { _ in })
-        let ready = try await loop.prepareAttachments(session)
-        let path = try XCTUnwrap(ready.command?.attachments?.first?.localPath)
-        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), data)
-        XCTAssertTrue(ready.command?.promptText.contains(path) == true)
-        XCTAssertTrue(ready.command?.promptText.contains(command.id) == true)
-        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        for kind in ["codex", "claude_code", "opencode"] {
+            let data = Data("original image bytes".utf8)
+            let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            let attachmentId = UUID().uuidString.lowercased()
+            let sessionId = UUID().uuidString.lowercased()
+            let attachment = AgentSessionAttachment(id: attachmentId, filename: "reference.png", kind: "image",
+                                                    contentType: "image/png", sizeBytes: data.count, sha256: digest)
+            let command = AgentSessionCommand(id: UUID().uuidString.lowercased(), text: "Inspect this",
+                                              status: "delivering", attachments: [attachment])
+            let session = NodeAgentSession(id: sessionId, agentKind: kind, sessionRef: "thread",
+                                           status: "idle", command: command, externalBindingGeneration: 7)
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("missiongo-chat-test-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let api = FakeAPI(claims: [])
+            api.attachmentData.withLock { $0[attachmentId] = data }
+            let loop = NodeLoop(api: api, adapters: [], fallbackNodeName: "Mac mini",
+                                attachmentCacheRoot: root, log: { _ in })
+            let ready = try await loop.prepareAttachments(session)
+            XCTAssertEqual(ready.externalBindingGeneration, 7)
+            XCTAssertFalse(ready.externalAutoConnect)
+            XCTAssertEqual(ready.sessionRef, "thread")
+            let path = try XCTUnwrap(ready.command?.attachments?.first?.localPath)
+            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), data)
+            XCTAssertTrue(ready.command?.promptText.contains(path) == true)
+            XCTAssertTrue(ready.command?.promptText.contains(command.id) == true)
+            XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        }
     }
 }
 

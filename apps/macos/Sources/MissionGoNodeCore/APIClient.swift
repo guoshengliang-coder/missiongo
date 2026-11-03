@@ -1578,7 +1578,7 @@ public struct APIClient: Sendable {
         struct Reply: Decodable { let sessions: [NodeAgentSession] }
         let response = try await send(
             "GET", "/api/v1/node/agent-sessions", body: Optional<String>.none, bearer: try nodeToken(),
-            extraHeaders: ["X-MissionGo-Chat-Attachments": "1", "X-MissionGo-External-Sessions": "1", "X-MissionGo-External-Worker": externalWorkerId, "X-MissionGo-External-Auto-Connect": "1"]
+            extraHeaders: ["X-MissionGo-Chat-Attachments": "1", "X-MissionGo-External-Sessions": "1", "X-MissionGo-External-Attachments": "1", "X-MissionGo-External-Worker": externalWorkerId, "X-MissionGo-External-Auto-Connect": "1"]
         )
         // During a rolling update the Mac can reach a server from before
         // mirrored sessions. Dispatching must keep working until that server is
@@ -1591,7 +1591,8 @@ public struct APIClient: Sendable {
 
     public func downloadAgentSessionAttachment(sessionId: String, attachmentId: String) async throws -> Data {
         let path = "/api/v1/node/agent-sessions/\(APIClient.encodePathComponent(sessionId))/attachments/\(APIClient.encodePathComponent(attachmentId))/content"
-        let response = try await send("GET", path, body: Optional<String>.none, bearer: try nodeToken(), timeout: 5 * 60)
+        let response = try await send("GET", path, body: Optional<String>.none, bearer: try nodeToken(), timeout: 5 * 60,
+            extraHeaders: ["X-MissionGo-External-Worker": externalWorkerId])
         try requireSuccess(response, operation: "下载聊天附件")
         return response.body
     }
@@ -1607,14 +1608,14 @@ public struct APIClient: Sendable {
     public func reportExternalAgentSession(sessionId: String, generation: Int, report: AgentSessionReport) async throws {
         let path = "/api/v1/node/agent-sessions/\(APIClient.encodePathComponent(sessionId))/snapshot"
         let response = try await send("POST", path, body: try APIClient.uploadableSnapshot(report), bearer: try nodeToken(), gzipBody: true,
-            extraHeaders: ["X-MissionGo-External-Generation": String(generation), "X-MissionGo-External-Worker": externalWorkerId])
+            extraHeaders: ["X-MissionGo-External-Attachments": "1", "X-MissionGo-External-Generation": String(generation), "X-MissionGo-External-Worker": externalWorkerId])
         try requireSuccess(response, operation: "同步外部 Agent 会话")
     }
 
     public func reportAutomaticExternalSession(sessionId: String, generation: Int, nativeSessionRef: String, report: AgentSessionReport) async throws {
         let path = "/api/v1/node/agent-sessions/\(APIClient.encodePathComponent(sessionId))/snapshot"
         let response = try await send("POST", path, body: try APIClient.uploadableSnapshot(report), bearer: try nodeToken(), gzipBody: true,
-            extraHeaders: ["X-MissionGo-External-Generation": String(generation), "X-MissionGo-External-Worker": externalWorkerId,
+            extraHeaders: ["X-MissionGo-External-Attachments": "1", "X-MissionGo-External-Generation": String(generation), "X-MissionGo-External-Worker": externalWorkerId,
                 "X-MissionGo-External-Auto-Connect": "1", "X-MissionGo-External-Ref": nativeSessionRef])
         if response.status == 409,
            let problem = JSONValues.parse(response.text) as? [String: Any],

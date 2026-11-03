@@ -299,7 +299,7 @@ final class CodexProtocolTests: XCTestCase {
 
     func testTurnSteerPinsTheActiveTurnAndClientMessage() throws {
         let params = CodexProtocol.turnSteerParams(
-            threadId: "t1", turnId: "turn-1", prompt: "focus here", clientUserMessageId: "command-1"
+            threadId: "t1", turnId: "turn-1", prompt: "focus here", clientUserMessageId: "command-1", imagePaths: ["/synthetic/reference.png"]
         )
         XCTAssertEqual(params["threadId"] as? String, "t1")
         XCTAssertEqual(params["expectedTurnId"] as? String, "turn-1")
@@ -307,6 +307,8 @@ final class CodexProtocolTests: XCTestCase {
         let input = params["input"] as? [[String: Any]]
         XCTAssertEqual(input?.first?["type"] as? String, "text")
         XCTAssertEqual(input?.first?["text"] as? String, "focus here")
+        XCTAssertEqual(input?.last?["type"] as? String, "localImage")
+        XCTAssertEqual(input?.last?["path"] as? String, "/synthetic/reference.png")
     }
 
     func testReadsOnlyUserVisibleThreadItems() throws {
@@ -661,10 +663,12 @@ final class CodexAppServerControlTests: XCTestCase {
             return [["jsonrpc": "2.0", "id": id, "result": result]]
         }
         try await CodexAppServerControl(timeout: 5).sendExternalMessage(socketPath: server.path,
-            threadId: "external-exact", text: "Continue", clientUserMessageId: "reply-exact")
+            threadId: "external-exact", text: "Continue", clientUserMessageId: "reply-exact", imagePaths: ["/synthetic/reference.png"])
         server.waitUntilDone()
         XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/read", "turn/start"])
         let params = server.params(of: "turn/start")
+        let input = params?["input"] as? [[String: String]]
+        XCTAssertEqual(input?.last, ["type": "localImage", "path": "/synthetic/reference.png"])
         XCTAssertEqual(params?["threadId"] as? String, "external-exact")
         XCTAssertEqual(params?["clientUserMessageId"] as? String, "reply-exact")
         for key in ["model", "effort", "approvalPolicy", "approvalsReviewer", "sandbox"] { XCTAssertNil(params?[key]) }
@@ -1339,6 +1343,7 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
     let requests = Locked<[CodexThreadRequest]>([])
     let replies = Locked<[(String, String)]>([])
     let externalReplies = Locked<[(String, String)]>([])
+    let externalImagePaths = Locked<[[String]]>([])
     let approvalReads = Locked(0)
     var pendingApproval: CodexApprovalSnapshot?
     let cancelledApprovals = Locked<[String]>([])
@@ -1349,6 +1354,10 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
     }
     func cancelApprovals(threadId: String, turnId: String) {
         cancelledApprovals.withLock { $0.append(turnId) }
+    }
+    func sendExternalMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String, imagePaths: [String]) async throws {
+        externalImagePaths.withLock { $0.append(imagePaths) }
+        try await sendExternalMessage(socketPath: socketPath, threadId: threadId, text: text, clientUserMessageId: clientUserMessageId)
     }
     func sendExternalMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws {
         externalReplies.withLock { $0.append((clientUserMessageId, text)) }
@@ -1779,6 +1788,24 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertEqual(control.approvalReads.current, 0)
         XCTAssertTrue(control.replies.current.isEmpty)
         XCTAssertEqual(control.externalReplies.current.map { [$0.0, $0.1] }, [["reply", "Continue"]])
+    }
+
+    func testExternalImagesUseNativeVisionAndKeepOtherOriginalFileReferences() async throws {
+        let control = RecordingControl(threadId: "external-exact")
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        let image = AgentSessionAttachment(id: "image", filename: "reference.png", kind: "image", contentType: "image/png",
+            sizeBytes: 10, sha256: "fixture", localPath: "/synthetic/reference.png")
+        let document = AgentSessionAttachment(id: "pdf", filename: "reference.pdf", kind: "document", contentType: "application/pdf",
+            sizeBytes: 10, sha256: "fixture", localPath: "/synthetic/reference.pdf")
+        let command = AgentSessionCommand(id: "files", text: "", status: "delivering", attachments: [image, document])
+        let report = try await launcher.synchronize(NodeAgentSession(id: "external", sessionRef: "external-exact", status: "idle",
+            command: command, externalBindingGeneration: 1))
+        XCTAssertEqual(report.commandStatus, "delivered")
+        XCTAssertEqual(control.externalImagePaths.current, [["/synthetic/reference.png"]])
+        XCTAssertEqual(control.externalReplies.current.first?.1, command.promptText)
+        XCTAssertTrue(control.externalReplies.current.first?.1.contains("/synthetic/reference.pdf") == true)
+        XCTAssertEqual(control.approvalReads.current, 0)
     }
 
     func testAnAlreadyMirroredCodexReplyIsAcknowledgedWithoutSendingAgain() async throws {

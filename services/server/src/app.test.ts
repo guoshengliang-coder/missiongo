@@ -1098,6 +1098,46 @@ describe("Commenting over MCP", () => {
     const delivered = { ...snapshot, messages: [...snapshot.messages, { sourceId: command.id, role: "user", text: command.text }], commandId: command.id, commandStatus: "delivered" };
     expect((await post(delivered)).statusCode).toBe(204); expect((await post(delivered)).statusCode).toBe(204);
     expect((await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${id}`, headers })).json()).toMatchObject({ command: { status: "delivered" }, messages: [{}, {}, {}, {}] });
+    // An old node stays text-only. Only the updated, exact bound worker may receive originals.
+    const upload = (name: string, bytes = Buffer.from("reference"), h = headers) => app.inject({ method: "POST",
+      url: `/api/v1/agent-sessions/${id}/attachments`, headers: { ...h, "content-type": "application/octet-stream",
+        "x-missiongo-filename": name, "x-missiongo-content-type": "application/octet-stream" }, payload: bytes });
+    expect((await upload("reference.png")).statusCode).toBe(409);
+    const capableHeaders = { ...snapshotHeaders, "x-missiongo-external-attachments": "1" };
+    expect((await post(delivered, capableHeaders)).statusCode).toBe(204);
+    expect((await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${id}`, headers })).json().canAttach).toBe(true);
+    for (const name of ["reference.html", "reference.zip", "reference.exe"]) expect((await upload(name)).statusCode).toBe(400);
+    expect((await upload("oversized.png", Buffer.alloc(20 * 1024 * 1024 + 1))).statusCode).toBe(400);
+    const files = [];
+    for (const name of ["reference.png", "recording.mp4", "note.txt", "report.pdf"]) {
+      const result = await upload(name);
+      expect(result.statusCode, result.body).toBe(201); files.push(result.json());
+    }
+    const enqueue = (ids: string[]) => app.inject({ method: "POST", url: `/api/v1/agent-sessions/${id}/commands`, headers,
+      payload: { text: "", attachmentIds: ids } });
+    expect((await enqueue([files[0].id, files[0].id])).statusCode).toBe(400);
+    const attached = await enqueue(files.map(file => file.id));
+    expect(attached.statusCode, attached.body).toBe(201);
+    const attachmentCommand = attached.json();
+    expect(attachmentCommand.attachments).toHaveLength(4);
+    const contentUrl = `/api/v1/node/agent-sessions/${id}/attachments/${files[0].id}/content`;
+    expect((await app.inject({ method: "GET", url: contentUrl, headers: nodeHeaders })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: "/api/v1/node/agent-sessions", headers: nodeHeaders })).json().sessions[0].command).toBeUndefined();
+    const current = { ...snapshot, commandId: attachmentCommand.id, commandStatus: "delivering" };
+    expect((await post(current, capableHeaders)).statusCode).toBe(204);
+    expect((await app.inject({ method: "GET", url: contentUrl, headers: { ...nodeHeaders, authorization: `Bearer ${other.token}` } })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: contentUrl, headers: { ...nodeHeaders, "x-missiongo-external-worker": "another-worker-id" } })).statusCode).toBe(404);
+    const original = await app.inject({ method: "GET", url: contentUrl, headers: nodeHeaders });
+    expect(original.statusCode).toBe(200); expect(original.rawPayload).toEqual(Buffer.from("reference"));
+    expect((await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${id}/attachments/${files[0].id}/preview`, headers })).statusCode).toBe(200);
+    expect((await post({ ...current, commandStatus: "delivered" }, capableHeaders)).statusCode).toBe(204);
+    const history = (await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${id}`, headers })).json();
+    expect(history.attachmentMessages).toMatchObject([{ commandId: attachmentCommand.id, text: "", attachments: files }]);
+    expect((await app.inject({ method: "GET", url: contentUrl, headers: nodeHeaders })).statusCode).toBe(404);
+    expect((await enqueue(files.map(file => file.id))).statusCode).toBe(400);
+    const draft = (await upload("draft.txt")).json();
+    expect((await app.inject({ method: "DELETE", url: `/api/v1/agent-sessions/${id}/attachments/${draft.id}`, headers })).statusCode).toBe(204);
+    expect((await enqueue([draft.id])).statusCode).toBe(404);
     expect((await app.inject({ method: "DELETE", url: `/api/v1/agent-sessions/${id}/native-connection`, headers })).statusCode).toBe(200);
     expect((await post(delivered)).statusCode).toBe(404);
     expect(app.missionGoStore.getWorkItem("HG-1").status).toBe("in_progress");

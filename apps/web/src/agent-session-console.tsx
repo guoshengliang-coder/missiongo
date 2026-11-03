@@ -1083,7 +1083,7 @@ export function AgentSessionConsole({
                   {" · "}{sessionQuery.data.managedExecution.stageId} / {sessionQuery.data.managedExecution.generation}
                 </p>}
                 {sessionQuery.isError && <p className="inline-error">{localizedErrorText(sessionQuery.error, t)}</p>}
-                {sessionQuery.data?.messages.length === 0 && !outgoing && <p className="agent-session-muted">{t("agentSessionNoMessages")}</p>}
+                {sessionQuery.data && visibleMessages.length === 0 && !outgoing && <p className="agent-session-muted">{t("agentSessionNoMessages")}</p>}
                 {!selected.agentSessionId && (
                   <div className="agent-console-dispatch-state">
                     <Bot size={20} />
@@ -1393,7 +1393,7 @@ export function AgentSessionConsole({
                     <div className="agent-chat-send-actions">
                       <input ref={fileInputRef} type="file" accept={CHAT_FILE_ACCEPT} multiple hidden
                         onChange={(event) => addFiles(event.target.files)} />
-                      {selected.source !== "external" && <button type="button" className="secondary-button agent-chat-icon-button"
+                      {(selected.source !== "external" || canAttach) && <button type="button" className="secondary-button agent-chat-icon-button"
                         disabled={!sessionQuery.data?.canAttach || pending || sendingSelected || replyFiles.length >= 10}
                         title={sessionQuery.data?.canAttach ? t("agentChatAddFile") : t("agentChatNodeUpdate")}
                         aria-label={t("agentChatAddFile")}
@@ -1406,7 +1406,7 @@ export function AgentSessionConsole({
                       </button>
                     </div>
                   </div>
-                  {sessionQuery.data && !sessionQuery.data.canAttach && <p className="agent-session-muted" role="note">{t(selected.source === "external" ? "agentExternalTextOnly" : "agentChatNodeUpdate")}</p>}
+                  {sessionQuery.data && !sessionQuery.data.canAttach && <p className="agent-session-muted" role="note">{t("agentChatNodeUpdate")}</p>}
                 </form>
               ) : (
                 <p className="agent-session-muted" role="note">
