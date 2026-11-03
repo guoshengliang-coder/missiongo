@@ -8,8 +8,8 @@
   ],
   "artifacts": {
     "linuxCli": {
-      "version": "0.1.1",
-      "commit": "85357ffac2687f6483bfae9645bf65f4e1893a78",
+      "version": "0.1.2",
+      "commit": "2af560d23b706b4c4f9f9a9dacf41d4311ff9743",
       "versionFile": "product.json",
       "versionJsonPath": "linuxNode.version",
       "paths": [
@@ -17,7 +17,7 @@
         "packages/domain",
         "scripts/build-node.mjs"
       ],
-      "sha256": "9af74f6aa7d44a43585d244c2edcb9ed3608f478111ce9347ccfa1c36f9253da"
+      "sha256": "4c4b1ea4ab50ff1cd181fb2c47ed607a026e4ec923175364cce88841476d297a"
     },
     "androidApp": {
       "version": "0.1.18",
