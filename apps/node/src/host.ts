@@ -6,7 +6,9 @@ import { CodexAdapter } from "./codex.js";
 import { ClaudeAdapter } from "./claude.js";
 import { OpenCodeAdapter } from "./opencode.js";
 import { launchPrompt } from "./prompt.js";
-import { skillPaths, skillVersion } from "./skills.js";
+import { skillPaths, skillVersion, syncSkill } from "./skills.js";
+import { resolveClaudeLaunch } from "./environment.js";
+import { probe } from "./process.js";
 import { loadConfig, privateDir, readPrivate, safeError, savePrivate } from "./storage.js";
 import type { Adapter, Dispatch, HostState, Session, Snapshot } from "./types.js";
 import { id, InputRejected } from "./types.js";
@@ -146,7 +148,15 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(socket, () => { chmodSync(socket, 0o600); resolve(); }); });
     const localSkill = job.agentKind === "codex" ? skillVersion(readFileSync(skillPaths("codex")[0]!, "utf8")) : undefined;
     if (job.agentKind === "codex" && !localSkill) throw new Error("Install the current MissionGo Skill before dispatching Codex");
-    adapter = job.agentKind === "codex" ? new CodexAdapter(job, executable, localSkill) : job.agentKind === "claude_code" ? new ClaudeAdapter(job, executable) : new OpenCodeAdapter(job);
+    if (job.agentKind === "claude_code") {
+      // Resolve inside the detached host, never serialize secrets into state or mutate the node's environment.
+      const launch = await resolveClaudeLaunch(agent);
+      await probe(launch.executable, ["--version"], job.repoPath, launch.env);
+      const expected = readPrivate<{ agents?: { kind: string; skill?: { expectedVersion?: string } }[] }>(join(root, "status.json"))
+        ?.agents?.find((value) => value.kind === "claude_code")?.skill?.expectedVersion;
+      await syncSkill("claude_code", config.server!, expected, launch.env);
+      adapter = new ClaudeAdapter(job, launch.executable, launch.env);
+    } else adapter = job.agentKind === "codex" ? new CodexAdapter(job, executable, localSkill) : new OpenCodeAdapter(job);
     state.sessionRef = await adapter.start(launchPrompt(job));
     state.phase = "launched"; state.snapshot = boundedSnapshot(await adapter.snapshot()); launchFinished = true; persist();
   } catch (error) {

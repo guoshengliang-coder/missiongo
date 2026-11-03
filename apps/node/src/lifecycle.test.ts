@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, chmodSync, existsSync, realpathSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, chmodSync, existsSync, realpathSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,7 +45,11 @@ it("reconnects the original detached host after a node restart and never replays
   const events = join(directory, "agent-events");
   vi.stubEnv("TEST_AGENT_EVENTS", events); vi.stubEnv("HOME", directory); vi.stubEnv("CLAUDE_CONFIG_DIR", join(directory, ".claude"));
   execFileSync("git", ["init", directory], { stdio: "ignore" });
-  const config = { ...loadConfig(stateRoot), server: "https://missiongo.example.com", token: "fake-node-token", agents: { claude_code: { executable: fixture } } };
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  const environmentScript = join(directory, "gateway-env.sh"); const launcher = join(directory, "claude-launcher");
+  writeFileSync(environmentScript, "export ANTHROPIC_AUTH_TOKEN=fixture-gateway-only\n", { mode: 0o600 });
+  writeFileSync(launcher, `#!/bin/bash\n[ "$ANTHROPIC_AUTH_TOKEN" = fixture-gateway-only ] || exit 42\nexec ${quote(fixture)} "$@"\n`, { mode: 0o700 });
+  const config = { ...loadConfig(stateRoot), server: "https://missiongo.example.com", token: "fake-node-token", agents: { claude_code: { executable: launcher, environmentScript } } };
   saveConfig(stateRoot, config);
   execFileSync(process.execPath, ["scripts/build-node.mjs"], { cwd: root, stdio: "ignore" });
   const entry = join(root, "apps/node/dist/package/cli.mjs");

@@ -9,8 +9,8 @@ export class JsonProcess {
   private pending = new Map<string, { resolve: (v: Wire) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
   onEvent: (event: Wire) => void = () => {};
   onClose: () => void = () => {};
-  constructor(executable: string, args: string[], cwd: string) {
-    this.child = spawn(executable, args, { cwd, env: process.env, stdio: "pipe" });
+  constructor(executable: string, args: string[], cwd: string, env = process.env) {
+    this.child = spawn(executable, args, { cwd, env, stdio: "pipe" });
     this.child.stderr.resume(); // Model config and tool output must not enter node logs.
     const decoder = new StringDecoder("utf8");
     let buffer = "";
@@ -52,13 +52,28 @@ export class JsonProcess {
   }
 }
 
-export async function probe(executable: string, args: string[], cwd?: string): Promise<string> {
+export async function probe(executable: string, args: string[], cwd?: string, env = process.env, timeoutMs = 10_000): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { ...(cwd ? { cwd } : {}), env: process.env, stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawn(executable, args, { ...(cwd ? { cwd } : {}), env, detached: true, stdio: ["ignore", "pipe", "ignore"] });
     let text = "";
-    const timer = setTimeout(() => { child.kill(); reject(new Error("Agent check timed out")); }, 10_000);
-    child.stdout.on("data", (bytes: Buffer) => { text += bytes.toString(); if (text.length > 1024 * 1024) child.kill(); });
-    child.on("error", () => { clearTimeout(timer); reject(new Error("Agent executable unavailable")); });
-    child.on("exit", (code) => { clearTimeout(timer); if (code === 0) resolve(text.trim()); else reject(new Error("Agent check failed")); });
+    let settled = false;
+    const fail = (message: string) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
+      try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch { /* Already exited. */ }
+      reject(new Error(message));
+    };
+    const timer = setTimeout(() => fail("Agent version check timed out"), timeoutMs);
+    child.stdout.on("data", (bytes: Buffer) => {
+      if (settled) return;
+      if (text.length + bytes.length > 1024 * 1024) { fail("Agent version check output exceeded the limit"); return; }
+      text += bytes.toString();
+    });
+    child.on("error", (error: NodeJS.ErrnoException) => fail(error.code === "ENOENT" ? "Agent executable not found; check PATH, Node runtime or launcher" : "Agent executable could not be started; check permissions and launcher"));
+    child.on("close", (code, signal) => {
+      if (settled) return;
+      if (code !== 0) { fail(`Agent version check failed (${signal ? `signal ${signal}` : `exit ${code}`}); check Node runtime and launcher`); return; }
+      settled = true; clearTimeout(timer); resolve(text.trim());
+    });
   });
 }

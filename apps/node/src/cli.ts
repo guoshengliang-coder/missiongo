@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { hostname } from "node:os";
+import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +11,7 @@ import { hostCall, runHost } from "./host.js";
 import { detectAgents, runNode, verifyRepo, version } from "./runner.js";
 import { loadConfig, readPrivate, safeError, saveConfig, stateRoot } from "./storage.js";
 import { installService, uninstallService } from "./service.js";
+import { validateLaunchPaths } from "./environment.js";
 import type { Kind, RepoMapping } from "./types.js";
 
 const help = `missiongo-node — Linux headless execution node
@@ -20,6 +22,7 @@ logout                                     Remove this local node credential
 products                                   List permitted products
 repo list | repo set <product-id> <path> | repo remove <product-id>
 agent enable <claude_code|codex|opencode> [--executable <absolute-path>]
+  Claude: [--environment-script <absolute-path>] [--clear-environment-script] [--clear-executable]
 agent disable <kind> | agent check          Only enabled agents are probed
 status | doctor                            Show node state / recheck enabled agents
 run                                        Foreground node (flock singleton)
@@ -33,12 +36,20 @@ Enable only the integrations you want this node to use. Run without sudo.
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
     server: { type: "string" }, name: { type: "string" }, executable: { type: "string" },
+    "environment-script": { type: "string" }, "clear-environment-script": { type: "boolean" }, "clear-executable": { type: "boolean" },
     version: { type: "boolean" }, help: { type: "boolean", short: "h" },
   } });
   if (values.version) { console.log(version); return; }
   if (values.help || !positionals.length) { console.log(help); return; }
   const root = stateRoot(); const entry = fileURLToPath(import.meta.url);
   const config = loadConfig(root);
+  const recheck = async () => {
+    // Tell a running service to refresh its in-memory environment on the next heartbeat.
+    if (config.agents.claude_code) {
+      config.agents.claude_code.checkRevision = randomUUID(); saveConfig(root, config);
+    }
+    return detectAgents(config);
+  };
   const [command, action, arg, path] = positionals;
   const api = () => {
     if (!config.server || !config.token) throw new Error("Run login first");
@@ -73,13 +84,22 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       console.log("Repository mappings saved."); return;
     }
     case "agent": {
-      if (action === "check") { console.log(JSON.stringify(await detectAgents(config), null, 2)); return; }
+      if (action === "check") { console.log(JSON.stringify(await recheck(), null, 2)); return; }
       if (!["claude_code", "codex", "opencode"].includes(arg ?? "")) throw new Error("Choose claude_code, codex, or opencode");
       const kind = arg as Kind;
       if (action === "enable") {
         api();
         if (values.executable && !isAbsolute(values.executable)) throw new Error("Executable override must be an absolute path");
-        config.agents[kind] = values.executable ? { executable: values.executable } : {};
+        if ((values["environment-script"] !== undefined || values["clear-environment-script"]) && kind !== "claude_code") throw new Error("Environment scripts are supported for claude_code only");
+        if ((values.executable !== undefined && values["clear-executable"]) || (values["environment-script"] !== undefined && values["clear-environment-script"])) throw new Error("Choose a configuration path or its clear option, not both");
+        const settings = { ...config.agents[kind] };
+        if (values.executable !== undefined) settings.executable = values.executable;
+        if (values["clear-executable"]) delete settings.executable;
+        if (values["environment-script"] !== undefined) settings.environmentScript = values["environment-script"];
+        if (values["clear-environment-script"]) delete settings.environmentScript;
+        validateLaunchPaths(settings);
+        settings.checkRevision = randomUUID();
+        config.agents[kind] = settings;
         saveConfig(root, config);
         console.log(JSON.stringify(await detectAgents({ ...config, agents: { [kind]: config.agents[kind] } }), null, 2));
       } else if (action === "disable") { delete config.agents[kind]; saveConfig(root, config); console.log("Integration disabled for new dispatches."); }
@@ -92,7 +112,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     }
     case "doctor": {
       await api().call("GET", "/api/v1/node/me");
-      console.log(JSON.stringify({ version, nodeAuthorization: "valid", agents: await detectAgents(config) }, null, 2)); return;
+      console.log(JSON.stringify({ version, nodeAuthorization: "valid", agents: await recheck() }, null, 2)); return;
     }
     case "service": {
       if (action === "install") {

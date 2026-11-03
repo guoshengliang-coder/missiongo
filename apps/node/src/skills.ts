@@ -19,8 +19,8 @@ function compare(a: string, b: string): number {
   for (let i = 0; i < 3; i++) if (aa[i] !== bb[i]) return aa[i]! - bb[i]!;
   return 0;
 }
-export async function syncSkill(kind: Kind, server: string, expected?: string): Promise<{ localVersion?: string; expectedVersion?: string; syncState: string; checkedAt: string }> {
-  const paths = skillPaths(kind);
+export async function syncSkill(kind: Kind, server: string, expected?: string, env = process.env): Promise<{ localVersion?: string; expectedVersion?: string; syncState: string; checkedAt: string }> {
+  const paths = skillPaths(kind, env);
   let downloaded: string | undefined;
   for (const path of paths) {
     const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
