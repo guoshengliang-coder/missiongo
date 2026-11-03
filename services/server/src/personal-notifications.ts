@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import type { PersonalNotificationDetail, PersonalNotificationFilter, PersonalNotificationKind, PersonalNotificationPage } from "@missiongo/domain";
+import type { PersonalAttentionCount, PersonalTodoPage, PersonalNotificationDetail, PersonalNotificationFilter, PersonalNotificationKind, PersonalNotificationPage } from "@missiongo/domain";
 import { AccountStore, type AccountSnapshot } from "./accounts-store.js";
 import type { MissionGoDatabase } from "./storage/database.js";
 import type { MissionGoStore } from "./store.js";
@@ -28,26 +28,49 @@ interface Row {
   id:string; sequence:number; kind:PersonalNotificationKind; read_at:string|null; created_at:string;
   item_key:string; title:string; product_id:string; product_name:string; comment_id:string|null;
   withdrawn_at:string|null; body_json:string|null; summary:string|null; actor_id:string|null; agent_name:string|null;
-  payload_json:string|null;
+  payload_json:string|null; resolved_at:string|null;
 }
 const joins = `FROM personal_notifications n JOIN notification_events e ON e.id=n.event_id
   JOIN work_items w ON w.id=e.item_id JOIN products p ON p.id=w.product_id
   LEFT JOIN work_item_comments c ON c.id=e.comment_id
   LEFT JOIN work_item_events b ON b.id=e.business_event_id`;
+// A verification notice belongs to one status entry, not the lifetime of an item.
+// Derive resolution from authoritative history: GET never changes read state and
+// old rounds cannot resurrect after reopening. Comments are deliberately excluded.
+const resolution = `CASE WHEN n.kind='verification' THEN (
+  SELECT later.created_at FROM work_item_events later
+  WHERE later.item_id=w.id AND later.timeline_seq>b.timeline_seq
+    AND later.history_source_key IS NULL
+    AND later.event_type IN ('status_changed','item_transferred_out')
+  ORDER BY later.timeline_seq LIMIT 1
+) ELSE NULL END`;
+const needsReading = `n.read_at IS NULL AND (${resolution}) IS NULL`;
+// Same ownership as verification delivery and human acceptance: the accessible
+// non-SDK proposer. Administrator capability alone is not personal assignment.
+const todoJoins = `FROM work_items w JOIN products p ON p.id=w.product_id
+  JOIN work_item_events creator ON creator.id=(SELECT first.id FROM work_item_events first
+    WHERE first.item_id=w.id AND first.event_type='item_created' ORDER BY first.timeline_seq,first.created_at LIMIT 1)`;
+const todoWhere = `w.status='pending_verification' AND p.archived_at IS NULL
+  AND NOT EXISTS (SELECT 1 FROM item_transfers t WHERE t.source_item_id=w.id)
+  AND creator.account_id=? AND creator.actor_kind IN ('human','agent')
+  AND (creator.actor_kind='agent' OR coalesce(json_extract(creator.payload_json,'$.source'),'')!='android_sdk')`;
 const select = `SELECT n.id,n.sequence,n.kind,n.read_at,e.created_at,w.item_key,w.title,w.product_id,p.name AS product_name,
-  e.comment_id,c.withdrawn_at,c.body_json,c.summary,coalesce(c.account_id,b.account_id) AS actor_id,c.agent_name,b.payload_json ${joins}`;
+  e.comment_id,c.withdrawn_at,c.body_json,c.summary,coalesce(c.account_id,b.account_id) AS actor_id,c.agent_name,b.payload_json,${resolution} AS resolved_at ${joins}`;
 
 export class PersonalNotifications {
   constructor(private store: MissionGoStore, private accounts: AccountStore) {}
   private get db() { return this.store.database.connection; }
+  private productIds(account: AccountSnapshot) {
+    return this.store.listProducts({includeArchived:true}).filter(p => this.accounts.allows(account,p.id,"view")).map(p=>p.id);
+  }
   private scope(account: AccountSnapshot) {
     // Use the same capability check as item reads (including project administrators).
-    const ids = this.store.listProducts({includeArchived:true}).filter(p => this.accounts.allows(account,p.id,"view")).map(p=>p.id);
+    const ids = this.productIds(account);
     return {sql:`n.account_id=? AND w.product_id IN (${ids.map(()=>"?").join(",") || "NULL"})`,args:[account.id,...ids]};
   }
   private filter(filter: PersonalNotificationFilter) {
     const sql:string[]=[],args:(string|number)[]=[];
-    if(filter.unread) sql.push("n.read_at IS NULL");
+    if(filter.unread) sql.push(needsReading);
     if(filter.productId) {sql.push("w.product_id=?");args.push(filter.productId);}
     if(filter.kind) {sql.push("n.kind=?");args.push(filter.kind);}
     return {sql:sql.length ? ` AND ${sql.join(" AND ")}` : "",args};
@@ -62,14 +85,41 @@ export class PersonalNotifications {
       const payload = JSON.parse(row.payload_json) as Record<string,unknown>;
       text = [payload.note,payload.summary,payload.reason].filter(v=>typeof v==="string").join("\n\n");
     }
-    return {id:row.id,sequence:row.sequence,kind:row.kind,readAt:row.read_at,createdAt:row.created_at,
+    return {id:row.id,sequence:row.sequence,kind:row.kind,readAt:row.read_at,resolvedAt:row.resolved_at,createdAt:row.created_at,
       itemKey:row.item_key,itemTitle:row.title,productId:row.product_id,productName:row.product_name,
       actorName:row.agent_name || (row.actor_id ? this.accounts.displayNames([row.actor_id]).get(row.actor_id) : undefined) || "",
       summary:unavailable ? "" : (row.summary || text).slice(0,240),text,commentId:row.comment_id,unavailable};
   }
   count(account: AccountSnapshot) {
     const scope=this.scope(account);
-    return (this.db.prepare(`SELECT count(*) AS count ${joins} WHERE ${scope.sql} AND n.read_at IS NULL`).get(...scope.args) as {count:number}).count;
+    return (this.db.prepare(`SELECT count(*) AS count ${joins} WHERE ${scope.sql} AND ${needsReading}`).get(...scope.args) as {count:number}).count;
+  }
+  private todoScope(account: AccountSnapshot, productId?:string) {
+    const ids=this.productIds(account).filter(id=>!productId || id===productId);
+    return {sql:`${todoWhere} AND w.product_id IN (${ids.map(()=>"?").join(",") || "NULL"})`,args:[account.id,...ids]};
+  }
+  todos(account:AccountSnapshot, filter:{productId?:string|undefined;beforeSequence?:number|undefined}={}):PersonalTodoPage {
+    const scope=this.todoScope(account,filter.productId);
+    const rows=this.db.prepare(`SELECT w.id,w.rowid AS sequence,w.item_key,w.title,w.product_id,p.name AS product_name,
+      coalesce((SELECT e.created_at FROM work_item_events e WHERE e.item_id=w.id AND e.history_source_key IS NULL
+        AND e.event_type='status_changed' AND e.to_status='pending_verification' ORDER BY e.timeline_seq DESC LIMIT 1),w.updated_at) AS created_at
+      ${todoJoins} WHERE ${scope.sql} AND w.rowid<? ORDER BY w.rowid DESC LIMIT 51`)
+      .all(...scope.args,filter.beforeSequence ?? Number.MAX_SAFE_INTEGER) as unknown as {
+        id:string;sequence:number;item_key:string;title:string;product_id:string;product_name:string;created_at:string;
+      }[];
+    const page=rows.slice(0,50);
+    return {todos:page.map(row=>({id:`verification:${row.id}`,sequence:row.sequence,kind:"verification",
+      itemKey:row.item_key,itemTitle:row.title,productId:row.product_id,productName:row.product_name,createdAt:row.created_at})),
+      ...(rows.length>50?{nextBeforeSequence:page.at(-1)!.sequence}:{})};
+  }
+  attentionCount(account:AccountSnapshot):PersonalAttentionCount {
+    const todo=this.todoScope(account),scope=this.scope(account);
+    const todoCount=(this.db.prepare(`SELECT count(*) AS count ${todoJoins} WHERE ${todo.sql}`).get(...todo.args) as {count:number}).count;
+    const unreadCount=this.count(account);
+    const coveredUnreadCount=(this.db.prepare(`SELECT count(*) AS count ${joins}
+      WHERE ${scope.sql} AND ${needsReading} AND n.kind='verification'
+        AND w.id IN (SELECT w.id ${todoJoins} WHERE ${todo.sql})`).get(...scope.args,...todo.args) as {count:number}).count;
+    return {count:todoCount+unreadCount-coveredUnreadCount,todoCount,unreadCount,coveredUnreadCount};
   }
   list(account: AccountSnapshot, filter: PersonalNotificationFilter): PersonalNotificationPage {
     const scope=this.scope(account),extra=this.filter(filter);
@@ -100,6 +150,8 @@ const filterSchema=z.object({unread:z.enum(["true","false"]).optional().transfor
 export function registerPersonalNotificationRoutes(app:FastifyInstance,{store,accounts,requireAccount}:{store:MissionGoStore;accounts:AccountStore;requireAccount:(request:FastifyRequest)=>AccountSnapshot}) {
   const service=new PersonalNotifications(store,accounts);
   const filter=(value:unknown)=>{const result=filterSchema.safeParse(value);if(!result.success)throw invalidInput("消息筛选格式无效。");return result.data;};
+  app.get("/api/v1/attention/count",async request=>service.attentionCount(requireAccount(request)));
+  app.get("/api/v1/attention/todos",async request=>service.todos(requireAccount(request),filter(request.query)));
   app.get("/api/v1/notifications",async request=>service.list(requireAccount(request),filter(request.query)));
   app.get("/api/v1/notifications/unread-count",async request=>({count:service.count(requireAccount(request))}));
   app.get("/api/v1/notifications/:id",async request=>service.detail(requireAccount(request),(request.params as {id:string}).id));
