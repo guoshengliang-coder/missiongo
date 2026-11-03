@@ -113,6 +113,11 @@ export class AgentApprovalStore {
     this.database.transaction(() => {
       const previous = this.row(sessionId);
       if (previous && previous.approval_id === approval.id) {
+        if ((previous.kind === "manual" || approval.kind === "manual")
+          && (previous.kind !== approval.kind || previous.turn_id !== approval.turnId
+            || previous.action !== approval.action || previous.started_at_ms !== approval.startedAtMs)) {
+          throw conflict("approval_stale", "This Codex approval's identity or permission scope has changed.");
+        }
         if ((previous.kind === "manual" && previous.status !== "pending" && approval.status === "pending")
           || (previous.kind === "manual" && !["pending", "reconnecting"].includes(previous.status) && approval.status === "reconnecting")
           || (previous.kind === "auto" && previous.status !== "inProgress" && approval.status === "inProgress")) {
@@ -120,11 +125,17 @@ export class AgentApprovalStore {
         }
         // A stale node snapshot must not reset a decision or retry queued by a
         // person after that snapshot was taken.
+        // Older snapshot routes dropped options. Recover them only from the
+        // same live, unanswered prompt; an existing list (even []) is frozen.
+        const recoveredOptions = previous.kind === "manual" && previous.status === "pending"
+          && approval.status === "pending" && !previous.decision && previous.options_json === null
+          && approval.options !== undefined ? JSON.stringify(approval.options) : null;
         this.database.connection.prepare(
           `UPDATE agent_session_approvals SET status = ?, action = ?, reason = ?, updated_at = ?,
+           options_json = COALESCE(options_json, ?),
            decision = CASE WHEN ? = 'reconnecting' THEN NULL ELSE decision END
            WHERE session_id = ? AND approval_id = ?`,
-        ).run(approval.status, approval.action, approval.reason ?? null, now, approval.status, sessionId, approval.id);
+        ).run(approval.status, approval.action, approval.reason ?? null, now, recoveredOptions, approval.status, sessionId, approval.id);
       } else {
         this.database.connection.prepare(
           `INSERT INTO agent_session_approvals
