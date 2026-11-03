@@ -514,9 +514,13 @@ export function AgentSessionConsole({
       setReplyFor(input.sessionId, input.text);
       queryClient.setQueryData<AgentSession>(["agent-session", input.sessionId], (current) => current ? { ...current, command: cancelled } : current);
       const restored = await Promise.allSettled((cancelled.attachments ?? []).map(async (attachment) => {
-        const response = await fetch(api.agentSessionAttachmentUrl(input.sessionId, attachment.id), { credentials: "same-origin" });
-        if (!response.ok) throw new Error("Attachment restore failed");
-        return new File([await response.blob()], attachment.filename, { type: attachment.contentType });
+        const controller = new AbortController();
+        const timeout = window.setTimeout(() => controller.abort(), 30_000);
+        try {
+          const response = await fetch(api.agentSessionAttachmentUrl(input.sessionId, attachment.id), { credentials: "same-origin", signal: controller.signal });
+          if (!response.ok) throw new Error("Attachment restore failed");
+          return new File([await response.blob()], attachment.filename, { type: attachment.contentType });
+        } finally { window.clearTimeout(timeout); }
       }));
       setReplyFilesFor(input.sessionId, restored.flatMap((result) => result.status === "fulfilled" ? [result.value] : []));
       setReplyFileErrorFor(input.sessionId, restored.some((result) => result.status === "rejected") ? t("agentChatRestoreFilesFailed") : null);
@@ -531,6 +535,7 @@ export function AgentSessionConsole({
       });
     },
   });
+  const cancellingSelected = cancel.isPending && cancel.variables?.sessionId === replySessionId;
   const resolveDelivery = useMutation({
     mutationFn: ({ sessionId, commandId, outcome }: {
       sessionId: string; commandId: string; outcome: "received" | "not_received"; text: string;
@@ -612,7 +617,7 @@ export function AgentSessionConsole({
   const planApprovalStatus = pending || sendingSelected ? { code: "reply_pending" }
     : sessionQuery.data?.planApprovalStatus;
   const canApprovePlan = Boolean(!showPermissionApproval && planApproval && planApprovalStatus?.code === "ready"
-    && sessionQuery.data?.canReply && selected?.canReply && !pending && !sendingSelected);
+    && sessionQuery.data?.canReply && selected?.canReply && !pending && !sendingSelected && !cancellingSelected);
   const approvePlan = () => {
     if (!canApprovePlan || !planApproval || !selected?.agentSessionId) return;
     const key = `${selected.agentSessionId}:${planApproval.revision}`;
@@ -722,7 +727,7 @@ export function AgentSessionConsole({
     event.preventDefault();
     const text = reply.trim();
     if (selected?.canReply && selected.agentSessionId && (text || replyFiles.length)
-      && (!replyFiles.length || sessionQuery.data?.canAttach) && !pending && !sendingSelected && !cancel.isPending) {
+      && (!replyFiles.length || sessionQuery.data?.canAttach) && !pending && !sendingSelected && !cancellingSelected) {
       send.mutate({ sessionId: selected.agentSessionId, text, files: replyFiles, occurredAt: new Date().toISOString() });
     }
   };
@@ -731,7 +736,7 @@ export function AgentSessionConsole({
   // so a stray unsupported file never drops a screenshot someone just pasted.
   const canAttach = sessionQuery.data?.canAttach === true;
   const addFilesList = (incoming: readonly File[]) => {
-    if (incoming.length === 0) return;
+    if (incoming.length === 0 || cancellingSelected) return;
     if (sessionQuery.data && !canAttach) { setReplyFileError(t("agentChatNodeUpdate")); return; }
     const { files, rejection } = mergeChatFiles(replyFiles, incoming);
     if (rejection) {
@@ -1135,7 +1140,7 @@ export function AgentSessionConsole({
                         <AgentSessionQuestions
                           questions={message.questions}
                           reply={reply}
-                          canReply={selected.canReply && !pending && !sendingSelected}
+                          canReply={selected.canReply && !pending && !sendingSelected && !cancellingSelected}
                           onChange={setReply}
                         />
                       )}
@@ -1194,7 +1199,7 @@ export function AgentSessionConsole({
                     {sendingSelected && send.variables?.files.length ? <div className="agent-chat-draft-files">
                       {send.variables.files.map((file, index) => <DraftChatFile key={`${file.name}-${index}`} file={file} disabled />)}
                     </div> : null}
-                    <AgentReplyFeedback status={outgoing.status} cancelling={cancel.isPending}
+                    <AgentReplyFeedback status={outgoing.status} cancelling={cancellingSelected}
                       onEdit={outgoing.commandId && selected.canReply ? () => cancel.mutate({ sessionId: selected.agentSessionId!, commandId: outgoing.commandId!, text: outgoing.text }) : undefined} />
                     {(outgoing.status === "failed" || outgoing.status === "delivery_unknown") && (
                     <footer className="agent-console-message-delivery" role="alert">
@@ -1402,10 +1407,10 @@ export function AgentSessionConsole({
                       if (send.isError && send.variables?.sessionId === selected.agentSessionId) send.reset();
                     }}
                     placeholder={t("agentSessionReplyPlaceholder", { agent: agentLabel(selected, t) })}
-                    disabled={pending || sendingSelected || cancel.isPending}
+                    disabled={pending || sendingSelected || cancellingSelected}
                   />
                   {replyFiles.length > 0 && <div className="agent-chat-draft-files">
-                    {replyFiles.map((file, index) => <DraftChatFile key={`${file.name}-${index}`} file={file} disabled={sendingSelected}
+                    {replyFiles.map((file, index) => <DraftChatFile key={`${file.name}-${index}`} file={file} disabled={sendingSelected || cancellingSelected}
                       onRemove={() => setReplyFiles((current) => current.filter((_, fileIndex) => fileIndex !== index))} />)}
                   </div>}
                   {replyFileError && <p className="inline-error" role="alert">{replyFileError}</p>}
@@ -1415,12 +1420,12 @@ export function AgentSessionConsole({
                       <input ref={fileInputRef} type="file" accept={CHAT_FILE_ACCEPT} multiple hidden
                         onChange={(event) => addFiles(event.target.files)} />
                       {(selected.source !== "external" || canAttach) && <button type="button" className="secondary-button agent-chat-icon-button"
-                        disabled={!sessionQuery.data?.canAttach || pending || sendingSelected || cancel.isPending || replyFiles.length >= 10}
+                        disabled={!sessionQuery.data?.canAttach || pending || sendingSelected || cancellingSelected || replyFiles.length >= 10}
                         title={sessionQuery.data?.canAttach ? t("agentChatAddFile") : t("agentChatNodeUpdate")}
                         aria-label={t("agentChatAddFile")}
                         onClick={() => fileInputRef.current?.click()}><Plus size={18} /></button>}
                       <button type="submit" className="primary-button agent-chat-icon-button"
-                        disabled={(!reply.trim() && replyFiles.length === 0) || (replyFiles.length > 0 && !sessionQuery.data?.canAttach) || pending || sendingSelected || cancel.isPending}
+                        disabled={(!reply.trim() && replyFiles.length === 0) || (replyFiles.length > 0 && !sessionQuery.data?.canAttach) || pending || sendingSelected || cancellingSelected}
                         title={sendingSelected ? t("agentSessionSending") : t("agentSessionSend")}
                         aria-label={sendingSelected ? t("agentSessionSending") : t("agentSessionSend")}>
                         {sendingSelected ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />}

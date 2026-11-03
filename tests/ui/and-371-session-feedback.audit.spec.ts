@@ -123,3 +123,42 @@ for (const width of [320, 768, 1440]) for (const theme of ["light", "dark"] as c
     await context.close();
   });
 }
+
+test("recalling attachments stays bound to the original session and reports partial restore failures", async ({ page }) => {
+  const stamp = new Date().toISOString();
+  const attachments = ["notes.txt", "missing.txt"].map((filename) => ({ id: filename, filename, kind: "document", contentType: "text/plain", sizeBytes: 5, sha256: "fixture" }));
+  let cancelled = false; let releaseFiles!: () => void;
+  const files = new Promise<void>((resolve) => { releaseFiles = resolve; });
+  const summary = (id: string) => ({ id, agentSessionId: id, agentKind: "codex", status: "idle", updatedAt: stamp, activityAt: stamp, createdAt: stamp,
+    sessionName: id === "recall-first" ? "First conversation" : "Second conversation", nodeName: "Fixture", nodeConnectionState: "online", nodeRevoked: false,
+    mode: "default", dispatchStatus: "launched", settings: {}, activities: [], turnState: {}, canReply: true, canStop: false, canArchive: true,
+    canRetry: false, unread: false, items: [{ key: id === "recall-first" ? "EX-371" : "EX-372", title: id === "recall-first" ? "First conversation" : "Second conversation", productId: fixture.productId }],
+    attention: { state: "not_needed" }, needsAttention: false, waitingForReply: false });
+  const command = () => ({ id: "recall", kind: "message", text: "恢复这条消息", status: cancelled ? "cancelled" : "queued", createdAt: stamp, attachments });
+  await page.route("**/api/v1/agent-sessions**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/cancel")) { cancelled = true; return route.fulfill({ json: command() }); }
+    if (path.includes("/attachments/")) {
+      await files;
+      return path.includes("missing.txt") ? route.fulfill({ status: 404 }) : route.fulfill({ contentType: "text/plain", body: "notes" });
+    }
+    if (path.endsWith("/read")) return route.fulfill({ status: 204 });
+    if (path === "/api/v1/agent-sessions") return route.fulfill({ json: { sessions: [summary("recall-first"), summary("recall-second")] } });
+    const id = path.endsWith("recall-first") ? "recall-first" : "recall-second";
+    return route.fulfill({ json: { ...summary(id), canAttach: true, messages: [], ...(id === "recall-first" ? { command: command() } : {}) } });
+  });
+  await page.goto(`/?product=${fixture.productId}&console=agent&session=recall-first`);
+  await page.getByRole("button", { name: "撤回编辑" }).click();
+  await expect(page.locator(".agent-console-reply textarea")).toBeDisabled();
+  await page.locator(".agent-console-session").filter({ hasText: "Second conversation" }).click();
+  const editor = page.locator(".agent-console-reply textarea");
+  await expect(editor).toBeEnabled(); await editor.fill("第二会话草稿");
+  releaseFiles();
+  await expect(editor).toHaveValue("第二会话草稿");
+  await expect(page.locator(".agent-chat-draft-files")).toHaveCount(0);
+  await page.locator(".agent-console-session").filter({ hasText: "First conversation" }).click();
+  await expect(editor).toHaveValue("恢复这条消息");
+  await expect(editor).toBeEnabled();
+  await expect(page.locator(".agent-chat-draft-files")).toContainText("notes.txt");
+  await expect(page.getByText("部分附件未能恢复，请重新添加后再发送。", { exact: true })).toBeVisible();
+});
