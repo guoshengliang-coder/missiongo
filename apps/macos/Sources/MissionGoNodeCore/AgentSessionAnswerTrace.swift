@@ -24,7 +24,7 @@ public enum AgentSessionAnswerTrace {
             guard !answers.isEmpty else { continue }
             let card = result[questionIndex]
             let updated = questions.enumerated().map { offset, question in
-                guard question.answered == nil, let answer = answers[offset] else { return question }
+                guard question.answered == nil, question.withdrawn != true, let answer = answers[offset] else { return question }
                 return AgentSessionQuestion(
                     header: question.header, title: question.title, detail: question.detail,
                     options: question.options, multiSelect: question.multiSelect, key: question.key,

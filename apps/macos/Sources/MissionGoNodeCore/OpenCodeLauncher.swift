@@ -612,6 +612,12 @@ public struct OpenCodeSessionSnapshot: Sendable {
     }
 }
 
+public struct OpenCodeStopState: Sendable {
+    public let active: Bool
+    public let inputId: String?
+    public init(active: Bool, inputId: String?) { self.active = active; self.inputId = inputId }
+}
+
 public protocol OpenCodeControlling: Sendable {
     func health() async throws -> String
     func missionGoMcpStatus(directory: String?) async throws -> String?
@@ -622,6 +628,8 @@ public protocol OpenCodeControlling: Sendable {
     /// badly at the source — a person-readable reason for that status.
     /// `failed` means the session is over and will not recover by itself.
     func snapshot(id: String) async throws -> OpenCodeSessionSnapshot
+    func stopState(id: String) async throws -> OpenCodeStopState
+    func initialInputId(id: String) async throws -> String?
     func interrupt(id: String) async throws
     func deleteSession(id: String) async throws
     /// The catalog as a heartbeat reports it: one entry per model a dispatch
@@ -641,6 +649,16 @@ public protocol OpenCodeControlling: Sendable {
     func replyForm(id: String, formID: String, answer: [String: OpenCodeAnswerValue]) async throws
     /// Answers a permission request with once, always or reject.
     func replyPermission(id: String, requestID: String, decision: String) async throws
+}
+
+public extension OpenCodeControlling {
+    func stopState(id: String) async throws -> OpenCodeStopState {
+        let value = try await snapshot(id: id)
+        return OpenCodeStopState(active: value.status == "active", inputId: value.messages.last(where: { $0.role == "user" })?.sourceId)
+    }
+    func initialInputId(id: String) async throws -> String? {
+        try await snapshot(id: id).messages.first(where: { $0.role == "user" })?.sourceId
+    }
 }
 
 public struct OpenCodeHTTPControl: OpenCodeControlling {
@@ -811,6 +829,23 @@ public struct OpenCodeHTTPControl: OpenCodeControlling {
         return OpenCodeSessionSnapshot("idle", messages, nil, execution: execution)
     }
 
+    public func stopState(id: String) async throws -> OpenCodeStopState {
+        let active = try await call("GET", "/api/session/active")
+        let running = (active["data"] as? [String: Any])?[id] != nil
+        if !running { return OpenCodeStopState(active: false, inputId: nil) }
+        // A bounded tail, independent of historical pagination and permission APIs.
+        // If it cannot identify the input, fail closed instead of stopping another turn.
+        let page = try await call("GET", "/api/session/\(encoded(id))/message?limit=100&order=desc")
+        let entries = page["data"] as? [[String:Any]] ?? []
+        let input = entries.first(where: { $0["type"] as? String == "user" })?["id"] as? String
+        return OpenCodeStopState(active: true, inputId: input)
+    }
+
+    public func initialInputId(id: String) async throws -> String? {
+        let page = try await call("GET", "/api/session/\(encoded(id))/message?limit=1&order=asc")
+        return (page["data"] as? [[String:Any]])?.first(where: { $0["type"] as? String == "user" })?["id"] as? String
+    }
+
     public func interrupt(id: String) async throws {
         _ = try await call("POST", "/api/session/\(encoded(id))/interrupt")
     }
@@ -888,6 +923,7 @@ public struct OpenCodeHTTPControl: OpenCodeControlling {
 public struct OpenCodeLauncher: AgentAdapter {
     public let kind = "opencode"
     private let control: any OpenCodeControlling
+    private let stopJournal: StopCommandJournal?
     private let availabilityCache = Locked<(at: Date, result: AgentDispatchAvailability)?>(nil)
     private let modelCache = ModelListCache()
     /// The catalog as last fetched, beyond the options alone: launching needs
@@ -906,7 +942,8 @@ public struct OpenCodeLauncher: AgentAdapter {
     /// weight.
     private static let deliveredPromptTTL: TimeInterval = 24 * 60 * 60
 
-    public init(control: any OpenCodeControlling = OpenCodeHTTPControl()) {
+    public init(control: any OpenCodeControlling = OpenCodeHTTPControl(), stopJournal: StopCommandJournal? = nil) {
+        self.stopJournal = stopJournal
         self.control = control
     }
 
@@ -1000,7 +1037,8 @@ public struct OpenCodeLauncher: AgentAdapter {
         // A timeout after this request is ambiguous: OpenCode may already have
         // admitted the prompt, so leave the session for the user to inspect.
         try await control.prompt(id: id, text: prompt)
-        return LaunchResult(sessionName: name, sessionUrl: nil, sessionRef: id, logPath: nil)
+        return LaunchResult(sessionName: name, sessionUrl: nil, sessionRef: id, logPath: nil,
+            initialTurnId: try? await control.initialInputId(id: id))
     }
 
     public func artifactMessages(sessionRef: String) async throws -> [AgentSessionMessage] {
@@ -1008,6 +1046,7 @@ public struct OpenCodeLauncher: AgentAdapter {
     }
 
     public func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
+        if session.command?.kind == "interrupt" { return await synchronizeInterrupt(session) }
         let snapshot = try await control.snapshot(id: session.sessionRef)
         var execution = snapshot.execution
         // A pending choice is not in the message log: OpenCode blocks on a form
@@ -1179,6 +1218,49 @@ public struct OpenCodeLauncher: AgentAdapter {
                 turnStartedAt: execution.turnStartedAt, lastOutputAt: execution.lastOutputAt).reportingSettings(
             mode: mode, model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
         )
+    }
+
+    private func synchronizeInterrupt(_ session: NodeAgentSession) async -> AgentSessionReport {
+        guard let command = session.command else { return AgentSessionReport(status: "unavailable", messages: []) }
+        do {
+            let before = try await control.stopState(id: session.sessionRef)
+            if !before.active {
+                return AgentSessionReport(status: "idle", stopConfirmed: true, messages: [], commandId: command.id, commandStatus: "delivered", turnActive: false)
+            }
+            let target: String?
+            if command.turnId == "startup" { target = try await control.initialInputId(id: session.sessionRef) }
+            else { target = command.turnId }
+            guard let target, target == before.inputId else {
+                throw LaunchError("原回合已变化或无法确认，不会中断后续回合。")
+            }
+            // Check the input again immediately before the session-scoped call.
+            let checked = try await control.stopState(id: session.sessionRef)
+            guard checked.active, checked.inputId == target else {
+                if !checked.active { return AgentSessionReport(status: "idle", stopConfirmed: true, messages: [], commandId: command.id, commandStatus: "delivered", turnActive: false) }
+                throw LaunchError("原回合已变化，不会中断后续回合。")
+            }
+            if deliveredPrompts.current[command.id] == nil {
+                // Reserve before the native effect; failures are never blindly replayed.
+                deliveredPrompts.withLock { $0[command.id] = Date() }
+                if try stopJournal?.reserve(sessionRef: session.sessionRef, commandId: command.id) ?? true {
+                    try await control.interrupt(id: session.sessionRef)
+                }
+            }
+            let after = try await control.stopState(id: session.sessionRef)
+            if !after.active {
+                return AgentSessionReport(status: "idle", stopConfirmed: true, messages: [], commandId: command.id, commandStatus: "delivered", turnActive: false)
+            }
+            return AgentSessionReport(status: "active", messages: [], commandId: command.id, commandStatus: "failed",
+                commandError: "停止尚未确认：来源仍在运行，请核实后重试。", turnActive: true)
+        } catch {
+            // A transport failure is an unconfirmed stop, never a message delivery slot.
+            // Re-observe once: the interrupt may have taken effect despite a lost response.
+            if let after = try? await control.stopState(id: session.sessionRef), !after.active {
+                return AgentSessionReport(status: "idle", stopConfirmed: true, messages: [], commandId: command.id, commandStatus: "delivered", turnActive: false)
+            }
+            return AgentSessionReport(status: "unavailable", messages: [], commandId: command.id, commandStatus: "failed",
+                commandError: "停止尚未确认：\(error.localizedDescription) 请在来源核实后重试。")
+        }
     }
 
     /// The mirror entries a delivered answer leaves behind (AND-227, AND-218):

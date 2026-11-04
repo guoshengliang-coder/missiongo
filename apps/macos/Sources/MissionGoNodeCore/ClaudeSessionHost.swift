@@ -150,15 +150,17 @@ public struct ClaudeHostConfiguration: Codable, Equatable, Sendable {
 public struct ClaudeHostCommandResult: Codable, Equatable, Sendable {
     public let status: String
     public let error: String?
+    public let attemptedAt: Date?
 
-    public init(status: String, error: String? = nil) {
+    public init(status: String, error: String? = nil, attemptedAt: Date? = nil) {
+        self.attemptedAt = attemptedAt
         self.status = status
         self.error = error
     }
 }
 
 public struct ClaudeHostState: Codable, Equatable, Sendable {
-    public var version: Int = 1
+    public var version: Int = 2
     public var status: String
     public var sessionRef: String
     public var hostPid: Int32?
@@ -176,6 +178,8 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
     /// written before this field decodes as true: unknown hosts keep the old,
     /// conservative behaviour.
     public var turnActive: Bool
+    public var initialTurnId: String? = nil
+    public var activeTurnId: String? = nil
     public var turnStartedAt: String?
     public var lastOutputAt: String?
     public var thinkingStartedAt: String?
@@ -246,7 +250,7 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case version, status, sessionRef, hostPid, externalChildPid, sessionUrl, launchReady, messages, activities, waitingForInput, commandResults, error
         case idleSince, lastProgressAt
-        case turnActive, turnStartedAt, lastOutputAt, thinkingStartedAt, thinkingTokens, thinkingDurationSeconds
+        case initialTurnId, activeTurnId, turnActive, turnStartedAt, lastOutputAt, thinkingStartedAt, thinkingTokens, thinkingDurationSeconds
         case model, effort, mode, settingsRevision, settingsError, acceptsSettings
     }
 
@@ -262,6 +266,8 @@ public struct ClaudeHostState: Codable, Equatable, Sendable {
         messages = try values.decodeIfPresent([AgentSessionMessage].self, forKey: .messages) ?? []
         activities = try values.decodeIfPresent([AgentSessionActivity].self, forKey: .activities) ?? []
         waitingForInput = try values.decodeIfPresent(Bool.self, forKey: .waitingForInput) ?? false
+        initialTurnId = try values.decodeIfPresent(String.self, forKey: .initialTurnId)
+        activeTurnId = try values.decodeIfPresent(String.self, forKey: .activeTurnId)
         turnActive = try values.decodeIfPresent(Bool.self, forKey: .turnActive) ?? true
         turnStartedAt = try values.decodeIfPresent(String.self, forKey: .turnStartedAt)
         lastOutputAt = try values.decodeIfPresent(String.self, forKey: .lastOutputAt)
@@ -293,8 +299,10 @@ public struct ClaudeHostCommand: Codable, Equatable, Sendable {
     public let permissionRequestId: String?
     public let webReply: Bool?
     public let expiresAt: Date?
+    public let turnId: String?
 
-    public init(id: String, kind: String, text: String, createdAt: String? = nil, settings: AgentSessionSettings? = nil, permissionRequestId: String? = nil, webReply: Bool? = nil, expiresAt: Date? = nil) {
+    public init(id: String, kind: String, text: String, createdAt: String? = nil, settings: AgentSessionSettings? = nil, permissionRequestId: String? = nil, webReply: Bool? = nil, expiresAt: Date? = nil, turnId: String? = nil) {
+        self.turnId = turnId
         self.id = id
         self.kind = kind
         self.text = text
@@ -337,6 +345,7 @@ public struct ClaudeStreamSnapshot: Sendable {
     /// replacing only the process identity and live Remote Control endpoint.
     public init(resuming state: ClaudeHostState, hostPid: Int32) {
         var resumed = state
+        resumed.version = 2
         resumed.hostPid = hostPid
         resumed.status = "suspended"
         resumed.sessionUrl = nil
@@ -371,6 +380,8 @@ public struct ClaudeStreamSnapshot: Sendable {
                   let text = Self.textContent(message["content"]), !text.isEmpty
             else { return }
             let sourceId = (value["uuid"] as? String) ?? UUID().uuidString
+            state.activeTurnId = sourceId
+            if state.initialTurnId == nil { state.initialTurnId = sourceId }
             upsert(AgentSessionMessage(
                 sourceId: sourceId,
                 turnId: sourceId,
@@ -475,7 +486,7 @@ public struct ClaudeStreamSnapshot: Sendable {
 
     public mutating func recordUserMessage(id: String, text: String, occurredAt: String? = nil) {
         upsert(AgentSessionMessage(
-            sourceId: id, turnId: id, role: "user", text: text, occurredAt: occurredAt
+            sourceId: id, turnId: state.activeTurnId ?? id, role: "user", text: text, occurredAt: occurredAt
         ))
         state.status = "active"
         state.idleSince = nil
@@ -549,6 +560,18 @@ public struct ClaudeStreamSnapshot: Sendable {
         noteProgress()
     }
 
+    public mutating func withdrawPermissions(_ ids: Set<String>) {
+        state.messages = state.messages.map { message in
+            guard ids.contains(String(message.sourceId.dropFirst("permission-".count))),
+                  message.sourceId.hasPrefix("permission-"), let questions = message.questions else { return message }
+            return AgentSessionMessage(sourceId: message.sourceId, turnId: message.turnId, role: message.role,
+                phase: message.phase, text: message.text, occurredAt: message.occurredAt,
+                questions: questions.map { q in AgentSessionQuestion(header: q.header, title: q.title, detail: q.detail,
+                    options: q.options, multiSelect: q.multiSelect, key: q.key, kind: q.kind, placeholder: q.placeholder,
+                    custom: q.custom, answered: q.answered, withdrawn: q.answered == nil ? true : q.withdrawn) })
+        }
+    }
+
     public mutating func setRemote(sessionUrl: String) {
         state.sessionUrl = sessionUrl
         if state.status == "suspended" { state.status = "idle" }
@@ -577,7 +600,8 @@ public struct ClaudeStreamSnapshot: Sendable {
     }
 
     public mutating func commandFinished(id: String, status: String, error: String? = nil) {
-        state.commandResults[id] = ClaudeHostCommandResult(status: status, error: error)
+        state.commandResults[id] = ClaudeHostCommandResult(status: status, error: error,
+            attemptedAt: status == "delivering" ? (state.commandResults[id]?.attemptedAt ?? Date()) : nil)
         if state.commandResults.count > 100 {
             for key in state.commandResults.keys.sorted().prefix(state.commandResults.count - 100) {
                 state.commandResults.removeValue(forKey: key)
@@ -678,6 +702,13 @@ public struct ClaudeStreamSnapshot: Sendable {
             state.messages = AgentSessionAnswerTrace.markingAnswered(state.messages)
         }
     }
+
+    public mutating func beginInitialTurn(id: String) {
+        state.initialTurnId = id
+        state.activeTurnId = id
+    }
+
+    public var currentTurnId: String? { state.activeTurnId ?? latestTurnId() }
 
     private func latestTurnId() -> String? {
         state.messages.reversed().compactMap(\.turnId).first

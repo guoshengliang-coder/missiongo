@@ -2225,6 +2225,20 @@ export class MissionGoDatabase {
           .run(202611040420,new Date().toISOString());
       });
     }
+    // AND-391: a stop has its own slot; an uncertain input cannot block control.
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611040500").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611040500").get()) return;
+        this.connection.exec(`ALTER TABLE agent_session_commands ADD COLUMN stop_confirmed INTEGER NOT NULL DEFAULT 0 CHECK(stop_confirmed IN (0,1));
+          DROP INDEX IF EXISTS idx_agent_session_one_queued_command;
+          CREATE UNIQUE INDEX idx_agent_session_one_queued_command ON agent_session_commands(session_id, kind)
+          WHERE status IN ('queued', 'delivering', 'delivery_unknown');
+          UPDATE agent_session_commands SET status='failed',error='停止尚未确认：旧节点未回报结果，请核实来源后重试。'
+          WHERE kind='interrupt' AND status='delivery_unknown';`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611040500, new Date().toISOString());
+      });
+    }
 
   }
 }

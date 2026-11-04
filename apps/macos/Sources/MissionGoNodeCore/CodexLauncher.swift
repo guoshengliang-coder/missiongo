@@ -448,6 +448,7 @@ public struct CodexLauncher: AgentAdapter {
     /// How long a dispatch waits for a daemon it just started.
     let daemonWait: TimeInterval
     let modelCache: ModelListCache
+    let stopJournal: StopCommandJournal?
     public init(
         environment: ShellEnvironment,
         serverUrl: String?,
@@ -456,8 +457,10 @@ public struct CodexLauncher: AgentAdapter {
         control: CodexControl = CodexAppServerControl(),
         resources: CodexResourceChecking? = nil,
         daemonWait: TimeInterval = 5,
-        modelCacheTTL: TimeInterval = 10 * 60
+        modelCacheTTL: TimeInterval = 10 * 60,
+        stopJournal: StopCommandJournal? = nil
     ) {
+        self.stopJournal = stopJournal
         self.environment = environment
         self.daemonWait = daemonWait
         self.modelCache = ModelListCache(ttl: modelCacheTTL)
@@ -589,7 +592,7 @@ public struct CodexLauncher: AgentAdapter {
             sessionName: sessionName,
             sessionUrl: CodexProtocol.threadLink(threadId),
             sessionRef: threadId,
-            logPath: nil
+            logPath: nil, initialTurnId: control.initialTurnId(threadId: threadId)
         )
     }
 
@@ -775,13 +778,13 @@ public struct CodexLauncher: AgentAdapter {
     /// Never require the complete history and never infer stop from an RPC ack.
     private func synchronizeInterrupt(_ session: NodeAgentSession) async -> AgentSessionReport {
         guard let command = session.command else { return AgentSessionReport(status: "unavailable", messages: []) }
-        guard let turnId = command.turnId, !turnId.isEmpty else {
+        guard let turnId = command.turnId, !turnId.isEmpty, turnId != "startup" else {
             return AgentSessionReport(status: "unavailable", messages: [], commandId: command.id,
                 commandStatus: "failed", commandError: "终止未发送：缺少原回合标识，请在来源客户端核实。")
         }
         let before = try? await control.readThreadStatus(socketPath: location.controlSocketPath, threadId: session.sessionRef)
         if before?.status == "idle" {
-            return AgentSessionReport(status: "idle", messages: before?.messages ?? [], commandId: command.id,
+            return AgentSessionReport(status: "idle", stopConfirmed: true, messages: before?.messages ?? [], commandId: command.id,
                 commandStatus: "delivered", turnActive: false)
         }
         // Even when observation failed, the explicit command authorizes only
@@ -789,8 +792,10 @@ public struct CodexLauncher: AgentAdapter {
         control.cancelApprovals(threadId: session.sessionRef, turnId: turnId)
         var interruptError: String?
         do {
-            try await control.interruptTurn(socketPath: location.controlSocketPath,
-                threadId: session.sessionRef, turnId: turnId)
+            if try stopJournal?.reserve(sessionRef: session.sessionRef, commandId: command.id) ?? true {
+                try await control.interruptTurn(socketPath: location.controlSocketPath,
+                    threadId: session.sessionRef, turnId: turnId)
+            }
         } catch {
             interruptError = CodexSessionFailure.redact(error.localizedDescription)
         }
@@ -803,7 +808,7 @@ public struct CodexLauncher: AgentAdapter {
             observationError = CodexSessionFailure.redact(error.localizedDescription)
         }
         if let after, after.status == "idle" {
-            return AgentSessionReport(status: "idle", messages: after.messages, commandId: command.id,
+            return AgentSessionReport(status: "idle", stopConfirmed: true, messages: after.messages, commandId: command.id,
                 commandStatus: "delivered", activityAt: after.activityAt, turnActive: false)
         }
         // Release the command queue without claiming the runtime stopped.

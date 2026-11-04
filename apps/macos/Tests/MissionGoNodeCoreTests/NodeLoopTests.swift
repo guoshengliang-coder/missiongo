@@ -3,6 +3,8 @@ import CryptoKit
 @testable import MissionGoNodeCore
 
 private final class FakeAPI: NodeAPI, @unchecked Sendable {
+    let startAllowed = Locked(true)
+    func permitDispatchStart(dispatchId: String) async throws -> Bool { startAllowed.current }
     let calls = Locked<[String]>([])
     let heartbeats = Locked<[[DetectedAgent]]>([])
     let reports = Locked<[(String, DispatchReport)]>([])
@@ -258,6 +260,16 @@ private let request = DispatchRequest(
 )
 
 final class NodeLoopTests: XCTestCase {
+    func testStopBeforeLaunchDoesNotInvokeAnyNativeAdapter() async {
+        let api = FakeAPI(claims: [])
+        api.startAllowed.withLock { $0 = false }
+        let adapter = FakeAdapter(outcome: .success(LaunchResult(sessionName: "must not launch", sessionUrl: nil, logPath: nil)))
+        let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "Fixture", log: { _ in })
+        let (report, _) = await loop.launchDispatch(request)
+        XCTAssertEqual(report.status, .cancelled)
+        XCTAssertTrue(adapter.jobs.current.isEmpty)
+    }
+
     func testFailedCodexStopIsReportedWithoutLeavingTheCommandQueued() async throws {
         let api = FakeAPI(claims: [])
         api.sessionList.withLock { $0 = [NodeAgentSession(id: "stopping", agentKind: "codex", sessionRef: "thread", status: "active",

@@ -38,6 +38,7 @@ export function openCodeMessages(entries: Wire[]): Message[] {
 }
 export class OpenCodeAdapter implements Adapter {
   private ref = "";
+  initialTurnId?: string;
   private path = "";
   constructor(private job: Dispatch, readonly api = new OpenCodeAPI()) {}
   async start(prompt: string): Promise<string> {
@@ -54,6 +55,8 @@ export class OpenCodeAdapter implements Adapter {
     try { await this.api.call("PATCH", this.path, { title }); }
     catch (error) { if (!(error instanceof OpenCodeHTTPError) || error.status !== 404) throw error; await this.api.call("POST", `${this.path}/rename`, { title }); }
     await this.prompt(prompt);
+    this.initialTurnId = (await this.api.call("GET", `${this.path}/message?limit=1&order=asc`)
+      .catch(() => ({} as Wire))).data?.find((entry: Wire) => entry.type === "user")?.id;
     return this.ref;
   }
   private async choices(): Promise<{ forms: Wire[]; permissions: Wire[] }> {
@@ -97,8 +100,28 @@ export class OpenCodeAdapter implements Adapter {
       turnActive: running, waitingForInput: choices.permissions.length + choices.forms.length > 0,
       ...(cursor ? { error: "OpenCode message pagination exceeded the 3000-message limit" } : {}) };
   }
+  private async stopState(): Promise<{ active: boolean; input?: string }> {
+    const active = (await this.api.call("GET", "/api/session/active")).data?.[this.ref] !== undefined;
+    if (!active) return { active: false };
+    const tail = await this.api.call("GET", `${this.path}/message?limit=100&order=desc`);
+    return { active: true, input: tail.data?.find((entry: Wire) => entry.type === "user")?.id };
+  }
+  async stop(command: Command): Promise<Snapshot> {
+    const target = command.turnId === "startup" ? this.initialTurnId : command.turnId;
+    const before = await this.stopState();
+    if (!before.active) return { status: "idle", messages: [], turnActive: false };
+    if (!target || target !== before.input) throw new Error("停止未发送：原回合已变化或无法确认");
+    const checked = await this.stopState();
+    if (!checked.active) return { status: "idle", messages: [], turnActive: false };
+    if (checked.input !== target) throw new Error("停止未发送：原回合已变化");
+    let failure: unknown;
+    try { await this.api.call("POST", `${this.path}/interrupt`); } catch (error) { failure = error; }
+    const after = await this.stopState();
+    if (!after.active) return { status: "idle", messages: [], turnActive: false };
+    throw new Error(`停止尚未确认：${failure instanceof Error ? failure.message : "来源仍在运行"}`);
+  }
   async deliver(command: Command): Promise<void> {
-    if (command.kind === "interrupt") { await this.api.call("POST", `${this.path}/interrupt`); return; }
+    if (command.kind === "interrupt") { await this.stop(command); return; }
     const choices = await this.choices();
     const permission = choices.permissions[0];
     if (permission) {

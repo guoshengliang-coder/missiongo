@@ -44,6 +44,8 @@ export function claudeAnswer(request: Wire, text: string): Wire {
 export class ClaudeAdapter implements Adapter {
   private process: JsonProcess;
   private ref = randomUUID();
+  initialTurnId?: string;
+  private activeTurnId?: string;
   private state: Snapshot = { status: "idle", messages: [], turnActive: false };
   private requests: Wire[] = [];
   private waits = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
@@ -83,13 +85,16 @@ export class ClaudeAdapter implements Adapter {
       this.requests = this.requests.filter((r) => r.requestId !== event.request_id); return;
     }
     if (event.type === "result") {
-      this.state.status = event.is_error ? "failed" : "idle"; this.state.turnActive = false;
+      this.state.status = event.is_error && event.terminal_reason !== "aborted_streaming" ? "failed" : "idle";
+      this.state.turnActive = false; this.state.waitingForInput = false; this.requests = [];
     }
     if (["assistant", "user"].includes(event.type)) {
       const message = event.message ?? {};
       const content: Wire[] = Array.isArray(message.content) ? message.content : [{ type: "text", text: message.content }];
       const text = content.filter((c) => c.type === "text" && typeof c.text === "string").map((c) => c.text).join("\n");
-      if (text.trim()) this.add({ sourceId: event.uuid ?? randomUUID(), role: event.type === "user" ? "user" : "agent", text });
+      if (event.type === "user" && event.uuid) this.activeTurnId = event.uuid;
+      if (text.trim()) this.add({ sourceId: event.uuid ?? randomUUID(), ...(this.activeTurnId ? { turnId: this.activeTurnId } : {}),
+        role: event.type === "user" ? "user" : "agent", text });
       if (event.type === "user" && event.uuid) this.received(event.uuid);
       if (event.type === "assistant") { this.state.status = "active"; this.state.turnActive = true; }
     }
@@ -104,11 +109,13 @@ export class ClaudeAdapter implements Adapter {
     this.process.write({ type: "control_request", request_id: requestId, request: { subtype: "initialize" } });
     await ready;
     const native = this.wait("native-id", 60_000);
-    this.send(randomUUID(), prompt);
+    this.initialTurnId = randomUUID();
+    this.send(this.initialTurnId, prompt);
     await native;
     return this.ref;
   }
   private send(uuid: string, text: string): void {
+    this.activeTurnId = uuid;
     this.process.write({ type: "user", uuid, session_id: "", parent_tool_use_id: null,
       message: { role: "user", content: [{ type: "text", text }] } });
     this.state.status = "active"; this.state.turnActive = true;
@@ -123,15 +130,27 @@ export class ClaudeAdapter implements Adapter {
       }));
       else questions = [{ title: `Claude Code 请求使用 ${request.tool_name}`, key: `授权请求 ${request.requestId}`,
         detail: JSON.stringify(request.input ?? {}).slice(0, 4000), options: JSON.stringify(request.input ?? {}).length > 4000 ? ["拒绝"] : ["批准", "拒绝"] }];
-      messages.push({ sourceId, role: "agent", text: request.tool_name === "ExitPlanMode" ? "计划已准备好，请明确批准或提出修改。" : `Claude Code 请求确认：${request.tool_name}`, questions });
+      messages.push({ sourceId, ...(this.activeTurnId ? { turnId: this.activeTurnId } : {}), role: "agent", text: request.tool_name === "ExitPlanMode" ? "计划已准备好，请明确批准或提出修改。" : `Claude Code 请求确认：${request.tool_name}`, questions });
     }
     return { ...this.state, waitingForInput: this.requests.length > 0, messages };
   }
-  async deliver(command: Command): Promise<void> {
-    if (command.kind === "interrupt") {
-      const requestId = randomUUID(); const ack = this.wait(requestId);
-      this.process.write({ type: "control_request", request_id: requestId, request: { subtype: "interrupt" } }); await ack; return;
+  async stop(command: Command): Promise<Snapshot> {
+    const target = command.turnId === "startup" ? this.initialTurnId : command.turnId;
+    if (!this.state.turnActive && !this.requests.length && this.state.status === "idle") return this.snapshot();
+    if (!target || target !== this.activeTurnId) throw new Error("停止未发送：原回合已变化或无法确认");
+    const requestId = randomUUID(); const ack = this.wait(requestId);
+    this.process.write({ type: "control_request", request_id: requestId, request: { subtype: "interrupt" } });
+    await ack;
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      if (!this.state.turnActive && !this.requests.length && this.state.status === "idle") return this.snapshot();
+      if (this.activeTurnId !== target) break;
+      await new Promise(resolve => setTimeout(resolve, 50));
     }
+    throw new Error("停止尚未确认：来源未报告原回合结束");
+  }
+  async deliver(command: Command): Promise<void> {
+    if (command.kind === "interrupt") { await this.stop(command); return; }
     const request = this.requests[0];
     if (request) {
       const response = claudeAnswer(request, command.text);

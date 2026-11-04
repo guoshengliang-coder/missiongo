@@ -14,6 +14,7 @@ public protocol NodeAPI: Sendable {
     func permitManaged(id: String, generation: Int) async throws -> ManagedExecutionPermit
     func reportManaged(id: String, observation: ManagedExecutionObservation) async throws -> ManagedObservationReceipt
     func heartbeat(agents: [DetectedAgent], repoCandidates: [RepoCandidate]) async throws -> HeartbeatReply
+    func permitDispatchStart(dispatchId: String) async throws -> Bool
     func claimNext(waitMs: Int, availableAgentKinds: [String]?) async throws -> DispatchRequest?
     func reportResult(dispatchId: String, report: DispatchReport) async throws
     func listAgentSessions() async throws -> [NodeAgentSession]
@@ -26,6 +27,7 @@ public protocol NodeAPI: Sendable {
 }
 
 public extension NodeAPI {
+    func permitDispatchStart(dispatchId: String) async throws -> Bool { true }
     func artifactJobs() async throws -> [AgentArtifactJob] { [] }
     func reportArtifact(id: String, result: AgentArtifactResult) async throws {}
     func statusCheckJournalScope() throws -> String? { nil }
@@ -1073,6 +1075,9 @@ public final class NodeLoop: @unchecked Sendable {
         let choice = [request.model, request.effort].compactMap { $0 }.joined(separator: "/")
         log("派单 \(request.dispatchId)：\(request.itemKeys.joined(separator: "、"))（\(request.agentKind)/\(request.mode)\(choice.isEmpty ? "" : "/\(choice)")）于 \(request.repoPath)")
         do {
+            guard try await api.permitDispatchStart(dispatchId: request.dispatchId) else {
+                return (DispatchReport(status: .cancelled, error: "已在启动前停止"), nil)
+            }
             let launched = try await adapter.launch(DispatchJob(
                 dispatchId: request.dispatchId, itemKeys: request.itemKeys,
                 repoPath: request.repoPath, mode: request.mode,
@@ -1092,7 +1097,7 @@ public final class NodeLoop: @unchecked Sendable {
                     status: .launched,
                     sessionName: launched.sessionName,
                     sessionUrl: url,
-                    sessionRef: launched.sessionRef
+                    sessionRef: launched.sessionRef, initialTurnId: launched.initialTurnId
                 ), launched.logPath)
             }
             // A Claude Code session with a custom API endpoint has no
@@ -1102,7 +1107,7 @@ public final class NodeLoop: @unchecked Sendable {
             return (DispatchReport(
                 status: .launched,
                 sessionName: launched.sessionName,
-                sessionRef: launched.sessionRef
+                sessionRef: launched.sessionRef, initialTurnId: launched.initialTurnId
             ), launched.logPath)
         } catch {
             let reason = error.localizedDescription
@@ -1121,6 +1126,7 @@ public final class NodeLoop: @unchecked Sendable {
 
     /// True once the server has the result. Rethrows only a revoked credential.
     private func reportWithRetry(_ dispatchId: String, _ report: DispatchReport, stop: StopSignal) async throws -> (reported: Bool, error: String?) {
+        if report.status == .cancelled { return (true, nil) }
         var lastError: String?
         for attempt in 1...max(1, timing.resultReportAttempts) {
             do {

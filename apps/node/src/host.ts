@@ -118,6 +118,7 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
             } catch (error) { state.snapshot.sourceArchiveError = safeError(error); }
           }
           const command = session.command;
+          let stopSnapshot: Snapshot | undefined;
           if (command && ["queued", "delivering"].includes(command.status)) {
             const key = id(command.id);
             if (!state.commands[key]) {
@@ -127,15 +128,25 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
               state.commands[key] = { status: "delivering" }; persist();
               try {
                 if (command.attachments?.length) throw new Error("Attachments are not enabled on this node");
-                await adapter.deliver(command); state.commands[key] = { status: "delivered" };
-              } catch (error) { state.commands[key] = { status: "delivery_unknown", error: safeError(error) }; }
+                if (command.kind === "interrupt") stopSnapshot = await adapter.stop(command);
+                else await adapter.deliver(command);
+                if (command.kind === "interrupt" && stopSnapshot) stopSnapshot.stopConfirmed = true;
+                state.commands[key] = { status: "delivered", ...(stopSnapshot?.stopConfirmed ? { stopConfirmed: true } : {}) };
+              } catch (error) { state.commands[key] = { status: command.kind === "interrupt" ? "failed" : "delivery_unknown", error: safeError(error) }; }
               persist();
             }
             const outcome = state.commands[key]!;
             state.snapshot.commandId = key; state.snapshot.commandStatus = outcome.status;
+            if (outcome.stopConfirmed) state.snapshot.stopConfirmed = true;
+            else delete state.snapshot.stopConfirmed;
             if (outcome.error) state.snapshot.commandError = outcome.error; else delete state.snapshot.commandError;
           }
-          const snapshot = boundedSnapshot(await adapter.snapshot());
+          let snapshot: Snapshot;
+          try { snapshot = boundedSnapshot(stopSnapshot ?? await adapter.snapshot()); }
+          catch (error) {
+            if (command?.kind !== "interrupt") throw error;
+            snapshot = { status: "unavailable", messages: [], error: safeError(error) };
+          }
           if (!snapshot.error) delete state.snapshot.error;
           if (!snapshot.approval) delete state.snapshot.approval;
           state.snapshot = { ...state.snapshot, ...snapshot }; persist();
@@ -158,6 +169,7 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
       adapter = new ClaudeAdapter(job, launch.executable, launch.env);
     } else adapter = job.agentKind === "codex" ? new CodexAdapter(job, executable, localSkill) : new OpenCodeAdapter(job);
     state.sessionRef = await adapter.start(launchPrompt(job));
+    if (adapter.initialTurnId) state.initialTurnId = adapter.initialTurnId;
     state.phase = "launched"; state.snapshot = boundedSnapshot(await adapter.snapshot()); launchFinished = true; persist();
   } catch (error) {
     await adapter?.close().catch(() => {});

@@ -136,8 +136,10 @@ public struct LaunchResult: Equatable, Sendable {
     /// Absent for an agent whose session is not a child process of this app
     /// (Codex runs its threads inside the ChatGPT app).
     public let logPath: String?
+    public let initialTurnId: String?
 
-    public init(sessionName: String, sessionUrl: String?, sessionRef: String? = nil, logPath: String?) {
+    public init(sessionName: String, sessionUrl: String?, sessionRef: String? = nil, logPath: String?, initialTurnId: String? = nil) {
+        self.initialTurnId = initialTurnId
         self.sessionName = sessionName
         self.sessionUrl = sessionUrl
         self.sessionRef = sessionRef
@@ -535,7 +537,7 @@ public struct SessionLauncher: AgentAdapter {
                         sessionName: sessionName,
                         sessionUrl: state.sessionUrl,
                         sessionRef: sessionRef,
-                        logPath: logPath
+                        logPath: logPath, initialTurnId: state.initialTurnId
                     )
                 }
             }
@@ -550,7 +552,7 @@ public struct SessionLauncher: AgentAdapter {
         // Check once more at the deadline before stopping a host that may have
         // accepted the prompt between the last poll and this branch.
         if let state = try? ClaudeHostFiles.readState(statePath), state.launchReady, process.isRunning {
-            return LaunchResult(sessionName: sessionName, sessionUrl: state.sessionUrl, sessionRef: sessionRef, logPath: logPath)
+            return LaunchResult(sessionName: sessionName, sessionUrl: state.sessionUrl, sessionRef: sessionRef, logPath: logPath, initialTurnId: state.initialTurnId)
         }
         if process.isRunning { ClaudeHostProcess.terminateGroup(process.processIdentifier) }
         throw HostedLaunchError(message:
@@ -953,8 +955,14 @@ public struct SessionLauncher: AgentAdapter {
             )
         }
         if let result = state.commandResults[command.id] {
+            if command.kind == "interrupt", result.status == "delivering",
+               result.attemptedAt.map({ Date().timeIntervalSince($0) >= 35 }) ?? true {
+                return AgentSessionReport(status: state.status, messages: state.messages, activities: state.activities,
+                    commandId: command.id, commandStatus: "failed",
+                    commandError: "停止尚未确认：宿主未回报原回合结束，不会自动重放。", sessionUrl: state.sessionUrl)
+            }
             return AgentSessionReport(
-                status: state.status,
+                status: state.status, stopConfirmed: state.version >= 2 && command.kind == "interrupt" && result.status == "delivered" && !state.turnActive && !state.waitingForInput ? true : nil,
                 messages: state.messages,
                 activities: state.activities,
                 error: state.error,
@@ -965,9 +973,9 @@ public struct SessionLauncher: AgentAdapter {
                 activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt)
             )
         }
-        if command.kind == "interrupt", !["active", "stalled"].contains(state.status) {
+        if command.kind == "interrupt", !state.turnActive && !state.waitingForInput {
             return AgentSessionReport(
-                status: state.status,
+                status: state.status, stopConfirmed: state.version >= 2 ? true : nil,
                 messages: state.messages,
                 activities: state.activities,
                 error: state.error,
@@ -1016,7 +1024,8 @@ public struct SessionLauncher: AgentAdapter {
             try ClaudeHostFiles.write(
                 ClaudeHostCommand(
                     id: command.id, kind: command.kind ?? "message", text: command.promptText,
-                    createdAt: command.createdAt.isEmpty ? nil : command.createdAt
+                    createdAt: command.createdAt.isEmpty ? nil : command.createdAt,
+                    turnId: command.turnId
                 ),
                 to: path
             )

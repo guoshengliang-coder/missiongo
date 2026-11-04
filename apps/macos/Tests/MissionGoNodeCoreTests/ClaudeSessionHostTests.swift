@@ -2,6 +2,14 @@ import XCTest
 @testable import MissionGoNodeCore
 
 final class ClaudeStreamSnapshotTests: XCTestCase {
+    func testPermissionAnswerDoesNotReplaceTheNativeTurnIdentity() {
+        var snapshot = ClaudeStreamSnapshot(sessionRef: "native")
+        snapshot.beginInitialTurn(id: "first-turn")
+        snapshot.recordUserMessage(id: "permission-answer", text: "批准")
+        XCTAssertEqual(snapshot.currentTurnId, "first-turn")
+        XCTAssertEqual(snapshot.state.messages.last?.turnId, "first-turn")
+    }
+
     func testGatewayMessageIdReuseDoesNotMoveNewRepliesIntoOldBubbles() {
         var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
         func frame(_ uuid: String, _ text: String, _ timestamp: String) -> [String: Any] {
@@ -658,6 +666,37 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
 }
 
 final class ClaudeSessionSynchronizationTests: XCTestCase {
+    func testStopWaitingForPermissionIsQueuedWithItsExactNativeTurn() async throws {
+        let (launcher, root, ref) = try fixture(status: "idle")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        var state = ClaudeHostState(status: "idle", sessionRef: ref, waitingForInput: true)
+        state.turnActive = true
+        try ClaudeHostFiles.write(state, to: ClaudeHostStore.statePath(root: root, sessionRef: ref))
+        let session = NodeAgentSession(id: "s", agentKind: "claude_code", sessionRef: ref, status: "idle",
+            command: AgentSessionCommand(id: "stop-wait", kind: "interrupt", text: "stop", turnId: "exact-turn"))
+        let report = try await launcher.synchronize(session)
+        XCTAssertNil(report.commandStatus)
+        let data = try Data(contentsOf: URL(fileURLWithPath: ClaudeHostStore.commandPath(root: root, sessionRef: ref, commandId: "stop-wait")))
+        XCTAssertEqual(try JSONDecoder().decode(ClaudeHostCommand.self, from: data).turnId, "exact-turn")
+    }
+    func testReservedStopIsNotRecreatedAndExpiredReservationFailsWithoutReplay() async throws {
+        let (launcher, root, ref) = try fixture(status: "active")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let path = ClaudeHostStore.statePath(root: root, sessionRef: ref)
+        var state = ClaudeHostState(status: "active", sessionRef: ref,
+            commandResults: ["reserved": .init(status: "delivering", attemptedAt: Date())])
+        try ClaudeHostFiles.write(state, to: path)
+        let session = NodeAgentSession(id: "s", agentKind: "claude_code", sessionRef: ref, status: "active",
+            command: AgentSessionCommand(id: "reserved", kind: "interrupt", text: "stop", turnId: "turn"))
+        let report = try await launcher.synchronize(session)
+        XCTAssertEqual(report.commandStatus, "delivering")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: ClaudeHostStore.commandPath(root: root, sessionRef: ref, commandId: "reserved")))
+        state.commandResults["reserved"] = .init(status: "delivering", attemptedAt: Date(timeIntervalSinceNow: -40))
+        try ClaudeHostFiles.write(state, to: path)
+        let expired = try await launcher.synchronize(session)
+        XCTAssertEqual(expired.commandStatus, "failed")
+    }
+
     private func fixture(status: String = "idle") throws -> (SessionLauncher, String, String) {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("missiongo-claude-sync-\(UUID().uuidString)").path
@@ -717,7 +756,7 @@ final class ClaudeSessionSynchronizationTests: XCTestCase {
         XCTAssertEqual(acknowledged.status, "active")
     }
 
-    func testQueuesAnInterruptOnlyWhileClaudeIsActive() async throws {
+    func testStopIsAcknowledgedOnlyAfterTheNativeTurnEnds() async throws {
         let (launcher, root, sessionRef) = try fixture(status: "active")
         defer { try? FileManager.default.removeItem(atPath: root) }
         let interrupt = NodeAgentSession(
@@ -733,7 +772,7 @@ final class ClaudeSessionSynchronizationTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: path))
 
         try ClaudeHostFiles.write(
-            ClaudeHostState(status: "idle", sessionRef: sessionRef),
+            ClaudeHostState(status: "idle", sessionRef: sessionRef, turnActive: false),
             to: ClaudeHostStore.statePath(root: root, sessionRef: sessionRef)
         )
         let acknowledged = try await launcher.synchronize(interrupt)

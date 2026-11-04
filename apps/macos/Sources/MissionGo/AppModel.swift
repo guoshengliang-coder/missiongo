@@ -487,7 +487,7 @@ final class AppModel: ObservableObject {
         let make: @Sendable (ShellEnvironment, String?) -> any AgentAdapter = { environment, cwd in
             let runner = Commands.runner(environment: environment, directory: cwd ?? Paths.homeDirectory())
             if agent == .claudeCode { return SessionLauncher(environment: environment, run: runner) }
-            return CodexLauncher(environment: environment, serverUrl: serverUrl, run: runner)
+            return CodexLauncher(environment: environment, serverUrl: serverUrl, run: runner, stopJournal: .application)
         }
         return RefreshingAgentAdapter(base: make(initial, nil), sessions: sessionAdapters[agent] ?? .init()) { cwd in
             guard let attempt = access.state(for: agent)?.attempt else { throw LaunchError("客户端集成已停用。") }
@@ -544,7 +544,7 @@ final class AppModel: ObservableObject {
             adapters: [
                 ConsentedAgentAdapter(agent: .claudeCode, base: refreshingAdapter(.claudeCode, base: environment, serverUrl: credential.serverUrl), access: integrations),
                 ConsentedAgentAdapter(agent: .codex, base: refreshingAdapter(.codex, base: environment, serverUrl: credential.serverUrl), access: integrations),
-                ConsentedAgentAdapter(agent: .openCode, base: OpenCodeLauncher(), access: integrations),
+                ConsentedAgentAdapter(agent: .openCode, base: OpenCodeLauncher(stopJournal: .application), access: integrations),
             ],
             fallbackNodeName: credential.name,
             detectRepoCandidates: { snapshot.candidates },

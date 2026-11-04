@@ -142,6 +142,7 @@ private func run(configPath: String) throws {
     var promptSent = false
     var promptId: String?
     var pendingControlCommands: [String: String] = [:]
+    var stopping: [String: (target: String, deadline: Date)] = [:]
     var settingsChange: ClaudeSettingsChange?
     var permissions = ClaudePermissionQueue()
     var shouldContinue = true
@@ -182,6 +183,7 @@ private func run(configPath: String) throws {
             snapshot.confirmLaunch()
         } else {
             let id = UUID().uuidString
+            snapshot.beginInitialTurn(id: id)
             try write(userMessage(id: id, text: config.prompt), to: writer)
             promptId = id
             promptSent = true
@@ -286,21 +288,22 @@ private func run(configPath: String) throws {
                 return
             }
             if let commandId = pendingControlCommands.removeValue(forKey: requestId) {
-                if response["subtype"] as? String == "success" {
-                    snapshot.commandFinished(id: commandId, status: "delivered")
-                    snapshot.markIdle()
-                } else {
-                    snapshot.commandFinished(
-                        id: commandId,
-                        status: "failed",
-                        error: (response["error"] as? String) ?? "Claude Code 拒绝了终止请求。"
-                    )
+                if response["subtype"] as? String != "success" {
+                    stopping.removeValue(forKey: commandId)
+                    snapshot.commandFinished(id: commandId, status: "failed",
+                        error: (response["error"] as? String) ?? "Claude Code 拒绝了停止请求。")
                 }
+                // An acknowledgement is not a terminal result. The loop below
+                // waits for the source's turn/result, retaining background work.
                 persist()
             }
             return
         }
 
+        if event["type"] as? String == "result" {
+            snapshot.withdrawPermissions(Set(permissions.pending.map(\.requestId)))
+            permissions = ClaudePermissionQueue()
+        }
         snapshot.consume(event)
         if promptSent, nativeIdentityConfirmed,
            (event["type"] as? String == "system" && event["subtype"] as? String == "init"
@@ -417,6 +420,24 @@ private func run(configPath: String) throws {
                 continue
             }
             if command.kind == "interrupt" {
+                let target = command.turnId == "startup" ? snapshot.state.initialTurnId : command.turnId
+                guard let target, target == snapshot.currentTurnId else {
+                    snapshot.commandFinished(id: command.id, status: "failed", error: "停止未发送：原回合已变化或无法确认，不会中断后续回合。")
+                    persist()
+                    try? FileManager.default.removeItem(atPath: path)
+                    continue
+                }
+                if !snapshot.state.turnActive && !snapshot.state.waitingForInput {
+                    snapshot.commandFinished(id: command.id, status: "delivered")
+                    persist()
+                    try? FileManager.default.removeItem(atPath: path)
+                    continue
+                }
+                // Persist the reservation before writing to the CLI. Re-polls
+                // and a restarted node can never recreate/replay this command.
+                snapshot.commandFinished(id: command.id, status: "delivering")
+                stopping[command.id] = (target, Date().addingTimeInterval(30))
+                persist()
                 let requestId = UUID().uuidString
                 pendingControlCommands[requestId] = command.id
                 try write(controlRequest(id: requestId, request: ["subtype": "interrupt"]), to: writer)
@@ -476,6 +497,18 @@ private func run(configPath: String) throws {
         }
         try handleCommands()
         let now = Date()
+        for (id, stop) in stopping {
+            if !snapshot.state.turnActive && !snapshot.state.waitingForInput {
+                snapshot.commandFinished(id: id, status: "delivered")
+                stopping.removeValue(forKey: id)
+                persist()
+            } else if snapshot.currentTurnId != stop.target || now >= stop.deadline {
+                snapshot.commandFinished(id: id, status: "failed", error: "停止尚未确认：来源未报告原回合结束，请核实后重试。")
+                stopping.removeValue(forKey: id)
+                pendingControlCommands = pendingControlCommands.filter { $0.value != id }
+                persist()
+            }
+        }
         snapshot.ensureIdleClock(at: now)
         if !external && ClaudeRuntimePolicy.shouldSuspend(state: snapshot.state, now: now, timeout: config.idleTimeoutSeconds) {
             snapshot.markSuspended()

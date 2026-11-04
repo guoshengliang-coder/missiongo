@@ -16,6 +16,7 @@ import Foundation
 public protocol CodexControl: Sendable {
     /// Creates one named thread, sends its first turn and disconnects.
     /// Returns the thread id.
+    func initialTurnId(threadId: String) -> String?
     func startThread(_ request: CodexThreadRequest) async throws -> String
     func startManagedThread(_ request: CodexThreadRequest) async throws -> ManagedRuntimeReceipt
     func readThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
@@ -49,6 +50,7 @@ public protocol CodexControl: Sendable {
 }
 
 public extension CodexControl {
+    func initialTurnId(threadId: String) -> String? { nil }
     func readArtifactThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
         try await readThread(socketPath: socketPath, threadId: threadId)
     }
@@ -767,13 +769,18 @@ public struct CodexAppServerControl: CodexControl {
         approvalMonitor = CodexApprovalMonitor()
     }
 
+    private let initialTurns = Locked<[String:String]>([:])
+    public func initialTurnId(threadId: String) -> String? { initialTurns.current[threadId] }
+
     public func startThread(_ request: CodexThreadRequest) async throws -> String {
         let timeout = self.timeout
-        let threadId: String = try await withCheckedThrowingContinuation { continuation in
+        let started: (String, String?) = try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async {
                 continuation.resume(with: Result { try CodexAppServerControl.startThreadSync(request, timeout: timeout) })
             }
         }
+        let (threadId, turnId) = started
+        if let turnId { initialTurns.withLock { $0[threadId] = turnId } }
         approvalMonitor.watch(socketPath: request.socketPath, threadId: threadId)
         return threadId
     }
@@ -1175,7 +1182,7 @@ public struct CodexAppServerControl: CodexControl {
         return receipt
     }
 
-    static func startThreadSync(_ request: CodexThreadRequest, timeout: TimeInterval) throws -> String {
+    static func startThreadSync(_ request: CodexThreadRequest, timeout: TimeInterval) throws -> (String, String?) {
         let connection = try JSONRPCWebSocket(socketPath: request.socketPath, timeout: timeout)
         defer { connection.close() }
 
@@ -1191,6 +1198,7 @@ public struct CodexAppServerControl: CodexControl {
         guard let threadId = CodexProtocol.threadId(fromThreadStart: started) else {
             throw CodexControlError.invalidResponse(method: "thread/start")
         }
+        var initialTurnId: String?
         do {
             try CodexProtocol.validateStarted(started, request: request)
             // Ask the app-server for the thread-scoped MCP state. Older app-
@@ -1205,11 +1213,12 @@ public struct CodexAppServerControl: CodexControl {
             // A thread that could not be named is still a working thread; failing the
             // dispatch here would leave it running with nobody told about it.
             _ = try? connection.call("thread/name/set", CodexProtocol.threadNameParams(threadId: threadId, name: request.name))
-            _ = try connection.call("turn/start", CodexProtocol.turnStartParams(
+            let firstTurn = try connection.call("turn/start", CodexProtocol.turnStartParams(
                 threadId: threadId,
                 prompt: request.prompt,
                 overrides: CodexTurnOverrides(model: request.model, effort: request.effort)
             ))
+            initialTurnId = (firstTurn["turn"] as? [String:Any])?["id"] as? String
         } catch {
             let diagnostic = missionGoDiagnostic(connection: connection, threadId: threadId, fallback: error)
             // Nothing reached turn/start successfully. Archive the empty shell
@@ -1220,7 +1229,7 @@ public struct CodexAppServerControl: CodexControl {
             throw error
         }
         _ = try? connection.call("thread/unsubscribe", ["threadId": threadId])
-        return threadId
+        return (threadId, initialTurnId)
     }
 
     static func missionGoDiagnostic(

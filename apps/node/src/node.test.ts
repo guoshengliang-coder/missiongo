@@ -148,3 +148,58 @@ describe("OpenCode shared-service control", () => {
     expect(calls.some((c) => c.path.includes("permission/permit-1/reply") && JSON.stringify(c.body).includes("always"))).toBe(false);
   });
 });
+
+describe("AND-391 scoped native stops", () => {
+  it("Codex stops the command's exact turn without reading full history and confirms idle", async () => {
+    const adapter = new CodexAdapter(job(temporary()), fixture); adapters.push(adapter);
+    await adapter.start("fixture only");
+    const native = adapter as unknown as { rpc: { call(method: string, params: Wire): Promise<Wire> } };
+    let stopped = false; const calls: { method: string; params: Wire }[] = [];
+    vi.spyOn(native.rpc, "call").mockImplementation(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "turn/interrupt") { expect(params.turnId).toBe("exact-old-turn"); stopped = true; return {}; }
+      if (method === "thread/read") { expect(params.includeTurns).toBe(false); return { thread: { status: { type: stopped ? "idle" : "active" } } }; }
+      throw new Error("Unexpected native method");
+    });
+    expect(await adapter.stop({ id: "stop-exact", kind: "interrupt", text: "stop", status: "delivering", turnId: "exact-old-turn" })).toMatchObject({ status: "idle", turnActive: false });
+    expect(calls.filter(c => c.method === "turn/interrupt")).toHaveLength(1);
+  });
+  it("Claude waits beyond ACK for the terminal result and clears the old permission", async () => {
+    const adapter = new ClaudeAdapter(job(temporary(), "claude_code"), fixture); adapters.push(adapter);
+    await adapter.start("fixture only");
+    const native = adapter as unknown as { activeTurnId: string; state: { status: string; turnActive: boolean }; requests: Wire[];
+      event(value: Wire): void; process: { write(value: Wire): void } };
+    native.activeTurnId = "native-input"; native.state.status = "active"; native.state.turnActive = true;
+    native.requests = [{ requestId: "old-permission", tool_name: "Bash", input: {} }];
+    vi.spyOn(native.process, "write").mockImplementation(value => {
+      expect(value.request.subtype).toBe("interrupt");
+      queueMicrotask(() => native.event({ type: "control_response", response: { subtype: "success", request_id: value.request_id } }));
+      setTimeout(() => native.event({ type: "result", terminal_reason: "aborted_streaming" }), 100);
+    });
+    const outcome = await adapter.stop({ id: "stop-native", kind: "interrupt", text: "stop", status: "delivering", turnId: "native-input" });
+    expect(outcome).toMatchObject({ status: "idle", turnActive: false, waitingForInput: false });
+    expect(native.requests).toEqual([]);
+  });
+  it("OpenCode confirms a lost interrupt ACK and refuses to retarget a later input", async () => {
+    let active = true; let inputId = "first-input"; let interrupts = 0;
+    class StopAPI extends OpenCodeAPI {
+      override async call(method: string, path: string): Promise<Wire> {
+        if (path === "/api/info") return { version: "2.1.0" };
+        if (path.startsWith("/api/mcp?")) return { data: [{ name: "missiongo", status: { status: "connected" } }] };
+        if (path === "/api/session" && method === "POST") return { data: { id: "scoped-session" } };
+        if (path === "/api/session/active") return { data: active ? { "scoped-session": {} } : {} };
+        if (path.includes("/message?")) return { data: [{ id: inputId, type: "user", text: "fixture" }] };
+        if (path.endsWith("/interrupt")) { interrupts++; active = false; throw new Error("lost ACK"); }
+        if (path.includes("/permission") || path.includes("/form")) throw new Error("permission endpoint unavailable");
+        return {};
+      }
+    }
+    const adapter = new OpenCodeAdapter(job(temporary(), "opencode"), new StopAPI()); adapters.push(adapter);
+    await adapter.start("fixture only");
+    const command = { id: "stop", kind: "interrupt", text: "stop", status: "delivering", turnId: "first-input" };
+    expect(await adapter.stop(command)).toMatchObject({ status: "idle", turnActive: false });
+    active = true; inputId = "new-input";
+    await expect(adapter.stop(command)).rejects.toThrow("原回合已变化");
+    expect(interrupts).toBe(1);
+  });
+});

@@ -83,7 +83,7 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
       const state = readPrivate<HostState>(join(directory, "state.json"));
       if (!state || state.phase === "starting" || readPrivate(join(directory, "reported.json"))) continue;
       await api.call("POST", `/api/v1/node/dispatches/${encodeURIComponent(key)}/result`, state.phase === "launched"
-        ? { status: "launched", sessionRef: state.sessionRef, sessionName: state.sessionName }
+        ? { status: "launched", sessionRef: state.sessionRef, sessionName: state.sessionName, initialTurnId: state.initialTurnId }
         : { status: "failed", error: state.launchError ?? "Host failed", failureCode: "unknown", failureStage: "host_start" });
       savePrivate(join(directory, "reported.json"), { reportedAt: new Date().toISOString() });
     }
@@ -108,7 +108,8 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
         }
         snapshot = await hostCall(root, session.dispatchId, session);
       } catch (error) { snapshot = { status: "unavailable", messages: [], error: safeError(error),
-        ...(session.command ? { commandId: session.command.id, commandStatus: "delivery_unknown" } : {}) }; }
+        ...(session.command ? { commandId: session.command.id, commandStatus: session.command.kind === "interrupt" ? "failed" : "delivery_unknown",
+          commandError: session.command.kind === "interrupt" ? "停止尚未确认：节点未取得执行结果，请核实来源后重试。" : safeError(error) } : {}) }; }
       await api.call("POST", `/api/v1/node/agent-sessions/${encodeURIComponent(session.id)}/snapshot`, snapshot);
     }
   }
@@ -133,6 +134,8 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
         if (!job) return;
         try {
           if (!repos.some((r) => r.repoPath === job.repoPath) || !loadConfig(root).agents[job.agentKind]) throw new Error("Dispatch repository or Agent is not enabled on this node");
+          const permit = await api.call("POST", `/api/v1/node/dispatches/${encodeURIComponent(job.dispatchId)}/permit-start`, {});
+          if (!permit.allowed) return;
           await launch(root, job, entry); await recoverResults();
         } catch (error) {
           await api.call("POST", `/api/v1/node/dispatches/${encodeURIComponent(job.dispatchId)}/result`, {

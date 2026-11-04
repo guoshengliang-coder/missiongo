@@ -3004,19 +3004,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.post("/api/v1/dispatches/:dispatchId/stop", async (request, reply) => {
     const { dispatchId } = request.params as { dispatchId: string };
-    const dispatch = authorizedDispatch(request, dispatchId, true);
-    if (dispatch.status === "queued") {
-      return { dispatch: dispatch.productId ? freeSessionStore.stop(requireAccountId(request), dispatchId) : dispatchStore.cancelQueuedDispatch(requireAccountId(request), dispatchId) };
-    }
-    if (dispatch.agentSessionId) {
-      authorizedAgentSession(request, dispatch.agentSessionId, true);
-      const command = agentSessionStore.enqueueInterrupt(
-        requireAccountId(request),
-        dispatch.agentSessionId,
-      );
-      return reply.status(202).send({ command });
-    }
-    throw conflict("dispatch_not_stoppable", "This dispatch cannot be stopped from MissionGo.");
+    const result = store.database.transaction(() => {
+      // Serialize cancellation against claim-next: the stop must either cancel
+      // queued work or durably follow the claimed launch, never fall in between.
+      const dispatch = authorizedDispatch(request, dispatchId, true);
+      if (dispatch.status === "queued") {
+        return { dispatch: dispatch.productId ? freeSessionStore.stop(requireAccountId(request), dispatchId) : dispatchStore.cancelQueuedDispatch(requireAccountId(request), dispatchId) };
+      }
+      return { command: agentSessionStore.requestDispatchStop(requireAccountId(request), dispatchId) };
+    });
+    return reply.status("command" in result ? 202 : 200).send(result);
   });
 
   app.post("/api/v1/agent-sessions/:sessionId/commands/:commandId/cancel", async (request) => {
@@ -3544,6 +3541,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         ...(stringField(body, "commandId", false) ? { commandId: body.commandId as string } : {}),
         ...(commandStatus ? { commandStatus } : {}),
         ...(stringField(body, "commandError", false) ? { commandError: body.commandError as string } : {}),
+        ...(body.stopConfirmed === true ? { stopConfirmed: true } : {}),
         ...(typeof body.sourceArchived === "boolean" ? { sourceArchived: body.sourceArchived } : {}),
         ...(body.sourceRestored === true ? { sourceRestored: true } : {}),
         ...(stringField(body, "sourceArchiveError", false)
@@ -3730,11 +3728,21 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return reply.status(204).send();
   });
 
+  app.post("/api/v1/node/dispatches/:dispatchId/permit-start", async (request) => {
+    const node = requireNode(request);
+    const { dispatchId } = request.params as { dispatchId: string };
+    const dispatch = dispatchStore.getDispatch(node.accountId, dispatchId);
+    if (dispatch.productId) requireNodeAccountPermission(node.accountId, dispatch.productId, true);
+    for (const key of dispatch.itemKeys) requireNodeAccountPermission(node.accountId, store.getWorkItem(key).productId, true);
+    return { allowed: agentSessionStore.permitDispatchStart(node.nodeId, dispatchId) };
+  });
+
   app.post("/api/v1/node/dispatches/:dispatchId/result", async (request, reply) => {
     const node = requireNode(request);
     const { dispatchId } = request.params as { dispatchId: string };
     let status: string;
     let sessionRef: string | undefined;
+    let initialTurnId: string | undefined;
     try {
       const body = objectBody(request.body);
       status = stringField(body, "status")!;
@@ -3750,6 +3758,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         throw invalidInput("diagnosticSnapshot must be an object.");
       }
       sessionRef = stringField(body, "sessionRef", false);
+      initialTurnId = stringField(body, "initialTurnId", false);
       const projectDispatch = dispatchStore.getDispatch(node.accountId, dispatchId);
       if (projectDispatch.productId) {
         requireNodeAccountPermission(node.accountId, projectDispatch.productId, true);
@@ -3779,7 +3788,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       throw error;
     }
     if (status === "launched" && sessionRef) {
-      agentSessionStore.createForDispatch({ dispatchId, nodeId: node.nodeId, sessionRef });
+      agentSessionStore.createForDispatch({ dispatchId, nodeId: node.nodeId, sessionRef, ...(initialTurnId ? { initialTurnId } : {}) });
     }
     return reply.status(204).send();
   });
