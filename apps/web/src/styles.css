@@ -294,16 +294,12 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand-mark {
-  width: 36px;
-  height: 36px;
-  display: grid;
-  place-items: center;
-  color: var(--navy);
-  background: var(--mint);
-  border: 1px solid var(--navy);
-  border-radius: var(--radius-md);
-  box-shadow: 3px 3px 0 var(--navy);
+  width: 39px;
+  height: 39px;
+  flex-shrink: 0;
+  display: block;
 }
+
 .brand-name { font-size: 19px; font-weight: 780; letter-spacing: -0.045em; white-space: nowrap; }
 .brand-name span { color: var(--mint-dark); }
 .brand-tagline { margin-left: 8px; color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }

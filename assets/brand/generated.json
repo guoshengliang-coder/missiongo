@@ -1,0 +1,14 @@
+{
+  "sourceDigest": "b4a3710908e6381ed088fe65a322a985056333e2cb22aad676ba9ccab0f830de",
+  "rasters": {
+    "apps/web/public/icon-32.png": "de36e0ab1dfbfd32e37092cae848f27185dd650032891897b3bca45c76febd54",
+    "apps/web/public/icon-180.png": "9f4fa64e1fb7f8958a9e3a09578eebeba9602447a697b88085f73bdd4ae596a9",
+    "apps/web/public/icon-192.png": "0032813f85874a25a683e71d0c5519cd683d25bb3ae09910885ce938efad42bd",
+    "apps/web/public/icon-512.png": "1d0695b541b9e350f3fe69e2d9cc1343a84f8c43161300909879ae0488a19bac",
+    "apps/web/public/icon-1024.png": "3c186f970a228f25f9f751689501965ea93fc5c2060d132f98bd162410d8bd7a",
+    "apps/web/public/icon-maskable-192.png": "1eb6a6503253a21d21bbde32650d894ed8817c3e90e547a0c424c9f8ae90f146",
+    "apps/web/public/icon-maskable-512.png": "9a88374d0f06bda0d940f5bca46fc78608bd89d7044e44f10ccfffc283aa7769",
+    "apps/web/public/og.png": "75ee5cc85fa237b595f8474b5f2535bc0f38831c6ec0112eea481fed0669aa34",
+    "apps/web/public/og-en.png": "a8f594b6c81c9679b456227d257de3795e85afd9efd6d743e1b7a74fa9cad8d4"
+  }
+}

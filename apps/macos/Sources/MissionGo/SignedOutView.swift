@@ -7,9 +7,10 @@ struct SignedOutView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
-                Image(systemName: "paperplane.circle.fill")
-                    .font(.system(size: 30))
-                    .foregroundStyle(Color.accentColor)
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 32, height: 32)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("MissionGo").font(.headline)
                     Text(model.loginServerUrl.map(ServerAddress.displayHost) ?? "尚未设置服务器地址")

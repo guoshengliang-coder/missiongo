@@ -87,24 +87,21 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 
-# The app icon comes from the one product icon the web app and Android use.
-# Quick Look renders the SVG; without it the app still works and Finder shows a
-# generic icon, which is not worth failing a build over.
-ICON_SOURCE="$REPOSITORY_ROOT/$(node -e "process.stdout.write(require('$REPOSITORY_ROOT/product.json').icon)")"
+# Use the checked-in raster generated from product.json's canonical vector.
+# Quick Look can fail in headless CI or add a white thumbnail background; a
+# missing product icon must fail packaging rather than ship a generic app icon.
+ICON_SOURCE="$REPOSITORY_ROOT/$(node -e "process.stdout.write(require('$REPOSITORY_ROOT/product.json').icon.replace(/\.svg$/, '-1024.png'))")"
+[ -s "$ICON_SOURCE" ] || { echo "Missing generated product icon; run npm run generate:branding." >&2; exit 1; }
 ICON_WORK=$(mktemp -d)
 trap 'rm -rf "$ICON_WORK"' EXIT HUP INT TERM
-if qlmanage -t -s 1024 -o "$ICON_WORK" "$ICON_SOURCE" >/dev/null 2>&1 && [ -s "$ICON_WORK/$(basename "$ICON_SOURCE").png" ]; then
-  ICONSET="$ICON_WORK/AppIcon.iconset"
-  mkdir -p "$ICONSET"
-  for size in 16 32 128 256 512; do
-    sips -z "$size" "$size" "$ICON_WORK/$(basename "$ICON_SOURCE").png" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
-    double=$((size * 2))
-    sips -z "$double" "$double" "$ICON_WORK/$(basename "$ICON_SOURCE").png" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
-  done
-  iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
-else
-  echo "Note: could not render ${ICON_SOURCE}; the app will use a generic icon." >&2
-fi
+ICONSET="$ICON_WORK/AppIcon.iconset"
+mkdir -p "$ICONSET"
+for size in 16 32 128 256 512; do
+  sips -z "$size" "$size" "$ICON_SOURCE" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+  double=$((size * 2))
+  sips -z "$double" "$double" "$ICON_SOURCE" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 
 sh "$SCRIPT_DIRECTORY/sign-macos-app.sh" "$APP" "$ZIP"
 echo "==> ${ZIP}"

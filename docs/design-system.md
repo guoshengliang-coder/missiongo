@@ -45,6 +45,7 @@
 ### 2.3 品牌与操作
 
 - `--navy` #172033 与 `--mint` #67e3b4 是品牌色，**两端恒定，不随主题反转**；`--on-mint` 是放在薄荷底上的文字色。
+- 产品标识与中英文宣传语由 `product.json` 声明；图标以其 `iconSource` 的斜火箭为源。Web 共用 `Brand`，Android 与 macOS 使用生成资源，PWA maskable 图标另留安全区；SDK 验证 Sample 保持独立身份。生成及校验见 [品牌资源](../assets/brand/README.md)，界面覆盖登录、首次使用与工作区，回归见 `tests/ui/branding.audit.spec.ts`。
 - `--primary-bg` / `--primary-fg` 是主操作按钮，**随主题反转**：浅色为 navy 底白字，深色为 mint 底深字。
 - 一个视图里只能有一个主操作（实心主按钮）。其余操作一律用次级按钮或图标按钮。
 

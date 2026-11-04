@@ -1,6 +1,6 @@
 # MissionGo
 
-> From idea to shipped.
+> 一站式AI交付平台
 
 MissionGo 是面向个人开发者的开源、自托管工作记录中心。它把灵感、需求、Bug、任务和备注集中到同一套结构化记录中，并让 Web、Android 和 AI 客户端共享完整上下文。
 

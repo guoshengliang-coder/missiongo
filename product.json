@@ -29,5 +29,10 @@
   },
   "web": {
     "version": "1.1.12"
+  },
+  "iconSource": "assets/brand/icon.svg",
+  "taglines": {
+    "zh-CN": "一站式AI交付平台",
+    "en": "All-in-one AI delivery platform"
   }
 }

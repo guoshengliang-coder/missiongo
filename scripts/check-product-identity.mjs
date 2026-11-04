@@ -9,12 +9,10 @@
 // existed only as a literal inside a publish script. product.json is now the
 // single declaration; this asserts every copy still agrees with it.
 //
-// The icon comparison is deliberate about its limits: it checks that the web
-// SVG and the Android vectors declare the same colours, and that the Android
-// vectors share their path geometry with each other. It does not re-render the
-// artwork, so it catches recolouring and a half-finished edit, not a redrawn
-// path that keeps the palette.
+// Every generated brand asset is checked against the canonical vector source,
+// including geometry, native variants, raster receipts and localized metadata.
 
+import { syncBrandAssets } from "./product-branding.mjs";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -104,10 +102,8 @@ check(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(product.web?.version ?? 
 // --- Icon ----------------------------------------------------------------
 const webIconColours = coloursOf(read(product.icon));
 
-// Android draws the icon twice: an adaptive foreground over a background
-// colour, and a flat pre-v26 fallback. A half-finished recolour touches one and
-// leaves the other, so require every app's two copies to agree before comparing
-// any of them with the web icon.
+// The independently branded SDK sample still has two native vector copies.
+// The official app is checked against generated canonical geometry below.
 const iconOf = (path) => {
   const launcher = read(`${path}/src/main/res/mipmap-anydpi/ic_launcher.xml`);
   const foreground = read(`${path}/src/main/res/drawable/ic_launcher_foreground.xml`);
@@ -120,7 +116,7 @@ const iconOf = (path) => {
   };
 };
 
-for (const target of [app, sample]) {
+for (const target of [sample]) {
   const icon = iconOf(target.path);
   check(
     sameSet(icon.launcherColours, icon.adaptiveColours),
@@ -132,10 +128,8 @@ for (const target of [app, sample]) {
   );
 }
 
-check(
-  sameSet(iconOf(app.path).launcherColours, webIconColours),
-  `${app.path} icon colours must match ${product.icon}`,
-);
+await syncBrandAssets({ check: true });
+
 check(
   !sameSet(iconOf(sample.path).launcherColours, webIconColours),
   "the SDK sample icon must be visibly different from the product icon",

@@ -1,0 +1,44 @@
+{
+  "id": "/",
+  "name": "MissionGo",
+  "short_name": "MissionGo",
+  "description": "All-in-one AI delivery platform",
+  "lang": "en",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#67E3B4",
+  "theme_color": "#172033",
+  "icons": [
+    {
+      "src": "/icon.svg?v=097ac258bf15",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-192.png?v=097ac258bf15",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-192.png?v=a3d750f7dced",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon-512.png?v=097ac258bf15",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-512.png?v=a3d750f7dced",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

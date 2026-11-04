@@ -1,3 +1,4 @@
+import { PRODUCT_ICON_URL } from "./branding.generated";
 import { MediaLightbox } from "./media-lightbox";
 import { NewSessionDraft, type NewConversationDraft } from "./new-session-draft";
 import { CollaborationPanel } from "./collaboration";
@@ -1406,7 +1407,7 @@ export function App() {
             }}
           />
         </section>
-        <p className="onboarding-tagline">From idea to shipped.</p>
+        <p className="onboarding-tagline">{t("productTagline")}</p>
       </main>
     );
   }
@@ -1994,11 +1995,12 @@ export function App() {
 }
 
 function Brand({ compact = false }: { compact?: boolean }) {
+  const { t } = useI18n();
   return (
     <div className={`brand ${compact ? "compact" : ""}`}>
-      <span className="brand-mark"><Rocket size={18} strokeWidth={2.4} /></span>
+      <img className="brand-mark" src={PRODUCT_ICON_URL} alt="" aria-hidden="true" />
       <span className="brand-name">Mission<span>Go</span></span>
-      {!compact && <span className="brand-tagline">From idea to shipped.</span>}
+      {!compact && <span className="brand-tagline">{t("productTagline")}</span>}
     </div>
   );
 }
