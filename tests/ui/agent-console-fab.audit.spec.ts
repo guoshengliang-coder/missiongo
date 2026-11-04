@@ -7,8 +7,8 @@ import { expect, test, type Page } from "@playwright/test";
  * The console entry leaves the phone topbar (AND-374).
  *
  * At 520px and below the list topbar gives the button up to a floating one
- * above the capture button; the detail page has no capture button to sit
- * above, so it keeps the topbar entry. The count is drawn only when there is
+ * above the capture button; a detail page has no capture button to sit above,
+ * so it shows no console entry at all. The count is drawn only when there is
  * something unread, unlike the topbar badge which always shows a number.
  */
 
@@ -42,12 +42,12 @@ test.describe("phone portrait", () => {
     await expect(page.locator(".agent-console-page")).toBeVisible();
   });
 
-  test("keeps the topbar entry on a detail page", async ({ page }) => {
+  test("shows no console entry on a detail page", async ({ page }) => {
     await page.goto(DETAIL_URL);
     await page.waitForLoadState("networkidle");
 
     await expect(page.locator(".ai-console-fab")).toBeHidden();
-    await expect(page.locator(".topbar .ai-console-toggle")).toBeVisible();
+    await expect(page.locator(".topbar .ai-console-toggle")).toBeHidden();
   });
 });
 

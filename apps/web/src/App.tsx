@@ -1822,9 +1822,11 @@ export function App() {
 
       {!agentConsoleOpen && !selectedItemKey && <button className="mobile-fab mobile-only" disabled={!selectedProductCanCapture} title={!selectedProductCanCapture ? t("captureReadOnly") : undefined} onClick={openCapture} aria-label={t("captureNewItem")}><Plus size={24} /></button>}
 
-      {/* AND-374: below 520px the list topbar has no room for the console entry.
-          It becomes a floating icon above the capture button, and the count is
-          only drawn when there is something unread to draw attention to. */}
+      {/* AND-374: below 520px the topbar has no room for the console entry.
+          On the list it becomes a floating icon above the capture button, and
+          the count is only drawn when there is something unread to draw
+          attention to. A detail page has no capture button to sit above and
+          does not show the entry at all, matching the capture button. */}
       {!agentConsoleOpen && !selectedItemKey && products.length > 0 && (
         <button
           type="button"
