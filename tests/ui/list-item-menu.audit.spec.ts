@@ -160,6 +160,13 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
     });
 
     test("read-only permission and transferred source hide list operations", async ({ page, request }) => {
+      // A full-page transfer must retire the modal history entry first. An
+      // overlapping history.back() can cancel the destination navigation.
+      await page.addInitScript(() => {
+        window.addEventListener("beforeunload", () => {
+          sessionStorage.setItem("test.transfer-dialogs", JSON.stringify(history.state?.["missiongo:dialogs"] ?? []));
+        });
+      });
       const item = await createItem(request);
       await page.route(/\/api\/v1\/(bootstrap|products)(\?|$)/, async route => {
         const response = await route.fetch();
@@ -195,6 +202,7 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
       await dialog.getByRole("button", { name: "下一步", exact: true }).click();
       await dialog.getByRole("button", { name: "迁移条目", exact: true }).click();
       await expect(page).toHaveURL(new RegExp(`product=${target.id}`));
+      expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem("test.transfer-dialogs") ?? "null"))).toEqual([]);
       await page.goto(`/?product=${fixture.productId}&status=cancelled&q=${item.key}`);
       await expect(page.locator(".item-row")).toHaveCount(1);
       await expect(page.locator(".row-more-menu")).toHaveCount(0);
