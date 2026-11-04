@@ -44,10 +44,14 @@ for (const width of [353, 812, 1440]) for(const theme of ["light","dark"] as con
     const banner=page.locator(".agent-console-attention-banner"),label=banner.locator("summary");
     const approve=banner.getByRole("button",{name:"批准",exact:true}),dismiss=banner.getByRole("button",{name:"无需处理",exact:true});
     const reason=banner.locator(".agent-console-approve-reason");
+    // AND-375: the loading boundary now includes the approval banner. Once
+    // detail arrives, keep the existing height/interaction contract below.
+    await expect(page.locator(".agent-console-messages .spin")).toBeVisible();
+    await expect(banner).toHaveCount(0);
+    hold=false;release();
     await expect(approve).toBeDisabled();await expect(dismiss).toBeVisible();await expect(reason).toBeHidden();
     const height=(await banner.boundingBox())!.height;
-    await label.click();await expect(reason).toHaveText("正在确认是否可以批准…");await expect(reason).toBeVisible();
-    hold=false;release();
+    await label.click();
     await expect(reason).toContainText("你的回复还在发送");
     await label.click();await expect(reason).toBeHidden();
     for(const [state,text] of [["running","会话仍在执行"],["reply_unavailable","当前无法向这个会话发送消息"],["connection_unavailable","会话连接当前不可用"],["permission_required","当前有工具权限请求"],["awaiting_source","回复已送达"],["ready",""]] as const){
