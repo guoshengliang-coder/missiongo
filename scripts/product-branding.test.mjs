@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import sharp from "sharp";
 import { androidVector, brandAssets, syncBrandAssets } from "./product-branding.mjs";
 
 test("every checked-in brand artifact matches the canonical artwork and declarations", async () => {
@@ -23,5 +24,16 @@ test("maskable PWA icons are separate opaque assets with a central rocket", () =
   assert.ok(manifest.icons.filter((icon) => icon.purpose === "maskable").every((icon) => icon.src.includes("icon-maskable-")));
   const maskable = texts.get("apps/web/public/icon-maskable.svg");
   assert.match(maskable, /M0 0H108V108H0Z/);
-  assert.match(maskable, /translate\(30 30\) scale\(2\)/);
+  assert.match(maskable, /translate\(27.6 27.6\) scale\(2.2\)/);
+});
+
+test("app artwork has balanced mint margins without the header's offset shadow", async () => {
+  const { texts, product } = brandAssets();
+  const source = texts.get(product.icon);
+  assert.doesNotMatch(source, /fill="#172033"/);
+  const { data, info } = await sharp(Buffer.from(source)).resize(512, 512).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  for (const [x, y] of [[32, 256], [480, 256], [256, 32], [256, 480]]) {
+    const offset = (y * info.width + x) * info.channels;
+    assert.deepEqual([...data.subarray(offset, offset + 3)], [103, 227, 180]);
+  }
 });

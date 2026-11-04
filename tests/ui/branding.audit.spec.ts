@@ -10,6 +10,7 @@ for (const width of [320, 375, 1440]) {
         await expect(page.locator(".app-shell")).toBeVisible();
         const favicon = await page.locator('link[rel="icon"]').getAttribute("href");
         await expect(page.locator(".brand-mark").first()).toHaveAttribute("src", favicon!);
+        expect(await page.locator(".brand-mark").first().evaluate((image) => getComputedStyle(image).filter)).toContain("drop-shadow");
         expect(await page.locator(".brand-mark").first().evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
         await expect(page).toHaveTitle("MissionGo · 一站式AI交付平台");
         for (const selector of ['meta[name="description"]', 'meta[property="og:description"]', 'meta[name="twitter:description"]']) {
@@ -58,8 +59,8 @@ for (const width of [320, 375, 1440]) {
           expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
           for (const mark of await page.locator(".brand-mark").all()) {
             const box = await mark.boundingBox();
-            expect(box?.width).toBe(39);
-            expect(box?.height).toBe(39);
+            expect(box?.width).toBe(36);
+            expect(box?.height).toBe(36);
           }
         }
       });

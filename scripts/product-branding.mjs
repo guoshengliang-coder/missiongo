@@ -53,7 +53,7 @@ export function brandAssets() {
   const stroke = attrs(rocket).stroke;
   // The glyph fits inside the central safe circle (66/108), even when Android
   // masks a launcher into a circle, squircle or rounded square.
-  const adaptive = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108">${rocket.replace(/transform="[^"]*"/, 'transform="translate(30 30) scale(2)"')}</svg>`;
+  const adaptive = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108">${rocket.replace(/transform="[^"]*"/, 'transform="translate(27.6 27.6) scale(2.2)"')}</svg>`;
   const maskable = adaptive.replace(/(<svg[^>]*>)/, `$1<path fill="${background}" d="M0 0H108V108H0Z" />`);
   const iconUrl = `/${product.icon.split("/").at(-1)}?v=${hash(source).slice(0, 12)}`;
   const description = (locale) => `${product.name} — ${product.taglines[locale]}`;

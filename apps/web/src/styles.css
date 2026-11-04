@@ -294,10 +294,11 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand-mark {
-  width: 39px;
-  height: 39px;
+  width: 36px;
+  height: 36px;
   flex-shrink: 0;
   display: block;
+  filter: drop-shadow(3px 3px 0 var(--navy));
 }
 
 .brand-name { font-size: 19px; font-weight: 780; letter-spacing: -0.045em; white-space: nowrap; }
