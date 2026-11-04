@@ -549,6 +549,8 @@ export function offlineDegradedStatus(
  * nothing in the server noticed.
  */
 export const COMMAND_DELIVERING_TIMEOUT_MS = 30 * 60 * 1_000;
+/** A stop must settle promptly; ordinary replies keep their separate policy. */
+export const STOP_COMMAND_TIMEOUT_MS = 2 * 60 * 1_000;
 /**
  * How long a reply may wait behind a running turn before it is worth pointing
  * out. Waiting behind a long turn is legitimate, so this never fails the
@@ -701,6 +703,7 @@ export class AgentSessionStore {
   }
 
   getForAccount(accountId: string, sessionId: string): AgentSessionSnapshot {
+    this.failStuckDeliveringCommands();
     const row = this.database.connection
       .prepare(
         `SELECT s.id, s.dispatch_id, s.agent_kind, s.agent_session_ref, s.status, s.last_error, s.updated_at,
@@ -1060,6 +1063,7 @@ export class AgentSessionStore {
   }
 
   setArchived(accountId: string, sessionId: string, archived: boolean): AgentSessionSnapshot {
+    this.failStuckDeliveringCommands();
     this.requireManualSession(sessionId);
     const session = this.database.connection
       .prepare(
@@ -1339,6 +1343,7 @@ export class AgentSessionStore {
   }
 
   enqueueInterrupt(accountId: string, sessionId: string): AgentSessionCommand {
+    this.failStuckDeliveringCommands();
     this.requireManualSession(sessionId);
     const session = this.database.connection.prepare(`SELECT s.id,s.status,s.archived_at,s.agent_kind,s.agent_session_ref
       FROM agent_sessions s JOIN dispatches d ON d.id=s.dispatch_id WHERE s.id=? AND d.account_id=?`)
@@ -1469,7 +1474,7 @@ export class AgentSessionStore {
       cancelled_at: outcome === "not_received" ? now : null });
   }
 
-  listForNode(nodeId: string): readonly NodeAgentSession[] {
+  listForNode(nodeId: string, interruptsOnly = false): readonly NodeAgentSession[] {
     this.failStuckDeliveringCommands();
     const sourceArchiveBefore = new Date(Date.now() - SOURCE_ARCHIVE_POLL_MS).toISOString();
     const selection = `SELECT id, dispatch_id, agent_kind, agent_session_ref, status, last_error, updated_at,
@@ -1507,13 +1512,16 @@ export class AgentSessionStore {
              AND source_archived_at IS NULL AND source_archive_error IS NULL)
            OR s.updated_at <= ?
          )
+         ${interruptsOnly ? `AND s.agent_kind='codex' AND EXISTS (
+           SELECT 1 FROM agent_session_commands c WHERE c.session_id=s.id AND c.kind='interrupt'
+           AND c.status IN ('queued','delivering'))` : ""}
          AND s.id > ?`;
     const args = (managed: number, after: string) => [nodeId, managed, sourceArchiveBefore, sourceArchiveBefore, after];
     const managedPage = this.database.connection.prepare(selection + " ORDER BY s.id LIMIT 100");
     // Persist stable-ID progress across requests and restarts. BEGIN IMMEDIATE
     // serializes selection/advancement across connections. Stop/status updates
     // do not reset progress or move a held session ahead of unseen sessions.
-    const managedRows = this.database.transaction(() => {
+    const managedRows = interruptsOnly ? [] : this.database.transaction(() => {
       const cursor = this.database.connection.prepare(
         "SELECT after_session_id FROM managed_session_poll_cursors WHERE node_id=?",
       ).get(nodeId) as { after_session_id: string } | undefined;
@@ -1615,6 +1623,9 @@ export class AgentSessionStore {
     clearSessionUrl?: boolean;
     activityAt?: string;
   }): void {
+    // A node may resume an old poll without any intervening console read.
+    // Expire the request before accepting its reservation or late result.
+    this.failStuckDeliveringCommands();
     if (input.messages.length > MAX_MESSAGES_PER_SNAPSHOT) {
       throw invalidInput(`messages must contain ${MAX_MESSAGES_PER_SNAPSHOT} entries or fewer.`);
     }
@@ -2124,6 +2135,20 @@ export class AgentSessionStore {
    * itself still runs on every read, keeping AND-184's "check exactly when
    * somebody can see the freed slot" contract. */
   private failStuckDeliveringCommands(now = Date.now()): void {
+    const stopCutoff = new Date(now - STOP_COMMAND_TIMEOUT_MS).toISOString();
+    // Startup stops also fence a launch. Keep that fence until its native turn
+    // is bound; expiring it could silently permit the cancelled work to start.
+    const stopPending = this.database.connection.prepare(`SELECT 1 FROM agent_session_commands
+      WHERE kind='interrupt' AND ((status='queued' AND turn_id<>'startup' AND created_at<=?)
+        OR (status='delivering' AND COALESCE(delivering_at,created_at)<=?)) LIMIT 1`).get(stopCutoff, stopCutoff);
+    if (stopPending) {
+      this.database.connection.prepare(`UPDATE agent_session_commands SET status='failed',error=?
+        WHERE kind='interrupt' AND status='queued' AND turn_id<>'startup' AND created_at<=?`)
+        .run("停止尚未确认：节点在 2 分钟内未接收请求。请检查节点连接，在来源客户端核实后重试。", stopCutoff);
+      this.database.connection.prepare(`UPDATE agent_session_commands SET status='failed',error=?
+        WHERE kind='interrupt' AND status='delivering' AND COALESCE(delivering_at,created_at)<=?`)
+        .run("停止尚未确认：节点在 2 分钟内未回报结果。请在来源客户端核实后重试。", stopCutoff);
+    }
     const cutoff = new Date(now - COMMAND_DELIVERING_TIMEOUT_MS).toISOString();
     const stuck = this.database.connection
       .prepare(

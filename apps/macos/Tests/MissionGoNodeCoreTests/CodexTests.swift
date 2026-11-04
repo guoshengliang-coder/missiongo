@@ -1466,6 +1466,8 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
     var statusReadError: Error?
     let historyReads = Locked(0)
     let statusReads = Locked(0)
+    let statusReadsAtInterrupt = Locked<[Int]>([])
+    let statusSnapshots = Locked<[CodexThreadSnapshot]>([])
     var replyError: Error?
     let replyOverrides = Locked<[CodexTurnOverrides?]>([])
     let appliedSettings = Locked<[(String, CodexTurnOverrides)]>([])
@@ -1507,6 +1509,7 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
     func readThreadStatus(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
         statusReads.withLock { $0 += 1 }
         if let statusReadError { throw statusReadError }
+        if let next = statusSnapshots.withLock({ $0.isEmpty ? nil : $0.removeFirst() }) { return next }
         return snapshot
     }
 
@@ -1550,6 +1553,7 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
     }
 
     func interruptTurn(socketPath: String, threadId: String, turnId: String) async throws {
+        statusReadsAtInterrupt.withLock { $0.append(statusReads.current) }
         interruptions.withLock { $0.append((threadId, turnId)) }
         if let afterInterrupt { snapshot = afterInterrupt }
         if let interruptError { throw interruptError }
@@ -1598,7 +1602,8 @@ final class CodexLauncherTests: XCTestCase {
         let report = try await launcher.synchronize(NodeAgentSession(id: "s", sessionRef: "thread-1", status: "unavailable",
             command: AgentSessionCommand(id: "stop", kind: "interrupt", text: "停止", turnId: "exact-turn")))
         XCTAssertEqual(control.historyReads.current, 0)
-        XCTAssertEqual(control.statusReads.current, 2)
+        XCTAssertEqual(control.statusReads.current, 1)
+        XCTAssertEqual(control.statusReadsAtInterrupt.current, [0], "send the stop before any potentially slow status read")
         XCTAssertEqual(control.interruptions.current.map { [$0.0, $0.1] }, [["thread-1", "exact-turn"]])
         XCTAssertEqual(report.status, "idle")
         XCTAssertEqual(report.commandStatus, "delivered")
@@ -1625,6 +1630,19 @@ final class CodexLauncherTests: XCTestCase {
         _ = try await launcher.synchronize(NodeAgentSession(id: "s", sessionRef: "thread-1", status: "unavailable"))
         XCTAssertEqual(control.interruptions.current.count, 1)
         XCTAssertTrue(control.replies.current.isEmpty)
+    }
+
+    func testStopWaitsForNativeEndWithoutRepeatingInterrupt() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.statusSnapshots.withLock { $0 = [CodexThreadSnapshot(status: "active", messages: []), CodexThreadSnapshot(status: "idle", messages: [])] }
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        let report = try await launcher.synchronize(NodeAgentSession(id: "s", sessionRef: "thread-1", status: "active",
+            command: AgentSessionCommand(id: "stop", kind: "interrupt", text: "stop", turnId: "exact-turn")))
+        XCTAssertEqual(report.stopConfirmed, true)
+        XCTAssertEqual(control.statusReads.current, 2)
+        XCTAssertEqual(control.interruptions.current.count, 1)
+        XCTAssertEqual(control.statusReadsAtInterrupt.current, [0])
     }
 
     func testHumanApprovalAnswerSurvivesHistoryReadFailure() async throws {

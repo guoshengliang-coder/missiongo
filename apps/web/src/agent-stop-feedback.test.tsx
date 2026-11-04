@@ -7,6 +7,10 @@ import type { AgentSessionCommand } from "./types.js";
 const stop: AgentSessionCommand = { id: "stop", kind: "interrupt", text: "stop", status: "delivered", stopConfirmed: true, createdAt: "2026-11-04T01:00:00Z" };
 const render = (props: Parameters<typeof AgentStopFeedback>[0]) => renderToStaticMarkup(<I18nProvider><AgentStopFeedback {...props} /></I18nProvider>);
 describe("stop feedback", () => {
+  it("distinguishes waiting for the node from an accepted stop", () => {
+    expect(render({ stop: { ...stop, status: "queued", stopConfirmed: false } })).toContain("等待节点接收");
+    expect(render({ stop: { ...stop, status: "delivering", stopConfirmed: false } })).toContain("正在中断并确认结果");
+  });
   it("distinguishes stopped foreground from running background work", () => {
     expect(render({ stop, backgroundRunning: true })).toContain("后台任务");
     expect(render({ stop })).toContain("可继续在本会话发消息");

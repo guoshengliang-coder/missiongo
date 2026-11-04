@@ -1636,9 +1636,21 @@ public struct APIClient: Sendable {
     }
 
     public func listAgentSessions() async throws -> [NodeAgentSession] {
+        try await agentSessions(interruptsOnly: false)
+    }
+
+    public func listAgentInterrupts() async throws -> [NodeAgentSession] {
+        // Old servers ignore this optional query. Filter their response locally;
+        // polling it still remains independent of ordinary history reads.
+        try await agentSessions(interruptsOnly: true).filter {
+            $0.agentKind == "codex" && $0.managedExecution == nil && $0.command?.kind == "interrupt"
+        }
+    }
+
+    private func agentSessions(interruptsOnly: Bool) async throws -> [NodeAgentSession] {
         struct Reply: Decodable { let sessions: [NodeAgentSession] }
         let response = try await send(
-            "GET", "/api/v1/node/agent-sessions", body: Optional<String>.none, bearer: try nodeToken(),
+            "GET", "/api/v1/node/agent-sessions" + (interruptsOnly ? "?interruptsOnly=1" : ""), body: Optional<String>.none, bearer: try nodeToken(),
             extraHeaders: ["X-MissionGo-Chat-Attachments": "1", "X-MissionGo-External-Sessions": "1", "X-MissionGo-External-Settings": "1", "X-MissionGo-External-Attachments": "1", "X-MissionGo-External-Worker": externalWorkerId, "X-MissionGo-External-Auto-Connect": "1"]
         )
         // During a rolling update the Mac can reach a server from before

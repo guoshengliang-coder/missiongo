@@ -813,10 +813,10 @@ public struct CodexAppServerControl: CodexControl {
     }
     public func readThreadStatus(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
         try await readThread(socketPath: socketPath, threadId: threadId, includeExecutionItems: false,
-            checkArchiveList: false, includeTurns: false)
+            checkArchiveList: false, includeTurns: false, timeoutOverride: min(readTimeout, 3))
     }
-    private func readThread(socketPath: String, threadId: String, includeExecutionItems: Bool, checkArchiveList: Bool = true, requireLoaded: Bool = false, includeTurns: Bool = true) async throws -> CodexThreadSnapshot {
-        let timeout = self.readTimeout
+    private func readThread(socketPath: String, threadId: String, includeExecutionItems: Bool, checkArchiveList: Bool = true, requireLoaded: Bool = false, includeTurns: Bool = true, timeoutOverride: TimeInterval? = nil) async throws -> CodexThreadSnapshot {
+        let timeout = timeoutOverride ?? self.readTimeout
         let archiveCache = self.archiveCache
         let successfulReads = self.successfulReads
         return try await withCheckedThrowingContinuation { continuation in
@@ -1131,7 +1131,7 @@ public struct CodexAppServerControl: CodexControl {
     }
 
     public func interruptTurn(socketPath: String, threadId: String, turnId: String) async throws {
-        let timeout = self.timeout
+        let timeout = min(self.timeout, 5)
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async {
                 continuation.resume(with: Result {
