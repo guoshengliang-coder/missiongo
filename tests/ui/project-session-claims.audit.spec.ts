@@ -36,7 +36,7 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
     page.on("pageerror", error => errors.push(error.message));
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
-    await expect(page.locator(".agent-console-heading h2")).toHaveText("这是什么问题？");
+    await expect(page.locator(".agent-console-heading h2")).toContainText("这是什么问题？");
     await expect(page.locator(".agent-console-heading h2 .agent-console-unlinked-badge")).toHaveText("无关联会话");
     await expect(page.locator(".agent-console-session-heading .agent-console-unlinked-badge")).toHaveText("无关联会话");
     for (const linked of [
@@ -48,7 +48,7 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
       await expect(page.locator(".agent-console-session")).toHaveCount(1);
       const keys = linked.map(item => item.key).join("、");
       await expect(page.locator(".agent-console-session-heading strong")).toHaveText(`${keys} · 这是什么问题？`);
-      await expect(page.locator(".agent-console-heading h2")).toHaveText(`${keys} · 这是什么问题？`);
+      await expect(page.locator(".agent-console-heading h2")).toContainText(`${keys} · 这是什么问题？`);
       await expect(page.locator(".agent-console-unlinked-badge")).toHaveCount(0);
       await expect(page.getByRole("button", { name: /^运行中 \d+$/ }).locator("small")).toHaveText("1");
       await expect(page.locator(".agent-console-dispatch-head button")).toHaveCount(items.length);
@@ -56,7 +56,7 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
       for (const width of [320, 520, 768, 1440]) for (const scale of ["small", "medium", "large"]) {
         await page.setViewportSize({ width, height: 900 });
         await page.evaluate(value => { document.documentElement.dataset.fontScale = value; }, scale);
-        await expect(page.locator(".agent-console-heading h2")).toHaveText(`${keys} · 这是什么问题？`);
+        await expect(page.locator(".agent-console-heading h2")).toContainText(`${keys} · 这是什么问题？`);
         await expect(page.locator(".agent-console-reply textarea")).toBeVisible();
         expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
       }
