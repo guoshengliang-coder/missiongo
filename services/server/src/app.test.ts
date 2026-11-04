@@ -463,7 +463,7 @@ describe("Commenting over MCP", () => {
     const writer = await call(writeToken, 2, "tools/call", { name: "get_current_account", arguments: {} });
     expect(writer.result?.structuredContent).toMatchObject({
       capabilities: {
-        writeTools: ["prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "claim_item", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session", "register_item_handover", "report_handover_evidence"],
+        writeTools: ["prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session", "register_item_handover", "report_handover_evidence"],
         canComment: true,
         canCreateItems: true,
       },

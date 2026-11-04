@@ -1,7 +1,7 @@
 ---
 name: missiongo
 description: 通过 MissionGo MCP 查询项目概览、吞吐、交付周期和验收打回率，或完整读取及处理指定条目、评论、创建和上传附件；核实合并与发布后可靠交接。不修改条目正文与字段，不决定验收。
-version: 5.32.0
+version: 5.33.0
 ---
 
 # MissionGo 条目读取与评论
@@ -253,6 +253,21 @@ frontmatter 中的 `version` 对比。
 4. 调用 `claim_item`，带 `agentId`（标明是哪个 AI）和稳定的 `idempotencyKey`。来自可信派单启动提示词的会话还应带该提示词给出的 `dispatchId`，沿用已有派单会话；外部主动处理的会话按「外部主动处理的会话与进展」提供 `session`，保存返回的 `sessionId`。
 5. 当前服务的状态写入和交接工具必须携带本轮 `executionAuthorization`，没有首次交接前的免凭据例外。领取成功返回 `executionAuthorization` 时，保存这份当前执行凭据；后续调用 `submit_development_complete`、`submit_for_verification`、`register_item_handover` 和 `report_handover_evidence` 都带上它。Builder 转交会永久撤销旧凭据，即使同一账号以后再次成为 Builder，也不能复用。旧服务没有返回此字段时不要伪造。新 Builder 接手仍处于「处理中」的条目时，只有已完成系统交接并指定给自己的接手派单才能再次调用 `claim_item`，必须带可信启动提示词中的 `dispatchId`；领取不会把条目退回或重复改变业务状态。收到执行授权失效或交接未完成的拒绝就停下，不换账号、客户端、幂等键或其他入口绕过。
 6. 领取之后**必须写清楚结局**——完成、做不了、或需要用户补信息。都是评论，见「处理完成后回写」。不得领了就不说话。
+
+### 长会话续接与执行凭据恢复
+
+上下文压缩或续接后，发现本会话遗失了 `executionAuthorization` 或原领取幂等键时，不要再次领取，
+不要仅凭卡片显示“处理中”就认定其他会话抢占了任务。先完整重读用户指定条目并重新核对
+`get_current_account`；`capabilities.writeTools` 包含 `recover_execution_authorization` 时，用该工具恢复原授权。
+
+- 提供 `itemKey`，以及且仅以下一种原会话身份：可信启动提示词给出的原 `dispatchId`、
+  本会话原领取返回的外部 `sessionId`，或由可信客户端取得的原 `session`（`agentKind`、`refKind`、`sessionRef`）。
+  身份来源沿用「外部主动处理的会话与进展」；tracking 只能沿用原值，不能新生成后冒充原会话。
+- 服务端核对原账号、OAuth 客户端、产品与 AI 权限、原领取回执的会话关联、撤销状态和当前执行轮次。
+  可核验的历史领取记录同样支持；工具只返回仍有效的原凭据，不新建会话、不重新领取、不改变状态或轮次。
+- 保存恢复的 `executionAuthorization`，后续状态与交接写入仍遵守合并和发布核验规则。恢复授权不证明交付完成。
+- 工具不可用、原身份不可取得、关联有歧义或授权已撤销时，保留原状态，报告具体限制并由用户核对。
+  不扫描其他会话、不猜身份、不换账号/客户端/幂等键绕过，也不把已撤销授权当成可恢复的丢失凭据。
 
 不需要租约：普通领取以条目状态为锁；系统交接后的接手以交接记录和指定派单为锁，只能成功领取一次。会话中途断掉，条目留在处理中等用户处理，这和其它离开处理中的路径一致。
 

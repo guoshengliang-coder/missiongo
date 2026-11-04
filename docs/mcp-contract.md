@@ -25,7 +25,7 @@ MissionGo MCP 让经过鉴权的 AI 按用户给出的编号完整读取一个�
 | 档位 | 开放的工具 |
 |---|---|
 | `none` | 无。工具清单与只读部署完全一致 |
-| `comments` | `append_comment`、`claim_item`、`submit_development_complete`、`submit_for_verification`、`create_item`、`upload_attachment_chunk`、`prepare_attachment_upload`、`add_item_attachment`、`register_agent_session`、`report_agent_session` |
+| `comments` | `append_comment`、`claim_item`、`recover_execution_authorization`、`submit_development_complete`、`submit_for_verification`、`create_item`、`upload_attachment_chunk`、`prepare_attachment_upload`、`add_item_attachment`、`register_agent_session`、`report_agent_session` |
 
 只有两级：写入面限于评论、三条受限状态流转、创建条目、关联附件与外部会话进展登记。
 
@@ -61,6 +61,11 @@ MissionGo MCP 让经过鉴权的 AI 按用户给出的编号完整读取一个�
 
 - `claim_item`（`comments` 档位起，需 `missiongo:write`）：把「待处理」的条目领为「处理中」。
   不需要租约——状态本身就是锁，只有待处理的条目能被领取。
+- `recover_execution_authorization`（同上）：长会话遗失领取凭据或幂等键时，按 `itemKey` 和且仅一种原
+  `dispatchId`、外部 `sessionId` 或 `session` 身份取回当前轮次仍有效的原授权。核对当前产品操作与 AI
+  权限、原账号与 OAuth 客户端、原领取回执关联和撤销状态；不能用后来登记的其他会话冒领凭据。
+  历史回执可核验时兼容，歧义或缺失则拒绝。工具要求写权限但不写数据，不领取、不创建会话或轮次。
+  返回 `executionAuthorization` 和 `statusChanged: false`。Builder 交接、验收打回或重开后的旧授权不能恢复。
 - `register_agent_session`（同上）：把当前用户明确要求继续处理的会话关联到一个已在处理中、开发完成或待验证的条目。`session` 含 `agentKind`、稳定 `sessionRef`、`refKind: native|tracking` 和可选自述 `name`。原生 ID 必须由可信客户端提供；不可取得时生成对话 UUID 并标为 tracking。唯一键由账号、OAuth 客户端、Agent 类型与会话引用共同组成；同一对话关联多条目不重复创建，不会领取或控制客户端。
 - `report_agent_session`（同上）：用返回的 `sessionId`、已关联 `itemKey`、`status: working|waiting_for_input|blocked|completed|failed`、可选事实 `text` 和稳定 `idempotencyKey` 上报进展。相同键重放不新增消息、不同内容复用键会拒绝。每次检查记录所属账号、OAuth 客户端及全部关联产品权限。completed 只结束会话处理，不更改条目状态。超过 30 分钟未上报的非终态记录显示状态无法确认。
 - 外部领取时 `claim_item.session` 可直接登记上述关联并返回 `sessionId`；旧调用不带此参数时只创建每次领取的跟踪记录。来自 Web 派单的调用应传可信启动提示词的 `dispatchId`，服务器核对派单所属账号和条目，不创建外部记录。领取、登记和初始进展在同一事务内完成；失败不留下半成品。

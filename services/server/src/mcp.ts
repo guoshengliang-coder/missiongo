@@ -1,6 +1,7 @@
 import { Collaborations, collaborationDraftSchema } from "./collaboration.js";
 import { transitionPolicy, itemRoles } from "./item-policy.js";
 import { deliveryRound } from "./delivery-round.js";
+import { recoverExecutionAuthorization } from "./execution-authorization-recovery.js";
 import { commentAudienceSchema, commentCandidates } from "./comment-discussions.js";
 import { assertBuilderExecution, assertDispatchExecution, assertExecutionAuthorization } from "./builder-authority.js";
 import { completionFields, completionPayload, normalizeCompletion } from "./completion.js";
@@ -38,7 +39,7 @@ const MCP_READ_ONLY_INSTRUCTIONS =
   " This connection is read-only: never modify repositories, write to MissionGo, or change work-item status.";
 
 const MCP_COMMENT_INSTRUCTIONS =
-  " You may add comments with append_comment. You may claim a ready item, mark an in-progress item development complete "
+  " You may add comments with append_comment. If continuation loses a claim credential, recover_execution_authorization uses only the original conversation identity; never claim again to recover it. You may claim a ready item, mark an in-progress item development complete "
   + "only after checking its PR is merged, and submit development-complete work for verification only after a "
   + "verified release contains every required artifact. Unverified work stays in its current status. "
   + "Giving up, pausing, accepting, and reopening are the user's decisions. "
@@ -111,7 +112,7 @@ function accountAccess(ctx: ServerContext): McpAccountAccess {
  */
 export const WRITE_TOOLS_BY_TIER: Readonly<Record<McpWriteTier, readonly string[]>> = {
   none: [],
-  comments: ["prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "claim_item", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session", "register_item_handover", "report_handover_evidence"],
+  comments: ["prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session", "register_item_handover", "report_handover_evidence"],
 };
 
 /**
@@ -733,7 +734,8 @@ export function createMissionGoMcpServer(
         + "A project conversation may claim items in its own product using its original dispatchId; a verified native session identity also reuses that project conversation. "
         + "When projectSessionId is returned, keep using that original conversation; do not register or report a separate external session, since the node already synchronizes it. "
         + "A legacy call creates a per-claim tracking record, never a native transcript. Work-item and session states remain independent. "
-        + "Save the returned executionAuthorization and pass it to status-changing and handover tools; Builder transfer permanently revokes earlier execution credentials.",
+        + "Save the returned executionAuthorization and pass it to status-changing and handover tools; Builder transfer permanently revokes earlier execution credentials. "
+        + "If continuation loses the credential or original idempotency key, use recover_execution_authorization with the original conversation identity, never claim again.",
       inputSchema: z.object({
         itemKey: z.string().min(2).max(50),
         agentId: z.string().min(1).max(200),
@@ -794,6 +796,40 @@ export function createMissionGoMcpServer(
   );
 
   server.registerTool(
+    "recover_execution_authorization",
+    {
+      title: "Recover this conversation's existing execution authorization",
+      description: "After context compaction or continuation loses a claim credential, recover the original executionAuthorization for the user-named item. "
+        + "Provide exactly one original dispatchId, external sessionId, or trusted session identity. Never guess another conversation's identity. "
+        + "Requires current write, product operation and AI permissions, the original account and OAuth client, an unrevoked claim and the current execution round. "
+        + "Includes historical claims with verifiable receipts. Does not claim again, register sessions, mint credentials or change status. "
+        + "If recovery is refused, leave the item unchanged and ask the user to check execution ownership; do not retry with another identity.",
+      inputSchema: z.object({
+        itemKey: z.string().min(2).max(50),
+        dispatchId: z.string().min(1).max(200).optional(),
+        sessionId: z.string().min(1).max(200).optional(),
+        session: sessionIdentity.pick({ agentKind: true, refKind: true, sessionRef: true }).optional(),
+      }).refine(input => [input.dispatchId, input.sessionId, input.session].filter(Boolean).length === 1,
+        "Provide exactly one original conversation identity."),
+      // Credential disclosure is write-gated even though recovery changes no data.
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (input, ctx) => {
+      requireWriteScope(ctx);
+      const access = accountAccess(ctx);
+      const key = requireItemAccess(ctx, store, input.itemKey);
+      if (options.canOperate && !options.canOperate(access.accountId, store.getWorkItem(key).productId)) throw new Error("Product operation is not permitted.");
+      const result = store.database.transaction(() => recoverExecutionAuthorization(store, access.accountId, access.clientId ?? "", {
+        itemKey: key,
+        ...(input.dispatchId ? { dispatchId: input.dispatchId } : {}),
+        ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+        ...(input.session ? { session: input.session } : {}),
+      }));
+      return textResult(result, `Recovered the original executionAuthorization for ${key}. Keep it for this handling round. No claim, session, or status was changed.`);
+    },
+  );
+
+  server.registerTool(
     "submit_development_complete",
     {
       title: "Record integrated work as development complete",
@@ -806,7 +842,7 @@ export function createMissionGoMcpServer(
         + "No-release work waits for a person to arrange verification; this tool never proves publication or acceptance.",
       inputSchema: z.object({
         itemKey: z.string().min(2).max(50),
-        executionAuthorization: z.string().uuid(),
+        executionAuthorization: z.string().uuid().describe("Current claim credential. If lost, recover_execution_authorization with the original conversation identity; do not claim again."),
         ...completionFields,
         requiredArtifacts: z.array(z.string().regex(RELEASE_ARTIFACT_ID_PATTERN)).max(MAX_RELEASE_ARTIFACTS).optional(),
         noReleaseReason: z.string().trim().min(1).max(4_000).optional(),
@@ -855,7 +891,7 @@ export function createMissionGoMcpServer(
       description: "Always include executionAuthorization returned by the current claim; operation and AI permission are rechecked for every write. Only after independently checking the integration reference, verified release receipt and every required public artifact, move a development-complete item to pending verification. Read the item fully and write a release comment first. Artifacts must match the identifiers recorded at handover. The receipt digest and artifact versions are recorded for audit; the server cannot itself verify the repository host or public downloads.",
       inputSchema: z.object({
         itemKey: z.string().min(2).max(50),
-        executionAuthorization: z.string().uuid(),
+        executionAuthorization: z.string().uuid().describe("Current claim credential. If lost, recover_execution_authorization with the original conversation identity; do not claim again."),
         ...completionFields,
         releases: z.array(z.object({
           artifact: z.string().regex(RELEASE_ARTIFACT_ID_PATTERN),
@@ -1106,7 +1142,7 @@ export function createMissionGoMcpServer(
     "register_item_handover", {
     title: "Associate completion and release scope with the current work round",
     description: "Always include executionAuthorization returned by the current claim; operation and AI permission are rechecked for every write. After reading the user-directed item, register its completion reference (GitHub PR, GitLab MR, local commit with targetBranch, or manual confirmation). The original authorized execution may still associate its current round after a human moves the card to ready or inbox; do not claim again just to correct the card. Integration occurring before this work round needs human review. requiredArtifacts records the actual task release scope without product preconfiguration; omit for unknown scope, or send [] with noReleaseReason. Verified integration is independent of release scope. A durable record lets the node detect a later merge even if the conversation stops. Changes are constrained to handover metadata, never item prose or acceptance.",
-    inputSchema: handoverRegistrationSchema.safeExtend({itemKey:z.string().min(2).max(50),executionAuthorization:z.uuid()}),
+    inputSchema: handoverRegistrationSchema.safeExtend({itemKey:z.string().min(2).max(50),executionAuthorization:z.uuid().describe("Current claim credential. If lost, use recover_execution_authorization with the original conversation identity.")}),
     annotations: { readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false },
   }, async ({itemKey,executionAuthorization,...input},ctx) => {
     requireWriteScope(ctx); authorizeExecution(ctx,itemKey,executionAuthorization); const key = requireItemAccess(ctx,store,itemKey);
@@ -1117,7 +1153,7 @@ export function createMissionGoMcpServer(
     "report_handover_evidence", {
     title: "Record executor-verified merge and release evidence",
     description: "Always include executionAuthorization returned by the current claim; operation and AI permission are rechecked for every write. Only report facts verified by this authorized executor. The supplied releases list is a complete current observation, replacing earlier release evidence. Each release must contain the named merged commit, have a verified public artifact, time and receipt digest. Persists evidence before attempting the constrained development/verification handoff, safe to repeat after interruption. Never accepts work as done.",
-    inputSchema: handoverEvidenceSchema.extend({itemKey:z.string().min(2).max(50),handoverId:z.uuid(),executionAuthorization:z.uuid()}),
+    inputSchema: handoverEvidenceSchema.extend({itemKey:z.string().min(2).max(50),handoverId:z.uuid(),executionAuthorization:z.uuid().describe("Current claim credential. If lost, use recover_execution_authorization with the original conversation identity.")}),
     annotations: { readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false },
   }, async ({itemKey,handoverId,executionAuthorization,...input},ctx) => {
     requireWriteScope(ctx); authorizeExecution(ctx,itemKey,executionAuthorization); const key = requireItemAccess(ctx,store,itemKey);
