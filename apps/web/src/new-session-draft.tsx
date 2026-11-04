@@ -6,6 +6,7 @@ import { useI18n } from "./i18n";
 import { agentLabelKey, dispatchProblemKey } from "./dispatch-eligibility";
 import { localizedErrorText } from "./error-text";
 import { AutoGrowTextarea } from "./auto-grow-textarea";
+import { DraftSessionQuickSettings } from "./agent-session-settings";
 import { DraftChatFile } from "./agent-chat-draft-file";
 import { mergeChatFiles } from "./agent-chat-files";
 import { useFileDropZone } from "./file-drop";
@@ -91,7 +92,8 @@ export function NewSessionDraft({ draft, projectName, onChange, onBack, onConfig
         {draft.files.length > 0 && !draft.config.canAttach && <p className="inline-error" role="alert">{t("agentChatNodeUpdate")}</p>}
         {fileError && <p className="inline-error" role="alert">{fileError}</p>}
         {send.isError && <p className="inline-error" role="alert">{errorText}</p>}
-        <div className="agent-console-reply-actions"><small className="agent-session-muted">{t("newSessionDraftHint")}</small>
+        <div className="agent-console-reply-actions">
+          <DraftSessionQuickSettings config={draft.config} disabled={locked} onChange={config => onChange({ ...draft, config })} />
           <div className="agent-chat-send-actions">
             <input ref={picker} type="file" multiple hidden accept=".png,.jpg,.jpeg,.webp,.gif,.heic,.mp4,.mov,.webm,.log,.txt,.json,.md,.csv,.pdf"
               onChange={event => { addFiles(Array.from(event.target.files ?? [])); event.target.value = ""; }} />
@@ -103,6 +105,7 @@ export function NewSessionDraft({ draft, projectName, onChange, onBack, onConfig
             </button>
           </div>
         </div>
+        <small className="agent-session-muted">{t("newSessionDraftHint")}</small>
       </form>
     </footer>
   </>;

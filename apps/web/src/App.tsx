@@ -1,5 +1,6 @@
 import { PRODUCT_ICON_URL } from "./branding.generated";
 import { MediaLightbox } from "./media-lightbox";
+import { AgentConsoleSearch } from "./agent-console-search";
 import { NewSessionDraft, type NewConversationDraft } from "./new-session-draft";
 import { CollaborationPanel } from "./collaboration";
 import { MessageButton, MessageCenter } from "./message-center";
@@ -492,6 +493,8 @@ export function App() {
   const sidebarIsDrawer = useSinglePaneLayout();
   const sidebarRef = useRef<HTMLElement>(null);
   const sidebarTriggerRef = useRef<HTMLButtonElement>(null);
+  const [agentConsoleSearch, setAgentConsoleSearch] = useState("");
+  const [agentConsoleSearchOpen, setAgentConsoleSearchOpen] = useState(false);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [messageCenterOpen,setMessageCenterOpen]=useState(false);
   const searchTriggerRef=useRef<HTMLButtonElement>(null);
@@ -1154,7 +1157,7 @@ export function App() {
       if (event.key === "Escape" && mobileSearchOpen && !document.querySelector("dialog[open]")) {
         setMobileSearchOpen(false); requestAnimationFrame(()=>searchTriggerRef.current?.focus());
       }
-      if (!statisticsOpen && !messageCenterOpen && !document.querySelector("dialog[open]") && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      if (!agentConsoleOpen && !statisticsOpen && !messageCenterOpen && !document.querySelector("dialog[open]") && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         setMobileSearchOpen(true);
         requestAnimationFrame(() => searchInputRef.current?.focus());
@@ -1162,7 +1165,7 @@ export function App() {
     };
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, [statisticsOpen,messageCenterOpen,mobileSearchOpen]);
+  }, [agentConsoleOpen,statisticsOpen,messageCenterOpen,mobileSearchOpen]);
 
   const buildersQuery = useQuery({ queryKey: ["builders", selectedProductId], queryFn: () => api.listBuilders(selectedProductId), enabled: bootstrapQuery.isSuccess && Boolean(selectedProductId) });
   const deferredSearch = useDeferredValue(search.trim());
@@ -1418,7 +1421,7 @@ export function App() {
     <div className={`app-shell ${agentConsoleOpen ? "agent-console-open" : ""} ${
       agentConsoleOpen && agentConsoleSinglePane && (agentConversationOpen || newSessionOpen) ? "agent-conversation-open" : ""
     }`}>
-      <header className={`topbar ${agentConsoleOpen ? "agent-console-topbar" : ""} ${mobileSearchOpen ? "searching" : ""} ${selectedItemKey ? "detail-view" : ""}`} inert={sidebarIsDrawer && sidebarOpen}>
+      <header className={`topbar ${agentConsoleOpen ? `agent-console-topbar ${agentConsoleSearchOpen ? "agent-console-searching" : ""}` : ""} ${mobileSearchOpen ? "searching" : ""} ${selectedItemKey ? "detail-view" : ""}`} inert={sidebarIsDrawer && sidebarOpen}>
         {!agentConsoleOpen && <button ref={sidebarTriggerRef} className="icon-button mobile-only" onClick={() => openSidebar()} aria-label={t("openNavigation")}>
           <Menu size={20} />
         </button>}
@@ -1484,6 +1487,8 @@ export function App() {
             )}
           </button>
         )}
+        {agentConsoleOpen && <AgentConsoleSearch value={agentConsoleSearch} onChange={setAgentConsoleSearch}
+          open={agentConsoleSearchOpen} onOpenChange={setAgentConsoleSearchOpen} />}
         {agentConsoleOpen && (
           <div className="agent-console-topbar-actions has-bulk">
             {newSessionProducts.length > 0 && <button type="button" className="secondary-button agent-console-topbar-new" disabled={newSessionPending}
@@ -1793,6 +1798,7 @@ export function App() {
       {agentConsoleOpen && selectedProductId && (
         <AgentSessionConsole
           productId={selectedProductId}
+          search={agentConsoleSearch}
           initialFilter={agentConsoleLinkedFilter}
           allSessions={allAgentSessions}
           sessionsLoaded={agentSessionsQuery.data !== undefined}
