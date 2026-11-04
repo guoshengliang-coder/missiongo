@@ -46,7 +46,7 @@ export function collaborationTransitionDenial(
     const missing = database.connection
       .prepare(
         `SELECT 1 FROM collaboration_requests r WHERE r.target_item_id=? AND r.withdrawn_at IS NULL AND NOT EXISTS (
-      SELECT 1 FROM collaboration_events e WHERE e.request_id=r.id AND e.kind='delivery' AND e.rowid>COALESCE((SELECT MAX(last.rowid) FROM collaboration_events last WHERE last.request_id=r.id AND last.kind='target_status' AND json_extract(last.payload_json,'to') IN ('ready','inbox')),0)) LIMIT 1`,
+      SELECT 1 FROM collaboration_events e WHERE e.request_id=r.id AND e.kind='delivery' AND e.rowid>COALESCE((SELECT MAX(last.rowid) FROM collaboration_events last WHERE last.request_id=r.id AND last.kind='target_status' AND json_extract(last.payload_json,'$.to') IN ('ready','inbox')),0)) LIMIT 1`,
       )
       .get(item.id);
     if (missing) return "collaboration_delivery_required";
