@@ -5,7 +5,6 @@ import { randomUUID,scryptSync } from "node:crypto";
 import { afterEach,beforeEach,describe,expect,it } from "vitest";
 import { buildApp } from "./app.js";
 import { transitionPolicy } from "./item-policy.js";
-import { StatusChecks } from "./status-checks.js";
 import { deliveryRound } from "./delivery-round.js";
 import { assertExecutionAuthorization } from "./builder-authority.js";
 
@@ -109,18 +108,6 @@ describe("AND-357 revision, round and evidence fences",()=>{
   await move("done","verification_passed","proposer");expect(()=>store.updateWorkItem(item.key,{description:"Scope C",attribution:{accountId:config.id}})).toThrow();
   expect((await move("cancelled","manual_override")).statusCode).toBe(403);
  });
- it("keeps the processing round through hold, stores facts and reconciles after resuming",async()=>{
-  preset("in_progress");const store=app.missionGoStore,checks=new StatusChecks(store),round=deliveryRound(store.database,item.id);
-  const handover=checks.register(item.key,ids.builder!,{completion:{kind:"commit",commit:"a".repeat(40),targetBranch:"main"},requiredArtifacts:["web"]});
-  expect((await move("on_hold","request_human_input","builder")).statusCode).toBe(200);
-  checks.report(handover.id,{merged:{commit:"a".repeat(40),occurredAt:new Date().toISOString()},releases:[{artifact:"web",version:"2",sourceCommit:"b".repeat(40),containsMergeCommit:"a".repeat(40),verifiedAt:new Date().toISOString(),receiptDigest:"c".repeat(64)}]},{accountId:ids.builder!});
-  expect(store.getWorkItem(item.key).status).toBe("on_hold");expect(deliveryRound(store.database,item.id)).toBe(round);
-  expect((await move("ready","resume","builder")).statusCode).toBe(409);
-  expect((await move("in_progress","resume","builder")).statusCode).toBe(200);
-  checks.reconcile(handover.id);expect(store.getWorkItem(item.key).status).toBe("pending_verification");
-  expect(store.getTimeline(item.key).findLast(e=>e.toStatus==="pending_verification")?.payload.deployedCommit).toBe("b".repeat(40));
-  await move("ready","verification_failed","builder");checks.reconcile(handover.id);expect(store.getWorkItem(item.key).status).toBe("ready");
- });
  it("saves the exact hold origin and restores cancelled work to inbox only",async()=>{
   await move("on_hold","request_human_input","proposer");expect(app.missionGoStore.getWorkItem(item.key).heldFrom).toBe("ready");
   expect((await move("ready","resume","proposer")).statusCode).toBe(200);
@@ -185,20 +172,6 @@ describe("AND-357 public command boundaries",()=>{
   }
   expect((await move("in_progress","claim","builder")).statusCode).toBe(200);
  });
- it("re-certifies development completion after scope changes before accepting new release proof",()=>{
-  preset("in_progress");const store=app.missionGoStore,checks=new StatusChecks(store);
-  const completion={kind:"commit" as const,commit:"a".repeat(40),targetBranch:"main"};
-  const first=checks.register(item.key,ids.builder!,{completion,requiredArtifacts:["web"]});
-  checks.report(first.id,{merged:{commit:completion.commit,occurredAt:new Date().toISOString()}},{accountId:ids.builder!});
-  store.updateWorkItem(item.key,{description:"Scope B",attribution:{accountId:ids.builder}});
-  const nextCompletion={...completion,commit:"d".repeat(40)};
-  const next=checks.register(item.key,ids.builder!,{completion:nextCompletion,requiredArtifacts:["web"]});
-  checks.report(next.id,{merged:{commit:nextCompletion.commit,occurredAt:new Date().toISOString()},releases:[{artifact:"web",version:"3",sourceCommit:"e".repeat(40),containsMergeCommit:nextCompletion.commit,verifiedAt:new Date().toISOString(),receiptDigest:"f".repeat(64)}]},{accountId:ids.builder!});
-  expect(store.getWorkItem(item.key).status).toBe("pending_verification");
-  const events=store.getTimeline(item.key).filter(e=>e.toStatus==="development_complete");
-  expect(events).toHaveLength(2);expect(events.at(-1)?.payload).toMatchObject({contentVersion:2,roundKey:deliveryRound(store.database,item.id)});
-  checks.reconcile(next.id);expect(store.getTimeline(item.key).filter(e=>e.toStatus==="development_complete")).toHaveLength(2);
- });
 });
 
 function policyAiToken(role:string) {
@@ -242,13 +215,6 @@ describe("AND-357 real MCP authorization",()=>{
  });
 });
 
-it("lets a manager register and confirm current-round evidence while preserving another Builder's responsibility",async()=>{
- await move("in_progress","claim","builder");
- const checks=new StatusChecks(app.missionGoStore);
- const handover=checks.register(item.key,ids.admin!,{completion:{kind:"manual",commit:"a".repeat(40),description:"Human reviewed integration"},requiredArtifacts:[],noReleaseReason:"Source review"});
- const confirmed=checks.confirm(handover.id,ids.admin!,{stage:"integration",commit:"a".repeat(40),note:"Verified this round in the target branch"});
- expect(confirmed.itemStatus).toBe("development_complete");expect(app.missionGoStore.getWorkItem(item.key).builderAccountId).toBe(ids.builder);
-});
 it("audits explicit AI scope changes with the real human account and before/after grants",async()=>{
  const response=await app.inject({method:"PUT",url:`/api/v1/accounts/${ids.operator}/products`,headers:{cookie:cookies.admin!},payload:{aiScope:"none",permissions:[]}});
  expect(response.statusCode).toBe(200);

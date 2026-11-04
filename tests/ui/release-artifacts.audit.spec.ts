@@ -1,4 +1,3 @@
-import { postItemCommand } from "./item-command";
 import {expect,test} from "@playwright/test";
 
 for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
@@ -14,10 +13,14 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
   await expect(section.getByRole("button")).toHaveCount(0);
   await expect(section.getByRole("textbox")).toHaveCount(0);
   await page.screenshot({path:test.info().outputPath("artifacts-empty.png")});
-  const item = await (await request.post("/api/v1/items",{data:{productId:product.id,title:"Gateway publication",description:"Release scope discovered from the repository",type:"task",priority:"normal",status:"ready",environment:{platform:"other"}}})).json() as {key:string};
-  await postItemCommand(request,`/api/v1/items/${item.key}/transitions`,{data:{to:"in_progress",reason:"claim"}});
-  const registered = await request.put(`/api/v1/items/${item.key}/handover`,{data:{completion:{kind:"commit",commit:"a".repeat(40),targetBranch:"main"},requiredArtifacts:["gateway"]}});
-  expect(registered.ok()).toBe(true);
+  // Rendering fixture for inventory recorded by explicit development handoff.
+  // The real MCP-to-inventory path is covered in app.test.ts; the retired check
+  // registration endpoint must not be used to prepare UI fixtures.
+  await page.route(/\/api\/v1\/products(?:\?.*)?$/,async route=>{
+   const response=await route.fetch();
+   const products=await response.json();
+   await route.fulfill({response,json:products.map((entry:{id:string})=>entry.id===product.id ? {...entry,releaseArtifacts:["gateway"]} : entry)});
+  });
   await page.reload();
   await expect(section.locator("code")).toHaveText(["gateway"]);
   await expect(section.getByRole("button")).toHaveCount(0);

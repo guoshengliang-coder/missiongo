@@ -87,7 +87,7 @@ describe("Commenting over MCP", () => {
     const executionCredentials=new Map<string,string>();
     const call = async (token: string, id: number, method: string, params: Readonly<Record<string, unknown>> = {}) => {
       const args=params.arguments as Record<string,unknown>|undefined;
-      const scoped = args && typeof args.itemKey === "string" && ["submit_development_complete","submit_for_verification","register_item_handover","report_handover_evidence"].includes(String(params.name));
+      const scoped = args && typeof args.itemKey === "string" && ["submit_development_complete","submit_for_verification"].includes(String(params.name));
       if (scoped && args.executionAuthorization === undefined && executionCredentials.has(args.itemKey as string)) params={...params,arguments:{...args,executionAuthorization:executionCredentials.get(args.itemKey as string)}};
       const response = await app.inject({
         method: "POST",
@@ -158,36 +158,6 @@ describe("Commenting over MCP", () => {
     expect(app.missionGoStore.getTimeline("HG-1", { includeWithdrawn: true })).toEqual(expect.arrayContaining([
       expect.objectContaining({ eventType: "comment_added", payload: expect.objectContaining({ withdrawnAt: expect.any(String) }) }),
     ]));
-  });
-
-  it("keeps human confirmation behind a signed-in console session", async () => {
-    const { app, call, productId, writeToken } = await commentingApp();
-    const store = app.missionGoStore;
-    store.transitionWorkItem({itemKey:"HG-1",to:"ready",actor:"human",reason:"triaged"});
-    await call(writeToken,99,"tools/call",{name:"claim_item",arguments:{itemKey:"HG-1",agentId:"test",idempotencyKey:"manual-claim"}});
-    const registration = await call(writeToken,1,"tools/call",{name:"register_item_handover",arguments:{
-      itemKey:"HG-1",completion:{kind:"manual",commit:"a".repeat(40),description:"Offline build"},requiredArtifacts:["web"],
-    }});
-    const registered = registration.result?.structuredContent as {handover:{id:string}};
-    const url = `/api/v1/items/HG-1/handovers/${registered.handover.id}/confirm`;
-    const input = {stage:"integration",commit:"a".repeat(40),note:"Verified on main"};
-    for (const token of ["management-test-token",writeToken]) {
-      expect((await versionedTestRequest(app, {method:"POST",url,headers:{authorization:`Bearer ${token}`},payload:input})).statusCode).toBe(401);
-    }
-    const forged = await call(writeToken,2,"tools/call",{name:"report_handover_evidence",arguments:{
-      itemKey:"HG-1",handoverId:registered.handover.id,merged:{commit:"a".repeat(40),occurredAt:new Date().toISOString()},human:true,
-    }});
-    expect(forged.result?.isError).toBe(true);
-    expect(store.getWorkItem("HG-1").status).toBe("in_progress");
-    const login = await app.inject({method:"POST",url:"/api/v1/auth/login",payload:{username:"mission-owner",password:"correct horse"}});
-    const headers = {cookie:login.headers["set-cookie"]!.split(";",1)[0]!};
-    const confirmed = await versionedTestRequest(app, {method:"POST",url,headers,payload:input});
-    expect(confirmed.statusCode).toBe(200);
-    expect(confirmed.json()).toMatchObject({handover:{itemStatus:"development_complete",evidenceSource:"human_confirmation"}});
-    const publication = await versionedTestRequest(app, {method:"POST",url,headers,payload:{stage:"release",note:"Installed the offline build",releases:[{artifact:"web",version:"2.0",sourceCommit:"a".repeat(40)}]}});
-    expect(publication.statusCode).toBe(200);
-    expect(store.getWorkItem("HG-1").status).toBe("pending_verification");
-    expect(store.getProduct(productId).releaseArtifacts).toContain("web");
   });
 
   it.each([
@@ -435,12 +405,6 @@ describe("Commenting over MCP", () => {
     expect(unscoped.result?.structuredContent).toMatchObject({ coverageVersion: 1, noReleaseItems: [],
       candidates:[{itemKey:"HG-1",pullRequestUrl:"https://github.com/owner/repo/pull/504"}] });
     expect(unscoped.result?.structuredContent?.candidates).not.toContainEqual(expect.objectContaining({requiredArtifacts:[]}));
-    await call(writeToken,3,"tools/call",{name:"register_item_handover",arguments:{itemKey:"HG-1",pullRequestUrl:"https://github.com/owner/repo/pull/504",requiredArtifacts:["gateway"]}});
-    const candidates = await call(readToken,4,"tools/call",{name:"list_release_candidates",arguments:{productId}});
-    expect(candidates.result?.structuredContent).toMatchObject({candidates:[{itemKey:"HG-1",requiredArtifacts:["gateway"]}]});
-    await call(writeToken,6,"tools/call",{name:"register_item_handover",arguments:{itemKey:"HG-1",pullRequestUrl:"https://github.com/owner/repo/pull/504",requiredArtifacts:[],noReleaseReason:"Confirmed test-only scope"}});
-    const excluded = await call(readToken,7,"tools/call",{name:"list_release_candidates",arguments:{productId,includeUnscoped:true}});
-    expect(excluded.result?.structuredContent).toMatchObject({candidates:[],noReleaseItems:[{itemKey:"HG-1",noReleaseReason:"Confirmed test-only scope"}]});
   });
 
   it("refuses a handover without an https pull request", async () => {
@@ -463,7 +427,7 @@ describe("Commenting over MCP", () => {
     const writer = await call(writeToken, 2, "tools/call", { name: "get_current_account", arguments: {} });
     expect(writer.result?.structuredContent).toMatchObject({
       capabilities: {
-        writeTools: ["prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session", "register_item_handover", "report_handover_evidence"],
+        writeTools: ["prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
         canComment: true,
         canCreateItems: true,
       },

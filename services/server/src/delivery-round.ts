@@ -23,8 +23,3 @@ export function deliveryRound(database: MissionGoDatabase, itemId: string, execu
     ORDER BY timeline_seq DESC LIMIT 1`).get(itemId,start.timeline_seq) as {id:string} | undefined;
   return changed?.id ?? start.id;
 }
-
-export function queueDeliveryChecks(database: MissionGoDatabase, itemId: string, now: string): void {
-  database.connection.prepare(`UPDATE status_handovers SET requested_at=?,retry_count=0
-    WHERE item_id=?`).run(now,itemId);
-}

@@ -43,8 +43,6 @@ export const MCP_TOOL_DEFINITIONS = [
   { name: "add_item_attachment", access: "write", purpose: "Attach a completed upload to a user-named work item without editing its fields." },
   { name: "register_agent_session", access: "write", purpose: "Associate a user-directed external conversation with an item already being handled, without claiming or controlling it." },
   { name: "report_agent_session", access: "write", purpose: "Report factual external-session progress independently of work-item status." },
-  { name: "register_item_handover", access: "write", purpose: "Register GitHub/GitLab, local Git or human confirmation and explicit release scope for this processing round." },
-  { name: "report_handover_evidence", access: "write", purpose: "Persist executor-verified merge and release facts and perform constrained handoffs." },
 ] as const satisfies readonly McpToolDefinition[];
 
 export interface ListItemsInput {

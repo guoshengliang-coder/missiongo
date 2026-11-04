@@ -6,7 +6,7 @@ import { commentAudienceSchema, commentCandidates } from "./comment-discussions.
 import { assertBuilderExecution, assertDispatchExecution, assertExecutionAuthorization } from "./builder-authority.js";
 import { completionFields, completionPayload, normalizeCompletion } from "./completion.js";
 import { insightInputSchema } from "./project-insights-query.js";
-import { StatusChecks, handoverRegistrationSchema, handoverEvidenceSchema } from "./status-checks.js";
+import { StatusCheckHistory } from "./status-check-history.js";
 import { projectInsights } from "./project-insights.js";
 import { createHash, randomUUID } from "node:crypto";
 import { open, readFile, stat } from "node:fs/promises";
@@ -112,7 +112,7 @@ function accountAccess(ctx: ServerContext): McpAccountAccess {
  */
 export const WRITE_TOOLS_BY_TIER: Readonly<Record<McpWriteTier, readonly string[]>> = {
   none: [],
-  comments: ["prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session", "register_item_handover", "report_handover_evidence"],
+  comments: ["prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
 };
 
 /**
@@ -286,10 +286,10 @@ export function createMissionGoMcpServer(
       limit: z.number().int().min(1).max(100).default(50), offset: z.number().int().min(0).max(1000000).default(0) }),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input,ctx) => textResult({...projectInsights(store, insightScope(ctx,input.productIds), input, new Date(), input)}));
-  const checks = new StatusChecks(store);
+  const checks = new StatusCheckHistory(store);
   server.registerTool("get_item_status_checks", {
-    title: "Read the item's handover and check results",
-    description: "Read recorded PR, required release scope, evidence and status-check results. This does not contact GitHub or trigger work. Evidence originates with the authorized executor, not an independent server-side GitHub check.",
+    title: "Read historical status-check records",
+    description: "Read audit history from the retired status-check feature. These records never trigger checks, block current progress, or correct item status. Use get_item_context for the current item.",
     inputSchema: z.object({ itemKey: z.string().min(2).max(50) }),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({itemKey},ctx) => {
@@ -1138,29 +1138,6 @@ export function createMissionGoMcpServer(
     },
   );
 
-  server.registerTool(
-    "register_item_handover", {
-    title: "Associate completion and release scope with the current work round",
-    description: "Always include executionAuthorization returned by the current claim; operation and AI permission are rechecked for every write. After reading the user-directed item, register its completion reference (GitHub PR, GitLab MR, local commit with targetBranch, or manual confirmation). The original authorized execution may still associate its current round after a human moves the card to ready or inbox; do not claim again just to correct the card. Integration occurring before this work round needs human review. requiredArtifacts records the actual task release scope without product preconfiguration; omit for unknown scope, or send [] with noReleaseReason. Verified integration is independent of release scope. A durable record lets the node detect a later merge even if the conversation stops. Changes are constrained to handover metadata, never item prose or acceptance.",
-    inputSchema: handoverRegistrationSchema.safeExtend({itemKey:z.string().min(2).max(50),executionAuthorization:z.uuid().describe("Current claim credential. If lost, use recover_execution_authorization with the original conversation identity.")}),
-    annotations: { readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false },
-  }, async ({itemKey,executionAuthorization,...input},ctx) => {
-    requireWriteScope(ctx); authorizeExecution(ctx,itemKey,executionAuthorization); const key = requireItemAccess(ctx,store,itemKey);
-    if (!options.canOperate?.(accountAccess(ctx).accountId,store.getWorkItem(key).productId)) throw new Error("Product operation is not permitted.");
-    return textResult({handover:checks.register(key,accountAccess(ctx).accountId,input)});
-  });
-  server.registerTool(
-    "report_handover_evidence", {
-    title: "Record executor-verified merge and release evidence",
-    description: "Always include executionAuthorization returned by the current claim; operation and AI permission are rechecked for every write. Only report facts verified by this authorized executor. The supplied releases list is a complete current observation, replacing earlier release evidence. Each release must contain the named merged commit, have a verified public artifact, time and receipt digest. Persists evidence before attempting the constrained development/verification handoff, safe to repeat after interruption. Never accepts work as done.",
-    inputSchema: handoverEvidenceSchema.extend({itemKey:z.string().min(2).max(50),handoverId:z.uuid(),executionAuthorization:z.uuid().describe("Current claim credential. If lost, use recover_execution_authorization with the original conversation identity.")}),
-    annotations: { readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false },
-  }, async ({itemKey,handoverId,executionAuthorization,...input},ctx) => {
-    requireWriteScope(ctx); authorizeExecution(ctx,itemKey,executionAuthorization); const key = requireItemAccess(ctx,store,itemKey);
-    if (!options.canOperate?.(accountAccess(ctx).accountId,store.getWorkItem(key).productId)) throw new Error("Product operation is not permitted.");
-    if (checks.snapshot(handoverId).itemKey !== key) throw new Error("Handover does not belong to this item.");
-    return textResult({handover:checks.report(handoverId,input,{accountId:accountAccess(ctx).accountId})});
-  });
 
   return server;
 }

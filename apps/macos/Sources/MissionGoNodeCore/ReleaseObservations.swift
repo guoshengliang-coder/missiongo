@@ -1,6 +1,23 @@
 import CryptoKit
 import Foundation
 
+public struct LocalReleaseEvidence: Codable, Sendable, Equatable {
+    public struct Release: Codable, Sendable, Equatable {
+        public struct Proof: Codable, Sendable, Equatable {
+            public let kind: String
+            public let url: String
+            public let sha256: String?
+        }
+        public let artifact: String
+        public let version: String
+        public let sourceCommit: String
+        public let proof: Proof
+    }
+    public let schemaVersion: Int
+    public var environment: String? = nil
+    public let releases: [Release]
+}
+
 public struct ReleaseObservation: Codable, Sendable, Equatable {
     public let schemaVersion: Int
     public let id: String
@@ -13,6 +30,24 @@ public struct ReleaseObservation: Codable, Sendable, Equatable {
 /// Publication files are immutable and shared by worktrees. Delivery acknowledgements are scoped
 /// to the signed-in node/server, so changing accounts never silently reuses another login's ack.
 public actor ReleaseObservationWorker {
+    static func remoteIdentity(_ remote: String) -> (host: String, path: String)? {
+        let value = remote.trimmingCharacters(in: .whitespacesAndNewlines)
+        let host: String
+        var path: String
+        if let url = URL(string: value), ["https", "ssh"].contains(url.scheme ?? ""), let name = url.host {
+            host = name.lowercased() + (url.scheme == "ssh" ? "" : url.port.map { ":\($0)" } ?? "")
+            path = String(url.path.drop(while: { $0 == "/" }))
+        } else if value.hasPrefix("git@"), let colon = value.firstIndex(of: ":") {
+            host = String(value[value.index(value.startIndex, offsetBy: 4)..<colon]).lowercased()
+            path = String(value[value.index(after: colon)...])
+        } else { return nil }
+        if path.hasSuffix(".git") { path = String(path.dropLast(4)) }
+        guard AnchoredPattern("[A-Za-z0-9.-]+(?::[0-9]+)?").matches(host),
+              AnchoredPattern("[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+").matches(path),
+              !path.split(separator: "/").contains(where: { $0 == "." || $0 == ".." }) else { return nil }
+        return (host, path)
+    }
+
     let root: URL
     let run: CommandRunner
     public init(root: URL, run: @escaping CommandRunner = Commands.runner(environment: ShellEnvironment.resolve())) {
@@ -34,7 +69,7 @@ public actor ReleaseObservationWorker {
             guard !directory.isEmpty else { continue }
             let outbox = URL(fileURLWithPath: Paths.join(Paths.resolve(directory, cwd: mapping.repoPath), "missiongo-release-outbox"))
             let remote = await run("git", ["-C", mapping.repoPath, "config", "--get", "remote.origin.url"])
-            guard remote.code == 0, let identity = HandoverVerifier.remoteIdentity(remote.stdout) else { continue }
+            guard remote.code == 0, let identity = Self.remoteIdentity(remote.stdout) else { continue }
             let repository = "https://\(identity.host)/\(identity.path)"
             let files = (try? FileManager.default.contentsOfDirectory(at: outbox, includingPropertiesForKeys: [.isRegularFileKey,.isSymbolicLinkKey,.fileSizeKey])) ?? []
             for file in files.filter({$0.pathExtension == "json"}).sorted(by: {$0.lastPathComponent < $1.lastPathComponent}) {
@@ -53,8 +88,7 @@ public actor ReleaseObservationWorker {
                           observation.repository == repository, observation.releases.count <= 20 else {
                         throw LaunchError("Release observation does not match the mapped repository")
                     }
-                    // This endpoint only stores an observation. The leased status worker independently
-                    // rechecks live proof and commit ancestry before any work item changes status.
+                    // Publication uploads only retain history; item handoffs are explicit operations.
                     try await api.uploadReleaseObservation(productId: mapping.productId, repoPath: mapping.repoPath, observation: observation)
                     delivery.delivered = true; delivery.error = nil
                 } catch {

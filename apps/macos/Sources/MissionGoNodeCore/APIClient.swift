@@ -1469,7 +1469,7 @@ public struct APIClient: Sendable {
         return node
     }
 
-    public func statusCheckJournalScope() throws -> String? {
+    public func releaseObservationJournalScope() throws -> String? {
         SHA256.hash(data: Data(try nodeToken().utf8)).map { String(format: "%02x", $0) }.joined()
     }
     public func uploadReleaseObservation(productId: String, repoPath: String, observation: ReleaseObservation) async throws {
@@ -1481,35 +1481,6 @@ public struct APIClient: Sendable {
         let receipt: Receipt = try decode(response, operation: "上报发布凭据")
         guard receipt.accepted, receipt.id == observation.id else { throw APIError.invalidResponse("发布凭据回执不匹配。") }
     }
-    public func claimCompletionDiscovery() async throws -> CompletionDiscoveryJob? {
-        struct Reply: Decodable { let job: CompletionDiscoveryJob? }
-        let response = try await send("POST", "/api/v1/node/completion-discovery/claim", body: [String: Bool](), bearer: try nodeToken())
-        if response.status == 404 { return nil }
-        try requireSuccess(response, operation: "查找完成依据")
-        let reply: Reply = try decode(response, operation: "查找完成依据")
-        return reply.job
-    }
-    public func reportCompletionDiscovery(id: String, leaseToken: String, result: CompletionDiscoveryResult) async throws {
-        guard UUID(uuidString: id) != nil, UUID(uuidString: leaseToken) != nil else { throw APIError.invalidResponse("无效的查找任务标识。") }
-        struct Body: Encodable { let leaseToken: String; let repository: String?; let candidates: [CompletionCandidate]; let failure: String? }
-        let response = try await send("POST", "/api/v1/node/completion-discovery/\(id)/report",
-            body: Body(leaseToken: leaseToken, repository: result.repository, candidates: result.candidates, failure: result.failure), bearer: try nodeToken())
-        try requireSuccess(response, operation: "上报完成依据候选")
-    }
-    public func claimStatusCheck() async throws -> StatusCheckJob? {
-        struct Reply: Decodable { let job: StatusCheckJob? }
-        let response = try await send("POST", "/api/v1/node/status-checks/claim", body: ["supportsSharedReleases":true], bearer: try nodeToken())
-        try requireSuccess(response, operation: "领取状态检查")
-        let reply: Reply = try decode(response, operation: "领取状态检查")
-        return reply.job
-    }
-    public func reportStatusCheck(id: String, leaseToken: String, evidence: HandoverEvidence) async throws {
-        guard UUID(uuidString: id) != nil, UUID(uuidString: leaseToken) != nil else { throw APIError.invalidResponse("无效的状态检查标识。") }
-        struct Body: Encodable { let leaseToken: String; let evidence: HandoverEvidence }
-        let response = try await send("POST", "/api/v1/node/status-checks/\(id)/report", body: Body(leaseToken: leaseToken, evidence: evidence), bearer: try nodeToken())
-        try requireSuccess(response, operation: "上报状态检查")
-    }
-
     public func heartbeat(agents: [DetectedAgent], repoCandidates: [RepoCandidate] = []) async throws -> HeartbeatReply {
         struct Body: Encodable {
             let agents: [DetectedAgent]

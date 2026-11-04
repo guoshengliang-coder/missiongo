@@ -26,13 +26,6 @@ export function versionedTestRequest(app:import("fastify").FastifyInstance, opti
   if (["on_hold","cancelled"].includes(String(body.to))) body.executionDisposition ??="keep_running";
   options={...options,payload:body};
  }
- if (options.method === "POST" && /\/handovers\/[^/]+\/confirm$/.test(path) && payload && typeof payload === "object" && !Buffer.isBuffer(payload)) {
-  const body={...payload} as Record<string,unknown>;
-  const handoverId=path.split("/").at(-2)!;
-  const row=app.missionGoStore.database.connection.prepare("SELECT revision,item_id FROM status_handovers WHERE id=?").get(handoverId) as {revision:number;item_id:string}|undefined;
-  if (row) {body.expectedHandoverRevision ??=row.revision;body.expectedItemRevision ??=(app.missionGoStore.database.connection.prepare("SELECT revision FROM work_items WHERE id=?").get(row.item_id) as {revision:number}).revision;body.idempotencyKey ??=randomUUID();}
-  options={...options,payload:body};
- }
  return app.inject(options);
 }
 
