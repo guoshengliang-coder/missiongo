@@ -126,6 +126,56 @@ function post(url: string, id: string, payload: unknown) {
   });
 }
 describe("cross-project collaboration", () => {
+  it.each(["in_progress", "development_complete"] as const)(
+    "keeps the receiving item's %s list and detail readable after an Agent claim",
+    async (status) => {
+      const relation = send();
+      const store = app.missionGoStore;
+      const claimed = store.claimWorkItem({
+        itemKey: relation.targetKey,
+        agentId: "Codex",
+        idempotencyKey: randomUUID(),
+        attribution: { accountId: b },
+      });
+      expect(claimed.status).toBe("in_progress");
+      if (status === "development_complete") {
+        store.transitionWorkItem({
+          itemKey: relation.targetKey,
+          to: status,
+          actor: "human",
+          reason: "manual_override",
+          note: "Development complete; delivery evidence still required",
+          attribution: { accountId: admin.id },
+        });
+      }
+      const list = await app.inject({
+        method: "GET",
+        url: `/api/v1/items?productId=${pb}&status=${status}&limit=30`,
+        headers: { cookie: cookies[b]! },
+      });
+      expect(list.statusCode, list.body).toBe(200);
+      expect(list.json().items).toEqual([
+        expect.objectContaining({ key: relation.targetKey, status }),
+      ]);
+      const detail = await app.inject({
+        method: "GET",
+        url: `/api/v1/items/${relation.targetKey}`,
+        headers: { cookie: cookies[b]! },
+      });
+      expect(detail.statusCode, detail.body).toBe(200);
+      expect(detail.json()).toMatchObject({
+        key: relation.targetKey,
+        status,
+        transitionDecisions: expect.arrayContaining([
+          expect.objectContaining({
+            to: "pending_verification",
+            allowed: false,
+            code: "collaboration_delivery_required",
+          }),
+        ]),
+      });
+    },
+  );
   it("creates no item or blocker before human approval; submission is atomic and idempotent", () => {
     const d = draft();
     expect(c.context(a, source.key).blocked).toBe(false);
@@ -641,7 +691,11 @@ describe("collaboration boundaries and recovery", () => {
       "Return for retest",
       randomUUID(),
     );
-    expect(() => s.transitionWorkItem(pending)).toThrow();
+    expect(() => s.transitionWorkItem(pending)).toThrowError(
+      expect.objectContaining({ code: "collaboration_delivery_required" }),
+    );
+    c.discuss(b, d.id, "v3; retest completed", randomUUID(), "agent", true);
+    expect(s.transitionWorkItem(pending).status).toBe("pending_verification");
   });
   it("revocation keeps blockers and supports controlled recovery and withdrawal", () => {
     const d = send();
