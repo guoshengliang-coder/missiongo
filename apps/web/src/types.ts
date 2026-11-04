@@ -700,7 +700,7 @@ export interface ItemDispatchSummary {
   readonly createdAt: string;
   readonly agentSessionId?: string;
   readonly itemStatus?: WorkItemStatus;
-  readonly issue?: { readonly kind: "dispatch" | "execution"; readonly reason?: string };
+  readonly issue?: { readonly kind: "dispatch" | "execution" | "synchronization"; readonly reason?: string };
 }
 
 /** An in-progress item's dispatch origin: the agent whose session claimed it. */

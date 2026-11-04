@@ -140,7 +140,7 @@ export interface CurrentItemDispatch {
   readonly sessionStatus?: string;
   readonly waitingForInput?: boolean;
   readonly claimed?: boolean;
-  readonly issue?: { readonly kind: "dispatch" | "execution"; readonly reason?: string };
+  readonly issue?: { readonly kind: "dispatch" | "execution" | "synchronization"; readonly reason?: string };
 }
 
 export interface DispatchHealthGroup {
@@ -1073,8 +1073,8 @@ export class DispatchStore {
       const rejected = !row.session_id && row.status === "delivered"
         && Boolean(row.diagnostic_snapshot_json && JSON.parse(row.diagnostic_snapshot_json).resultRejection);
       const dispatchFailed = row.status === "failed" || timedOut || rejected;
-      const executionFailed = row.status === "launched"
-        && (row.session_status === "failed" || (row.session_status === "unavailable" && Boolean(row.last_error)));
+      const executionFailed = row.status === "launched" && row.session_status === "failed";
+      const synchronizationFailed = row.status === "launched" && row.session_status === "unavailable" && Boolean(row.last_error);
       const reason = dispatchFailed
         ? row.error ?? (timedOut ? "Mac 领取派单后超过 10 分钟仍未报告启动结果。请确认来源会话不存在，再手动重新派单。" : undefined)
         : row.last_error ?? undefined;
@@ -1084,8 +1084,8 @@ export class DispatchStore {
         ...(row.session_id ? { agentSessionId: row.session_id } : {}),
         ...(row.session_status ? { sessionStatus:row.session_status,
           waitingForInput:row.turn_state_json ? JSON.parse(row.turn_state_json).waitingForInput === true : false } : {}),
-        ...(dispatchFailed || executionFailed ? { issue: {
-          kind: dispatchFailed ? "dispatch" as const : "execution" as const,
+        ...(dispatchFailed || executionFailed || synchronizationFailed ? { issue: {
+          kind: dispatchFailed ? "dispatch" as const : synchronizationFailed ? "synchronization" as const : "execution" as const,
           ...(reason ? { reason } : {}),
         } } : {}),
       };

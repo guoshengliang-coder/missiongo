@@ -633,7 +633,7 @@ export function AgentSessionConsole({
         ? t("agentSessionWaitingTool", { duration: elapsed(activities[0]?.startedAt, clock) ?? "–" })
       : turnRunning
         ? t("agentSessionTurnRunning", { duration: elapsed(turnState?.turnStartedAt, clock) ?? "–", agent: agentName })
-        : t(activityLabelKey(sessionStatus, command?.status === "queued"), { agent: agentName });
+        : t(activityLabelKey(sessionStatus, command?.kind !== "interrupt" && command?.status === "queued"), { agent: agentName });
 
   const markRead = useMutation({
     mutationFn: ({ sessionId, dispatchId, through }: { id: string; sessionId?: string | undefined; dispatchId?: string | undefined; through: string }) =>

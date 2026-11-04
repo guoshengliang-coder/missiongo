@@ -258,6 +258,24 @@ private let request = DispatchRequest(
 )
 
 final class NodeLoopTests: XCTestCase {
+    func testFailedCodexStopIsReportedWithoutLeavingTheCommandQueued() async throws {
+        let api = FakeAPI(claims: [])
+        api.sessionList.withLock { $0 = [NodeAgentSession(id: "stopping", agentKind: "codex", sessionRef: "thread", status: "active",
+            command: AgentSessionCommand(id: "stop", kind: "interrupt", text: "停止", turnId: "turn"))] }
+        let loop = NodeLoop(api: api, adapters: [CodexReplyAdapter(fail: true)], fallbackNodeName: "Fixture",
+            timing: snapshotTiming(), log: { _ in })
+        let task = Task { try await loop.run() }
+        await waitUntil { !api.sessionReports.current.isEmpty }
+        task.cancel(); try await task.value
+        let report = try XCTUnwrap(api.sessionReports.current.first?.1)
+        XCTAssertEqual(report.commandId, "stop")
+        XCTAssertEqual(report.commandStatus, "failed")
+        XCTAssertEqual(report.status, "unavailable")
+        XCTAssertNil(report.turnActive)
+        XCTAssertNil(report.observedAt)
+        XCTAssertTrue(report.commandError?.contains("终止尚未确认") == true)
+    }
+
     private func waitUntil(_ condition: @escaping () -> Bool, timeout: TimeInterval = 5) async {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition(), Date() < deadline {

@@ -689,7 +689,7 @@ describe("Dispatching the same item twice", () => {
         const current = (await currentView(f)).current;
         expect(current.dispatchId).toBe(owned);
         expect(Boolean(current.issue), status).toBe(expected);
-        if (expected) expect(current.issue).toEqual({ kind: "execution", ...(error ? { reason: error } : {}) });
+        if (expected) expect(current.issue).toEqual({ kind: status === "unavailable" ? "synchronization" : "execution", ...(error ? { reason: error } : {}) });
       }
       const handlers = (await f.app.inject({ method: "GET", url: "/api/v1/dispatches/active", headers: { cookie: f.cookie } })).json().handlers;
       expect(handlers[0].dispatchId).toBe(owned);
