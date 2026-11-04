@@ -49,15 +49,15 @@ describe("agent console responsive layout", () => {
     expect(phone).toBeDefined();
 
     expect(styles).toMatch(/\.ai-console-fab \{[^}]*position: fixed;[^}]*bottom: calc\(82px \+ var\(--safe-bottom\)\);/);
-    expect(phone).toContain(".topbar:not(.detail-view) .ai-console-toggle { display: none; }");
+    // The toggle leaves the phone topbar everywhere; a detail page has no
+    // capture button to float above, so it shows no console entry at all.
+    expect(phone).toContain(".ai-console-toggle { min-width: 44px; justify-content: center; display: none; }");
     expect(phone).toContain(".ai-console-fab { display: grid; }");
     // Only when there is something to count: unlike the topbar badge, a
     // floating "0" would be a second thing competing with the capture button.
     expect(appSource).toContain("agentSessionsQuery.data !== undefined && unreadCounts.total > 0");
-    // The list keeps the floating entry; a detail page has no capture button to
-    // sit above, so it keeps the topbar toggle instead.
+    // The floating entry is list-only, matching the capture button it sits above.
     expect(appSource).toContain("!agentConsoleOpen && !selectedItemKey && products.length > 0 && (");
-    expect(appSource).toContain('${selectedItemKey ? "detail-view" : ""}');
   });
 
   it("keeps the project switcher in the phone console header", () => {
