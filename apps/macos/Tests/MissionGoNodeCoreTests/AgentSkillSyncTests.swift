@@ -132,6 +132,24 @@ final class AgentSkillSyncTests: XCTestCase {
         XCTAssertTrue(result.reason?.contains("高于服务端要求") == true)
     }
 
+    func testUnrecognizedLocalFileIsPreservedAndExplained() async throws {
+        let target = try directory().appendingPathComponent("SKILL.md")
+        try "---\nversion: 1.0.0\n---\n".write(to: target, atomically: true, encoding: .utf8)
+        let remote = skill("5.15.0")
+        StubURLProtocol.install { _, _ in .response(status: 200, body: remote) }
+        let result = await SkillSync.check(
+            serverUrl: "https://example.test", targets: [target.path], expectedVersion: "5.15.0",
+            session: StubURLProtocol.session()
+        )
+        XCTAssertEqual(result.syncState, "failed")
+        XCTAssertNil(result.localVersion)
+        XCTAssertTrue(result.reason?.contains(target.path) == true)
+        XCTAssertTrue(result.reason?.contains("无法识别版本") == true)
+        XCTAssertTrue(result.reason?.contains("删除该文件后重试") == true)
+        XCTAssertTrue(result.reason?.contains("5.15.0") == true)
+        XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), "---\nversion: 1.0.0\n---\n")
+    }
+
     func testCodexTargetsIncludeAnExistingSharedCopyOnly() throws {
         let home = try directory()
         let shared = home.appendingPathComponent(".agents/skills/missiongo/SKILL.md")
