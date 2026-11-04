@@ -4,6 +4,7 @@ import { appendFileSync, existsSync, readFileSync, readdirSync, statSync } from 
 import { createRequire } from "node:module";
 import { dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isReleaseMetadata, validateReleaseMetadata } from "./check-release-metadata.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -12,6 +13,7 @@ const ui = "tests/ui/";
 const auditName = /^[\w-]+\.audit\.spec\.ts$|^audit\.spec\.ts$/;
 const unitName = /\.test\.[cm]?[jt]sx?$/;
 const modes = new Set(["full", "targeted", "skip", "visual", "snapshots"]);
+const fullShards = Array.from({ length: 8 }, (_, index) => index + 1);
 
 export function auditCatalog(directory = root) {
   return readdirSync(join(directory, ui)).filter(file => auditName.test(file)).map(file => ui + file).sort();
@@ -105,10 +107,10 @@ export function importGraph(directory = root) {
 }
 
 function plan(mode, head, reasons, auditFiles = []) {
-  return { version: 1, head, mode, auditFiles: [...new Set(auditFiles)].sort(), shards: mode === "full" ? [1, 2, 3, 4] : [1], visual: mode !== "skip", reasons };
+  return { version: 1, head, mode, auditFiles: [...new Set(auditFiles)].sort(), shards: mode === "full" ? [...fullShards] : [1], visual: mode !== "skip", reasons };
 }
 
-export function selectUITests({ eventName, snapshotUpdate = false, head, changes, map, catalog, graph }) {
+export function selectUITests({ eventName, snapshotUpdate = false, head, changes, map, catalog, graph, releaseMetadataValidated = false }) {
   if (eventName === "workflow_dispatch" && snapshotUpdate) return plan("snapshots", head, ["Explicit snapshot generation"]);
   if (eventName !== "pull_request") return plan("full", head, ["Main pushes and ordinary manual runs always run full UI"]);
   if (!changes?.length) return plan("full", head, ["Missing or empty change evidence"]);
@@ -122,6 +124,10 @@ export function selectUITests({ eventName, snapshotUpdate = false, head, changes
   let visual = false;
   for (const { path, status } of changes) {
     if (typeof path !== "string" || path.startsWith("/") || path.split("/").includes("..") || path.includes("\\")) return plan("full", head, ["Unsupported changed path"]);
+    if (isReleaseMetadata(path) && releaseMetadataValidated && ["A", "M"].includes(status)) {
+      reasons.push(`Validated release metadata: ${path}`);
+      continue;
+    }
     // These trees are not inputs to the browser fixture. Everything else is
     // evaluated below or conservatively falls back to the full suite.
     if (/^(apps\/(android|macos|node)\/|sdks\/android-feedback\/)/.test(path)
@@ -146,12 +152,12 @@ export function selectUITests({ eventName, snapshotUpdate = false, head, changes
   }
   if (selected.size) {
     for (const file of map.smoke) selected.add(ui + file);
-    // Large combined feature changes are cheaper on the four full-suite
+    // Large combined feature changes are cheaper on the full-suite
     // runners than on one targeted runner, and deserve broader coverage.
     if (selected.size > 12) return plan("full", head, ["Broad feature change"]);
     return plan("targeted", head, [...new Set(reasons)], [...selected]);
   }
-  return visual ? plan("visual", head, ["Screenshot baselines only"]) : plan("skip", head, ["Documentation, native clients, or unit tests only"]);
+  return visual ? plan("visual", head, ["Screenshot baselines only"]) : plan("skip", head, reasons.length ? reasons : ["Documentation, native clients, or unit tests only"]);
 }
 
 export function validatePlan(value, { head, catalog = auditCatalog() } = {}) {
@@ -161,7 +167,7 @@ export function validatePlan(value, { head, catalog = auditCatalog() } = {}) {
   if (value.mode === "targeted") {
     if (!value.auditFiles.length || impactMap().smoke.some(file => !value.auditFiles.includes(ui + file))) throw new Error("Targeted UI must include core smoke coverage");
   } else if (value.auditFiles.length) throw new Error("Unexpected UI file filter");
-  if (JSON.stringify(value.shards) !== JSON.stringify(value.mode === "full" ? [1, 2, 3, 4] : [1]) || value.visual !== (value.mode !== "skip")) throw new Error("Invalid UI plan execution shape");
+  if (JSON.stringify(value.shards) !== JSON.stringify(value.mode === "full" ? fullShards : [1]) || value.visual !== (value.mode !== "skip")) throw new Error("Invalid UI plan execution shape");
   return value;
 }
 
@@ -207,8 +213,12 @@ function main() {
       if (changes.some(change => change.path.startsWith(web))) graph = importGraph();
     } catch { changes = null; }
   }
+  // Keep validation errors fatal; malformed publication facts cannot earn a
+  // successful skip. Missing diff evidence above still falls back to full UI.
+  const releaseMetadataValidated = changes?.some(change => isReleaseMetadata(change.path))
+    ? validateReleaseMetadata({ root, base: process.env.UI_BASE_SHA, changes }) : false;
   const value = validatePlan(selectUITests({ eventName, snapshotUpdate: process.env.UI_UPDATE_SNAPSHOTS === "true", head, changes,
-    map: impactMap(), catalog: auditCatalog(), graph }));
+    map: impactMap(), catalog: auditCatalog(), graph, releaseMetadataValidated }));
   const json = JSON.stringify(value);
   console.log(json);
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `plan=${json}\naudit=${["full", "targeted"].includes(value.mode)}\nvisual=${value.visual}\nshards=${JSON.stringify(value.shards)}\n`);

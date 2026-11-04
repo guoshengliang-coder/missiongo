@@ -27,6 +27,15 @@ test("PR documentation/native-only changes skip UI, while main and manual runs s
   }
 });
 
+test("only validated publication facts skip PR UI; runtime changes and main stay full", () => {
+  const paths = ["released.json", "release-notes/macos/pr-123.json"];
+  assert.equal(choose(paths).mode, "full");
+  assert.equal(choose(paths, { releaseMetadataValidated: true }).mode, "skip");
+  assert.equal(choose([...paths, "apps/web/src/App.tsx"], { releaseMetadataValidated: true }).mode, "full");
+  assert.equal(choose(paths, { releaseMetadataValidated: true, eventName: "push" }).mode, "full");
+  assert.equal(choose([{ path: paths[0], status: "D" }], { releaseMetadataValidated: true }).mode, "full");
+});
+
 test("reviewed feature boundaries and private dependencies include the entire smoke matrix", () => {
   for (const feature of Object.values(map.features)) {
     const value = validatePlan(choose([`apps/web/src/${feature.entry}`]), { head });
@@ -156,7 +165,7 @@ test("plan validation rejects stale revisions, missing smoke tests and unknown e
   const args = playwrightArguments(value, "audit");
   assert(args.includes("--shard=1/1"));
   assert(args.includes("tests/ui/statistics\\.audit\\.spec\\.ts$"));
-  assert.deepEqual(playwrightArguments(choose(["apps/web/src/App.tsx"]), "audit", 4), ["test", "--project=audit", "--shard=4/4"]);
+  assert.deepEqual(playwrightArguments(choose(["apps/web/src/App.tsx"]), "audit", 8), ["test", "--project=audit", "--shard=8/8"]);
 });
 
 test("UI gate accepts only the exact successes/skips required by each permitted plan", () => {
@@ -183,7 +192,7 @@ test("CLI plans from real commits and validates the skip gate without installed 
     for (const file of catalog) put(file, "// fixture");
     for (const feature of Object.values(map.features)) put(`apps/web/src/${feature.entry}`, "// fixture");
     put("scripts/.keep", "");
-    for (const file of ["ui-test-plan.mjs", "run-ui-tests.mjs"]) copyFileSync(new URL(`./${file}`, import.meta.url), join(directory, "scripts", file));
+    for (const file of ["ui-test-plan.mjs", "run-ui-tests.mjs", "check-release-metadata.mjs", "release-notes.mjs"]) copyFileSync(new URL(`./${file}`, import.meta.url), join(directory, "scripts", file));
     put("README.md", "before");
     git("init"); git("add", "."); git("-c", "user.name=UI Fixture", "-c", "user.email=ui@example.test", "commit", "-m", "base");
     const baseSha = git("rev-parse", "HEAD");
@@ -202,5 +211,23 @@ test("CLI plans from real commits and validates the skip gate without installed 
       const full = JSON.parse(execFileSync(process.execPath, ["scripts/ui-test-plan.mjs"], { cwd: directory, env: { ...environment, UI_BASE_SHA }, encoding: "utf8" }));
       assert.equal(full.mode, "full");
     }
+    // Reproduce Actions' depth-1 checkout: fetching the base object does not
+    // reconnect HEAD. The workflow's full fetch must restore selective plans.
+    const shallow = join(directory, "shallow");
+    git("clone", "--quiet", "--depth=1", `file://${directory}`, shallow);
+    const shallowGit = (...args) => execFileSync("git", args, { cwd: shallow, stdio: ["ignore", "pipe", "pipe"] });
+    shallowGit("fetch", "--no-tags", "origin", baseSha);
+    const inShallow = () => JSON.parse(execFileSync(process.execPath, ["scripts/ui-test-plan.mjs"], { cwd: shallow, env: { ...environment, GITHUB_OUTPUT: "" }, encoding: "utf8" }));
+    assert.equal(inShallow().mode, "full");
+    shallowGit("fetch", "--unshallow", "origin");
+    assert.equal(inShallow().mode, "skip");
+
+    put("release-notes/macos/pr-123.json", JSON.stringify({ pullRequest: 123, items: [{ key: "PR-123", title: "更新说明" }] }));
+    const metadataEnv = { ...environment, GITHUB_OUTPUT: "", UI_BASE_SHA: git("rev-parse", "HEAD") };
+    git("add", "release-notes"); git("-c", "user.name=UI Fixture", "-c", "user.email=ui@example.test", "commit", "-m", "release note");
+    const runMetadata = () => spawnSync(process.execPath, ["scripts/ui-test-plan.mjs"], { cwd: directory, env: metadataEnv, encoding: "utf8" });
+    const valid = runMetadata(); assert.equal(valid.status, 0, valid.stderr); assert.equal(JSON.parse(valid.stdout).mode, "skip");
+    put("release-notes/macos/pr-123.json", "{invalid");
+    assert.notEqual(runMetadata().status, 0);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

@@ -16,6 +16,12 @@ on:
 permissions:
   contents: read
 
+# Superseded PR revisions cannot become the version we merge. Keep main and
+# manual runs in separate groups so a newer commit cannot cancel release proof.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   ui-plan:
     runs-on: ubuntu-latest
@@ -26,6 +32,10 @@ jobs:
       shards: ${{ steps.plan.outputs.shards }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The planner verifies base ancestry. Fetching the base object alone
+          # does not reconnect a depth-1 checkout's shallow merge commit.
+          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: 22.13.0

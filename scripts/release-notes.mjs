@@ -106,7 +106,7 @@ function mergedPullRequests({ root, from, to }) {
 /// belongs to the PR that added it, which is the normal case. With it, the items
 /// can be attributed to an already-merged PR whose own diff may not have carried
 /// them -- how a missing note is filled in after the fact.
-function parseDeclaration(content, path, client) {
+export function parseDeclaration(content, path, client) {
   let parsed;
   try {
     parsed = JSON.parse(content);
