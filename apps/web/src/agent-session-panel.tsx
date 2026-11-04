@@ -1,11 +1,11 @@
-import { useState, type FormEvent } from "react";
+import { useState, useEffect, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { AgentReplyFeedback, AgentRunDetails } from "./agent-session-feedback";
 import { MarkdownText } from "./markdown-text";
 import { AgentArtifactMarkdown } from "./agent-artifact-viewer";
 import { api } from "./api";
-import { activityLabelKey, formatAgentMessageTime, isWithdrawnCard, replyBlockedLabelKey } from "./agent-session-view";
+import { activityLabelKey, agentSessionDetailRefetchInterval, formatAgentMessageTime, isWithdrawnCard, replyBlockedLabelKey } from "./agent-session-view";
 import { AgentSessionQuestions } from "./agent-session-questions";
 import { useI18n } from "./i18n";
 import { localizedErrorText } from "./error-text";
@@ -38,11 +38,22 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [reply, setReply] = useState("");
+  const [documentVisible, setDocumentVisible] = useState(() => typeof document === "undefined" || document.visibilityState === "visible");
+  useEffect(() => {
+    const update = () => setDocumentVisible(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", update);
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
   const session = useQuery({
     queryKey: ["agent-session", sessionId],
     queryFn: () => api.getAgentSession(sessionId),
     enabled: open,
-    refetchInterval: open ? 2_000 : false,
+    // AND-383: this panel used to poll every 2s unconditionally; it now shares
+    // the console's visibility-aware interval with failure backoff, so a slow
+    // server is asked less often instead of being hammered at a fixed rate.
+    refetchInterval: (query) => open
+      ? agentSessionDetailRefetchInterval(documentVisible, query.state.fetchFailureCount)
+      : false,
   });
   const send = useMutation({
     mutationFn: (text: string) => api.sendAgentSessionCommand(sessionId, text),
