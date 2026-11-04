@@ -167,11 +167,34 @@ export class ExternalAgentSessionStore {
   listForAccount(accountId: string, limit = 100): AgentSessionListItem[] {
     const rows = this.db.prepare("SELECT * FROM external_agent_sessions WHERE account_id = ? ORDER BY activity_at DESC, rowid DESC LIMIT ?")
       .all(accountId, limit) as unknown as SessionRow[];
+    // AND-383: batch the per-row lookups (latest report, linked items) and
+    // reuse one native-session store instead of allocating per row.
+    const nativeStore = new ExternalNativeSessionStore(this.store);
+    const ids = rows.map((row) => row.id);
+    const holes = (values: readonly string[]) => `(${values.map(() => "?").join(",")})`;
+    const latestBySession = new Map<string, { id: string; text: string | null; status: ExternalProgressStatus; item_key: string }>();
+    const itemsBySession = new Map<string, Array<{ key: string; title: string; productId: string }>>();
+    if (ids.length) {
+      const reports = this.db.prepare(`SELECT session_id, id, text, status, item_key FROM (
+        SELECT session_id, id, text, status, item_key,
+          ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY created_at DESC, rowid DESC) AS rn
+        FROM external_agent_session_reports WHERE session_id IN ${holes(ids)}) WHERE rn = 1`)
+        .all(...ids) as unknown as Array<{ session_id: string; id: string; text: string | null; status: ExternalProgressStatus; item_key: string }>;
+      for (const report of reports) latestBySession.set(report.session_id, report);
+      const items = this.db.prepare(`SELECT i.session_id, w.item_key, w.title, w.product_id
+        FROM external_agent_session_items i JOIN work_items w ON w.id = i.item_id
+        WHERE i.session_id IN ${holes(ids)} ORDER BY i.session_id, i.rowid`)
+        .all(...ids) as unknown as Array<{ session_id: string; item_key: string; title: string; product_id: string }>;
+      for (const item of items) {
+        const list = itemsBySession.get(item.session_id) ?? [];
+        itemsBySession.set(item.session_id, list);
+        list.push({ key: item.item_key, title: item.title, productId: item.product_id });
+      }
+    }
     return rows.map((row) => {
-      const { nativeMessages, ...native } = new ExternalNativeSessionStore(this.store).overlay(accountId, row.id, false);
-      const latest = this.db.prepare("SELECT id, text, status, item_key FROM external_agent_session_reports WHERE session_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
-        .get(row.id) as { id: string; text: string | null; status: ExternalProgressStatus; item_key: string } | undefined;
-      const items = this.itemKeys(accountId, row.id).map((key) => this.store.getWorkItem(key));
+      const { nativeMessages, ...native } = nativeStore.overlay(accountId, row.id, false);
+      const latest = latestBySession.get(row.id);
+      const items = itemsBySession.get(row.id) ?? [];
       const revision = latest?.id;
       const needsAttention = ["waiting_for_input", "blocked", "failed"].includes(row.progress_status)
         && row.dismissed_revision !== revision;
