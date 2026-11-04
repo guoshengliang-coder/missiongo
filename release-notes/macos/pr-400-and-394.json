@@ -1,0 +1,9 @@
+{
+  "pullRequest": 400,
+  "items": [
+    {
+      "key": "AND-394",
+      "title": "修复 Codex 停止请求被慢同步阻塞和长期排队"
+    }
+  ]
+}
