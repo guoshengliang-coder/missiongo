@@ -40,13 +40,15 @@
     "test:ui": "playwright test --project=audit",
     "test:ui:visual": "playwright test --project=visual",
     "typecheck": "tsc -b --pretty false",
-    "version:web": "node scripts/web-version.mjs bump"
+    "version:web": "node scripts/web-version.mjs bump",
+    "generate:branding": "node scripts/product-branding.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
     "@types/node": "^26.4.1",
     "esbuild": "^0.28.2",
     "oxlint": "^1.81.0",
+    "sharp": "^0.35.4",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2",
     "vitest": "^5.0.0"

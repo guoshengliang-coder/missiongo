@@ -1,3 +1,5 @@
+import { PRODUCT_TAGLINES } from "./branding.generated";
+import { applyProductMetadata } from "./branding";
 import { COLLABORATION_EN, COLLABORATION_ZH } from "./collaboration-messages";
 import { createContext, useContext, useEffect, useMemo, type ReactNode } from "react";
 
@@ -6,6 +8,7 @@ import { ITEM_STATUSES, type WorkItemPriority, type WorkItemStatus, type WorkIte
 export type Locale = "zh-CN" | "en";
 
 const EN_MESSAGES = {
+  productTagline: PRODUCT_TAGLINES.en,
   executionStopBlocked: "An earlier execution has not been confirmed stopped. Close dispatch and check Execution records in the item details.",
   executionStopHeading: "Check the earlier execution before starting again",
   executionStopActive: "The source still reports activity. Stop it in the original client and wait for a new observation.",
@@ -1412,6 +1415,7 @@ const EN_MESSAGES = {
 export type MessageKey = keyof typeof EN_MESSAGES;
 
 const ZH_MESSAGES: Record<MessageKey, string> = {
+  productTagline: PRODUCT_TAGLINES["zh-CN"],
   executionStopBlocked: "原执行尚未确认结束。请关闭派单窗口，在条目详情的执行记录中核对阻塞原因。",
   executionStopHeading: "启动新执行前，请核实原执行",
   executionStopActive: "来源仍上报活动，请先在原客户端停止，并等待新的状态回报。",
@@ -2926,7 +2930,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     localStorage.setItem("missiongo.locale", locale);
     document.documentElement.lang = locale;
-    document.title = locale === "zh-CN" ? "MissionGo · 从灵感到交付" : "MissionGo · From idea to shipped";
+    applyProductMetadata(document, locale);
   }, [locale]);
 
   const value = useMemo<I18nValue>(() => {

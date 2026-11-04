@@ -45,6 +45,7 @@
 ### 2.3 品牌与操作
 
 - `--navy` #172033 与 `--mint` #67e3b4 是品牌色，**两端恒定，不随主题反转**；`--on-mint` 是放在薄荷底上的文字色。
+- 产品标识与中英文宣传语由 `product.json` 声明；图标以其 `iconSource` 的斜火箭为源。Web 共用 `Brand`，Android 与 macOS 使用生成资源，PWA maskable 图标另留安全区；SDK 验证 Sample 保持独立身份。生成及校验见 [品牌资源](../assets/brand/README.md)，界面覆盖登录、首次使用与工作区，回归见 `tests/ui/branding.audit.spec.ts`。
 - `--primary-bg` / `--primary-fg` 是主操作按钮，**随主题反转**：浅色为 navy 底白字，深色为 mint 底深字。
 - 一个视图里只能有一个主操作（实心主按钮）。其余操作一律用次级按钮或图标按钮。
 
@@ -93,6 +94,7 @@
 - 圆角阶梯：`--radius-xs` 6 / `--radius-sm` 8 / `--radius-md` 11 / `--radius-lg` 14 / `--radius-xl` 18，另外胶囊形用 999px。
 - 对应关系：徽章与小控件 xs–sm，按钮与输入框 md，卡片与列表容器 lg，弹层与抽屉 xl。
 - 阴影只有两档：`--shadow`（浮层）和 `--shadow-soft`（面板）。
+- 品牌页头的细边框及装饰性硬阴影是标识专用样式：由 `.brand-mark` 的 CSS 边框与 `drop-shadow` 提供，不烙入应用图标资源。应用图标保持无边框、平面、居中，各平台自行裁切与添加系统效果。
 
 ## 5. 布局与适配
 

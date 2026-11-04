@@ -4,7 +4,8 @@
 // v5 (AND-309) discards OAuth pages that v4 cached as both authorization URLs
 // and `/`. Authorization documents must always come from the server, even when
 // the browser already has a complete console shell and a signed-in session.
-const CACHE_NAME = "missiongo-shell-v5";
+// v6 refreshes the unified brand icon and PWA metadata (AND-384).
+const CACHE_NAME = "missiongo-shell-v6";
 const SHELL = ["/", "/icon.svg", "/manifest.webmanifest"];
 
 /** Only these routes render the shared index.html, never server documents. */
