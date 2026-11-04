@@ -472,6 +472,41 @@ final class WebSocketFrameTests: XCTestCase {
 }
 
 final class CodexAppServerControlTests: XCTestCase {
+    func testStopStateReadExcludesHistoryAndNeverResumesOrLists() async throws {
+        let server = try FakeAppServer { message in
+            guard let id = message["id"] else { return [] }
+            let result: [String: Any] = message["method"] as? String == "thread/read"
+                ? ["thread": ["id": "stop-exact", "status": ["type": "active"]]] : [:]
+            return [["jsonrpc": "2.0", "id": id, "result": result]]
+        }
+        let snapshot = try await CodexAppServerControl().readThreadStatus(socketPath: server.path, threadId: "stop-exact")
+        server.waitUntilDone()
+        XCTAssertEqual(snapshot.status, "active")
+        XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/read"])
+        XCTAssertEqual(server.params(of: "thread/read")?["includeTurns"] as? Bool, false)
+        XCTAssertEqual(server.params(of: "thread/read")?["threadId"] as? String, "stop-exact")
+    }
+
+    func testReadTimeoutReportsOnlyTransportMetadata() async throws {
+        let server = try FakeAppServer { message in
+            guard let id = message["id"], message["method"] as? String != "thread/read" else { return [] }
+            return [["jsonrpc": "2.0", "id": id, "result": [:]]]
+        }
+        do {
+            _ = try await CodexAppServerControl(readTimeout: 0.1).readThreadStatus(socketPath: server.path, threadId: "private-thread-id")
+            XCTFail("Expected a read timeout")
+        } catch let error as CodexReadFailure {
+            XCTAssertEqual(error.stage, "thread/read")
+            XCTAssertFalse(error.includesHistory)
+            XCTAssertGreaterThanOrEqual(error.elapsedMilliseconds, 90)
+            XCTAssertGreaterThan(error.receivedBytes, 0)
+            XCTAssertFalse(error.localizedDescription.contains(server.path))
+            XCTAssertFalse(error.localizedDescription.contains("private-thread-id"))
+            XCTAssertTrue(error.localizedDescription.contains("尚不能确认原任务是否停止"))
+        }
+        server.waitUntilDone()
+    }
+
     func testApprovalObserverAnswersTheLiveRequestOnItsOwnSocket() throws {
         let server = try FakeAppServer { message in
             guard let method = message["method"] as? String, let id = message["id"] else { return [] }
@@ -1393,6 +1428,10 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
     let externalOverrides = Locked<[CodexTurnOverrides?]>([])
     let approvalReads = Locked(0)
     var pendingApproval: CodexApprovalSnapshot?
+    let approvalAnswers = Locked<[String]>([])
+    func answerApproval(threadId: String, approvalId: String, decision: String) throws {
+        approvalAnswers.withLock { $0.append(approvalId + ":" + decision) }
+    }
     let cancelledApprovals = Locked<[String]>([])
     var interruptError: Error?
     var afterInterrupt: CodexThreadSnapshot?
@@ -1420,6 +1459,9 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
     let archived = Locked<[String]>([])
     var archiveError: Error?
     var readError: Error?
+    var statusReadError: Error?
+    let historyReads = Locked(0)
+    let statusReads = Locked(0)
     var replyError: Error?
     let replyOverrides = Locked<[CodexTurnOverrides?]>([])
     let appliedSettings = Locked<[(String, CodexTurnOverrides)]>([])
@@ -1453,7 +1495,14 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
     func hasLoadedThreads(socketPath: String) async throws -> Bool { loadedThreads }
 
     func readThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
+        historyReads.withLock { $0 += 1 }
         if let readError { throw readError }
+        return snapshot
+    }
+
+    func readThreadStatus(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
+        statusReads.withLock { $0 += 1 }
+        if let statusReadError { throw statusReadError }
         return snapshot
     }
 
@@ -1517,6 +1566,60 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
 }
 
 final class CodexLauncherTests: XCTestCase {
+    func testStopDoesNotReadHistoryAndConfirmsTheResult() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.readError = CodexControlError.timedOut(method: "thread/read")
+        control.snapshot = CodexThreadSnapshot(status: "active", messages: [])
+        control.afterInterrupt = CodexThreadSnapshot(status: "idle", messages: [])
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        let report = try await launcher.synchronize(NodeAgentSession(id: "s", sessionRef: "thread-1", status: "unavailable",
+            command: AgentSessionCommand(id: "stop", kind: "interrupt", text: "停止", turnId: "exact-turn")))
+        XCTAssertEqual(control.historyReads.current, 0)
+        XCTAssertEqual(control.statusReads.current, 2)
+        XCTAssertEqual(control.interruptions.current.map { [$0.0, $0.1] }, [["thread-1", "exact-turn"]])
+        XCTAssertEqual(report.status, "idle")
+        XCTAssertEqual(report.commandStatus, "delivered")
+        XCTAssertEqual(report.turnActive, false)
+        XCTAssertTrue(control.replies.current.isEmpty)
+    }
+
+    func testStopAckWithoutReadableStateReleasesQueueWithoutClaimingStopped() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.statusReadError = CodexControlError.timedOut(method: "thread/read")
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        let report = try await launcher.synchronize(NodeAgentSession(id: "s", sessionRef: "thread-1", status: "active",
+            command: AgentSessionCommand(id: "stop", kind: "interrupt", text: "停止", turnId: "exact-turn")))
+        XCTAssertEqual(control.interruptions.current.count, 1)
+        XCTAssertEqual(report.commandId, "stop")
+        XCTAssertEqual(report.commandStatus, "failed")
+        XCTAssertEqual(report.status, "unavailable")
+        XCTAssertNil(report.turnActive)
+        XCTAssertNil(report.observedAt)
+        XCTAssertTrue(report.commandError?.contains("终止尚未确认") == true)
+        // A subsequent mirror poll cannot replay the failed stop or send input.
+        control.statusReadError = nil
+        _ = try await launcher.synchronize(NodeAgentSession(id: "s", sessionRef: "thread-1", status: "unavailable"))
+        XCTAssertEqual(control.interruptions.current.count, 1)
+        XCTAssertTrue(control.replies.current.isEmpty)
+    }
+
+    func testHumanApprovalAnswerSurvivesHistoryReadFailure() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.readError = CodexControlError.timedOut(method: "thread/read")
+        control.pendingApproval = CodexApprovalSnapshot(id: "approval", kind: "manual", status: "pending",
+            turnId: "turn-1", action: "test action", startedAtMs: 1)
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        let report = try await launcher.synchronize(NodeAgentSession(id: "s", sessionRef: "thread-1", status: "active",
+            approvalDecision: CodexApprovalDecision(id: "approval", choice: "accept")))
+        XCTAssertEqual(control.approvalAnswers.current, ["approval:accept"])
+        XCTAssertEqual(report.status, "unavailable")
+        XCTAssertEqual(report.approval?.id, "approval")
+        XCTAssertTrue(control.replies.current.isEmpty)
+    }
+
     /// A Codex home with the control socket listening and the Skill installed,
     /// and a git repository to work in.
     private func machine(skill: Bool = true, socket: Bool = true) throws -> (location: CodexLocation, repoPath: String, listener: Int32?) {
@@ -2269,6 +2372,7 @@ final class CodexLauncherTests: XCTestCase {
     func testAnActiveThreadExecutesAQueuedInterrupt() async throws {
         let control = RecordingControl(threadId: "thread-1")
         control.snapshot = CodexThreadSnapshot(status: "active", messages: [])
+        control.afterInterrupt = CodexThreadSnapshot(status: "idle", messages: [])
         let launcher = CodexLauncher(
             environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
             location: CodexLocation(codexHome: "/tmp/codex"), control: control

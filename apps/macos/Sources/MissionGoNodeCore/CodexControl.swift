@@ -19,6 +19,8 @@ public protocol CodexControl: Sendable {
     func startThread(_ request: CodexThreadRequest) async throws -> String
     func startManagedThread(_ request: CodexThreadRequest) async throws -> ManagedRuntimeReceipt
     func readThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
+    /// Reads runtime state without loading the transcript or resuming the thread.
+    func readThreadStatus(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
     func readExternalThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
     func readArtifactThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
     func readManagedThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
@@ -66,6 +68,10 @@ public extension CodexControl {
     }
     func readThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
         throw CodexControlError.rpc(method: "thread/read", message: "这个 Codex 控制器不支持读取会话。")
+    }
+
+    func readThreadStatus(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
+        try await readThread(socketPath: socketPath, threadId: threadId)
     }
 
     func sendExternalMessage(socketPath: String, threadId: String, text: String, clientUserMessageId: String) async throws {
@@ -440,8 +446,8 @@ public enum CodexProtocol {
         ]
     }
 
-    public static func threadReadParams(threadId: String) -> [String: Any] {
-        return ["threadId": threadId, "includeTurns": true]
+    public static func threadReadParams(threadId: String, includeTurns: Bool = true) -> [String: Any] {
+        return ["threadId": threadId, "includeTurns": includeTurns]
     }
 
     public static func archivedThreadListParams(cursor: String? = nil) -> [String: Any] {
@@ -725,6 +731,22 @@ private final class CodexArchiveCache: @unchecked Sendable {
     }
 }
 
+/// Metadata only: never includes paths, thread IDs, transcript text or tool arguments.
+struct CodexReadFailure: Error, LocalizedError {
+    let stage: String
+    let reason: String
+    let elapsedMilliseconds: Int
+    let receivedBytes: Int
+    let includesHistory: Bool
+    let lastSuccessfulRead: Date?
+
+    var errorDescription: String? {
+        let last = lastSuccessfulRead.map { ISO8601DateFormatter().string(from: $0) } ?? "尚无成功记录"
+        let version = AppUpdater.currentVersion() ?? "development"
+        return "Codex 会话同步失败（\(reason)）；尚不能确认原任务是否停止。诊断：stage=\(stage), elapsedMs=\(elapsedMilliseconds), connectionReceivedBytes=\(receivedBytes), includeTurns=\(includesHistory), lastSuccessfulRead=\(last), nodeVersion=\(version)。"
+    }
+}
+
 public struct CodexAppServerControl: CodexControl {
     /// Per call. `thread/start` loads configuration and MCP servers, which can
     /// take a few seconds on a cold app-server.
@@ -736,6 +758,7 @@ public struct CodexAppServerControl: CodexControl {
     public let readTimeout: TimeInterval
     private let archiveCache: CodexArchiveCache
     private let approvalMonitor: CodexApprovalMonitor
+    private let successfulReads = Locked<[String: Date]>([:])
 
     public init(timeout: TimeInterval = 30, readTimeout: TimeInterval = 10) {
         self.timeout = timeout
@@ -781,28 +804,63 @@ public struct CodexAppServerControl: CodexControl {
     public func readExternalThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
         try await readThread(socketPath: socketPath, threadId: threadId, includeExecutionItems: false, checkArchiveList: false, requireLoaded: true)
     }
-    private func readThread(socketPath: String, threadId: String, includeExecutionItems: Bool, checkArchiveList: Bool = true, requireLoaded: Bool = false) async throws -> CodexThreadSnapshot {
+    public func readThreadStatus(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
+        try await readThread(socketPath: socketPath, threadId: threadId, includeExecutionItems: false,
+            checkArchiveList: false, includeTurns: false)
+    }
+    private func readThread(socketPath: String, threadId: String, includeExecutionItems: Bool, checkArchiveList: Bool = true, requireLoaded: Bool = false, includeTurns: Bool = true) async throws -> CodexThreadSnapshot {
         let timeout = self.readTimeout
         let archiveCache = self.archiveCache
+        let successfulReads = self.successfulReads
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async {
                 continuation.resume(with: Result {
-                    let connection = try JSONRPCWebSocket(socketPath: socketPath, timeout: timeout)
-                    defer { connection.close() }
-                    _ = try connection.call("initialize", CodexProtocol.initializeParams())
-                    try connection.notify("initialized")
-                    let archived = checkArchiveList && ((try? archiveCache.value(socketPath: socketPath) {
-                        try CodexAppServerControl.archivedThreadIds(connection: connection)
-                    }.contains(threadId)) ?? false)
-                    if archived {
-                        return CodexThreadSnapshot(status: "unavailable", messages: [], archived: true)
+                    let started = Date()
+                    var stage = "connect"
+                    var connection: JSONRPCWebSocket?
+                    defer { connection?.close() }
+                    do {
+                        let channel = try JSONRPCWebSocket(socketPath: socketPath, timeout: timeout)
+                        connection = channel
+                        stage = "initialize"
+                        _ = try channel.call("initialize", CodexProtocol.initializeParams())
+                        try channel.notify("initialized")
+                        let archived = checkArchiveList && ((try? archiveCache.value(socketPath: socketPath) {
+                            try CodexAppServerControl.archivedThreadIds(connection: channel)
+                        }.contains(threadId)) ?? false)
+                        if archived {
+                            return CodexThreadSnapshot(status: "unavailable", messages: [], archived: true)
+                        }
+                        stage = "thread/read"
+                        let result = try channel.call("thread/read", CodexProtocol.threadReadParams(threadId: threadId, includeTurns: includeTurns))
+                        if !checkArchiveList, (result["thread"] as? [String: Any])?["id"] as? String != threadId {
+                            throw CodexControlError.invalidResponse(method: "thread/read identity")
+                        }
+                        if requireLoaded { try Self.requireExternalRuntime(result, threadId: threadId) }
+                        let snapshot = try CodexProtocol.threadSnapshot(fromRead: result, includeExecutionItems: includeExecutionItems)
+                        if includeTurns {
+                            successfulReads.withLock { values in
+                                values[threadId] = Date()
+                                if values.count > 128, let oldest = values.min(by: { $0.value < $1.value })?.key {
+                                    values.removeValue(forKey: oldest)
+                                }
+                            }
+                        }
+                        return snapshot
+                    } catch let error as CodexControlError {
+                        let reason: String
+                        switch error {
+                        case .timedOut: reason = "读取超时"
+                        case .closed: reason = "控制通道断开"
+                        case .connect: reason = "控制通道连接失败"
+                        case .handshake: reason = "控制通道握手失败"
+                        default: throw error
+                        }
+                        throw CodexReadFailure(stage: stage, reason: reason,
+                            elapsedMilliseconds: Int(Date().timeIntervalSince(started) * 1_000),
+                            receivedBytes: connection?.receivedBytes ?? 0, includesHistory: includeTurns,
+                            lastSuccessfulRead: successfulReads.current[threadId])
                     }
-                    let result = try connection.call("thread/read", CodexProtocol.threadReadParams(threadId: threadId))
-                    if !checkArchiveList, (result["thread"] as? [String: Any])?["id"] as? String != threadId {
-                        throw CodexControlError.invalidResponse(method: "thread/read identity")
-                    }
-                    if requireLoaded { try Self.requireExternalRuntime(result, threadId: threadId) }
-                    return try CodexProtocol.threadSnapshot(fromRead: result, includeExecutionItems: includeExecutionItems)
                 })
             }
         }
@@ -1437,6 +1495,7 @@ final class JSONRPCWebSocket {
     private var buffer: [UInt8] = []
     private var nextId = 1
     private(set) var notifications: [[String: Any]] = []
+    private(set) var receivedBytes = 0
 
     init(socketPath: String, timeout: TimeInterval) throws {
         socket = try UnixSocket(path: socketPath, timeout: timeout)
@@ -1540,6 +1599,7 @@ final class JSONRPCWebSocket {
             if Date() >= deadline { throw CodexControlError.timedOut(method: method) }
             switch try socket.read() {
             case let .data(bytes):
+                receivedBytes += bytes.count
                 buffer += bytes
                 return
             case .closed:

@@ -651,24 +651,30 @@ public struct CodexLauncher: AgentAdapter {
         failureReplyReservations.withLock { reservations in
             if reservations[session.id] != session.command?.id { reservations[session.id] = nil }
         }
+        if session.command?.kind == "interrupt" {
+            return await synchronizeInterrupt(session)
+        }
+        // Approval answers use the observer's original socket, independently
+        // of transcript reads. A slow history must not prevent a human answer.
+        let approval = approvalSnapshot(session)
+        if let decision = session.approvalDecision, approval?.id == decision.id,
+           approval?.status == "pending" {
+            try? control.answerApproval(threadId: session.sessionRef, approvalId: decision.id,
+                decision: decision.choice)
+        }
         let snapshot: CodexThreadSnapshot
         do {
             snapshot = try await readSnapshot(session)
         } catch {
-            guard let command = session.command, (command.kind ?? "message") == "message", command.status == "queued" else { throw error }
+            if session.command?.status == "delivering" { throw error }
+            let command = session.command
             return AgentSessionReport(status: "unavailable", messages: [],
                 error: CodexSessionFailure.redact(error.localizedDescription),
-                commandId: command.id, commandStatus: "failed",
-                commandError: "回复未发送：无法读取原 Codex 会话，请检查 Mac 连接或在来源客户端恢复。")
-        }
-        let approval = approvalSnapshot(session)
-        if let decision = session.approvalDecision, approval?.id == decision.id,
-           approval?.status == "pending" {
-            // The observer sends the answer asynchronously on the request's
-            // original socket. A transient failure keeps the decision queued;
-            // a completed approval must never be re-labelled unavailable.
-            try? control.answerApproval(threadId: session.sessionRef, approvalId: decision.id,
-                decision: decision.choice)
+                commandId: command?.status == "queued" ? command?.id : nil,
+                commandStatus: command?.status == "queued" ? "failed" : nil,
+                commandError: command?.status == "queued"
+                    ? "回复未发送：无法读取原 Codex 会话，请检查 Mac 连接或在来源客户端恢复。" : nil
+            ).reportingApproval(approvalSnapshot(session))
         }
         var model = snapshot.model
         var effort = snapshot.reasoningEffort
@@ -763,6 +769,50 @@ public struct CodexLauncher: AgentAdapter {
         }
         guard let desired = session.desiredSettings else { return nil }
         return try? CodexTurnOverrides(desired: desired)
+    }
+
+    /// A stop is scoped to the exact turn already attached to the command.
+    /// Never require the complete history and never infer stop from an RPC ack.
+    private func synchronizeInterrupt(_ session: NodeAgentSession) async -> AgentSessionReport {
+        guard let command = session.command else { return AgentSessionReport(status: "unavailable", messages: []) }
+        guard let turnId = command.turnId, !turnId.isEmpty else {
+            return AgentSessionReport(status: "unavailable", messages: [], commandId: command.id,
+                commandStatus: "failed", commandError: "终止未发送：缺少原回合标识，请在来源客户端核实。")
+        }
+        let before = try? await control.readThreadStatus(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+        if before?.status == "idle" {
+            return AgentSessionReport(status: "idle", messages: before?.messages ?? [], commandId: command.id,
+                commandStatus: "delivered", turnActive: false)
+        }
+        // Even when observation failed, the explicit command authorizes only
+        // this old turn. It cannot interrupt a newer turn or restart a daemon.
+        control.cancelApprovals(threadId: session.sessionRef, turnId: turnId)
+        var interruptError: String?
+        do {
+            try await control.interruptTurn(socketPath: location.controlSocketPath,
+                threadId: session.sessionRef, turnId: turnId)
+        } catch {
+            interruptError = CodexSessionFailure.redact(error.localizedDescription)
+        }
+        let after: CodexThreadSnapshot?
+        var observationError: String?
+        do {
+            after = try await control.readThreadStatus(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+        } catch {
+            after = nil
+            observationError = CodexSessionFailure.redact(error.localizedDescription)
+        }
+        if let after, after.status == "idle" {
+            return AgentSessionReport(status: "idle", messages: after.messages, commandId: command.id,
+                commandStatus: "delivered", activityAt: after.activityAt, turnActive: false)
+        }
+        // Release the command queue without claiming the runtime stopped.
+        // Retrying requires a person's next action; no stop/input is replayed.
+        return AgentSessionReport(status: after?.status ?? "unavailable", messages: after?.messages ?? [],
+            error: observationError, commandId: command.id, commandStatus: "failed",
+            commandError: "终止尚未确认：\(interruptError ?? observationError ?? "来源仍未报告回合结束") 请在来源客户端核实，或恢复同步后重试终止。",
+            activityAt: after?.activityAt, turnActive: after.map { $0.status == "active" },
+            waitingForInput: after?.waitingOnApproval)
     }
 
     private func synchronize(_ session: NodeAgentSession, snapshot: CodexThreadSnapshot) async throws -> AgentSessionReport {
@@ -864,58 +914,6 @@ public struct CodexLauncher: AgentAdapter {
                 status: snapshot.status, messages: snapshot.messages,
                 commandId: command.id, commandStatus: "delivered",
                 sourceArchived: false, activityAt: snapshot.activityAt,
-                turnActive: snapshot.status == "active"
-            )
-        }
-        if command.kind == "interrupt" {
-            // The turn may have finished between the web click and this poll. In
-            // that case the requested outcome is already true, so acknowledge
-            // the command instead of leaving an impossible interrupt queued.
-            if snapshot.status == "active" {
-                guard let turnId = command.turnId else {
-                    throw LaunchError("终止命令缺少 Codex turn id，未执行中断。")
-                }
-                control.cancelApprovals(threadId: session.sessionRef, turnId: turnId)
-                do {
-                    try await control.interruptTurn(
-                        socketPath: location.controlSocketPath,
-                        threadId: session.sessionRef,
-                        turnId: turnId
-                    )
-                } catch {
-                    // A timed-out interrupt can have taken effect. Re-read it;
-                    // never leave an unconfirmed stop queued forever or claim
-                    // the turn is idle when the source still reports active.
-                    let observed = (try? await readSnapshot(session)) ?? snapshot
-                    if observed.status != "idle" {
-                        return AgentSessionReport(status: observed.status, messages: observed.messages,
-                            commandId: command.id, commandStatus: "failed",
-                            commandError: "终止尚未确认：\(CodexFailure.explain(error)) 可重试终止；不会自动重启其他会话共用的后台。",
-                            activityAt: observed.activityAt, turnActive: observed.status == "active",
-                            waitingForInput: observed.waitingOnApproval)
-                    }
-                }
-                // Re-read for the messages the interruption leaves behind so
-                // the delivered report carries the thread as it now stands
-                // (AND-219). The status stays the interrupted-idle contract;
-                // a re-read racing the interrupt's own effect would otherwise
-                // report a turn the person just stopped.
-                snapshot = CodexThreadSnapshot(
-                    status: "idle",
-                    activeTurnId: nil,
-                    messages: ((try? await control.readThread(
-                        socketPath: location.controlSocketPath, threadId: session.sessionRef
-                    ))?.messages) ?? snapshot.messages,
-                    activityAt: snapshot.activityAt
-                )
-            }
-            return AgentSessionReport(
-                status: snapshot.status,
-                messages: snapshot.messages,
-                commandId: command.id,
-                commandStatus: "delivered",
-                sourceArchived: false,
-                activityAt: snapshot.activityAt,
                 turnActive: snapshot.status == "active"
             )
         }

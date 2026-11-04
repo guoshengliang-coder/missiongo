@@ -106,6 +106,26 @@ it("an uncertain transport delivery does not refresh time beyond the user's send
   expect(row().activity_at).toBe(time(3));
 });
 
+it("a failed stop releases the reply queue while preserving unknown runtime state and history", () => {
+  const { snapshot, store, sessionId, db } = fixture();
+  const runningMessage = { ...message, turnId: "exact-turn" };
+  snapshot({ status: "active", messages: [runningMessage], turnState: { turnActive: true, observedAt: time(1) } });
+  const stop = store.enqueueInterrupt("owner", sessionId);
+  expect(stop.turnId).toBe("exact-turn");
+  expect(() => store.enqueue("owner", sessionId, "Continue")).toThrow();
+  snapshot({ status: "unavailable", messages: [], error: "Read timeout", commandId: stop.id,
+    commandStatus: "failed", commandError: "Stop not confirmed" });
+  const stored = store.getForAccount("owner", sessionId);
+  expect(stored.status).toBe("unavailable");
+  expect(stored.command).toMatchObject({ id: stop.id, status: "failed" });
+  expect(stored.messages.some(row => row.sourceId === message.sourceId)).toBe(true);
+  expect(stored.turnState?.turnActive).toBe(true);
+  const reply = store.enqueue("owner", sessionId, "Check the original turn");
+  expect(reply.status).toBe("queued");
+  expect(store.listForNode("node")[0]?.command?.id).toBe(reply.id);
+  expect(db.prepare("SELECT status FROM agent_session_commands WHERE id=?").get(stop.id)).toMatchObject({ status: "failed" });
+});
+
 it.each(["source-clock", "source-message"])("repairs a flagged historical time using %s and later durable user operations", (evidence) => {
   const { db, sessionId, snapshot, row } = fixture();
   db.prepare("UPDATE agent_sessions SET status='unavailable', activity_at=?, activity_repair_pending=1 WHERE id=?")

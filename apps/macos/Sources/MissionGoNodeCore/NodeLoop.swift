@@ -645,14 +645,20 @@ public final class NodeLoop: @unchecked Sendable {
                 do {
                     let sourceReport = try await adapter.synchronize(prepared)
                     let healthKey = session.externalBindingGeneration.map { "\(session.id):external:\($0)" } ?? session.id
-                    report = self.sessionHealth.observe(sourceReport, key: healthKey)
+                    // A failed observation is not evidence of source progress.
+                    report = sourceReport.status == "unavailable" ? sourceReport
+                        : self.sessionHealth.observe(sourceReport, key: healthKey)
                 } catch {
                     // After the command reached Codex, a transport
                     // error cannot prove whether turn/start took it.
                     let uncertain = session.agentKind == "codex"
                         && session.command?.status == "delivering"
                         && (session.command?.kind ?? "message") == "message"
-                    if let command = session.command, command.status == "delivering",
+                    if let command = session.command, session.agentKind == "codex", command.kind == "interrupt" {
+                        report = AgentSessionReport(status: "unavailable", messages: [],
+                            error: CodexSessionFailure.redact(error.localizedDescription), commandId: command.id,
+                            commandStatus: "failed", commandError: "终止尚未确认：无法同步原 Codex 会话，请在来源客户端核实。")
+                    } else if let command = session.command, command.status == "delivering",
                        command.attachments?.isEmpty == false, !uncertain {
                         report = AgentSessionReport(
                             status: session.status, messages: [], commandId: command.id,

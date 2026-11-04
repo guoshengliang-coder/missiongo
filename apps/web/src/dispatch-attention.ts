@@ -11,7 +11,8 @@ export function currentDispatchForStatus(
 }
 
 export function dispatchIssueLabelKey(issue: NonNullable<ItemDispatchSummary["issue"]>) {
-  return issue.kind === "execution" ? "executionIssueBadge" as const : "failedDispatchBadge" as const;
+  return issue.kind === "execution" ? "executionIssueBadge" as const
+    : issue.kind === "synchronization" ? "synchronizationIssueBadge" as const : "failedDispatchBadge" as const;
 }
 
 export function itemProgressKeys(item: Pick<WorkItem,"status"|"deliveryProgress">, current?: ItemDispatchSummary) {

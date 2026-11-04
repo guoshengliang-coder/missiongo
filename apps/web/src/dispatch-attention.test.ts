@@ -42,5 +42,7 @@ describe("current-stage dispatch attention", () => {
     expect(translate("zh-CN", dispatchIssueLabelKey({ kind: "dispatch" }))).toBe("派单失败");
     expect(translate("zh-CN", dispatchIssueLabelKey({ kind: "execution" }))).toBe("执行异常");
     expect(translate("en", dispatchIssueLabelKey({ kind: "execution" }))).toBe("Execution issue");
+    expect(translate("zh-CN", dispatchIssueLabelKey({ kind: "synchronization" }))).toBe("同步异常");
+    expect(translate("en", dispatchIssueLabelKey({ kind: "synchronization" }))).toBe("Sync unavailable");
   });
 });
