@@ -39,7 +39,9 @@ struct UnreadSessionCard: View {
         }
         .buttonStyle(.plain)
         .help(([session.title] + session.items.map(\.label)).joined(separator: "\n"))
-        .accessibilityLabel("\(session.title)，\(session.items.map(\.label).joined(separator: "，"))，\(agentName(session.agentKind))，\(session.nodeName)，\(relativeTime(session.activityAt))，在 Web 打开会话")
+        .accessibilityLabel(([session.title] + session.items.map(\.label)
+            + [agentName(session.agentKind), session.nodeName, relativeTime(session.activityAt), "在 Web 打开会话"])
+            .joined(separator: "，"))
     }
 
     private func agentName(_ kind: String) -> String {

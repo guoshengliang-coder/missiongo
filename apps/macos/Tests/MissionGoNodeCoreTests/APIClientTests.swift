@@ -203,8 +203,28 @@ final class APIClientTests: XCTestCase {
         let snapshot = try await client().unreadSessions()
         XCTAssertEqual(snapshot.totalUnread, 1)
         XCTAssertEqual(snapshot.sessions.first?.sessionId, "s1")
+        XCTAssertEqual(snapshot.sessions.first?.linkProductId, "p1")
         XCTAssertEqual(StubURLProtocol.recorded.first?.request.url?.path, "/api/v1/node/unread-sessions")
         XCTAssertEqual(StubURLProtocol.recorded.first?.request.value(forHTTPHeaderField: "Authorization"), "Bearer mgn_x")
+    }
+
+    func testUnreadSessionsAcceptAProductConversationWithoutWorkItems() async throws {
+        StubURLProtocol.install { _, _ in .response(status: 200, body: #"{"totalUnread":1,"sessions":[{"sessionId":"s1","agentKind":"codex","nodeName":"M5","activityAt":"2026-11-04T00:00:00.000Z","title":"这是什么问题？","productId":"p1","items":[]}]}"#) }
+        let snapshot = try await client().unreadSessions()
+        XCTAssertEqual(snapshot.totalUnread, 1)
+        XCTAssertEqual(snapshot.sessions.first?.title, "这是什么问题？")
+        XCTAssertEqual(snapshot.sessions.first?.linkProductId, "p1")
+        XCTAssertEqual(snapshot.sessions.first?.items.isEmpty, true)
+    }
+
+    func testUnreadSessionsStillRejectARowWithNeitherProductNorItems() async throws {
+        StubURLProtocol.install { _, _ in .response(status: 200, body: #"{"totalUnread":1,"sessions":[{"sessionId":"s1","agentKind":"codex","nodeName":"M5","activityAt":"2026-11-04T00:00:00.000Z","title":"没有归属","items":[]}]}"#) }
+        do {
+            _ = try await client().unreadSessions()
+            XCTFail("A row with neither a product nor a work item must not be displayed")
+        } catch let error as APIError {
+            guard case .invalidResponse = error else { return XCTFail("Unexpected error: \(error)") }
+        }
     }
 
     func testUnreadSessionItemsCarryTitlesAndSupportOlderServers() throws {

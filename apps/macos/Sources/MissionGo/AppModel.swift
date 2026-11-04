@@ -1483,7 +1483,7 @@ final class AppModel: ObservableObject {
               let url = ConsoleDeepLink.session(
                 serverUrl: credential.serverUrl,
                 sessionId: session.sessionId,
-                productId: session.items.first?.productId
+                productId: session.linkProductId
               ) else { return }
         NSWorkspace.shared.open(url)
     }

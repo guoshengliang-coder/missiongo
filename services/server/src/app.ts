@@ -3311,6 +3311,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         nodeName: session.nodeName,
         activityAt: session.activityAt,
         title: session.sessionName?.trim() || session.items.map((item) => item.key).join("、"),
+        // A product conversation started from the console has no work items;
+        // its product is the only thing that identifies it (AND-392).
+        ...(session.productId ? { productId: session.productId } : {}),
         items: session.items.map((item) => ({ key: item.key, productId: item.productId, title: item.title })),
       })),
     };

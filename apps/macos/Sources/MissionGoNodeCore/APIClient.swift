@@ -28,9 +28,16 @@ public struct UnreadSessionPreview: Decodable, Equatable, Sendable, Identifiable
     public let nodeName: String
     public let activityAt: String
     public let title: String
+    /// Present for a product conversation started from the console, which has
+    /// no work items to carry one (AND-392); older servers never send it.
+    public let productId: String?
     public let items: [Item]
 
     public var id: String { sessionId }
+
+    /// The product to open this conversation in: the conversation's own, else
+    /// the one its first work item belongs to.
+    public var linkProductId: String? { productId ?? items.first?.productId }
 }
 
 public struct UnreadSessionsSnapshot: Decodable, Equatable, Sendable {
@@ -40,7 +47,7 @@ public struct UnreadSessionsSnapshot: Decodable, Equatable, Sendable {
     public func validate() throws {
         guard totalUnread >= 0, totalUnread == sessions.count,
               Set(sessions.map(\.sessionId)).count == sessions.count,
-              sessions.allSatisfy({ !$0.sessionId.isEmpty && !$0.items.isEmpty })
+              sessions.allSatisfy({ !$0.sessionId.isEmpty && $0.linkProductId != nil })
         else { throw APIError.invalidResponse("未读会话列表与数量不一致。") }
     }
 }
