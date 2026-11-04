@@ -240,6 +240,7 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 
 ### 聊天图片与状态反馈（AND-377/378/379/380）
 
+- 评论与会话发送前的图片共用 `DraftChatFile`，点击缩略图复用 `MediaLightbox` 与 `ZoomableImage` 查看大图；预览与移除是独立按钮，关闭预览保留输入、附件并恢复焦点。无法解码时说明加载失败，不移除草稿。发送前预览不上传文件；发送中的只读图片同样可查看。新会话与状态原因弹窗沿用同一组件，嵌套预览只关闭顶层。回归来源：`and-376-draft-image.audit.spec.ts`、`external-attachments.audit.spec.ts`、`new-session.audit.spec.ts`、`transition-attachments.audit.spec.ts`。
 - 用户聊天图片只展示缩略图，下载与文件名留在图片详情。下载及解码期间保留灰色占位，加载失败提供常驻重试；历史消息与待投递消息共用 `ChatAttachments`。全屏预览复用 `MediaLightbox`、`OverlayDialog` 与 `ZoomableImage`，关闭恢复焦点及底层聊天上下文。
 - 消息排队图标轻微闪动，发送及送达中图标旋转，终态静止；文字仍区分投递与执行，系统减少动态效果时停止图标动画。控制台与条目内面板共用 `AgentReplyFeedback`。
 - 会话头部状态与操作组成同一工具栏，同行外框最小高度 44px 并垂直对齐；窄屏沿用图标操作及现有状态信息布局。
