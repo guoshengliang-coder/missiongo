@@ -1,0 +1,9 @@
+{
+  "pullRequest": 397,
+  "items": [
+    {
+      "key": "AND-391",
+      "title": "修复 Agent 各阶段停止与后续回合隔离"
+    }
+  ]
+}
