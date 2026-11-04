@@ -239,5 +239,40 @@ final class MainWindowLayoutTests: XCTestCase {
             XCTAssertTrue(defaults.bool(forKey: AppDelegate.menuBarOnlyKey), "Forced login does not erase the saved mode")
         }
     }
+
+    /// A product conversation has no work items; the menu must show it by title
+    /// instead of rejecting the whole unread snapshot (AND-392).
+    func testProductConversationWithoutWorkItemsRendersInTheUnreadSection() async throws {
+        let sessions: [[String: Any]] = [[
+            "sessionId": "product-1", "agentKind": "codex", "nodeName": "UI preview",
+            "activityAt": "2026-11-04T00:00:00.000Z",
+            "title": "这是什么问题？", "productId": "preview", "items": [],
+        ]]
+        let data = try JSONSerialization.data(withJSONObject: ["totalUnread": 1, "sessions": sessions])
+        let unread = try JSONDecoder().decode(UnreadSessionsSnapshot.self, from: data)
+        XCTAssertNoThrow(try unread.validate())
+        try await MainActor.run {
+            _ = NSApplication.shared
+            let model = AppModel(
+                previewCredential: NodeCredential(serverUrl: "https://example.invalid", nodeId: "preview", name: "UI preview", token: "unused"),
+                unread: unread, agentVersions: [:]
+            )
+            XCTAssertNil(model.unreadError, "A product conversation must not blank the unread section")
+            let host = NSHostingView(rootView: MenuContentView().environmentObject(model))
+            if #available(macOS 13.3, *) { host.sizingOptions = [] }
+            let controller = MainWindowController(title: "Product conversation preview", contentView: host)
+            let window = controller.window
+            defer { window.close() }
+            controller.show()
+            window.setContentSize(NSSize(width: 390, height: 520))
+            host.layoutSubtreeIfNeeded()
+            if let directory = ProcessInfo.processInfo.environment["MISSIONGO_UI_CAPTURE_DIRECTORY"] {
+                let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                host.cacheDisplay(in: host.bounds, to: bitmap)
+                let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                try png.write(to: URL(fileURLWithPath: directory).appendingPathComponent("product-conversation.png"))
+            }
+        }
+    }
 }
 #endif

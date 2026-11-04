@@ -4342,6 +4342,70 @@ describe("Widget summary (AND-149)", () => {
     expect((await summary(app, cookie)).agent).toMatchObject({ unread: 1, active: 1 });
   });
 
+  it("shows a product conversation without work items in the unread preview (AND-392)", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+    const heartbeatResult = await app.inject({
+      method: "POST", url: "/api/v1/node/heartbeat",
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: {
+        agents: [{
+          kind: "codex", version: "0.166.0", ready: true,
+          skill: { localVersion: MISSIONGO_SKILL_VERSION, expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "ready" },
+        }],
+        clientVersion: "1.2.3", repoCandidates: [], supportsFreeSessions: true,
+      },
+    });
+    expect(heartbeatResult.statusCode, heartbeatResult.body).toBe(200);
+    const { productId } = await readyItem(app, cookie, "Project GO", "PRJ");
+    await app.inject({
+      method: "PUT", url: `/api/v1/nodes/${node.nodeId}/repos`, headers: { cookie },
+      payload: { repos: [{ productId, repoPath: "/Users/dev/Projects/project-go" }] },
+    });
+    const started = await app.inject({
+      method: "POST", url: "/api/v1/project-conversations", headers: { cookie },
+      payload: { productId, nodeId: node.nodeId, agentKind: "codex", mode: "plan", requestKey: randomUUID(), text: "这是什么问题？" },
+    });
+    expect(started.statusCode, started.body).toBe(201);
+    const dispatchId = started.json<{ id: string }>().id;
+    const startedResult = await app.inject({
+      method: "POST", url: `/api/v1/project-conversations/${dispatchId}/start`, headers: { cookie },
+      payload: { attachmentIds: [] },
+    });
+    expect(startedResult.statusCode, startedResult.body).toBe(200);
+    const claimed = await app.inject({
+      method: "POST", url: "/api/v1/node/dispatches/claim-next",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    expect(claimed.json<{ dispatchId: string; freeSession?: boolean }>()).toMatchObject({ dispatchId, freeSession: true });
+    const launched = await app.inject({
+      method: "POST", url: `/api/v1/node/dispatches/${dispatchId}/result`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "launched", sessionRef: randomUUID() },
+    });
+    expect(launched.statusCode, launched.body).toBe(204);
+    const session = (await app.inject({
+      method: "GET", url: `/api/v1/agent-sessions?productId=${productId}`, headers: { cookie },
+    })).json<{ sessions: Array<{ id: string; items: unknown[] }> }>().sessions[0]!;
+    expect(session.items).toEqual([]);
+    expect((await app.inject({
+      method: "POST", url: `/api/v1/node/agent-sessions/${session.id}/snapshot`,
+      headers: { authorization: `Bearer ${node.token}` },
+      payload: { status: "idle", messages: [{ sourceId: "a1", role: "agent", text: "先从这个问题说起。" }] },
+    })).statusCode).toBe(204);
+
+    // The conversation has nothing to count it by except its product: the Mac
+    // refuses a row with neither, so the preview must carry productId.
+    const preview = await app.inject({
+      method: "GET", url: "/api/v1/node/unread-sessions",
+      headers: { authorization: `Bearer ${node.token}` },
+    });
+    expect(preview.json()).toMatchObject({
+      totalUnread: 1,
+      sessions: [expect.objectContaining({ sessionId: session.id, productId, title: "这是什么问题？", items: [] })],
+    });
+  });
+
   it("does not spend an AI call on a conversation still waiting to be classified", async () => {
     const provider = vi.fn(async () => new Response(JSON.stringify({
       choices: [{ message: { content: JSON.stringify({ needsAttention: false, kind: "none", reason: "Done." }) } }],
