@@ -41,15 +41,20 @@ export function StatusCheckPanel({productId,itemKey,canOperate,onClose,autoCheck
   const query = useQuery({queryKey:["status-checks",productId,itemKey,offset],queryFn:()=>api.statusChecks(productId,itemKey,offset),
     refetchInterval: q => (q.state.data?.items.some(r=>r.requestedAt || ["waiting_node","checking"].includes(r.status)) || ["waiting_node","checking"].includes(q.state.data?.discovery?.status ?? "")) ? 5000 : false});
   const refresh = async () => { await Promise.all([client.invalidateQueries({queryKey:["products"]}),client.invalidateQueries({queryKey:["status-checks"]}),client.invalidateQueries({queryKey:["items"]}),client.invalidateQueries({queryKey:["item"]}),client.invalidateQueries({queryKey:["timeline"]})]); };
-  const mutation = useMutation({mutationFn:()=>api.requestStatusCheck(productId,itemKey),onSuccess:async()=>{setRequested(true);await refresh();}});
+  const mutation = useMutation({mutationFn:(rediscover:boolean)=>api.requestStatusCheck(productId,itemKey,rediscover),onSuccess:async()=>{setRequested(true);await refresh();}});
   useEffect(()=>{
-    if (autoCheck && !autoRequested.current && mayOperate && canRegister && query.isSuccess) {
-      autoRequested.current=true; mutation.mutate();
+    if (autoCheck && !autoRequested.current && mayOperate && canRegister && query.isSuccess && !query.isFetching) {
+      // Cached results may paint before the fresh read completes. Wait for that
+      // read, and never restart an existing search just by reopening its panel.
+      autoRequested.current=true;
+      if (!query.data.items.some(r=>r.status!=="stale") && query.data.discovery && query.data.discovery.status!=="stale") return;
+      mutation.mutate(false);
     }
-  },[autoCheck,mayOperate,canRegister,query.isSuccess,mutation]);
+  },[autoCheck,mayOperate,canRegister,query.isSuccess,query.isFetching,query.data,mutation]);
   const discovery=query.data?.discovery;
   const records = query.data?.items ?? [];
   const hasCurrentRecord=records.some(r=>r.status !== "stale");
+  const discoveryPending=!hasCurrentRecord && ["waiting_node","checking"].includes(discovery?.status ?? "");
   const newest = records.find(r=>r.status !== "stale");
   const statusFingerprint = records.map(r=>`${r.itemKey}:${r.itemStatus}`).join("|");
   useEffect(()=>{
@@ -63,9 +68,10 @@ export function StatusCheckPanel({productId,itemKey,canOperate,onClose,autoCheck
       : confirmation ? <HumanConfirmation key={`${confirmation.id}:${confirmation.itemStatus}`} record={confirmation} onCancel={()=>setConfirmation(null)} onSaved={async()=>{setConfirmation(null);await refresh();}}/> : <>
     <p className="dispatch-note">{zh ? "已有证据由服务端核对；需要仓库权限时，由已关联的 macOS 节点检查。节点离线时任务会保留。" : "The server reconciles recorded evidence. Repository checks run on a mapped macOS node; offline work remains queued."}</p>
     {query.data?.schedule && <p className="dispatch-note">{query.data.schedule.time === false ? (zh ? "每日补查已关闭" : "Daily checks disabled") : `${zh ? "每天" : "Daily at"} ${query.data.schedule.time} · ${query.data.schedule.timezone}`}</p>}
-    <div className="status-check-actions"><button type="button" className="primary-button" disabled={!mayOperate || mutation.isPending} onClick={()=>mutation.mutate()}>
+    <div className="status-check-actions"><button type="button" className="primary-button" disabled={!mayOperate || mutation.isPending || query.isLoading || discoveryPending} onClick={()=>mutation.mutate(false)}>
       {mutation.isPending ? <LoaderCircle className="spin" size={16}/> : <ClipboardCheck size={16}/>}{zh ? "立即检查并校正" : "Check and reconcile now"}</button>
       <button type="button" className="secondary-button" disabled={query.isFetching} onClick={()=>void refresh()}>{zh ? "刷新结果" : "Refresh results"}</button>
+      {itemKey && mayOperate && canRegister && !hasCurrentRecord && discovery && !discoveryPending && <button type="button" className="secondary-button" disabled={mutation.isPending || query.isFetching} onClick={()=>mutation.mutate(true)}>{zh ? "重新查找完成依据" : "Search for completion references again"}</button>}
       {itemKey && mayOperate && canRegister && <button type="button" className="secondary-button" onClick={()=>{setCandidate(undefined);setScopeRecord(newest);setEditing(true);}}>{zh ? "关联完成依据 / 确认发布范围" : "Associate completion / confirm release scope"}</button>}
     </div>
     {(mutation.isError || query.isError) && <p className="inline-error" role="alert">{localizedErrorText(mutation.error ?? query.error,t)}</p>}
@@ -89,7 +95,7 @@ export function StatusCheckPanel({productId,itemKey,canOperate,onClose,autoCheck
         <p>{"url" in value.completion ? <a href={value.completion.url} target="_blank" rel="noreferrer">{value.completion.url}</a> : <code>{"commit" in value.completion ? value.completion.commit : ""}</code>}</p>
         <p>{({merged:zh ? "查询显示已合并" : "Reported merged",integrated:zh ? "查询显示已集成" : "Reported integrated",open:zh ? "尚未合并" : "Open",closed:zh ? "已关闭" : "Closed",unmerged:zh ? "尚未集成" : "Not integrated"})[value.state]}</p>
         <p>{value.commentId ? <a href={`/?product=${encodeURIComponent(productId)}&item=${encodeURIComponent(itemKey!)}&comment=${value.commentId}`}>{zh ? "来源：本轮评论" : "Source: current-round comment"}</a> : (zh ? "来源：仓库条目编号搜索" : "Source: repository item-key search")}</p>
-        {mayOperate && canRegister && <button type="button" className="secondary-button" onClick={()=>{setScopeRecord(undefined);setCandidate({value,selection:{discoveryId:discovery.id,candidateIndex:index}});setEditing(true);}}>{zh ? "选择此依据" : "Choose this reference"}</button>}
+        {mayOperate && canRegister && <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={()=>{setScopeRecord(undefined);setCandidate({value,selection:{discoveryId:discovery.id,candidateIndex:index}});setEditing(true);}}>{zh ? "选择此依据" : "Choose this reference"}</button>}
       </article>)}</div>
     </section>}
     <div className="status-check-list">{records.map(record=><article className="status-check-card" key={record.id}>

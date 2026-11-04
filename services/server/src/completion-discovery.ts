@@ -42,25 +42,42 @@ export class CompletionDiscovery {
       && !this.store.getProduct(item.product_id).archivedAt && (!builder || builder.status==="completed")
       && !this.db.prepare("SELECT 1 FROM item_transfers WHERE source_item_id=?").get(row.item_id);
   }
+  private currentResult(row:Row) {
+    if (!this.db.prepare("SELECT 1 FROM node_product_repos WHERE node_id=? AND product_id=? AND repo_path=?")
+      .get(row.lease_node_id,this.productId(row.id),row.lease_repo_path)) return false;
+    const hints=this.hints(row);
+    return (JSON.parse(row.candidates_json) as z.infer<typeof candidate>[])
+      .every(c=>!c.commentId || hints.some(h=>h.commentId===c.commentId));
+  }
   snapshot(itemKey:string) {
     const item=this.store.getWorkItem(itemKey);
     const row=this.db.prepare("SELECT * FROM completion_discoveries WHERE item_id=? ORDER BY (round_key=?) DESC,requested_at DESC,rowid DESC LIMIT 1").get(item.id,deliveryRound(this.store.database,item.id)) as unknown as Row|undefined;
     if (!row) return null;
-    return {id:row.id,status:this.valid(row)?row.status:"stale",repository:row.repository,
-      candidates:this.valid(row)&&row.status==="found"?JSON.parse(row.candidates_json) as z.infer<typeof candidate>[]:[]};
+    const valid=this.valid(row) && (row.status!=="found" || this.currentResult(row));
+    return {id:row.id,status:valid?row.status:"stale",repository:row.repository,
+      candidates:valid&&row.status==="found"?JSON.parse(row.candidates_json) as z.infer<typeof candidate>[]:[]};
   }
-  request(itemKey:string,accountId:string) {
+  request(itemKey:string,accountId:string,rediscover=false) {
     this.store.assertWorkItemWritable(itemKey);
     const item=this.store.getWorkItem(itemKey);
     assertBuilderExecution(this.store.database,item.id,accountId,!itemRoles(this.store.database,item,accountId).manager);
     const round=deliveryRound(this.store.database,item.id);
     if (!round || !["in_progress","development_complete","ready","inbox"].includes(item.status)) throw conflict("handover_round_missing","A current processing round is required.");
-    // Repeated requests preserve a live lease and already discovered suggestions.
     const now=new Date().toISOString();
+    const previous=this.db.prepare("SELECT * FROM completion_discoveries WHERE item_id=? AND round_key=?")
+      .get(item.id,round) as unknown as Row|undefined;
+    if (previous && previous.account_id===accountId && this.valid(previous)) {
+      // Opening a status action is not a request to throw away usable results.
+      // Even an explicit retry must not steal an active worker's lease.
+      if (previous.status==="checking" && previous.lease_until && previous.lease_until>now
+        || !rediscover && (previous.status==="waiting_node" || previous.status==="found" && this.currentResult(previous)))
+        return this.snapshot(itemKey);
+    }
     this.db.prepare(`INSERT INTO completion_discoveries(id,item_id,account_id,round_key,content_version,status,requested_at)
       VALUES (?,?,?,?,?,'waiting_node',?) ON CONFLICT(item_id,round_key) DO UPDATE SET
-      account_id=excluded.account_id, status=CASE WHEN status='checking' AND lease_until>? THEN status ELSE 'waiting_node' END,
-      requested_at=excluded.requested_at`).run(randomUUID(),item.id,accountId,round,item.contentVersion ?? 1,now,now);
+      account_id=excluded.account_id,content_version=excluded.content_version,status='waiting_node',
+      candidates_json='[]',repository=NULL,lease_node_id=NULL,lease_token=NULL,lease_repo_path=NULL,lease_until=NULL,
+      requested_at=excluded.requested_at`).run(randomUUID(),item.id,accountId,round,item.contentVersion ?? 1,now);
     return this.snapshot(itemKey);
   }
   hints(row:Row):Hint[] {
@@ -120,10 +137,10 @@ export class CompletionDiscovery {
   }
   assertSelection(itemKey:string,id:string,index:number,completion:CompletionReference) {
     const row=this.row(id),snapshot=this.snapshot(itemKey);
-    if (this.itemKey(row)!==itemKey || !this.valid(row) || snapshot?.id!==id || snapshot.status!=="found"
-      || JSON.stringify(snapshot.candidates[index]?.completion)!==JSON.stringify(completion)) throw conflict("discovery_stale","Refresh candidates before associating completion.");
+    if (this.itemKey(row)!==itemKey || !this.valid(row) || snapshot?.id!==id) throw conflict("discovery_stale","Refresh candidates before associating completion.");
     if (!this.db.prepare("SELECT 1 FROM node_product_repos WHERE node_id=? AND product_id=? AND repo_path=?")
       .get(row.lease_node_id,this.productId(id),row.lease_repo_path)) throw conflict("discovery_stale","The repository mapping changed; search again.");
+    if (snapshot.status!=="found" || JSON.stringify(snapshot.candidates[index]?.completion)!==JSON.stringify(completion)) throw conflict("discovery_stale","Refresh candidates before associating completion.");
     const c=snapshot.candidates[index];
     if (c?.commentId && !this.hints(row).some(h=>h.commentId===c.commentId)) throw conflict("discovery_source_changed","The source comment changed.");
   }
