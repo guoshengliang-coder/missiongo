@@ -46,6 +46,7 @@ interface ArchiveIdentity extends ConversationIdentity {
   archived_at: string | null;
   suppressed: number;
   dispatch_status: string | null;
+  project: number;
 }
 
 /** Quietly archive the whole displayed conversation, including external mirrors.
@@ -61,16 +62,18 @@ export function autoArchiveFinishedConversations(
       'dispatch' AS source, d.id AS dispatch_id, s.id AS session_id,
       CASE WHEN s.id IS NULL THEN d.archived_at ELSE s.archived_at END AS archived_at,
       CASE WHEN s.id IS NULL THEN d.auto_archive_suppressed ELSE s.auto_archive_suppressed END AS suppressed,
-      d.status AS dispatch_status
+      d.status AS dispatch_status,EXISTS(SELECT 1 FROM free_session_starts f WHERE f.dispatch_id=d.id) AS project
       FROM dispatches d LEFT JOIN agent_sessions s ON s.dispatch_id=d.id WHERE d.account_id=?
       UNION ALL SELECT id,agent_kind,CASE WHEN ref_kind='native' THEN session_ref END,native_node_id,0,
-      'external',NULL,id,archived_at,auto_archive_suppressed,NULL
+      'external',NULL,id,archived_at,auto_archive_suppressed,NULL,0
       FROM external_agent_sessions WHERE account_id=?`).all(accountId, accountId) as unknown as ArchiveIdentity[];
     const dispatchItems = db.prepare("SELECT w.status FROM dispatch_items i JOIN work_items w ON w.id=i.item_id WHERE i.dispatch_id=?");
     const externalItems = db.prepare("SELECT w.status FROM external_agent_session_items i JOIN work_items w ON w.id=i.item_id WHERE i.session_id=?");
     const dispatchPending = db.prepare("SELECT 1 FROM agent_session_commands WHERE session_id=? AND status IN ('queued','delivering','delivery_unknown') LIMIT 1");
     const externalPending = db.prepare("SELECT 1 FROM external_native_commands WHERE session_id=? AND status IN ('queued','delivering','delivery_unknown') LIMIT 1");
     for (const group of conversationIdentityGroups(identities)) {
+      // A project conversation outlives the work items it happens to handle.
+      if (group.some((row) => row.project)) continue;
       if (ids && !group.some((row) => ids.includes(row.id) || (row.dispatch_id && ids.includes(row.dispatch_id)))) continue;
       if (group.every((row) => row.archived_at) || group.some((row) => row.suppressed)) continue;
       if (group.some((row) => row.source === "external" ? externalPending.get(row.id)

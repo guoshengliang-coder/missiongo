@@ -103,7 +103,7 @@ for (const width of [320, 768, 1440]) for (const theme of ["light", "dark"] as c
     expect(command.status).toBe("queued"); expect(cancels).toBe(1);
     rejectCancel = false; await edit.click();
     const editor = page.locator(".agent-console-reply textarea");
-    await expect(editor).toHaveValue(command.text); await expect(editor).toBeFocused();
+    await expect(editor).toHaveValue(command.text); await expect(editor).toBeEnabled(); await expect(editor).toBeFocused();
     await expect(page.locator(".agent-chat-draft-files")).toContainText("notes.txt");
     await expect(bubble).toHaveCount(0); expect(cancels).toBe(2);
     // Native delivery is no promise of execution; later states must not offer recall.
@@ -158,6 +158,7 @@ test("recalling attachments stays bound to the original session and reports part
   await expect(editor).toBeEnabled(); await editor.fill("第二会话草稿");
   releaseFiles();
   await expect(editor).toHaveValue("第二会话草稿");
+  await expect(editor).toBeFocused();
   await expect(page.locator(".agent-chat-draft-files")).toHaveCount(0);
   await page.locator(".agent-console-session").filter({ hasText: "First conversation" }).click();
   await expect(editor).toHaveValue("恢复这条消息");

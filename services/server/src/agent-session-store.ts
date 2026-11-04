@@ -901,7 +901,7 @@ export class AgentSessionStore {
       const command = row.session_id ? commandBySession.get(row.session_id) : undefined;
       const pendingNativeFree = Boolean(free) && pendingNatives.has(row.dispatch_id);
       const binding = row.session_id ? bindingBySession.get(row.session_id) : undefined;
-      const itemsCompleted = row.session_id
+      const itemsCompleted = !free && row.session_id
         ? itemRows.length > 0 && itemRows.every((item) => item.status === "done")
         : false;
       const awaitingNative = !row.session_id || pendingNativeFree;
@@ -2123,6 +2123,8 @@ export class AgentSessionStore {
   }
 
   private itemsCompleted(sessionId: string): boolean {
+    if (this.database.connection.prepare(`SELECT 1 FROM agent_sessions s JOIN free_session_starts f
+      ON f.dispatch_id=s.dispatch_id WHERE s.id=?`).get(sessionId)) return false;
     const rows = this.database.connection.prepare(
       `SELECT w.status FROM agent_sessions s
        JOIN dispatch_items di ON di.dispatch_id = s.dispatch_id
