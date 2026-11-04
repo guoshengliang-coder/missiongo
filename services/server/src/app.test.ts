@@ -1121,6 +1121,10 @@ describe("Commenting over MCP", () => {
     const finished = (await f.app.inject({method:"GET",url:`/api/v1/agent-sessions/${f.projectSessionId}`,headers:f.headers})).json();
     expect(finished).toMatchObject({ status:"active",canReply:true });
     expect(finished.archivedAt).toBeUndefined();
+    const finishedList = (await f.app.inject({method:"GET",url:"/api/v1/agent-sessions",headers:f.headers})).json().sessions;
+    expect(finishedList).toHaveLength(1);
+    expect(finishedList[0]).toMatchObject({ id:f.projectSessionId,productId:f.productId,sessionName:"这是什么问题？",status:"active",canReply:true });
+    expect(finishedList[0].archivedAt).toBeUndefined();
     const reply = await f.app.inject({method:"POST",url:`/api/v1/agent-sessions/${f.projectSessionId}/commands`,headers:f.headers,payload:{text:"继续讨论"}});
     expect(reply.statusCode,reply.body).toBe(201);
     expect(f.app.missionGoStore.getWorkItem(second.key).status).toBe("done");

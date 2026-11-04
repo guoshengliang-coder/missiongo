@@ -901,7 +901,7 @@ export class AgentSessionStore {
       const command = row.session_id ? commandBySession.get(row.session_id) : undefined;
       const pendingNativeFree = Boolean(free) && pendingNatives.has(row.dispatch_id);
       const binding = row.session_id ? bindingBySession.get(row.session_id) : undefined;
-      const itemsCompleted = row.session_id
+      const itemsCompleted = !free && row.session_id
         ? itemRows.length > 0 && itemRows.every((item) => item.status === "done")
         : false;
       const awaitingNative = !row.session_id || pendingNativeFree;
