@@ -20,25 +20,28 @@ function isolatedStore() {
   if(!directory) throw new Error("Isolated UI fixture is required");
   return new MissionGoStore(join(directory,"missiongo.sqlite"));
 }
-function setup() {
+function setup(interrupted=false) {
   const store=isolatedStore();
   try {
     const accountId="ui-fixture";
     const product=store.createProduct({name:"Execution stop verification",keyPrefix:`ES${randomUUID().slice(0,6).toUpperCase()}`,createdByAccountId:accountId});
     const item=store.createWorkItem({productId:product.id,title:"核实旧执行后重新派单",description:"Keep history and new execution distinct",type:"bug",priority:"normal",status:"ready",environment:{platform:"shared"}});
     const owner={accountId,clientId:"ui-fixture"};
-    store.claimWorkItem({itemKey:item.key,agentId:"Codex",idempotencyKey:randomUUID(),attribution:owner});
+    if (interrupted) store.transitionWorkItem({itemKey:item.key,to:"in_progress",reason:"claim",actor:"human",attribution:{accountId}});
+    else store.claimWorkItem({itemKey:item.key,agentId:"Codex",idempotencyKey:randomUUID(),attribution:owner});
     const external=new ExternalAgentSessionStore(store);
     const sessionId=external.register(owner,{agentKind:"codex",refKind:"native",sessionRef:randomUUID()},item.key);
     const dispatches=new DispatchStore(store.database);
     const node=dispatches.registerNode({accountId,installationId:randomUUID(),name:"Fixture node"});
     fixtureNodes.push(node.nodeId);
     dispatches.recordHeartbeat(node.nodeId,[{kind:"codex",ready:true}]);
-    external.report(owner,sessionId,item.key,"completed","Handling ended",randomUUID());
-    store.transitionWorkItem({itemKey:item.key,to:"pending_verification",reason:"manual_override",actor:"human",note:"Fixture delivery",attribution:{accountId}});
+    if (!interrupted) {
+      external.report(owner,sessionId,item.key,"completed","Handling ended",randomUUID());
+      store.transitionWorkItem({itemKey:item.key,to:"pending_verification",reason:"manual_override",actor:"human",note:"Fixture delivery",attribution:{accountId}});
+    }
     store.database.connection.prepare("UPDATE external_agent_sessions SET native_node_id=?,native_snapshot_json=?,native_synced_at=? WHERE id=?")
       .run(node.nodeId,JSON.stringify({status:"unavailable",turnState:{},error:"Original conversation not loaded "+"long-diagnostic-".repeat(35)}),new Date().toISOString(),sessionId);
-    store.transitionWorkItem({itemKey:item.key,to:"ready",reason:"verification_failed",actor:"human",note:"Rework",attribution:{accountId}});
+    store.transitionWorkItem({itemKey:item.key,to:"ready",reason:interrupted?"released":"verification_failed",actor:"human",note:"Rework",attribution:{accountId}});
     return {item,product,sessionId};
   } finally {store.close();}
 }
@@ -136,3 +139,40 @@ test("rejects stale source observations without replacing the user's check or si
   await expect(dialog.getByRole("alert")).toHaveText("条目或执行状态已变更，请刷新条目并重新核实原会话后再确认。");
   await expect(dialog.getByRole("textbox",{name:"停止核实依据",exact:true})).toHaveValue("Original observation was checked");
 });
+
+
+for (const width of [320,1440]) for (const theme of ["light","dark"] as const) {
+  test.describe(`interrupted execution ${width}px ${theme}`,()=>{
+    test.use({viewport:{width,height:812},hasTouch:width===320,isMobile:width===320,colorScheme:theme});
+    test("checks each interrupted working execution separately without fabricating completed history",async({page,request},info)=>{
+      const {item,product,sessionId}=setup(true);
+      await page.goto(`/?product=${product.id}&status=ready&item=${item.key}`);
+      const notice=page.getByRole("region",{name:"启动新执行前，请核实原执行"});
+      await expect(notice.getByRole("button",{name:"核实停止",exact:true})).toHaveCount(2);
+      await expect(notice).toContainText("人工领取处理");
+      await expect(notice).toContainText("进展上报：working");
+      const original=notice.locator(".execution-stop-observation").filter({hasText:sessionId});
+      await original.getByRole("button",{name:"核实停止",exact:true}).click();
+      const dialog=page.getByRole("dialog");
+      await dialog.getByRole("textbox",{name:"停止核实依据",exact:true}).fill("已在原设备核实该会话停止，当前无活动或待执行命令。");
+      await dialog.getByRole("checkbox").check();
+      await dialog.getByRole("button",{name:"记录停止确认",exact:true}).click();
+      await expect(dialog).toHaveCount(0);
+      await expect(notice.getByRole("button",{name:"核实停止",exact:true})).toHaveCount(1);
+      activity(sessionId,false);await page.reload();
+      await expect(notice.getByRole("button",{name:"核实停止",exact:true})).toHaveCount(1);
+      await expect(notice).toContainText("人工领取处理");
+      await notice.getByRole("button",{name:"核实停止",exact:true}).click();
+      await dialog.getByRole("textbox",{name:"停止核实依据",exact:true}).fill("已核实这条旧执行的工作停止，确认结束其在途阻塞。");
+      await dialog.getByRole("checkbox").check();
+      await page.screenshot({path:info.outputPath("interrupted-stop-check.png")});
+      await dialog.getByRole("button",{name:"记录停止确认",exact:true}).click();
+      await expect(dialog).toHaveCount(0);await expect(notice).toHaveCount(0);
+      const delivery=await (await request.get(`/api/v1/items/${item.key}/delivery`)).json();
+      expect(delivery.executionBlockers).toEqual([]);
+      expect(delivery.executions).toHaveLength(2);
+      expect(delivery.executions.every((row:{status:string})=>row.status==="working")).toBe(true);
+      expect((await (await request.get(`/api/v1/items/${item.key}`)).json()).status).toBe("ready");
+    });
+  });
+}
