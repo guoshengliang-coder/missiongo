@@ -27,12 +27,12 @@ test("maskable PWA icons are separate opaque assets with a central rocket", () =
   assert.match(maskable, /translate\(27.6 27.6\) scale\(2.2\)/);
 });
 
-test("app artwork has balanced mint margins without the header's offset shadow", async () => {
+test("app artwork has mint edges without the header's border or offset shadow", async () => {
   const { texts, product } = brandAssets();
   const source = texts.get(product.icon);
   assert.doesNotMatch(source, /fill="#172033"/);
   const { data, info } = await sharp(Buffer.from(source)).resize(512, 512).removeAlpha().raw().toBuffer({ resolveWithObject: true });
-  for (const [x, y] of [[32, 256], [480, 256], [256, 32], [256, 480]]) {
+  for (const [x, y] of [[0, 256], [511, 256], [256, 0], [256, 511]]) {
     const offset = (y * info.width + x) * info.channels;
     assert.deepEqual([...data.subarray(offset, offset + 3)], [103, 227, 180]);
   }

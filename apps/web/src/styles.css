@@ -298,6 +298,9 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
   height: 36px;
   flex-shrink: 0;
   display: block;
+  background: var(--mint);
+  border: 1px solid var(--navy);
+  border-radius: var(--radius-md);
   filter: drop-shadow(3px 3px 0 var(--navy));
 }
 

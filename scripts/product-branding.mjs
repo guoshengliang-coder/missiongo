@@ -48,7 +48,7 @@ export function brandAssets() {
   if (!source.includes('viewBox="0 0 40 40"')) throw new Error("Brand icon must use the 40-unit header canvas");
   const rocket = /<g id="rocket"[\s\S]*?<\/g>/.exec(source)?.[0];
   if (!rocket) throw new Error("Brand icon must contain the shared rocket group");
-  const background = /<path fill="(#[0-9A-F]{6})" stroke=/.exec(source)?.[1];
+  const background = /<path fill="(#[0-9A-F]{6})"/.exec(source)?.[1];
   if (!background) throw new Error("Brand icon must declare its tile colour");
   const stroke = attrs(rocket).stroke;
   // The glyph fits inside the central safe circle (66/108), even when Android

@@ -1,14 +1,14 @@
 {
-  "sourceDigest": "9ab98449f5b85ee3ff7ddc46a10dde5692612d7553fc9a8ec29348ccc92ccbc6",
+  "sourceDigest": "8fa05cb8655e02210acb8e2ec6070668b7540033b09d80f2d4fab78b1e03b3da",
   "rasters": {
-    "apps/web/public/icon-32.png": "073c5959bdb591d07ea619efcd1cd42b0cb21b875ccf247d76f94b21012217c1",
-    "apps/web/public/icon-180.png": "04115547bfac61eb3adf57c463368aef55f9bef5fd0f8ef6b0953fd6ad7b3afb",
-    "apps/web/public/icon-192.png": "eb911302e6b02ee829704b30b7f8ea2505061222dfddbdb40c1913387e2c8220",
-    "apps/web/public/icon-512.png": "29f20f3d0da68e3a69fcc23e3e9668c112c21f540b9eae56ffa9793190825aff",
-    "apps/web/public/icon-1024.png": "b92f82803e4f702c78fef7994140d8d165c8839b64633eb75c5708e519304403",
+    "apps/web/public/icon-32.png": "785ac37aab0647649d66312e1c14300cccd390673f171b8e07327b330d9fa640",
+    "apps/web/public/icon-180.png": "c9eed987d02314ee3787f9230d42fd8a2277e6c0cd155be58b0041bc78324cf1",
+    "apps/web/public/icon-192.png": "c9a2088c24835fac2219b6f2516cfe17910bbe87d844728fbb4c1166ab7aa78a",
+    "apps/web/public/icon-512.png": "9d514f60395e3bfc8bacf8be9975d1758f8994e6c26359bf6d54bd6251552ff9",
+    "apps/web/public/icon-1024.png": "2381cb17ad7e43e0a48bd09a3b0ebc73351bdc9c40672ab7b9fa3791271e95b3",
     "apps/web/public/icon-maskable-192.png": "1b4223656a31c65919ede18b1cd71aeb2962bdf4674601050536b1ad7c7eb0f7",
     "apps/web/public/icon-maskable-512.png": "682f8b88b65af03d776c5a97f52f7604062005ee2c030f34f58dcc4e543443c0",
-    "apps/web/public/og.png": "31de95f0182e95a8c6b765f95ccee7d7228fe8d47ab474a9ef60724a2fe7975e",
-    "apps/web/public/og-en.png": "80077b0ef55bccf6a55f340e5ae41c24ff20efd881c0a40c8294b879de7e5bd3"
+    "apps/web/public/og.png": "5aeea224729a37526794dd36bfd553d53fe9298160e174865a18042d46e96c25",
+    "apps/web/public/og-en.png": "f1be0b7e219a20063a4e3f53a350466b83d43531bc99aacbc46c2849a1cf66ba"
   }
 }

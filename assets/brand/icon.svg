@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" role="img" aria-label="MissionGo">
   <!-- Flat app artwork; header-only shadows live in CSS. Lucide paths: ISC (LUCIDE-LICENSE.txt). -->
-  <path fill="#67E3B4" stroke="#172033" stroke-width="0.8" d="M10.4 .4H29.6A10 10 0 0 1 39.6 10.4V29.6A10 10 0 0 1 29.6 39.6H10.4A10 10 0 0 1 .4 29.6V10.4A10 10 0 0 1 10.4 .4Z" />
+  <path fill="#67E3B4" d="M10 0H30A10 10 0 0 1 40 10V30A10 10 0 0 1 30 40H10A10 10 0 0 1 0 30V10A10 10 0 0 1 10 0Z" />
   <g id="rocket" transform="translate(7.4 7.4) scale(1.05)" fill="none" stroke="#172033" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
     <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
     <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09" />
