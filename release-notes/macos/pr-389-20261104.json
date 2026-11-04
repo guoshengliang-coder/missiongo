@@ -1,0 +1,13 @@
+{
+  "pullRequest": 389,
+  "items": [
+    {
+      "key": "AND-389",
+      "title": "修复 Codex 读取超时后的停止与回复恢复"
+    },
+    {
+      "key": "AND-387",
+      "title": "改善 Codex 读取异常后的会话恢复"
+    }
+  ]
+}
