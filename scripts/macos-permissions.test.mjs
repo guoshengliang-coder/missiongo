@@ -114,7 +114,7 @@ test("publisher cannot bypass release signing with allow-republish", () => {
 test("application background paths do not invoke history scans or login/skill timers", () => {
   const source = readFileSync(join(root, "apps/macos/Sources/MissionGo/AppModel.swift"), "utf8");
   assert.doesNotMatch(source, /RepoCandidates\.detect|startClaudeTimer|startSkillTimer|ClaudeJson\.read|enableLaunchAtLoginAfterFirstLogin/);
-  assert.match(source, /loadCredential\(allowInteraction: false\)/);
+  assert.match(source, /credentialAccess\.restoreCredential\s*\{/);
   assert.match(source, /ConsentedAgentAdapter\(agent: \.claudeCode/);
   assert.match(source, /ConsentedAgentAdapter\(agent: \.codex/);
   const updater = readFileSync(join(root, "apps/macos/Sources/MissionGoNodeCore/AppUpdater.swift"), "utf8");
