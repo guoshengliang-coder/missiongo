@@ -121,3 +121,46 @@ test("an empty product inventory does not block manual integration or arranging 
  await expect(dialog.getByText("发布范围：明确无需发布",{exact:true})).toBeVisible();
  await expect(dialog.getByText("来源：登录用户人工确认。",{exact:true})).toBeVisible();
 });
+
+for (const width of [320,1440]) for (const theme of ["light","dark"] as const) test.describe(`legacy completion ${width}px ${theme}`,()=>{
+ test.use({viewport:{width,height:812},hasTouch:width === 320,isMobile:width === 320,colorScheme:theme});
+for (const kind of ["github","gitlab","commit","manual"] as const) {
+ test(`repairs a development-complete item without a reference via ${kind}`, async({page,request})=>{
+  await recordArtifacts(request,["web"]);
+  const created=await request.post("/api/v1/items",{data:{productId:fixture.productId,title:"Previously shipped client fix",description:"Missing historical completion reference",type:"bug",priority:"normal",status:"ready",environment:{platform:"web"}}});
+  expect(created.ok()).toBe(true);
+  const item=await created.json() as {key:string};
+  expect((await postItemCommand(request,`/api/v1/items/${item.key}/transitions`,{data:{to:"in_progress",reason:"claim"}})).ok()).toBe(true);
+  expect((await postItemCommand(request,`/api/v1/items/${item.key}/transitions`,{data:{to:"development_complete",reason:"manual_override"}})).ok()).toBe(true);
+  await page.goto(`/?product=${fixture.productId}&item=${item.key}`);
+  await page.locator(".detail-toolbar .detail-more-menu > summary").click();
+  await page.locator(".detail-toolbar").getByRole("button",{name:"状态检查",exact:true}).click();
+  const dialog=page.getByRole("dialog");
+  await dialog.getByRole("button",{name:"关联完成依据 / 确认发布范围",exact:true}).click();
+  if (kind !== "github") await chooseOption(dialog.getByRole("combobox",{name:"完成依据",exact:true}),kind);
+  if (kind === "github" || kind === "gitlab") await dialog.getByLabel(kind === "github" ? "PR URL" : "MR URL",{exact:true}).fill(kind === "github" ? "https://github.com/example/project/pull/73" : "https://git.example.test/group/sub/project/-/merge_requests/19");
+  else {
+   await dialog.getByLabel("完整提交编号",{exact:true}).fill("a".repeat(40));
+   if (kind === "manual") await dialog.getByLabel("需要人工确认的交付说明",{exact:true}).fill("Client fix already delivered; verify integration and publication");
+  }
+  await dialog.getByLabel("web",{exact:true}).check();
+  await dialog.getByRole("button",{name:"确认并保存关联",exact:true}).click();
+  await expect(dialog.getByText("条目状态：开发完成",{exact:true})).toBeVisible();
+  await expect(dialog.getByRole("button",{name:"人工确认已集成",exact:true})).toBeVisible();
+  await expect(dialog.getByRole("button",{name:"人工确认已发布",exact:true})).toHaveCount(0);
+  await dialog.getByRole("button",{name:"人工确认已集成",exact:true}).click();
+  await dialog.getByLabel("已纳入交付的完整提交编号",{exact:true}).fill("a".repeat(40));
+  await dialog.getByRole("textbox",{name:"确认依据与说明",exact:true}).fill("Reviewed the target branch and integrated client fix");
+  await dialog.getByRole("button",{name:"人工确认已集成",exact:true}).click();
+  await dialog.getByRole("button",{name:"人工确认已发布",exact:true}).click();
+  await dialog.getByLabel("发布版本",{exact:true}).fill("2.0.0");
+  await dialog.getByLabel("发布来源的完整提交编号",{exact:true}).fill("a".repeat(40));
+  await dialog.getByRole("textbox",{name:"确认依据与说明",exact:true}).fill("Verified published client version and source commit");
+  await dialog.getByRole("button",{name:"人工确认已发布",exact:true}).click();
+  await expect(dialog.getByText("条目状态：待验证",{exact:true})).toBeVisible();
+  await expect(dialog.getByText("交接已核对",{exact:true})).toBeVisible();
+  expect(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
+  if (kind === "gitlab") await page.screenshot({path:test.info().outputPath("legacy-gitlab-verified.png")});
+ });
+}
+});

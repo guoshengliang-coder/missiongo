@@ -12,6 +12,11 @@ import { isReleaseArtifactId, MAX_RELEASE_ARTIFACTS } from "./types.js";
 
 const sha = z.string().regex(/^[a-f0-9]{40}$/);
 const timestamp = z.iso.datetime({ offset: true });
+// Legacy/manual development transitions may have no reference at all. They
+// can be repaired, but a recorded reference must still pass normal validation.
+function hasRecordedCompletion(payload: Record<string, unknown>): boolean {
+  return payload.completion !== undefined || payload.pullRequestUrl !== undefined;
+}
 export const handoverRegistrationSchema = z.object({
   ...completionFields,
   requiredArtifacts: z.array(z.string().refine(isReleaseArtifactId)).max(MAX_RELEASE_ARTIFACTS).optional(),
@@ -92,7 +97,7 @@ export class StatusChecks {
     if (!["inbox", "ready", "in_progress", "development_complete","on_hold"].includes(item.status)) throw conflict("handover_not_active", "Register a handover for active work only.");
     if (item.status === "development_complete") {
       const current = [...this.store.getTimeline(itemKey)].reverse().find(e => !e.historySourceKey && e.eventType === "status_changed" && e.toStatus === "development_complete");
-      if (current && (current.payload.roundKey === undefined || current.payload.roundKey === this.round(item.id)) && (current.payload.contentVersion === undefined || current.payload.contentVersion === item.contentVersion) && !sameCompletion(normalizeCompletion(current.payload), completion)) throw conflict("handover_pr_conflict","Reopen the item before replacing a completed integration reference.");
+      if (current && (current.payload.roundKey === undefined || current.payload.roundKey === this.round(item.id)) && (current.payload.contentVersion === undefined || current.payload.contentVersion === item.contentVersion) && hasRecordedCompletion(current.payload) && !sameCompletion(normalizeCompletion(current.payload), completion)) throw conflict("handover_pr_conflict","Reopen the item before replacing a completed integration reference.");
     }
     const round = this.round(item.id);
     if (!round) throw conflict("handover_round_missing", "The processing round has no recorded start.");
@@ -253,7 +258,8 @@ export class StatusChecks {
     const actor = reporter.kind === "human_confirmation" ? "human" as const : "system" as const;
     let item = this.store.getWorkItem(this.snapshot(id).itemKey);
     const development=[...this.store.getTimeline(item.key)].reverse().find(e=>e.eventType === "status_changed" && e.toStatus === "development_complete" && !e.historySourceKey);
-    const refreshDevelopment = item.status === "development_complete" && (development?.payload.roundKey !== row.round_key || development?.payload.contentVersion !== item.contentVersion);
+    const refreshDevelopment = item.status === "development_complete" && (!development || development.payload.roundKey !== row.round_key || development.payload.contentVersion !== item.contentVersion
+      || !hasRecordedCompletion(development.payload));
     if (["inbox", "ready", "in_progress"].includes(item.status) || refreshDevelopment) {
       // A new manual move needs its own correction receipt; replaying the first
       // receipt would return a stale snapshot without updating the card again.

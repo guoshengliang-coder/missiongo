@@ -114,6 +114,44 @@ describe("platform-independent handover", () => {
   expect(checks.report(handover.id,{releases:[release("gateway"),release("desktop")]},{accountId:"account-1"})).toMatchObject({itemStatus:"pending_verification",completion});
   expect(store.getTimeline(item.key).find(e=>e.toStatus==="pending_verification")?.payload.completion).toEqual(completion);
  });
+ it.each([
+  {kind:"github" as const,url:"https://github.com/example/project/pull/73"},
+  {kind:"gitlab" as const,url:"https://git.example.test/group/sub/project/-/merge_requests/19"},
+  {kind:"commit" as const,commit:merged.commit,targetBranch:"main"},
+  {kind:"manual" as const,commit:merged.commit,description:"Previously delivered client fix"},
+ ])("repairs a development-complete record missing its reference using $kind evidence", completion => {
+  const {item,checks}=seed(["desktop"]);
+  store.transitionWorkItem({itemKey:item.key,to:"development_complete",actor:"human",reason:"manual_override",note:"Legacy client delivery"});
+  const historical=store.getTimeline(item.key).find(e=>e.toStatus === "development_complete")!;
+  expect(historical.payload.completion).toBeUndefined();
+  expect(historical.payload.pullRequestUrl).toBeUndefined();
+  const handover=checks.register(item.key,"account-1",{completion,requiredArtifacts:["desktop"]});
+  expect(handover).toMatchObject({completion,itemStatus:"development_complete",status:completion.kind === "manual" ? "waiting_confirmation" : "waiting_merge"});
+  expect(handover.evidence.merged).toBeUndefined();
+  expect(()=>checks.confirm(handover.id,"human-1",{stage:"release",note:"Already shipped",releases:[release("desktop")]})).toThrow(/Confirm integration/);
+  if (completion.kind === "manual") {
+   expect(()=>checks.report(handover.id,{merged},{accountId:"executor"})).toThrow(/human confirmation/);
+   checks.confirm(handover.id,"human-1",{stage:"integration",commit:merged.commit,note:"Verified the client fix is integrated"});
+  } else checks.report(handover.id,{merged},{accountId:"executor"});
+  const development=store.getTimeline(item.key).filter(e=>e.toStatus === "development_complete");
+  expect(development).toHaveLength(2);
+  expect(development[0]).toEqual(historical);
+  expect(development[1]?.payload.completion).toEqual(completion);
+  expect(checks.snapshot(handover.id).itemStatus).toBe("development_complete");
+  expect(()=>checks.confirm(handover.id,"human-1",{stage:"release",note:"Incomplete publication",releases:[]})).toThrow(/every required artifact/);
+  const verified=completion.kind === "manual"
+   ? checks.confirm(handover.id,"human-1",{stage:"release",note:"Verified published client",releases:[release("desktop")]})
+   : checks.report(handover.id,{releases:[release("desktop")]},{accountId:"executor"});
+  expect(verified).toMatchObject({itemStatus:"pending_verification",status:"checked"});
+  expect(store.getTimeline(item.key).find(e=>e.toStatus === "pending_verification")?.payload.completion).toEqual(completion);
+ });
+ it("keeps a valid completed reference immutable while allowing release-scope corrections",()=>{
+  const {item,checks,handover}=seed(["web"]);
+  checks.report(handover.id,{merged},{accountId:"executor"});
+  expect(()=>checks.register(item.key,"account-1",{completion:{kind:"gitlab",url:"https://git.example.test/group/project/-/merge_requests/19"},requiredArtifacts:["desktop"]})).toThrow(/Reopen the item/);
+  expect(checks.snapshot(handover.id).completion).toEqual({kind:"github",url:pr});
+  expect(checks.register(item.key,"account-1",{pullRequestUrl:pr,requiredArtifacts:["desktop"]})).toMatchObject({itemStatus:"development_complete",requiredArtifacts:["desktop"]});
+ });
  it("requires a real person for manual integration and records both confirmation stages",()=>{
   const {item,checks}=seed();
   const completion={kind:"manual" as const,commit:merged.commit,description:"Offline delivery"};
