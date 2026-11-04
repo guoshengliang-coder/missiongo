@@ -3,14 +3,14 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LoaderCircle, MoreHorizontal } from "lucide-react";
 
-import { DISPATCH_MODES_BY_AGENT } from "@missiongo/domain";
+import { type AgentKind, DISPATCH_MODES_BY_AGENT } from "@missiongo/domain";
 
 import { api, ApiError } from "./api";
 import { useOverlay } from "./overlay";
-import { agentModels, effortLabelKey, effortOptions, groupModelsByProvider, modelDisplayLabel } from "./agent-model-options";
+import { agentModels, effortLabelKey, effortOptions, groupModelsByProvider, modelDisplayLabel, reconcileChoice } from "./agent-model-options";
 import { dispatchModeLabelKey } from "./dispatch-eligibility";
 import { useI18n } from "./i18n";
-import type { AgentSessionSummary } from "./types";
+import type { AgentSessionSummary, FreeSessionConfig, NodeAgentModel } from "./types";
 
 /**
  * Mode, model and effort of one conversation, under the reply box (AND-158).
@@ -21,18 +21,6 @@ import type { AgentSessionSummary } from "./types";
  */
 export function AgentSessionQuickSettings({ session }: { session: AgentSessionSummary }) {
   const { t } = useI18n();
-  const [moreOpen, setMoreOpen] = useState(false);
-  const [showEffortNote, setShowEffortNote] = useState(false);
-  useEffect(() => {
-    if (!showEffortNote) return;
-    const timer = window.setTimeout(() => setShowEffortNote(false), 5000);
-    return () => window.clearTimeout(timer);
-  }, [showEffortNote]);
-
-  const moreRef = useRef<HTMLButtonElement>(null);
-  const openMore = () => setMoreOpen(true);
-  const closeMore = () => setMoreOpen(false);
-  useOverlay(moreOpen, () => { closeMore(); moreRef.current?.focus({ preventScroll: true }); });
   const queryClient = useQueryClient();
   const settings = session.settings;
   const external = session.source === "external";
@@ -70,7 +58,6 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
     return entry ? modelDisplayLabel(entry, models ?? []) : id || t("dispatchModelLocal");
   };
   const selectedModelLabel = modelLabel(modelValue);
-  const availableEfforts = external && !models?.some(entry => entry.id === modelValue) ? [] : effortOptions(models, modelValue);
   const shownEffort = settings.pending?.effort ? effortLabel(settings.pending.effort) : settings.effort
     ? effortLabel(settings.effort)
     : settings.requestedEffort
@@ -90,17 +77,6 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
   // selects fall back to what is confirmed.
   const modeValue = settings.pending?.mode ?? settings.mode;
   const effortValue = settings.pending?.effort ?? settings.effort ?? "";
-  const changeMode = (mode: string) => {
-    if (mode !== modeValue) apply.mutate({ mode });
-    closeMore();
-  };
-  const changeEffort = (effort: string) => {
-    if (effort && effort !== effortValue) {
-      apply.mutate({ effort });
-      if (session.agentKind === "codex") setShowEffortNote(true);
-    }
-    closeMore();
-  };
 
   if ((!settings.adjustable || !session.agentSessionId) && !external) {
     return (
@@ -117,16 +93,84 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
 
   return (
     <div className="agent-session-quick-settings">
+      <AgentSettingsControls agentKind={session.agentKind} models={models} mode={modeValue} model={modelValue}
+        effort={effortValue} effortDisplay={shownEffort} external={external} busy={apply.isPending} canChange={canChange}
+        onChange={change => apply.mutate(change)} />
+      {external && <p className="agent-session-settings-note">{t(!session.canReply && !settings.unavailableReason
+        ? "agentSettingsExternalUnavailable"
+        : settings.unavailableReason === "connect" ? "agentSettingsExternalConnect"
+        : settings.unavailableReason === "upgrade" ? "agentSettingsExternalUpgrade"
+        : settings.unavailableReason === "source" ? "agentSettingsExternalSource"
+        : "agentSettingsExternalSupported")}</p>}
+      {external && settings.adjustable && !settings.supportedFields?.includes("mode") && <p className="agent-session-settings-note">{t("agentSettingsExternalMode")}</p>}
+      {endpointNote && <p className="agent-session-settings-note">{t("customModelEndpoint", { host: settings.modelEndpoint! })}</p>}
+      {settings.pending && <p className="agent-session-settings-note" role="status">{t(external && settings.applyOn === "next_reply" ? "agentSettingsNextReply" : "agentSettingsPending", { change: pendingText })}</p>}
+      {settings.error && <p className="agent-session-settings-note error">{t("agentSettingsError", { error: settings.error })}</p>}
+      {apply.isError && (
+        <p className="agent-session-settings-note error">
+          {apply.error instanceof ApiError && apply.error.code === "node_upgrade_required"
+            ? t("agentSettingsUpgrade")
+            : external ? t("agentSettingsExternalFailed") : apply.error instanceof Error ? apply.error.message : t("somethingWentWrong")}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Shared reply-bar controls. Local drafts never call the session settings API. */
+export function AgentSettingsControls({ agentKind, models, mode: modeValue, model: modelValue, effort: effortValue,
+  external = false, busy = false, allowLocalDefaults = false, effortDisplay, canChange, onChange }: {
+  agentKind: AgentKind | "other"; models: readonly NodeAgentModel[] | undefined;
+  mode: string; model: string; effort: string; external?: boolean; busy?: boolean; allowLocalDefaults?: boolean; effortDisplay?: string;
+  canChange: (field: "mode" | "model" | "effort") => boolean;
+  onChange: (change: { mode?: string; model?: string; effort?: string }) => void;
+}) {
+  const { t } = useI18n();
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [showEffortNote, setShowEffortNote] = useState(false);
+  const moreRef = useRef<HTMLButtonElement>(null);
+  const closeMore = () => setMoreOpen(false);
+  const openMore = () => setMoreOpen(true);
+  useOverlay(moreOpen, () => { closeMore(); moreRef.current?.focus({ preventScroll: true }); });
+  useEffect(() => {
+    if (!showEffortNote) return;
+    const timer = window.setTimeout(() => setShowEffortNote(false), 5000);
+    return () => window.clearTimeout(timer);
+  }, [showEffortNote]);
+  const modeLabel = (value: string) => {
+    const key = dispatchModeLabelKey(agentKind, value);
+    return key ? t(key) : value === "external" ? t("agentSettingsSourceMode") : value;
+  };
+  const effortLabel = (value: string) => {
+    const key = effortLabelKey(value);
+    return key ? t(key) : value;
+  };
+  const modelLabel = (value: string) => {
+    const entry = models?.find(model => model.id === value);
+    return entry ? modelDisplayLabel(entry, models ?? []) : value || t("dispatchModelLocal");
+  };
+  const selectedModelLabel = modelLabel(modelValue);
+  const shownEffort = effortDisplay ?? (effortValue ? effortLabel(effortValue) : t("dispatchModelLocal"));
+  const availableEfforts = external && !models?.some(entry => entry.id === modelValue) ? [] : effortOptions(models, modelValue);
+  const changeMode = (mode: string) => { if (mode !== modeValue) onChange({ mode }); closeMore(); };
+  const changeEffort = (effort: string) => {
+    if ((allowLocalDefaults || effort) && effort !== effortValue) {
+      onChange({ effort });
+      if (agentKind === "codex" && !allowLocalDefaults) setShowEffortNote(true);
+    }
+    closeMore();
+  };
+  return <>
       <div className="agent-session-quick-settings-row">
         <Select
           className="agent-settings-mode"
           aria-label={t("dispatchMode")}
           value={modeValue}
-          disabled={apply.isPending || !canChange("mode")}
+          disabled={busy || !canChange("mode")}
           onChange={(event) => changeMode(event.target.value)}
         >
           {external && <option value={modeValue}>{modeLabel(modeValue)}</option>}
-          {(session.agentKind === "other" ? [] : DISPATCH_MODES_BY_AGENT[session.agentKind]).filter(value => !external || value !== modeValue).map((value) => (
+          {(agentKind === "other" ? [] : DISPATCH_MODES_BY_AGENT[agentKind]).filter(value => !external || value !== modeValue).map((value) => (
             <option key={value} value={value}>{modeLabel(value)}</option>
           ))}
         </Select>
@@ -135,14 +179,15 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
           aria-label={t("dispatchModel")}
           value={modelValue}
           title={selectedModelLabel}
-          disabled={apply.isPending || !models || !canChange("model")}
+          disabled={busy || !models || !canChange("model")}
           onChange={(event) => {
             const model = event.target.value;
-            if (model && model !== modelValue) apply.mutate({ model });
+            if ((allowLocalDefaults || model) && model !== modelValue) onChange({ model });
           }}
         >
           {/* Use the same catalog labels as dispatch, including pending picks. */}
           <option value={modelValue}>{selectedModelLabel}</option>
+          {allowLocalDefaults && modelValue && <option value="">{t("dispatchModelLocal")}</option>}
           {groupModelsByProvider((models ?? []).filter((entry) => entry.id !== modelValue)).map((group) => (
             group.provider === null
               ? group.models.map((entry) => (
@@ -161,9 +206,10 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
           className="agent-settings-effort"
           aria-label={t("dispatchEffort")}
           value={effortValue}
-          disabled={apply.isPending || !models || !canChange("effort") || availableEfforts.length === 0}
+          disabled={busy || !models || !canChange("effort") || availableEfforts.length === 0}
           onChange={(event) => changeEffort(event.target.value)}
         >
+          {allowLocalDefaults && effortValue && <option value="">{t("dispatchModelLocal")}</option>}
           {effortValue && <option value={effortValue}>{shownEffort}</option>}
           {!effortValue && <option value="">{shownEffort}</option>}
           {availableEfforts.filter((value) => value !== effortValue).map((value) => (
@@ -174,13 +220,14 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
           <button ref={moreRef} type="button" className="secondary-button" aria-label={t("moreActions")} aria-expanded={moreOpen} onClick={() => (moreOpen ? closeMore() : openMore())}><MoreHorizontal size={18} /></button>
           {moreOpen && <div className="agent-settings-more-panel">
             <label>{t("dispatchMode")}
-              <Select value={modeValue} disabled={apply.isPending || !canChange("mode")} onChange={(event) => changeMode(event.target.value)}>
+              <Select value={modeValue} disabled={busy || !canChange("mode")} onChange={(event) => changeMode(event.target.value)}>
                 {external && <option value={modeValue}>{modeLabel(modeValue)}</option>}
-                {(session.agentKind === "other" ? [] : DISPATCH_MODES_BY_AGENT[session.agentKind]).filter(value => !external || value !== modeValue).map((value) => <option key={value} value={value}>{modeLabel(value)}</option>)}
+                {(agentKind === "other" ? [] : DISPATCH_MODES_BY_AGENT[agentKind]).filter(value => !external || value !== modeValue).map((value) => <option key={value} value={value}>{modeLabel(value)}</option>)}
               </Select>
             </label>
             <label>{t("dispatchEffort")}
-              <Select value={effortValue} disabled={apply.isPending || !models || !canChange("effort") || availableEfforts.length === 0} onChange={(event) => changeEffort(event.target.value)}>
+              <Select value={effortValue} disabled={busy || !models || !canChange("effort") || availableEfforts.length === 0} onChange={(event) => changeEffort(event.target.value)}>
+                {allowLocalDefaults && effortValue && <option value="">{t("dispatchModelLocal")}</option>}
                 {effortValue && <option value={effortValue}>{shownEffort}</option>}
                 {!effortValue && <option value="">{shownEffort}</option>}
                 {availableEfforts.filter((value) => value !== effortValue).map((value) => <option key={value} value={value}>{effortLabel(value)}</option>)}
@@ -188,26 +235,25 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
             </label>
           </div>}
         </div>
-        {apply.isPending && <LoaderCircle className="spin" size={13} aria-hidden="true" />}
+        {busy && <LoaderCircle className="spin" size={13} aria-hidden="true" />}
       </div>
-      {external && <p className="agent-session-settings-note">{t(!session.canReply && !settings.unavailableReason
-        ? "agentSettingsExternalUnavailable"
-        : settings.unavailableReason === "connect" ? "agentSettingsExternalConnect"
-        : settings.unavailableReason === "upgrade" ? "agentSettingsExternalUpgrade"
-        : settings.unavailableReason === "source" ? "agentSettingsExternalSource"
-        : "agentSettingsExternalSupported")}</p>}
-      {external && settings.adjustable && !settings.supportedFields?.includes("mode") && <p className="agent-session-settings-note">{t("agentSettingsExternalMode")}</p>}
-      {endpointNote && <p className="agent-session-settings-note">{t("customModelEndpoint", { host: settings.modelEndpoint! })}</p>}
-      {settings.pending && <p className="agent-session-settings-note" role="status">{t(external && settings.applyOn === "next_reply" ? "agentSettingsNextReply" : "agentSettingsPending", { change: pendingText })}</p>}
-      {settings.error && <p className="agent-session-settings-note error">{t("agentSettingsError", { error: settings.error })}</p>}
-      {apply.isError && (
-        <p className="agent-session-settings-note error">
-          {apply.error instanceof ApiError && apply.error.code === "node_upgrade_required"
-            ? t("agentSettingsUpgrade")
-            : external ? t("agentSettingsExternalFailed") : apply.error instanceof Error ? apply.error.message : t("somethingWentWrong")}
-        </p>
-      )}
-      {showEffortNote && <p className="agent-session-settings-note" role="status">{t("agentSettingsCodexEffortNote")}</p>}
-    </div>
-  );
+    {showEffortNote && <p className="agent-session-settings-note" role="status">{t("agentSettingsCodexEffortNote")}</p>}
+  </>;
+}
+
+export function DraftSessionQuickSettings({ config, disabled, onChange }: {
+  config: FreeSessionConfig; disabled: boolean; onChange: (config: FreeSessionConfig) => void;
+}) {
+  const nodes = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes });
+  const models = agentModels(nodes.data?.nodes.find(node => node.id === config.nodeId), config.agentKind);
+  return <div className="agent-session-quick-settings">
+    <AgentSettingsControls agentKind={config.agentKind} models={models} mode={config.mode}
+      allowLocalDefaults model={config.model ?? ""} effort={config.effort ?? ""} canChange={() => !disabled}
+      onChange={change => {
+        if (change.mode !== undefined) { onChange({ ...config, mode: change.mode }); return; }
+        const { model: _model, effort: _effort, ...base } = config;
+        onChange({ ...base, ...("mode" in change ? { mode: change.mode! } : {}),
+          ...reconcileChoice(models, { ...(config.model ? { model: config.model } : {}), ...(config.effort ? { effort: config.effort } : {}), ...change }) });
+      }} />
+  </div>;
 }

@@ -263,6 +263,13 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 - 手动状态流转的确认按钮使用“移至＋目标状态中文名”，语义流转继续保留“验收打回”等动作文案；共用 `translateTransition`，列表、详情及确认弹窗不直接展示状态枚举值。
 - 回归来源：`and-377-380-console.audit.spec.ts`、`external-attachments.audit.spec.ts`、`and-371-session-feedback.audit.spec.ts`、`i18n.test.ts`；共用灯箱同时由既有媒体与缩放回归约束。
 
+### 项目会话与控制台筛选（AND-369）
+
+- 草稿和已保存会话的底部配置共用 `AgentSettingsControls`，使用 `Select` 及现有紧凑“更多”布局。草稿只改本地配置，文字和附件保持；首次发送请求开始后不能修改或重复启动。
+- 启动中保留输入栏并解释暂不可发送的原因；已有会话沿用普通投递与禁用规则。无关联条目不渲染空条目容器，有条目时保留原标签和预览。
+- 关联类型筛选位于原列表搜索位置，保留 Agent 筛选。搜索迁入顶栏，≤1023px 用图标展开；关闭保留搜索内容，清除动作单独表达。搜索返回使用 `useOverlay`，关闭恢复触发器焦点。
+- 回归见 `and-369-rework.audit.spec.ts`、`new-session.audit.spec.ts` 及服务端 AND-369 用例，覆盖明暗主题、窄屏与断点两侧、字号、草稿、启动和投递状态。
+
 ### 单选控件（AND-322）
 
 - Web、Android/macOS 内嵌 Web 页面及反馈 SDK 页统一使用 `Select`（`apps/web/src/select.tsx`），提供可访问的 select-only combobox。独立原生选择器保留系统行为，详见[覆盖清单](and-322-select-audit.md)。

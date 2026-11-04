@@ -446,6 +446,7 @@ export interface DispatchHealthSnapshot {
 
 export type AgentSessionStatus = "active" | "idle" | "suspended" | "stalled" | "unavailable" | "failed";
 export type AgentSessionReplyBlockedReason =
+  | "starting"
   | "work_finished"
   | "archived"
   | "source_archived"

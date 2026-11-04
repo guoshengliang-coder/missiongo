@@ -181,6 +181,7 @@ const REFRESH_TOKEN_SECONDS = 90 * 24 * 60 * 60;
 const PERSONAL_TOKEN_DAY_CHOICES = [7, 30, 90, 365] as const;
 
 type AgentSessionReplyBlockedReason =
+  | "starting"
   | "work_finished"
   | "archived"
   | "source_archived"
@@ -192,6 +193,7 @@ type AgentSessionReplyBlockedReason =
 function agentSessionReplyBlockedReason(input: {
   readonly hasSession: boolean;
   readonly replyable: boolean;
+  readonly starting?: boolean;
   readonly archivedAt?: string;
   readonly archivedSource?: "missiongo" | "source";
   readonly nodeRevoked: boolean;
@@ -201,6 +203,7 @@ function agentSessionReplyBlockedReason(input: {
   if (!input.hasSession) return undefined;
   if (input.archivedAt) return input.archivedSource === "source" ? "source_archived" : "archived";
   if (input.nodeRevoked) return "node_revoked";
+  if (input.starting) return "starting";
   if (!input.replyable) return "work_finished";
   if (!input.canOperate) return "operate_permission";
   if (!input.canUseAi) return "ai_permission";
@@ -2542,6 +2545,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const replyBlockedReason = agentSessionReplyBlockedReason({
       hasSession: true,
       replyable: session.replyable,
+      starting: Boolean(session.productId && ["queued", "delivered"].includes(dispatch.status)),
       ...(session.archivedAt ? { archivedAt: session.archivedAt } : {}),
       ...(session.archivedSource ? { archivedSource: session.archivedSource } : {}),
       nodeRevoked: Boolean(dispatchStore.getNode(account.id, dispatch.nodeId).revokedAt),
@@ -2721,6 +2725,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         const canUseAi = sessionProducts(session).every((productId) => accountStore.allows(account, productId, "ai"));
         const replyBlockedReason = session.source === "external" && !session.nativeConnection ? "external_progress_only" as const : agentSessionReplyBlockedReason({
           hasSession: Boolean(session.agentSessionId),
+          starting: Boolean(session.productId && ["queued", "delivered"].includes(session.dispatchStatus)),
           replyable: session.source === "external" ? session.items.some((item) => store.getWorkItem(item.key).status !== "done") : session.replyable,
           ...(session.archivedAt ? { archivedAt: session.archivedAt } : {}),
           ...(session.archivedSource ? { archivedSource: session.archivedSource } : {}),

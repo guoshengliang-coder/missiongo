@@ -7,7 +7,7 @@ for (const width of [375, 768, 1440]) {
     const product = await (await request.post("/api/v1/products", { data: { name: `Project conversation ${width}`, keyPrefix: `PC${width}` } })).json();
     const now = new Date().toISOString();
     const node = { id: "fixture-node", name: "Fixture Mac", online: true, supportsFreeSessions: true, supportsChatAttachments: true,
-      agents: [{ kind: "codex", ready: true, models: [] }], repos: [{ productId: product.id, repoPath: "fixture-repository" }], repoCandidates: [], createdAt: now };
+      agents: [{ kind: "codex", ready: true, models: [{ id: "draft-beta", label: "Draft Beta", efforts: ["low", "high"] }] }], repos: [{ productId: product.id, repoPath: "fixture-repository" }], repoCandidates: [], createdAt: now };
     await page.route("**/api/v1/nodes", route => route.fulfill({ json: { nodes: [node] } }));
     await page.route("**/api/v1/dispatch-defaults", route => route.fulfill({ json: { nodeId: node.id, agentKind: "codex", agents: { codex: { mode: "plan" } } } }));
     let prepareCount = 0, uploadCount = 0, startCount = 0;
@@ -37,7 +37,7 @@ for (const width of [375, 768, 1440]) {
       }
       prepareCount++;
       if (width === 1440 && prepareCount === 1) return route.fulfill({ status: 409, json: { code: "node_offline", title: "This node is offline" } });
-      expect(route.request().postDataJSON()).toMatchObject({ productId: product.id, nodeId: node.id, agentKind: "codex", mode: "plan", text: "先讨论这个方案" });
+      expect(route.request().postDataJSON()).toMatchObject({ productId: product.id, nodeId: node.id, agentKind: "codex", mode: "plan", model: "draft-beta", effort: "high", text: "先讨论这个方案" });
       return route.fulfill({ status: 201, json: dispatch });
     });
     const openNew = async (name = "新会话") => {
@@ -56,6 +56,20 @@ for (const width of [375, 768, 1440]) {
     const draft = page.locator(".agent-console-reply textarea");
     await expect(draft).toBeVisible();
     await draft.fill("先讨论这个方案");
+    const replyBar = page.locator(".agent-console-reply");
+    await replyBar.getByRole("combobox", { name: "模型", exact: true }).click();
+    await page.getByRole("option", { name: "Draft Beta", exact: true }).click();
+    const effort = replyBar.locator(".agent-settings-effort");
+    if (await effort.isVisible()) await effort.click();
+    else {
+      await replyBar.getByRole("button", { name: "更多操作", exact: true }).click();
+      await replyBar.locator(".agent-settings-more-panel").getByRole("combobox", { name: "强度", exact: true }).click();
+    }
+    await page.getByRole("option", { name: "高", exact: true }).click();
+    await page.locator(".new-session-head").getByRole("button", { name: "配置", exact: true }).click();
+    await expect(form.getByRole("combobox", { name: "模型", exact: true })).toHaveAttribute("data-value", "draft-beta");
+    await expect(form.getByRole("combobox", { name: "强度", exact: true })).toHaveAttribute("data-value", "high");
+    await form.getByRole("button", { name: "进入会话", exact: true }).click();
     await page.locator(".agent-console-reply input[type=file]").setInputFiles({ name: "draft.png", mimeType: "image/png", buffer: solidPng(160, 90, [214, 226, 240]) });
     const preview = page.getByRole("button", { name: "预览 draft.png", exact: true });
     await preview.click();

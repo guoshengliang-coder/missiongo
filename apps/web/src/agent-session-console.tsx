@@ -20,7 +20,6 @@ import {
   MessageSquare,
   Plus,
   RotateCcw,
-  Search,
   Send,
   Square,
   Video,
@@ -66,6 +65,7 @@ import {
   shouldResetMessageView,
   shouldScrollMessagesAfterChange,
   type AgentKindFilter,
+  type AgentAssociationFilter,
   type AgentSessionFilter,
   withSessionReplyDraft,
 } from "./agent-session-view";
@@ -176,6 +176,7 @@ function commandStatusLabel(command: AgentSessionCommand, t: ReturnType<typeof u
 export function AgentSessionConsole({
   productId,
   initialFilter,
+  search = "",
   allSessions,
   sessionsLoaded,
   sessionsError,
@@ -190,6 +191,7 @@ export function AgentSessionConsole({
 }: {
   productId: string;
   initialFilter: AgentSessionFilter | null;
+  search?: string;
   allSessions: readonly AgentSessionSummary[];
   sessionsLoaded: boolean;
   sessionsError: unknown;
@@ -209,7 +211,7 @@ export function AgentSessionConsole({
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState<AgentSessionFilter>(initialFilter ?? DEFAULT_AGENT_SESSION_FILTER);
   const [agentFilter, setAgentFilter] = useState<AgentKindFilter>(DEFAULT_AGENT_KIND_FILTER);
-  const [search, setSearch] = useState("");
+  const [association, setAssociation] = useState<AgentAssociationFilter>("all");
   const [replyDrafts, setReplyDrafts] = useState<Readonly<Record<string, string>>>({});
   const [clock, setClock] = useState(Date.now);
   useEffect(() => {
@@ -251,13 +253,15 @@ export function AgentSessionConsole({
   );
   const sessions = filter === "unread" ? allSessions : productSessions;
   const productAgentSessions = useMemo(
-    () => productSessions.filter((session) => agentFilter === "all" || session.agentKind === agentFilter),
-    [agentFilter, productSessions],
+    () => productSessions.filter((session) => (agentFilter === "all" || session.agentKind === agentFilter)
+      && (association === "all" || (association === "linked") === (session.items.length > 0))),
+    [agentFilter, association, productSessions],
   );
   // AND-260: every unread number here counts what is waiting, not what a still
   // running conversation is saying, so it matches the list the filter opens.
   const counts = useMemo(() => ({
-    unread: allSessions.filter((session) => !session.archivedAt && sessionCountsAsUnread(session)
+    unread: allSessions.filter((session) => (association === "all" || (association === "linked") === (session.items.length > 0))
+      && !session.archivedAt && sessionCountsAsUnread(session)
       && (agentFilter === "all" || session.agentKind === agentFilter)).length,
     productUnread: productAgentSessions.filter((session) => !session.archivedAt
       && !isAbnormalAgentSession(session) && sessionCountsAsUnread(session)).length,
@@ -267,10 +271,10 @@ export function AgentSessionConsole({
     all: productAgentSessions.filter((session) => !session.archivedAt && !isAbnormalAgentSession(session)).length,
     failed: productAgentSessions.filter((session) => !session.archivedAt && isAbnormalAgentSession(session)).length,
     archived: productAgentSessions.filter((session) => session.archivedAt).length,
-  }), [agentFilter, allSessions, productAgentSessions]);
+  }), [agentFilter, association, allSessions, productAgentSessions]);
   const visibleSessions = useMemo(
-    () => byLatestActivity(sessions.filter((session) => agentSessionMatches(session, filter, agentFilter, search))),
-    [agentFilter, filter, search, sessions],
+    () => byLatestActivity(sessions.filter((session) => agentSessionMatches(session, filter, agentFilter, search, association))),
+    [agentFilter, association, filter, search, sessions],
   );
   const archivableIds = useMemo(() => archivableVisibleSessionIds(visibleSessions), [visibleSessions]);
   const allArchivableSelected = archivableIds.length > 0
@@ -308,7 +312,7 @@ export function AgentSessionConsole({
   useEffect(() => {
     setSelectedForArchive(new Set());
     setBulkArchiveMessage(null);
-  }, [agentFilter, filter, productId, search]);
+  }, [agentFilter, association, filter, productId, search]);
 
   useEffect(() => {
     onBulkAvailabilityChange(bulkAvailable);
@@ -742,12 +746,12 @@ export function AgentSessionConsole({
     setFilter(next);
     const nextSessions = next === "unread" ? allSessions : productSessions;
     if (selectedId && !nextSessions.some((session) => session.id === selectedId
-      && agentSessionMatches(session, next, agentFilter, search))) onSelectSession(null, false);
+      && agentSessionMatches(session, next, agentFilter, search, association))) onSelectSession(null, false);
   };
   const chooseAgent = (next: AgentKindFilter) => {
     setAgentFilter(next);
     if (selectedId && !sessions.some((session) => session.id === selectedId
-      && agentSessionMatches(session, filter, next, search))) onSelectSession(null, false);
+      && agentSessionMatches(session, filter, next, search, association))) onSelectSession(null, false);
   };
 
   const showRecovery = Boolean(selected && !selected.archivedAt && isAbnormalAgentSession({ status: sessionStatus, ...(command ? { command } : {}) }));
@@ -859,10 +863,16 @@ export function AgentSessionConsole({
           ))}
         </div>
         <div className="agent-console-list-controls">
-          <label className="agent-console-search">
-            <Search size={15} />
-            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("agentConsoleSearch")} />
-          </label>
+          <Select aria-label={t("agentConsoleAssociationFilter")} value={association} onChange={event => {
+            const next = event.target.value as AgentAssociationFilter;
+            setAssociation(next);
+            if (selectedId && !sessions.some(session => session.id === selectedId
+              && agentSessionMatches(session, filter, agentFilter, search, next))) onSelectSession(null, false);
+          }}>
+            <option value="all">{t("agentConsoleAssociationAll")}</option>
+            <option value="unlinked">{t("agentConsoleAssociationUnlinked")}</option>
+            <option value="linked">{t("agentConsoleAssociationLinked")}</option>
+          </Select>
           <label className="agent-console-agent-filter">
             <span>{t("agentConsoleAgentFilter")}</span>
             <Select
@@ -1021,11 +1031,11 @@ export function AgentSessionConsole({
                 <h2>{sessionTitle(selected, roundLabel)}</h2>
                 {/* The items this session is working on stay in the head, where
                     scrolling the conversation cannot lose them (AND-159). */}
-                <div className="agent-console-dispatch agent-console-dispatch-head">
+                {selected.items.length > 0 && <div className="agent-console-dispatch agent-console-dispatch-head">
                   <div>{selected.items.map((item) => (
                     <button key={item.key} type="button" onClick={() => setPreviewItemKey(item.key)}>{item.key}</button>
                   ))}</div>
-                </div>
+                </div>}
               </div>
               <div className="agent-console-toolbar">
                 <span className={`status-pill agent-session-status-${visualStatus}`}>{selected.archivedAt ? t("archived") : selected.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected)) : claudeBackgroundOnly ? t("agentSessionBackgroundStatus") : agentWaiting ? t(selected.agentKind === "codex" ? "agentSessionWaitingApprovalStatus" : "agentSessionWaitingStatus") : statusLabel(sessionStatus, t)}</span>
@@ -1377,7 +1387,7 @@ export function AgentSessionConsole({
                   </span>
                 </div>
               )}
-              {selected.canReply && selected.agentSessionId ? (
+              {(selected.canReply || selected.replyBlockedReason === "starting") && selected.agentSessionId ? (
                 <form onSubmit={submit} onPaste={replyPaste} {...dropHandlers}>
                   {isDraggingFiles && <FileDropOverlay remaining={Math.max(0, 10 - replyFiles.length)} limitReachedText={t("agentChatTooManyFiles")} />}
                   <AutoGrowTextarea
@@ -1391,7 +1401,7 @@ export function AgentSessionConsole({
                       if (send.isError && send.variables?.sessionId === selected.agentSessionId) send.reset();
                     }}
                     placeholder={t("agentSessionReplyPlaceholder", { agent: agentLabel(selected, t) })}
-                    disabled={pending || sendingSelected || cancellingSelected}
+                    disabled={!selected.canReply || pending || sendingSelected || cancellingSelected}
                   />
                   {replyFiles.length > 0 && <div className="agent-chat-draft-files">
                     {replyFiles.map((file, index) => <DraftChatFile key={`${file.name}-${index}`} file={file} disabled={sendingSelected || cancellingSelected}
@@ -1409,14 +1419,15 @@ export function AgentSessionConsole({
                         aria-label={t("agentChatAddFile")}
                         onClick={() => fileInputRef.current?.click()}><Plus size={18} /></button>}
                       <button type="submit" className="primary-button agent-chat-icon-button"
-                        disabled={(!reply.trim() && replyFiles.length === 0) || (replyFiles.length > 0 && !sessionQuery.data?.canAttach) || pending || sendingSelected || cancellingSelected}
+                        disabled={!selected.canReply || (!reply.trim() && replyFiles.length === 0) || (replyFiles.length > 0 && !sessionQuery.data?.canAttach) || pending || sendingSelected || cancellingSelected}
                         title={sendingSelected ? t("agentSessionSending") : t("agentSessionSend")}
                         aria-label={sendingSelected ? t("agentSessionSending") : t("agentSessionSend")}>
                         {sendingSelected ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />}
                       </button>
                     </div>
                   </div>
-                  {sessionQuery.data && !sessionQuery.data.canAttach && <p className="agent-session-muted" role="note">{t("agentChatNodeUpdate")}</p>}
+                  {selected.replyBlockedReason === "starting" && <p className="agent-session-muted" role="status">{t("agentSessionStarting")}</p>}
+                  {selected.replyBlockedReason !== "starting" && sessionQuery.data && !sessionQuery.data.canAttach && <p className="agent-session-muted" role="note">{t("agentChatNodeUpdate")}</p>}
                 </form>
               ) : (
                 <p className="agent-session-muted" role="note">
@@ -1426,7 +1437,7 @@ export function AgentSessionConsole({
                     : t("agentConsoleNoInlineReply")}
                 </p>
               )}
-              {(!selected.canReply || !selected.agentSessionId) && <AgentSessionQuickSettings session={selected} />}
+              {((!selected.canReply && selected.replyBlockedReason !== "starting") || !selected.agentSessionId) && <AgentSessionQuickSettings session={selected} />}
               {cancel.isError && <p className="inline-error">{localizedErrorText(cancel.error, t)}</p>}
             </footer>
           </>
