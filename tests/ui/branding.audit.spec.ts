@@ -1,9 +1,9 @@
 import { expect, test } from "@playwright/test";
 
-for (const width of [320, 1440]) {
+for (const width of [320, 375, 1440]) {
   for (const theme of ["light", "dark"] as const) {
     test.describe(`AND-384 branding ${width} ${theme}`, () => {
-      test.use({ viewport: { width, height: 900 }, hasTouch: width === 320, colorScheme: theme });
+      test.use({ viewport: { width, height: width === 375 ? 812 : 900 }, hasTouch: width < 400, colorScheme: theme });
 
       test("shares the canonical icon and localized metadata across login, workspace and onboarding", async ({ page }) => {
         await page.goto("/");
@@ -53,6 +53,15 @@ for (const width of [320, 1440]) {
         await expect(page.locator(".brand-mark").first()).toHaveAttribute("src", favicon!);
         await expect(page.locator(".brand-tagline").first()).toHaveText("一站式AI交付平台");
         await page.screenshot({ path: test.info().outputPath("login.png") });
+        for (const scale of ["small", "medium", "large"]) {
+          await page.evaluate((value) => { document.documentElement.dataset.fontScale = value; }, scale);
+          expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+          for (const mark of await page.locator(".brand-mark").all()) {
+            const box = await mark.boundingBox();
+            expect(box?.width).toBe(39);
+            expect(box?.height).toBe(39);
+          }
+        }
       });
     });
   }
