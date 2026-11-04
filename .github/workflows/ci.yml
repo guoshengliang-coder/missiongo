@@ -195,7 +195,9 @@ jobs:
   # same way the publish script does it, so a change that breaks packaging fails
   # here rather than on the machine that happens to publish next.
   macos:
-    runs-on: macos-15
+    # Arm64 pool allocation failed repeatedly on 2026-11-04. Keep the same OS,
+    # tests and universal bundle build on the supported standard Intel pool.
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
