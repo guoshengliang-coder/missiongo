@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach,describe,expect,it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "./app.js";
+import { DispatchStore } from "./dispatch-store.js";
 import { createAiAccessToken } from "./admin-auth.js";
 const apps:FastifyInstance[]=[];const dirs:string[]=[];
 afterEach(async()=>{await Promise.all(apps.splice(0).map(a=>a.close()));await Promise.all(dirs.splice(0).map(d=>rm(d,{recursive:true,force:true})));});
@@ -152,5 +153,33 @@ describe("saved batch API boundaries",()=>{
   expect(overview.body).not.toContain(item.title);expect(overview.body).not.toContain(shared.id);
   expect((await app.inject({method:"DELETE",url:`${path}/${id}`,headers:{cookie:memberCookie}})).statusCode).toBe(204);
   expect(app.missionGoStore.getWorkItem(item.key).id).toBe(item.id);
+ });
+});
+
+
+describe("completion discovery API",()=>{
+ it("queues from the status action, accepts node suggestions and checks only after human association",async()=>{
+  const {app,cookie,memberCookie,item,shared}=await seed();
+  const store=app.missionGoStore;
+  const c=store.createComment({itemKey:item.key,actorKind:"agent",bodyKind:"free",body:{text:"PR #385 已合并 main (60ca83a)"},idempotencyKey:"comment"});
+  const node=new DispatchStore(store.database).registerNode({accountId:"owner",installationId:"discovery-node",name:"Node"});
+  store.database.connection.prepare("INSERT INTO node_product_repos(id,node_id,product_id,repo_path,created_at,updated_at) VALUES (?,?,?,?,?,?)").run("mapping",node.nodeId,shared.id,"/example/repository",new Date().toISOString(),new Date().toISOString());
+  const url=`/api/v1/items/${item.key}/status-checks`;
+  expect((await app.inject({method:"POST",url,headers:{cookie:memberCookie}})).statusCode).toBe(404);
+  const queued=await app.inject({method:"POST",url,headers:{cookie}});
+  expect(queued.statusCode).toBe(200);expect(queued.json()).toMatchObject({missingAssociation:true,discovery:{status:"waiting_node"}});
+  const headers={authorization:`Bearer ${node.token}`};
+  const jobReply=await app.inject({method:"POST",url:"/api/v1/node/completion-discovery/claim",headers,payload:{}});
+  expect(jobReply.statusCode).toBe(200);const job=jobReply.json().job;
+  expect(job.hints).toContainEqual({kind:"github",value:"385",commentId:c.id});
+  const completion={kind:"github",url:"https://github.com/example/project/pull/385"};
+  const report=await app.inject({method:"POST",url:`/api/v1/node/completion-discovery/${job.id}/report`,headers,payload:{leaseToken:job.leaseToken,repository:"https://github.com/example/project",candidates:[{completion,title:"Fix",state:"merged",commentId:c.id}]}});
+  expect(report.statusCode).toBe(200);expect(store.getWorkItem(item.key).status).toBe("in_progress");
+  const payload={completion,discoverySelection:{discoveryId:job.id,candidateIndex:0}};
+  const save=await app.inject({method:"PUT",url:`/api/v1/items/${item.key}/handover`,headers:{cookie},payload});
+  expect(save.statusCode,save.body).toBe(200);
+  const check=await app.inject({method:"POST",url:"/api/v1/node/status-checks/claim",headers,payload:{}});
+  expect(check.json().job).toMatchObject({itemKey:item.key,completion,status:"checking"});
+  expect(store.getWorkItem(item.key).status).toBe("in_progress");
  });
 });

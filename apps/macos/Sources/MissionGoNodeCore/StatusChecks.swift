@@ -330,6 +330,9 @@ public actor StatusCheckWorker {
                 continue
             }
         }
+        // Discovery failures must not block already associated delivery checks.
+        do { try await CompletionDiscoveryWorker(root: root.appendingPathComponent("Discovery"), run: run).tick(api: api, mappedRepos: mappedRepos) }
+        catch { /* Durable discovery reports retry independently on the next tick. */ }
         guard let job = try await api.claimStatusCheck() else { return }
         guard UUID(uuidString: job.id) != nil, UUID(uuidString: job.leaseToken) != nil else {
             throw APIError.invalidResponse("无效的状态检查任务标识。")

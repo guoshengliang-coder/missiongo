@@ -1,10 +1,10 @@
 import { Select } from "./select";
 import { useDialogDraft } from "./dialog-state";
 import type { CompletionReference } from "@missiongo/contracts";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ClipboardCheck, LoaderCircle } from "lucide-react";
-import { api, type StatusCheckRecord } from "./api";
+import { api, type CompletionCandidate, type DiscoverySelection, type StatusCheckRecord } from "./api";
 import { localizedErrorText } from "./error-text";
 import { useI18n } from "./i18n";
 import { Modal } from "./modal";
@@ -24,10 +24,12 @@ export function StatusCheckButton({productId,itemKey,canOperate}:{productId:stri
   return <><button type="button" className={itemKey ? "icon-button" : "secondary-button status-check-entry"} aria-label={locale === "zh-CN" ? "检查状态" : "Check status"} title={locale === "zh-CN" ? "检查状态" : "Check status"} onClick={()=>setOpen(true)}><ClipboardCheck size={16}/>{!itemKey && <span className="status-check-entry-label">{locale === "zh-CN" ? "检查状态" : "Check status"}</span>}</button>
     {open && <StatusCheckPanel key={itemKey ?? productId} productId={productId} {...(itemKey ? {itemKey} : {})} canOperate={canOperate} onClose={()=>setOpen(false)}/>}</>;
 }
-export function StatusCheckPanel({productId,itemKey,canOperate,onClose}:{productId:string;itemKey?:string;canOperate:boolean;onClose:()=>void}) {
+export function StatusCheckPanel({productId,itemKey,canOperate,onClose,autoCheck=false}:{productId:string;itemKey?:string;canOperate:boolean;onClose:()=>void;autoCheck?:boolean}) {
   const {locale,t,statusLabel} = useI18n(); const zh = locale === "zh-CN";
   const [confirmation, setConfirmation] = useState<StatusCheckRecord | null>(null);
   const [scopeRecord, setScopeRecord] = useState<StatusCheckRecord>();
+  const [candidate,setCandidate] = useState<{value:CompletionCandidate;selection:DiscoverySelection}>();
+  const autoRequested = useRef(false);
   const [offset,setOffset] = useState(0); const [editing,setEditing] = useState(false); const [requested,setRequested] = useState(false);
   const client = useQueryClient();
   const products = useQuery({queryKey:["products"],queryFn:()=>api.listProducts()});
@@ -37,11 +39,18 @@ export function StatusCheckPanel({productId,itemKey,canOperate,onClose}:{product
     || item.data.hasProcessingRound && ["ready","inbox"].includes(item.data.status)));
   const mayOperate = canOperate && product?.access?.canOperate !== false && products.isSuccess;
   const query = useQuery({queryKey:["status-checks",productId,itemKey,offset],queryFn:()=>api.statusChecks(productId,itemKey,offset),
-    refetchInterval: q => q.state.data?.items.some(r=>r.requestedAt || ["waiting_node","checking"].includes(r.status)) ? 5000 : false});
+    refetchInterval: q => (q.state.data?.items.some(r=>r.requestedAt || ["waiting_node","checking"].includes(r.status)) || ["waiting_node","checking"].includes(q.state.data?.discovery?.status ?? "")) ? 5000 : false});
   const refresh = async () => { await Promise.all([client.invalidateQueries({queryKey:["products"]}),client.invalidateQueries({queryKey:["status-checks"]}),client.invalidateQueries({queryKey:["items"]}),client.invalidateQueries({queryKey:["item"]}),client.invalidateQueries({queryKey:["timeline"]})]); };
   const mutation = useMutation({mutationFn:()=>api.requestStatusCheck(productId,itemKey),onSuccess:async()=>{setRequested(true);await refresh();}});
+  useEffect(()=>{
+    if (autoCheck && !autoRequested.current && mayOperate && canRegister && query.isSuccess) {
+      autoRequested.current=true; mutation.mutate();
+    }
+  },[autoCheck,mayOperate,canRegister,query.isSuccess,mutation]);
+  const discovery=query.data?.discovery;
   const records = query.data?.items ?? [];
-  const newest = records[0];
+  const hasCurrentRecord=records.some(r=>r.status !== "stale");
+  const newest = records.find(r=>r.status !== "stale");
   const statusFingerprint = records.map(r=>`${r.itemKey}:${r.itemStatus}`).join("|");
   useEffect(()=>{
     if (!statusFingerprint) return;
@@ -50,22 +59,39 @@ export function StatusCheckPanel({productId,itemKey,canOperate,onClose}:{product
     void client.invalidateQueries({queryKey:["timeline"]});
   },[statusFingerprint,client]);
   return <Modal title={editing ? (zh ? "关联完成依据 / 确认发布范围" : "Associate completion / confirm release scope") : confirmation ? (zh ? "人工确认交付" : "Confirm delivery") : (zh ? "状态检查" : "Status checks")} subtitle={itemKey ?? product?.name ?? ""} onClose={onClose} pending={mutation.isPending} wide scrolls>
-    {editing && itemKey ? <ScopeEditor key={itemKey} itemKey={itemKey} record={scopeRecord} artifacts={product?.releaseArtifacts ?? []} onCancel={()=>setEditing(false)} onSaved={async()=>{setEditing(false);await refresh();}}/>
+    {editing && itemKey ? <ScopeEditor key={itemKey} itemKey={itemKey} record={scopeRecord} candidate={candidate} artifacts={product?.releaseArtifacts ?? []} onCancel={()=>setEditing(false)} onSaved={async()=>{setEditing(false);await refresh();}}/>
       : confirmation ? <HumanConfirmation key={`${confirmation.id}:${confirmation.itemStatus}`} record={confirmation} onCancel={()=>setConfirmation(null)} onSaved={async()=>{setConfirmation(null);await refresh();}}/> : <>
     <p className="dispatch-note">{zh ? "已有证据由服务端核对；需要仓库权限时，由已关联的 macOS 节点检查。节点离线时任务会保留。" : "The server reconciles recorded evidence. Repository checks run on a mapped macOS node; offline work remains queued."}</p>
     {query.data?.schedule && <p className="dispatch-note">{query.data.schedule.time === false ? (zh ? "每日补查已关闭" : "Daily checks disabled") : `${zh ? "每天" : "Daily at"} ${query.data.schedule.time} · ${query.data.schedule.timezone}`}</p>}
     <div className="status-check-actions"><button type="button" className="primary-button" disabled={!mayOperate || mutation.isPending} onClick={()=>mutation.mutate()}>
       {mutation.isPending ? <LoaderCircle className="spin" size={16}/> : <ClipboardCheck size={16}/>}{zh ? "立即检查并校正" : "Check and reconcile now"}</button>
       <button type="button" className="secondary-button" disabled={query.isFetching} onClick={()=>void refresh()}>{zh ? "刷新结果" : "Refresh results"}</button>
-      {itemKey && mayOperate && canRegister && <button type="button" className="secondary-button" onClick={()=>{setScopeRecord(newest);setEditing(true);}}>{zh ? "关联完成依据 / 确认发布范围" : "Associate completion / confirm release scope"}</button>}
+      {itemKey && mayOperate && canRegister && <button type="button" className="secondary-button" onClick={()=>{setCandidate(undefined);setScopeRecord(newest);setEditing(true);}}>{zh ? "关联完成依据 / 确认发布范围" : "Associate completion / confirm release scope"}</button>}
     </div>
     {(mutation.isError || query.isError) && <p className="inline-error" role="alert">{localizedErrorText(mutation.error ?? query.error,t)}</p>}
-    {requested && <p role="status" className="dispatch-note">{mutation.data?.missingAssociation ? (zh ? "缺少完成依据，暂时无法检查。请先关联 PR、MR 或提交。" : "Associate a PR, MR or commit before requesting a check.")
+    {requested && <p role="status" className="dispatch-note">{mutation.data?.missingAssociation ? (zh ? "尚未关联完成依据，请查看下方查找进度或候选；也可手动关联。" : "No completion reference associated yet. See discovery progress or candidates below, or associate one manually.")
       : records.some(r=>r.requestedAt || r.status === "checking") ? (zh ? "已排队，等待关联节点；这不代表已经核实。" : "Queued for a mapped node; this is not a verification result.")
       : (zh ? "已有证据已核对；请查看下方结果。" : "Recorded evidence reconciled; see results below.")}</p>}
 
     {query.isLoading && <p><LoaderCircle className="spin" size={16}/>{zh ? "正在读取…" : "Loading…"}</p>}
-    {query.isSuccess && !records.length && <p className="dispatch-note">{zh ? "暂无交接记录。请先关联完成依据和发布范围。" : "No handover recorded. Associate completion evidence and release scope first."}</p>}
+    {query.isSuccess && !records.length && !discovery && <p className="dispatch-note">{zh ? "暂无交接记录。请先关联完成依据和发布范围。" : "No handover recorded. Associate completion evidence and release scope first."}</p>}
+    {discovery && !hasCurrentRecord && <section aria-label={zh ? "完成依据候选" : "Completion candidates"}>
+      <p role="status" className="dispatch-note">{discovery.status === "waiting_node" ? (zh ? "查找已排队，等待支持自动查找的关联节点；节点离线时保留任务，旧版节点需升级。" : "Discovery queued for a mapped node supporting discovery. Offline jobs are retained; older nodes need an update.")
+        : discovery.status === "checking" ? (zh ? "节点正在根据本轮评论和仓库记录查找完成依据…" : "Searching current-round comments and repository records…")
+        : discovery.status === "empty" ? (zh ? "未找到完成依据，请手动关联 PR、MR 或提交。" : "No references found. Associate a PR, MR or commit manually.")
+        : discovery.status === "permission_failed" ? (zh ? "节点无法访问仓库，请核对仓库映射及 Git、gh/glab 登录权限后重试。" : "Repository access failed. Check the mapping and Git/gh/glab permissions, then retry.")
+        : discovery.status === "failed" ? (zh ? "查找失败，可重试或手动关联。" : "Discovery failed. Retry or associate manually.")
+        : discovery.status === "stale" ? (zh ? "处理轮次或内容已变化，请重新查找。" : "The processing round or content changed. Search again.")
+        : (zh ? "请选择完成依据。评论仅提供线索，保存关联后会核实真实集成结果。" : "Choose a reference. Comments supply hints; integration is verified after association.")}</p>
+      {discovery.repository && <p className="dispatch-note">{zh ? "关联仓库：" : "Mapped repository: "}{discovery.repository}</p>}
+      <div className="status-check-list">{discovery.candidates.map((value,index)=><article className="status-check-card" key={index}>
+        <strong>{value.title}</strong>
+        <p>{"url" in value.completion ? <a href={value.completion.url} target="_blank" rel="noreferrer">{value.completion.url}</a> : <code>{"commit" in value.completion ? value.completion.commit : ""}</code>}</p>
+        <p>{({merged:zh ? "查询显示已合并" : "Reported merged",integrated:zh ? "查询显示已集成" : "Reported integrated",open:zh ? "尚未合并" : "Open",closed:zh ? "已关闭" : "Closed",unmerged:zh ? "尚未集成" : "Not integrated"})[value.state]}</p>
+        <p>{value.commentId ? <a href={`/?product=${encodeURIComponent(productId)}&item=${encodeURIComponent(itemKey!)}&comment=${value.commentId}`}>{zh ? "来源：本轮评论" : "Source: current-round comment"}</a> : (zh ? "来源：仓库条目编号搜索" : "Source: repository item-key search")}</p>
+        {mayOperate && canRegister && <button type="button" className="secondary-button" onClick={()=>{setScopeRecord(undefined);setCandidate({value,selection:{discoveryId:discovery.id,candidateIndex:index}});setEditing(true);}}>{zh ? "选择此依据" : "Choose this reference"}</button>}
+      </article>)}</div>
+    </section>}
     <div className="status-check-list">{records.map(record=><article className="status-check-card" key={record.id}>
       <header><strong>{record.itemKey}</strong><span role="status">{statusCheckLabel(record.status,zh)}</span></header>
       {record.requestedAt && <p className="dispatch-note">{record.status === "checking" ? (zh ? "本次检查：节点正在核查。" : "Current check: a node is verifying.") : (zh ? "本次检查：已排队或等待自动重试；下方为上次记录。" : "Current check: queued or awaiting retry; previous observations appear below.")}</p>}
@@ -92,25 +118,26 @@ export function StatusCheckPanel({productId,itemKey,canOperate,onClose}:{product
     </>}
   </Modal>;
 }
-function ScopeEditor({itemKey,record,artifacts,onSaved,onCancel}:{itemKey:string;record:StatusCheckRecord|undefined;artifacts:readonly string[];onSaved:()=>Promise<void>;onCancel:()=>void}) {
+function ScopeEditor({itemKey,record,candidate,artifacts,onSaved,onCancel}:{itemKey:string;record:StatusCheckRecord|undefined;candidate:{value:CompletionCandidate;selection:DiscoverySelection}|undefined;artifacts:readonly string[];onSaved:()=>Promise<void>;onCancel:()=>void}) {
   const {locale,t} = useI18n(); const zh = locale === "zh-CN";
-  const [kind,setKind] = useState<CompletionReference["kind"]>(record?.completion.kind ?? "github");
-  const [url,setUrl] = useState(record?.pullRequestUrl ?? "");
-  const [commit,setCommit] = useState(record && "commit" in record.completion ? record.completion.commit : "");
-  const [branch,setBranch] = useState(record?.completion.kind === "commit" ? record.completion.targetBranch : "main");
+  const initial=candidate?.value.completion ?? record?.completion;
+  const [kind,setKind] = useState<CompletionReference["kind"]>(initial?.kind ?? "github");
+  const [url,setUrl] = useState(initial && "url" in initial ? initial.url : "");
+  const [commit,setCommit] = useState(initial && "commit" in initial ? initial.commit : "");
+  const [branch,setBranch] = useState(initial?.kind === "commit" ? initial.targetBranch : "main");
   const [description,setDescription] = useState(record?.completion.kind === "manual" ? record.completion.description : ""); const [selected,setSelected] = useState<string[]>(record?.requiredArtifacts ?? []);
   const [noRelease,setNoRelease] = useState(record?.requiredArtifacts?.length === 0); const [reason,setReason] = useState(record?.noReleaseReason ?? "");
-  const mutation = useMutation({mutationFn:()=>api.registerHandover(itemKey,{completion: kind === "github" || kind === "gitlab" ? {kind,url:url.trim()} : kind === "commit" ? {kind,commit:commit.trim(),targetBranch:branch.trim()} : {kind,commit:commit.trim(),description:description.trim()},...(noRelease ? {requiredArtifacts:[],noReleaseReason:reason.trim()} : selected.length ? {requiredArtifacts:selected} : {})}),onSuccess:onSaved});
+  const mutation = useMutation({mutationFn:()=>api.registerHandover(itemKey,{completion: kind === "github" || kind === "gitlab" ? {kind,url:url.trim()} : kind === "commit" ? {kind,commit:commit.trim(),targetBranch:branch.trim()} : {kind,commit:commit.trim(),description:description.trim()},...(candidate ? {discoverySelection:candidate.selection} : {}),...(noRelease ? {requiredArtifacts:[],noReleaseReason:reason.trim()} : selected.length ? {requiredArtifacts:selected} : {})}),onSuccess:onSaved});
   const currentDraft = JSON.stringify({kind,url,commit,branch,description,selected,noRelease,reason});
   const [initialDraft] = useState(currentDraft);
   useDialogDraft(currentDraft !== initialDraft, mutation.isPending);
   return <form className="status-check-scope" onSubmit={event=>{event.preventDefault();mutation.mutate();}}>
-    <label>{zh ? "完成依据" : "Completion reference"}<Select value={kind} onChange={e=>setKind(e.target.value as CompletionReference["kind"])}>
+    <label>{zh ? "完成依据" : "Completion reference"}<Select disabled={Boolean(candidate)} value={kind} onChange={e=>setKind(e.target.value as CompletionReference["kind"])}>
       <option value="github">GitHub PR</option><option value="gitlab">GitLab MR</option>
       <option value="commit">{zh ? "本地 Git 提交" : "Local Git commit"}</option><option value="manual">{zh ? "人工确认" : "Human confirmation"}</option></Select></label>
-    {kind === "github" || kind === "gitlab" ? <label>{kind === "github" ? "PR URL" : "MR URL"}<input type="url" required value={url} onChange={e=>setUrl(e.target.value)} maxLength={500}/></label>
-      : <label>{zh ? "完整提交编号" : "Full commit SHA"}<input required pattern="[a-f0-9]{40}" value={commit} onChange={e=>setCommit(e.target.value)} maxLength={40}/></label>}
-    {kind === "commit" && <label>{zh ? "集成的目标分支" : "Integration target branch"}<input required value={branch} onChange={e=>setBranch(e.target.value)} maxLength={200}/></label>}
+    {kind === "github" || kind === "gitlab" ? <label>{kind === "github" ? "PR URL" : "MR URL"}<input type="url" readOnly={Boolean(candidate)} required value={url} onChange={e=>setUrl(e.target.value)} maxLength={500}/></label>
+      : <label>{zh ? "完整提交编号" : "Full commit SHA"}<input readOnly={Boolean(candidate)} required pattern="[a-f0-9]{40}" value={commit} onChange={e=>setCommit(e.target.value)} maxLength={40}/></label>}
+    {kind === "commit" && <label>{zh ? "集成的目标分支" : "Integration target branch"}<input readOnly={Boolean(candidate)} required value={branch} onChange={e=>setBranch(e.target.value)} maxLength={200}/></label>}
     {kind === "manual" && <label>{zh ? "需要人工确认的交付说明" : "Delivery details for human confirmation"}<textarea required value={description} onChange={e=>setDescription(e.target.value)} maxLength={4000}/></label>}
     {artifacts.length > 0 && <fieldset><legend>{zh ? "本条需要发布的产物" : "Required release artifacts"}</legend>{artifacts.map(artifact=><label key={artifact}>
       <input type="checkbox" disabled={noRelease} checked={selected.includes(artifact)} onChange={e=>setSelected(e.target.checked ? [...selected,artifact] : selected.filter(a=>a!==artifact))}/>{artifact}</label>)}</fieldset>}

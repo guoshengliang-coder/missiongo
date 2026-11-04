@@ -183,6 +183,13 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 - 删除、归档、停用、撤销等操作使用产品确认弹窗，写明对象与影响范围。保留浏览器对刷新和关闭标签页的原生未保存保护。
 - 手机使用适配视口的底部弹层；长内容可滚动，操作栏保持可见。桌面居中弹窗。macOS 短编辑使用原生 sheet，未保存内容与请求期间禁止意外关闭。
 
+### 完成依据查找（AND-386）
+
+- 列表与详情的开发完成／待验证快捷操作共用 `StatusCheckPanel`，进入即触发核对；单独查看状态保持只读。
+- 缺少本轮交接时，关联节点从当前轮次评论线索和仓库条目编号搜索候选，展示来源、仓库及查询状态。评论声明不替代核实，用户选择候选并保存关联后进入真实集成检查；发布范围未知仍可核实集成。
+- 候选确认与手动关联复用 `ScopeEditor`、`Modal`、`Select`、`useDialogDraft` 和现有状态卡片样式；取消返回候选，保存中保护关闭，失败保留输入。轮次或来源变化后提示重新查找；离线、旧节点、权限不足、空结果均说明下一步。
+- 验证来源为 `completion-discovery.audit.spec.ts`、`status-checks.audit.spec.ts`、服务端 `completion-discovery.test.ts`、`status-insights-api.test.ts` 和节点 `CompletionDiscoveryTests`、`StatusCheckTests`。
+
 ### 同行控件与分层筛选（AND-334/335/336）
 
 - 标准工具栏的下拉框、按钮、图标按钮和输入框以 44px 最小外部高度对齐，圆角使用 `--radius-md`。
