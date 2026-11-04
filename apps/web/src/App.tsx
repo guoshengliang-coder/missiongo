@@ -1,5 +1,6 @@
 import { PRODUCT_ICON_URL } from "./branding.generated";
 import { MediaLightbox } from "./media-lightbox";
+import { AgentConsoleSearch } from "./agent-console-search";
 import { NewSessionDraft, type NewConversationDraft } from "./new-session-draft";
 import { CollaborationPanel } from "./collaboration";
 import { MessageButton, MessageCenter } from "./message-center";
@@ -21,6 +22,7 @@ import { itemFilterKey, MAX_ITEM_ATTACHMENTS, type ItemFilters } from "@missiong
 import { ListFilters } from "./list-filters";
 import { pickItemFilters } from "./item-filters";
 import { BuilderHandoverNotice, ItemDeliveryPanel, ModuleBuilderSetting, TransferBuilderModal, useItemDelivery, executionStatusLabel } from "./item-delivery";
+import { DetailStatusList, detailStatusItems } from "./detail-status";
 import { CommentDingTalkNotifications, useItemDingTalkNotifications } from "./dingtalk-settings";
 import { CommentMoreActions } from "./comment-actions";
 import { COMMENT_CATEGORIES, useCommentFilters } from "./comment-filters";
@@ -492,6 +494,8 @@ export function App() {
   const sidebarIsDrawer = useSinglePaneLayout();
   const sidebarRef = useRef<HTMLElement>(null);
   const sidebarTriggerRef = useRef<HTMLButtonElement>(null);
+  const [agentConsoleSearch, setAgentConsoleSearch] = useState("");
+  const [agentConsoleSearchOpen, setAgentConsoleSearchOpen] = useState(false);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [messageCenterOpen,setMessageCenterOpen]=useState(false);
   const searchTriggerRef=useRef<HTMLButtonElement>(null);
@@ -1154,7 +1158,7 @@ export function App() {
       if (event.key === "Escape" && mobileSearchOpen && !document.querySelector("dialog[open]")) {
         setMobileSearchOpen(false); requestAnimationFrame(()=>searchTriggerRef.current?.focus());
       }
-      if (!statisticsOpen && !messageCenterOpen && !document.querySelector("dialog[open]") && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      if (!agentConsoleOpen && !statisticsOpen && !messageCenterOpen && !document.querySelector("dialog[open]") && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         setMobileSearchOpen(true);
         requestAnimationFrame(() => searchInputRef.current?.focus());
@@ -1162,7 +1166,7 @@ export function App() {
     };
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, [statisticsOpen,messageCenterOpen,mobileSearchOpen]);
+  }, [agentConsoleOpen,statisticsOpen,messageCenterOpen,mobileSearchOpen]);
 
   const buildersQuery = useQuery({ queryKey: ["builders", selectedProductId], queryFn: () => api.listBuilders(selectedProductId), enabled: bootstrapQuery.isSuccess && Boolean(selectedProductId) });
   const deferredSearch = useDeferredValue(search.trim());
@@ -1418,7 +1422,7 @@ export function App() {
     <div className={`app-shell ${agentConsoleOpen ? "agent-console-open" : ""} ${
       agentConsoleOpen && agentConsoleSinglePane && (agentConversationOpen || newSessionOpen) ? "agent-conversation-open" : ""
     }`}>
-      <header className={`topbar ${agentConsoleOpen ? "agent-console-topbar" : ""} ${mobileSearchOpen ? "searching" : ""} ${selectedItemKey ? "detail-view" : ""}`} inert={sidebarIsDrawer && sidebarOpen}>
+      <header className={`topbar ${agentConsoleOpen ? `agent-console-topbar ${agentConsoleSearchOpen ? "agent-console-searching" : ""}` : ""} ${mobileSearchOpen ? "searching" : ""} ${selectedItemKey ? "detail-view" : ""}`} inert={sidebarIsDrawer && sidebarOpen}>
         {!agentConsoleOpen && <button ref={sidebarTriggerRef} className="icon-button mobile-only" onClick={() => openSidebar()} aria-label={t("openNavigation")}>
           <Menu size={20} />
         </button>}
@@ -1484,6 +1488,8 @@ export function App() {
             )}
           </button>
         )}
+        {agentConsoleOpen && <AgentConsoleSearch value={agentConsoleSearch} onChange={setAgentConsoleSearch}
+          open={agentConsoleSearchOpen} onOpenChange={setAgentConsoleSearchOpen} />}
         {agentConsoleOpen && (
           <div className="agent-console-topbar-actions has-bulk">
             {newSessionProducts.length > 0 && <button type="button" className="secondary-button agent-console-topbar-new" disabled={newSessionPending}
@@ -1793,6 +1799,7 @@ export function App() {
       {agentConsoleOpen && selectedProductId && (
         <AgentSessionConsole
           productId={selectedProductId}
+          search={agentConsoleSearch}
           initialFilter={agentConsoleLinkedFilter}
           allSessions={allAgentSessions}
           sessionsLoaded={agentSessionsQuery.data !== undefined}
@@ -2549,7 +2556,7 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
   const secondaryActions = otherActions.filter((action) => action.tone !== "danger");
   const destructiveActions = otherActions.filter((action) => action.tone === "danger");
   const moreActionsRef = useRef<HTMLDetailsElement>(null);
-  const [statusChecksOpen,setStatusChecksOpen]=useState(false);
+  const [statusChecksOpen,setStatusChecksOpen]=useState<boolean|"check">(false);
   const [transferring, setTransferring] = useState(false);
   const [noteAction, setNoteAction] = useState<TransitionAction | null>(null);
   const [transitionKeys]=useState(()=>new TransitionCommandKeys());
@@ -2572,7 +2579,7 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
   // kept in the browser.
   const startTransition = (action: TransitionAction) => {
     // Picking up waiting work asks how first: by hand, or through an AI (AND-68).
-    if (action.reason === "resolution_submitted" || action.reason === "release_verified") setStatusChecksOpen(true);
+    if (action.reason === "resolution_submitted" || action.reason === "release_verified") setStatusChecksOpen("check");
     else if (isStartWork(item.status, action)) onStartWork(item);
     else if (action.reason === "manual_override" || transitionRequiresNote(item.status, action.to)) setNoteAction(action);
     else mutation.mutate({ action });
@@ -2654,7 +2661,7 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
     </OverlayMenu>
     {/* Outside the menu on purpose: a closed <details> hides everything but its
         <summary>, and a <dialog> under a hidden ancestor never paints. */}
-    {statusChecksOpen && <StatusCheckPanel productId={item.productId} itemKey={item.key} canOperate={item.access?.canOperate !== false} onClose={()=>setStatusChecksOpen(false)} />}
+    {statusChecksOpen && <StatusCheckPanel autoCheck={statusChecksOpen === "check"} productId={item.productId} itemKey={item.key} canOperate={item.access?.canOperate !== false} onClose={()=>setStatusChecksOpen(false)} />}
     {transferring && <TransferItemDialog item={item} onClose={() => setTransferring(false)} />}
     {noteAction && (
       <Modal
@@ -2824,7 +2831,7 @@ function DetailPane({
     };
   }, [itemKey, item?.key]);
   const [transferBuilderOpen, setTransferBuilderOpen] = useState(false);
-  const [statusChecksOpen, setStatusChecksOpen] = useState(false);
+  const [statusChecksOpen, setStatusChecksOpen] = useState<boolean|"check">(false);
   const [collaborationAction,setCollaborationAction]=useState<"request"|"associate"|undefined>(undefined);
   const { toolbarRef, overflow: toolbarOverflow } = useToolbarOverflow();
   const moreActionsRef = useRef<HTMLDetailsElement>(null);
@@ -2909,7 +2916,7 @@ function DetailPane({
   const PrimaryIcon = TYPE_ICONS[item.type];
   // Same rule as the list row: the domain decides whether this move owes a reason.
   const startTransition = (action: TransitionAction) => {
-    if (action.reason === "resolution_submitted" || action.reason === "release_verified") setStatusChecksOpen(true);
+    if (action.reason === "resolution_submitted" || action.reason === "release_verified") setStatusChecksOpen("check");
     else if (isStartWork(item.status, action)) onStartWork(item);
     else if (action.reason === "manual_override" || transitionRequiresNote(item.status, action.to)) setNoteAction(action);
     else transitionMutation.mutate({ action });
@@ -2944,6 +2951,14 @@ function DetailPane({
   const summarizedSession = deliveryQuery.data?.executions.find(execution =>
     Boolean(jumpSessionId) && execution.kind === "agent" && execution.recorded !== true && execution.sessionId === jumpSessionId);
   const progress = itemProgressKeys(item,currentAttempt).map(key => t(key)).join(" · ");
+  const disposition = item.executionDisposition !== "stop_requested" || !["ready","inbox"].includes(item.status) || deliveryQuery.data?.executionBlockers === undefined
+    ? item.executionDisposition : undefined;
+  const statusItems = detailStatusItems({
+    status: item.status,
+    canVerify: item.access?.canVerify,
+    executionDisposition: disposition === "stop_requested" || disposition === "keep_running" ? disposition : undefined,
+    progressKeys: latestDispatch ? [] : itemProgressKeys(item,currentAttempt),
+  });
   const dispatchStateLabel = issue ? t(dispatchIssueLabelKey(issue))
     : progress || (!currentAttempt ? t("dispatchHistoryAttribution")
     : summarizedSession ? executionStatusLabel(summarizedSession.status)
@@ -3010,20 +3025,31 @@ function DetailPane({
         </div>
       </div>
       <div className="detail-scroll">
-        {item.status === "pending_verification" && !item.access?.canVerify && <p className="dispatch-note" role="status">{t("verificationNotPermitted")}</p>}
-        {item.executionDisposition && (item.executionDisposition !== "stop_requested" || !["ready","inbox"].includes(item.status) || deliveryQuery.data?.executionBlockers === undefined) && <p className="dispatch-note" role="status">{t(item.executionDisposition === "stop_requested" ? "executionStopRequested" : "executionKeepRunning")}</p>}
+        <DetailStatusList items={statusItems} />
         {deliveryQuery.data && <BuilderHandoverNotice itemKey={item.key} delivery={deliveryQuery.data} onTakeOver={() => onTakeOver(item)} />}
         {(item.transferred || item.transferredFrom) && <div className="transfer-banner" role="status">
           {item.transferred && <p>{t("transferReadOnly")}</p>}
           {item.transferredTo && <button type="button" className="text-button" onClick={() => onOpenItem(item.transferredTo!.key)}>{t("transferDestination", { key: item.transferredTo.key })}</button>}
           {item.transferredFrom && <button type="button" className="text-button" onClick={() => onOpenItem(item.transferredFrom!.key)}>{t("transferSource", { key: item.transferredFrom.key })}</button>}
         </div>}
-        {!latestDispatch && progress && <p className="dispatch-note" role="status">{progress}</p>}
         <>
-            {/* Between the toolbar and the title: who the work was last handed
-                to, which the toolbar's chip used to squeeze in and only for an
-                in-progress item (AND-217). A jump to the console session is
-                offered only when one was actually started for it. */}
+            <div className="detail-title-block">
+              <span className={`type-icon large type-${item.type}`}><PrimaryIcon size={20} /></span>
+              <div className="detail-title-copy">
+                <p className="eyebrow">
+                  <span>
+                    {typeLabel(item.type)} · {priorityLabel(item.priority)}
+                    {detailCreator && <> · {t("createdBy", { name: detailCreator })}</>}
+                    {item.createdBy?.kind === "agent" && item.createdBy.name && <> · {t("aiAssistedSubmission")}{item.createdBy.clientName ? ` · ${item.createdBy.clientName}` : ""}</>}
+                  </span>
+                  {deliveryQuery.data && <BuilderBadge name={deliveryQuery.data.builderName} needsReassignment={deliveryQuery.data.builderNeedsReassignment} />}
+                </p>
+                <h2>{item.title}</h2>
+              </div>
+            </div>
+            {/* Attribution sits after the title: which agent and machine took
+                the work is context for the item, not its identity (AND-385).
+                The toolbar chip it replaced only fit one status (AND-217). */}
             {latestDispatch && (
               <div className={`detail-dispatch-line ${dispatchFailed ? "failed" : ""}`}>
                 <Bot size={16} aria-hidden="true" />
@@ -3055,20 +3081,6 @@ function DetailPane({
                 )}
               </div>
             )}
-            <div className="detail-title-block">
-              <span className={`type-icon large type-${item.type}`}><PrimaryIcon size={20} /></span>
-              <div className="detail-title-copy">
-                <p className="eyebrow">
-                  <span>
-                    {typeLabel(item.type)} · {priorityLabel(item.priority)}
-                    {detailCreator && <> · {t("createdBy", { name: detailCreator })}</>}
-                    {item.createdBy?.kind === "agent" && item.createdBy.name && <> · {t("aiAssistedSubmission")}{item.createdBy.clientName ? ` · ${item.createdBy.clientName}` : ""}</>}
-                  </span>
-                  {deliveryQuery.data && <BuilderBadge name={deliveryQuery.data.builderName} needsReassignment={deliveryQuery.data.builderNeedsReassignment} />}
-                </p>
-                <h2>{item.title}</h2>
-              </div>
-            </div>
             <ItemDeliveryPanel key={item.key} item={item} summarizedSessionId={jumpSessionId} dispatches={dispatchesQuery.data?.dispatches ?? []} dispatchesFailed={dispatchesQuery.isError} notificationsQuery={notificationsQuery} renderDispatch={dispatch => <DispatchRow dispatch={dispatch} itemKey={item.key} />} />
             <CollaborationPanel key={`collaboration-${item.key}`} item={item} requestedAction={collaborationAction} onActionHandled={()=>setCollaborationAction(undefined)} />
             <ItemRelations item={item} onOpenItem={onOpenItem} />
@@ -3239,7 +3251,7 @@ function DetailPane({
       {!item.transferred && accountId && <CommentComposer idPrefix={commentIdPrefix} key={`${accountId}:${item.key}`} item={item} draft={commentDraft} onDraftChange={updateCommentDraft} storageFailed={storageFailed} replyUnavailable={replyUnavailable}
         replyTo={replyTo} onLocateReply={()=>replyTo && locateComment(replyTo.id)} onCancelReply={()=>setReplyTo(null)} onPosted={refreshItem} onNotice={onNotice} />}
       {transferring && <TransferItemDialog item={item} onClose={() => setTransferring(false)} />}
-      {statusChecksOpen && <StatusCheckPanel key={`status-checks:${item.key}`} productId={item.productId} itemKey={item.key} canOperate={!item.transferred && item.access?.canOperate !== false} onClose={() => setStatusChecksOpen(false)} />}
+      {statusChecksOpen && <StatusCheckPanel autoCheck={statusChecksOpen === "check"} key={`status-checks:${item.key}`} productId={item.productId} itemKey={item.key} canOperate={!item.transferred && item.access?.canOperate !== false} onClose={() => setStatusChecksOpen(false)} />}
       {transferBuilderOpen && deliveryQuery.data && (
         <TransferBuilderModal itemKey={item.key} delivery={deliveryQuery.data} onClose={() => setTransferBuilderOpen(false)} />
       )}

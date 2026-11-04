@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { expect, test, type APIRequestContext } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Locator } from "@playwright/test";
 import { chooseOption } from "./select-helpers";
 import { postItemCommand } from "./item-command";
 import { AUDIT_SOURCE } from "./audit-page.mjs";
@@ -7,6 +7,11 @@ async function json(request: APIRequestContext, url: string, data: unknown) {
   const r = await request.post(url, { data });
   expect(r.ok(), await r.text()).toBe(true);
   return r.json();
+}
+async function openRelation(panel: Locator, key: string) {
+  await panel.getByRole("button", { name: "展开", exact: true }).click();
+  await panel.locator(".collaboration-record > summary").filter({ hasText: key }).click();
+  await panel.getByRole("button", { name: new RegExp(key) }).click();
 }
 for (const width of [375, 1440])
   for (const theme of ["light", "dark"] as const) {
@@ -118,6 +123,7 @@ for (const width of [375, 1440])
           name: "协作与依赖",
           exact: true,
         });
+        await section.locator(".collaboration-add-menu > summary").click();
         await section
           .getByRole("button", { name: "发起协作请求", exact: true })
           .click();
@@ -194,9 +200,7 @@ for (const width of [375, 1440])
           name: "协作与依赖",
           exact: true,
         });
-        await receiving
-          .getByRole("button", { name: new RegExp(original.key) })
-          .click();
+        await openRelation(receiving, original.key);
         const targetDialog = targetPage.getByRole("dialog");
         await expect(targetDialog).not.toContainText("Private source context");
         await targetDialog
@@ -232,9 +236,7 @@ for (const width of [375, 1440])
         );
         expect(moved.ok(), await moved.text()).toBe(true);
         await sourcePage.reload();
-        await section
-          .getByRole("button", { name: new RegExp(relation.targetKey) })
-          .click();
+        await openRelation(section, relation.targetKey);
         dialog = sourcePage.getByRole("dialog");
         await dialog
           .getByRole("button", { name: "验收协作结果", exact: true })
@@ -338,6 +340,7 @@ test("cancel source explicitly withdraws dependencies without cancelling receive
     environment: { platform: "web" },
   });
   await page.goto(`/?product=${source.id}&item=${item.key}`);
+  await page.locator(".collaboration-add-menu > summary").click();
   await page
     .getByRole("region", { name: "协作与依赖", exact: true })
     .getByRole("button", { name: "发起协作请求", exact: true })

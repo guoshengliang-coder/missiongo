@@ -109,6 +109,7 @@ export function formatAgentMessageTime(value: string, locale: string, now = new 
 }
 
 export type AgentSessionFilter = "unread" | "attention" | "active" | "all" | "failed" | "archived";
+export type AgentAssociationFilter = "all" | "unlinked" | "linked";
 export type AgentKindFilter = "all" | AgentKind;
 
 export function isAbnormalAgentSession(session: Pick<AgentSessionSummary, "status" | "command">): boolean {
@@ -169,6 +170,7 @@ export function effectiveAgentSessionStatus(
 }
 
 export function replyBlockedLabelKey(reason: AgentSessionReplyBlockedReason | undefined):
+  | "agentSessionStarting"
   | "agentSessionWorkFinishedReadOnly"
   | "agentSessionArchivedReadOnly"
   | "agentSessionSourceArchivedReadOnly"
@@ -180,6 +182,7 @@ export function replyBlockedLabelKey(reason: AgentSessionReplyBlockedReason | un
   | "agentSessionUnavailableReadOnly" {
   if (reason === "external_progress_only") return "agentSessionExternalReadOnly";
   if (reason === "external_native_unavailable") return "agentExternalNativeUnavailable";
+  if (reason === "starting") return "agentSessionStarting";
   if (reason === "work_finished") return "agentSessionWorkFinishedReadOnly";
   if (reason === "archived") return "agentSessionArchivedReadOnly";
   if (reason === "source_archived") return "agentSessionSourceArchivedReadOnly";
@@ -252,7 +255,10 @@ export function agentSessionMatches(
   filter: AgentSessionFilter,
   agentFilter: AgentKindFilter,
   search: string,
+  association: AgentAssociationFilter = "all",
 ): boolean {
+  if (association === "unlinked" && session.items.length > 0) return false;
+  if (association === "linked" && session.items.length === 0) return false;
   if (filter === "archived") {
     if (!session.archivedAt) return false;
   } else if (session.archivedAt) return false;

@@ -70,7 +70,7 @@ describe("agent console responsive layout", () => {
   });
 
   it("uses one console topbar instead of a second list heading", () => {
-    expect(styles).toMatch(/\.topbar\.agent-console-topbar \{[^}]*grid-template-columns: auto minmax\(0, 1fr\) auto;/);
+    expect(styles).toMatch(/\.topbar\.agent-console-topbar \{[^}]*grid-template-columns: auto minmax\(0, 1fr\) minmax\(160px, 560px\) auto;/);
     expect(styles).toContain(".agent-console-projects .product-switcher { width: auto;");
     expect(consoleSource).not.toContain('className="agent-console-list-head"');
   });

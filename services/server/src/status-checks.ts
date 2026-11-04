@@ -352,7 +352,7 @@ export class StatusChecks {
       if (!row.lease_token || !row.lease_until || row.lease_until < now) this.state(row,"waiting_node");
       queued++;
     }
-    return { queued, missingAssociation: itemKey ? !rows.length : false, ...this.list(productId,itemKey) };
+    return { queued, missingAssociation: itemKey ? !rows.some(row=>row.round_key===this.round(row.item_id)) : false, ...this.list(productId,itemKey) };
   }
   schedule(hourMinute: string, allowed: (accountId: string, productId: string) => boolean, now = new Date()) {
     const minute = new Intl.DateTimeFormat("en-GB", {timeZone:"Asia/Shanghai", hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).format(now);

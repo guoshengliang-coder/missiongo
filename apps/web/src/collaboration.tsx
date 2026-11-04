@@ -1,6 +1,6 @@
-import { useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, ArrowRight } from "lucide-react";
+import { Plus, ArrowRight, ChevronDown, ChevronUp } from "lucide-react";
 import { api } from "./api";
 import {
   collaborationApi as collab,
@@ -10,6 +10,8 @@ import {
 } from "./collaboration-api";
 import { Modal } from "./modal";
 import { Select } from "./select";
+import { OverlayMenu } from "./overlay";
+import { RecordDisclosure } from "./record-disclosure";
 import { useI18n } from "./i18n";
 import { localizedErrorText } from "./error-text";
 import type { Product, WorkItem } from "./types";
@@ -70,7 +72,18 @@ export function CollaborationPanel({
     client = useQueryClient();
   const [draft, setDraft] = useState<Draft | null | undefined>(undefined),
     [selected, setSelected] = useState<string | null>(null),
-    [associate, setAssociate] = useState(false);
+    [associate, setAssociate] = useState(false),
+    [expanded, setExpanded] = useState(false);
+  const bodyId = useId();
+  const addMenu = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const outside = (event: PointerEvent) => {
+      if (!addMenu.current?.contains(event.target as Node))
+        addMenu.current?.removeAttribute("open");
+    };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, []);
   const q = useQuery({
     queryKey: ["collaboration", item.key],
     queryFn: () => collab.context(item.key),
@@ -92,27 +105,65 @@ export function CollaborationPanel({
   };
   const showRequest = requestedAction === "request" || draft !== undefined,
     showAssociate = requestedAction === "associate" || associate;
+  const data = q.data;
+  const count = data?.requests.length ?? 0;
+  const draftCount = data?.drafts.length ?? 0;
+  const hasContent = count + draftCount > 0;
   return (
     <section
       className="collaboration-panel"
       aria-label={t("collaborationRelations")}
+      aria-busy={q.isPending}
     >
       <div className="collaboration-heading">
-        <h3>{t("collaborationRelations")}</h3>
-        {q.data?.canRequest && (
-          <button
-            className="text-button"
-            type="button"
-            onClick={() => setDraft(null)}
+        <div className="collaboration-heading-label">
+          <h3>{t("collaborationRelations")}{count > 0 && `（${count}）`}</h3>
+          {draftCount > 0 && <span className="collaboration-draft-count">{t("collaborationReviewCount", { count: draftCount })}</span>}
+        </div>
+        <div className="collaboration-heading-actions">
+          {data?.canRequest && <OverlayMenu
+            ref={addMenu}
+            className="detail-more-menu collaboration-add-menu"
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) event.currentTarget.open = false;
+            }}
+            onToggle={(event) => {
+              const menu = event.currentTarget;
+              if (!menu.open) return;
+              const box = menu.getBoundingClientRect();
+              const area = menu.closest(".detail-scroll")?.getBoundingClientRect();
+              const below = Math.min(innerHeight, area?.bottom ?? innerHeight) - box.bottom;
+              const above = box.top - Math.max(0, area?.top ?? 0);
+              const popover = menu.querySelector(".detail-more-menu-popover");
+              const height = popover?.scrollHeight ?? 0;
+              const openAbove = below < height + 7 && above > below;
+              menu.dataset.side = openAbove ? "above" : "below";
+              menu.style.setProperty("--collaboration-menu-height", `${Math.max(44, (openAbove ? above : below) - 7)}px`);
+              menu.dataset.align = "end";
+              if ((popover?.getBoundingClientRect().left ?? 0) < Math.max(8, area?.left ?? 0)) menu.dataset.align = "start";
+            }}
           >
-            <Plus size={16} />
-            {t("collaborationRequest")}
-          </button>
-        )}
+            <summary className="text-button"><Plus size={16} aria-hidden="true" />{t("collaborationAddDependency")}</summary>
+            <div className="detail-more-menu-popover">
+              <button type="button" onClick={() => { addMenu.current?.removeAttribute("open"); setDraft(null); }}>{t("collaborationRequest")}</button>
+              <button type="button" onClick={() => { addMenu.current?.removeAttribute("open"); setAssociate(true); }}>{t("collaborationAssociate")}</button>
+            </div>
+          </OverlayMenu>}
+          {hasContent && <button
+            className="text-button collaboration-toggle"
+            type="button"
+            aria-expanded={expanded}
+            aria-controls={bodyId}
+            onClick={() => setExpanded(!expanded)}
+          >
+            {t(expanded ? "collaborationCollapse" : "collaborationExpand")}
+            {expanded ? <ChevronUp size={16} aria-hidden="true" /> : <ChevronDown size={16} aria-hidden="true" />}
+          </button>}
+        </div>
       </div>
-      {q.isPending ? (
-        <p role="status">{t("settingsLoading")}</p>
-      ) : q.isError ? (
+      {data?.blocked && <p className="collaboration-warning" role="status">{t("collaborationBlocked")}</p>}
+      {q.isPending && <p role="status">{t("settingsLoading")}</p>}
+      {q.isError && (
         <div role="alert">
           <p>{t("collaborationReadError")}</p>
           <button
@@ -123,32 +174,33 @@ export function CollaborationPanel({
             {t("retry")}
           </button>
         </div>
-      ) : (
-        <>
-          {q.data.blocked && (
-            <p className="collaboration-warning" role="status">
-              {t("collaborationBlocked")}
-            </p>
-          )}
-          {!q.data.requests.length && !q.data.drafts.length && (
-            <p className="section-empty">{t("collaborationEmpty")}</p>
-          )}
+      )}
+      {data && (
+        <div id={bodyId} className="collaboration-body" hidden={!hasContent || !expanded}>
           {(["outgoing", "incoming"] as const).map((direction) => {
-            const rows = q.data.requests.filter(
+            const rows = data.requests.filter(
               (r) => r.direction === direction,
             );
             return (
               rows.length > 0 && (
-                <div key={direction}>
-                  <p>
+                <div className="collaboration-group" key={direction}>
+                  <h4>
                     {t(
                       direction === "outgoing"
                         ? "collaborationWaiting"
                         : "collaborationWaited",
                     )}
-                  </p>
+                  </h4>
                   {rows.map((r) => (
-                    <div className="collaboration-card" key={r.id}>
+                    <RecordDisclosure className="execution-record collaboration-record" key={r.id}
+                      summary={r.restricted ? <strong>{t("collaborationRestrictedTitle")}</strong> : <>
+                        <strong>{direction === "outgoing" ? `${r.targetKey} · ${r.targetProductName}` : `${r.sourceKey} · ${r.sourceProductName}`}</strong>
+                        <span>{r.targetTitle}</span>
+                        <small>{r.builderName} · {t("collaborationVerifier")}：{r.verifierName}</small>
+                      </>}
+                      status={!r.restricted && <span className={`status-pill collaboration-status status-${r.status}`}>{statusLabel(r.status)}</span>}
+                    >
+                    <div className="execution-record-body collaboration-record-body">
                       {r.restricted ? (
                         <>
                           <p>{t("collaborationRestricted")}</p>
@@ -166,44 +218,37 @@ export function CollaborationPanel({
                         </>
                       ) : (
                         <>
+                          <p className="collaboration-prose">{r.targetTitle}</p>
                           <button
                             className="text-button"
                             type="button"
+                            aria-label={`${t("collaborationDetail")} · ${direction === "outgoing" ? r.targetKey : r.sourceKey}`}
                             onClick={() => setSelected(r.id)}
                           >
-                            {direction === "outgoing"
-                              ? `${r.targetKey} · ${r.targetProductName}`
-                              : `${r.sourceKey} · ${r.sourceProductName}`}
+                            {t("collaborationDetail")}
                             <ArrowRight size={16} />
                           </button>
-                          <span className={`status-badge status-${r.status}`}>
-                            {statusLabel(r.status)}
-                          </span>
-                          <p>{r.targetTitle}</p>
-                          <small>
-                            {r.builderName} · {t("collaborationVerifier")}：
-                            {r.verifierName}
-                          </small>
                           {r.withdrawn && <p>{t("collaborationWithdrawn")}</p>}
                         </>
                       )}
                     </div>
+                    </RecordDisclosure>
                   ))}
                 </div>
               )
             );
           })}
-          {q.data.drafts.length > 0 && (
-            <div>
+          {data.drafts.length > 0 && (
+            <div className="collaboration-group">
               <h4>{t("collaborationDrafts")}</h4>
-              {q.data.drafts.map((d) => (
+              {data.drafts.map((d) => (
                 <div className="collaboration-card" key={d.id}>
                   <strong>{d.title}</strong>
                   <span> · v{d.version}</span>
                   <button
                     className="secondary-button"
                     type="button"
-                    disabled={!q.data.canRequest}
+                    disabled={!data.canRequest}
                     onClick={() => setDraft(d)}
                   >
                     {t("collaborationReview")}
@@ -212,16 +257,7 @@ export function CollaborationPanel({
               ))}
             </div>
           )}
-          {q.data.canRequest && (
-            <button
-              className="text-button"
-              type="button"
-              onClick={() => setAssociate(true)}
-            >
-              {t("collaborationAssociate")}
-            </button>
-          )}
-        </>
+        </div>
       )}
       {showRequest && (
         <CollaborationRequest

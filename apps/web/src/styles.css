@@ -270,7 +270,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .topbar.agent-console-topbar {
   container: agent-console-topbar / inline-size;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) minmax(160px, 560px) auto;
   gap: 12px;
 }
 .product-switcher-slot { display: contents; }
@@ -1130,6 +1130,8 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
   .detail-actions-popover { max-height: min(70vh, 520px); overflow-y: auto; }
   .detail-move-popover { position: static; width: auto; margin: 2px 0 2px 18px; padding: 0; border: 0; box-shadow: none; }
   .detail-move-menu[open] .detail-move-chevron { transform: rotate(90deg); }
+  .detail-status-list { gap: 4px; }
+  .detail-status-item { padding: 5px 8px; }
 }
 /* A narrow list can be a phone or the desktop split pane. Keep nested moves
    inside its menu so they remain reachable without horizontal overflow. */
@@ -1153,9 +1155,24 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .detail-title-copy { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .detail-title-block h2 { overflow-wrap: anywhere; max-width: 680px; margin: 0; font-size: clamp(22px, 2.3vw, 30px); letter-spacing: -0.035em; line-height: 1.17; }
 .detail-title-block .eyebrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 2px; letter-spacing: normal; text-transform: none; overflow-wrap: anywhere; }
-/* Between the toolbar and the title: the agent and machine the work was last
-   handed to, moved out of the toolbar where it only ever fit one status
-   (AND-217). Quiet for a plain hand-off, danger-coloured for a failure. */
+/* Work-state messages sit above the title because they change what to do next.
+   One ordered group keeps each new state from adding another bare line, and
+   the icon plus text carries the severity instead of colour alone. */
+.detail-status { margin: 0 0 16px; }
+.detail-status-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.detail-status-item { min-width: 0; max-width: 100%; display: inline-flex; align-items: flex-start; gap: 7px; padding: 6px 10px; color: var(--ink-2); background: var(--surface-sunken); border: 1px solid var(--line); border-left: 3px solid var(--muted-soft); border-radius: var(--radius-sm); font-size: var(--text-xs); font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.detail-status-item > svg { flex: 0 0 auto; margin-top: 1px; color: var(--muted); }
+.detail-status-item > span { min-width: 0; }
+.detail-status-item.tone-warning { color: var(--warn-text); background: var(--warn-bg); border-color: var(--warn-line); border-left-color: var(--warn-text); }
+.detail-status-item.tone-warning > svg { color: var(--warn-text); }
+.detail-status-item.tone-danger { color: var(--danger); background: var(--danger-bg); border-color: var(--danger-line); border-left-color: var(--danger); }
+.detail-status-item.tone-danger > svg { color: var(--danger); }
+.detail-status-item.tone-info { background: var(--surface-sunken); border-left-color: var(--accent-text); }
+.detail-status-item.tone-info > svg { color: var(--accent-text); }
+/* Below the title: the agent and machine the work was last handed to, moved
+   out of the toolbar where it only ever fit one status (AND-217), then past
+   the title because attribution is context rather than identity (AND-385).
+   Quiet for a plain hand-off, danger-coloured for a failure. */
 .detail-dispatch-line { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; margin: 0 0 20px; padding: 8px 11px; color: var(--muted); background: var(--tile-bg); border: 1px solid var(--line); border-radius: var(--radius-md); font-size: var(--text-xs); }
 .detail-dispatch-line.failed { color: var(--danger); background: var(--danger-bg-strong); border-color: var(--danger-line); }
 .detail-dispatch-target { min-width: 0; display: grid; gap: 3px; overflow-wrap: anywhere; }
@@ -3080,7 +3097,12 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .single-select-option[aria-selected=true] { outline: 1px solid Highlight; outline-offset: -1px; }
 }
 
-.builder-handover-notice { margin: 16px; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-md); }
+.builder-handover-notice { margin: 0 0 16px; padding: 12px 14px; background: var(--surface-sunken); border: 1px solid var(--line); border-radius: var(--radius-md); }
+.builder-handover-notice.tone-warning { background: var(--warn-bg); border-color: var(--warn-line); }
+.builder-handover-notice.tone-danger { background: var(--danger-bg); border-color: var(--danger-line); }
+.builder-handover-notice.tone-warning > strong { color: var(--warn-text); }
+.builder-handover-notice.tone-danger > strong { color: var(--danger); }
+.builder-handover-notice.tone-info > strong { color: var(--accent-text); }
 .builder-handover-notice p { margin: 8px 0; overflow-wrap: anywhere; }
 .builder-handover-notice button { min-height: 44px; }
 .execution-stop-notice { padding: 16px; margin-bottom: 16px; color: var(--warn-text); background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: var(--radius-md); overflow-wrap: anywhere; }
@@ -3337,4 +3359,23 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .agent-reply-sending { animation: spin 0.8s linear infinite; }
 @media (prefers-reduced-motion: reduce) {
   .agent-reply-queued, .agent-reply-sending { animation: none; }
+}
+
+/* Console search uses the existing topbar and leaves both list filters in place. */
+.agent-console-search-slot { min-width: 0; }
+.agent-console-search-slot .agent-console-search { margin: 0; }
+.agent-console-search-trigger, .agent-console-search-close { display: none; }
+.agent-console-search .icon-button { flex: 0 0 auto; }
+.agent-console-list-controls > .single-select { min-width: 0; min-height: 44px; }
+@media (max-width: 1023px) {
+  .topbar.agent-console-topbar { grid-template-columns: auto minmax(0, 1fr) auto auto; }
+  .agent-console-search-slot .agent-console-search { display: none; }
+  .agent-console-search-trigger { display: inline-flex; }
+  .agent-console-search-slot.expanded .agent-console-search { display: flex; }
+  .agent-console-search-slot.expanded .agent-console-search-trigger { display: none; }
+  .agent-console-search-close { display: inline-flex; }
+  .topbar.agent-console-topbar.agent-console-searching { grid-template-columns: minmax(0, 1fr); }
+  .agent-console-searching .agent-console-projects,
+  .topbar.agent-console-topbar.agent-console-searching > .agent-console-topbar-back,
+  .agent-console-searching .agent-console-topbar-actions { display: none; }
 }

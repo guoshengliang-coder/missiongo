@@ -2211,5 +2211,20 @@ export class MissionGoDatabase {
           .run(202611031536,new Date().toISOString());
       });
     }
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611040420").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611040420").get()) return;
+        this.connection.exec(`CREATE TABLE completion_discoveries (
+          id TEXT PRIMARY KEY, item_id TEXT NOT NULL REFERENCES work_items(id), account_id TEXT NOT NULL,
+          round_key TEXT NOT NULL, content_version INTEGER NOT NULL, status TEXT NOT NULL,
+          candidates_json TEXT NOT NULL DEFAULT '[]', repository TEXT,
+          requested_at TEXT NOT NULL, lease_node_id TEXT, lease_token TEXT, lease_repo_path TEXT, lease_until TEXT,
+          UNIQUE(item_id, round_key)
+        );`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611040420,new Date().toISOString());
+      });
+    }
+
   }
 }

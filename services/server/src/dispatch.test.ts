@@ -4762,6 +4762,38 @@ describe("AND-369 project conversations", () => {
     expect(widget.agent.unreadProductId).toBe(f.product.id);
   });
 
+  it("distinguishes startup from finished work and keeps the itemless composer usable through later turns", async () => {
+    const f = await fixture();
+    const d = (await f.prepare()).json();
+    await f.start(d.id);
+    const list = async () => (await f.app.inject({ method: "GET", url: "/api/v1/agent-sessions", headers: { cookie: f.cookie } })).json().sessions[0];
+    const detail = async () => (await f.app.inject({ method: "GET", url: `/api/v1/agent-sessions/${d.agentSessionId}`, headers: { cookie: f.cookie } })).json();
+    expect(await list()).toMatchObject({ canReply: false, replyBlockedReason: "starting" });
+    expect(await detail()).toMatchObject({ canReply: false, replyBlockedReason: "starting" });
+    await f.claim();
+    expect(await list()).toMatchObject({ canReply: false, replyBlockedReason: "starting" });
+    const launched = await f.app.inject({ method: "POST", url: `/api/v1/node/dispatches/${d.id}/result`, headers: f.headers,
+      payload: { status: "launched", sessionRef: randomUUID() } });
+    expect(launched.statusCode, launched.body).toBe(204);
+    const firstCommand = (await detail()).command;
+    const snapshot = (commandId: string, commandStatus: string, status = "active") => f.app.inject({ method: "POST",
+      url: `/api/v1/node/agent-sessions/${d.agentSessionId}/snapshot`, headers: f.headers,
+      payload: { status, messages: [{ sourceId: "answer", role: "agent", text: "继续讨论" }], commandId, commandStatus } });
+    expect((await snapshot(firstCommand.id, "delivered", "idle")).statusCode).toBe(204);
+    const followup = await f.app.inject({ method: "POST", url: `/api/v1/agent-sessions/${d.agentSessionId}/commands`,
+      headers: { cookie: f.cookie }, payload: { text: "请继续" } });
+    expect(followup.statusCode, followup.body).toBe(201);
+    for (const state of ["delivering", "delivered"]) {
+      expect((await snapshot(followup.json().id, state)).statusCode).toBe(204);
+      for (const read of [await list(), await detail()]) {
+        expect(read).toMatchObject({ canReply: true });
+        expect(read.replyBlockedReason).toBeUndefined();
+        expect(read.archivedAt).toBeUndefined();
+      }
+    }
+    expect(f.app.missionGoStore.database.connection.prepare("SELECT COUNT(*) AS n FROM work_items").get()).toMatchObject({ n: 0 });
+  });
+
   it("keeps uploaded files and the same first-message command when a confirmed launch failure is retried", async () => {
     const f = await fixture();
     const d = (await f.prepare({ ...f.input, text: "", attachmentCount: 1 })).json();
