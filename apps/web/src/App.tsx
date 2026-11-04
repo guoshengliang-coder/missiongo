@@ -21,6 +21,7 @@ import { itemFilterKey, MAX_ITEM_ATTACHMENTS, type ItemFilters } from "@missiong
 import { ListFilters } from "./list-filters";
 import { pickItemFilters } from "./item-filters";
 import { BuilderHandoverNotice, ItemDeliveryPanel, ModuleBuilderSetting, TransferBuilderModal, useItemDelivery, executionStatusLabel } from "./item-delivery";
+import { DetailStatusList, detailStatusItems } from "./detail-status";
 import { CommentDingTalkNotifications, useItemDingTalkNotifications } from "./dingtalk-settings";
 import { CommentMoreActions } from "./comment-actions";
 import { COMMENT_CATEGORIES, useCommentFilters } from "./comment-filters";
@@ -2942,6 +2943,14 @@ function DetailPane({
   const summarizedSession = deliveryQuery.data?.executions.find(execution =>
     Boolean(jumpSessionId) && execution.kind === "agent" && execution.recorded !== true && execution.sessionId === jumpSessionId);
   const progress = itemProgressKeys(item,currentAttempt).map(key => t(key)).join(" · ");
+  const disposition = item.executionDisposition !== "stop_requested" || !["ready","inbox"].includes(item.status) || deliveryQuery.data?.executionBlockers === undefined
+    ? item.executionDisposition : undefined;
+  const statusItems = detailStatusItems({
+    status: item.status,
+    canVerify: item.access?.canVerify,
+    executionDisposition: disposition === "stop_requested" || disposition === "keep_running" ? disposition : undefined,
+    progressKeys: latestDispatch ? [] : itemProgressKeys(item,currentAttempt),
+  });
   const dispatchStateLabel = issue ? t(dispatchIssueLabelKey(issue))
     : progress || (!currentAttempt ? t("dispatchHistoryAttribution")
     : summarizedSession ? executionStatusLabel(summarizedSession.status)
@@ -3008,20 +3017,31 @@ function DetailPane({
         </div>
       </div>
       <div className="detail-scroll">
-        {item.status === "pending_verification" && !item.access?.canVerify && <p className="dispatch-note" role="status">{t("verificationNotPermitted")}</p>}
-        {item.executionDisposition && (item.executionDisposition !== "stop_requested" || !["ready","inbox"].includes(item.status) || deliveryQuery.data?.executionBlockers === undefined) && <p className="dispatch-note" role="status">{t(item.executionDisposition === "stop_requested" ? "executionStopRequested" : "executionKeepRunning")}</p>}
+        <DetailStatusList items={statusItems} />
         {deliveryQuery.data && <BuilderHandoverNotice itemKey={item.key} delivery={deliveryQuery.data} onTakeOver={() => onTakeOver(item)} />}
         {(item.transferred || item.transferredFrom) && <div className="transfer-banner" role="status">
           {item.transferred && <p>{t("transferReadOnly")}</p>}
           {item.transferredTo && <button type="button" className="text-button" onClick={() => onOpenItem(item.transferredTo!.key)}>{t("transferDestination", { key: item.transferredTo.key })}</button>}
           {item.transferredFrom && <button type="button" className="text-button" onClick={() => onOpenItem(item.transferredFrom!.key)}>{t("transferSource", { key: item.transferredFrom.key })}</button>}
         </div>}
-        {!latestDispatch && progress && <p className="dispatch-note" role="status">{progress}</p>}
         <>
-            {/* Between the toolbar and the title: who the work was last handed
-                to, which the toolbar's chip used to squeeze in and only for an
-                in-progress item (AND-217). A jump to the console session is
-                offered only when one was actually started for it. */}
+            <div className="detail-title-block">
+              <span className={`type-icon large type-${item.type}`}><PrimaryIcon size={20} /></span>
+              <div className="detail-title-copy">
+                <p className="eyebrow">
+                  <span>
+                    {typeLabel(item.type)} · {priorityLabel(item.priority)}
+                    {detailCreator && <> · {t("createdBy", { name: detailCreator })}</>}
+                    {item.createdBy?.kind === "agent" && item.createdBy.name && <> · {t("aiAssistedSubmission")}{item.createdBy.clientName ? ` · ${item.createdBy.clientName}` : ""}</>}
+                  </span>
+                  {deliveryQuery.data && <BuilderBadge name={deliveryQuery.data.builderName} needsReassignment={deliveryQuery.data.builderNeedsReassignment} />}
+                </p>
+                <h2>{item.title}</h2>
+              </div>
+            </div>
+            {/* Attribution sits after the title: which agent and machine took
+                the work is context for the item, not its identity (AND-385).
+                The toolbar chip it replaced only fit one status (AND-217). */}
             {latestDispatch && (
               <div className={`detail-dispatch-line ${dispatchFailed ? "failed" : ""}`}>
                 <Bot size={16} aria-hidden="true" />
@@ -3053,20 +3073,6 @@ function DetailPane({
                 )}
               </div>
             )}
-            <div className="detail-title-block">
-              <span className={`type-icon large type-${item.type}`}><PrimaryIcon size={20} /></span>
-              <div className="detail-title-copy">
-                <p className="eyebrow">
-                  <span>
-                    {typeLabel(item.type)} · {priorityLabel(item.priority)}
-                    {detailCreator && <> · {t("createdBy", { name: detailCreator })}</>}
-                    {item.createdBy?.kind === "agent" && item.createdBy.name && <> · {t("aiAssistedSubmission")}{item.createdBy.clientName ? ` · ${item.createdBy.clientName}` : ""}</>}
-                  </span>
-                  {deliveryQuery.data && <BuilderBadge name={deliveryQuery.data.builderName} needsReassignment={deliveryQuery.data.builderNeedsReassignment} />}
-                </p>
-                <h2>{item.title}</h2>
-              </div>
-            </div>
             <ItemDeliveryPanel key={item.key} item={item} summarizedSessionId={jumpSessionId} dispatches={dispatchesQuery.data?.dispatches ?? []} dispatchesFailed={dispatchesQuery.isError} notificationsQuery={notificationsQuery} renderDispatch={dispatch => <DispatchRow dispatch={dispatch} itemKey={item.key} />} />
             <CollaborationPanel key={`collaboration-${item.key}`} item={item} requestedAction={collaborationAction} onActionHandled={()=>setCollaborationAction(undefined)} />
             <ItemRelations item={item} onOpenItem={onOpenItem} />

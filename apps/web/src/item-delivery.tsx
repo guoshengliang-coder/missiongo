@@ -87,7 +87,8 @@ export function BuilderHandoverNotice({itemKey,delivery,onTakeOver}: {itemKey:st
     await Promise.all([queryClient.invalidateQueries({queryKey:["delivery",itemKey]}),queryClient.invalidateQueries({queryKey:["item",itemKey]}),queryClient.invalidateQueries({queryKey:["items"]}),queryClient.invalidateQueries({queryKey:["timeline",itemKey]})]);
   }});
   if (!handover) return null;
-  return <section className="builder-handover-notice" aria-label="Builder 交接进度" role="status">
+  const tone = handover.status === "blocked" ? "tone-danger" : handover.status === "stopping" ? "tone-warning" : "tone-info";
+  return <section className={`builder-handover-notice ${tone}`} aria-label="Builder 交接进度" role="status">
     <strong>{handover.status === "blocked" ? "交接受阻" : handover.status === "stopping" ? "交接中" : "交接完成"}</strong>
     <p>{handover.status === "completed" ? `Builder 已转交给 ${delivery.builderName ?? "待分配"}，条目状态和历史成果已保留。`
       : handover.reason || "正在等待旧执行停止确认，暂时不能启动或继续执行。"}</p>
