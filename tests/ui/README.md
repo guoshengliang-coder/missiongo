@@ -35,8 +35,8 @@ main push 和普通手动运行执行全量 UI 测试；PR 先生成变更影响
 或数据辅助函数即使名称带某个功能，也可能仍直达 `App.tsx`，这类变更全量检查。
 增加边界时须审查消费者和跨入口专项，不能仅按名称前缀推断。修改映射本身也会触发全量。
 
-核心冒烟复用 `audit.spec.ts` 的完整视口/主题矩阵、`agent-console-enter.audit.spec.ts` 的消息输入
-交互和 `capture-permissions.audit.spec.ts` 的录入权限与草稿保护。没有缩减它们内部的断言或主题覆盖。
+核心冒烟包含 `audit-engine.audit.spec.ts` 的测量器回归，并复用 `audit.spec.ts` 的完整视口/主题矩阵、
+`agent-console-enter.audit.spec.ts` 的消息输入交互和 `capture-permissions.audit.spec.ts` 的录入权限与草稿保护。没有缩减它们内部的断言或主题覆盖。
 
 全量模式下：
 
@@ -90,6 +90,22 @@ Playwright 命令：它们会覆盖 `.auth` 和报告；并行验证须使用独
 node scripts/seed-ui-fixture.mjs --base http://127.0.0.1:8799 --cookie "<会话 cookie>"
 ```
 
+## 审计准确性与用例整理
+
+文字、背景和下拉框边界共用 `audit-colour.mjs`。普通 RGB 保留浮点精度，现代 CSS 颜色
+（`color-mix()`、`color()`、Lab/LCH、OKLab/OKLCH 等）由浏览器转换到 sRGB 后测量；结果按 8 位颜色量化。
+无法转换时测试明确失败，不能将该文字跳过或用 `NaN` 通过比较。透明背景沿实际祖先逐层合成，
+透明根节点使用浏览器当前 `color-scheme` 下的系统画布色；深色主题的品牌色豁免按颜色与透明度判断，不依赖 CSS 字符串格式。
+全透明祖先里的文字不参与测量。测量器的 18 个小型浏览器用例检查这些规则，也随 PR 核心冒烟执行。
+
+| 检查组 | 处理 | 保留的保障 |
+|---|---|---|
+| 通用矩阵的可读性与触控尺寸 | 同一页面一次加载、一次扫描，触控断言作为单独 step；去掉 24 次重复加载 | 全部 5 种视口、2 种主题、3 个页面，以及 44×44 零豁免；软断言让可读性失败时仍检查触控 |
+| `overlay-history` 的 4 个截图取证用例 | 删除重复的可见性检查与未做基线比较的截图取证 | 通用 30 张基线仍保留；`overlay-contract` 检查预览关闭、逐层 Back 与焦点，`toolbar-font-contract` 检查 320px、大字号和真实控件可达性 |
+| 各页面专项中的相似扫描 | 保留 | 设置、审批、筛选和弹层的状态并不相同，不能用列表首页的一次扫描替代 |
+| Select 组件与业务接入 | 保留两层 | 前者检查键盘、分组、碰撞、表单值；后者检查真实筛选入口和 SDK 提交参数，覆盖不同故障 |
+| 输入、权限和嵌套弹层 | 保留 | IME/Enter、触控发送、权限拒绝后草稿、焦点恢复、层级返回、转派跳转竞态 |
+
 ## 已知的豁免
 
 - `audit.spec.ts` 里的 `SMALL_TARGET_ALLOWANCE` 已为 **0**，触控目标不允许小于 44×44；原先的 8 个豁免已清理。
@@ -98,5 +114,8 @@ node scripts/seed-ui-fixture.mjs --base http://127.0.0.1:8799 --cookie "<会话 
 ## 覆盖边界
 
 通用矩阵见 `fixture.mjs`：375×812、812×375、768×1024、1180×820、1440×900，覆盖列表、详情与 Agent 控制台。设置、筛选、审批等另有专项，但不是所有状态都进入通用截图矩阵。
+
+颜色对比度仍基于元素的文字色和背景色，不模拟背景图片、渐变、混合模式、滤镜、伪元素遮挡或
+半透明祖先整组绘制后的最终像素，也不能证明实际点击区域未被其他元素遮挡。这些情况需要截图和交互专项。
 
 UI 测试通过不代表 Safari、Android WebView 或 macOS 原生界面已验收。本轮新增的 `overlay-contract.audit.spec.ts` 覆盖分层返回、草稿、焦点恢复、iframe 和 SDK 桥接；`toolbar-font-contract.audit.spec.ts` 与 `visible-control.ts` 检查控件及裁切祖先、三档字号、320px 和断点两侧。这些专项不能证明所有入口或平台都没有缺陷；原始案例见 [2026-10 审计](../../docs/ui-ue-audit-2026-10.md)。新增入口需按[设计规范 §8–§9](../../docs/design-system.md)补同类交互验证。

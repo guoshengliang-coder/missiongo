@@ -1,5 +1,5 @@
 {
-  "smoke": ["audit.spec.ts", "agent-console-enter.audit.spec.ts", "capture-permissions.audit.spec.ts"],
+  "smoke": ["audit-engine.audit.spec.ts", "audit.spec.ts", "agent-console-enter.audit.spec.ts", "capture-permissions.audit.spec.ts"],
   "features": {
     "statistics": {
       "entry": "statistics-center.tsx",

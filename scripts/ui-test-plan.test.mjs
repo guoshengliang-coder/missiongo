@@ -54,7 +54,7 @@ test("shared inputs, permission changes, missing graph evidence and unknown path
     "apps/web/src/product-permissions.ts", "apps/web/src/project-administrators-settings.tsx", "apps/web/src/overlay.tsx",
     "apps/web/src/types.ts", "apps/web/src/i18n.tsx", "apps/web/src/statistics-state.ts", "apps/web/vite.config.ts", "services/server/src/app.ts", "packages/domain/src/work-item.ts",
     "package-lock.json", "package.json", ".github/workflows/ci.yml", "scripts/ui-test-plan.mjs", "tests/ui/impact-map.json",
-    "tests/ui/fixture.mjs", "tests/ui/select-helpers.ts", "tests/ui/visual.spec.ts", "unknown/config.yml", "docs/runtime.js"]) {
+    "tests/ui/fixture.mjs", "tests/ui/audit-page.mjs", "tests/ui/audit-colour.mjs", "tests/ui/select-helpers.ts", "tests/ui/visual.spec.ts", "unknown/config.yml", "docs/runtime.js"]) {
     assert.equal(choose([path]).mode, "full", path);
   }
   for (const changes of [null, []]) assert.equal(choose(changes).mode, "full");
