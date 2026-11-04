@@ -18,6 +18,9 @@ const copy: Record<string,[string,string]> = {
   failed:["检查失败，可重试","Check failed; retry available"], stale:["处理轮次已变化，旧记录失效","Old record invalidated by a new work round"],
 };
 export function statusCheckLabel(status: string, chinese: boolean) { return copy[status]?.[chinese ? 0 : 1] ?? (chinese ? "尚未核实" : "Not verified"); }
+function confirmationStage(record: StatusCheckRecord) {
+  return record.itemStatus !== "development_complete" || !record.evidence.merged ? "integration" : "release";
+}
 
 export function StatusCheckButton({productId,itemKey,canOperate}:{productId:string;itemKey?:string;canOperate:boolean}) {
   const {locale} = useI18n(); const [open,setOpen] = useState(false);
@@ -116,7 +119,7 @@ export function StatusCheckPanel({productId,itemKey,canOperate,onClose,autoCheck
       {zh && record.reason && <p className="dispatch-note">{record.reason}</p>}
       <p className="dispatch-note">{record.evidenceSource === "human_confirmation" ? (zh ? "来源：登录用户人工确认。" : "Source: signed-in user's confirmation.") : (zh ? "来源：授权执行端上报；服务端未独立访问代码托管平台。" : "Source: authorized executor report; the server does not independently check the repository host.")}</p>
       {mayOperate && ["inbox","ready","in_progress","development_complete"].includes(record.itemStatus) && record.status !== "stale" &&
-        <button type="button" className="secondary-button" onClick={()=>setConfirmation(record)}>{record.itemStatus !== "development_complete" ? (zh ? "人工确认已集成" : "Confirm integration") : !record.requiredArtifacts?.length ? (zh ? "安排人工验证" : "Arrange verification") : (zh ? "人工确认已发布" : "Confirm publication")}</button>}
+        <button type="button" className="secondary-button" onClick={()=>setConfirmation(record)}>{confirmationStage(record) === "integration" ? (zh ? "人工确认已集成" : "Confirm integration") : !record.requiredArtifacts?.length ? (zh ? "安排人工验证" : "Arrange verification") : (zh ? "人工确认已发布" : "Confirm publication")}</button>}
       <p className="dispatch-note">{zh ? "上次检查结果时间：" : "Last result at: "}{(record.lastResultAt ?? record.evidenceReporter?.recordedAt) ? new Date((record.lastResultAt ?? record.evidenceReporter?.recordedAt)!).toLocaleString(locale) : (zh ? "尚未检查" : "Never")}</p>
     </article>)}</div>
     <div className="status-check-actions"><button type="button" className="secondary-button" disabled={offset === 0} onClick={()=>setOffset(Math.max(0,offset-100))}>{zh ? "上一页" : "Previous"}</button>
@@ -157,7 +160,7 @@ function ScopeEditor({itemKey,record,candidate,artifacts,onSaved,onCancel}:{item
 
 function HumanConfirmation({record,onSaved,onCancel}:{record:StatusCheckRecord;onSaved:()=>Promise<void>;onCancel:()=>void}) {
   const {locale,t} = useI18n(); const zh = locale === "zh-CN";
-  const stage = record.itemStatus !== "development_complete" ? "integration" : "release";
+  const stage = confirmationStage(record);
   const [commit,setCommit] = useState("commit" in record.completion ? record.completion.commit : record.evidence.merged?.commit ?? "");
   const [note,setNote] = useState("");
   const [details,setDetails] = useState<Record<string,{version:string;sourceCommit:string}>>({});
