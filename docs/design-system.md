@@ -188,6 +188,8 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 - 列表与详情的开发完成／待验证快捷操作共用 `StatusCheckPanel`，进入即触发核对；单独查看状态保持只读。
 - 缺少本轮交接时，关联节点从当前轮次评论线索和仓库条目编号搜索候选，展示来源、仓库及查询状态。评论声明不替代核实，用户选择候选并保存关联后进入真实集成检查；发布范围未知仍可核实集成。
 - 候选确认与手动关联复用 `ScopeEditor`、`Modal`、`Select`、`useDialogDraft` 和现有状态卡片样式；取消返回候选，保存中保护关闭，失败保留输入。轮次或来源变化后提示重新查找；离线、旧节点、权限不足、空结果均说明下一步。
+- 同轮已有查找任务或结果时，重开快捷操作展示当前结果，不自动重新排队；普通检查复用仍有效的候选。刷新结果只读，明确“重新查找完成依据”才丢弃旧候选并重查，活跃节点租约不被重复点击抢占。来源撤回或仓库映射改变后旧候选失效；候选编辑不被后台刷新重置。
+- 重复打开、重复检查、明确重查、延迟节点上报、发布范围草稿与真实关联的返工回归见 `completion-discovery-rework.audit.spec.ts`，使用隔离服务端及节点协议，覆盖 320px/桌面、触控、明暗和三档字号。
 - 验证来源为 `completion-discovery.audit.spec.ts`、`status-checks.audit.spec.ts`、服务端 `completion-discovery.test.ts`、`status-insights-api.test.ts` 和节点 `CompletionDiscoveryTests`、`StatusCheckTests`。
 
 ### 同行控件与分层筛选（AND-334/335/336）

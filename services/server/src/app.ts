@@ -3068,8 +3068,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
   app.post("/api/v1/items/:itemKey/status-checks",async request => {
     const {itemKey} = request.params as {itemKey:string}; const key = requireItemPermission(request,itemKey,"operate");
+    const input=z.object({rediscover:z.boolean().optional()}).safeParse(request.body ?? {});
+    if (!input.success) throw invalidInput("Invalid discovery retry request.");
     const result=statusChecks.request(store.getWorkItem(key).productId,requireAccountId(request),key);
-    if (result.missingAssociation) completionDiscovery.request(key,requireAccountId(request));
+    if (result.missingAssociation) completionDiscovery.request(key,requireAccountId(request),input.data.rediscover===true);
     return {...result,discovery:completionDiscovery.snapshot(key)};
   });
   app.put("/api/v1/items/:itemKey/handover",async request => {

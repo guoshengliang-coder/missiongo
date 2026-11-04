@@ -336,9 +336,9 @@ export const api = {
     return request<StatusCheckPage>(itemKey ? `/api/v1/items/${encodeURIComponent(itemKey)}/status-checks?offset=${offset}`
       : `/api/v1/products/${encodeURIComponent(productId)}/status-checks?offset=${offset}`);
   },
-  requestStatusCheck(productId: string, itemKey?: string) {
+  requestStatusCheck(productId: string, itemKey?: string, rediscover = false) {
     return request<StatusCheckPage>(itemKey ? `/api/v1/items/${encodeURIComponent(itemKey)}/status-checks`
-      : `/api/v1/products/${encodeURIComponent(productId)}/status-checks`, {method:"POST"});
+      : `/api/v1/products/${encodeURIComponent(productId)}/status-checks`, {method:"POST",...(rediscover ? {body:JSON.stringify({rediscover:true})} : {})});
   },
   registerHandover(itemKey: string, input: {completion:CompletionReference;requiredArtifacts?:string[];noReleaseReason?:string;discoverySelection?:DiscoverySelection}) {
     return request<{handover:StatusCheckRecord}>(`/api/v1/items/${encodeURIComponent(itemKey)}/handover`,{method:"PUT",body:JSON.stringify(input)});

@@ -175,11 +175,37 @@ describe("completion discovery API",()=>{
   const completion={kind:"github",url:"https://github.com/example/project/pull/385"};
   const report=await app.inject({method:"POST",url:`/api/v1/node/completion-discovery/${job.id}/report`,headers,payload:{leaseToken:job.leaseToken,repository:"https://github.com/example/project",candidates:[{completion,title:"Fix",state:"merged",commentId:c.id}]}});
   expect(report.statusCode).toBe(200);expect(store.getWorkItem(item.key).status).toBe("in_progress");
+  for (let n=0;n<2;n++) {
+   const repeated=await app.inject({method:"POST",url,headers:{cookie}});
+   expect(repeated.statusCode).toBe(200);
+   expect(repeated.json().discovery).toEqual(report.json().discovery);
+  }
+  expect((await app.inject({method:"POST",url:"/api/v1/node/completion-discovery/claim",headers,payload:{}})).json().job).toBeNull();
+  expect((await app.inject({method:"POST",url,headers:{cookie:memberCookie},payload:{rediscover:true}})).statusCode).toBe(404);
+  expect((await app.inject({method:"POST",url,headers:{cookie},payload:{rediscover:"yes"}})).statusCode).toBe(400);
   const payload={completion,discoverySelection:{discoveryId:job.id,candidateIndex:0}};
   const save=await app.inject({method:"PUT",url:`/api/v1/items/${item.key}/handover`,headers:{cookie},payload});
   expect(save.statusCode,save.body).toBe(200);
   const check=await app.inject({method:"POST",url:"/api/v1/node/status-checks/claim",headers,payload:{}});
   expect(check.json().job).toMatchObject({itemKey:item.key,completion,status:"checking"});
   expect(store.getWorkItem(item.key).status).toBe("in_progress");
+ });
+ it("explicit rediscovery clears old suggestions without invalidating an active retry lease",async()=>{
+  const {app,cookie,item,shared}=await seed();
+  const nodes=new DispatchStore(app.missionGoStore.database);
+  const node=nodes.registerNode({accountId:"owner",installationId:"retry-node",name:"Retry node"});
+  nodes.replaceRepos("owner",node.nodeId,[{productId:shared.id,repoPath:"/example/repository"}]);
+  const headers={authorization:`Bearer ${node.token}`},url=`/api/v1/items/${item.key}/status-checks`;
+  await app.inject({method:"POST",url,headers:{cookie}});
+  const job=(await app.inject({method:"POST",url:"/api/v1/node/completion-discovery/claim",headers,payload:{}})).json().job;
+  await app.inject({method:"POST",url:`/api/v1/node/completion-discovery/${job.id}/report`,headers,payload:{leaseToken:job.leaseToken,repository:"https://github.com/example/project",candidates:[]}});
+  const retry=await app.inject({method:"POST",url,headers:{cookie},payload:{rediscover:true}});
+  expect(retry.json().discovery).toMatchObject({status:"waiting_node",repository:null,candidates:[]});
+  const next=(await app.inject({method:"POST",url:"/api/v1/node/completion-discovery/claim",headers,payload:{}})).json().job;
+  expect(next.leaseToken).not.toBe(job.leaseToken);
+  const repeated=await app.inject({method:"POST",url,headers:{cookie},payload:{rediscover:true}});
+  expect(repeated.json().discovery.status).toBe("checking");
+  const report=await app.inject({method:"POST",url:`/api/v1/node/completion-discovery/${next.id}/report`,headers,payload:{leaseToken:next.leaseToken,repository:"https://github.com/example/project",candidates:[]}});
+  expect(report.statusCode).toBe(200);
  });
 });

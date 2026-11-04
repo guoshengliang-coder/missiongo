@@ -18,6 +18,46 @@ function seed() {
 }
 const completion={kind:"github" as const,url:"https://github.com/example/project/pull/385"};
 describe("completion discovery",()=>{
+ it("keeps found candidates selectable across repeated status actions until an explicit rediscovery",()=>{
+  const {item,discovery,node}=seed();
+  discovery.request(item.key,"account-1");const job=discovery.claim(node.nodeId,"account-1",()=>{})!;
+  discovery.report(job.id,{leaseToken:job.leaseToken,repository:"https://github.com/example/project",candidates:[{completion,title:"Fix",state:"merged"}]},node.nodeId,"account-1");
+  const found=discovery.snapshot(item.key);
+  expect(discovery.request(item.key,"account-1")).toEqual(found);
+  expect(discovery.request(item.key,"account-1")).toEqual(found);
+  expect(discovery.claim(node.nodeId,"account-1",()=>{})).toBeNull();
+  expect(()=>discovery.assertSelection(item.key,job.id,0,completion)).not.toThrow();
+  expect(discovery.request(item.key,"account-1",true)).toMatchObject({status:"waiting_node",repository:null,candidates:[]});
+  const retry=discovery.claim(node.nodeId,"account-1",()=>{})!;
+  expect(retry.leaseToken).not.toBe(job.leaseToken);
+  expect(discovery.request(item.key,"account-1",true)?.status).toBe("checking");
+  expect(discovery.claim(node.nodeId,"account-1",()=>{})).toBeNull();
+  expect(()=>discovery.report(job.id,{leaseToken:job.leaseToken,repository:"https://github.com/example/project",candidates:[]},node.nodeId,"account-1")).toThrow(/lease/i);
+ });
+ it("invalidates found candidates when their source or repository mapping changes and can search again",()=>{
+  const {item,discovery,node}=seed();
+  const c=store.createComment({itemKey:item.key,actorKind:"agent",bodyKind:"free",body:{text:"PR #385"},idempotencyKey:"source"});
+  discovery.request(item.key,"account-1");let job=discovery.claim(node.nodeId,"account-1",()=>{})!;
+  discovery.report(job.id,{leaseToken:job.leaseToken,repository:"https://github.com/example/project",candidates:[{completion,title:"Fix",state:"merged",commentId:c.id}]},node.nodeId,"account-1");
+  store.database.connection.prepare("UPDATE work_item_comments SET withdrawn_at=? WHERE id=?").run(new Date().toISOString(),c.id);
+  expect(discovery.snapshot(item.key)).toMatchObject({status:"stale",candidates:[]});
+  expect(discovery.request(item.key,"account-1")?.status).toBe("waiting_node");
+  job=discovery.claim(node.nodeId,"account-1",()=>{})!;
+  discovery.report(job.id,{leaseToken:job.leaseToken,repository:"https://github.com/example/project",candidates:[{completion,title:"Fix",state:"merged"}]},node.nodeId,"account-1");
+  store.database.connection.prepare("UPDATE node_product_repos SET repo_path='/other'").run();
+  expect(discovery.snapshot(item.key)).toMatchObject({status:"stale",candidates:[]});
+  expect(discovery.request(item.key,"account-1")?.status).toBe("waiting_node");
+  expect(discovery.claim(node.nodeId,"account-1",()=>{})?.repoPath).toBe("/other");
+ });
+ it("refreshes content versions and clears old leases before retrying an invalidated search",()=>{
+  const {item,discovery,node}=seed();discovery.request(item.key,"account-1");
+  const old=discovery.claim(node.nodeId,"account-1",()=>{})!;
+  store.database.connection.prepare("UPDATE work_items SET content_version=content_version+1 WHERE id=?").run(item.id);
+  expect(discovery.request(item.key,"account-1")?.status).toBe("waiting_node");
+  const fresh=discovery.claim(node.nodeId,"account-1",()=>{})!;
+  expect(fresh).toBeTruthy();expect(fresh.leaseToken).not.toBe(old.leaseToken);
+  expect(()=>discovery.report(old.id,{leaseToken:old.leaseToken,candidates:[],failure:"failed"},node.nodeId,"account-1")).toThrow(/lease/i);
+ });
  it("extracts agent comments as hints without treating a merge assertion as evidence",()=>{
   const {item,discovery,node}=seed();
   const c=store.createComment({itemKey:item.key,actorKind:"agent",bodyKind:"free",body:{text:"PR #385 已合并 main (60ca83a)，CI 全过"},idempotencyKey:"comment"});

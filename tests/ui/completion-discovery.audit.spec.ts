@@ -10,11 +10,11 @@ for (const width of [320,768,1440]) for (const theme of ["light","dark"] as cons
   const created=await request.post("/api/v1/items",{data:{productId:fixture.productId,title:"Discover completion",description:"Find existing Agent comment reference",type:"bug",priority:"normal",status:"ready",environment:{platform:"web"}}});
   const item=await created.json() as {key:string};
   expect((await postItemCommand(request,`/api/v1/items/${item.key}/transitions`,{data:{to:"in_progress",reason:"claim"}})).ok()).toBe(true);
-  let state="waiting_node",saved=false,posts=0;
+  let state:string|null=null,saved=false,posts=0;
   const record={id:discoveryId,itemKey:item.key,productId:fixture.productId,itemStatus:"in_progress",completion,pullRequestUrl:completion.url,requiredArtifacts:null,noReleaseReason:null,status:"waiting_node",reason:"",checkedAt:null,requestedAt:new Date().toISOString(),evidenceUpdatedAt:new Date().toISOString(),evidenceSource:"authorized_executor",evidence:{}};
-  const body=()=>({items:saved?[record]:[],discovery:{id:discoveryId,status:state,repository:"https://github.com/example/project",candidates:state==="found"?[{completion,title:"Fix completion reference from Agent comment",state:"merged",commentId:"00000000-0000-4000-8000-000000000002"}]:[]}});
+  const body=()=>({items:saved?[record]:[],discovery:state ? {id:discoveryId,status:state,repository:"https://github.com/example/project",candidates:state==="found"?[{completion,title:"Fix completion reference from Agent comment",state:"merged",commentId:"00000000-0000-4000-8000-000000000002"}]:[]} : null});
   await page.route(`**/api/v1/items/${item.key}/status-checks*`,async route=>{
-   if(route.request().method()==="POST") posts++;
+   if(route.request().method()==="POST") { posts++; state ??="waiting_node"; }
    await route.fulfill({json:body()});
   });
   await page.route(`**/api/v1/items/${item.key}/handover`,async route=>{
