@@ -53,8 +53,9 @@ for (const viewport of VIEWPORTS) {
           // networkidle. Never accept a temporarily stable loading placeholder.
           if (pageUnderTest.name === "detail") {
             // Collaboration data loads independently of the item. A stable
-            // screenshot must show this fixture's resolved empty state.
-            await expect(page.locator(".collaboration-panel .section-empty")).toBeVisible();
+            // screenshot must show the resolved header without an empty-state row.
+            await expect(page.locator(".collaboration-panel")).toHaveAttribute("aria-busy", "false");
+            await expect(page.locator(".collaboration-panel [role=alert]")).toHaveCount(0);
             await expect.poll(() => page.locator(".attachment-image").evaluateAll(cards =>
               cards.filter(card => {
                 const box = card.getBoundingClientRect();

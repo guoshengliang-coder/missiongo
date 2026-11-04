@@ -26,6 +26,10 @@ export const COLLABORATION_EN = {
   collaborationRequest: "Request collaboration",
   collaborationAssociate: "Associate existing item",
   collaborationRelations: "Collaboration and dependencies",
+  collaborationAddDependency: "Add dependency",
+  collaborationExpand: "Expand",
+  collaborationCollapse: "Collapse",
+  collaborationReviewCount: "Awaiting review {count}",
   collaborationWaiting: "I am waiting",
   collaborationWaited: "Waiting for me",
   collaborationBlocked:
@@ -77,6 +81,7 @@ export const COLLABORATION_EN = {
   collaborationChoose: "Choose…",
   collaborationRestricted:
     "Shared access has been revoked. Unresolved dependencies still block delivery.",
+  collaborationRestrictedTitle: "Shared access restricted",
   collaborationWithdrawn: "Dependency withdrawn",
   collaborationError:
     "The collaboration operation failed. Check access and content, refresh and retry.",
@@ -126,6 +131,10 @@ export const COLLABORATION_ZH: Record<keyof typeof COLLABORATION_EN, string> = {
   collaborationRequest: "发起协作请求",
   collaborationAssociate: "关联已有条目",
   collaborationRelations: "协作与依赖",
+  collaborationAddDependency: "添加依赖",
+  collaborationExpand: "展开",
+  collaborationCollapse: "收起",
+  collaborationReviewCount: "待审核 {count}",
   collaborationWaiting: "我在等待",
   collaborationWaited: "等待我",
   collaborationBlocked: "依赖未结束，暂不能推进交付；可以继续独立开发与联调。",
@@ -172,6 +181,7 @@ export const COLLABORATION_ZH: Record<keyof typeof COLLABORATION_EN, string> = {
   collaborationCancelKeep: "保留并指定接续负责人",
   collaborationChoose: "请选择…",
   collaborationRestricted: "共享访问已撤销，未结束的依赖仍阻止交付。",
+  collaborationRestrictedTitle: "共享访问受限",
   collaborationWithdrawn: "依赖已撤回",
   collaborationError: "协作操作失败，请核对权限和内容，刷新后重试。",
   collaborationStale: "内容版本已变化，请刷新并重新审阅后批准。",
