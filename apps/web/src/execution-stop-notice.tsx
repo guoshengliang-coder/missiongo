@@ -24,7 +24,8 @@ export function ExecutionStopNotice({itemKey,blockers,onRefresh}: {
       <strong>{t("executionStopHeading")}</strong>
       {blockers.map(blocker=><div className="execution-stop-observation" key={blocker.id}>
         <p>{blocker.nodeName && <strong>{blocker.nodeName} · </strong>}{t(reasonKeys[blocker.reason])}</p>
-        <p>{t("executionStopSession",{id:blocker.sessionId ?? blocker.executionId})}</p>
+        <p>{t("executionStopSession",{id:blocker.source === "performer" ? blocker.executionId : blocker.sessionId ?? blocker.executionId})}</p>
+        {blocker.scope && <p>{blocker.scope}</p>}
         <p>{t("executionStopStatus",{status:blocker.status,progress:blocker.progressStatus ?? "—"})}</p>
         {blocker.lastObservedAt && <p>{t("executionStopObserved",{time:new Date(blocker.lastObservedAt).toLocaleString()})}</p>}
         {blocker.error && <details><summary>{t("executionStopDiagnostic")}</summary><p>{blocker.error}</p></details>}

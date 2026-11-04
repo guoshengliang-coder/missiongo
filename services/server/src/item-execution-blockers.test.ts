@@ -40,6 +40,14 @@ async function fixture() {
     store.transitionWorkItem({itemKey:item.key,to:"ready",actor:"human",reason:"verification_failed",note:"Adjust UI",attribution:{accountId}});
     return {item,sessionId,authorization};
   }
+  function interrupted() {
+    const item=store.createWorkItem({productId:product.id,title:"Interrupted before delivery",description:"Scope",type:"bug",priority:"normal",status:"ready",environment:{platform:"shared"}});
+    store.transitionWorkItem({itemKey:item.key,to:"in_progress",reason:"claim",actor:"human",attribution:{accountId}});
+    const sessionId=external.register(owner,{agentKind:"codex",refKind:"native",sessionRef:randomUUID()},item.key);
+    snapshot(sessionId,"unavailable");
+    store.transitionWorkItem({itemKey:item.key,to:"ready",reason:"released",actor:"human",note:"Continue after stopping",attribution:{accountId}});
+    return {item,sessionId};
+  }
   function snapshot(sessionId:string,status:string,turnActive=false) {
     db.prepare("UPDATE external_agent_sessions SET native_node_id=?,native_snapshot_json=?,native_synced_at=? WHERE id=?")
       .run(node.nodeId,JSON.stringify({status,turnState:{turnActive},error:status==="unavailable" ? "Original conversation not loaded" : undefined}),new Date().toISOString(),sessionId);
@@ -51,7 +59,7 @@ async function fixture() {
       payload:{revision:observed.revision,note:"Checked the original device; execution stopped",confirmedStopped:true,...custom}});
   }
   const dispatch=(key:string)=>dispatches.createDispatch({accountId,nodeId:node.nodeId,agentKind:"codex",mode:"default",itemKeys:[key]});
-  return {app,store,db,headers,accountId,owner,product,node,dispatches,external,create,snapshot,read,confirm,dispatch};
+  return {app,store,db,headers,accountId,owner,product,node,dispatches,external,create,interrupted,snapshot,read,confirm,dispatch};
 }
 
 it("reproduces the completed/unavailable case, settles only the human-verified execution and preserves old history/credential revocation",async()=>{
@@ -193,7 +201,7 @@ it("also reconciles closed dispatched history while keeping a pending new dispat
   expect((await f.confirm(item.key,b)).statusCode).toBe(409);
 });
 
-it("does not offer human confirmation for archived projects or a mere completion report without a closed handling round",async()=>{
+it("keeps archived projects read-only but allows a human check without a closed handling round",async()=>{
   const f=await fixture(),{item}=f.create();
   f.store.createProduct({name:"Other active project",keyPrefix:"OTHER"});
   const blocker=(await f.read(item.key)).executionBlockers[0];
@@ -208,8 +216,8 @@ it("does not offer human confirmation for archived projects or a mere completion
   f.snapshot(sessionId,"unavailable");
   f.store.transitionWorkItem({itemKey:open.key,to:"ready",reason:"released",actor:"human",note:"Replan",attribution:{accountId:f.accountId}});
   const b=(await f.read(open.key)).executionBlockers[0];
-  expect(b.canConfirmStopped).toBe(false);
-  expect((await f.confirm(open.key,b)).statusCode).toBe(409);
+  expect(b.canConfirmStopped).toBe(true);
+  expect((await f.confirm(open.key,b)).statusCode).toBe(200);
 });
 
 it("leaves a scoped human performer blocked after settling the old native execution",async()=>{
@@ -219,7 +227,7 @@ it("leaves a scoped human performer blocked after settling the old native execut
   expect(response.statusCode).toBe(201);
   const b=(await f.read(item.key)).executionBlockers.find((row:{source:string})=>row.source==="external");
   expect((await f.confirm(item.key,b)).statusCode).toBe(200);
-  expect((await f.read(item.key)).executionBlockers).toMatchObject([{source:"performer",reason:"execution_open",canConfirmStopped:false}]);
+  expect((await f.read(item.key)).executionBlockers).toMatchObject([{source:"performer",reason:"execution_open",canConfirmStopped:true}]);
   expect(()=>f.dispatch(item.key)).toThrow();
 });
 
@@ -234,4 +242,95 @@ it("reuses only a still-valid item-scoped human stop check during Builder handov
   f.snapshot(another.sessionId,"active",true);f.snapshot(another.sessionId,"unavailable");
   expect(new BuilderHandovers(f.store).start(another.item.key,f.accountId,target.id,f.accountId,"New activity needs another check"))
     .toMatchObject({builderAccountId:f.accountId,builderHandover:{status:"blocked"}});
+});
+
+
+it("recovers interrupted working history one execution at a time through redispatch and a new claim",async()=>{
+  const f=await fixture(),{item,sessionId}=f.interrupted();
+  const original=f.db.prepare("SELECT progress_status,native_snapshot_json FROM external_agent_sessions WHERE id=?").get(sessionId);
+  const oldPerformer=f.db.prepare("SELECT * FROM item_executions WHERE item_id=?").get(item.id);
+  const before=await f.read(item.key);
+  expect(before.executionBlockers).toHaveLength(2);
+  expect(before.executionBlockers).toEqual(expect.arrayContaining([
+    expect.objectContaining({source:"external",progressStatus:"working",canConfirmStopped:true}),
+    expect.objectContaining({source:"performer",status:"working",scope:"人工领取处理",canConfirmStopped:true}),
+  ]));
+  const claim=()=>f.store.claimWorkItem({itemKey:item.key,agentId:"Codex",idempotencyKey:randomUUID(),attribution:f.owner});
+  expect(claim).toThrow();
+  expect(f.dispatches.checkRedispatch(f.accountId,[item.key]).allowed).toBe(false);
+  const external=before.executionBlockers.find((b:{source:string})=>b.source==="external");
+  expect((await f.confirm(item.key,external)).statusCode).toBe(200);
+  // A harmless native poll must not undo a check merely because the last progress report is still working.
+  vi.advanceTimersByTime(1000);f.snapshot(sessionId,"unavailable");
+  expect((await f.read(item.key)).executionBlockers).toMatchObject([{source:"performer"}]);
+  expect(claim).toThrow();
+  expect((await f.confirm(item.key)).statusCode).toBe(200);
+  expect((await f.read(item.key)).executionBlockers).toEqual([]);
+  expect(f.db.prepare("SELECT progress_status,native_snapshot_json FROM external_agent_sessions WHERE id=?").get(sessionId)).toEqual(original);
+  expect(f.db.prepare("SELECT * FROM item_executions WHERE item_id=?").get(item.id)).toEqual(oldPerformer);
+  expect(f.store.getWorkItem(item.key).status).toBe("ready");
+  expect(f.dispatches.checkRedispatch(f.accountId,[item.key]).allowed).toBe(true);
+  const dispatch=f.dispatch(item.key);f.dispatches.claimNextDispatch(f.node.nodeId);
+  f.dispatches.recordDispatchResult({nodeId:f.node.nodeId,dispatchId:dispatch.id,status:"launched"});
+  new AgentSessionStore(f.store.database).createForDispatch({dispatchId:dispatch.id,nodeId:f.node.nodeId,sessionRef:randomUUID()});
+  expect(f.store.claimWorkItem({itemKey:item.key,agentId:"Codex",idempotencyKey:randomUUID(),attribution:f.owner,dispatchId:dispatch.id}).status).toBe("in_progress");
+  expect(f.store.getTimeline(item.key).filter(e=>e.eventType==="execution_stop_confirmed")).toHaveLength(2);
+});
+
+it.each(["active","queued","delivering","delivery_unknown"])("never lets a linked performer check conceal %s source work",async state=>{
+  const f=await fixture(),{item,sessionId}=f.interrupted();
+  const id=randomUUID();
+  f.db.prepare("INSERT INTO item_executions(id,item_id,account_id,scope,kind,session_id,status,created_by,created_at,updated_at) VALUES (?,?,?,'Agent scope','agent',?,'working',?,?,?)")
+    .run(id,item.id,f.accountId,sessionId,f.accountId,new Date().toISOString(),new Date().toISOString());
+  const original=(await f.read(item.key)).executionBlockers.find((b:{executionId:string})=>b.executionId===id);
+  expect((await f.confirm(item.key,original)).statusCode).toBe(200);
+  if(state==="active") f.snapshot(sessionId,"active",true);
+  else f.db.prepare("INSERT INTO external_native_commands(id,session_id,text,status,created_at) VALUES (?,?,?,?,?)")
+    .run(randomUUID(),sessionId,"More work",state,new Date().toISOString());
+  const blocker=(await f.read(item.key)).executionBlockers.find((b:{executionId:string})=>b.executionId===id);
+  expect(blocker).toMatchObject({canConfirmStopped:false,reason:state==="active"?"active":"commands_pending"});
+  expect((await f.confirm(item.key,blocker)).statusCode).toBe(409);
+  expect(f.dispatches.checkRedispatch(f.accountId,[item.key]).allowed).toBe(false);
+});
+
+it.each(["progress","performer","sourceActivity"])("invalidates interrupted-work confirmations after new %s even when it becomes unavailable again",async change=>{
+  const f=await fixture(),{item,sessionId}=f.interrupted();
+  const performer=(await f.read(item.key)).executionBlockers.find((b:{source:string})=>b.source==="performer");
+  const source=(await f.read(item.key)).executionBlockers.find((b:{source:string})=>b.source==="external");
+  expect((await f.confirm(item.key,source)).statusCode).toBe(200);
+  expect((await f.confirm(item.key,performer)).statusCode).toBe(200);
+  expect((await f.read(item.key)).executionBlockers).toEqual([]);
+  if(change==="progress") f.external.report(f.owner,sessionId,item.key,"working","Resumed with the same status",randomUUID());
+  if(change==="performer") f.db.prepare("UPDATE item_executions SET status='working' WHERE id=?").run(performer.executionId);
+  if(change==="sourceActivity") {f.snapshot(sessionId,"active",true);f.snapshot(sessionId,"unavailable");}
+  expect((await f.read(item.key)).executionBlockers.length).toBeGreaterThan(0);
+  expect(f.dispatches.checkRedispatch(f.accountId,[item.key]).allowed).toBe(false);
+});
+
+it("rejects a stale performer check, preserves separate performer scopes and accepts only fresh human checks",async()=>{
+  const f=await fixture(),{item}=f.interrupted();
+  const first=(await f.read(item.key)).executionBlockers.find((b:{source:string})=>b.source==="performer");
+  f.db.prepare("UPDATE item_executions SET scope='Changed scope' WHERE id=?").run(first.executionId);
+  expect((await f.confirm(item.key,first)).statusCode).toBe(409);
+  const changed=(await f.read(item.key)).executionBlockers.find((b:{source:string})=>b.source==="performer");
+  expect((await f.confirm(item.key,changed,{confirmedStopped:false})).statusCode).toBe(400);
+  expect((await f.confirm(item.key,changed,{note:" "})).statusCode).toBe(400);
+  expect((await f.confirm(item.key,changed,{},{} as typeof f.headers)).statusCode).toBe(401);
+  const results=await Promise.all([f.confirm(item.key,changed),f.confirm(item.key,changed)]);
+  expect(results.map(r=>r.statusCode).sort()).toEqual([200,409]);
+  expect((await f.read(item.key)).executionBlockers).toMatchObject([{source:"external"}]);
+});
+
+
+it("keeps startup placeholders fenced even when their status becomes unavailable",async()=>{
+  const f=await fixture(),{item}=f.create();
+  expect((await f.confirm(item.key)).statusCode).toBe(200);
+  const dispatch=f.dispatch(item.key);f.dispatches.claimNextDispatch(f.node.nodeId);
+  f.dispatches.recordDispatchResult({nodeId:f.node.nodeId,dispatchId:dispatch.id,status:"launched"});
+  const id=new AgentSessionStore(f.store.database).createForDispatch({dispatchId:dispatch.id,nodeId:f.node.nodeId,sessionRef:`pending:${dispatch.id}`});
+  f.db.prepare("UPDATE agent_sessions SET status='unavailable',turn_state_json='{}' WHERE id=?").run(id);
+  const blocker=(await f.read(item.key)).executionBlockers[0];
+  expect(blocker).toMatchObject({source:"dispatch",reason:"execution_open",canConfirmStopped:false});
+  expect((await f.confirm(item.key,blocker)).statusCode).toBe(409);
+  expect(()=>f.dispatch(item.key)).toThrow();
 });
