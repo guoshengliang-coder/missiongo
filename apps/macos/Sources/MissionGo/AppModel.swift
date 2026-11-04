@@ -318,11 +318,11 @@ final class AppModel: ObservableObject {
                     credential = nil
                 } else {
                     let store = self.store
-                    credential = try await credentialAccess.run { try store.loadCredential(allowInteraction: false) }
+                    credential = try await credentialAccess.restoreCredential { try store.loadCredential(allowInteraction: $0) }
                 }
             } catch {
                 credential = nil
-                loginError = "未自动读取登录凭据：\(error.localizedDescription)。请点击登录后按系统提示授权。"
+                loginError = "未能恢复原有登录：\(error.localizedDescription)。点击登录可重试。"
             }
             if let credential {
                 enterSignedIn(credential)
@@ -722,17 +722,33 @@ final class AppModel: ObservableObject {
         loginError = nil
         loginStatus = "正在准备登录…"
         phase = .signingIn
-        deviceLogin = initial
+        deviceLogin = nil
         let store = self.store
         let access = credentialAccess
         loginTask = Task {
             do {
+                // A click can recover an existing credential after a startup
+                // authorization was dismissed. Honor a previous sign-out.
+                if initial == nil, !defaults.bool(forKey: DefaultsKey.credentialUnavailable) {
+                    loginStatus = "正在恢复原有登录…"
+                    let saved = try await access.run(timeout: 60) { try store.loadCredential() }
+                    try Task.checkCancellation()
+                    guard generation == loginGeneration else { return }
+                    if let saved, saved.serverUrl == serverUrl {
+                        loginTask = nil
+                        enterSignedIn(saved)
+                        return
+                    }
+                    loginStatus = "正在准备登录…"
+                }
                 let installationId = try await access.run { try store.installationId() }
                 let login = DeviceLogin(serverUrl: serverUrl)
                 var pending = initial
                 if pending == nil, !defaults.bool(forKey: DefaultsKey.pendingLoginCancelled) {
                     pending = try await access.run { try store.loadPendingLogin(allowInteraction: true) }
-                    if pending?.isExpired == true || pending?.serverUrl != serverUrl { pending = nil }
+                }
+                if let candidate = pending, candidate.isExpired || candidate.serverUrl != serverUrl {
+                    pending = nil
                 }
                 if pending == nil {
                     // Finish deleting any cancelled/expired request before storing
@@ -747,9 +763,11 @@ final class AppModel: ObservableObject {
                 guard generation == loginGeneration else { return }
                 defaults.set(false, forKey: DefaultsKey.pendingLoginCancelled)
                 let current = pending!
-                deviceLogin = current
-                loginStatus = "等待浏览器授权…"
-                if initial == nil { reopenDeviceLogin() }
+                if current.accessToken == nil {
+                    deviceLogin = current
+                    loginStatus = "等待浏览器授权…"
+                    reopenDeviceLogin()
+                }
                 let credential = try await login.complete(current, installationId: installationId,
                     name: MachineIdentity.defaultName(), hostname: MachineIdentity.hostname(), checkpoint: { pending in
                         try Task.checkCancellation()
@@ -806,6 +824,7 @@ final class AppModel: ObservableObject {
 
     func reopenDeviceLogin() {
         guard let pending = deviceLogin else { return }
+        loginError = nil
         if !NSWorkspace.shared.open(pending.verificationUriComplete) {
             loginError = "无法打开默认浏览器。请在任意浏览器打开验证网址并输入验证码。"
         }

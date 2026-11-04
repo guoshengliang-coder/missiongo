@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 /// A Security.framework call may never return and cannot be cancelled by Swift.
 /// The deadline ends the caller's wait without awaiting that system call. Only
@@ -9,6 +10,19 @@ public final class AsyncCredentialAccess: @unchecked Sendable {
     private let queue = DispatchQueue(label: "credential-access", qos: .userInitiated)
 
     public init() {}
+
+    /// A new signature can require access to be granted again. Retry only an
+    /// authorization failure, and give the user time to respond to macOS.
+    public func restoreCredential(
+        load: @escaping @Sendable (Bool) throws -> NodeCredential?
+    ) async throws -> NodeCredential? {
+        do {
+            return try await run { try load(false) }
+        } catch let error as CredentialStoreError
+            where error.status == errSecInteractionNotAllowed || error.status == errSecAuthFailed {
+            return try await run(timeout: 60) { try load(true) }
+        }
+    }
 
     public func run<Value: Sendable>(timeout: TimeInterval = 10, operation: @escaping @Sendable () throws -> Value) async throws -> Value {
         try Task.checkCancellation()
