@@ -118,7 +118,7 @@ test("keeps a product owner's scoped permissions in the common account entry wit
   await page.goto(`/settings/permissions/${owned.id}`);
   await expect(page.getByRole("alert")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "新建账号", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("textbox", { name: "添加", exact: true })).toHaveCount(1);
+  await expect(page.locator(".account-picker").getByRole("combobox", { name: "搜索昵称或邮箱", exact: true })).toHaveCount(1);
   await expect(page.getByRole("navigation", { name: "设置", exact: true }).getByRole("button", { name: "模型", exact: true })).toHaveCount(0);
   await page.goto(`/settings/permissions/${fixture.productId}`);
   await expect(page.getByRole("alert")).toHaveText("此设置不可用，或你没有访问权限。");

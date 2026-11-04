@@ -131,6 +131,13 @@ export interface AccountSummary {
   readonly role: AccountRole;
 }
 
+/** One account the product-access picker may offer (AND-390). */
+export interface GrantableAccountSummary {
+  readonly id: string;
+  readonly email: string;
+  readonly nickname?: string;
+}
+
 /** One account's standing on one product, as the product-side editor shows it. */
 export interface ProductAccessEntry {
   readonly aiScope: "all" | "selected" | "none";
@@ -410,11 +417,15 @@ export const api = {
     request<void>(`/api/v1/accounts/${encodeURIComponent(accountId)}`, { method: "DELETE" }),
   listProductAccounts: (productId: string) =>
     request<{ accounts: ProductAccessEntry[] }>(`/api/v1/products/${encodeURIComponent(productId)}/accounts`),
+  /** Who this product's manager may pick from when granting access (AND-390). */
+  listGrantableAccounts: (productId: string, query = "") =>
+    request<{ accounts: GrantableAccountSummary[] }>(
+      `/api/v1/products/${encodeURIComponent(productId)}/grantable-accounts${query.trim() ? `?query=${encodeURIComponent(query.trim())}` : ""}`,
+    ),
   setProductAccounts: (
     productId: string,
-    // An entry names its account by id, or by the address someone typed -- which
-    // is how a product's creator adds a person without being able to list who
-    // has an account here.
+    // An entry names its account by id, or by the address the picker chose,
+    // which the server resolves.
     accounts: Array<
       { accountId?: string; email?: string; canView: boolean; canOperate: boolean; canUseAi: boolean }
     >,

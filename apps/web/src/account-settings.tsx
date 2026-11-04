@@ -18,6 +18,7 @@ import {
   type ProductPermission,
 } from "./api";
 import { openAccountEditor, type AccountEditor } from "./account-edit-state";
+import { AccountPicker } from "./account-picker";
 import { groupAiConnections, type AiConnectionGroup } from "./ai-connections";
 import {
   accountDisplayName,
@@ -984,8 +985,7 @@ export function ProductAccessSettings(
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<Record<string, ProductPermission> | null>(null);
-  const [added, setAdded] = useState<readonly string[]>([]);
-  const [email, setEmail] = useState("");
+  const [added, setAdded] = useState<readonly { email: string; nickname?: string }[]>([]);
   const [saved, setSaved] = useState(false);
 
   const query = useQuery({
@@ -1013,7 +1013,7 @@ export function ProductAccessSettings(
     },
   });
 
-  useSettingsDraft(draft !== null || added.length > 0 || Boolean(email), mutation.isPending);
+  useSettingsDraft(draft !== null || added.length > 0, mutation.isPending);
 
   if (query.isPending) return <p className="account-note"><LoaderCircle className="spin" size={15} /></p>;
   if (query.isError) return <InlineNote danger message={messageFor(query.error, t, t("somethingWentWrong"))} />;
@@ -1039,18 +1039,22 @@ export function ProductAccessSettings(
       // would have the whole save refused over rows it was never offered.
       .filter(editable)
       .map((entry) => ({ accountId: entry.account.id, ...permissionFor(entry.account.id) }));
-    const newcomers = added.map((address) => ({ email: address, canView: true, canOperate: false, canUseAi: false }));
+    const newcomers = added.map((person) => ({ email: person.email, canView: true, canOperate: false, canUseAi: false }));
     mutation.mutate([...rows, ...newcomers]);
   };
 
-  const addByEmail = () => {
-    const address = email.trim();
-    // The server decides whether the address has an account; this only keeps the
-    // same one from being queued twice, which it would refuse as a duplicate.
-    if (!address || added.some((existing) => existing.toLowerCase() === address.toLowerCase())) return;
+  const addPerson = (person: { email: string; nickname?: string }) => {
+    const address = person.email.trim();
+    // The server decides whether the address has an account. These two checks
+    // keep the same person from being queued twice, which the server refuses as
+    // a duplicate: once already waiting, and once already drawn as a row. An
+    // address typed by hand can still reach the second case, which is why the
+    // picker marks those rows and will not choose them.
+    if (!address
+      || added.some((existing) => existing.email.toLowerCase() === address.toLowerCase())
+      || entries.some((entry) => entry.account.email.toLowerCase() === address.toLowerCase())) return;
     setSaved(false);
-    setAdded([...added, address]);
-    setEmail("");
+    setAdded([...added, { email: address, ...(person.nickname ? { nickname: person.nickname } : {}) }]);
   };
 
   const remove = (accountId: string) => {
@@ -1129,11 +1133,15 @@ export function ProductAccessSettings(
               </tr>
             );
           })}
-          {added.map((address) => (
-            <tr key={`pending-${address}`}>
-              <td>{address}<em className="account-role-note"> · {t("accessPendingSave")}</em></td>
+          {added.map((person) => (
+            <tr key={`pending-${person.email}`}>
+              <td>
+                {person.nickname || person.email}
+                {person.nickname && <em className="account-role-note"> · {person.email}</em>}
+                <em className="account-role-note"> · {t("accessPendingSave")}</em>
+              </td>
               <td colSpan={4}>
-                <button className="text-button" onClick={() => setAdded(added.filter((existing) => existing !== address))}>
+                <button className="text-button" onClick={() => setAdded(added.filter((existing) => existing.email !== person.email))}>
                   {t("removeAccess")}
                 </button>
               </td>
@@ -1142,31 +1150,17 @@ export function ProductAccessSettings(
         </tbody>
       </table>
       {!editsRoster && (
-        <form
-          className="account-email-row"
-          onSubmit={(event) => {
-            event.preventDefault();
-            addByEmail();
-          }}
-        >
-          {/* Typed rather than picked: a creator may add someone without being
-              able to read who else has an account here. */}
-          <input
-            type="email"
-            value={email}
-            placeholder={t("addByEmailPlaceholder")}
-            onChange={(event) => setEmail(event.target.value)}
-            aria-label={t("addByEmail")}
-          />
-          <button className="secondary-button" type="submit" disabled={!email.trim()}>
-            <Plus size={15} /> {t("addByEmail")}
-          </button>
-        </form>
+        <AccountPicker
+          productId={productId}
+          entries={entries}
+          added={added.map((person) => person.email)}
+          onAdd={addPerson}
+        />
       )}
       {mutation.isError && <InlineNote danger message={messageFor(mutation.error, t, t("somethingWentWrong"))} />}
       <div className="account-permissions-footer">
         {saved && <span className="account-note">{t("productAccessSaved")}</span>}
-        <button type="button" className="secondary-button" disabled={mutation.isPending || !dirty && !email} onClick={() => { setDraft(null); setAdded([]); setEmail(""); setSaved(false); mutation.reset(); }}>{t("cancel")}</button>
+        <button type="button" className="secondary-button" disabled={mutation.isPending || !dirty} onClick={() => { setDraft(null); setAdded([]); setSaved(false); mutation.reset(); }}>{t("cancel")}</button>
         <button className="primary-button" disabled={mutation.isPending || !dirty} onClick={submit}>
           {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {t("savePermissions")}
         </button>

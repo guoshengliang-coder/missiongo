@@ -1670,6 +1670,19 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .account-email-row label { flex: 1 1 auto; min-width: 0; display: grid; gap: 6px; font-size: var(--text-sm); font-weight: 700; }
 .account-email-row input { min-height: 44px; padding: 0 11px; border: 1px solid var(--line-dark); border-radius: var(--radius-md); font: inherit; }
 .account-email-row .secondary-button { min-height: 44px; white-space: nowrap; }
+.account-picker { display: flex; align-items: flex-end; gap: 10px; margin-top: 13px; padding-top: 13px; border-top: 1px solid var(--line); }
+.account-picker-field { position: relative; flex: 1 1 auto; min-width: 0; }
+.account-picker-field input { width: 100%; min-height: 44px; padding: 0 11px; border: 1px solid var(--line-dark); border-radius: var(--radius-md); font: inherit; }
+.account-picker .secondary-button { min-height: 44px; white-space: nowrap; }
+.account-picker-list { position: absolute; z-index: 20; top: calc(100% + 6px); left: 0; right: 0; max-height: 280px; overflow-y: auto; margin: 0; padding: 5px; list-style: none; background: var(--surface-strong); border: 1px solid var(--line); border-radius: var(--radius-md); box-shadow: var(--shadow); }
+.account-picker-option { display: grid; gap: 2px; padding: 8px 9px; border-radius: var(--radius-sm); cursor: pointer; }
+.account-picker-option strong { font-size: var(--text-sm); font-weight: 650; overflow-wrap: anywhere; }
+.account-picker-option small { color: var(--muted); font-size: var(--text-xs); overflow-wrap: anywhere; }
+.account-picker-option em { color: var(--muted); font-size: var(--text-xs); font-style: normal; }
+.account-picker-option[aria-disabled="true"] { color: var(--muted); cursor: default; }
+@media (hover: hover) { .account-picker-option:not([aria-disabled="true"]):hover { background: var(--row-hover); } }
+.account-picker-option.active { background: var(--row-hover); }
+.account-picker-status { padding: 9px; color: var(--muted); font-size: var(--text-sm); }
 .account-authorizations { display: flex; flex-direction: column; gap: 10px; padding-top: 16px; border-top: 1px solid var(--line); }
 .account-authorizations h3 { margin: 0; font-size: var(--text-base); }
 .ai-connections-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }

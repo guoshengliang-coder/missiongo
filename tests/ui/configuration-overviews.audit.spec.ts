@@ -89,7 +89,10 @@ test("owners choose among owned products without fetching the system account ros
   await expect(page.locator(".settings-product-card")).toHaveCount(2);
   await page.locator(`.settings-product-card[data-product-id="${b.id}"]`).click();
   await expect(page.locator(".settings-page-title")).toContainText(b.name);
-  await expect(page.getByRole("textbox", { name: "添加", exact: true })).toBeVisible();
+  // AND-390 replaced the typed address with a picker, but the panel still does
+  // not read the system roster on open: the grantable list is only fetched once
+  // the picker is opened, and this test never opens it.
+  await expect(page.locator(".account-picker").getByRole("combobox", { name: "搜索昵称或邮箱", exact: true })).toBeVisible();
   expect(rosterRequests).toEqual([]);
   await page.goto(`/settings/admin/accounts/${a.id}`);
   await expect(page.getByRole("alert")).toHaveText("此设置不可用，或你没有访问权限。");
