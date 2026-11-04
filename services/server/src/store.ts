@@ -5,7 +5,7 @@ import { assertTransitionPolicy, itemRoles } from "./item-policy.js";
 import { resolveCommentAudience, enqueueCommentNotifications } from "./comment-discussions.js";
 import { assertBuilderExecution, assertDispatchExecution, latestBuilderHandover, hasOngoingItemExecution, hasPriorProcessing } from "./builder-authority.js";
 import { completionPayload, normalizeCompletion, sameCompletion } from "./completion.js";
-import { deliveryRound, queueDeliveryChecks } from "./delivery-round.js";
+import { deliveryRound } from "./delivery-round.js";
 import { enqueueDecisionNotifications, enqueueVerificationNotification } from "./dingtalk-notifications.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { SQLInputValue } from "node:sqlite";
@@ -1190,7 +1190,6 @@ export class MissionGoStore {
         this.database.connection.prepare("INSERT INTO item_content_versions VALUES (?,?,?,?,?)").run(current.id,updated.content_version,
           JSON.stringify(this.contentSnapshot(updated)),input.attribution?.accountId ?? null,now);
       }
-      if (deliveryScopeChanged) queueDeliveryChecks(this.database,current.id,now);
     });
 
     return this.getWorkItem(itemKey);
@@ -1432,9 +1431,6 @@ export class MissionGoStore {
       if (input.expectedRevision !== undefined && current.revision !== input.expectedRevision) {
         throw conflict("transition_revision_changed", "条目已发生变化，请刷新后重新确认。");
       }
-      if (["development_complete","pending_verification"].includes(input.to) && input.attribution?.accountId && input.actor === "human" && input.reason !== "manual_override" && !input.confirmedHandoverId) {
-        throw conflict("delivery_evidence_required", "请通过交付状态检查核实本轮依据后提报。");
-      }
       const uploads = ids.length ? this.getTimeline(current.item_key) : [];
       const attachments = ids.length ? this.listAttachmentsByItemId(current.id) : [];
       for (const id of ids) {
@@ -1448,7 +1444,7 @@ export class MissionGoStore {
         if (attachment.commentId || attachment.transitionEventId) throw invalidInput("Attachment already belongs to another operation.");
       }
       this.applyTransition(current, input.to, input.actor, input.reason, input.note, now, input.attribution ?? {},
-        { ...(input.collaborationDisposition ? {collaborationDisposition:input.collaborationDisposition} : {}), ...(ids.length ? { attachmentIds: ids } : {}), ...(input.executionDisposition ? {executionDisposition:input.executionDisposition} : {}), ...(input.confirmedHandoverId ? {handoverId:input.confirmedHandoverId,evidenceSource:"human_confirmation"} : {}) });
+        { ...(input.collaborationDisposition ? {collaborationDisposition:input.collaborationDisposition} : {}), ...(ids.length ? { attachmentIds: ids } : {}), ...(input.executionDisposition ? {executionDisposition:input.executionDisposition} : {}) });
       if (key) this.saveIdempotentResult(key, operation, true, now);
     });
     return this.getWorkItem(input.itemKey);
@@ -1665,10 +1661,10 @@ export class MissionGoStore {
   }
 
   /** Record merged work, separating an explicit no-release decision from missing evidence. */
-  submitDevelopmentComplete(input: SubmitDevelopmentCompleteInput, evidence?: { actor: "system" | "human"; occurredAt: string; handoverId: string }): WorkItemSnapshot {
+  submitDevelopmentComplete(input: SubmitDevelopmentCompleteInput): WorkItemSnapshot {
     this.assertWorkItemWritable(input.itemKey);
     const completion = normalizeCompletion(input);
-    if (completion.kind === "manual" && evidence?.actor !== "human") throw invalidInput("Human confirmation requires a signed-in person.");
+    if (completion.kind === "manual") throw invalidInput("Human confirmation requires a signed-in person.");
     const requiredArtifacts = input.requiredArtifacts ? [...input.requiredArtifacts] : undefined;
     if (requiredArtifacts && (requiredArtifacts.length > MAX_RELEASE_ARTIFACTS
       || new Set(requiredArtifacts).size !== requiredArtifacts.length
@@ -1694,37 +1690,21 @@ export class MissionGoStore {
 
       const item = this.getWorkItemRow(input.itemKey);
       if (!item) throw notFound("Work item");
-      const correcting = item.status === "ready" || item.status === "inbox";
-      let mergeCommit: string | undefined;
-      if (item.status !== "in_progress" && !(correcting && evidence) && !(item.status === "development_complete" && evidence)) {
+      if (item.status !== "in_progress") {
         throw conflict("item_not_ready_for_development_complete", "Only an in-progress work item can be marked development complete.");
-      }
-      if (evidence) {
-        const handover = this.database.connection.prepare(`SELECT item_id,round_key,completion_json,pull_request_url,evidence_json
-          FROM status_handovers WHERE id=?`).get(evidence.handoverId) as
-          {item_id:string;round_key:string;completion_json:string|null;pull_request_url:string;evidence_json:string} | undefined;
-        const merged = handover && (JSON.parse(handover.evidence_json) as {merged?:{commit:string;occurredAt:string}}).merged;
-        if (!handover || handover.item_id !== item.id || handover.round_key !== deliveryRound(this.database,item.id)
-          || !sameCompletion(completion,normalizeCompletion(handover.completion_json ? {completion:JSON.parse(handover.completion_json)} : {pullRequestUrl:handover.pull_request_url}))
-          || !merged || merged.occurredAt !== evidence.occurredAt) {
-          throw conflict("delivery_evidence_required", "The handover must verify this item's current processing round.");
-        }
-        mergeCommit = merged.commit;
       }
       this.recordProductReleaseArtifacts(item.product_id, requiredArtifacts ?? []);
       const now = new Date().toISOString();
       this.applyTransition(
         item,
         "development_complete",
-        correcting ? "system" : evidence?.actor ?? "agent",
+        "agent",
         "resolution_submitted",
         summary,
         now,
         input.attribution ?? {},
         { ...completionPayload(completion), ...(requiredArtifacts ? { requiredArtifacts: [...requiredArtifacts].sort() } : {}),
-          ...(noReleaseReason ? { noReleaseReason } : {}),
-          ...(evidence ? { occurredAt: evidence.occurredAt, handoverId: evidence.handoverId, evidenceSource: evidence.actor === "human" ? "human_confirmation" : "authorized_executor" } : {}),
-          ...(correcting ? { reconciledFrom: item.status } : {}), ...(mergeCommit ? {mergeCommit} : {}) },
+          ...(noReleaseReason ? { noReleaseReason } : {}) },
       );
       const result = this.getWorkItem(item.item_key);
       this.saveIdempotentResult(idempotencyKey, operation, result, now);
@@ -1754,10 +1734,10 @@ export class MissionGoStore {
   }
 
   /** Accept a verified release only when every artifact recorded at merge is present. */
-  submitForVerification(input: SubmitForVerificationInput, evidence?: { actor: "system" | "human"; occurredAt: string; handoverId: string; requiredArtifacts: readonly string[] }): WorkItemSnapshot {
+  submitForVerification(input: SubmitForVerificationInput): WorkItemSnapshot {
     this.assertWorkItemWritable(input.itemKey);
     const completion = normalizeCompletion(input);
-    if (completion.kind === "manual" && evidence?.actor !== "human") throw invalidInput("Human confirmation requires a signed-in person.");
+    if (completion.kind === "manual") throw invalidInput("Human confirmation requires a signed-in person.");
     if (!/^[0-9a-f]{40}$/.test(input.deployedCommit) || !/^[0-9a-f]{64}$/.test(input.receiptDigest)) {
       throw invalidInput("A verified release needs a deployed commit and receipt digest.");
     }
@@ -1773,7 +1753,7 @@ export class MissionGoStore {
       }
       const handover = [...this.getTimeline(item.item_key)].reverse()
         .find((event) => !event.historySourceKey && event.eventType === "status_changed" && event.toStatus === "development_complete");
-      const required = evidence?.requiredArtifacts ?? this.getDevelopmentReleaseScope(item.item_key);
+      const required = this.getDevelopmentReleaseScope(item.item_key);
       const releases = input.releases;
       if (!handover || !sameCompletion(normalizeCompletion(handover.payload), completion) || !Array.isArray(required) || required.length === 0
         || releases.length !== required.length
@@ -1783,16 +1763,10 @@ export class MissionGoStore {
           || !/^[0-9a-f]{40}$/.test(release.sourceCommit))) {
         throw invalidInput("Release evidence does not cover the recorded integration and every required artifact.");
       }
-      if (evidence) {
-        const registered=this.database.connection.prepare("SELECT item_id,round_key,completion_json FROM status_handovers WHERE id=?").get(evidence.handoverId) as {item_id:string;round_key:string;completion_json:string}|undefined;
-        if (!registered || registered.item_id !== item.id || registered.round_key !== deliveryRound(this.database,item.id)
-          || !sameCompletion(normalizeCompletion({completion:JSON.parse(registered.completion_json)}),completion)) throw conflict("delivery_evidence_required","本轮交付关联已变化，请重新核查。");
-      }
       const now = new Date().toISOString();
-      this.applyTransition(item, "pending_verification", evidence?.actor ?? "agent", "release_verified", undefined, now,
+      this.applyTransition(item, "pending_verification", "agent", "release_verified", undefined, now,
         input.attribution ?? {}, { ...completionPayload(completion), releases, deployedCommit: input.deployedCommit,
-          receiptDigest: input.receiptDigest,
-          ...(evidence ? { occurredAt: evidence.occurredAt, handoverId: evidence.handoverId, evidenceSource: evidence.actor === "human" ? "human_confirmation" : "authorized_executor" } : {}) });
+          receiptDigest: input.receiptDigest });
       const result = this.getWorkItem(item.item_key);
       this.saveIdempotentResult(idempotencyKey, operation, result, now);
       return result;
@@ -2153,7 +2127,6 @@ export class MissionGoStore {
       attribution,
     );
     if (to === "in_progress" && reason === "claim") this.database.connection.prepare("UPDATE work_item_events SET payload_json=json_set(payload_json,'$.roundKey',?) WHERE id=?").run(eventId,eventId);
-    if (actor === "human" && (to === "ready" || to === "inbox" || current.status === "on_hold")) queueDeliveryChecks(this.database,current.id,now);
     if (to === "pending_verification") {
       const creator = this.creatorOf(current.id).createdBy;
       enqueueVerificationNotification(this.database,eventId,current.id,current.product_id,
@@ -2685,16 +2658,9 @@ export class MissionGoStore {
   private deliveryProgressOf(row: WorkItemRow): Pick<WorkItemSnapshot,"deliveryProgress"|"hasProcessingRound"> {
     if (!["inbox","ready","in_progress","development_complete"].includes(row.status)) return {};
     const currentRound = deliveryRound(this.database,row.id);
-    const handover = this.database.connection.prepare(`SELECT round_key,check_status,evidence_json,required_json
-      FROM status_handovers WHERE item_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1`).get(row.id) as
-      {round_key:string;check_status:string;evidence_json:string;required_json:string|null}|undefined;
-    if (!handover) return (row.status === "ready" || row.status === "inbox") && currentRound ? {hasProcessingRound:true} : {};
-    if (handover.round_key !== currentRound) return {deliveryProgress:"review_required",hasProcessingRound:Boolean(currentRound)};
-    const hasProcessingRound = true;
-    if (["permission_failed","failed","evidence_missing"].includes(handover.check_status)) return {deliveryProgress:"blocked",hasProcessingRound};
-    if (!(JSON.parse(handover.evidence_json) as {merged?:unknown}).merged) return {deliveryProgress:"waiting_merge",hasProcessingRound};
-    if (!handover.required_json) return {deliveryProgress:"needs_scope",hasProcessingRound};
-    return {deliveryProgress:(JSON.parse(handover.required_json) as string[]).length ? "waiting_release" : "no_release",hasProcessingRound};
+    // Retired check records remain audit history and must not add live blockers
+    // or progress labels to the current card.
+    return currentRound ? {hasProcessingRound:true} : {};
   }
 
   private verificationReturnOf(row: WorkItemRow): WorkItemSnapshot["verificationReturn"] {

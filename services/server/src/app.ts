@@ -15,9 +15,7 @@ import { AgentArtifacts, ARTIFACT_PREVIEW_POLICY, ARTIFACT_PREVIEW_SHELL } from 
 import { localArtifactLinks } from "@missiongo/domain";
 import { join } from "node:path";
 import { listInsightBatchSummaries, createInsightBatch, insightBatchProgress, deleteInsightBatch } from "./insight-batches.js";
-import { CompletionDiscovery, discoveryReportSchema } from "./completion-discovery.js";
-import { normalizeCompletion } from "./completion.js";
-import { StatusChecks, handoverRegistrationSchema, handoverEvidenceSchema, humanConfirmationSchema } from "./status-checks.js";
+import { StatusCheckHistory } from "./status-check-history.js";
 import { projectInsights } from "./project-insights.js";
 import { browserInsightSchema, browserInsightDetailSchema } from "./project-insights-query.js";
 import { transferWorkItem } from "./item-transfer.js";
@@ -117,6 +115,7 @@ import { WidgetPushService, type WidgetPushServiceAccount } from "./widget-push.
 import { widgetSummary, type WidgetSummary, type WidgetSummarySession } from "./widget-summary.js";
 
 export interface BuildAppOptions {
+  /** @deprecated Status checks have been retired; this option is ignored. */
   readonly statusCheckTime?: string | false;
   readonly managedExecution?: { readonly enabled: boolean; readonly coordinatorClientIds: readonly string[] };
   readonly databasePath?: string;
@@ -689,33 +688,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         : {}),
     });
   }
-  const statusChecks = new StatusChecks(store);
-  const completionDiscovery = new CompletionDiscovery(store);
-  const statusCheckTime = options.statusCheckTime ?? "09:00";
-  if (statusCheckTime !== false && !/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(statusCheckTime)) throw invalidInput("statusCheckTime must be HH:mm in Asia/Shanghai.");
-  let statusCheckTimer: ReturnType<typeof setInterval> | undefined;
+  const statusChecks = new StatusCheckHistory(store);
   const canCheck = (accountId: string, productId: string): boolean => {
     if (unauthenticatedDeployment) return true;
     const account = accountStore.findActive(accountId);
     return Boolean(account && !store.getProduct(productId).archivedAt && accountStore.allows(account,productId,"view") && accountStore.allows(account,productId,"operate"));
   };
-  app.addHook("onReady", async () => {
-    if (statusCheckTime === false) return;
-    let scheduledDay = "";
-    const clock = new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Shanghai",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hourCycle:"h23"});
-    const tick = () => {
-      const parts = clock.formatToParts(new Date());
-      const part = (name:string) => parts.find(p=>p.type===name)!.value;
-      const day = `${part("year")}-${part("month")}-${part("day")}`;
-      if (`${part("hour")}:${part("minute")}` < statusCheckTime || day === scheduledDay) return;
-      try { statusChecks.schedule(statusCheckTime,canCheck); scheduledDay = day; }
-      catch (error) { app.log.error({error},"Daily handover check could not be scheduled"); }
-    };
-    tick();
-    // This cheap local clock check does not inspect repositories or call GitHub.
-    // The durable day key allows one actual reconciliation per product/account/day.
-    statusCheckTimer = setInterval(tick,60_000); statusCheckTimer.unref();
-  });
   const attachmentStorage = new AttachmentStorage(options.attachmentsPath ?? "./data/attachments");
   const mcpUploads = new McpAttachmentUploads(store, attachmentStorage);
   const publicOrigin = new URL(options.publicOrigin ?? "http://127.0.0.1").origin;
@@ -979,7 +957,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.decorate("missionGoStore", store);
   app.decorate("missionGoAccounts", accountStore);
   app.addHook("onClose", async () => {
-    if (statusCheckTimer) clearInterval(statusCheckTimer);
     await Promise.allSettled(attentionClassifications.values());
     await widgetPush.close();
     await dingtalk.close();
@@ -3056,50 +3033,33 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.get("/api/v1/products/:productId/status-checks",async request => {
     const {productId} = request.params as {productId:string}; requireProductPermission(request,productId);
     const {limit,offset} = statusPage(request.query);
-    return {...statusChecks.list(productId,undefined,limit,offset), schedule:{time:statusCheckTime,timezone:"Asia/Shanghai",frequency:"daily"}};
+    return {...statusChecks.list(productId,undefined,limit,offset), schedule:{time:false,timezone:"Asia/Shanghai",frequency:"daily"}};
   });
-  app.post("/api/v1/products/:productId/status-checks",async request => {
-    const {productId} = request.params as {productId:string}; requireProductPermission(request,productId,"operate");
-    return statusChecks.request(productId,requireAccountId(request));
+  // Retain read-only history. Cached consoles and in-flight old node reports
+  // must never restart checks or correct a person's card after retirement.
+  const statusChecksRetired = (): never => {
+    throw new MissionGoError("status_checks_retired", "状态检查已取消，请使用条目的普通状态操作。", 410);
+  };
+  app.post("/api/v1/products/:productId/status-checks", async request => {
+    const {productId} = request.params as {productId:string};
+    requireProductPermission(request,productId,"operate");
+    return statusChecksRetired();
   });
   app.get("/api/v1/items/:itemKey/status-checks",async request => {
     const {itemKey} = request.params as {itemKey:string}; const key = requireItemPermission(request,itemKey);
-    return {...statusChecks.list(store.getWorkItem(key).productId,key),discovery:completionDiscovery.snapshot(key),schedule:{time:statusCheckTime,timezone:"Asia/Shanghai",frequency:"daily"}};
+    return {...statusChecks.list(store.getWorkItem(key).productId,key),discovery:null,schedule:{time:false,timezone:"Asia/Shanghai",frequency:"daily"}};
   });
-  app.post("/api/v1/items/:itemKey/status-checks",async request => {
-    const {itemKey} = request.params as {itemKey:string}; const key = requireItemPermission(request,itemKey,"operate");
-    const input=z.object({rediscover:z.boolean().optional()}).safeParse(request.body ?? {});
-    if (!input.success) throw invalidInput("Invalid discovery retry request.");
-    const result=statusChecks.request(store.getWorkItem(key).productId,requireAccountId(request),key);
-    if (result.missingAssociation) completionDiscovery.request(key,requireAccountId(request),input.data.rediscover===true);
-    return {...result,discovery:completionDiscovery.snapshot(key)};
-  });
-  app.put("/api/v1/items/:itemKey/handover",async request => {
-    const {itemKey} = request.params as {itemKey:string}; const key = requireItemPermission(request,itemKey,"operate");
-    const parsed = handoverRegistrationSchema.safeParse(request.body);
-    if (!parsed.success) throw invalidInput(parsed.error.issues.map(e=>e.message).join("; "));
-    const selection=z.object({discoveryId:z.uuid(),candidateIndex:z.number().int().min(0).max(29)}).optional().safeParse(objectBody(request.body).discoverySelection);
-    if (!selection.success) throw invalidInput("Invalid discovery selection.");
-    if (selection.data) {
-      if (!sessionUser(request)) throw new MissionGoError("authentication_required","Candidate confirmation requires a signed-in console user.",401);
-      completionDiscovery.assertSelection(key,selection.data.discoveryId,selection.data.candidateIndex,normalizeCompletion(parsed.data));
-    }
-    const handover=statusChecks.register(key,requireAccountId(request),parsed.data);
-    if (selection.data) statusChecks.request(store.getWorkItem(key).productId,requireAccountId(request),key);
-    return {handover};
-  });
-
-  app.post("/api/v1/items/:itemKey/handovers/:handoverId/confirm", async request => {
-    const user = sessionUser(request);
-    if (!user) throw new MissionGoError("authentication_required", "Human confirmation requires a signed-in console user.", 401);
-    const { itemKey, handoverId } = request.params as { itemKey: string; handoverId: string };
-    const key = requireItemPermission(request, itemKey);
-    if (statusChecks.snapshot(handoverId).itemKey !== key) throw notFound("Handover");
-    const parsed = humanConfirmationSchema.safeParse(request.body);
-    if (!parsed.success) throw invalidInput("Provide confirmation notes and the integration commit or every required artifact's release details.");
-    if (!parsed.data.expectedItemRevision || !parsed.data.expectedHandoverRevision || !parsed.data.idempotencyKey) throw invalidInput("Version and idempotency key are required.","transition_version_required");
-    return { handover: statusChecks.confirm(handoverId, user.id, parsed.data) };
-  });
+  for (const [method,url] of [
+    ["POST","/api/v1/items/:itemKey/status-checks"],
+    ["PUT","/api/v1/items/:itemKey/handover"],
+    ["POST","/api/v1/items/:itemKey/handovers/:handoverId/confirm"],
+  ] as const) {
+    app.route({method,url,handler: async request => {
+      const {itemKey} = request.params as {itemKey:string};
+      requireItemPermission(request,itemKey,"operate");
+      return statusChecksRetired();
+    }});
+  }
 
   app.post("/api/v1/node/register", async (request, reply) => {
     const principal = aiPrincipal(suppliedBearerToken(request));
@@ -3156,39 +3116,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (!canCheck(node.accountId,productId)) throw notFound("Product");
     return new ReleaseObservations(store).upload(productId,stringField(body,"repoPath")!,body.observation,node);
   });
-  app.post("/api/v1/node/completion-discovery/claim",async request => {
-    const node=requireNode(request);
-    return {job:completionDiscovery.claim(node.nodeId,node.accountId,productId=>{
-      requireNodeAccountPermission(node.accountId,productId,true);
-      if (!canCheck(node.accountId,productId)) throw notFound("Product");
-    })};
-  });
-  app.post("/api/v1/node/completion-discovery/:id/report",async request => {
-    const node=requireNode(request),{id}=request.params as {id:string};
-    const productId=completionDiscovery.productId(id);
-    requireNodeAccountPermission(node.accountId,productId,true);
-    if (!canCheck(node.accountId,productId)) throw notFound("Discovery");
-    const parsed=discoveryReportSchema.safeParse(request.body);
-    if (!parsed.success) throw invalidInput("Invalid discovery report.");
-    return {discovery:completionDiscovery.report(id,parsed.data,node.nodeId,node.accountId)};
-  });
-  app.post("/api/v1/node/status-checks/claim",async request => {
-    const node = requireNode(request);
-    return {job:statusChecks.claim(node.nodeId,node.accountId,productId => {
-      requireNodeAccountPermission(node.accountId,productId,true);
-      if (!canCheck(node.accountId,productId)) throw notFound("Product");
-    },objectBody(request.body ?? {}).supportsSharedReleases === true)};
-  });
-  app.post("/api/v1/node/status-checks/:handoverId/report",async request => {
-    const node = requireNode(request); const {handoverId} = request.params as {handoverId:string};
-    const body = objectBody(request.body);
-    const parsed = handoverEvidenceSchema.safeParse(body.evidence);
-    if (!parsed.success) throw invalidInput("Invalid handover evidence.");
-    const snapshot = statusChecks.snapshot(handoverId);
-    requireNodeAccountPermission(node.accountId,snapshot.productId,true);
-    if (!canCheck(node.accountId,snapshot.productId)) throw notFound("Handover");
-    return {handover:statusChecks.report(handoverId,parsed.data,{accountId:node.accountId,nodeId:node.nodeId,leaseToken:stringField(body,"leaseToken")!})};
-  });
+  // Old nodes can drain their poll loops, but receive no work. Reject queued
+  // reports even if they held a valid lease before the server was upgraded.
+  for (const url of ["/api/v1/node/completion-discovery/claim","/api/v1/node/status-checks/claim"]) {
+    app.post(url,async request => { requireNode(request); return {job:null}; });
+  }
+  for (const url of ["/api/v1/node/completion-discovery/:id/report","/api/v1/node/status-checks/:handoverId/report"]) {
+    app.post(url,async request => { requireNode(request); return statusChecksRetired(); });
+  }
 
   registerManagedExecutionRoutes(app, {
     db: store.database, enabled: options.managedExecution?.enabled === true,
@@ -3612,7 +3547,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       // nobody is looking at.
       products: nodeProducts(node.accountId),
       expectedSkillVersion,
-      supportsStatusChecks: true,
+      supportsStatusChecks: false,
       // AND-306: this account's live AI authorizations, so a node can learn
       // when the token inside an agent config expires without that token
       // ever travelling. The node matches the SHA-256 it computes locally
@@ -4289,7 +4224,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const to = enumField(body, "to", WORK_ITEM_STATUSES)!;
     const reason = enumField(body,"reason",TRANSITION_REASONS)!;
     requireTransitionPermission(request,itemKey,to,reason,body.expectedStatus as WorkItemStatus|undefined);
-    if (["development_complete","pending_verification"].includes(to) && reason !== "manual_override") throw conflict("delivery_evidence_required","请通过交付状态检查提报。");
     if (!unauthenticatedDeployment && (!Number.isSafeInteger(body.expectedRevision) || !body.idempotencyKey)) throw invalidInput("expectedRevision and idempotencyKey are required.","transition_version_required");
     const collaborationDisposition=z.object({mode:z.enum(["withdraw","keep"]),successorAccountId:z.string().min(1).max(100).optional()}).optional().safeParse(body.collaborationDisposition);
     if(!collaborationDisposition.success)throw invalidInput("协作处置格式无效。","collaboration_input_invalid");

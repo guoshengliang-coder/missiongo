@@ -3,12 +3,8 @@ import Foundation
 
 /// The protocol calls the loop makes, so a test can stand in for the server.
 public protocol NodeAPI: Sendable {
-    func statusCheckJournalScope() throws -> String?
+    func releaseObservationJournalScope() throws -> String?
     func uploadReleaseObservation(productId: String, repoPath: String, observation: ReleaseObservation) async throws
-    func claimCompletionDiscovery() async throws -> CompletionDiscoveryJob?
-    func reportCompletionDiscovery(id: String, leaseToken: String, result: CompletionDiscoveryResult) async throws
-    func claimStatusCheck() async throws -> StatusCheckJob?
-    func reportStatusCheck(id: String, leaseToken: String, evidence: HandoverEvidence) async throws
     func managedJobs() async throws -> [ManagedExecutionJob]
     func claimManaged(id: String, generation: Int) async throws -> ManagedExecutionIntent
     func permitManaged(id: String, generation: Int) async throws -> ManagedExecutionPermit
@@ -31,12 +27,8 @@ public extension NodeAPI {
     func permitDispatchStart(dispatchId: String) async throws -> Bool { true }
     func artifactJobs() async throws -> [AgentArtifactJob] { [] }
     func reportArtifact(id: String, result: AgentArtifactResult) async throws {}
-    func statusCheckJournalScope() throws -> String? { nil }
+    func releaseObservationJournalScope() throws -> String? { nil }
     func uploadReleaseObservation(productId: String, repoPath: String, observation: ReleaseObservation) async throws { throw LaunchError("Release upload unsupported") }
-    func claimCompletionDiscovery() async throws -> CompletionDiscoveryJob? { nil }
-    func reportCompletionDiscovery(id: String, leaseToken: String, result: CompletionDiscoveryResult) async throws {}
-    func claimStatusCheck() async throws -> StatusCheckJob? { nil }
-    func reportStatusCheck(id: String, leaseToken: String, evidence: HandoverEvidence) async throws {}
     func managedJobs() async throws -> [ManagedExecutionJob] { [] }
     func claimManaged(id: String, generation: Int) async throws -> ManagedExecutionIntent { throw LaunchError("Managed API unsupported") }
     func permitManaged(id: String, generation: Int) async throws -> ManagedExecutionPermit { throw LaunchError("Managed API unsupported") }
@@ -97,7 +89,6 @@ public struct NodeLoopState: Equatable, Sendable {
     /// The Skill version the server will require when the next dispatch starts.
     /// nil keeps compatibility with a server from before heartbeat sync.
     public var expectedSkillVersion: String?
-    public var supportsStatusChecks = false
     /// Most recent first, capped at `NodeLoop.recentLaunchLimit`.
     public var recentLaunches: [LocalLaunch] = []
 
@@ -325,9 +316,8 @@ public final class NodeLoop: @unchecked Sendable {
             async let interrupts: Void = interruptLoop(stop: stop, fatal: fatal)
             async let managed: Void = managedLoop(stop: stop)
             async let artifacts: Void = artifactLoop(stop: stop)
-            async let statusChecks: Void = statusCheckLoop(stop: stop)
             async let releases: Void = releaseObservationLoop(stop: stop)
-            _ = await (heartbeat, claim, sessions, interrupts, managed, artifacts, statusChecks, releases)
+            _ = await (heartbeat, claim, sessions, interrupts, managed, artifacts, releases)
         } onCancel: {
             stop.stop()
         }
@@ -364,36 +354,13 @@ public final class NodeLoop: @unchecked Sendable {
     }
 
     private func releaseObservationLoop(stop: StopSignal) async {
-        guard let scope = try? api.statusCheckJournalScope() else { return }
+        guard let scope = try? api.releaseObservationJournalScope() else { return }
         let worker = ReleaseObservationWorker(root: attachmentCacheRoot.deletingLastPathComponent()
             .appendingPathComponent("ReleaseDeliveryOutbox").appendingPathComponent(scope))
         while !stop.isStopped {
             let generation = stop.generation
-            if currentState.supportsStatusChecks {
-                do { try await worker.tick(api: api, mappedRepos: currentState.repos) }
-                catch { log("发布凭据上传队列暂不可用，稍后重试。") }
-            }
-            await stop.sleep(timing.heartbeatInterval, unlessWokenSince: generation)
-        }
-    }
-
-    private func statusCheckLoop(stop: StopSignal) async {
-        guard let scope = try? api.statusCheckJournalScope() else { return }
-        let worker = StatusCheckWorker(root: attachmentCacheRoot.deletingLastPathComponent()
-            .appendingPathComponent("StatusCheckOutbox").appendingPathComponent(scope))
-        while !stop.isStopped {
-            let generation = stop.generation
-            if !currentState.supportsStatusChecks {
-                await stop.sleep(timing.heartbeatInterval, unlessWokenSince: generation)
-                continue
-            }
             do { try await worker.tick(api: api, mappedRepos: currentState.repos) }
-            catch APIError.http(_, let status, _) where status == 404 {
-                // Older servers have no check queue. Retry after a later upgrade.
-                await stop.sleep(timing.heartbeatInterval, unlessWokenSince: generation)
-                continue
-            }
-            catch { log("状态检查暂未完成，将保留结果重试。") }
+            catch { log("发布凭据上传队列暂不可用，稍后重试。") }
             await stop.sleep(timing.heartbeatInterval, unlessWokenSince: generation)
         }
     }
@@ -440,7 +407,6 @@ public final class NodeLoop: @unchecked Sendable {
                         // an older server must not empty the repository menu.
                         if let products = beat.products { $0.products = products }
                         if let expected = beat.expectedSkillVersion { $0.expectedSkillVersion = expected }
-                        $0.supportsStatusChecks = beat.supportsStatusChecks == true
                     }
                 } catch {
                     self.handle(error, what: "上报心跳出错", stop: stop, fatal: fatal)

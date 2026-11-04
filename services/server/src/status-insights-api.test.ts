@@ -1,11 +1,10 @@
-import { scryptSync } from "node:crypto";
+import { randomUUID, scryptSync } from "node:crypto";
 import { mkdtemp,rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach,describe,expect,it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "./app.js";
-import { DispatchStore } from "./dispatch-store.js";
 import { createAiAccessToken } from "./admin-auth.js";
 const apps:FastifyInstance[]=[];const dirs:string[]=[];
 afterEach(async()=>{await Promise.all(apps.splice(0).map(a=>a.close()));await Promise.all(dirs.splice(0).map(d=>rm(d,{recursive:true,force:true})));});
@@ -71,25 +70,32 @@ describe("status-check and insight API permissions",()=>{
    expect(expanded.result?.structuredContent).toMatchObject({metric,total:metric==="period_end_backlog" ? 1 : 0});
   }
  });
- it("separates viewing results from triggering or editing a check",async()=>{
-  const {app,cookie,memberCookie,shared,hidden,item}=await seed();
-  expect((await app.inject({method:"GET",url:`/api/v1/products/${shared.id}/status-checks`,headers:{cookie:memberCookie}})).statusCode).toBe(200);
+ it("lets a signed-in operator complete and submit work through ordinary transitions",async()=>{
+  const {app,cookie,memberCookie,item}=await seed();
+  for(const [to,reason] of [["development_complete","resolution_submitted"],["pending_verification","release_verified"]] as const) {
+   const current=app.missionGoStore.getWorkItem(item.key);
+   const payload={to,reason,expectedRevision:current.revision,expectedStatus:current.status,idempotencyKey:randomUUID()};
+   expect((await app.inject({method:"POST",url:`/api/v1/items/${item.key}/transitions`,headers:{cookie:memberCookie},payload})).statusCode).not.toBe(200);
+   const response=await app.inject({method:"POST",url:`/api/v1/items/${item.key}/transitions`,headers:{cookie},payload});
+   expect(response.statusCode,response.body).toBe(200);expect(response.json().status).toBe(to);
+   const event=app.missionGoStore.getTimeline(item.key).at(-1)!;
+   expect(event.actorKind).toBe("human");expect(event.payload.handoverId).toBeUndefined();
+  }
+ });
+ it("keeps check history read-only and rejects retired mutations",async()=>{
+  const {app,cookie,memberCookie,shared,hidden,item,call}=await seed();
+  expect((await app.inject({method:"GET",url:`/api/v1/products/${shared.id}/status-checks`,headers:{cookie:memberCookie}})).json()).toMatchObject({items:[],schedule:{time:false}});
   expect((await app.inject({method:"GET",url:`/api/v1/products/${hidden.id}/status-checks`,headers:{cookie:memberCookie}})).statusCode).toBe(404);
   expect((await app.inject({method:"POST",url:`/api/v1/items/${item.key}/status-checks`,headers:{cookie:memberCookie}})).statusCode).toBe(404);
-  const registered=await app.inject({method:"PUT",url:`/api/v1/items/${item.key}/handover`,headers:{cookie},payload:{pullRequestUrl:"https://github.com/example/project/pull/1",requiredArtifacts:["web"]}});
-  expect(registered.statusCode).toBe(200);
-  const checked=await app.inject({method:"POST",url:`/api/v1/items/${item.key}/status-checks`,headers:{cookie}});
-  expect(checked.json()).toMatchObject({queued:1,items:[{status:"waiting_node"}]});
-  expect((await app.inject({method:"POST",url:"/api/v1/node/status-checks/claim",headers:{cookie}})).statusCode).toBe(401);
- });
- it("rejects malformed scopes and read-scope handover mutations",async()=>{
-  const {app,cookie,item,call}=await seed();
-  const invalid=await app.inject({method:"PUT",url:`/api/v1/items/${item.key}/handover`,headers:{cookie},payload:{pullRequestUrl:"file:///example",requiredArtifacts:[]}});
-  expect(invalid.statusCode).toBe(400);
-  const denied=await call("register_item_handover",{itemKey:item.key,pullRequestUrl:"https://github.com/example/project/pull/1",requiredArtifacts:["web"]});
-  expect(denied.error || denied.result?.isError).toBeTruthy();
-  const cannotOperate=await call("register_item_handover",{itemKey:item.key,pullRequestUrl:"https://github.com/example/project/pull/1",requiredArtifacts:["web"]},true);
-  expect(cannotOperate.error || cannotOperate.result?.isError).toBeTruthy();
+  for (const [method,url] of [["POST",`/api/v1/products/${shared.id}/status-checks`],["POST",`/api/v1/items/${item.key}/status-checks`],["PUT",`/api/v1/items/${item.key}/handover`],["POST",`/api/v1/items/${item.key}/handovers/old/confirm`]] as const) {
+   const response=await app.inject({method,url,headers:{cookie},payload:{}});
+   expect(response.statusCode).toBe(410);expect(response.json()).toMatchObject({code:"status_checks_retired"});
+  }
+  for(const name of ["register_item_handover","report_handover_evidence"]) {
+   const denied=await call(name,{itemKey:item.key},true);
+   expect(denied.error || denied.result?.isError).toBeTruthy();
+  }
+  expect(app.missionGoStore.getWorkItem(item.key).status).toBe("in_progress");
  });
 });
 
@@ -153,59 +159,5 @@ describe("saved batch API boundaries",()=>{
   expect(overview.body).not.toContain(item.title);expect(overview.body).not.toContain(shared.id);
   expect((await app.inject({method:"DELETE",url:`${path}/${id}`,headers:{cookie:memberCookie}})).statusCode).toBe(204);
   expect(app.missionGoStore.getWorkItem(item.key).id).toBe(item.id);
- });
-});
-
-
-describe("completion discovery API",()=>{
- it("queues from the status action, accepts node suggestions and checks only after human association",async()=>{
-  const {app,cookie,memberCookie,item,shared}=await seed();
-  const store=app.missionGoStore;
-  const c=store.createComment({itemKey:item.key,actorKind:"agent",bodyKind:"free",body:{text:"PR #385 已合并 main (60ca83a)"},idempotencyKey:"comment"});
-  const node=new DispatchStore(store.database).registerNode({accountId:"owner",installationId:"discovery-node",name:"Node"});
-  store.database.connection.prepare("INSERT INTO node_product_repos(id,node_id,product_id,repo_path,created_at,updated_at) VALUES (?,?,?,?,?,?)").run("mapping",node.nodeId,shared.id,"/example/repository",new Date().toISOString(),new Date().toISOString());
-  const url=`/api/v1/items/${item.key}/status-checks`;
-  expect((await app.inject({method:"POST",url,headers:{cookie:memberCookie}})).statusCode).toBe(404);
-  const queued=await app.inject({method:"POST",url,headers:{cookie}});
-  expect(queued.statusCode).toBe(200);expect(queued.json()).toMatchObject({missingAssociation:true,discovery:{status:"waiting_node"}});
-  const headers={authorization:`Bearer ${node.token}`};
-  const jobReply=await app.inject({method:"POST",url:"/api/v1/node/completion-discovery/claim",headers,payload:{}});
-  expect(jobReply.statusCode).toBe(200);const job=jobReply.json().job;
-  expect(job.hints).toContainEqual({kind:"github",value:"385",commentId:c.id});
-  const completion={kind:"github",url:"https://github.com/example/project/pull/385"};
-  const report=await app.inject({method:"POST",url:`/api/v1/node/completion-discovery/${job.id}/report`,headers,payload:{leaseToken:job.leaseToken,repository:"https://github.com/example/project",candidates:[{completion,title:"Fix",state:"merged",commentId:c.id}]}});
-  expect(report.statusCode).toBe(200);expect(store.getWorkItem(item.key).status).toBe("in_progress");
-  for (let n=0;n<2;n++) {
-   const repeated=await app.inject({method:"POST",url,headers:{cookie}});
-   expect(repeated.statusCode).toBe(200);
-   expect(repeated.json().discovery).toEqual(report.json().discovery);
-  }
-  expect((await app.inject({method:"POST",url:"/api/v1/node/completion-discovery/claim",headers,payload:{}})).json().job).toBeNull();
-  expect((await app.inject({method:"POST",url,headers:{cookie:memberCookie},payload:{rediscover:true}})).statusCode).toBe(404);
-  expect((await app.inject({method:"POST",url,headers:{cookie},payload:{rediscover:"yes"}})).statusCode).toBe(400);
-  const payload={completion,discoverySelection:{discoveryId:job.id,candidateIndex:0}};
-  const save=await app.inject({method:"PUT",url:`/api/v1/items/${item.key}/handover`,headers:{cookie},payload});
-  expect(save.statusCode,save.body).toBe(200);
-  const check=await app.inject({method:"POST",url:"/api/v1/node/status-checks/claim",headers,payload:{}});
-  expect(check.json().job).toMatchObject({itemKey:item.key,completion,status:"checking"});
-  expect(store.getWorkItem(item.key).status).toBe("in_progress");
- });
- it("explicit rediscovery clears old suggestions without invalidating an active retry lease",async()=>{
-  const {app,cookie,item,shared}=await seed();
-  const nodes=new DispatchStore(app.missionGoStore.database);
-  const node=nodes.registerNode({accountId:"owner",installationId:"retry-node",name:"Retry node"});
-  nodes.replaceRepos("owner",node.nodeId,[{productId:shared.id,repoPath:"/example/repository"}]);
-  const headers={authorization:`Bearer ${node.token}`},url=`/api/v1/items/${item.key}/status-checks`;
-  await app.inject({method:"POST",url,headers:{cookie}});
-  const job=(await app.inject({method:"POST",url:"/api/v1/node/completion-discovery/claim",headers,payload:{}})).json().job;
-  await app.inject({method:"POST",url:`/api/v1/node/completion-discovery/${job.id}/report`,headers,payload:{leaseToken:job.leaseToken,repository:"https://github.com/example/project",candidates:[]}});
-  const retry=await app.inject({method:"POST",url,headers:{cookie},payload:{rediscover:true}});
-  expect(retry.json().discovery).toMatchObject({status:"waiting_node",repository:null,candidates:[]});
-  const next=(await app.inject({method:"POST",url:"/api/v1/node/completion-discovery/claim",headers,payload:{}})).json().job;
-  expect(next.leaseToken).not.toBe(job.leaseToken);
-  const repeated=await app.inject({method:"POST",url,headers:{cookie},payload:{rediscover:true}});
-  expect(repeated.json().discovery.status).toBe("checking");
-  const report=await app.inject({method:"POST",url:`/api/v1/node/completion-discovery/${next.id}/report`,headers,payload:{leaseToken:next.leaseToken,repository:"https://github.com/example/project",candidates:[]}});
-  expect(report.statusCode).toBe(200);
  });
 });

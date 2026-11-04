@@ -181,10 +181,7 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(sent.request.value(forHTTPHeaderField:"Authorization"),"Bearer mgn_x")
         XCTAssertEqual(sent.request.timeoutInterval,APIClient.requestTimeout)
         XCTAssertEqual(jsonObject(sent.body)["productId"] as? String,"p1")
-        StubURLProtocol.install {_,_ in .response(status:200,body:"{\"job\":null}")}
-        let job = try await client().claimStatusCheck()
-        XCTAssertNil(job)
-        XCTAssertEqual(jsonObject(try XCTUnwrap(StubURLProtocol.recorded.first).body)["supportsSharedReleases"] as? Bool,true)
+
     }
 
     func testUnreadCountUsesNodeCredentialAndReadsExactCount() async throws {

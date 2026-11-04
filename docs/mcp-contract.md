@@ -74,7 +74,7 @@ MissionGo MCP 让经过鉴权的 AI 按用户给出的编号完整读取一个�
   `requiredArtifacts`。实际任务产物会自动加入产品只读清单，不要求先在设置声明。Skill 须先核实 PR/MR 已合并或本地提交已集成、仓库检查通过，
   并按当前产品仓库的实际 diff、构建和发布规则确定产物，不得套用其他仓库的路径映射。
   明确无需发布时允许 `requiredArtifacts: []`，但必须同时提供非空、最多 4,000 字符的 `noReleaseReason`，说明范围、依据和验证方式；非空产物列表不能同时带这个字段。原因随状态事件保存。
-  无法判断发布范围时省略 `requiredArtifacts`，集成核实后仍可进入开发完成，之后补充范围或由登录用户安排人工验证；空匹配不能作为无需发布的证明。明确无需发布的条目进入开发完成后由用户安排验证；当前自动交接工具仅处理实际发布，不伪造发布凭据。旧服务端拒绝新参数时须升级，不能虚填产物。
+  无法判断发布范围时省略 `requiredArtifacts`，集成核实后仍可进入开发完成，由登录用户安排人工验证；空匹配不能作为无需发布的证明。明确无需发布的条目进入开发完成后由用户安排验证；发布交接工具仅处理实际发布，不伪造发布凭据。旧服务端拒绝新参数时须升级，不能虚填产物。
 - `submit_for_verification`（同上）：只把「开发完成」推到「待验证」，要求完成依据与前次交接一致，
   `releases` 恰好覆盖非空的全部必需产物（沿用交接时记录的标识，产品之后改动清单不影响已交接的条目），
   并记录 `deployedCommit` 和 `receiptDigest`。发布会话先核实公开产物并写评论。
@@ -187,16 +187,13 @@ AI 写入的评论会成为下一次读取的上下文，所以来源必须可�
 死代码，比删掉更糟。`ai_executions` 与 `execution_leases` 两张表暂时留在库里，未被任何代码使用。
 
 
-## 状态交接与每日补查（AND-294 / AND-295）
+## 状态检查已取消
 
-- `register_item_handover` 在当前处理轮次保存完成依据和明确的产物范围。省略范围表示未知，且不阻止核实集成和开发完成；空数组必须附无需发布的理由。文件路径仅作范围建议。登记不会把条目直接标为已完成。
-- `report_handover_evidence` 先保存授权执行端核实的事实，再按规则推进开发完成、待验证。`releases` 是当前完整观察快照，提供时会替换之前的发布证据，不把已回滚的旧证据与新产物拼接。每项必须说明包含的合并提交、核验时间和凭据摘要。服务端没有独立验证代码托管平台的权限。
-- `get_item_status_checks` 只读返回交接、核验结果和来源。处理轮次变化时旧记录失效；最终验收始终由人工操作。新 MCP 写入口同时要求 OAuth write、产品 AI 可见范围和产品操作权限。
-- Web 的产品/条目 `status-checks` GET 读取结果，POST 手动核对；条目 `handover` PUT 明确确认关联和发布范围。GET 支持 limit（1–100）和 offset 分页。查看只需产品查看权限；触发和保存需要操作权限。
-- 服务端每日一次调度，`MISSIONGO_STATUS_CHECK_TIME` 配置北京时间 HH:mm，默认 09:00，off 关闭。平时只比较本地时钟；任务队列持久化，日键保证重启不重复触发。证据上报立即尝试交接。
-- macOS 节点通过自己的账号凭据领取待检查记录，只能在自己已映射的对应产品仓库核实。服务端按账号、产品操作权限、仓库映射和租约检查上报；租约过期或映射变化后必须重新核实。节点只运行固定 argv 的 git/gh/glab 只读查询，不 fetch、不 checkout、不执行服务端传来的命令，也不上传托管平台凭据。
-- 节点检查结果先写入按节点凭据隔离的本地 outbox，成功上报后删除。公开产物重新核对健康信息或文件哈希，提交包含关系按不可变提交对缓存。未登录、无权限、没有发布证据、节点离线分别保持可解释的等待/失败状态。
-- 发布证据保存在 Git common directory 的 `missiongo-release-evidence.json`，不进入 Git 跟踪文件。当前仓库的 release-receipt 流程会生成；其他产品由自己的发布流程生成 schemaVersion:1、releases 数组，每项含 artifact/version/sourceCommit/proof，proof 为 health（健康信息含 status=ok、release=来源提交）或 sha256（公开 HTTPS URL 和哈希）。通用落盘脚本位于 `/downloads/missiongo-handover.mjs`。单有版本文件不是发布成功证据。
+- 独立检查界面、每日调度、完成依据自动发现及节点自动校正已移除。`MISSIONGO_STATUS_CHECK_TIME` 不再生效。
+- MCP 不再提供关联与检查证据写入工具。正常交接继续使用 `submit_development_complete` 和 `submit_for_verification`，执行授权、集成依据与全部必需发布产物的要求不变。
+- 产品和条目的 `status-checks` GET 以及 `get_item_status_checks` 只读保留历史，返回自动检查关闭；历史记录不再影响当前卡片进度。
+- 旧控制台的检查 POST、交接 PUT、人工确认 POST 均返回 410 `status_checks_retired`。节点的检查/查找领取返回空任务，迟到上报返回 410，旧租约不能推进状态。权限校验仍生效。
+- 发布观察上传仅保存事实，不再排队。用户通过普通状态操作明确推进或退回卡片，最终验收只能由人决定。发布覆盖门禁和发布凭据校验继续执行。
 
 ## 项目指标查询（AND-296）
 
@@ -208,24 +205,18 @@ AI 写入的评论会成为下一次读取的上下文，所以来源必须可�
 
 ### GitHub、GitLab 与本地 Git 的交接
 
-`register_item_handover`、`submit_development_complete` 和 `submit_for_verification` 支持 `completion`：
+`submit_development_complete` 和 `submit_for_verification` 支持 `completion`：
 
 | kind | 字段 | 核实方式 |
 | --- | --- | --- |
 | github | url：HTTPS PR 链接 | 节点使用本机 gh 授权核实合并 |
 | gitlab | url：HTTPS MR 链接 | 节点使用对应实例的 glab 授权核实合并，支持自托管及子组 |
 | commit | commit：完整 SHA；targetBranch：本地目标分支 | 本地 Git 核实提交已包含在目标分支中，不要求 remote |
-| manual | commit：完整 SHA；description：交付说明 | 仅登录用户可以确认，AI 只能登记 |
+| manual（历史） | commit：完整 SHA；description：交付说明 | 只保留历史解析，AI 不能使用此方式交接 |
 
 旧 `pullRequestUrl` 仍可用于 GitHub/GitLab；同时给两个参数时必须指向同一依据。完成依据在开发交接后不能替换，返工须开始新轮次。本地提交的集成时间是实际核实时间；GitLab/本地发布来源的提交包含检查使用本地 Git 对象，缺失时等待人同步，不自动 fetch。
 
-人工确认入口为 `POST /api/v1/items/:itemKey/handovers/:handoverId/confirm`，要求网页登录会话及对应产品操作权限，操作员 Bearer、MCP 和节点凭据均不能替代：
-
-- `stage: integration`：完整 commit、非空 note，记录确认人并交接为开发完成。
-- `stage: release`：非空 note 和覆盖全部已登记产物的 releases（artifact/version/sourceCommit），记录人工发布依据并转待验证。可用于内网或离线交付。
-- 明确无需发布或尚未记录发布范围时，release 阶段传空 releases 和非空 note，表示人工安排验证，保留原发布范围状态，不伪造无需发布结论或发布凭据，仍不表示验收通过。已记录非空范围时仍须逐项覆盖。
-
-确认事件和状态事件均保留账号、依据与时间，不授予 AI 验收权。发布检查仍须覆盖条目登记的完整范围；产品只读清单不决定任务的发布范围；已有交接所需的证据继续有效。
+人工交付决定通过条目的普通状态操作记录账号与时间；旧状态检查的人工确认接口已取消。人工推进不会伪造 PR、集成提交、发布范围或发布凭据；需要自动化发布交接时仍由授权执行端核实并使用正常交接工具。
 
 产品设置只读展示产物记录，不再提供新增、删除、清空或 PUT release-artifacts 接口。新产品从空清单开始，任务交接登记的标识自动累积，旧配置继续保留。每次任务范围最多 20 个标识（字母开头，1–40 个字母、数字、下划线或短横线）。清单为空不阻断任务，也不证明无需发布；只有显式传空任务范围时才要求 noReleaseReason。
 

@@ -97,14 +97,8 @@ describe("AND-397 execution authorization recovery", () => {
           executionAuthorization: original.executionAuthorization, statusChanged: false });
         expect(f.snapshot()).toEqual(before);
       }
-      // A real status/handover call must work with the recovered credential.
+      // A real status call must work with the recovered credential.
       const recovered = await f.recover(input);
-      const registered = await f.call("register_item_handover", {
-        itemKey: f.item.key, executionAuthorization: recovered.structuredContent!.executionAuthorization,
-        completion: { kind: "commit", commit: "a".repeat(40), targetBranch: "main" },
-        requiredArtifacts: [], noReleaseReason: "Synthetic recovery regression",
-      });
-      expect(registered.isError ?? registered.error, JSON.stringify(registered)).toBeFalsy();
       const completed = await f.call("submit_development_complete", {
         itemKey: f.item.key, executionAuthorization: recovered.structuredContent!.executionAuthorization,
         completion: { kind: "commit", commit: "a".repeat(40), targetBranch: "main" },

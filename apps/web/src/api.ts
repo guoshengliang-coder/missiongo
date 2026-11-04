@@ -3,7 +3,6 @@ import type { CommentAudienceInput, CommentCandidate } from "@missiongo/domain";
 import type { ItemFilters } from "@missiongo/domain";
 import { appendItemFilters } from "./item-filters";
 import type { AgentArtifactBundle, AgentArtifactState } from "@missiongo/domain";
-import type { CompletionReference } from "@missiongo/contracts";
 import type { InsightQuery, InsightSummary, InsightDetails, InsightDetailSelection, InsightBatch, InsightBatchSummary, InsightBatchProgress } from "@missiongo/domain";
 import type { ManagedDecision, ManagedDecisionGuard } from "@missiongo/domain";
 import { attachmentPreviewPath, attachmentThumbnailPath } from "./attachment-thumbnail";
@@ -267,18 +266,6 @@ export interface Bootstrap {
   readonly nextBeforeSequence?: number;
 }
 
-export interface StatusCheckRecord {
-  revision?:number; itemRevision?:number; id: string; itemKey: string; productId: string; itemStatus: WorkItemStatus; pullRequestUrl: string; completion: CompletionReference;
-  requiredArtifacts: string[] | null; noReleaseReason: string | null; status: string; reason: string;
-  lastResultAt?: string | null; checkedAt: string | null; requestedAt: string | null; evidenceUpdatedAt: string; evidenceSource: string; evidenceReporter?: {accountId?:string;note?:string;recordedAt?:string};
-  evidence: { merged?: {commit: string; occurredAt: string}; releases?: Array<{artifact:string;version:string;sourceCommit:string;verifiedAt:string}> };
-}
-export interface CompletionCandidate { completion:CompletionReference;title:string;state:"merged"|"open"|"closed"|"integrated"|"unmerged";commentId?:string }
-export interface CompletionDiscovery { id:string;status:string;repository:string|null;candidates:CompletionCandidate[] }
-export interface DiscoverySelection { discoveryId:string;candidateIndex:number }
-export interface StatusCheckPage { discovery?:CompletionDiscovery|null; items: StatusCheckRecord[]; nextOffset?: number; queued?: number; missingAssociation?: boolean;
-  schedule?: {time:string|false;timezone:string;frequency:string} }
-
 function insightSearch(input: InsightQuery & {productIds?: string[]} & Partial<InsightDetailSelection>): string {
   const params = new URLSearchParams();
   for (const [key,value] of Object.entries(input)) {
@@ -331,20 +318,6 @@ export const api = {
   },
   projectInsightItems(input: InsightQuery & {productIds?: string[]} & InsightDetailSelection) {
     return request<InsightDetails>(`/api/v1/project-insights/items?${insightSearch(input)}`);
-  },
-  statusChecks(productId: string, itemKey?: string, offset = 0) {
-    return request<StatusCheckPage>(itemKey ? `/api/v1/items/${encodeURIComponent(itemKey)}/status-checks?offset=${offset}`
-      : `/api/v1/products/${encodeURIComponent(productId)}/status-checks?offset=${offset}`);
-  },
-  requestStatusCheck(productId: string, itemKey?: string, rediscover = false) {
-    return request<StatusCheckPage>(itemKey ? `/api/v1/items/${encodeURIComponent(itemKey)}/status-checks`
-      : `/api/v1/products/${encodeURIComponent(productId)}/status-checks`, {method:"POST",...(rediscover ? {body:JSON.stringify({rediscover:true})} : {})});
-  },
-  registerHandover(itemKey: string, input: {completion:CompletionReference;requiredArtifacts?:string[];noReleaseReason?:string;discoverySelection?:DiscoverySelection}) {
-    return request<{handover:StatusCheckRecord}>(`/api/v1/items/${encodeURIComponent(itemKey)}/handover`,{method:"PUT",body:JSON.stringify(input)});
-  },
-  confirmHandover(itemKey: string, handoverId: string, input: ({stage:"integration";commit:string;note:string} | {stage:"release";note:string;releases:Array<{artifact:string;version:string;sourceCommit:string}>}) & {expectedItemRevision?:number|undefined;expectedHandoverRevision?:number|undefined;idempotencyKey?:string}) {
-    return request<{handover:StatusCheckRecord}>(`/api/v1/items/${encodeURIComponent(itemKey)}/handovers/${encodeURIComponent(handoverId)}/confirm`, {method:"POST",body:JSON.stringify(input)});
   },
   getAiTitleSettings: () => request<{ configured: boolean; agentAttentionEnabled: boolean; model: string }>("/api/v1/ai/title-settings"),
   setAiTitleKey: (apiKey: string | null) => request<{ configured: boolean; agentAttentionEnabled: boolean; model: string }>("/api/v1/ai/title-settings", {

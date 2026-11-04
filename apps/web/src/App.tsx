@@ -31,7 +31,6 @@ import {useBeforeUnloadGuard} from "./unsaved-changes";
 import { statisticsIsOpen, statisticsUrl, statisticsExitUrl } from "./statistics-state";
 import { useOverlay, OverlayMenu } from "./overlay";
 import { Modal } from "./modal";
-import { StatusCheckButton, StatusCheckPanel } from "./status-check-panel";
 import { localizedErrorText } from "./error-text";
 import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type Dispatch as ReactDispatch, type FormEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type SetStateAction } from "react";
 import { useInfiniteQuery, useIsFetching, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -1657,7 +1656,6 @@ export function App() {
               {/* Nothing pushes changes to the console: items the SDK or an AI
                   creates elsewhere only show up on a refetch, so give people
                   one they can ask for. Counts come from the same query. */}
-              {selectedProduct && <StatusCheckButton productId={selectedProduct.id} canOperate={selectedProduct.access?.canOperate ?? true} />}
               <RefreshButton
                 refreshing={itemsQuery.isFetching}
                 onRefresh={() => queryClient.invalidateQueries({ queryKey: ["items"] })}
@@ -2556,7 +2554,6 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
   const secondaryActions = otherActions.filter((action) => action.tone !== "danger");
   const destructiveActions = otherActions.filter((action) => action.tone === "danger");
   const moreActionsRef = useRef<HTMLDetailsElement>(null);
-  const [statusChecksOpen,setStatusChecksOpen]=useState<boolean|"check">(false);
   const [transferring, setTransferring] = useState(false);
   const [noteAction, setNoteAction] = useState<TransitionAction | null>(null);
   const [transitionKeys]=useState(()=>new TransitionCommandKeys());
@@ -2579,8 +2576,7 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
   // kept in the browser.
   const startTransition = (action: TransitionAction) => {
     // Picking up waiting work asks how first: by hand, or through an AI (AND-68).
-    if (action.reason === "resolution_submitted" || action.reason === "release_verified") setStatusChecksOpen("check");
-    else if (isStartWork(item.status, action)) onStartWork(item);
+    if (isStartWork(item.status, action)) onStartWork(item);
     else if (action.reason === "manual_override" || transitionRequiresNote(item.status, action.to)) setNoteAction(action);
     else mutation.mutate({ action });
   };
@@ -2661,7 +2657,6 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
     </OverlayMenu>
     {/* Outside the menu on purpose: a closed <details> hides everything but its
         <summary>, and a <dialog> under a hidden ancestor never paints. */}
-    {statusChecksOpen && <StatusCheckPanel autoCheck={statusChecksOpen === "check"} productId={item.productId} itemKey={item.key} canOperate={item.access?.canOperate !== false} onClose={()=>setStatusChecksOpen(false)} />}
     {transferring && <TransferItemDialog item={item} onClose={() => setTransferring(false)} />}
     {noteAction && (
       <Modal
@@ -2831,7 +2826,6 @@ function DetailPane({
     };
   }, [itemKey, item?.key]);
   const [transferBuilderOpen, setTransferBuilderOpen] = useState(false);
-  const [statusChecksOpen, setStatusChecksOpen] = useState<boolean|"check">(false);
   const [collaborationAction,setCollaborationAction]=useState<"request"|"associate"|undefined>(undefined);
   const { toolbarRef, overflow: toolbarOverflow } = useToolbarOverflow();
   const moreActionsRef = useRef<HTMLDetailsElement>(null);
@@ -2843,7 +2837,6 @@ function DetailPane({
 
   useEffect(() => {
     setEditing(openInEdit);
-    setStatusChecksOpen(false);
   }, [itemKey, openInEdit]);
 
   useEffect(() => {
@@ -2916,8 +2909,7 @@ function DetailPane({
   const PrimaryIcon = TYPE_ICONS[item.type];
   // Same rule as the list row: the domain decides whether this move owes a reason.
   const startTransition = (action: TransitionAction) => {
-    if (action.reason === "resolution_submitted" || action.reason === "release_verified") setStatusChecksOpen("check");
-    else if (isStartWork(item.status, action)) onStartWork(item);
+    if (isStartWork(item.status, action)) onStartWork(item);
     else if (action.reason === "manual_override" || transitionRequiresNote(item.status, action.to)) setNoteAction(action);
     else transitionMutation.mutate({ action });
   };
@@ -3015,7 +3007,6 @@ function DetailPane({
                   <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); refreshItem(); }}><RefreshCw size={17} aria-hidden="true" />{t("refresh")}</button>
                   <button type="button" disabled={item.transferred || item.access?.canOperate === false} onClick={() => { moreActionsRef.current?.removeAttribute("open"); setEditing(true); }}><Pencil size={17} aria-hidden="true" />{t("edit")}</button>
                 </>}
-                <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); setStatusChecksOpen(true); }}><ClipboardCheck size={17} aria-hidden="true" />{t("statusChecks")}</button>
               </div>
               {secondaryActions.filter((action) => action.tone === "danger").map((action) => (
                 <div className="detail-action-group" key={`${action.to}-${action.reason}`}><button type="button" className="danger" disabled={transitionMutation.isPending} onClick={() => { moreActionsRef.current?.removeAttribute("open"); startTransition(action); }}><X size={17} aria-hidden="true" />{transitionLabel(action.label)}</button></div>
@@ -3251,7 +3242,6 @@ function DetailPane({
       {!item.transferred && accountId && <CommentComposer idPrefix={commentIdPrefix} key={`${accountId}:${item.key}`} item={item} draft={commentDraft} onDraftChange={updateCommentDraft} storageFailed={storageFailed} replyUnavailable={replyUnavailable}
         replyTo={replyTo} onLocateReply={()=>replyTo && locateComment(replyTo.id)} onCancelReply={()=>setReplyTo(null)} onPosted={refreshItem} onNotice={onNotice} />}
       {transferring && <TransferItemDialog item={item} onClose={() => setTransferring(false)} />}
-      {statusChecksOpen && <StatusCheckPanel autoCheck={statusChecksOpen === "check"} key={`status-checks:${item.key}`} productId={item.productId} itemKey={item.key} canOperate={!item.transferred && item.access?.canOperate !== false} onClose={() => setStatusChecksOpen(false)} />}
       {transferBuilderOpen && deliveryQuery.data && (
         <TransferBuilderModal itemKey={item.key} delivery={deliveryQuery.data} onClose={() => setTransferBuilderOpen(false)} />
       )}

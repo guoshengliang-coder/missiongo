@@ -5,7 +5,6 @@ import { createAiAccessToken, hashPassword } from "./admin-auth.js";
 import { DispatchStore } from "./dispatch-store.js";
 import { AgentSessionStore } from "./agent-session-store.js";
 import { BuilderHandovers } from "./builder-handovers.js";
-import { StatusChecks } from "./status-checks.js";
 import { ExternalAgentSessionStore } from "./external-agent-session-store.js";
 import type { FastifyInstance } from "fastify";
 
@@ -182,8 +181,6 @@ describe("Builder execution handover",()=>{
     const first=await f.mcp(f.a,"claim_item",{itemKey:item.key,agentId:"Old agent",dispatchId:d.id,idempotencyKey:"claim-original"});
     expect(first.isError).not.toBe(true);
     const oldCredential=first.structuredContent!.executionAuthorization;
-    const checks=new StatusChecks(f.store);
-    const oldEvidence=checks.register(item.key,f.a.id,{completion:{kind:"commit",commit:"a".repeat(40),targetBranch:"main"},requiredArtifacts:[],noReleaseReason:"Synthetic test"});
     f.transfer(item.key);f.snapshot(sessionId,f.stopCommand(d.id));
     const completion={kind:"commit",commit:"a".repeat(40),targetBranch:"main"};
     expect((await f.mcp(f.a,"submit_development_complete",{itemKey:item.key,completion,executionAuthorization:oldCredential,idempotencyKey:"late-old-agent"})).isError).toBe(true);
@@ -191,11 +188,9 @@ describe("Builder execution handover",()=>{
     const takeover=await f.mcp(f.b,"claim_item",{itemKey:item.key,agentId:"New agent",dispatchId:next.id,idempotencyKey:"claim-takeover"});
     expect(takeover.isError).not.toBe(true);expect(takeover.structuredContent!.statusChanged).toBe(false);
     const credential=takeover.structuredContent!.executionAuthorization;
-    const register={itemKey:item.key,completion,requiredArtifacts:[],noReleaseReason:"Synthetic test"};
-    expect((await f.mcp(f.b,"register_item_handover",register)).isError).toBe(true);
-    expect((await f.mcp(f.b,"register_item_handover",{...register,executionAuthorization:credential},"another-client")).isError).toBe(true);
-    expect((await f.mcp(f.b,"register_item_handover",{...register,executionAuthorization:credential})).isError).not.toBe(true);
-    checks.report(oldEvidence.id,{merged:{commit:"a".repeat(40),occurredAt:new Date().toISOString()}},{accountId:f.a.id});
+    const submit={itemKey:item.key,completion,requiredArtifacts:[],noReleaseReason:"Synthetic test",idempotencyKey:"takeover-development"};
+    expect((await f.mcp(f.b,"submit_development_complete",submit)).isError).toBe(true);
+    expect((await f.mcp(f.b,"submit_development_complete",{...submit,executionAuthorization:credential},"another-client")).isError).toBe(true);
     expect(f.store.getWorkItem(item.key).status).toBe("in_progress");
     // No physical process started on the new queued/delivered dispatch: simulate a definite launch failure.
     f.dispatches.recordDispatchResult({nodeId:f.bNode.nodeId,dispatchId:next.id,status:"failed"});
