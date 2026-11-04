@@ -85,7 +85,8 @@ export class ClaudeAdapter implements Adapter {
       this.requests = this.requests.filter((r) => r.requestId !== event.request_id); return;
     }
     if (event.type === "result") {
-      this.state.status = event.is_error && event.terminal_reason !== "aborted_streaming" ? "failed" : "idle";
+      const cancelled = ["aborted_streaming", "aborted_tools"].includes(event.terminal_reason);
+      this.state.status = event.is_error && !cancelled ? "failed" : "idle";
       this.state.turnActive = false; this.state.waitingForInput = false; this.requests = [];
     }
     if (["assistant", "user"].includes(event.type)) {

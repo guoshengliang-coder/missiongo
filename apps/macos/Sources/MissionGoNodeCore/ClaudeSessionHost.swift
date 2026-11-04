@@ -460,7 +460,7 @@ public struct ClaudeStreamSnapshot: Sendable {
             let terminalReason = value["terminal_reason"] as? String
             // interrupt() currently ends a turn with this SDK result. It is a
             // completed cancellation, not a broken session.
-            if terminalReason != "aborted_streaming",
+            if terminalReason != "aborted_streaming", terminalReason != "aborted_tools",
                value["is_error"] as? Bool == true || subtype?.hasPrefix("error") == true || terminalReason == "blocking_limit" {
                 let errors = (value["errors"] as? [String] ?? []).filter { !$0.isEmpty }
                 if !errors.isEmpty {

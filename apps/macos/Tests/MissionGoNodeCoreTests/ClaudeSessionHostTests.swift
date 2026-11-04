@@ -48,6 +48,16 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
         XCTAssertNil(snapshot.state.error)
     }
 
+    func testInterruptedToolWaitEndsWithoutBreakingTheSession() {
+        var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
+        snapshot.beginInitialTurn(id: "input-1")
+        snapshot.consume(["type": "result", "subtype": "error_during_execution",
+            "is_error": true, "terminal_reason": "aborted_tools"])
+        XCTAssertFalse(snapshot.state.turnActive)
+        XCTAssertEqual(snapshot.state.status, "idle")
+        XCTAssertNil(snapshot.state.error)
+    }
+
     func testCompactionProgressUpdatesOneCardAndReportsFailures() {
         var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
         let start: [String: Any] = ["type": "system", "subtype": "status", "status": "compacting"]

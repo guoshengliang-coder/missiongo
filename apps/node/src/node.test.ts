@@ -174,7 +174,7 @@ describe("AND-391 scoped native stops", () => {
     vi.spyOn(native.process, "write").mockImplementation(value => {
       expect(value.request.subtype).toBe("interrupt");
       queueMicrotask(() => native.event({ type: "control_response", response: { subtype: "success", request_id: value.request_id } }));
-      setTimeout(() => native.event({ type: "result", terminal_reason: "aborted_streaming" }), 100);
+      setTimeout(() => native.event({ type: "result", subtype: "error_during_execution", is_error: true, terminal_reason: "aborted_tools" }), 100);
     });
     const outcome = await adapter.stop({ id: "stop-native", kind: "interrupt", text: "stop", status: "delivering", turnId: "native-input" });
     expect(outcome).toMatchObject({ status: "idle", turnActive: false, waitingForInput: false });
