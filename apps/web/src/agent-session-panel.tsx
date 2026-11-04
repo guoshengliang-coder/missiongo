@@ -1,3 +1,4 @@
+import { AgentStopFeedback } from "./agent-stop-feedback.js";
 import { useState, useEffect, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -159,7 +160,9 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                 )}
               </AgentRunDetails>
               {session.data.lastError && <p className="inline-error">{session.data.lastError}</p>}
-              {command && (
+              <AgentStopFeedback stop={session.data.stopCommand ?? (command?.kind === "interrupt" ? command : undefined)}
+                latestCommand={command} turnActive={session.data.turnState?.turnActive ?? false} backgroundRunning={session.data.activities.length > 0} />
+              {command?.kind === "message" && (
                 <div className={`agent-session-command agent-session-command-${command.status}`}>
                   <span>
                     {command.status === "delivery_unknown" && t("agentSessionReplyDeliveryUnknown", { agent: agentName })}

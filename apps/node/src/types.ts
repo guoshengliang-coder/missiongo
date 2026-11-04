@@ -26,6 +26,7 @@ export interface Approval {
 }
 export interface Command {
   id: string; kind?: string; text: string; turnId?: string; status: string;
+  createdAt?: string;
   attachments?: { id: string; filename: string; sizeBytes: number }[];
 }
 export interface Session {
@@ -38,6 +39,7 @@ export interface Session {
 export interface Snapshot {
   status: "active" | "idle" | "suspended" | "stalled" | "unavailable" | "failed";
   messages: Message[]; activities?: { id: string; title: string; detail?: string }[];
+  stopConfirmed?: boolean;
   turnActive?: boolean; waitingForInput?: boolean; error?: string; model?: string; effort?: string;
   approval?: Approval; commandId?: string; commandStatus?: string; commandError?: string;
   sourceArchived?: boolean; sourceRestored?: boolean; sourceArchiveError?: string;
@@ -45,12 +47,14 @@ export interface Snapshot {
   approvalRetryId?: string; approvalRetryStatus?: string; approvalRetryError?: string;
 }
 export interface HostState {
-  dispatch: Dispatch; pid: number; sessionRef?: string; sessionName: string;
+  dispatch: Dispatch; pid: number; sessionRef?: string; sessionName: string; initialTurnId?: string;
   phase: "starting" | "launched" | "failed"; snapshot: Snapshot; launchError?: string;
-  commands: Record<string, { status: string; error?: string }>;
+  commands: Record<string, { status: string; error?: string; stopConfirmed?: boolean }>;
 }
 export interface Adapter {
+  readonly initialTurnId?: string;
   start(prompt: string): Promise<string>;
+  stop(command: Command): Promise<Snapshot>;
   snapshot(): Promise<Snapshot>;
   deliver(command: Command): Promise<void>;
   decide(decision: { id: string; choice: string }): Promise<void>;

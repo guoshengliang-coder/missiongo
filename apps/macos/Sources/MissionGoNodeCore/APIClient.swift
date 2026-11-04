@@ -436,6 +436,7 @@ public struct DispatchReport: Codable, Equatable, Sendable {
         case failed
         /// The server returns this same dispatch to its queue after a bounded delay.
         case retry
+        case cancelled
     }
 
     public let status: Status
@@ -447,13 +448,15 @@ public struct DispatchReport: Codable, Equatable, Sendable {
     public let failureStage: String?
     public let retryAfterSeconds: Int?
     public let diagnosticSnapshot: DispatchDiagnosticSnapshot?
+    public let initialTurnId: String?
 
     public init(
         status: Status, sessionName: String? = nil, sessionUrl: String? = nil,
         sessionRef: String? = nil, error: String? = nil,
         failureCode: String? = nil, failureStage: String? = nil,
-        retryAfterSeconds: Int? = nil, diagnosticSnapshot: DispatchDiagnosticSnapshot? = nil
+        retryAfterSeconds: Int? = nil, diagnosticSnapshot: DispatchDiagnosticSnapshot? = nil, initialTurnId: String? = nil
     ) {
+        self.initialTurnId = initialTurnId
         self.status = status
         self.sessionName = sessionName
         self.sessionUrl = sessionUrl
@@ -706,6 +709,7 @@ public struct AgentSessionQuestion: Codable, Equatable, Sendable {
     /// The console uses it to keep the chosen option highlighted and the
     /// controls disabled, so a answered card no longer reads as a fresh ask.
     public let answered: String?
+    public let withdrawn: Bool?
 
     public init(
         header: String? = nil,
@@ -717,8 +721,10 @@ public struct AgentSessionQuestion: Codable, Equatable, Sendable {
         kind: Kind? = nil,
         placeholder: String? = nil,
         custom: Bool? = nil,
-        answered: String? = nil
+        answered: String? = nil,
+        withdrawn: Bool? = nil
     ) {
+        self.withdrawn = withdrawn
         self.header = header
         self.title = title
         self.detail = detail
@@ -771,6 +777,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     public private(set) var lastProgressAt: String?
     /// Opaque digest of visible source execution metadata; never raw tool arguments or output.
     public private(set) var progressRevision: String?
+    public let stopConfirmed: Bool?
     public let status: String
     public let messages: [AgentSessionMessage]
     public private(set) var activities: [AgentSessionActivity]
@@ -818,10 +825,11 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     public let approvalRetryStatus: String?
     public let approvalRetryError: String?
 
-    public init(status: String, observedAt: String? = nil, lastProgressAt: String? = nil, progressRevision: String? = nil, messages: [AgentSessionMessage], activities: [AgentSessionActivity] = [], error: String? = nil, failure: CodexSessionFailure? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil, sourceArchiveError: String? = nil, sourceRestored: Bool? = nil, sessionUrl: String? = nil, clearSessionUrl: Bool? = nil, activityAt: String? = nil, mode: String? = nil, settingsSupport: [String]? = nil, model: String? = nil, effort: String? = nil, modelEndpoint: String? = nil, settingsRevision: Int? = nil, settingsError: String? = nil, turnActive: Bool? = nil, waitingForInput: Bool? = nil, turnStartedAt: String? = nil, lastOutputAt: String? = nil, thinkingStartedAt: String? = nil, thinkingTokens: Int? = nil, thinkingDurationSeconds: Int? = nil, approval: CodexApprovalSnapshot? = nil, approvalRetryId: String? = nil, approvalRetryStatus: String? = nil, approvalRetryError: String? = nil) {
+    public init(status: String, stopConfirmed: Bool? = nil, observedAt: String? = nil, lastProgressAt: String? = nil, progressRevision: String? = nil, messages: [AgentSessionMessage], activities: [AgentSessionActivity] = [], error: String? = nil, failure: CodexSessionFailure? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil, sourceArchiveError: String? = nil, sourceRestored: Bool? = nil, sessionUrl: String? = nil, clearSessionUrl: Bool? = nil, activityAt: String? = nil, mode: String? = nil, settingsSupport: [String]? = nil, model: String? = nil, effort: String? = nil, modelEndpoint: String? = nil, settingsRevision: Int? = nil, settingsError: String? = nil, turnActive: Bool? = nil, waitingForInput: Bool? = nil, turnStartedAt: String? = nil, lastOutputAt: String? = nil, thinkingStartedAt: String? = nil, thinkingTokens: Int? = nil, thinkingDurationSeconds: Int? = nil, approval: CodexApprovalSnapshot? = nil, approvalRetryId: String? = nil, approvalRetryStatus: String? = nil, approvalRetryError: String? = nil) {
         self.observedAt = observedAt
         self.lastProgressAt = lastProgressAt
         self.progressRevision = progressRevision
+        self.stopConfirmed = stopConfirmed
         self.status = status
         self.messages = messages
         self.activities = activities
@@ -857,7 +865,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     }
 
     public func reportingExternalSettings(supportedFields: [String], mode: String? = nil) -> AgentSessionReport {
-        AgentSessionReport(status: status, observedAt: observedAt, lastProgressAt: lastProgressAt, progressRevision: progressRevision,
+        AgentSessionReport(status: status, stopConfirmed: stopConfirmed, observedAt: observedAt, lastProgressAt: lastProgressAt, progressRevision: progressRevision,
             messages: messages, activities: activities, error: error, failure: failure,
             commandId: commandId, commandStatus: commandStatus, commandError: commandError,
             sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError, sourceRestored: sourceRestored,
@@ -897,7 +905,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     /// branch that decides status and commands need not repeat them.
     public func reportingSettings(mode: String? = nil, model: String?, effort: String?, modelEndpoint: String? = nil, settingsRevision: Int?, settingsError: String?, clearSessionUrl: Bool? = nil) -> AgentSessionReport {
         AgentSessionReport(
-            status: status, observedAt: observedAt, lastProgressAt: lastProgressAt, progressRevision: progressRevision, messages: messages, activities: activities, error: error, failure: failure,
+            status: status, stopConfirmed: stopConfirmed, observedAt: observedAt, lastProgressAt: lastProgressAt, progressRevision: progressRevision, messages: messages, activities: activities, error: error, failure: failure,
             commandId: commandId, commandStatus: commandStatus, commandError: commandError,
             sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError, sourceRestored: sourceRestored,
             sessionUrl: sessionUrl, clearSessionUrl: clearSessionUrl, activityAt: activityAt,
@@ -912,7 +920,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     public func reportingApproval(_ approval: CodexApprovalSnapshot?, retryId: String? = nil,
                                   retryStatus: String? = nil, retryError: String? = nil) -> AgentSessionReport {
         AgentSessionReport(
-            status: status, observedAt: observedAt, lastProgressAt: lastProgressAt, progressRevision: progressRevision, messages: messages, activities: activities, error: error, failure: failure,
+            status: status, stopConfirmed: stopConfirmed, observedAt: observedAt, lastProgressAt: lastProgressAt, progressRevision: progressRevision, messages: messages, activities: activities, error: error, failure: failure,
             commandId: commandId, commandStatus: commandStatus, commandError: commandError,
             sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError, sourceRestored: sourceRestored,
             sessionUrl: sessionUrl, clearSessionUrl: clearSessionUrl, activityAt: activityAt,
@@ -930,7 +938,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     /// forces the oldest history out (AND-181).
     public func replacingMessages(_ messages: [AgentSessionMessage]) -> AgentSessionReport {
         AgentSessionReport(
-            status: status, observedAt: observedAt, lastProgressAt: lastProgressAt, progressRevision: progressRevision, messages: messages, activities: activities, error: error, failure: failure,
+            status: status, stopConfirmed: stopConfirmed, observedAt: observedAt, lastProgressAt: lastProgressAt, progressRevision: progressRevision, messages: messages, activities: activities, error: error, failure: failure,
             commandId: commandId, commandStatus: commandStatus, commandError: commandError,
             sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError, sourceRestored: sourceRestored,
             sessionUrl: sessionUrl, clearSessionUrl: clearSessionUrl, activityAt: activityAt,
@@ -945,7 +953,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     public func reportingTurn(_ state: ClaudeHostState) -> AgentSessionReport {
         let running = status == "active" || status == "stalled"
         return AgentSessionReport(
-            status: status, observedAt: observedAt, lastProgressAt: lastProgressAt, progressRevision: progressRevision, messages: messages, activities: activities, error: error, failure: failure,
+            status: status, stopConfirmed: stopConfirmed, observedAt: observedAt, lastProgressAt: lastProgressAt, progressRevision: progressRevision, messages: messages, activities: activities, error: error, failure: failure,
             commandId: commandId, commandStatus: commandStatus, commandError: commandError,
             sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError, sourceRestored: sourceRestored,
             sessionUrl: sessionUrl, clearSessionUrl: clearSessionUrl, activityAt: activityAt,
@@ -1565,6 +1573,15 @@ public struct APIClient: Sendable {
         let response = try await send("POST", "/api/v1/node/managed-execution/\(APIClient.encodePathComponent(id))/report",
             body: observation, bearer: try nodeToken())
         return try decode(response, operation: "managed observation")
+    }
+
+    public func permitDispatchStart(dispatchId: String) async throws -> Bool {
+        struct Reply: Decodable { let allowed: Bool }
+        let path = "/api/v1/node/dispatches/\(APIClient.encodePathComponent(dispatchId))/permit-start"
+        let response = try await send("POST", path, body: [String:String](), bearer: try nodeToken())
+        try requireSuccess(response, operation: "确认派单启动")
+        let reply: Reply = try decode(response, operation: "确认派单启动")
+        return reply.allowed
     }
 
     public func claimNext(

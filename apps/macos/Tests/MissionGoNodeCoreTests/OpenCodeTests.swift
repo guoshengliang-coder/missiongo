@@ -23,6 +23,18 @@ private actor StubOpenCodeControl: OpenCodeControlling {
     func rejectPermission(_ id: String) { rejectedPermissionIDs.insert(id) }
     var promptError: Error?
     var promptCount = 0
+    var stopStates: [OpenCodeStopState] = []
+    var interruptCount = 0
+    var interruptError: Error?
+    var snapshotError: Error?
+    func configureStop(_ states: [OpenCodeStopState], interruptError: Error? = nil, snapshotError: Error? = nil) {
+        stopStates = states; self.interruptError = interruptError; self.snapshotError = snapshotError
+    }
+    func stopState(id: String) async throws -> OpenCodeStopState {
+        if !stopStates.isEmpty { return stopStates.removeFirst() }
+        let value = try await snapshot(id: id)
+        return OpenCodeStopState(active: value.status == "active", inputId: value.messages.last(where: { $0.role == "user" })?.sourceId)
+    }
     var snapshotQueue: [(status: String, messages: [AgentSessionMessage], failure: String?)] = []
 
     func setSnapshotStatus(_ status: String) { snapshotStatus = status }
@@ -61,13 +73,17 @@ private actor StubOpenCodeControl: OpenCodeControlling {
         lastPrompt = text
     }
     func snapshot(id: String) async throws -> OpenCodeSessionSnapshot {
+        if let snapshotError { throw snapshotError }
         if !snapshotQueue.isEmpty {
             let next = snapshotQueue.removeFirst()
             return OpenCodeSessionSnapshot(next.status, next.messages, next.failure)
         }
         return OpenCodeSessionSnapshot(snapshotStatus ?? "idle", snapshotMessages, snapshotFailure)
     }
-    func interrupt(id: String) async throws {}
+    func interrupt(id: String) async throws {
+        interruptCount += 1
+        if let interruptError { throw interruptError }
+    }
     func deleteSession(id: String) async throws {}
     func listModels() async throws -> OpenCodeModelCatalog { catalog }
     func sessionInfo(id: String) async throws -> (agent: String?, model: OpenCodeModelRef?) { info }
@@ -88,6 +104,48 @@ private actor StubOpenCodeControl: OpenCodeControlling {
 }
 
 final class OpenCodeTests: XCTestCase {
+    func testStopBypassesHistoryAndPermissionFailureAndConfirmsIdle() async throws {
+        let control = StubOpenCodeControl(mcpStatus: "connected")
+        await control.configureStop([.init(active: true, inputId: "input-1"), .init(active: true, inputId: "input-1"), .init(active: false, inputId: nil)], snapshotError: LaunchError("history unavailable"))
+        await control.setChoicesError(LaunchError("permissions unavailable"))
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(id: "s", agentKind: "opencode", sessionRef: "native", status: "unavailable",
+            command: AgentSessionCommand(id: "stop", kind: "interrupt", text: "stop", turnId: "input-1")))
+        XCTAssertEqual(report.commandStatus, "delivered")
+        XCTAssertEqual(report.status, "idle")
+        let count = await control.interruptCount
+        XCTAssertEqual(count, 1)
+    }
+    func testStopAckWhileStillRunningIsFailedNotDeliveryUnknown() async throws {
+        let control = StubOpenCodeControl(mcpStatus: "connected")
+        await control.configureStop(Array(repeating: .init(active: true, inputId: "input-1"), count: 3))
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(id: "s", agentKind: "opencode", sessionRef: "native", status: "active",
+            command: AgentSessionCommand(id: "stop", kind: "interrupt", text: "stop", turnId: "input-1")))
+        XCTAssertEqual(report.commandStatus, "failed")
+        XCTAssertEqual(report.status, "active")
+    }
+    func testLateStopNeverInterruptsANewerNativeInput() async throws {
+        let control = StubOpenCodeControl(mcpStatus: "connected")
+        await control.configureStop(Array(repeating: .init(active: true, inputId: "new-input"), count: 2))
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(id: "s", agentKind: "opencode", sessionRef: "native", status: "active",
+            command: AgentSessionCommand(id: "old-stop", kind: "interrupt", text: "stop", turnId: "old-input")))
+        XCTAssertEqual(report.commandStatus, "failed")
+        let count = await control.interruptCount
+        XCTAssertEqual(count, 0)
+    }
+    func testRestartedAdapterObservesButDoesNotReplayAJournaledStop() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = StopCommandJournal(root: root)
+        let control = StubOpenCodeControl(mcpStatus: "connected")
+        let session = NodeAgentSession(id: "s", agentKind: "opencode", sessionRef: "native", status: "active",
+            command: AgentSessionCommand(id: "stop", kind: "interrupt", text: "stop", turnId: "input-1"))
+        await control.configureStop(Array(repeating: .init(active: true, inputId: "input-1"), count: 6))
+        _ = try await OpenCodeLauncher(control: control, stopJournal: journal).synchronize(session)
+        _ = try await OpenCodeLauncher(control: control, stopJournal: journal).synchronize(session)
+        let count = await control.interruptCount
+        XCTAssertEqual(count, 1)
+    }
+
     func testInstalledV2HttpRoutesUsePatchRenameAndTopLevelPromptText() async throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: home) }

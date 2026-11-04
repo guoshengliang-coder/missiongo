@@ -1398,10 +1398,10 @@ describe("Dispatching a batch", () => {
 });
 
 describe("Claiming a dispatch on the node", () => {
-  async function queuedDispatch(aiProviderFetch?: typeof fetch) {
+  async function queuedDispatch(aiProviderFetch?: typeof fetch, agentKind: "codex" | "claude_code" | "opencode" = "claude_code") {
     const { app, cookie, databasePath } = await signedInApp(adminAccount(), aiProviderFetch);
     const node = await registeredNode(app);
-    await heartbeat(app, node.token);
+    await heartbeat(app, node.token, agentKind);
     const mission = await readyItem(app, cookie, "Mission GO", "AND");
     await app.inject({
       method: "PUT",
@@ -1413,10 +1413,95 @@ describe("Claiming a dispatch on the node", () => {
       method: "POST",
       url: "/api/v1/dispatches",
       headers: { cookie },
-      payload: { nodeId: node.nodeId, agentKind: "claude_code", mode: "plan", itemKeys: [mission.itemKey] },
+      payload: { nodeId: node.nodeId, agentKind, mode: "plan", itemKeys: [mission.itemKey] },
     });
     return { app, cookie, databasePath, node, mission, dispatchId: dispatch.json<{ id: string }>().id };
   }
+
+  describe("AND-391 durable stop lifecycle", () => {
+    const kinds = ["codex", "claude_code", "opencode"] as const;
+    async function started(kind: typeof kinds[number] = "claude_code") {
+      const f = await queuedDispatch(undefined, kind);
+      const headers = { authorization: `Bearer ${f.node.token}` };
+      await f.app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers });
+      const result = await f.app.inject({ method: "POST", url: `/api/v1/node/dispatches/${f.dispatchId}/result`, headers,
+        payload: { status: "launched", sessionRef: "native-stop-test", initialTurnId: "first-turn" } });
+      expect(result.statusCode).toBe(204);
+      const sessions = (await f.app.inject({ method: "GET", url: "/api/v1/node/agent-sessions", headers })).json().sessions;
+      const sessionId = sessions[0].id as string;
+      const snapshot = (payload: Record<string, unknown>) => f.app.inject({ method: "POST", url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`, headers, payload });
+      await snapshot({ status: "active", messages: [{ sourceId: "native-input", turnId: "first-turn", role: "user", text: "work" }] });
+      const stop = () => f.app.inject({ method: "POST", url: `/api/v1/dispatches/${f.dispatchId}/stop`, headers: { cookie: f.cookie } });
+      const reply = () => f.app.inject({ method: "POST", url: `/api/v1/agent-sessions/${sessionId}/commands`, headers: { cookie: f.cookie }, payload: { text: "continue explicitly" } });
+      return { ...f, headers, sessionId, snapshot, stop, reply };
+    }
+    it.each(kinds)("cancels %s after node claim but before launch, without starting native work", async kind => {
+      const f = await queuedDispatch(undefined, kind);
+      const headers = { authorization: `Bearer ${f.node.token}` };
+      await f.app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers });
+      const stop = await f.app.inject({ method: "POST", url: `/api/v1/dispatches/${f.dispatchId}/stop`, headers: { cookie: f.cookie } });
+      expect(stop.statusCode).toBe(202);
+      expect(stop.json()).toMatchObject({ command: { turnId: "startup", status: "queued" } });
+      for (let i=0;i<2;i++) expect((await f.app.inject({ method: "POST", url: `/api/v1/node/dispatches/${f.dispatchId}/permit-start`, headers })).json()).toEqual({ allowed: false });
+      const rows = (await f.app.inject({ method: "GET", url: "/api/v1/agent-sessions", headers: { cookie: f.cookie } })).json().sessions;
+      expect(rows[0]).toMatchObject({ dispatchStatus: "cancelled", command: { status: "delivered" } });
+    });
+    it.each(kinds)("binds an early %s stop to the launch receipt even before messages arrive", async kind => {
+      const f = await queuedDispatch(undefined, kind);
+      const headers = { authorization: `Bearer ${f.node.token}` };
+      await f.app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers });
+      expect((await f.app.inject({ method: "POST", url: `/api/v1/node/dispatches/${f.dispatchId}/permit-start`, headers })).json()).toEqual({ allowed: true });
+      await f.app.inject({ method: "POST", url: `/api/v1/dispatches/${f.dispatchId}/stop`, headers: { cookie: f.cookie } });
+      expect((await f.app.inject({ method: "POST", url: `/api/v1/node/dispatches/${f.dispatchId}/result`, headers,
+        payload: { status: "launched", sessionRef: "native-receipt", initialTurnId: "first-exact-input" } })).statusCode).toBe(204);
+      const rows = (await f.app.inject({ method: "GET", url: "/api/v1/node/agent-sessions", headers })).json().sessions;
+      expect(rows[0]).toMatchObject({ sessionRef: "native-receipt", command: { kind: "interrupt", turnId: "first-exact-input" } });
+    });
+    it.each(["delivering", "delivery_unknown"])("stops independently of a %s input and permits a new explicit message after confirmation", async status => {
+      const f = await started();
+      const message = (await f.reply()).json();
+      expect((await f.snapshot({ status: "active", messages: [], commandId: message.id, commandStatus: status })).statusCode).toBe(204);
+      const stop = await f.stop(); expect(stop.statusCode).toBe(202);
+      const command = stop.json().command;
+      expect((await f.stop()).json().command.id).toBe(command.id);
+      expect((await f.reply()).statusCode).toBe(409);
+      expect((await f.snapshot({ status: "idle", messages: [], commandId: command.id, commandStatus: "delivered", stopConfirmed: true, turnActive: false })).statusCode).toBe(204);
+      expect((await f.reply()).statusCode).toBe(201);
+    });
+    it("retains stop failure feedback and the original unknown input's recovery outlet", async () => {
+      const f = await started(); const message = (await f.reply()).json();
+      await f.snapshot({ status: "active", messages: [], commandId: message.id, commandStatus: "delivery_unknown" });
+      const stop = (await f.stop()).json().command;
+      await f.snapshot({ status: "unavailable", messages: [], commandId: stop.id, commandStatus: "delivery_unknown", commandError: "stopped unknown" });
+      const view = (await f.app.inject({ method: "GET", url: `/api/v1/agent-sessions/${f.sessionId}`, headers: { cookie: f.cookie } })).json();
+      expect(view).toMatchObject({ command: { id: message.id, status: "delivery_unknown" }, stopCommand: { id: stop.id, status: "failed" } });
+      expect((await f.stop()).statusCode).toBe(202);
+    });
+    it.each(["idle", "unavailable"])("accepts a bounded stop while source status is %s", async status => {
+      const f = await started();
+      await f.snapshot({ status, turnActive: true, waitingForInput: status === "idle", messages: [] });
+      expect((await f.stop()).statusCode).toBe(202);
+    });
+    it("does not treat a legacy delivery ACK as confirmed stop or release an unknown reply", async () => {
+      const f = await started(); const message = (await f.reply()).json();
+      await f.snapshot({ status: "active", messages: [], commandId: message.id, commandStatus: "delivery_unknown" });
+      const stop = (await f.stop()).json().command;
+      await f.snapshot({ status: "idle", messages: [], commandId: stop.id, commandStatus: "delivered", turnActive: false });
+      const view = (await f.app.inject({ method: "GET", url: `/api/v1/agent-sessions/${f.sessionId}`, headers: { cookie: f.cookie } })).json();
+      expect(view.stopCommand.stopConfirmed).not.toBe(true);
+      expect(view.command).toMatchObject({ id: message.id, status: "delivery_unknown" });
+      expect((await f.reply()).statusCode).toBe(409);
+    });
+    it("rejects contradictory confirmation while the foreground is active", async () => {
+      const f = await started(); const stop = (await f.stop()).json().command;
+      expect((await f.snapshot({ status: "active", messages: [], commandId: stop.id, commandStatus: "delivered", stopConfirmed: true, turnActive: true })).statusCode).toBe(400);
+    });
+    it("rejects a stale reply reservation once the independent stop fence exists", async () => {
+      const f = await started(); const message = (await f.reply()).json();
+      await f.stop();
+      expect((await f.snapshot({ status: "active", messages: [], commandId: message.id, commandStatus: "delivering" })).statusCode).toBe(409);
+    });
+  });
 
   it("hands the batch over once and then reports the session back", async () => {
     const { app, cookie, node, mission, dispatchId } = await queuedDispatch();
@@ -2928,7 +3013,7 @@ describe("Claiming a dispatch on the node", () => {
     expect(stop.statusCode).toBe(202);
     const command = stop.json<{ command: { kind: string; status: string; turnId?: string } }>().command;
     expect(command).toMatchObject({ kind: "interrupt", status: "queued" });
-    expect(command.turnId).toBeUndefined();
+    expect(command.turnId).toBe("startup");
     const interruptId = stop.json<{ command: { id: string } }>().command.id;
     // AND-213: the node has not polled the interrupt yet, so pressing stop
     // again must confirm the same queued command instead of a 409.
@@ -2948,7 +3033,7 @@ describe("Claiming a dispatch on the node", () => {
     });
   });
 
-  it("still refuses to stop a Claude Code session when no turn is visible", async () => {
+  it("persists a Claude startup stop before its first turn is visible", async () => {
     const { app, cookie } = await signedInApp();
     const node = await registeredNode(app);
     await heartbeat(app, node.token, "claude_code");
@@ -2997,8 +3082,8 @@ describe("Claiming a dispatch on the node", () => {
       url: `/api/v1/dispatches/${dispatchId}/stop`,
       headers: { cookie },
     });
-    expect(stop.statusCode).toBe(409);
-    expect(stop.json()).toMatchObject({ code: "agent_turn_unavailable" });
+    expect(stop.statusCode).toBe(202);
+    expect(stop.json()).toMatchObject({ command: { kind: "interrupt", turnId: "startup", status: "queued" } });
   });
 
   it("reports Mac heartbeat health and stops then restores a manually archived Claude session", async () => {

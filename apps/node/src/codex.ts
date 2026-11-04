@@ -41,6 +41,7 @@ export function codexMessages(thread: Wire): Message[] {
 export class CodexAdapter implements Adapter {
   private rpc: JsonProcess;
   private ref = "";
+  initialTurnId?: string;
   private pending = new Map<string, { rpcId: unknown; snapshot: Approval; results: Map<string, unknown> }>();
   private closed = false;
   private lastApproval: Approval | undefined;
@@ -132,7 +133,8 @@ export class CodexAdapter implements Adapter {
     }
     if (this.localSkillVersion && account.skill?.expectedVersion !== this.localSkillVersion) throw new Error("Codex MissionGo Skill differs from the connected server; no task started");
     await this.rpc.call("thread/name/set", { threadId: this.ref, name: `${this.job.nodeName ?? "Linux"}-${this.job.itemKeys.join(",")}` });
-    await this.rpc.call("turn/start", this.turn(prompt, this.job.dispatchId));
+    const first = await this.rpc.call("turn/start", this.turn(prompt, this.job.dispatchId));
+    this.initialTurnId = first.turn?.id;
     return this.ref;
   }
   private turn(text: string, commandId: string): Wire {
@@ -149,13 +151,26 @@ export class CodexAdapter implements Adapter {
     return { status: active ? "active" : lastTurn?.status === "failed" ? "failed" : "idle", messages: codexMessages(thread), turnActive: active,
       waitingForInput: approval?.status === "pending", ...(approval ? { approval } : {}) };
   }
-  async deliver(command: Command): Promise<void> {
-    if (command.kind === "interrupt") {
-      const { thread } = await this.rpc.call("thread/read", { threadId: this.ref, includeTurns: true });
-      const turn = thread.turns?.find((t: Wire) => t.status === "inProgress");
-      if (turn) await this.rpc.call("turn/interrupt", { threadId: this.ref, turnId: turn.id });
-      return;
+  async stop(command: Command): Promise<Snapshot> {
+    const target = command.turnId === "startup" ? this.initialTurnId : command.turnId;
+    if (!target) throw new InputRejected("停止未发送：原回合标识不可用");
+    const observe = async () => {
+      const { thread } = await this.rpc.call("thread/read", { threadId: this.ref, includeTurns: false });
+      const state = typeof thread.status === "string" ? thread.status : thread.status?.type;
+      return state ?? ((thread.turns ?? []).some((t: Wire) => t.status === "inProgress") ? "active" : thread.turns ? "idle" : "unknown");
+    };
+    if (await observe().catch(() => "unknown") === "idle") return { status: "idle", turnActive: false, messages: [] };
+    for (const [key, request] of this.pending) if (request.snapshot.turnId === target) {
+      this.rpc.write({ id: request.rpcId, result: request.results.get("decline") ?? { decision: "decline" } });
+      this.pending.delete(key);
     }
+    let failure: unknown;
+    try { await this.rpc.call("turn/interrupt", { threadId: this.ref, turnId: target }); } catch (error) { failure = error; }
+    if (await observe().catch(() => "unknown") === "idle") return { status: "idle", turnActive: false, messages: [] };
+    throw new Error(`停止尚未确认：${failure instanceof Error ? failure.message : "来源未报告原回合结束"}`);
+  }
+  async deliver(command: Command): Promise<void> {
+    if (command.kind === "interrupt") { await this.stop(command); return; }
     if (this.pending.size) throw new Error("Answer the pending request explicitly before sending another message");
     const { thread } = await this.rpc.call("thread/read", { threadId: this.ref, includeTurns: true });
     const turn = thread.turns?.find((t: Wire) => t.status === "inProgress");

@@ -34,7 +34,7 @@ for (const phone of [false, true]) {
     const composer = page.locator(".agent-console-reply textarea");
     await expect(composer).toBeDisabled();
     await expect(page.locator(".agent-run-warning")).toHaveText("当前会话暂时不可用。");
-    await expect(page.locator(".agent-session-command")).toContainText("终止请求已排队；尚未确认原回合停止");
+    await expect(page.locator(".agent-session-command")).toContainText("停止请求已排队；尚未确认原回合停止");
     await expect(page.getByText(/排队回复会在|回复仍在排队/)).toHaveCount(0);
     commandStatus = "failed";
     await page.reload();

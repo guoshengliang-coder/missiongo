@@ -64,6 +64,7 @@ it("reconnects the original detached host after a node restart and never replays
       if (!claimed) { claimed = true; return Response.json(dispatch); }
       await delay(25); return new Response(null, { status: 204 });
     }
+    if (path.endsWith("/permit-start")) return Response.json({ allowed: true });
     if (path.endsWith("/result")) { ref = body.sessionRef; return new Response(null, { status: 204 }); }
     if (path.endsWith("/node/agent-sessions")) return Response.json({ sessions: ref ? [{ id: "session", dispatchId: "cycle", agentKind: "claude_code", sessionRef: ref, occupiesExecutionSlot: false,
       ...(!delivered || replay ? { command: { id: "reply-unique", status: "queued", text: "single reply" } } : {}) }] : [] });

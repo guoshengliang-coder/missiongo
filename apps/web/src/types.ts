@@ -516,6 +516,7 @@ export interface AgentSessionCommand {
   readonly text: string;
   readonly attachments?: readonly AgentSessionAttachment[];
   readonly turnId?: string;
+  readonly stopConfirmed?: boolean;
   readonly status: "queued" | "delivering" | "delivery_unknown" | "delivered" | "failed" | "cancelled";
   readonly error?: string;
   readonly createdAt: string;
@@ -562,6 +563,7 @@ export interface AgentSession {
   readonly activities: readonly AgentSessionActivity[];
   readonly turnState?: AgentSessionTurnState;
   readonly command?: AgentSessionCommand;
+  readonly stopCommand?: AgentSessionCommand;
   readonly approval?: AgentApproval;
   readonly canReply: boolean;
   readonly canResolveDelivery: boolean;
@@ -613,6 +615,7 @@ export interface AgentSessionSummary {
   }[];
   readonly latestMessage?: Pick<AgentSessionMessage, "role" | "text">;
   readonly command?: AgentSessionCommand;
+  readonly stopCommand?: AgentSessionCommand;
   readonly approval?: AgentApproval;
   readonly activities: readonly AgentSessionActivity[];
   readonly turnState?: AgentSessionTurnState;

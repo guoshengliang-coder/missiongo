@@ -86,6 +86,7 @@ export interface AgentSessionCommand {
   readonly text: string;
   readonly attachments?: readonly AgentSessionAttachment[];
   readonly turnId?: string;
+  readonly stopConfirmed?: boolean;
   readonly status: AgentSessionCommandStatus;
   readonly error?: string;
   readonly createdAt: string;
@@ -127,6 +128,7 @@ export interface AgentSessionSnapshot {
   readonly activities: readonly AgentSessionActivity[];
   readonly turnState: AgentSessionTurnState;
   readonly command?: AgentSessionCommand;
+  readonly stopCommand?: AgentSessionCommand;
   /** False once every linked item is done. */
   readonly replyable: boolean;
 }
@@ -175,6 +177,7 @@ export interface AgentSessionListItem {
   }[];
   readonly latestMessage?: Pick<AgentSessionMessageInput, "role" | "text">;
   readonly command?: AgentSessionCommand;
+  readonly stopCommand?: AgentSessionCommand;
   readonly attention: AgentSessionAttention;
   readonly needsAttention: boolean;
   /** Kept for clients shipped before the broader "needs attention" wording. */
@@ -360,6 +363,7 @@ interface SessionListRow {
 type SessionListSettingsRow = SessionListRow & SessionSettingsColumns;
 
 interface CommandRow {
+  stop_confirmed?: number;
   id: string;
   kind: "message" | "interrupt";
   text: string;
@@ -664,7 +668,7 @@ export class AgentSessionStore {
   private requireManualSession(sessionId: string): void {
     if (this.managedBinding(sessionId)) throw conflict("managed_session_control", "Use the scoped coordinator control for a managed session.");
   }
-  createForDispatch(input: { dispatchId: string; nodeId: string; sessionRef: string }): string {
+  createForDispatch(input: { dispatchId: string; nodeId: string; sessionRef: string; initialTurnId?: string }): string {
     assertDispatchExecution(this.database,input.dispatchId);
     const dispatch = this.database.connection
       .prepare("SELECT agent_kind FROM dispatches WHERE id = ? AND node_id = ?")
@@ -680,6 +684,7 @@ export class AgentSessionStore {
     if (existing) {
       this.database.connection.prepare("UPDATE agent_sessions SET agent_session_ref=?,status='active' WHERE id=? AND agent_session_ref=?")
         .run(sessionRef,existing.id,`pending:${input.dispatchId}`);
+      this.bindStartupStop(existing.id, input.initialTurnId);
       return existing.id;
     }
     const id = randomUUID();
@@ -691,6 +696,7 @@ export class AgentSessionStore {
          VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
       )
       .run(id, input.dispatchId, input.nodeId, dispatch.agent_kind, sessionRef, now, now, now);
+    this.bindStartupStop(id, input.initialTurnId);
     return id;
   }
 
@@ -719,6 +725,7 @@ export class AgentSessionStore {
         phase: string | null; text: string; questions_json: string | null; occurred_at: string;
       }>;
     const command = this.latestCommand(sessionId);
+    const stopCommand = this.latestStop(sessionId);
     const turnState = JSON.parse(row.turn_state_json) as AgentSessionTurnState;
     const health = sessionHealth(offlineDegradedStatus(row.status, row.node_last_seen_at, Boolean(row.node_revoked_at)).status, row.archived_at ? {} : turnState);
     return {
@@ -750,6 +757,7 @@ export class AgentSessionStore {
       })),
       ...(this.attachments ? { attachmentMessages: this.attachmentMessages(sessionId) } : {}),
       ...(command ? { command: this.mapCommand(command) } : {}),
+      ...(stopCommand ? { stopCommand: this.mapCommand(stopCommand) } : {}),
       replyable: (!free || free.dispatch_status === "launched") && !dispatchExecutionRevoked(this.database,row.dispatch_id) && !this.managedBinding(sessionId) && !this.itemsCompleted(sessionId),
     };
   }
@@ -836,12 +844,19 @@ export class AgentSessionStore {
     }
     const commandBySession = new Map<string, CommandRow>();
     if (sessionIds.length) {
-      const batch = db.prepare(`SELECT session_id, id, kind, text, turn_id, status, error, created_at, delivered_at, delivering_at, cancelled_at FROM (
-        SELECT session_id, id, kind, text, turn_id, status, error, created_at, delivered_at, delivering_at, cancelled_at,
-          ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY created_at DESC, rowid DESC) AS rn
+      const batch = db.prepare(`SELECT session_id, id, kind, text, turn_id, stop_confirmed, status, error, created_at, delivered_at, delivering_at, cancelled_at FROM (
+        SELECT session_id, id, kind, text, turn_id, stop_confirmed, status, error, created_at, delivered_at, delivering_at, cancelled_at,
+          ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY CASE WHEN status IN ('queued','delivering','delivery_unknown') THEN CASE WHEN kind='interrupt' THEN 0 ELSE 1 END ELSE 2 END, created_at DESC, rowid DESC) AS rn
         FROM agent_session_commands WHERE session_id IN ${holes(sessionIds)}) WHERE rn = 1`)
         .all(...sessionIds) as unknown as Array<{ session_id: string } & CommandRow>;
       for (const command of batch) commandBySession.set(command.session_id, command);
+    }
+    const stopBySession = new Map<string, CommandRow>();
+    if (sessionIds.length) {
+      const stops = db.prepare(`SELECT * FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY created_at DESC,rowid DESC) AS rn
+        FROM agent_session_commands WHERE kind='interrupt' AND session_id IN ${holes(sessionIds)}) WHERE rn=1`)
+        .all(...sessionIds) as unknown as Array<{ session_id: string } & CommandRow>;
+      for (const stop of stops) stopBySession.set(stop.session_id, stop);
     }
     const attentionBySession = new Map<string, AttentionRow>();
     if (sessionIds.length) {
@@ -899,6 +914,7 @@ export class AgentSessionStore {
       const itemRows = itemRowsByDispatch.get(row.dispatch_id) ?? [];
       const message = row.session_id ? messageBySession.get(row.session_id) : undefined;
       const command = row.session_id ? commandBySession.get(row.session_id) : undefined;
+      const stopCommand = row.session_id ? stopBySession.get(row.session_id) : undefined;
       const pendingNativeFree = Boolean(free) && pendingNatives.has(row.dispatch_id);
       const binding = row.session_id ? bindingBySession.get(row.session_id) : undefined;
       const itemsCompleted = !free && row.session_id
@@ -1018,6 +1034,7 @@ export class AgentSessionStore {
         items: itemRows.map((item) => ({ key: item.item_key, title: item.title, productId: item.product_id })),
         ...(message ? { latestMessage: { role: message.role, text: message.text } } : {}),
         ...(command ? { command: this.mapCommand(command) } : {}),
+        ...(stopCommand ? { stopCommand: this.mapCommand(stopCommand) } : {}),
         attention: alertAttention,
         needsAttention,
         activities: row.session_activities_json
@@ -1029,8 +1046,8 @@ export class AgentSessionStore {
         waitingForReply: needsAttention,
         retryable: (["failed", "cancelled"].includes(row.dispatch_status) || deliveryTimedOut)
           && (free ? free.ready === 1 && ["failed", "cancelled"].includes(row.dispatch_status) && pendingNativeFree : itemRows.length > 0 && itemRows.every((item) => item.status === "ready")),
-        stoppable: row.dispatch_status === "queued"
-          || Boolean(row.session_id && (row.session_status === "active" || row.session_status === "stalled")),
+        stoppable: ["queued", "delivered"].includes(row.dispatch_status)
+          || Boolean(row.session_id && !binding && !itemsCompleted && row.session_status !== "suspended"),
         replyable: row.session_id && (!free || free.dispatch_status === "launched") ? !revokedDispatches.has(row.dispatch_id) && !binding && !itemsCompleted : false,
         settings: sessionSettings(
           row,
@@ -1282,54 +1299,62 @@ export class AgentSessionStore {
     });
   }
 
+  /** A durable intent exists even while launch has not registered a native ID. */
+  requestDispatchStop(accountId: string, dispatchId: string): AgentSessionCommand {
+    const dispatch = this.database.connection.prepare("SELECT node_id FROM dispatches WHERE id=? AND account_id=? AND status IN ('delivered','launched')")
+      .get(dispatchId, accountId) as { node_id: string } | undefined;
+    if (!dispatch) throw conflict("dispatch_not_stoppable", "This dispatch cannot be stopped.");
+    return this.database.transaction(() => {
+      const existing = this.database.connection.prepare("SELECT id FROM agent_sessions WHERE dispatch_id=?").get(dispatchId) as { id: string } | undefined;
+      const sessionId = existing?.id ?? this.createForDispatch({ dispatchId, nodeId: dispatch.node_id, sessionRef: `pending:${dispatchId}` });
+      return this.enqueueInterrupt(accountId, sessionId);
+    });
+  }
+
+  /** Node-only launch fence. A later stop is carried to the first native turn. */
+  permitDispatchStart(nodeId: string, dispatchId: string): boolean {
+    return this.database.transaction(() => {
+      const dispatch = this.database.connection.prepare("SELECT status FROM dispatches WHERE id=? AND node_id=?").get(dispatchId, nodeId) as { status: string } | undefined;
+      if (!dispatch) throw notFound("Dispatch");
+      if (dispatch.status === "cancelled") return false;
+      if (dispatch.status !== "delivered") throw conflict("dispatch_result_not_expected", "Dispatch is not awaiting launch.");
+      assertDispatchExecution(this.database, dispatchId);
+      const stop = this.database.connection.prepare(`SELECT c.id,s.id AS session_id FROM agent_session_commands c
+        JOIN agent_sessions s ON s.id=c.session_id WHERE s.dispatch_id=? AND c.kind='interrupt'
+        AND c.status IN ('queued','delivering','delivery_unknown')`).get(dispatchId) as { id: string; session_id: string } | undefined;
+      if (!stop) return true;
+      const now = new Date().toISOString();
+      this.database.connection.prepare("UPDATE dispatches SET status='cancelled',completed_at=?,error=? WHERE id=?")
+        .run(now, "已在启动前停止", dispatchId);
+      this.database.connection.prepare("UPDATE agent_sessions SET status='idle',updated_at=? WHERE id=?").run(now, stop.session_id);
+      this.database.connection.prepare("UPDATE agent_session_commands SET status='delivered',stop_confirmed=1,delivered_at=? WHERE id=?").run(now, stop.id);
+      return false;
+    });
+  }
+
+  private bindStartupStop(sessionId: string, turnId?: string): void {
+    if (!turnId || turnId === "startup") return;
+    this.database.connection.prepare("UPDATE agent_session_commands SET turn_id=? WHERE session_id=? AND kind='interrupt' AND turn_id='startup' AND status='queued'")
+      .run(turnId, sessionId);
+  }
+
   enqueueInterrupt(accountId: string, sessionId: string): AgentSessionCommand {
     this.requireManualSession(sessionId);
-    const session = this.database.connection
-      .prepare(
-        `SELECT s.id, s.status, s.archived_at, s.agent_kind FROM agent_sessions s JOIN dispatches d ON d.id = s.dispatch_id
-         WHERE s.id = ? AND d.account_id = ?`,
-      )
-      .get(sessionId, accountId) as unknown as {
-        id: string; status: AgentSessionStatus; archived_at: string | null; agent_kind: AgentKind;
-      } | undefined;
+    const session = this.database.connection.prepare(`SELECT s.id,s.status,s.archived_at,s.agent_kind,s.agent_session_ref
+      FROM agent_sessions s JOIN dispatches d ON d.id=s.dispatch_id WHERE s.id=? AND d.account_id=?`)
+      .get(sessionId, accountId) as { id: string; status: AgentSessionStatus; archived_at: string | null; agent_kind: AgentKind; agent_session_ref: string } | undefined;
     if (!session) throw notFound("Agent session");
     if (session.archived_at) throw conflict("agent_session_archived", "Restore this session before stopping it.");
-    if (session.status !== "active" && session.status !== "stalled") {
-      throw conflict("agent_not_running", "This agent session is not currently running.");
-    }
-    const pending = this.pendingCommand(sessionId);
-    if (pending?.kind === "interrupt") {
-      // AND-213: pressing stop again while the queued request waits for the
-      // Mac is a harmless confirmation, so return that command instead of a
-      // 409 the consoles would print as an English error bar. A stop whose
-      // delivery outcome is unknown stays rejected: nobody knows whether the
-      // Mac already acted on it, and session snapshots hide such commands,
-      // so echoing one back would only confuse the console.
-      if (pending.status !== "delivery_unknown") return this.mapCommand(pending);
-      throw conflict("agent_stop_pending", "This session already has a queued stop request.");
-    }
-    if (pending?.status === "delivering") {
-      throw conflict("agent_reply_delivering", "A reply is already being delivered; try stopping again shortly.");
-    }
-    if (pending?.status === "delivery_unknown") {
-      throw conflict("agent_reply_delivery_unknown", "Confirm the earlier reply before stopping this session.");
-    }
-    // Claude Code and Codex interrupts name the exact turn they may cut off, so
-    // a stop needs a visible turn identifier first. OpenCode interrupts the
-    // session by reference and its host reports no turn identifiers at all;
-    // demanding one there made every stop fail with agent_turn_unavailable.
-    const turnId = session.agent_kind === "opencode"
-      ? null
-      : (this.database.connection
-          .prepare(
-            `SELECT turn_id FROM agent_session_messages
-             WHERE session_id = ? AND turn_id IS NOT NULL
-             ORDER BY position DESC, observed_at DESC, rowid DESC LIMIT 1`,
-          )
-          .get(sessionId) as unknown as { turn_id: string } | undefined)?.turn_id ?? null;
-    if (!turnId && session.agent_kind !== "opencode") {
-      throw conflict("agent_turn_unavailable", "The active agent turn is not visible yet.");
-    }
+    const stop = this.database.connection.prepare(`SELECT * FROM agent_session_commands WHERE session_id=? AND kind='interrupt'
+      AND status IN ('queued','delivering','delivery_unknown') ORDER BY created_at DESC,rowid DESC LIMIT 1`).get(sessionId) as unknown as CommandRow | undefined;
+    if (stop) return this.mapCommand(stop);
+    const pending = this.database.connection.prepare(`SELECT * FROM agent_session_commands WHERE session_id=? AND kind='message'
+      AND status IN ('queued','delivering','delivery_unknown') LIMIT 1`).get(sessionId) as unknown as CommandRow | undefined;
+    const latest = this.database.connection.prepare(`SELECT turn_id,source_id FROM agent_session_messages
+      WHERE session_id=? AND (role='user' OR turn_id IS NOT NULL) ORDER BY position DESC,observed_at DESC,rowid DESC LIMIT 1`)
+      .get(sessionId) as { turn_id: string | null; source_id: string } | undefined;
+    // Session-scoped protocols bind to the native user-input identity too.
+    const turnId = latest ? (session.agent_kind === "opencode" ? latest.source_id : latest.turn_id) ?? "startup" : "startup";
     const id = randomUUID();
     const now = new Date().toISOString();
     this.database.transaction(() => {
@@ -1572,6 +1597,7 @@ export class AgentSessionStore {
     commandId?: string;
     commandStatus?: "delivering" | "delivery_unknown" | "delivered" | "failed";
     commandError?: string;
+    stopConfirmed?: boolean;
     sourceArchived?: boolean;
     /** The node tried to archive the source thread MissionGo asked it to and could not. */
     sourceArchiveError?: string;
@@ -1772,6 +1798,8 @@ export class AgentSessionStore {
     }
     const unreadEvent = snapshotMakesUnread(session.status, input.status, messages, storedBySource);
     this.database.transaction(() => {
+      const first = messages.find(message => message.role === "user");
+      this.bindStartupStop(input.sessionId, session.agent_kind === "opencode" ? first?.sourceId : first?.turnId ?? undefined);
       this.database.connection
         .prepare(
           `UPDATE agent_sessions
@@ -1952,9 +1980,17 @@ export class AgentSessionStore {
         // -- so it is ignored. A late settled report still overwrites the
         // timeout failure, so work the Mac really did finish is not recorded as
         // lost.
+        if (current.kind === "interrupt" && input.commandStatus === "delivery_unknown") {
+          input.commandStatus = "failed";
+          input.commandError = input.commandError || "停止尚未确认：请核实来源后重试。";
+        }
         const reaped = current.status === "failed" && current.error === COMMAND_DELIVERY_TIMEOUT_ERROR;
         if (input.commandStatus === "delivering") {
-          if (current.kind !== "interrupt") assertDispatchExecution(this.database,session.dispatch_id);
+          if (current.kind !== "interrupt") {
+            assertDispatchExecution(this.database,session.dispatch_id);
+            const stop = this.pendingCommand(input.sessionId);
+            if (stop?.kind === "interrupt") throw conflict("agent_stop_pending", "Stop is pending; input was not reserved.");
+          }
           const managed = this.managedBinding(input.sessionId);
           if (managed && (managed.stopRequested || managed.state === "unknown" || managed.state === "terminal")) {
             throw conflict("execution_stopped", "Managed input permission is no longer active.");
@@ -1999,6 +2035,14 @@ export class AgentSessionStore {
             );
           if (changed.changes === 0) {
             throw conflict("agent_reply_changed", "The queued reply no longer matches this session.");
+          }
+          if (current.kind === "interrupt" && input.commandStatus === "delivered" && input.stopConfirmed === true) {
+            if (input.turnState?.turnActive !== false) throw invalidInput("A confirmed stop needs an ended foreground turn.");
+            this.database.connection.prepare("UPDATE agent_session_commands SET stop_confirmed=1 WHERE id=?").run(input.commandId);
+            this.database.connection.prepare(`UPDATE agent_session_commands SET status='failed', error=?
+              WHERE session_id=? AND kind='message' AND status IN ('queued','delivering','delivery_unknown')
+                AND created_at <= (SELECT created_at FROM agent_session_commands WHERE id=?)`)
+              .run("当前回合已停止；此回复的执行结果未确认，不会自动重发。", input.sessionId, input.commandId);
           }
           // A pending reply held back the automatic archive; retry now it settled.
           if (input.commandStatus !== "delivery_unknown") {
@@ -2096,6 +2140,9 @@ export class AgentSessionStore {
            AND COALESCE(c.delivering_at, c.created_at) <= ?`,
       )
       .all(cutoff) as unknown as Array<{ dispatch_id: string }>;
+    this.database.connection.prepare(`UPDATE agent_session_commands SET status='failed',error=?
+      WHERE kind='interrupt' AND status='delivering' AND COALESCE(delivering_at,created_at)<=?`)
+      .run("停止尚未确认：节点没有回报结果，请核实来源后重试。", cutoff);
     this.database.connection.prepare(
       `UPDATE agent_session_commands SET status = 'delivery_unknown', error = ?
        WHERE status = 'delivering' AND COALESCE(delivering_at, created_at) <= ?
@@ -2114,10 +2161,10 @@ export class AgentSessionStore {
   private pendingCommand(sessionId: string): CommandRow | undefined {
     return this.database.connection
       .prepare(
-        `SELECT id, kind, text, turn_id, status, error, created_at, delivered_at, delivering_at, cancelled_at
+        `SELECT id, kind, text, turn_id, stop_confirmed, status, error, created_at, delivered_at, delivering_at, cancelled_at
          FROM agent_session_commands
          WHERE session_id = ? AND status IN ('queued', 'delivering', 'delivery_unknown')
-         ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+         ORDER BY kind = 'interrupt' DESC, created_at DESC, rowid DESC LIMIT 1`,
       )
       .get(sessionId) as unknown as CommandRow | undefined;
   }
@@ -2134,11 +2181,16 @@ export class AgentSessionStore {
     return rows.length > 0 && rows.every((row) => row.status === "done");
   }
 
+  private latestStop(sessionId: string): CommandRow | undefined {
+    return this.database.connection.prepare(`SELECT * FROM agent_session_commands WHERE session_id=? AND kind='interrupt'
+      ORDER BY created_at DESC,rowid DESC LIMIT 1`).get(sessionId) as unknown as CommandRow | undefined;
+  }
+
   private latestCommand(sessionId: string): CommandRow | undefined {
     return this.database.connection
       .prepare(
-        `SELECT id, kind, text, turn_id, status, error, created_at, delivered_at, delivering_at, cancelled_at
-         FROM agent_session_commands WHERE session_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+        `SELECT id, kind, text, turn_id, stop_confirmed, status, error, created_at, delivered_at, delivering_at, cancelled_at
+         FROM agent_session_commands WHERE session_id = ? ORDER BY CASE WHEN status IN ('queued','delivering','delivery_unknown') THEN CASE WHEN kind='interrupt' THEN 0 ELSE 1 END ELSE 2 END, created_at DESC, rowid DESC LIMIT 1`,
       )
       .get(sessionId) as unknown as CommandRow | undefined;
   }
@@ -2151,6 +2203,7 @@ export class AgentSessionStore {
       text: row.text,
       ...(attachments.length ? { attachments } : {}),
       ...(row.turn_id ? { turnId: row.turn_id } : {}),
+      ...(row.kind === "interrupt" && row.stop_confirmed === 1 ? { stopConfirmed: true } : {}),
       status: row.status,
       ...(row.error ? { error: row.error } : {}),
       createdAt: row.created_at,

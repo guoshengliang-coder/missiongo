@@ -214,6 +214,8 @@ final class FakeAppServer: @unchecked Sendable {
                     "capabilities": ["canComment": true, "writeTools": ["append_comment", "claim_item"]],
                     "skill": ["expectedVersion": "5.8.0"],
                 ]]]]
+            case "turn/start":
+                return [["jsonrpc": "2.0", "id": id, "result": ["turn": ["id": "turn-1"]]]]
             default:
                 return [["jsonrpc": "2.0", "id": id, "result": [:]]]
             }
@@ -554,7 +556,8 @@ final class CodexAppServerControlTests: XCTestCase {
 
     func testStartsANamedThreadSendsTheTurnAndDisconnects() async throws {
         let server = try FakeAppServer.happy()
-        let threadId = try await CodexAppServerControl(timeout: 5).startThread(request(socketPath: server.path))
+        let control = CodexAppServerControl(timeout: 5)
+        let threadId = try await control.startThread(request(socketPath: server.path))
         server.waitUntilDone()
 
         XCTAssertEqual(threadId, "01a09f35-d6fa-7eb2-9d90-1352cf2fb661")
@@ -567,6 +570,7 @@ final class CodexAppServerControlTests: XCTestCase {
         XCTAssertEqual(server.params(of: "thread/name/set")?["name"] as? String, "Mac mini-AND-1")
         XCTAssertEqual(server.params(of: "thread/name/set")?["threadId"] as? String, threadId)
         XCTAssertEqual(server.params(of: "turn/start")?["threadId"] as? String, threadId)
+        XCTAssertEqual(control.initialTurnId(threadId: threadId), "turn-1")
         // The approval request the server sent was left for the apps to answer.
         XCTAssertFalse(server.received.current.contains { $0.contains("\"id\":900") })
         XCTAssertTrue(server.clientClosed.current)
@@ -1566,6 +1570,24 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
 }
 
 final class CodexLauncherTests: XCTestCase {
+    func testRestartNeverReplaysAJournaledExactTurnStop() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = StopCommandJournal(root: root)
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = CodexThreadSnapshot(status: "active", messages: [])
+        let session = NodeAgentSession(id: "s", sessionRef: "thread-1", status: "active",
+            command: AgentSessionCommand(id: "stop-once", kind: "interrupt", text: "stop", turnId: "exact-old-turn"))
+        for _ in 0..<2 {
+            let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+                location: CodexLocation(codexHome: "/tmp/codex"), control: control, stopJournal: journal)
+            let report = try await launcher.synchronize(session)
+            XCTAssertEqual(report.commandStatus, "failed")
+        }
+        XCTAssertEqual(control.interruptions.current.count, 1)
+        XCTAssertEqual(control.interruptions.current.first?.1, "exact-old-turn")
+    }
+
     func testStopDoesNotReadHistoryAndConfirmsTheResult() async throws {
         let control = RecordingControl(threadId: "thread-1")
         control.readError = CodexControlError.timedOut(method: "thread/read")

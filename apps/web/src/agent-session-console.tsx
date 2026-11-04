@@ -1,3 +1,4 @@
+import { AgentStopFeedback } from "./agent-stop-feedback.js";
 import { ChatAttachments } from "./chat-attachments";
 import type { ReactNode } from "react";
 import { OverlayDialog } from "./overlay";
@@ -80,7 +81,7 @@ import { localizedErrorText } from "./error-text";
 import { MarkdownText } from "./markdown-text";
 import { AgentArtifactMarkdown } from "./agent-artifact-viewer";
 import { SessionLink } from "./session-link";
-import type { AgentSession, AgentSessionAttachment, AgentSessionCommand, AgentSessionStatus, AgentSessionSummary, WorkItemAttachment } from "./types";
+import type { AgentSession, AgentSessionAttachment, AgentSessionStatus, AgentSessionSummary, WorkItemAttachment } from "./types";
 import { AutoGrowTextarea } from "./auto-grow-textarea";
 import { mergeChatFiles } from "./agent-chat-files";
 import { FileDropOverlay } from "./file-drop-overlay";
@@ -153,24 +154,6 @@ function attentionLabel(session: AgentSessionSummary, t: ReturnType<typeof useI1
   if (session.attention.kind === "action") return t("agentAttentionAction");
   if (session.attention.kind === "instruction") return t("agentAttentionInstruction");
   return t("agentAttentionUncertain");
-}
-
-function commandStatusLabel(command: AgentSessionCommand, t: ReturnType<typeof useI18n>["t"], agentName: string): string {
-  if (command.kind === "interrupt") {
-    if (command.status === "queued") return t("agentSessionStopQueued");
-    if (command.status === "delivering") return t("agentSessionStopDelivering");
-    if (command.status === "delivered") return t("agentSessionStopDelivered");
-    if (command.status === "failed") return t("agentSessionStopFailed");
-    return t("agentSessionStopCancelled");
-  }
-  if (command.status === "queued") return t("agentSessionReplyQueued");
-  if (command.status === "delivering") return t("agentSessionReplyDelivering");
-  // The reply may have reached any agent the console runs, so the line names
-  // this session's own one rather than saying Codex (AND-253).
-  if (command.status === "delivery_unknown") return t("agentSessionReplyDeliveryUnknown", { agent: agentName });
-  if (command.status === "delivered") return t("agentSessionReplyDelivered");
-  if (command.status === "failed") return t("agentSessionReplyFailed");
-  return t("agentSessionReplyCancelled");
 }
 
 export function AgentSessionConsole({
@@ -1379,14 +1362,9 @@ export function AgentSessionConsole({
                 <p className="inline-error">{localizedErrorText(retryDispatch.error ?? stopDispatch.error, t)}</p>
               )}
               {archiveSession.isError && <p className="inline-error">{localizedErrorText(archiveSession.error, t)}</p>}
-              {command?.kind === "interrupt" && (
-                <div className={`agent-session-command agent-session-command-${command.status}`}>
-                  <span>
-                    {commandStatusLabel(command, t, agentName)}
-                    {command.error ? `: ${command.error}` : ""}
-                  </span>
-                </div>
-              )}
+              <AgentStopFeedback stop={sessionQuery.data?.stopCommand ?? selected.stopCommand ?? (command?.kind === "interrupt" ? command : undefined)}
+                latestCommand={command} turnActive={sessionQuery.data?.turnState?.turnActive ?? false}
+                backgroundRunning={(sessionQuery.data?.activities.length ?? 0) > 0} />
               {(selected.canReply || selected.replyBlockedReason === "starting") && selected.agentSessionId ? (
                 <form onSubmit={submit} onPaste={replyPaste} {...dropHandlers}>
                   {isDraggingFiles && <FileDropOverlay remaining={Math.max(0, 10 - replyFiles.length)} limitReachedText={t("agentChatTooManyFiles")} />}
