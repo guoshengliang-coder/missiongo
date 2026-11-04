@@ -17,6 +17,34 @@ permissions:
   contents: read
 
 jobs:
+  ui-plan:
+    runs-on: ubuntu-latest
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
+      audit: ${{ steps.plan.outputs.audit }}
+      visual: ${{ steps.plan.outputs.visual }}
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - run: npm ci
+      - name: Fetch the PR base
+        if: github.event_name == 'pull_request'
+        # Missing comparison evidence makes the planner choose full UI.
+        continue-on-error: true
+        env:
+          UI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: git fetch --no-tags origin "$UI_BASE_SHA"
+      - name: Select UI coverage
+        id: plan
+        env:
+          UI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          UI_UPDATE_SNAPSHOTS: ${{ github.event_name == 'workflow_dispatch' && inputs.update_ui_snapshots }}
+        run: node scripts/ui-test-plan.mjs
+
   linux-node:
     strategy:
       matrix:
@@ -55,11 +83,12 @@ jobs:
   # Each shard has its own server, database and account. Keep one worker per
   # runner: tests intentionally exercise account-wide notifications/settings.
   ui-audit:
-    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.update_ui_snapshots }}
+    needs: ui-plan
+    if: needs.ui-plan.outputs.audit == 'true'
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: ${{ fromJSON(needs.ui-plan.outputs.shards) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -72,7 +101,10 @@ jobs:
       - run: npx playwright install --with-deps --only-shell chromium
       - run: npm run build:types
       - name: Audit interface behavior
-        run: npm run test:ui -- --shard=${{ matrix.shard }}/4
+        env:
+          UI_TEST_PLAN: ${{ needs.ui-plan.outputs.plan }}
+          UI_SHARD: ${{ matrix.shard }}
+        run: node scripts/run-ui-tests.mjs --kind=audit --shard="$UI_SHARD"
       - uses: actions/upload-artifact@v5
         if: ${{ always() }}
         with:
@@ -85,6 +117,8 @@ jobs:
 
   # Capture against a fresh fixture, independently of the behavior shards.
   ui-visual:
+    needs: ui-plan
+    if: needs.ui-plan.outputs.visual == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -96,14 +130,10 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps --only-shell chromium
       - run: npm run build:types
-      - name: Compare screenshots
-        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.update_ui_snapshots }}
-        run: npm run test:ui:visual
-      - name: Rewrite screenshot baselines
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.update_ui_snapshots }}
-        # Refresh even images whose intentional changes fit inside the normal
-        # comparison tolerance; otherwise desktop headers can retain old UI.
-        run: npm run test:ui:visual -- --update-snapshots=all
+      - name: Compare or explicitly update screenshots
+        env:
+          UI_TEST_PLAN: ${{ needs.ui-plan.outputs.plan }}
+        run: node scripts/run-ui-tests.mjs --kind=visual
       - uses: actions/upload-artifact@v5
         if: ${{ always() }}
         with:
@@ -119,21 +149,21 @@ jobs:
   # cancelled or unexpectedly skipped shard must never produce a green `ui`.
   ui:
     if: ${{ always() }}
-    needs: [ui-audit, ui-visual]
+    needs: [ui-plan, ui-audit, ui-visual]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.13.0
       - name: Require all UI checks
         env:
-          AUDIT_RESULT: ${{ needs.ui-audit.result }}
-          VISUAL_RESULT: ${{ needs.ui-visual.result }}
-          SNAPSHOT_UPDATE: ${{ github.event_name == 'workflow_dispatch' && inputs.update_ui_snapshots }}
-        run: |
-          test "$VISUAL_RESULT" = success
-          if [ "$SNAPSHOT_UPDATE" = true ]; then
-            test "$AUDIT_RESULT" = skipped
-          else
-            test "$AUDIT_RESULT" = success
-          fi
+          UI_TEST_PLAN: ${{ needs.ui-plan.outputs.plan }}
+          UI_PLAN_RESULT: ${{ needs.ui-plan.result }}
+          UI_AUDIT_RESULT: ${{ needs.ui-audit.result }}
+          UI_VISUAL_RESULT: ${{ needs.ui-visual.result }}
+          UI_UPDATE_SNAPSHOTS: ${{ github.event_name == 'workflow_dispatch' && inputs.update_ui_snapshots }}
+        run: node scripts/run-ui-tests.mjs --kind=check
 
   android:
     runs-on: ubuntu-latest

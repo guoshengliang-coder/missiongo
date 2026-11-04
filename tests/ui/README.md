@@ -16,15 +16,46 @@
 
 ## CI 并行与耗时
 
-PR、main push 和普通手动运行仍执行全量 UI 测试，不按改动文件筛选：
+main push 和普通手动运行执行全量 UI 测试；PR 先生成变更影响计划：
+
+| PR 变更范围 | UI 执行范围 |
+|---|---|
+| 仅仓库根 Markdown、`docs/*.md`、原生客户端/SDK、未被产品导入的 Web 单元测试 | 跳过行为与截图任务 |
+| 已审查的独立功能边界及其私有依赖 | 相关专项 + 核心冒烟，单 runner；全部 30 张截图独立比对 |
+| 仅某个 UI 专项测试 | 该文件 + 核心冒烟；全部截图比对 |
+| 仅现有 Linux 截图基线 | 仅截图比对 |
+| App 主入口、共用样式/组件、权限、API、服务端、共享包、构建/CI/测试配置、删除或未知输入 | 四分片全量行为 + 全部截图 |
+
+计划出现在 `ui-plan` 的 Job Summary 中，包含模式、原因、选中的专项文件和提交。无法取得 PR base、
+无法解析导入、出现动态依赖或新的消费者时，回退全量；计划生成失败时，`ui` 不能通过。
+分片失败、取消、意外跳过，或 main 使用缩小范围的计划，也不能通过汇总门禁。
+
+功能边界和专项对应关系在 `impact-map.json`。当前只收窄统计、独立决策页、下载面板和 Agent 产物预览；
+沿实际静态导入、再导出和字面量动态导入追踪私有依赖，多个功能同时受影响时取并集。共享 URL、权限
+或数据辅助函数即使名称带某个功能，也可能仍直达 `App.tsx`，这类变更全量检查。
+增加边界时须审查消费者和跨入口专项，不能仅按名称前缀推断。修改映射本身也会触发全量。
+
+核心冒烟复用 `audit.spec.ts` 的完整视口/主题矩阵、`agent-console-enter.audit.spec.ts` 的消息输入
+交互和 `capture-permissions.audit.spec.ts` 的录入权限与草稿保护。没有缩减它们内部的断言或主题覆盖。
+
+全量模式下：
 
 - `ui-audit (1)` 到 `ui-audit (4)` 使用 `--shard=1/4` 到 `--shard=4/4`，按文件分片，各自启动独立的服务、数据库和账号。
 - 每个分片仍只有一个 worker，文件内按原顺序执行；不要直接开启 `fullyParallel` 或增加 worker，共用账号的通知计数、派单默认值等会互相影响。
-- `ui-visual` 独立执行全部截图比对，不等行为测试结束。手动勾选更新基线时，只运行截图生成。
+- `ui-visual` 独立执行全部截图比对，不等行为测试结束。手动勾选更新基线时，只运行截图生成，仍使用 `--update-snapshots=all`。
 - `ui` 汇总前两类任务，保留发布门禁检查名；行为测试失败、取消或意外跳过，均不能通过汇总检查。
 
 行为报告与附件分别在 `ui-audit-1` 到 `ui-audit-4`；截图基线与报告仍在 `ui-snapshots`，互不覆盖。
 完整报告包含每条测试耗时，可用于后续对比分片耗时和调整测试组织。
+
+本机查看当前分支的 PR 计划：
+
+```bash
+GITHUB_EVENT_NAME=pull_request UI_BASE_SHA="$(git rev-parse origin/main)" node scripts/ui-test-plan.mjs
+```
+
+原有 `npm run test:ui`、`npm run test:ui:visual` 始终保持全量；只有 CI 的 `run-ui-tests.mjs`
+按已验证的计划选择文件，并校验计划提交与当前 checkout 一致。
 
 本机只运行一个分片可用 `npm run test:ui -- --shard=1/4`。不要在同一 checkout 同时启动多个
 Playwright 命令：它们会覆盖 `.auth` 和报告；并行验证须使用独立 checkout 和不同测试端口。

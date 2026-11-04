@@ -1,0 +1,25 @@
+{
+  "smoke": ["audit.spec.ts", "agent-console-enter.audit.spec.ts", "capture-permissions.audit.spec.ts"],
+  "features": {
+    "statistics": {
+      "entry": "statistics-center.tsx",
+      "consumers": ["App.tsx"],
+      "tests": ["statistics.audit.spec.ts", "statistics-delivery.audit.spec.ts"]
+    },
+    "managed-decisions": {
+      "entry": "managed-decision-page.tsx",
+      "consumers": ["main.tsx"],
+      "tests": ["managed-decision.audit.spec.ts"]
+    },
+    "downloads": {
+      "entry": "downloads-panel.tsx",
+      "consumers": ["App.tsx"],
+      "tests": ["linux-download.audit.spec.ts"]
+    },
+    "agent-artifacts": {
+      "entry": "agent-artifact-viewer.tsx",
+      "consumers": ["agent-session-console.tsx", "agent-session-panel.tsx"],
+      "tests": ["agent-artifacts.audit.spec.ts", "and-352-media.audit.spec.ts", "and-371-session-feedback.audit.spec.ts", "and-377-380-console.audit.spec.ts", "external-attachments.audit.spec.ts", "overlay-contract.audit.spec.ts"]
+    }
+  }
+}
