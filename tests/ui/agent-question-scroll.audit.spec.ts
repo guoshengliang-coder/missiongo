@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import type { AgentSessionMessage } from "../../apps/web/src/types";
+import { advanceSessionDetailPoll } from "./polling";
 
 // AND-279: exercise both real reply surfaces against isolated session reads.
 const fixture = JSON.parse(readFileSync(
@@ -110,6 +111,7 @@ for (const viewport of [
     for (const surface of ["console", "panel"] as const) {
       for (const fail of [false, true]) {
         test(`${surface} locks question edits until a reply ${fail ? "fails" : "is delivered"} (AND-350)`, async ({ page }) => {
+          await page.clock.install();
           await page.addInitScript(() => localStorage.setItem("missiongo.locale", "zh-CN"));
           let releaseReply!: () => void;
           const wait = new Promise<void>((resolve) => { releaseReply = resolve; });
@@ -161,11 +163,10 @@ for (const viewport of [
             await otherOption.dispatchEvent("click");
             await expect(reply).toHaveValue("");
             // Observe the actual status poll before moving to the next stage.
-            await expect.poll(async () => {
-              const response = await page.waitForResponse((response) => response.request().method() === "GET"
-                && new URL(response.url()).pathname === `/api/v1/agent-sessions/${id}`);
-              return (await response.json()).command?.status;
-            }).toBe(status);
+            const nextPoll = page.waitForResponse((response) => response.request().method() === "GET"
+              && new URL(response.url()).pathname === `/api/v1/agent-sessions/${id}`);
+            await advanceSessionDetailPoll(page);
+            expect((await (await nextPoll).json()).command?.status).toBe(status);
           }
           const index = state.messages.findIndex((message) => message.id === "questions");
           const questionMessage = state.messages[index]!;
@@ -174,6 +175,7 @@ for (const viewport of [
           };
           state.messages.push({ id: "answer-received", role: "agent", text: "已收到回答", occurredAt: stamp });
           state.deliverReply();
+          await advanceSessionDetailPoll(page);
           await expect(area.getByText("已收到回答", { exact: true })).toBeVisible();
           await expect(reply).toBeEnabled();
           await expect(reply).toHaveValue("");

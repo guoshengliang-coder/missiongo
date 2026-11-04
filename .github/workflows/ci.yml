@@ -52,8 +52,16 @@ jobs:
           npm run check:styles -- --base "$DESIGN_BASE_SHA"
       - run: npm run check
 
-  ui:
+  # Each shard has its own server, database and account. Keep one worker per
+  # runner: tests intentionally exercise account-wide notifications/settings.
+  ui-audit:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.update_ui_snapshots }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -61,18 +69,35 @@ jobs:
           node-version: 22.13.0
           cache: npm
       - run: npm ci
-      # The headless shell only; the full browsers are 300MB this job never uses.
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install --with-deps --only-shell chromium
       - run: npm run build:types
-      # Measured checks first: they say what is wrong, while a screenshot only
-      # says that something is.
       - name: Audit interface behavior
-        # PRs and pushes always audit behavior. Explicit baseline generation
-        # only captures images; it is not a substitute for the PR audit.
-        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.update_ui_snapshots }}
-        run: npm run test:ui
+        run: npm run test:ui -- --shard=${{ matrix.shard }}/4
+      - uses: actions/upload-artifact@v5
+        if: ${{ always() }}
+        with:
+          name: ui-audit-${{ matrix.shard }}
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Capture against a fresh fixture, independently of the behavior shards.
+  ui-visual:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps --only-shell chromium
+      - run: npm run build:types
       - name: Compare screenshots
-        if: ${{ github.event_name != 'workflow_dispatch' }}
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.update_ui_snapshots }}
         run: npm run test:ui:visual
       - name: Rewrite screenshot baselines
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.update_ui_snapshots }}
@@ -89,6 +114,26 @@ jobs:
             test-results/
           retention-days: 7
           if-no-files-found: ignore
+
+  # Preserve the required check name used by branch/release gates. A failed,
+  # cancelled or unexpectedly skipped shard must never produce a green `ui`.
+  ui:
+    if: ${{ always() }}
+    needs: [ui-audit, ui-visual]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all UI checks
+        env:
+          AUDIT_RESULT: ${{ needs.ui-audit.result }}
+          VISUAL_RESULT: ${{ needs.ui-visual.result }}
+          SNAPSHOT_UPDATE: ${{ github.event_name == 'workflow_dispatch' && inputs.update_ui_snapshots }}
+        run: |
+          test "$VISUAL_RESULT" = success
+          if [ "$SNAPSHOT_UPDATE" = true ]; then
+            test "$AUDIT_RESULT" = skipped
+          else
+            test "$AUDIT_RESULT" = success
+          fi
 
   android:
     runs-on: ubuntu-latest

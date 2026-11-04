@@ -47,12 +47,14 @@ for (const width of [375,1440]) {
     const registered=await request.put(`/api/v1/items/${item.key}/handover`,{data:{completion:{kind:"github",url:"https://github.com/example/project/pull/42"},requiredArtifacts:["web"]}});
     expect(registered.ok()).toBe(true); const {handover}=await registered.json();
     await postItemCommand(request,`/api/v1/items/${item.key}/transitions`,{data:{to:"ready",reason:"released",note:"Adjust planning"}});
+    await page.clock.install();
     await page.setViewportSize({width,height:900}); await page.goto(`/?product=${product.id}&status=ready&item=${item.key}`);
     await expect(page.locator(".detail-toolbar .status-pill")).toHaveText("待处理");
     await expect(page.locator(".detail-scroll")).toContainText("等待合并核验");
     const confirmed=await postItemCommand(request,`/api/v1/items/${item.key}/handovers/${handover.id}/confirm`,{data:{stage:"integration",commit:"a".repeat(40),note:"Test fixture confirms reviewed integration"}});
     expect(confirmed.ok()).toBe(true);
     // The background result must arrive without a user refreshing the card.
+    await page.clock.fastForward(15_100);
     await expect(page.locator(".detail-toolbar .status-pill")).toHaveText("开发完成",{timeout:22_000});
     await expect(page.locator(".detail-scroll")).toContainText("等待发布核验");
     await page.locator(".detail-toolbar .detail-more-menu > summary").click();
