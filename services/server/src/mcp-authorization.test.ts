@@ -144,7 +144,7 @@ describe("MCP write-tool authorization", () => {
     // claiming, leases, and status transitions. Naming the members explicitly
     // means a new tool has to be placed on purpose rather than by where it
     // happened to be pasted.
-    expect(toolNamesInTier("comments")).toEqual(["prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "claim_item", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session", "register_item_handover", "report_handover_evidence"]);
+    expect(toolNamesInTier("comments")).toEqual(["prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session", "register_item_handover", "report_handover_evidence"]);
   });
 });
 
@@ -181,6 +181,7 @@ describe("MCP write tiers", () => {
     expect(server.toolInputSchemaJson("get_item_context")).toBeDefined();
     expect(server.toolInputSchemaJson("append_comment")).toBeUndefined();
     expect(server.toolInputSchemaJson("claim_item")).toBeUndefined();
+    expect(server.toolInputSchemaJson("recover_execution_authorization")).toBeUndefined();
     expect(server.toolInputSchemaJson("submit_development_complete")).toBeUndefined();
     expect(server.toolInputSchemaJson("submit_for_verification")).toBeUndefined();
     expect(server.toolInputSchemaJson("create_item")).toBeUndefined();
@@ -192,6 +193,7 @@ describe("MCP write tiers", () => {
     const server = await serverForTier("comments");
     expect(server.toolInputSchemaJson("append_comment")).toBeDefined();
     expect(server.toolInputSchemaJson("claim_item")).toBeDefined();
+    expect(server.toolInputSchemaJson("recover_execution_authorization")).toBeDefined();
     expect(server.toolInputSchemaJson("submit_development_complete")).toBeDefined();
     expect(server.toolInputSchemaJson("submit_for_verification")).toBeDefined();
     expect(server.toolInputSchemaJson("create_item")).toBeDefined();

@@ -46,9 +46,12 @@ export function assertExecutionAuthorization(database: MissionGoDatabase, itemId
   authorization?: string): void {
   assertBuilderExecution(database,itemId,accountId);
 
-  if (!authorization || !database.connection.prepare(`SELECT 1 FROM builder_execution_authorizations
+  if (!authorization) {
+    throw conflict("builder_execution_missing","缺少执行凭据。请用 recover_execution_authorization 和原会话身份恢复本轮领取授权，不要重新领取。");
+  }
+  if (!database.connection.prepare(`SELECT 1 FROM builder_execution_authorizations
     WHERE id=? AND item_id=? AND account_id=? AND client_id=? AND revoked=0 AND round_key=?`).get(authorization,itemId,accountId,clientId,deliveryRound(database,itemId,true))) {
-    throw conflict("builder_execution_revoked","执行凭据已失效或缺失。请使用新一轮领取返回的 executionAuthorization，不能沿用旧会话凭据。");
+    throw conflict("builder_execution_revoked","执行凭据已失效或不属于本轮授权。请停止状态写入，由用户核对执行归属；不要重新领取或更换会话绕过。");
   }
 }
 
