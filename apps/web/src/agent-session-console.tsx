@@ -988,6 +988,7 @@ export function AgentSessionConsole({
                   <span className="agent-console-session-copy">
                     <span className="agent-console-session-heading">
                       <strong>{sessionTitle(session, roundLabel)}</strong>
+                      {session.items.length === 0 && <span className="agent-console-unlinked-badge">{t("agentConsoleAssociationUnlinked")}</span>}
                       <time>{formatAgentMessageTime(session.activityAt ?? session.updatedAt, locale)}</time>
                     </span>
                     <small>{session.source === "external" ? t("agentExternalSource") : session.nodeName} · {agentLabel(session, t)}</small>
@@ -1013,7 +1014,7 @@ export function AgentSessionConsole({
               <BackButton className="agent-console-conversation-back" label={t("agentConsoleBackToSessions")} onClick={onBackToSessions} />
               <span className="agent-console-avatar"><AgentIcon kind={selected.agentKind} size={18} /></span>
               <div className="agent-console-heading">
-                <h2>{sessionTitle(selected, roundLabel)}</h2>
+                <h2>{sessionTitle(selected, roundLabel)}{selected.items.length === 0 && <span className="agent-console-unlinked-badge">{t("agentConsoleAssociationUnlinked")}</span>}</h2>
                 {/* The items this session is working on stay in the head, where
                     scrolling the conversation cannot lose them (AND-159). */}
                 {selected.items.length > 0 && <div className="agent-console-dispatch agent-console-dispatch-head">

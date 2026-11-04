@@ -6,7 +6,7 @@ const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.m
 
 for (const touch of [false, true]) for (const theme of ["light", "dark"] as const) test.describe(`project claims ${theme} ${touch ? "touch" : "mouse"}`, () => {
   test.use({ colorScheme: theme, hasTouch: touch, isMobile: touch });
-  test("keeps the project title, one running conversation, history and reply after linking multiple items", async ({ page }, info) => {
+  test("keeps the project name behind its linked keys, one running conversation, history and reply after linking multiple items", async ({ page }, info) => {
     const id = "project-conversation", stamp = new Date().toISOString();
     let items: AgentSessionSummary["items"] = [];
     let sent = "";
@@ -37,6 +37,8 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
     await expect(page.locator(".agent-console-heading h2")).toHaveText("这是什么问题？");
+    await expect(page.locator(".agent-console-heading h2 .agent-console-unlinked-badge")).toHaveText("无关联会话");
+    await expect(page.locator(".agent-console-session-heading .agent-console-unlinked-badge")).toHaveText("无关联会话");
     for (const linked of [
       [{ key: fixture.detailKey, title: "首个处理条目", productId: fixture.productId }],
       [{ key: fixture.detailKey, title: "首个处理条目", productId: fixture.productId }, { key: "EXAMPLE-2", title: "第二个处理条目", productId: fixture.productId }],
@@ -44,14 +46,17 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
       items = linked;
       await page.reload();
       await expect(page.locator(".agent-console-session")).toHaveCount(1);
-      await expect(page.locator(".agent-console-session-heading strong")).toHaveText("这是什么问题？");
+      const keys = linked.map(item => item.key).join("、");
+      await expect(page.locator(".agent-console-session-heading strong")).toHaveText(`${keys} · 这是什么问题？`);
+      await expect(page.locator(".agent-console-heading h2")).toHaveText(`${keys} · 这是什么问题？`);
+      await expect(page.locator(".agent-console-unlinked-badge")).toHaveCount(0);
       await expect(page.getByRole("button", { name: /^运行中 \d+$/ }).locator("small")).toHaveText("1");
       await expect(page.locator(".agent-console-dispatch-head button")).toHaveCount(items.length);
       await expect(page.getByText("原项目会话的消息历史", { exact: true })).toBeVisible();
       for (const width of [320, 520, 768, 1440]) for (const scale of ["small", "medium", "large"]) {
         await page.setViewportSize({ width, height: 900 });
         await page.evaluate(value => { document.documentElement.dataset.fontScale = value; }, scale);
-        await expect(page.locator(".agent-console-heading h2")).toHaveText("这是什么问题？");
+        await expect(page.locator(".agent-console-heading h2")).toHaveText(`${keys} · 这是什么问题？`);
         await expect(page.locator(".agent-console-reply textarea")).toBeVisible();
         expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
       }
