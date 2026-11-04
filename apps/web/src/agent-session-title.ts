@@ -37,13 +37,21 @@ export function compactItemKeys(keys: readonly string[]): string {
  * gives its own session. The first round stays unlabelled, and a caller that
  * has no wording for the number (or a session MissionGo did not dispatch) just
  * gets the old title.
+ *
+ * A project conversation (AND-395) keeps its own name but leads with the keys
+ * of the items linked while it ran, in the same place a dispatch puts them, so
+ * both kinds read the same way.
  */
 export function sessionTitle(
   session: Pick<AgentSessionSummary, "items" | "sessionName" | "id" | "round" | "productId">,
   roundLabel?: (round: number) => string,
 ): string {
   // Linking work does not turn a project conversation into a dispatched-item session.
-  if (session.productId) return session.sessionName ?? session.id;
+  if (session.productId) {
+    const name = session.sessionName ?? session.id;
+    const keys = compactItemKeys(session.items.map((item) => item.key));
+    return keys ? `${keys} · ${name}` : name;
+  }
   const keys = compactItemKeys(session.items.map((item) => item.key));
   const firstTitle = session.items[0]?.title;
   const title = firstTitle ? `${keys} · ${firstTitle}` : session.sessionName ?? session.id;
