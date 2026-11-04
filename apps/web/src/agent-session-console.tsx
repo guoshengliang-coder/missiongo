@@ -371,6 +371,11 @@ export function AgentSessionConsole({
       ? agentSessionDetailRefetchInterval(documentVisible, query.state.fetchFailureCount)
       : false,
   });
+  // List summaries arrive before the transcript. Reveal the whole conversation
+  // together, including approval/attention/recovery cards (AND-375). Cached
+  // detail stays visible during polling and refetch errors; dispatches without
+  // a native session have no detail request to wait for.
+  const conversationReady = !selected?.agentSessionId || Boolean(sessionQuery.data);
   const planApprovalLocks = useRef(new Set<string>());
   const send = useMutation({
     mutationFn: async ({ sessionId, text, files, planApprovalRevision }: { sessionId: string; text: string; files: readonly File[]; occurredAt: string; planApprovalRevision?: string }) => {
@@ -1028,6 +1033,7 @@ export function AgentSessionConsole({
               <div
                 ref={messagesRef}
                 className="agent-console-messages"
+                aria-busy={!conversationReady && sessionQuery.isFetching}
                 onScroll={(event) => {
                   const nearBottom = isNearMessageBottom(event.currentTarget);
                   setFollowLatest(nearBottom);
@@ -1037,6 +1043,13 @@ export function AgentSessionConsole({
                   }
                 }}
               >
+                {selected.agentSessionId && sessionQuery.isLoading && <div className="agent-console-empty" role="status" aria-label={t("agentSessionLoading")}><LoaderCircle className="spin" size={20} /></div>}
+                {sessionQuery.isError && <div className="inline-error" role="alert">
+                  <span>{localizedErrorText(sessionQuery.error, t)}</span>
+                  {!conversationReady && <button type="button" className="text-button" disabled={sessionQuery.isFetching}
+                    onClick={() => void sessionQuery.refetch()}>{t("retry")}</button>}
+                </div>}
+                {conversationReady && <>
                 {selected.source === "external" && (
                   <div className="agent-console-connection-banner" role="status">
                     <CircleAlert size={17} />
@@ -1079,12 +1092,10 @@ export function AgentSessionConsole({
                     </div>
                   </div>
                 )}
-                {selected.agentSessionId && sessionQuery.isLoading && <div className="agent-console-empty"><LoaderCircle className="spin" size={20} /></div>}
                 {sessionQuery.data?.managedExecution && <p className="agent-session-muted">
                   Hermes · {sessionQuery.data.managedExecution.role} · Run {sessionQuery.data.managedExecution.runId}
                   {" · "}{sessionQuery.data.managedExecution.stageId} / {sessionQuery.data.managedExecution.generation}
                 </p>}
-                {sessionQuery.isError && <p className="inline-error">{localizedErrorText(sessionQuery.error, t)}</p>}
                 {sessionQuery.data && visibleMessages.length === 0 && !outgoing && <p className="agent-session-muted">{t("agentSessionNoMessages")}</p>}
                 {!selected.agentSessionId && (
                   <div className="agent-console-dispatch-state">
@@ -1296,7 +1307,7 @@ export function AgentSessionConsole({
                     )}
                   </section>
                 )}
-                {selected.agentSessionId && !sessionQuery.isLoading && !sessionQuery.isError
+                {selected.agentSessionId && sessionQuery.data
                   && !(selected.source !== "external" && selected.agentKind === "codex" && sessionStatus === "failed") && (
                   <div className="agent-run-status" key={selected.id}>
                     {["stalled", "unavailable", "failed"].includes(sessionStatus) && <p className="agent-run-warning" role="alert">{activityText}</p>}
@@ -1341,6 +1352,7 @@ export function AgentSessionConsole({
                     </AgentRunDetails>
                   </div>
                 )}
+                </>}
               </div>
               {newMessageCount > 0 && (
                 <button type="button" className="agent-console-new-messages" onClick={() => scrollToLatest("smooth")}>
