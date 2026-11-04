@@ -496,13 +496,16 @@ export function AgentSessionConsole({
         queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }),
       ]);
     },
-    onSettled: (_data, error, input) => {
-      if (!error) window.requestAnimationFrame(() => {
-        if (replySessionIdRef.current === input.sessionId) document.querySelector<HTMLTextAreaElement>(".agent-console-reply textarea")?.focus();
-      });
-    },
   });
   const cancellingSelected = cancel.isPending && cancel.variables?.sessionId === replySessionId;
+  const recalledSessionId = cancel.isSuccess ? cancel.variables?.sessionId : undefined;
+  useEffect(() => {
+    // Mutation callbacks can run before React commits the enabled textarea.
+    // Focus only after that commit, and never steal focus from another conversation.
+    if (recalledSessionId && replySessionIdRef.current === recalledSessionId) {
+      document.querySelector<HTMLTextAreaElement>(".agent-console-reply textarea")?.focus();
+    }
+  }, [recalledSessionId, cancel.submittedAt]);
   const resolveDelivery = useMutation({
     mutationFn: ({ sessionId, commandId, outcome }: {
       sessionId: string; commandId: string; outcome: "received" | "not_received"; text: string;
