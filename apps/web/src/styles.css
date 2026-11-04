@@ -3355,6 +3355,6 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .agent-console-search-close { display: inline-flex; }
   .topbar.agent-console-topbar.agent-console-searching { grid-template-columns: minmax(0, 1fr); }
   .agent-console-searching .agent-console-projects,
-  .agent-console-searching .agent-console-topbar-back,
+  .topbar.agent-console-topbar.agent-console-searching > .agent-console-topbar-back,
   .agent-console-searching .agent-console-topbar-actions { display: none; }
 }

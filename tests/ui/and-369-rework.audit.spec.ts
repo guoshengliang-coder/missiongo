@@ -59,6 +59,10 @@ for (const width of [320, 768, 1023, 1024, 1440]) for (const theme of ["light", 
     if (width <= 1023) await page.locator(".agent-console-search-trigger").click();
     await expect(search).toBeVisible();
     await search.fill("项目讨论");
+    const searchBox = await search.boundingBox();
+    const headerBox = await page.locator(".agent-console-topbar").boundingBox();
+    expect(searchBox!.y + searchBox!.height).toBeLessThanOrEqual(headerBox!.y + headerBox!.height);
+    if (width <= 1023) await expect(page.locator(".agent-console-topbar-back")).toBeHidden();
     await expect(rows).toHaveCount(1);
     await page.screenshot({ path: testInfo.outputPath(`and369-search-${width}-${theme}.png`) });
     if (width <= 1023) {
