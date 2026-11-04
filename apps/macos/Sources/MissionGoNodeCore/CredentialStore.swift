@@ -39,6 +39,12 @@ public protocol CredentialStore: Sendable {
 
 public struct CredentialStoreError: Error, Equatable, LocalizedError {
     public let message: String
+    let status: OSStatus?
+
+    init(message: String, status: OSStatus? = nil) {
+        self.message = message
+        self.status = status
+    }
 
     public var errorDescription: String? {
         return message
@@ -63,8 +69,8 @@ public struct KeychainCredentialStore: CredentialStore {
         return try loadCredential(allowInteraction: true)
     }
 
-    /// Startup must not summon a keychain dialog behind other applications.
-    /// The sign-in button remains the explicit interactive recovery path.
+    /// Read silently first at startup. An interactive retry can restore access
+    /// to an existing item when macOS needs to authorize this build.
     public func loadCredential(allowInteraction: Bool) throws -> NodeCredential? {
         guard let data = try read(account: KeychainCredentialStore.credentialAccount, allowInteraction: allowInteraction) else { return nil }
         do {
@@ -168,7 +174,7 @@ public struct KeychainCredentialStore: CredentialStore {
 
     private func keychainError(_ action: String, _ status: OSStatus) -> CredentialStoreError {
         let message = SecCopyErrorMessageString(status, nil) as String? ?? "OSStatus \(status)"
-        return CredentialStoreError(message: "\(action)钥匙串失败：\(message)（OSStatus \(status)）")
+        return CredentialStoreError(message: "\(action)钥匙串失败：\(message)（OSStatus \(status)）", status: status)
     }
 }
 

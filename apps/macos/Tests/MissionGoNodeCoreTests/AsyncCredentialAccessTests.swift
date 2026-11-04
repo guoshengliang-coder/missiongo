@@ -1,7 +1,45 @@
+import Security
 import XCTest
 @testable import MissionGoNodeCore
 
 final class AsyncCredentialAccessTests: XCTestCase {
+    func testRestoresExistingCredentialWhenKeychainRequiresAuthorization() async throws {
+        let saved = NodeCredential(serverUrl: "https://missiongo.example.test", nodeId: "node", name: "Mac", token: "test")
+        for status in [errSecInteractionNotAllowed, errSecAuthFailed] {
+            let access = AsyncCredentialAccess()
+            let attempts = Locked<[Bool]>([])
+            let result = try await access.restoreCredential { allowInteraction in
+                attempts.withLock { $0.append(allowInteraction) }
+                guard allowInteraction else { throw CredentialStoreError(message: "Authorization required", status: status) }
+                return saved
+            }
+            XCTAssertEqual(result, saved)
+            XCTAssertEqual(attempts.current, [false, true])
+        }
+    }
+
+    func testMissingCredentialAndKeychainFailureDoNotTriggerAuthorization() async throws {
+        let access = AsyncCredentialAccess()
+        let attempts = Locked<[Bool]>([])
+        let missing = try await access.restoreCredential { allowInteraction in
+            attempts.withLock { $0.append(allowInteraction) }
+            return nil
+        }
+        XCTAssertNil(missing)
+
+        let failure = CredentialStoreError(message: "Keychain unavailable", status: errSecNotAvailable)
+        do {
+            _ = try await access.restoreCredential { allowInteraction in
+                attempts.withLock { $0.append(allowInteraction) }
+                throw failure
+            }
+            XCTFail("Expected the Keychain failure")
+        } catch {
+            XCTAssertEqual(error as? CredentialStoreError, failure)
+        }
+        XCTAssertEqual(attempts.current, [false, false])
+    }
+
     func testSequentialOperationsCanRunImmediatelyAfterCompletion() async throws {
         let access = AsyncCredentialAccess()
         for i in 0..<30 {
