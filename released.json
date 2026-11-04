@@ -8,8 +8,8 @@
   ],
   "artifacts": {
     "linuxCli": {
-      "version": "0.1.3",
-      "commit": "36035d8b67ce2414f93665c499bd7d1f624ccca2",
+      "version": "0.1.4",
+      "commit": "772db5577064faec78f560321e35536336b9f55f",
       "versionFile": "product.json",
       "versionJsonPath": "linuxNode.version",
       "paths": [
@@ -17,11 +17,11 @@
         "packages/domain",
         "scripts/build-node.mjs"
       ],
-      "sha256": "b2468e88bd07bb788d890a3c2b290bb13183626fd2d29a46b22bd2c0cdc2244b"
+      "sha256": "12479cba6d37a0d159ad111f68aa5a5e72b70409601cf78300bff58bf035e5c5"
     },
     "androidApp": {
-      "version": "0.1.18",
-      "commit": "9c26f3e277d310c71c788db8520ddeb824d105d8",
+      "version": "0.1.19",
+      "commit": "609c65b7a92c45540e3d79f8e4824d2980f93566",
       "versionFile": "sdks/android-feedback/gradle.properties",
       "versionProperty": "missiongoAndroidVersionName",
       "paths": [
@@ -39,8 +39,8 @@
       ]
     },
     "macosApp": {
-      "version": "0.4.66",
-      "commit": "a711e71088ea0973d25827606c31b60026a25f50",
+      "version": "0.4.67",
+      "commit": "c1227243a8a87c875dcedd6755a867c7a70aaf41",
       "versionFile": "apps/macos/version.properties",
       "versionProperty": "missiongoMacosVersion",
       "paths": [
