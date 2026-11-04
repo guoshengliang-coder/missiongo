@@ -266,7 +266,10 @@ export interface StatusCheckRecord {
   lastResultAt?: string | null; checkedAt: string | null; requestedAt: string | null; evidenceUpdatedAt: string; evidenceSource: string; evidenceReporter?: {accountId?:string;note?:string;recordedAt?:string};
   evidence: { merged?: {commit: string; occurredAt: string}; releases?: Array<{artifact:string;version:string;sourceCommit:string;verifiedAt:string}> };
 }
-export interface StatusCheckPage { items: StatusCheckRecord[]; nextOffset?: number; queued?: number; missingAssociation?: boolean;
+export interface CompletionCandidate { completion:CompletionReference;title:string;state:"merged"|"open"|"closed"|"integrated"|"unmerged";commentId?:string }
+export interface CompletionDiscovery { id:string;status:string;repository:string|null;candidates:CompletionCandidate[] }
+export interface DiscoverySelection { discoveryId:string;candidateIndex:number }
+export interface StatusCheckPage { discovery?:CompletionDiscovery|null; items: StatusCheckRecord[]; nextOffset?: number; queued?: number; missingAssociation?: boolean;
   schedule?: {time:string|false;timezone:string;frequency:string} }
 
 function insightSearch(input: InsightQuery & {productIds?: string[]} & Partial<InsightDetailSelection>): string {
@@ -330,7 +333,7 @@ export const api = {
     return request<StatusCheckPage>(itemKey ? `/api/v1/items/${encodeURIComponent(itemKey)}/status-checks`
       : `/api/v1/products/${encodeURIComponent(productId)}/status-checks`, {method:"POST"});
   },
-  registerHandover(itemKey: string, input: {completion:CompletionReference;requiredArtifacts?:string[];noReleaseReason?:string}) {
+  registerHandover(itemKey: string, input: {completion:CompletionReference;requiredArtifacts?:string[];noReleaseReason?:string;discoverySelection?:DiscoverySelection}) {
     return request<{handover:StatusCheckRecord}>(`/api/v1/items/${encodeURIComponent(itemKey)}/handover`,{method:"PUT",body:JSON.stringify(input)});
   },
   confirmHandover(itemKey: string, handoverId: string, input: ({stage:"integration";commit:string;note:string} | {stage:"release";note:string;releases:Array<{artifact:string;version:string;sourceCommit:string}>}) & {expectedItemRevision?:number|undefined;expectedHandoverRevision?:number|undefined;idempotencyKey?:string}) {

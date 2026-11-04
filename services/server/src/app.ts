@@ -15,6 +15,8 @@ import { AgentArtifacts, ARTIFACT_PREVIEW_POLICY, ARTIFACT_PREVIEW_SHELL } from 
 import { localArtifactLinks } from "@missiongo/domain";
 import { join } from "node:path";
 import { listInsightBatchSummaries, createInsightBatch, insightBatchProgress, deleteInsightBatch } from "./insight-batches.js";
+import { CompletionDiscovery, discoveryReportSchema } from "./completion-discovery.js";
+import { normalizeCompletion } from "./completion.js";
 import { StatusChecks, handoverRegistrationSchema, handoverEvidenceSchema, humanConfirmationSchema } from "./status-checks.js";
 import { projectInsights } from "./project-insights.js";
 import { browserInsightSchema, browserInsightDetailSchema } from "./project-insights-query.js";
@@ -685,6 +687,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     });
   }
   const statusChecks = new StatusChecks(store);
+  const completionDiscovery = new CompletionDiscovery(store);
   const statusCheckTime = options.statusCheckTime ?? "09:00";
   if (statusCheckTime !== false && !/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(statusCheckTime)) throw invalidInput("statusCheckTime must be HH:mm in Asia/Shanghai.");
   let statusCheckTimer: ReturnType<typeof setInterval> | undefined;
@@ -3045,17 +3048,27 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
   app.get("/api/v1/items/:itemKey/status-checks",async request => {
     const {itemKey} = request.params as {itemKey:string}; const key = requireItemPermission(request,itemKey);
-    return {...statusChecks.list(store.getWorkItem(key).productId,key),schedule:{time:statusCheckTime,timezone:"Asia/Shanghai",frequency:"daily"}};
+    return {...statusChecks.list(store.getWorkItem(key).productId,key),discovery:completionDiscovery.snapshot(key),schedule:{time:statusCheckTime,timezone:"Asia/Shanghai",frequency:"daily"}};
   });
   app.post("/api/v1/items/:itemKey/status-checks",async request => {
     const {itemKey} = request.params as {itemKey:string}; const key = requireItemPermission(request,itemKey,"operate");
-    return statusChecks.request(store.getWorkItem(key).productId,requireAccountId(request),key);
+    const result=statusChecks.request(store.getWorkItem(key).productId,requireAccountId(request),key);
+    if (result.missingAssociation) completionDiscovery.request(key,requireAccountId(request));
+    return {...result,discovery:completionDiscovery.snapshot(key)};
   });
   app.put("/api/v1/items/:itemKey/handover",async request => {
     const {itemKey} = request.params as {itemKey:string}; const key = requireItemPermission(request,itemKey,"operate");
     const parsed = handoverRegistrationSchema.safeParse(request.body);
     if (!parsed.success) throw invalidInput(parsed.error.issues.map(e=>e.message).join("; "));
-    return {handover:statusChecks.register(key,requireAccountId(request),parsed.data)};
+    const selection=z.object({discoveryId:z.uuid(),candidateIndex:z.number().int().min(0).max(29)}).optional().safeParse(objectBody(request.body).discoverySelection);
+    if (!selection.success) throw invalidInput("Invalid discovery selection.");
+    if (selection.data) {
+      if (!sessionUser(request)) throw new MissionGoError("authentication_required","Candidate confirmation requires a signed-in console user.",401);
+      completionDiscovery.assertSelection(key,selection.data.discoveryId,selection.data.candidateIndex,normalizeCompletion(parsed.data));
+    }
+    const handover=statusChecks.register(key,requireAccountId(request),parsed.data);
+    if (selection.data) statusChecks.request(store.getWorkItem(key).productId,requireAccountId(request),key);
+    return {handover};
   });
 
   app.post("/api/v1/items/:itemKey/handovers/:handoverId/confirm", async request => {
@@ -3124,6 +3137,22 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     requireNodeAccountPermission(node.accountId,productId,true);
     if (!canCheck(node.accountId,productId)) throw notFound("Product");
     return new ReleaseObservations(store).upload(productId,stringField(body,"repoPath")!,body.observation,node);
+  });
+  app.post("/api/v1/node/completion-discovery/claim",async request => {
+    const node=requireNode(request);
+    return {job:completionDiscovery.claim(node.nodeId,node.accountId,productId=>{
+      requireNodeAccountPermission(node.accountId,productId,true);
+      if (!canCheck(node.accountId,productId)) throw notFound("Product");
+    })};
+  });
+  app.post("/api/v1/node/completion-discovery/:id/report",async request => {
+    const node=requireNode(request),{id}=request.params as {id:string};
+    const productId=completionDiscovery.productId(id);
+    requireNodeAccountPermission(node.accountId,productId,true);
+    if (!canCheck(node.accountId,productId)) throw notFound("Discovery");
+    const parsed=discoveryReportSchema.safeParse(request.body);
+    if (!parsed.success) throw invalidInput("Invalid discovery report.");
+    return {discovery:completionDiscovery.report(id,parsed.data,node.nodeId,node.accountId)};
   });
   app.post("/api/v1/node/status-checks/claim",async request => {
     const node = requireNode(request);

@@ -6,6 +6,9 @@ import { errorMessageKey, localizedErrorText } from "./error-text";
 const t = (key: string) => `<${key}>`;
 
 describe("localizedErrorText", () => {
+  it("explains how to recover a stale completion candidate", () => {
+    for (const code of ["discovery_stale","discovery_source_changed"]) expect(errorMessageKey(new ApiError(409,code,"Changed"))).toBe("completionDiscoveryChanged");
+  });
   it("replaces the server's English sign-in message", () => {
     const error = new ApiError(401, "authentication_required", "A signed-in account is required.");
     expect(localizedErrorText(error, t)).toBe("<errorSignedOut>");

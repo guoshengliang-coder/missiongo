@@ -5,6 +5,8 @@ import Foundation
 public protocol NodeAPI: Sendable {
     func statusCheckJournalScope() throws -> String?
     func uploadReleaseObservation(productId: String, repoPath: String, observation: ReleaseObservation) async throws
+    func claimCompletionDiscovery() async throws -> CompletionDiscoveryJob?
+    func reportCompletionDiscovery(id: String, leaseToken: String, result: CompletionDiscoveryResult) async throws
     func claimStatusCheck() async throws -> StatusCheckJob?
     func reportStatusCheck(id: String, leaseToken: String, evidence: HandoverEvidence) async throws
     func managedJobs() async throws -> [ManagedExecutionJob]
@@ -28,6 +30,8 @@ public extension NodeAPI {
     func reportArtifact(id: String, result: AgentArtifactResult) async throws {}
     func statusCheckJournalScope() throws -> String? { nil }
     func uploadReleaseObservation(productId: String, repoPath: String, observation: ReleaseObservation) async throws { throw LaunchError("Release upload unsupported") }
+    func claimCompletionDiscovery() async throws -> CompletionDiscoveryJob? { nil }
+    func reportCompletionDiscovery(id: String, leaseToken: String, result: CompletionDiscoveryResult) async throws {}
     func claimStatusCheck() async throws -> StatusCheckJob? { nil }
     func reportStatusCheck(id: String, leaseToken: String, evidence: HandoverEvidence) async throws {}
     func managedJobs() async throws -> [ManagedExecutionJob] { [] }

@@ -2554,7 +2554,7 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
   const secondaryActions = otherActions.filter((action) => action.tone !== "danger");
   const destructiveActions = otherActions.filter((action) => action.tone === "danger");
   const moreActionsRef = useRef<HTMLDetailsElement>(null);
-  const [statusChecksOpen,setStatusChecksOpen]=useState(false);
+  const [statusChecksOpen,setStatusChecksOpen]=useState<boolean|"check">(false);
   const [transferring, setTransferring] = useState(false);
   const [noteAction, setNoteAction] = useState<TransitionAction | null>(null);
   const [transitionKeys]=useState(()=>new TransitionCommandKeys());
@@ -2577,7 +2577,7 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
   // kept in the browser.
   const startTransition = (action: TransitionAction) => {
     // Picking up waiting work asks how first: by hand, or through an AI (AND-68).
-    if (action.reason === "resolution_submitted" || action.reason === "release_verified") setStatusChecksOpen(true);
+    if (action.reason === "resolution_submitted" || action.reason === "release_verified") setStatusChecksOpen("check");
     else if (isStartWork(item.status, action)) onStartWork(item);
     else if (action.reason === "manual_override" || transitionRequiresNote(item.status, action.to)) setNoteAction(action);
     else mutation.mutate({ action });
@@ -2659,7 +2659,7 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
     </OverlayMenu>
     {/* Outside the menu on purpose: a closed <details> hides everything but its
         <summary>, and a <dialog> under a hidden ancestor never paints. */}
-    {statusChecksOpen && <StatusCheckPanel productId={item.productId} itemKey={item.key} canOperate={item.access?.canOperate !== false} onClose={()=>setStatusChecksOpen(false)} />}
+    {statusChecksOpen && <StatusCheckPanel autoCheck={statusChecksOpen === "check"} productId={item.productId} itemKey={item.key} canOperate={item.access?.canOperate !== false} onClose={()=>setStatusChecksOpen(false)} />}
     {transferring && <TransferItemDialog item={item} onClose={() => setTransferring(false)} />}
     {noteAction && (
       <Modal
@@ -2829,7 +2829,7 @@ function DetailPane({
     };
   }, [itemKey, item?.key]);
   const [transferBuilderOpen, setTransferBuilderOpen] = useState(false);
-  const [statusChecksOpen, setStatusChecksOpen] = useState(false);
+  const [statusChecksOpen, setStatusChecksOpen] = useState<boolean|"check">(false);
   const [collaborationAction,setCollaborationAction]=useState<"request"|"associate"|undefined>(undefined);
   const { toolbarRef, overflow: toolbarOverflow } = useToolbarOverflow();
   const moreActionsRef = useRef<HTMLDetailsElement>(null);
@@ -2914,7 +2914,7 @@ function DetailPane({
   const PrimaryIcon = TYPE_ICONS[item.type];
   // Same rule as the list row: the domain decides whether this move owes a reason.
   const startTransition = (action: TransitionAction) => {
-    if (action.reason === "resolution_submitted" || action.reason === "release_verified") setStatusChecksOpen(true);
+    if (action.reason === "resolution_submitted" || action.reason === "release_verified") setStatusChecksOpen("check");
     else if (isStartWork(item.status, action)) onStartWork(item);
     else if (action.reason === "manual_override" || transitionRequiresNote(item.status, action.to)) setNoteAction(action);
     else transitionMutation.mutate({ action });
@@ -3249,7 +3249,7 @@ function DetailPane({
       {!item.transferred && accountId && <CommentComposer idPrefix={commentIdPrefix} key={`${accountId}:${item.key}`} item={item} draft={commentDraft} onDraftChange={updateCommentDraft} storageFailed={storageFailed} replyUnavailable={replyUnavailable}
         replyTo={replyTo} onLocateReply={()=>replyTo && locateComment(replyTo.id)} onCancelReply={()=>setReplyTo(null)} onPosted={refreshItem} onNotice={onNotice} />}
       {transferring && <TransferItemDialog item={item} onClose={() => setTransferring(false)} />}
-      {statusChecksOpen && <StatusCheckPanel key={`status-checks:${item.key}`} productId={item.productId} itemKey={item.key} canOperate={!item.transferred && item.access?.canOperate !== false} onClose={() => setStatusChecksOpen(false)} />}
+      {statusChecksOpen && <StatusCheckPanel autoCheck={statusChecksOpen === "check"} key={`status-checks:${item.key}`} productId={item.productId} itemKey={item.key} canOperate={!item.transferred && item.access?.canOperate !== false} onClose={() => setStatusChecksOpen(false)} />}
       {transferBuilderOpen && deliveryQuery.data && (
         <TransferBuilderModal itemKey={item.key} delivery={deliveryQuery.data} onClose={() => setTransferBuilderOpen(false)} />
       )}
