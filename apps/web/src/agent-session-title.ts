@@ -39,9 +39,11 @@ export function compactItemKeys(keys: readonly string[]): string {
  * gets the old title.
  */
 export function sessionTitle(
-  session: Pick<AgentSessionSummary, "items" | "sessionName" | "id" | "round">,
+  session: Pick<AgentSessionSummary, "items" | "sessionName" | "id" | "round" | "productId">,
   roundLabel?: (round: number) => string,
 ): string {
+  // Linking work does not turn a project conversation into a dispatched-item session.
+  if (session.productId) return session.sessionName ?? session.id;
   const keys = compactItemKeys(session.items.map((item) => item.key));
   const firstTitle = session.items[0]?.title;
   const title = firstTitle ? `${keys} · ${firstTitle}` : session.sessionName ?? session.id;

@@ -31,7 +31,9 @@ describe("headless configuration and scope", () => {
     expect(prompt).toContain("不得自动创建或领取条目");
     expect(prompt).toContain("独立 worktree");
     expect(prompt).toContain("原生计划模式");
-    expect(prompt).not.toContain("claim_item");
+    expect(prompt).toContain('claim_item 必须带 dispatchId: "test-dispatch"');
+    expect(prompt).toContain("仅当用户后来明确指定处理条目时");
+    expect(prompt).toContain("不要另行登记主动处理会话");
     expect(() => launchPrompt({ ...free, freeSession: false })).toThrow();
     expect(() => launchPrompt({ ...free, itemKeys: ["EX-1"] })).toThrow();
   });

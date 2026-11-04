@@ -2031,6 +2031,8 @@ export class AgentSessionStore {
   }
 
   private itemsCompleted(sessionId: string): boolean {
+    if (this.database.connection.prepare(`SELECT 1 FROM agent_sessions s JOIN free_session_starts f
+      ON f.dispatch_id=s.dispatch_id WHERE s.id=?`).get(sessionId)) return false;
     const rows = this.database.connection.prepare(
       `SELECT w.status FROM agent_sessions s
        JOIN dispatch_items di ON di.dispatch_id = s.dispatch_id

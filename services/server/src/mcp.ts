@@ -17,6 +17,7 @@ import sharp from "sharp";
 import { z } from "zod";
 
 import { ExternalAgentSessionStore, EXTERNAL_AGENT_KINDS, EXTERNAL_PROGRESS_STATUSES } from "./external-agent-session-store.js";
+import { ProjectSessionClaims } from "./project-session-claims.js";
 import type { AttachmentStorage } from "./attachment-storage.js";
 import { McpAttachmentUploads, MCP_UPLOAD_CHUNK_BYTES } from "./mcp-attachment-uploads.js";
 import { MISSIONGO_WRITE_SCOPE } from "./oauth.js";
@@ -168,6 +169,7 @@ export function createMissionGoMcpServer(
   const writeToolsTier = options.writeTools ?? "none";
   const uploads = new McpAttachmentUploads(store, attachmentStorage);
   const sessions = new ExternalAgentSessionStore(store);
+  const projectSessions = new ProjectSessionClaims(store);
   const sessionIdentity = z.object({
     agentKind: z.enum(EXTERNAL_AGENT_KINDS),
     sessionRef: z.string().trim().min(1).max(200).regex(/^[A-Za-z0-9:_-]+$/),
@@ -728,6 +730,8 @@ export function createMissionGoMcpServer(
       description: "Claim the user-named ready item before editing code. Tell the user before claiming. "
         + "For an externally started conversation, pass session with a verified native ID or a stable conversation UUID marked tracking; "
         + "the returned sessionId records progress in the Web console. For a MissionGo-dispatched conversation, pass the dispatchId from its trusted launch prompt. "
+        + "A project conversation may claim items in its own product using its original dispatchId; a verified native session identity also reuses that project conversation. "
+        + "When projectSessionId is returned, keep using that original conversation; do not register or report a separate external session, since the node already synchronizes it. "
         + "A legacy call creates a per-claim tracking record, never a native transcript. Work-item and session states remain independent. "
         + "Save the returned executionAuthorization and pass it to status-changing and handover tools; Builder transfer permanently revokes earlier execution credentials.",
       inputSchema: z.object({
@@ -745,14 +749,6 @@ export function createMissionGoMcpServer(
       const key = requireItemAccess(ctx, store, itemKey);
       assertBuilderExecution(store.database,store.getWorkItem(key).id,access.accountId);
       if (options.canOperate && !options.canOperate(access.accountId,store.getWorkItem(key).productId)) throw new Error("Product operation is not permitted.");
-      if (dispatchId) {
-        assertDispatchExecution(store.database,dispatchId);
-        const dispatch = store.database.connection.prepare(`SELECT d.id FROM dispatches d
-          JOIN dispatch_items i ON i.dispatch_id = d.id JOIN work_items w ON w.id = i.item_id
-          WHERE d.id = ? AND d.account_id = ? AND w.item_key = ? AND d.status IN ('launched','delivered')`)
-          .get(dispatchId, access.accountId, key);
-        if (!dispatch) throw new Error("Dispatch not found or does not contain this item.");
-      }
       const result = store.database.transaction(() => {
         const digest = createHash("sha256").update(JSON.stringify([key, agentId, session ?? null, dispatchId ?? null])).digest("hex");
         const receipt = store.database.connection.prepare("SELECT digest, result_json FROM mcp_agent_claim_receipts WHERE account_id = ? AND client_id = ? AND idempotency_key = ?")
@@ -764,24 +760,36 @@ export function createMissionGoMcpServer(
           if (repeated.sessionId) authorizeSession(ctx, repeated.sessionId, key);
           return repeated;
         }
+        const project = projectSessions.resolve(access.accountId, key, { ...(dispatchId ? { dispatchId } : {}), ...(session ? { session } : {}) });
+        const executionDispatchId = project?.dispatchId ?? dispatchId;
+        if (executionDispatchId) {
+          assertDispatchExecution(store.database, executionDispatchId);
+          if (project) projectSessions.link(project, key);
+          const dispatch = store.database.connection.prepare(`SELECT d.id FROM dispatches d
+            JOIN dispatch_items i ON i.dispatch_id=d.id JOIN work_items w ON w.id=i.item_id
+            WHERE d.id=? AND d.account_id=? AND w.item_key=? AND d.status IN ('launched','delivered')`)
+            .get(executionDispatchId, access.accountId, key);
+          if (!dispatch) throw new Error("Dispatch not found or does not contain this item.");
+        }
         // A legacy global idempotency key must not let another OAuth client
         // replay somebody else's claim and manufacture a second handling record.
-        if (store.getWorkItem(key).status !== "ready" && !dispatchId) throw new Error("Only a ready work item can be claimed without a takeover dispatch.");
+        if (store.getWorkItem(key).status !== "ready" && !executionDispatchId) throw new Error("Only a ready work item can be claimed without a takeover dispatch.");
         const statusChanged = store.getWorkItem(key).status === "ready";
-        const item = store.claimWorkItem({ itemKey: key, agentId, ...(dispatchId ? {dispatchId} : {}),
+        const item = store.claimWorkItem({ itemKey: key, agentId, ...(executionDispatchId ? {dispatchId: executionDispatchId} : {}),
           attribution: { accountId: access.accountId, ...(access.clientId ? { clientId: access.clientId } : {}) },
           idempotencyKey: `mcp-claim:${createHash("sha256").update(JSON.stringify([access.accountId,access.clientId ?? "",idempotencyKey])).digest("hex")}` });
-        const sessionId = dispatchId ? undefined : sessions.register(access, session ?? sessions.claimIdentity(agentId, idempotencyKey), key);
+        const sessionId = executionDispatchId ? undefined : sessions.register(access, session ?? sessions.claimIdentity(agentId, idempotencyKey), key);
         if (sessionId) authorizeSession(ctx, sessionId, key);
         const executionAuthorization = randomUUID();
         store.database.connection.prepare(`INSERT INTO builder_execution_authorizations(id,item_id,account_id,client_id,dispatch_id,created_at,round_key)
-          VALUES (?,?,?,?,?,?,?)`).run(executionAuthorization,item.id,access.accountId,access.clientId ?? "",dispatchId ?? null,new Date().toISOString(),deliveryRound(store.database,item.id,true));
-        const result = { item, executionAuthorization, statusChanged, ...(sessionId ? { sessionId, sessionSource: "external", progressOnly: true } : {}) };
+          VALUES (?,?,?,?,?,?,?)`).run(executionAuthorization,item.id,access.accountId,access.clientId ?? "",executionDispatchId ?? null,new Date().toISOString(),deliveryRound(store.database,item.id,true));
+        const result = { item, executionAuthorization, statusChanged, ...(sessionId ? { sessionId, sessionSource: "external", progressOnly: true } : {}),
+          ...(project ? { projectSessionId: project.projectSessionId, dispatchId: project.dispatchId, sessionSource: "dispatch" } : {}) };
         store.database.connection.prepare("INSERT INTO mcp_agent_claim_receipts(account_id, client_id, idempotency_key, digest, result_json) VALUES (?, ?, ?, ?, ?)")
           .run(access.accountId, access.clientId ?? "", idempotencyKey, digest, JSON.stringify(result));
         return result;
       });
-      return textResult(result, `${key} is now in progress. Save executionAuthorization from this result and include it in every status-changing and handover tool for this handling round.${"sessionId" in result ? ` Progress session: ${result.sessionId}. Save this ID for subsequent reports.` : ""}`);
+      return textResult(result, `${key} is now in progress. Save executionAuthorization from this result and include it in every status-changing and handover tool for this handling round.${"projectSessionId" in result ? ` Reused project conversation: ${result.projectSessionId}. Its node already synchronizes messages and replies; do not register or report an external session.` : "sessionId" in result ? ` Progress session: ${result.sessionId}. Save this ID for subsequent reports.` : ""}`);
     },
   );
 
@@ -1055,6 +1063,14 @@ export function createMissionGoMcpServer(
     async ({ itemKey, session, sessionId: previousSessionId }, ctx) => {
       requireWriteScope(ctx);
       const key = requireItemAccess(ctx, store, itemKey);
+      const project = projectSessions.resolve(accountAccess(ctx).accountId, key, { session });
+      if (project) {
+        assertBuilderExecution(store.database,store.getWorkItem(key).id,accountAccess(ctx).accountId);
+        if (previousSessionId) throw new Error("Keep the original project conversation; historical external records cannot be merged by registration.");
+        projectSessions.assertLinked(project, key);
+        return textResult({ projectSessionId: project.projectSessionId, dispatchId: project.dispatchId, sessionSource: "dispatch", statusChanged: false },
+          "The project conversation is already linked and synchronized by its node. Do not register or report an external session.");
+      }
       const sessionId = store.database.transaction(() => {
         if (previousSessionId) authorizeSession(ctx, previousSessionId, key);
         const id = sessions.register(accountAccess(ctx), session, key, previousSessionId);

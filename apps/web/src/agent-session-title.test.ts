@@ -34,6 +34,13 @@ describe("how a dispatch session's title writes out its item keys", () => {
     expect(sessionTitle(session([]))).toBe("session-1");
   });
 
+  it("keeps a project conversation's title after linking one or more items", () => {
+    for (const items of [[], [{ key: "AND-169" }], [{ key: "AND-169" }, { key: "AND-170" }]]) {
+      expect(sessionTitle({ ...session(items, "这是什么问题？"), productId: "product-1", round: 2 }, (round) => `第${round}轮`))
+        .toBe("这是什么问题？");
+    }
+  });
+
   it("names the dispatch round from the second attempt on, when the caller has wording for it", () => {
     const roundLabel = (round: number) => `第${round}轮`;
     const first = { ...session([{ key: "AND-169" }]), round: 1 };

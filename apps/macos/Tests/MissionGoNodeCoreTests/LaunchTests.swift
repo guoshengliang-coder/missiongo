@@ -8,7 +8,9 @@ final class LaunchPromptTests: XCTestCase {
         XCTAssertTrue(prompt.contains("不得自动创建、领取条目"))
         XCTAssertTrue(prompt.contains("独立 worktree"))
         XCTAssertTrue(prompt.contains("原生计划模式"))
-        XCTAssertFalse(prompt.contains("claim_item"))
+        XCTAssertTrue(prompt.contains(#"claim_item 必须带 dispatchId: "free-session""#))
+        XCTAssertTrue(prompt.contains("仅当用户后来明确指定处理条目时"))
+        XCTAssertTrue(prompt.contains("不要另行登记主动处理会话"))
         XCTAssertThrowsError(try LaunchPrompt.build(itemKeys: ["AND-1"], dispatchId: "free-session", freeSession: true))
         XCTAssertThrowsError(try LaunchPrompt.build(itemKeys: [], dispatchId: "invalid id", freeSession: true))
     }

@@ -69,6 +69,7 @@ public enum LaunchPrompt {
                 "这是用户从 MissionGo 控制台发起的项目会话，不关联工作条目。",
                 "本条是启动说明，用户首条消息将通过同一会话紧接着送达。现在只简短确认就绪，等待用户消息，不自行开始任务。",
                 "后续按用户消息讨论或执行；不得自动创建、领取条目，不套用条目处理 Skill 的领取前提。",
+                "本项目会话的派单身份为 \(JSONValues.quote(dispatchId))。仅当用户后来明确指定处理条目时，使用 missiongo skill 完整读取并遵守计划批准要求；领取时 claim_item 必须带 dispatchId: \(JSONValues.quote(dispatchId))，复用原项目会话，不要另行登记主动处理会话。",
                 "读取并遵守当前项目规则；修改代码前创建独立 worktree，不直接修改主工作区。",
                 "是否动手由用户指令决定；原生计划模式、权限审批、push、merge 和发布授权仍须遵守。"
             ]

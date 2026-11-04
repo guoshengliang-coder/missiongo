@@ -1052,6 +1052,135 @@ describe("Commenting over MCP", () => {
     });
     expect(JSON.stringify(again)).toMatch(/Only a ready work item can be claimed/);
   });
+  async function projectClaimFixture(kind: "codex" | "claude_code" | "opencode" = "codex") {
+    const f = await commentingApp();
+    const db = f.app.missionGoStore.database.connection;
+    const dispatches = new DispatchStore(f.app.missionGoStore.database);
+    const node = dispatches.registerNode({ accountId: f.adminAccount.id, installationId: randomUUID(), name: "Project node" });
+    dispatches.recordHeartbeat(node.nodeId, [{ kind, ready: true }]);
+    const native = new AgentSessionStore(f.app.missionGoStore.database);
+    const sessionRef = randomUUID();
+    const createConversation = (productId = f.productId, ref = sessionRef, project = true) => {
+      const dispatchId = randomUUID(), now = new Date().toISOString();
+      db.prepare(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at,delivered_at)
+        VALUES (?,?,?,?,'plan','launched','/synthetic/project',?,?)`).run(dispatchId,f.adminAccount.id,node.nodeId,kind,now,now);
+      if (project) db.prepare(`INSERT INTO free_session_starts(dispatch_id,account_id,request_key,product_id,initial_text,config_json,ready)
+        VALUES (?,?,?,?,?,'{}',1)`).run(dispatchId,f.adminAccount.id,randomUUID(),productId,"这是什么问题？");
+      const projectSessionId = native.createForDispatch({ dispatchId, nodeId: node.nodeId, sessionRef: ref });
+      native.recordSnapshot({ nodeId: node.nodeId, sessionId: projectSessionId, status: "active", turnState: { turnActive: true },
+        messages: [{ sourceId: "first-question", role: "user", text: "这是什么问题？" }, { sourceId: "first-answer", role: "agent", text: "原项目历史" }] });
+      return { dispatchId, projectSessionId };
+    };
+    const conversation = createConversation();
+    f.app.missionGoStore.transitionWorkItem({ itemKey: "HG-1", to: "ready", reason: "triaged", actor: "human" });
+    const identity = { agentKind: kind, refKind: "native", sessionRef };
+    return { ...f, ...conversation, createConversation, identity, db, native, node,
+      headers: { cookie: fixtureCookies.get(f.app)! } };
+  }
+
+  it.each(["codex", "claude_code", "opencode"] as const)("reuses a %s project conversation for multiple claims, native identity fallback and registration", async kind => {
+    const f = await projectClaimFixture(kind);
+    const before = f.native.getForAccount(f.adminAccount.id, f.projectSessionId);
+    const claimArgs = { itemKey: "HG-1", agentId: kind, dispatchId: f.dispatchId, idempotencyKey: "project-claim" };
+    const first = await f.call(f.writeToken,1,"tools/call",{ name:"claim_item",arguments:claimArgs });
+    expect(first.result?.isError, JSON.stringify(first)).not.toBe(true);
+    expect(first.result?.structuredContent).toMatchObject({ projectSessionId: f.projectSessionId, dispatchId: f.dispatchId, sessionSource: "dispatch",
+      executionAuthorization: expect.any(String), item: { status: "in_progress" } });
+    expect((first.result!.structuredContent as {sessionId?:string}).sessionId).toBeUndefined();
+    const repeat = await f.call(f.writeToken,2,"tools/call",{ name:"claim_item",arguments:claimArgs });
+    expect(repeat.result?.structuredContent).toEqual(first.result?.structuredContent);
+    const second = f.app.missionGoStore.createWorkItem({ productId:f.productId,title:"Second task",description:"Handle in same session",type:"task",priority:"normal",status:"ready",environment:{platform:"shared"} });
+    const next = await f.call(f.writeToken,3,"tools/call",{ name:"claim_item",arguments:{itemKey:second.key,agentId:kind,session:f.identity,idempotencyKey:"project-second"} });
+    expect(next.result?.structuredContent).toMatchObject({ projectSessionId:f.projectSessionId,dispatchId:f.dispatchId });
+    const registration = await f.call(f.writeToken,4,"tools/call",{name:"register_agent_session",arguments:{itemKey:second.key,session:f.identity}});
+    expect(registration.result?.structuredContent).toMatchObject({projectSessionId:f.projectSessionId,statusChanged:false});
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM external_agent_sessions").get()).toMatchObject({n:0});
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM agent_sessions").get()).toMatchObject({n:1});
+    expect(f.db.prepare("SELECT item_id,position FROM dispatch_items WHERE dispatch_id=? ORDER BY position").all(f.dispatchId))
+      .toEqual([{ item_id:f.app.missionGoStore.getWorkItem("HG-1").id,position:0 },{item_id:second.id,position:1}]);
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM builder_execution_authorizations WHERE dispatch_id=?").get(f.dispatchId)).toMatchObject({n:2});
+    const listed = (await f.app.inject({method:"GET",url:"/api/v1/agent-sessions",headers:f.headers})).json().sessions;
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({ id:f.projectSessionId,productId:f.productId,sessionName:"这是什么问题？",status:"active",canReply:true });
+    expect(listed[0].items.map((item:{key:string})=>item.key)).toEqual(["HG-1",second.key]);
+    const after = f.native.getForAccount(f.adminAccount.id,f.projectSessionId);
+    expect(after.messages).toEqual(before.messages);
+    expect(after.turnState).toEqual(before.turnState);
+    expect(after.updatedAt).toBe(before.updatedAt);
+    for (const key of ["HG-1",second.key]) {
+      const delivery = (await f.app.inject({method:"GET",url:`/api/v1/items/${key}/delivery`,headers:f.headers})).json();
+      expect(delivery.executions).toHaveLength(1);
+      expect(delivery.executions[0]).toMatchObject({ kind:"agent",sessionId:f.projectSessionId });
+    }
+    // Card transitions must neither archive the project nor stop its live turn/reply channel.
+    for (const key of ["HG-1",second.key]) {
+      for (const [to,reason] of [["development_complete","resolution_submitted"],["pending_verification","release_verified"],["done","verification_passed"]] as const) {
+        f.app.missionGoStore.transitionWorkItem({itemKey:key,to,reason,actor:"human"});
+      }
+    }
+    const finished = (await f.app.inject({method:"GET",url:`/api/v1/agent-sessions/${f.projectSessionId}`,headers:f.headers})).json();
+    expect(finished).toMatchObject({ status:"active",canReply:true });
+    expect(finished.archivedAt).toBeUndefined();
+    const reply = await f.app.inject({method:"POST",url:`/api/v1/agent-sessions/${f.projectSessionId}/commands`,headers:f.headers,payload:{text:"继续讨论"}});
+    expect(reply.statusCode,reply.body).toBe(201);
+    expect(f.app.missionGoStore.getWorkItem(second.key).status).toBe("done");
+  });
+
+  it.each(["cross-product","archived","revoked","pending","ambiguous","already-claimed","wrong-account","read-only","ai-revoked","operation-revoked"])("rejects %s project claims without partial links or duplicate sessions", async condition => {
+    const f = await projectClaimFixture();
+    let token = f.writeToken;
+    let dispatchId: string | undefined = f.dispatchId;
+    if (condition === "cross-product") {
+      const product = f.app.missionGoStore.createProduct({name:"Other",keyPrefix:"OTHER"});
+      f.db.prepare("UPDATE free_session_starts SET product_id=? WHERE dispatch_id=?").run(product.id,f.dispatchId);
+    }
+    if (condition === "archived") f.db.prepare("UPDATE agent_sessions SET archived_at=? WHERE id=?").run(new Date().toISOString(),f.projectSessionId);
+    if (condition === "revoked") {
+      const now = new Date().toISOString();
+      f.db.prepare(`INSERT INTO builder_handovers(id,item_id,initiated_by,note,status,created_at,updated_at)
+        VALUES ('synthetic-handover',?,?,'Transfer complete','completed',?,?)`)
+        .run(f.app.missionGoStore.getWorkItem("HG-1").id,f.adminAccount.id,now,now);
+      f.db.prepare("INSERT INTO builder_revoked_dispatches(dispatch_id,handover_id) VALUES (?,?)").run(f.dispatchId,"synthetic-handover");
+    }
+    if (condition === "pending") f.db.prepare("UPDATE agent_sessions SET agent_session_ref=? WHERE id=?").run(`pending:${f.dispatchId}`,f.projectSessionId);
+    if (condition === "ambiguous") { f.createConversation(); dispatchId = undefined; }
+    if (condition === "already-claimed") f.app.missionGoStore.claimWorkItem({itemKey:"HG-1",agentId:"another",idempotencyKey:"other-claim"});
+    if (condition === "wrong-account") {
+      const account = f.app.missionGoAccounts.createAccount({email:"other-project@example.test",password:"synthetic password",role:"admin"});
+      token = createAiAccessToken(f.adminAccount,{id:account.id,username:account.email,role:account.role},f.app.missionGoAccounts.credentialsStamp(account),"other-client",["missiongo:read","missiongo:write"]).token;
+    }
+    if (condition === "read-only") token = f.readToken;
+    if (condition === "ai-revoked") f.app.missionGoAccounts.replacePermissions(f.adminAccount.id,[],"none");
+    if (condition === "operation-revoked") {
+      const account = f.app.missionGoAccounts.createAccount({email:"project-reader@example.test",password:"synthetic password",role:"member"});
+      f.app.missionGoAccounts.replacePermissions(account.id,[{productId:f.productId,canView:true,canOperate:false}],"all");
+      f.db.prepare("UPDATE dispatches SET account_id=? WHERE id=?").run(account.id,f.dispatchId);
+      f.db.prepare("UPDATE free_session_starts SET account_id=? WHERE dispatch_id=?").run(account.id,f.dispatchId);
+      token = createAiAccessToken(f.adminAccount,{id:account.id,username:account.email,role:account.role},f.app.missionGoAccounts.credentialsStamp(account),"reader-client",["missiongo:read","missiongo:write"]).token;
+    }
+    const result = await f.call(token,1,"tools/call",{name:"claim_item",arguments:{itemKey:"HG-1",agentId:"codex",idempotencyKey:"rejected-project",
+      ...(dispatchId ? {dispatchId} : {session:f.identity})}});
+    expect(result.result?.isError ?? result.error, JSON.stringify(result)).toBeTruthy();
+    expect(f.app.missionGoStore.getWorkItem("HG-1").status).toBe(condition === "already-claimed" ? "in_progress" : "ready");
+    for (const table of ["external_agent_sessions","dispatch_items","builder_execution_authorizations","mcp_agent_claim_receipts"]) {
+      expect(f.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get(),table).toMatchObject({n:0});
+    }
+  });
+
+  it("keeps direct item dispatch claims scoped to their original batch", async () => {
+    const f = await projectClaimFixture();
+    const direct = f.createConversation(f.productId,randomUUID(),false);
+    const item = f.app.missionGoStore.getWorkItem("HG-1");
+    const args = {itemKey:item.key,agentId:"codex",dispatchId:direct.dispatchId,idempotencyKey:"direct-claim"};
+    const denied = await f.call(f.writeToken,1,"tools/call",{name:"claim_item",arguments:args});
+    expect(denied.result?.isError).toBe(true);
+    f.db.prepare("INSERT INTO dispatch_items(dispatch_id,item_id,position) VALUES (?,?,0)").run(direct.dispatchId,item.id);
+    const claimed = await f.call(f.writeToken,2,"tools/call",{name:"claim_item",arguments:args});
+    expect(claimed.result?.structuredContent).toMatchObject({statusChanged:true,item:{status:"in_progress"}});
+    expect((claimed.result!.structuredContent as {projectSessionId?:string}).projectSessionId).toBeUndefined();
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM external_agent_sessions").get()).toMatchObject({n:0});
+  });
+
   it("shows external claims and explicitly linked comments in the read-only Agent console", async () => {
     const { app, call, writeToken } = await commentingApp();
     const login = await app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { username: "mission-owner", password: "correct horse" } });
