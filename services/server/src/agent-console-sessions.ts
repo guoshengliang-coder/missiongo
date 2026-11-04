@@ -77,8 +77,10 @@ export class AgentConsoleSessions {
     };
   }
 
-  withMessages(accountId: string, id: string, primary: AgentSessionSnapshot): AgentSessionSnapshot {
-    const group = this.members(accountId, id);
+  // AND-383: a precomputed group from the caller's permission scan replaces the
+  // second full groups() pass; members() stays the fallback for direct callers.
+  withMessages(accountId: string, id: string, primary: AgentSessionSnapshot,
+    group: AgentSessionListItem[] = this.members(accountId, id)): AgentSessionSnapshot {
     if (group.length === 1) return primary;
     const messages = new Map<string, AgentSessionSnapshot["messages"][number]>();
     // The requested control channel wins when both mirrors carry the same native message.

@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { FileText, Image as ImageIcon, Video, X } from "lucide-react";
 
 import { useI18n } from "./i18n";
+import { MediaLightbox } from "./media-lightbox";
+import { ZoomableImage } from "./zoomable-image";
 
 /**
  * One file waiting to be sent, drawn above the reply box.
@@ -20,6 +22,7 @@ export function DraftChatFile({ file, disabled, onRemove }: { file: File; disabl
   const { t } = useI18n();
   const [thumbnail, setThumbnail] = useState<string | null>(null);
   const [imageFailed, setImageFailed] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const imageFile = file.type.startsWith("image/") || /\.(png|jpe?g|webp|gif|heic)$/i.test(file.name);
   const videoFile = file.type.startsWith("video/") || /\.(mp4|mov|webm)$/i.test(file.name);
   const mediaFile = imageFile || videoFile;
@@ -64,18 +67,28 @@ export function DraftChatFile({ file, disabled, onRemove }: { file: File; disabl
     };
   }, [file, imageFile, videoFile]);
 
-  return <span className={`agent-chat-draft-file${mediaFile ? " agent-chat-draft-file-media" : ""}`} title={file.name}>
-    <span className="agent-chat-draft-file-preview">
-      {thumbnail && !imageFailed
-        ? <img src={thumbnail} alt="" onError={() => setImageFailed(true)} />
-        : imageFile ? <ImageIcon size={20} aria-hidden="true" />
-        : videoFile ? <Video size={20} aria-hidden="true" />
-        : <FileText size={20} aria-hidden="true" />}
+  const thumbnailContent = <>
+    {thumbnail && !imageFailed
+      ? <img src={thumbnail} alt="" onError={() => setImageFailed(true)} />
+      : imageFile ? <ImageIcon size={20} aria-hidden="true" />
+      : videoFile ? <Video size={20} aria-hidden="true" />
+      : <FileText size={20} aria-hidden="true" />}
+  </>;
+
+  return <>
+    <span className={`agent-chat-draft-file${mediaFile ? " agent-chat-draft-file-media" : ""}`} title={file.name}>
+      {imageFile ? <button type="button" className="agent-chat-draft-file-preview"
+        aria-label={t("previewAttachment", { filename: file.name })} onClick={() => setPreviewOpen(true)}>
+        {thumbnailContent}
+      </button> : <span className="agent-chat-draft-file-preview">{thumbnailContent}</span>}
+      {!mediaFile && <span className="agent-chat-draft-file-copy">
+        <span className="agent-chat-draft-file-name">{file.name}</span>
+        <small>{extension}</small>
+      </span>}
+      {onRemove && <button type="button" disabled={disabled} aria-label={t("agentChatRemoveFile", { filename: file.name })} onClick={onRemove}><X size={14} /></button>}
     </span>
-    {!mediaFile && <span className="agent-chat-draft-file-copy">
-      <span className="agent-chat-draft-file-name">{file.name}</span>
-      <small>{extension}</small>
-    </span>}
-    {onRemove && <button type="button" disabled={disabled} aria-label={t("agentChatRemoveFile", { filename: file.name })} onClick={onRemove}><X size={14} /></button>}
-  </span>;
+    {previewOpen && imageFile && thumbnail && <MediaLightbox title={file.name} onClose={() => setPreviewOpen(false)}>
+      {imageFailed ? <p role="alert">{t("attachmentFailed")}</p> : <ZoomableImage src={thumbnail} alt={file.name} />}
+    </MediaLightbox>}
+  </>;
 }

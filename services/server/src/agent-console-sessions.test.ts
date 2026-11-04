@@ -48,6 +48,26 @@ it("unifies historical native mirrors, keeps their records and exposes both IDs"
   expect(f.store.getWorkItem(f.item.key).status).toBe("in_progress");
 });
 
+it("merges messages from a caller-provided group without rescanning (AND-383)", () => {
+  const f = fixture();
+  f.external.report(owner, f.externalId, f.item.key, "completed", "Local tests passed", "finish");
+  const primary = f.dispatch.getForAccount("owner", f.sessionId);
+  const expected = f.console.withMessages("owner", f.sessionId, primary);
+  const group = f.console.members("owner", f.sessionId);
+  const membersSpy = vi.spyOn(f.console, "members");
+  const detail = f.console.withMessages("owner", f.sessionId, primary, group);
+  expect(membersSpy).not.toHaveBeenCalled();
+  expect(detail).toEqual(expected);
+  membersSpy.mockRestore();
+});
+
+it("returns the primary snapshot unchanged for a single-member caller group (AND-383)", () => {
+  const f = fixture();
+  const primary = f.dispatch.getForAccount("owner", f.sessionId);
+  const solo = f.console.members("owner", f.sessionId).slice(0, 1);
+  expect(f.console.withMessages("owner", f.sessionId, primary, solo)).toBe(primary);
+});
+
 it("numbers a re-dispatched session with the round the machine names it by (AND-365)", () => {
   const f = fixture();
   const later = "2026-10-13T02:05:00.000Z";

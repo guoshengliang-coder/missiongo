@@ -9,7 +9,7 @@ import type { AgentAttentionClassification, AgentAttentionKind as ClassifiedAtte
 import type { AgentSessionAttachment, AgentSessionAttachments } from "./agent-session-attachments.js";
 import { parseAgentModels, requireOfferedModel, type AgentRunSettings } from "./agent-settings.js";
 import { autoArchiveFinishedDispatches, autoArchiveFinishedConversations } from "./auto-archive.js";
-import { deliveredDispatchTimedOut, dispatchRound } from "./dispatch-store.js";
+import { deliveredDispatchTimedOut } from "./dispatch-store.js";
 import { conflict, invalidInput, notFound } from "./errors.js";
 import type { MissionGoDatabase } from "./storage/database.js";
 import type { ExternalNativeConnection } from "./external-native-session-store.js";
@@ -768,7 +768,8 @@ export class AgentSessionStore {
     // resident timer, and the check happens exactly when somebody can see the
     // freed slot.
     this.failStuckDeliveringCommands();
-    const rows = this.database.connection
+    const db = this.database.connection;
+    const rows = db
       .prepare(
         `SELECT s.id AS session_id, d.id AS dispatch_id, d.agent_kind,
                 s.status AS session_status, s.last_error AS session_last_error,
@@ -796,36 +797,114 @@ export class AgentSessionStore {
          LIMIT ?`,
       )
       .all(accountId, limit) as unknown as SessionListSettingsRow[];
-    const items = this.database.connection.prepare(
-      `SELECT w.item_key, w.title, w.product_id, w.status
-       FROM dispatch_items di JOIN work_items w ON w.id = di.item_id
-       WHERE di.dispatch_id = ? ORDER BY di.position`,
-    );
-    const latestMessage = this.database.connection.prepare(
-      `SELECT id, source_id, role, phase, text, questions_json FROM agent_session_messages
-       WHERE session_id = ? ORDER BY position DESC, observed_at DESC, rowid DESC LIMIT 1`,
-    );
-    const attentionForSession = this.database.connection.prepare(
-      `SELECT message_hash, state, kind, reason, model,
-              dismissed_message_hash, dismissed_at, dismissed_by_account_id
-       FROM agent_session_attention WHERE session_id = ?`,
-    );
+    // AND-383: every per-row lookup below used to run as its own statement
+    // (items, latest message and command, attention, free starts, pending
+    // natives, rounds, managed bindings, revocations, item completion) --
+    // roughly ten queries per session, several thousand per scan once an
+    // account passed a few hundred dispatches, which pinned the single-
+    // threaded event loop for hundreds of milliseconds on every console read.
+    // One batched statement per lookup now feeds the exact same row mapping.
+    const dispatchIds = [...new Set(rows.map((row) => row.dispatch_id))];
+    const sessionIds = rows.flatMap((row) => (row.session_id ? [row.session_id as string] : []));
+    const holes = (values: readonly string[]) => `(${values.map(() => "?").join(",")})`;
+    const itemRowsByDispatch = new Map<string, Array<{ item_key: string; title: string; product_id: string; status: string }>>();
+    if (dispatchIds.length) {
+      const batch = db.prepare(`SELECT di.dispatch_id, w.item_key, w.title, w.product_id, w.status
+        FROM dispatch_items di JOIN work_items w ON w.id = di.item_id
+        WHERE di.dispatch_id IN ${holes(dispatchIds)} ORDER BY di.dispatch_id, di.position`)
+        .all(...dispatchIds) as unknown as Array<{ dispatch_id: string; item_key: string; title: string; product_id: string; status: string }>;
+      for (const item of batch) {
+        const list = itemRowsByDispatch.get(item.dispatch_id) ?? [];
+        itemRowsByDispatch.set(item.dispatch_id, list);
+        list.push(item);
+      }
+    }
+    const messageBySession = new Map<string, { id: string; source_id: string; role: AgentMessageRole; phase: string | null;
+      text: string; questions_json: string | null }>();
+    if (sessionIds.length) {
+      // The window-function form of this lookup sorted the whole message
+      // table per scan; idx_agent_session_messages_order turns each top-1
+      // into an index seek, which is an order of magnitude cheaper at a few
+      // hundred sessions.
+      const latestMessage = db.prepare(`SELECT id, source_id, role, phase, text, questions_json FROM agent_session_messages
+        WHERE session_id = ? ORDER BY position DESC, observed_at DESC, rowid DESC LIMIT 1`);
+      for (const sessionId of sessionIds) {
+        const message = latestMessage.get(sessionId) as unknown as
+          { id: string; source_id: string; role: AgentMessageRole; phase: string | null; text: string; questions_json: string | null } | undefined;
+        if (message) messageBySession.set(sessionId, message);
+      }
+    }
+    const commandBySession = new Map<string, CommandRow>();
+    if (sessionIds.length) {
+      const batch = db.prepare(`SELECT session_id, id, kind, text, turn_id, status, error, created_at, delivered_at, delivering_at, cancelled_at FROM (
+        SELECT session_id, id, kind, text, turn_id, status, error, created_at, delivered_at, delivering_at, cancelled_at,
+          ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY created_at DESC, rowid DESC) AS rn
+        FROM agent_session_commands WHERE session_id IN ${holes(sessionIds)}) WHERE rn = 1`)
+        .all(...sessionIds) as unknown as Array<{ session_id: string } & CommandRow>;
+      for (const command of batch) commandBySession.set(command.session_id, command);
+    }
+    const attentionBySession = new Map<string, AttentionRow>();
+    if (sessionIds.length) {
+      const batch = db.prepare(`SELECT session_id, message_hash, state, kind, reason, model,
+          dismissed_message_hash, dismissed_at, dismissed_by_account_id
+        FROM agent_session_attention WHERE session_id IN ${holes(sessionIds)}`)
+        .all(...sessionIds) as unknown as Array<{ session_id: string } & AttentionRow>;
+      for (const attention of batch) attentionBySession.set(attention.session_id, attention);
+    }
+    const freeByDispatch = new Map<string, { product_id: string; initial_text: string; ready: number; dispatch_status: string; error: string | null }>();
+    if (dispatchIds.length) {
+      const batch = db.prepare(`SELECT f.dispatch_id, f.product_id, f.initial_text, f.ready, d.status AS dispatch_status, d.error
+        FROM free_session_starts f JOIN dispatches d ON d.id = f.dispatch_id WHERE f.dispatch_id IN ${holes(dispatchIds)}`)
+        .all(...dispatchIds) as unknown as Array<{ dispatch_id: string; product_id: string; initial_text: string; ready: number; dispatch_status: string; error: string | null }>;
+      for (const free of batch) freeByDispatch.set(free.dispatch_id, free);
+    }
+    const pendingNatives = new Set<string>(dispatchIds.length
+      ? (db.prepare(`SELECT d.id AS dispatch_id FROM dispatches d
+          JOIN agent_sessions s ON s.dispatch_id = d.id AND s.agent_session_ref = 'pending:' || d.id
+          WHERE d.id IN ${holes(dispatchIds)}`)
+        .all(...dispatchIds) as unknown as Array<{ dispatch_id: string }>).map((row) => row.dispatch_id)
+      : []);
+    const roundByDispatch = new Map<string, number>();
+    if (dispatchIds.length) {
+      const batch = db.prepare(`SELECT di.dispatch_id, COUNT(prior.id) AS earlier
+        FROM dispatch_items di
+        JOIN dispatches d ON d.id = di.dispatch_id
+        LEFT JOIN dispatch_items prior_item ON prior_item.item_id = di.item_id AND prior_item.dispatch_id <> d.id
+        LEFT JOIN dispatches prior ON prior.id = prior_item.dispatch_id
+          AND prior.created_at < d.created_at AND prior.status IN ('delivered', 'launched')
+        WHERE di.dispatch_id IN ${holes(dispatchIds)}
+        GROUP BY di.dispatch_id, di.item_id`)
+        .all(...dispatchIds) as unknown as Array<{ dispatch_id: string; earlier: number }>;
+      for (const round of batch) roundByDispatch.set(round.dispatch_id, Math.max(roundByDispatch.get(round.dispatch_id) ?? 0, round.earlier));
+    }
+    const bindingBySession = new Map<string, ManagedSessionBinding>();
+    if (sessionIds.length) {
+      const batch = db.prepare(`SELECT s.id AS session_id, i.snapshot_json
+        FROM managed_execution_intents i JOIN agent_sessions s ON s.dispatch_id = i.id
+        WHERE s.id IN ${holes(sessionIds)}`)
+        .all(...sessionIds) as unknown as Array<{ session_id: string; snapshot_json: string }>;
+      for (const binding of batch) {
+        const intent = JSON.parse(binding.snapshot_json);
+        bindingBySession.set(binding.session_id, { id: intent.id, runId: intent.binding.runId, stageId: intent.stageId,
+          generation: intent.generation, role: intent.binding.role, stopRequested: intent.stopRequested,
+          state: intent.state, ownershipHeld: intent.ownershipHeld });
+      }
+    }
+    const revokedDispatches = new Set<string>(dispatchIds.length
+      ? (db.prepare(`SELECT dispatch_id FROM builder_revoked_dispatches WHERE dispatch_id IN ${holes(dispatchIds)}`)
+        .all(...dispatchIds) as unknown as Array<{ dispatch_id: string }>).map((row) => row.dispatch_id)
+      : []);
     return rows.map((row) => {
-      const free = this.freeSession(row.dispatch_id);
-      const itemRows = items.all(row.dispatch_id) as unknown as Array<{
-        item_key: string;
-        title: string;
-        product_id: string;
-        status: string;
-      }>;
-      const message = row.session_id
-        ? latestMessage.get(row.session_id) as unknown as {
-          id: string; source_id: string; role: AgentMessageRole; phase: string | null;
-          text: string; questions_json: string | null;
-        } | undefined
-        : undefined;
-      const command = row.session_id ? this.latestCommand(row.session_id) : undefined;
-      const awaitingNative = !row.session_id || Boolean(free && this.pendingNative(row.dispatch_id));
+      const free = freeByDispatch.get(row.dispatch_id);
+      const itemRows = itemRowsByDispatch.get(row.dispatch_id) ?? [];
+      const message = row.session_id ? messageBySession.get(row.session_id) : undefined;
+      const command = row.session_id ? commandBySession.get(row.session_id) : undefined;
+      const pendingNativeFree = Boolean(free) && pendingNatives.has(row.dispatch_id);
+      const binding = row.session_id ? bindingBySession.get(row.session_id) : undefined;
+      const itemsCompleted = row.session_id
+        ? itemRows.length > 0 && itemRows.every((item) => item.status === "done")
+        : false;
+      const awaitingNative = !row.session_id || pendingNativeFree;
       const resultRejected = awaitingNative && row.dispatch_status === "delivered"
         && Boolean(row.dispatch_diagnostic_json && JSON.parse(row.dispatch_diagnostic_json).resultRejection);
       const deliveryTimedOut = awaitingNative && row.dispatch_status === "delivered"
@@ -842,7 +921,7 @@ export class AgentSessionStore {
       // server can vouch for (AND-221): read its active sessions as
       // unavailable rather than "running".
       const offlineDegraded = offlineDegradedStatus(
-        (free && this.pendingNative(row.dispatch_id) ? inferredStatus : row.session_status ?? inferredStatus), row.node_last_seen_at, Boolean(row.node_revoked_at),
+        (free && pendingNativeFree ? inferredStatus : row.session_status ?? inferredStatus), row.node_last_seen_at, Boolean(row.node_revoked_at),
       );
       const turnState = row.session_turn_state_json ? JSON.parse(row.session_turn_state_json) as AgentSessionTurnState : {};
       const health = sessionHealth(offlineDegraded.status, row.session_archived_at || row.dispatch_archived_at ? {} : turnState);
@@ -861,7 +940,7 @@ export class AgentSessionStore {
       const messageHash = attentionMessageHash(status, message);
       const contentHash = attentionContentHash(message);
       const cachedAttention = row.session_id
-        ? attentionForSession.get(row.session_id) as unknown as AttentionRow | undefined
+        ? attentionBySession.get(row.session_id) as AttentionRow | undefined
         : undefined;
       const pendingReply = command?.kind === "message"
         && (command.status === "queued" || command.status === "delivering");
@@ -915,8 +994,8 @@ export class AgentSessionStore {
         id: row.session_id ?? `dispatch:${row.dispatch_id}`,
         ...(row.session_id ? { agentSessionId: row.session_id } : {}),
         dispatchId: row.dispatch_id,
-        round: dispatchRound(this.database.connection, row.dispatch_id),
-        ...(row.session_id && this.managedBinding(row.session_id) ? { managedExecution: this.managedBinding(row.session_id)! } : {}),
+        round: (roundByDispatch.get(row.dispatch_id) ?? 0) + 1,
+        ...(binding ? { managedExecution: binding } : {}),
         agentKind: row.agent_kind,
         status,
         ...sessionErrorFields(lastError),
@@ -949,13 +1028,13 @@ export class AgentSessionStore {
           : {}),
         waitingForReply: needsAttention,
         retryable: (["failed", "cancelled"].includes(row.dispatch_status) || deliveryTimedOut)
-          && (free ? free.ready === 1 && ["failed", "cancelled"].includes(row.dispatch_status) && this.pendingNative(row.dispatch_id) : itemRows.length > 0 && itemRows.every((item) => item.status === "ready")),
+          && (free ? free.ready === 1 && ["failed", "cancelled"].includes(row.dispatch_status) && pendingNativeFree : itemRows.length > 0 && itemRows.every((item) => item.status === "ready")),
         stoppable: row.dispatch_status === "queued"
           || Boolean(row.session_id && (row.session_status === "active" || row.session_status === "stalled")),
-        replyable: row.session_id && (!free || free.dispatch_status === "launched") ? !dispatchExecutionRevoked(this.database,row.dispatch_id) && !this.managedBinding(row.session_id) && !this.itemsCompleted(row.session_id) : false,
+        replyable: row.session_id && (!free || free.dispatch_status === "launched") ? !revokedDispatches.has(row.dispatch_id) && !binding && !itemsCompleted : false,
         settings: sessionSettings(
           row,
-          Boolean(row.session_id) && (!free || free.dispatch_status === "launched") && !archivedAt && !(row.session_id && (this.itemsCompleted(row.session_id) || this.managedBinding(row.session_id))),
+          Boolean(row.session_id) && (!free || free.dispatch_status === "launched") && !archivedAt && !(row.session_id && (itemsCompleted || binding)),
         ),
         unread: Boolean(row.unread_at && (!row.read_at || row.unread_at > row.read_at)),
         ...(row.unread_at ? { unreadAt: row.unread_at } : {}),
@@ -1993,9 +2072,22 @@ export class AgentSessionStore {
   }
 
   /** Time out old claimed replies on read paths. Codex replies keep their slot
-   * for human verification; other agents retain AND-184's failed timeout. */
+   * for human verification; other agents retain AND-184's failed timeout.
+   * AND-383: consoles poll this path every few seconds, and the timeout used
+   * to run its UPDATE statements unconditionally -- a write transaction on
+   * every read even with nothing stuck. The cheap existence probe now gates
+   * them, so the write only happens when there is work to do; the check
+   * itself still runs on every read, keeping AND-184's "check exactly when
+   * somebody can see the freed slot" contract. */
   private failStuckDeliveringCommands(now = Date.now()): void {
     const cutoff = new Date(now - COMMAND_DELIVERING_TIMEOUT_MS).toISOString();
+    const stuck = this.database.connection
+      .prepare(
+        `SELECT 1 FROM agent_session_commands
+         WHERE status = 'delivering' AND COALESCE(delivering_at, created_at) <= ? LIMIT 1`,
+      )
+      .get(cutoff);
+    if (!stuck) return;
     const affected = this.database.connection
       .prepare(
         `SELECT DISTINCT s.dispatch_id AS dispatch_id

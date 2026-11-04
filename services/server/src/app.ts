@@ -2520,7 +2520,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       if (requireAi) requireProductPermission(request,dispatch.productId,"ai");
       productIds.push(dispatch.productId);
     }
-    for (const itemKey of new Set(consoleSessions.members(account.id, sessionId).flatMap((row) => row.items.map((item) => item.key)))) {
+    // AND-383: one members() scan feeds both the permission loop and the
+    // message merge; withMessages used to repeat the full groups() pass.
+    const group = consoleSessions.members(account.id, sessionId);
+    for (const itemKey of new Set(group.flatMap((row) => row.items.map((item) => item.key)))) {
       const key = requireItemPermission(request, itemKey, operate ? "operate" : "view");
       const productId = store.getWorkItem(key).productId;
       productIds.push(productId);
@@ -2528,7 +2531,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         throw new MissionGoError("ai_not_permitted", `This account may not reply to the AI session for ${key}.`, 403);
       }
     }
-    return { account, session: consoleSessions.withMessages(account.id, sessionId, session), dispatch, productIds };
+    return { account, session: consoleSessions.withMessages(account.id, sessionId, session, group), dispatch, productIds };
   };
 
   const authorizedAgentSession = (request: FastifyRequest, sessionId: string, reply = false) =>
@@ -2558,13 +2561,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const loadExternalSession = (request: FastifyRequest, sessionId: string, operate = false, useAi = false) => {
     if (operate) assertExternalExecution(store.database,sessionId);
     const account = requireAccount(request);
-    const keys = [...new Set(consoleSessions.members(account.id, sessionId).flatMap((row) => row.items.map((item) => item.key)))];
+    // AND-383: reuse the permission scan's group for the merge, mirroring the
+    // native detail path's single members() pass.
+    const group = consoleSessions.members(account.id, sessionId);
+    const keys = [...new Set(group.flatMap((row) => row.items.map((item) => item.key)))];
     const items = keys.map((key) => store.getWorkItem(key));
     for (const key of keys) {
       requireItemPermission(request, key, operate ? "operate" : "view");
     }
     if (useAi) items.forEach((item) => requireProductPermission(request, item.productId, "ai"));
-    const session = consoleSessions.withMessages(account.id, sessionId, externalSessionStore.getForAccount(account.id, sessionId));
+    const session = consoleSessions.withMessages(account.id, sessionId, externalSessionStore.getForAccount(account.id, sessionId), group);
     const canOperate = items.every((item) => accountStore.allows(account, item.productId, "operate"));
     const canUseAi = items.every((item) => accountStore.allows(account, item.productId, "ai"));
     const reason = session.nativeConnection ? agentSessionReplyBlockedReason({ hasSession: true, replyable: items.some((item) => item.status !== "done"),
