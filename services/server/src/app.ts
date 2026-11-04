@@ -277,6 +277,9 @@ const MAX_NODE_EXECUTION_SESSIONS = 10;
  */
 const MAX_PRODUCT_ACCESS_ENTRIES = 200;
 
+/** A search box's needle; longer than this cannot match a name or an address. */
+const MAX_GRANTABLE_SEARCH_LENGTH = 120;
+
 /**
  * A machine's nickname from a request body: a string sets it, empty or null
  * clears it. `name` is still read, because a console page loaded before this
@@ -2122,17 +2125,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   /**
    * The account an entry names by email.
    *
-   * A product's creator can add someone without being able to list who has an
-   * account here, so the address is typed rather than picked, and the server
-   * looks it up. It does not create the account: there is no public
-   * registration, and an administrator setting a first password is still how
-   * someone gets one.
+   * The picker sends the address of whoever was chosen, and typing an address
+   * still works for a caller whose list is out of date (AND-390). It does not
+   * create the account: there is no public registration, and an administrator
+   * setting a first password is still how someone gets one.
    *
    * One error covers "no such address" and "suspended", so the reply says only
-   * whether this address can be added. It still tells a member whether a guessed
-   * address exists, which is the price of adding people by address at all;
-   * docs/security-boundaries.md records it next to the roster decision it
-   * follows from.
+   * whether this address can be added. docs/security-boundaries.md records that
+   * probe next to the roster decision it follows from.
    */
   const resolveGrantee = (email: string | undefined): string => {
     if (!email) throw invalidInput("Each entry needs an accountId or an email.");
@@ -2174,6 +2174,25 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const { productId } = request.params as { productId: string };
     const account = productAccessGuard(request, productId);
     return { accounts: productAccessFor(productId, account) };
+  });
+
+  /**
+   * Who could be granted this product, for the picker (AND-390).
+   *
+   * Same guard as the write below it: whoever may decide who reaches this
+   * product may see the names they can pick from, and nobody else. Suspended
+   * accounts are left out because they cannot be granted anything. The narrowed
+   * `ProductAccessEntry` list stays narrowed -- this answers "who could I add",
+   * not "who holds something here".
+   */
+  app.get("/api/v1/products/:productId/grantable-accounts", async (request) => {
+    const { productId } = request.params as { productId: string };
+    productAccessGuard(request, productId);
+    const query = request.query as { query?: unknown } | undefined;
+    // Bounded before it reaches the store: a search box is the only client, and
+    // nothing downstream benefits from a longer needle.
+    const search = typeof query?.query === "string" ? query.query.slice(0, MAX_GRANTABLE_SEARCH_LENGTH) : "";
+    return { accounts: accountStore.listGrantableAccounts(search) };
   });
 
   app.put("/api/v1/products/:productId/accounts", async (request) => {

@@ -92,6 +92,22 @@ export interface AccountSummary {
   readonly role: AccountRole;
 }
 
+/**
+ * One account the product-access picker may offer (AND-390).
+ *
+ * A product's creator can now search the accounts they could grant, so the
+ * picker needs a name to show next to the address. That is the nickname and
+ * nothing else: no role, no suspension state, no credential timestamps.
+ */
+export interface GrantableAccountSummary {
+  readonly id: string;
+  readonly email: string;
+  readonly nickname?: string;
+}
+
+/** Enough for the picker to open on "everyone" without growing with the workspace. */
+export const MAX_GRANTABLE_ACCOUNT_RESULTS = 50;
+
 /** One account's standing on one product, as the product-side editor shows it. */
 export interface ProductAccessEntry {
   readonly aiScope: "all" | "selected" | "none";
@@ -578,6 +594,36 @@ export class AccountStore {
       canOperate: row.can_operate === 1,
       canUseAi: row.can_use_ai === 1,
     }));
+  }
+
+  /**
+   * The accounts a product's creator may pick from when granting access
+   * (AND-390).
+   *
+   * Only accounts that can be granted something: a suspended account is not
+   * grantable, so it never appears. Matching is a case-insensitive substring of
+   * the address or the nickname, which is what a picker's search box sends.
+   *
+   * The result is capped: the picker lists everyone on an empty query, and an
+   * unbounded answer would grow with the workspace rather than with what one
+   * person can read. Typing narrows it, so the cap only hides accounts nobody
+   * searched for.
+   */
+  listGrantableAccounts(query: string, limit = MAX_GRANTABLE_ACCOUNT_RESULTS): readonly GrantableAccountSummary[] {
+    const needle = query.trim().toLocaleLowerCase();
+    return this.listAccounts()
+      .filter((account) => !account.disabledAt)
+      .map((account) => ({
+        id: account.id,
+        email: account.email,
+        ...(account.nickname ? { nickname: account.nickname } : {}),
+      }))
+      .filter((account) => !needle
+        || account.email.toLocaleLowerCase().includes(needle)
+        || (account.nickname ?? "").toLocaleLowerCase().includes(needle))
+      .sort((left, right) => (left.nickname ?? left.email).localeCompare(right.nickname ?? right.email)
+        || left.email.localeCompare(right.email))
+      .slice(0, limit);
   }
 
   /**

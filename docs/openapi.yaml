@@ -1515,9 +1515,10 @@ paths:
         product gets 404; one who can see it but did not create it gets 403, so
         the 403 never confirms a product they were not allowed to know about.
         An administrator sees every account. A creator sees the accounts that
-        hold something on this product, plus the administrators -- the roster
-        itself stays an administrator's to know, and administrators are listed
-        because they do reach the product whatever their row says.
+        hold something on this product, plus the administrators -- the rows an
+        administrator keeps in view. The picker that offers everyone grantable
+        is a separate endpoint (items/AND-390), so this list answers "who holds
+        something here" without turning the table into the whole roster.
       security:
         - adminSessionCookie: []
       responses:
@@ -1605,6 +1606,43 @@ paths:
             product_not_owned when the caller can see the product but did not
             create it; own_access_unchangeable or admin_access_unchangeable when a
             creator tried to change its own row or an administrator's.
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/products/{productId}/grantable-accounts:
+    parameters:
+      - $ref: "#/components/parameters/ProductId"
+    get:
+      operationId: listGrantableAccounts
+      summary: Who this product's manager may grant access to.
+      description: >-
+        The picker on the product's access panel (AND-390). Same guard as the
+        write: an administrator or the product's creator; a member who cannot
+        see the product gets 404, and one who can see it but did not create it
+        gets 403. Suspended accounts are left out because they cannot be
+        granted anything. `query` is a case-insensitive substring of the email
+        or the nickname. At most 50 accounts are returned, so an empty query
+        lists everyone only while the workspace fits under that cap; typing
+        narrows it. `nickname` is included when one is set.
+      security:
+        - adminSessionCookie: []
+      parameters:
+        - name: query
+          in: query
+          required: false
+          schema: { type: string, maxLength: 120 }
+      responses:
+        "200":
+          description: The accounts that can be granted access.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accounts]
+                properties:
+                  accounts:
+                    type: array
+                    items: { $ref: "#/components/schemas/GrantableAccountSummary" }
+        "403":
+          description: product_not_owned when the caller can see the product but did not create it.
         "404": { $ref: "#/components/responses/NotFound" }
   /api/v1/accounts:
     get:
@@ -3642,6 +3680,21 @@ components:
         id: { type: string }
         email: { type: string, format: email }
         role: { $ref: "#/components/schemas/AccountRole" }
+    GrantableAccountSummary:
+      type: object
+      required: [id, email]
+      description: >-
+        One account the product-access picker may offer (AND-390). Deliberately
+        narrower than Account: no role, no suspension state, no credential
+        timestamps. Suspended accounts are never returned. This is what a person
+        who may grant this product's access can enumerate, so the field list is
+        the whole concession.
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        nickname:
+          type: string
+          description: What the account calls itself; absent means "use the address".
     Account:
       type: object
       required: [id, email, role, createdAt, updatedAt, permissions]

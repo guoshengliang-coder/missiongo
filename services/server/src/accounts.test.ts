@@ -1593,11 +1593,10 @@ describe("Delegating product access to its creator (AND-58)", () => {
   });
 
   it("shows the creator only who holds something, plus the administrators", async () => {
-    // The roster itself stays an administrator's to know: app.ts answers a member
-    // asking who else has an account here with "there is nothing here". Listing
-    // every account from the product side would hand that same roster to anyone
-    // who made a product. Administrators stay because they do reach it, and
-    // because they are who a member asks for a new account.
+    // The access table answers "who holds something here", not "who exists":
+    // listing every account as a row would make every save look like it was
+    // asked to revoke the rest. The picker has its own endpoint below, because
+    // AND-390 lets a creator choose from the accounts they can grant.
     const { app, memberCookie, adminCookie, owned } = await creatorWorkspace();
     const emails = (await listFor(app, memberCookie, owned.id)).map((entry) => entry.account.email).sort();
     expect(emails).toEqual(["member@example.com", "owner@example.com"]);
@@ -1605,6 +1604,80 @@ describe("Delegating product access to its creator (AND-58)", () => {
     // Same product, same relation, read by an administrator: everyone.
     expect((await listFor(app, adminCookie, owned.id)).map((entry) => entry.account.email).sort())
       .toEqual(["member@example.com", "outsider@example.com", "owner@example.com"]);
+  });
+
+  describe("the grantable-account picker (AND-390)", () => {
+    const candidates = (app: FastifyInstance, cookie: string, productId: string, query?: string) =>
+      app.inject({
+        method: "GET",
+        url: `/api/v1/products/${productId}/grantable-accounts${query === undefined ? "" : `?query=${encodeURIComponent(query)}`}`,
+        headers: { cookie },
+      });
+
+    it("offers the creator every account they could grant, and says who they are", async () => {
+      const { app, memberCookie, owned } = await creatorWorkspace();
+      const listed = await candidates(app, memberCookie, owned.id);
+      expect(listed.statusCode).toBe(200);
+      expect(listed.json<{ accounts: Array<{ email: string }> }>().accounts.map((account) => account.email).sort())
+        .toEqual(["member@example.com", "outsider@example.com", "owner@example.com"]);
+      // Narrow like AccountSummary: a name and an address, nothing about
+      // credentials or suspension.
+      for (const account of listed.json<{ accounts: Array<Record<string, unknown>> }>().accounts) {
+        expect(Object.keys(account).sort()).toEqual(["email", "id"]);
+      }
+    });
+
+    it("carries the nickname when one is set", async () => {
+      const { app, adminCookie, memberCookie, outsider, owned } = await creatorWorkspace();
+      await app.inject({
+        method: "PATCH",
+        url: `/api/v1/accounts/${outsider.id}`,
+        headers: { cookie: adminCookie },
+        payload: { nickname: "王小明" },
+      });
+      const listed = (await candidates(app, memberCookie, owned.id)).json<{ accounts: Array<Record<string, unknown>> }>().accounts;
+      expect(listed.find((account) => account.email === "outsider@example.com")).toMatchObject({ nickname: "王小明" });
+    });
+
+    it("matches the typed text against the address and the nickname, case-insensitively", async () => {
+      const { app, adminCookie, memberCookie, outsider, owned } = await creatorWorkspace();
+      await app.inject({
+        method: "PATCH",
+        url: `/api/v1/accounts/${outsider.id}`,
+        headers: { cookie: adminCookie },
+        payload: { nickname: "王小明" },
+      });
+      const emails = async (query: string) =>
+        (await candidates(app, memberCookie, owned.id, query))
+          .json<{ accounts: Array<{ email: string }> }>().accounts.map((account) => account.email);
+      expect(await emails("OUTSIDER")).toEqual(["outsider@example.com"]);
+      expect(await emails("小明")).toEqual(["outsider@example.com"]);
+      expect(await emails("nobody")).toEqual([]);
+    });
+
+    it("leaves a suspended account out, because it cannot be granted anything", async () => {
+      const { app, adminCookie, memberCookie, outsider, owned } = await creatorWorkspace();
+      await app.inject({
+        method: "PATCH",
+        url: `/api/v1/accounts/${outsider.id}`,
+        headers: { cookie: adminCookie },
+        payload: { disabled: true },
+      });
+      const emails = (await candidates(app, memberCookie, owned.id))
+        .json<{ accounts: Array<{ email: string }> }>().accounts.map((account) => account.email);
+      expect(emails).not.toContain("outsider@example.com");
+    });
+
+    it("answers the same guards as the write it feeds", async () => {
+      // A member who can see a product they did not create cannot decide who
+      // else reaches it, and one who cannot see it does not learn that the
+      // endpoint exists.
+      const { app, memberCookie, adminCookie, shared, owned } = await creatorWorkspace();
+      expect((await candidates(app, memberCookie, shared.id)).statusCode).toBe(403);
+      const outsiderCookie = await signIn(app, "outsider@example.com", MEMBER_PASSWORD);
+      expect((await candidates(app, outsiderCookie, owned.id)).statusCode).toBe(404);
+      expect((await candidates(app, adminCookie, owned.id)).statusCode).toBe(200);
+    });
   });
 
   it("does not tell the creator when anyone else last changed their password", async () => {
