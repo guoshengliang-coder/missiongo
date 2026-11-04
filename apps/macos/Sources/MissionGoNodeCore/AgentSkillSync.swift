@@ -87,8 +87,14 @@ extension SkillSync {
                     reason = "\(mismatched)：Skill 路径为符号链接，已保留原文件；本地版本与服务端要求不一致。"
                 } else if let found, isNewer(found, than: expected) {
                     reason = "\(mismatched)：本地 Skill \(found) 高于服务端要求 \(expected)，已保留本地文件。"
+                } else if FileManager.default.fileExists(atPath: mismatched) {
+                    // Applying refuses to replace a file it cannot read a
+                    // version from, so without this the user only sees a
+                    // failure that repeating the sync never resolves.
+                    reason = "\(mismatched)：现有 Skill 文件无法识别版本（可能是残缺或测试占位文件），已保留未覆盖。"
+                        + "请在 App 中删除该文件后重试，或将其替换为完整 Skill；目标版本 \(expected)。"
                 } else {
-                    reason = "\(mismatched)：本地 Skill 缺失或版本无法识别，未同步到服务端要求的 \(expected)。"
+                    reason = "\(mismatched)：本地 Skill 缺失，未同步到服务端要求的 \(expected)。"
                 }
             } else {
                 reason = nil
