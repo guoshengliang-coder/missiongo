@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
+import { COLOUR_TOOLS_SOURCE } from "./audit-colour.mjs";
 import { chooseOption } from "./select-helpers";
 
 for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const) {
@@ -10,15 +11,15 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
       await page.goto(`/?product=${fixture.productId}&status=ready`);
       const control = page.getByRole("combobox", { name: "Builder", exact: true });
       await expect(control).toBeVisible();
-      const contrast = await control.evaluate(node => {
-        const style = getComputedStyle(node.closest("label")!);
-        const luminance = (color: string) => {
-          const [r, g, b] = color.match(/[\d.]+/g)!.slice(0, 3).map(value => { const n = Number(value) / 255; return n <= .04045 ? n / 12.92 : ((n + .055) / 1.055) ** 2.4; });
-          return .2126 * r! + .7152 * g! + .0722 * b!;
-        };
-        const border = luminance(style.borderTopColor), background = luminance(style.backgroundColor);
-        return (Math.max(border, background) + .05) / (Math.min(border, background) + .05);
-      });
+      const colourTools = await page.evaluateHandle(COLOUR_TOOLS_SOURCE);
+      const contrast = await control.evaluate((node, tools) => {
+        const { parse, over, contrast, backgroundBehind } = tools;
+        const label = node.closest("label")!;
+        const background = backgroundBehind(label);
+        const border = parse(getComputedStyle(label).borderTopColor);
+        return contrast(over(border, background), background);
+      }, colourTools);
+      await colourTools.dispose();
       expect(contrast).toBeGreaterThanOrEqual(3);
       await control.click();
       const menu = page.getByRole("listbox", { name: "Builder", exact: true });

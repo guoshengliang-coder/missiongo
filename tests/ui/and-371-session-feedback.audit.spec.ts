@@ -3,6 +3,7 @@ import { expect, test } from "@playwright/test";
 import { WEB_ORIGIN } from "./fixture.mjs";
 import { AUDIT_SOURCE } from "./audit-page.mjs";
 import type { AgentSessionCommand } from "../../apps/web/src/types";
+import { advanceSessionDetailPoll } from "./polling";
 
 const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as { productId: string };
 const image = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><rect width="640" height="360" fill="#16382e"/><text x="40" y="80" fill="#a9edcf" font-size="32">AND-371 Preview</text></svg>').toString("base64");
@@ -13,6 +14,7 @@ for (const width of [320, 768, 1440]) for (const theme of ["light", "dark"] as c
     const context = await browser.newContext({ baseURL: WEB_ORIGIN, viewport: { width, height: 900 }, hasTouch: touch, isMobile: touch,
       colorScheme: theme, storageState: "./tests/ui/.auth/state.json" });
     const page = await context.newPage();
+    await page.clock.install();
     const id = "and371-session"; const stamp = new Date().toISOString();
     const attachment = { id: "source-file", filename: "notes.txt", kind: "document" as const, contentType: "text/plain", sizeBytes: 5, sha256: "fixture" };
     let command: AgentSessionCommand = { id: "queued-message", kind: "message", text: "那你找一个需要审批的内容来测试下", status: "queued", createdAt: stamp, attachments: [attachment] };
@@ -107,6 +109,7 @@ for (const width of [320, 768, 1440]) for (const theme of ["light", "dark"] as c
     // Native delivery is no promise of execution; later states must not offer recall.
     for (const status of ["delivering", "delivered", "delivery_unknown", "failed"] as const) {
       command = { ...command, id: `message-${status}`, status };
+      await advanceSessionDetailPoll(page);
       await expect(page.locator(`.agent-console-message-outgoing-${status}`)).toBeVisible({ timeout: 10_000 });
       await expect(page.getByRole("button", { name: "撤回编辑" })).toHaveCount(0);
       if (status === "delivered") await expect(page.locator(".agent-reply-feedback")).toContainText("已送达，待执行");

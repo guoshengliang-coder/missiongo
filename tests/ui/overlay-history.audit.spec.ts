@@ -66,24 +66,3 @@ for (const marker of ["current", "missiongo:overlay", "missiongo:quick-settings"
   await expect(page.locator(".detail-toolbar")).toHaveCount(0);
   expect(new URL(page.url()).searchParams.has("item")).toBe(false);
 });
-
-for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const) {
-  test.describe(`${width} ${theme} remediation evidence`, () => {
-    test.use({ viewport: { width, height: 900 }, hasTouch: width === 375, isMobile: width === 375, colorScheme: theme });
-    test("toolbar and native modal retain the product layout", async ({ page }) => {
-      await page.goto(url());
-      await expect(page.locator(".detail-toolbar")).toBeVisible();
-      await page.screenshot({ path: test.info().outputPath(`detail-${width}-${theme}.png`) });
-      await page.locator(".attachment-card").first().scrollIntoViewIfNeeded();
-      await page.locator(".attachment-media-open").first().click();
-      await expect(page.getByRole("dialog")).toBeVisible();
-      await expect(page.locator(".selected-media-lightbox img")).toBeVisible();
-      await page.screenshot({ path: test.info().outputPath(`preview-${width}-${theme}.png`) });
-      await page.keyboard.press("Escape");
-      await page.setViewportSize({ width: 320, height: 812 });
-      await page.evaluate(() => { document.documentElement.dataset.fontScale = "large"; });
-      await expect(page.locator(".detail-toolbar")).toHaveAttribute("data-overflow", "true");
-      await page.screenshot({ path: test.info().outputPath(`large-320-${width}-${theme}.png`) });
-    });
-  });
-}

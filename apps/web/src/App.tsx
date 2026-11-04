@@ -152,7 +152,7 @@ import { environmentFields, environmentSummary, platformName, type EnvironmentFi
 import { ErrorBoundary, LoadFailureNotice } from "./ErrorBoundary";
 import { useI18n } from "./i18n";
 import { DownloadsPanel } from "./downloads-panel";
-import { afterOverlaysClose, afterHistoryBack } from "./overlay";
+import { afterOverlaysClose, afterTopOverlayCloses, afterHistoryBack } from "./overlay";
 import { SettingsPage } from "./settings-page";
 import { useSettingsNavigation } from "./settings-navigation";
 import { useSettingsDraft } from "./settings-drafts";
@@ -2484,7 +2484,6 @@ function ActiveMediaPreview({ itemKey, attachment }: { itemKey: string; attachme
 
 function TransferItemDialog({ item, onClose }: { item: WorkItem; onClose: () => void }) {
   const { t } = useI18n();
-  const queryClient = useQueryClient();
   const productsQuery = useQuery({ queryKey: ["products"], queryFn: () => api.listProducts() });
   const products = (productsQuery.data ?? []).filter((p) => p.id !== item.productId && !p.archivedAt && p.access?.canOperate);
   const source = productsQuery.data?.find((p) => p.id === item.productId);
@@ -2494,13 +2493,16 @@ function TransferItemDialog({ item, onClose }: { item: WorkItem; onClose: () => 
   const target = products.find((p) => p.id === targetId);
   const mutation = useMutation({
     mutationFn: () => api.transferItem(item.key, targetId, requestId),
-    onSuccess: async (updated) => {
-      await queryClient.invalidateQueries({ queryKey: ["items"] });
+    onSuccess: (updated) => {
       const url = new URL(window.location.href);
       url.search = "";
       url.searchParams.set("product", updated.productId);
       url.searchParams.set("item", updated.key);
-      window.location.assign(url.toString());
+      // Refetching the source list can unmount this row and its modal. Finish
+      // the shared history unwind before navigation, or Back can cancel it.
+      // The destination reload reads fresh data; no source refetch is needed.
+      afterTopOverlayCloses(() => window.location.assign(url.toString()));
+      onClose();
     },
   });
   return <Modal title={t("transferItem")} subtitle={item.key} onClose={mutation.isPending ? () => {} : onClose}>

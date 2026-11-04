@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 import { WEB_ORIGIN } from "./fixture.mjs";
+import { advanceSessionDetailPoll, advanceSessionListPoll } from "./polling";
 
 const fixture = JSON.parse(readFileSync(fileURLToPath(new URL("./.auth/fixture.json", import.meta.url)), "utf8")) as { productId: string };
 
@@ -10,6 +11,7 @@ for (const kind of ["opencode", "codex", "claude_code"]) for (const phone of [tr
     const context = await browser.newContext({ baseURL: WEB_ORIGIN, viewport: phone ? { width: 375, height: 812 } : { width: 1440, height: 900 },
       isMobile: phone, hasTouch: phone, colorScheme: phone ? "dark" : "light", storageState: "./tests/ui/.auth/state.json" });
     const page = await context.newPage();
+    await page.clock.install();
     const stamp = new Date().toISOString();
     const old = new Date(Date.now() - 12 * 60_000).toISOString();
     const id = `health-${kind}`;
@@ -46,16 +48,20 @@ for (const kind of ["opencode", "codex", "claude_code"]) for (const phone of [tr
     await expect(outgoing).toContainText("排队中");
     await expect(page.locator(".agent-run-diagnostics")).toContainText("当前工具结束");
     accepted = true;
+    await advanceSessionDetailPoll(page);
     await expect(page.locator(".agent-run-diagnostics")).toContainText("尚未确认开始处理", { timeout: 10_000 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
     await page.screenshot({ path: testInfo.outputPath(`tool-wait-${kind}.png`) });
     status = "stalled";
+    await advanceSessionListPoll(page);
     await expect(page.locator(".agent-console-activity-stalled")).toBeVisible({ timeout: 10_000 });
     await expect(page.locator(".agent-run-warning")).toContainText("没有自动终止");
     status = "unavailable";
+    await advanceSessionListPoll(page);
     await expect(page.locator(".agent-console-activity-unavailable")).toBeVisible({ timeout: 10_000 });
     // Native idle remains idle even when a reply is still waiting in MissionGo.
     progressed = true; accepted = false; status = "idle";
+    await advanceSessionListPoll(page);
     await expect(page.locator(".agent-console-activity-idle")).toBeVisible({ timeout: 10_000 });
     await expect(page.locator(".agent-console-background")).toHaveCount(0);
     expect(inputs).toEqual([]);

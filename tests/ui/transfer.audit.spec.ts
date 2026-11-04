@@ -57,3 +57,35 @@ for (const viewport of [{ name: "phone", width: 375, height: 812 }, { name: "des
     });
   }
 }
+
+for (const width of [375, 1440]) {
+  test(`transfer from a nested message-center detail completes at ${width}px`, async ({ page, request }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const user = (await (await request.get("/api/v1/bootstrap")).json()).user;
+    const target = await (await request.post("/api/v1/products", { data: {
+      name: "Nested transfer destination", keyPrefix: `N${randomUUID().slice(0, 7).toUpperCase()}`,
+    } })).json();
+    const item = await (await request.post("/api/v1/items", { data: {
+      productId: fixture.productId, type: "note", priority: "normal", title: "Nested transfer regression", description: "",
+      environment: { platform: "web" },
+    } })).json();
+    expect((await request.post(`/api/v1/items/${item.key}/comments`, { data: {
+      text: "Review this project assignment", mentionAccountIds: [user.id],
+    } })).ok()).toBe(true);
+    await page.goto(`/?product=${fixture.productId}&status=all`);
+    await page.getByRole("button", { name: "待处理", exact: true }).click();
+    await page.getByRole("button", { name: /^通知/ }).click();
+    await page.locator(".message-list-row").filter({ hasText: item.key }).click();
+    await page.getByRole("button", { name: "前往评论 / 回复", exact: true }).click();
+    const business = page.locator(".message-business-modal");
+    await business.locator(".detail-toolbar .detail-more-menu > summary").click();
+    await business.getByRole("button", { name: "迁移条目", exact: true }).click();
+    const transfer = page.getByRole("dialog", { name: "迁移条目", exact: true });
+    await expect.poll(() => page.evaluate(() => history.state?.["missiongo:dialogs"]?.length ?? 0)).toBeGreaterThanOrEqual(3);
+    await chooseOption(transfer.getByLabel("目标产品"), target.id);
+    await transfer.getByRole("button", { name: "下一步", exact: true }).click();
+    await transfer.getByRole("button", { name: "迁移条目", exact: true }).click();
+    await expect(page).toHaveURL(new RegExp(`product=${target.id}.*item=${target.keyPrefix}-1`));
+    await expect(page.locator(".transfer-banner")).toContainText(`迁移自 ${item.key}`);
+  });
+}

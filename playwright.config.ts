@@ -23,6 +23,8 @@ export default defineConfig({
   testDir: "./tests/ui",
   globalSetup: "./tests/ui/global-setup.mjs",
   globalTeardown: "./tests/ui/global-teardown.mjs",
+  // CI parallelizes isolated runners with --shard. Workers here share the
+  // fixture account and database, so keep files/tests sequential per runner.
   fullyParallel: false,
   workers: 1,
   reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : [["list"]],

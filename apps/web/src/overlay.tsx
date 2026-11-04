@@ -7,6 +7,7 @@ const layers = new Map<string, Layer>();
 let unwinding: { url: string } | undefined;
 let suspended = 0;
 const afterClose: Array<() => void> = [];
+const afterLayerClose: Array<{ id: string | undefined; action: () => void }> = [];
 const ids = (): string[] => Array.isArray(history.state?.[DIALOG_HISTORY_MARKER]) ? history.state[DIALOG_HISTORY_MARKER] : [];
 const state = () => typeof history.state === "object" && history.state ? history.state : {};
 const syncDepth = () => reportAndroidBackDepth(backDepthFromState(history.state));
@@ -45,7 +46,19 @@ function reconcile() {
     }
   }
   syncDepth();
+  const ready = afterLayerClose.filter(pending => !pending.id || (!layers.has(pending.id) && !ids().includes(pending.id)));
+  for (const pending of ready) {
+    afterLayerClose.splice(afterLayerClose.indexOf(pending), 1);
+  }
+  for (const pending of ready) pending.action();
   if (!layers.size) for (const action of afterClose.splice(0)) action();
+}
+
+/** Queue before closing the current modal. Parent layers may stay open (e.g.
+ * a transfer inside the message center); only this layer must finish Back. */
+export function afterTopOverlayCloses(action: () => void) {
+  afterLayerClose.push({ id: active().at(-1)?.id, action });
+  queueMicrotask(reconcile);
 }
 
 /** A guard may approve a page navigation. First retire its confirmation's

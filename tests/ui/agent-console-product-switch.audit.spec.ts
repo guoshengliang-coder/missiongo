@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { expect, test, type Page } from "@playwright/test";
+import { advanceSessionListPoll } from "./polling";
 
 /**
  * A manual product pick in the agent console stays picked (AND-263).
@@ -100,16 +101,17 @@ test("a manual product pick survives the 5s session refetch", async ({ page }) =
     listFetches += 1;
   });
 
+  await page.clock.install();
   await page.goto(CONSOLE_URL);
   await expect(page.locator(".agent-console-reply textarea")).toBeVisible();
   await expect.poll(() => listFetches).toBeGreaterThanOrEqual(1);
 
   await chooseOption(page.getByRole("combobox", { name: "当前产品", exact: true }), otherProduct.id);
 
-  // The bounce-back fired on the refetch after a switch, so wait past at least
-  // one refetch that happened after the pick before asserting it held.
-  await page.waitForTimeout(6_500);
-  expect(listFetches).toBeGreaterThanOrEqual(2);
+  // Observe a new list read after the pick, through the real polling callback.
+  const beforePoll = listFetches;
+  await advanceSessionListPoll(page);
+  await expect.poll(() => listFetches).toBeGreaterThan(beforePoll);
 
   expect(await page.evaluate(() => localStorage.getItem("missiongo.product"))).toBe(otherProduct.id);
   await expect(page.locator("span.product-switcher-name")).toHaveText(otherProduct.name);
