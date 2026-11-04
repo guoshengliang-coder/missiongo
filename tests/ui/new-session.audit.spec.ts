@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { solidPng } from "../../scripts/seed-ui-fixture.mjs";
 
 for (const width of [375, 768, 1440]) {
   test(`project conversation retains a local draft and retries first send once at ${width}px`, async ({ page, request }, testInfo) => {
@@ -55,6 +56,14 @@ for (const width of [375, 768, 1440]) {
     const draft = page.locator(".agent-console-reply textarea");
     await expect(draft).toBeVisible();
     await draft.fill("先讨论这个方案");
+    await page.locator(".agent-console-reply input[type=file]").setInputFiles({ name: "draft.png", mimeType: "image/png", buffer: solidPng(160, 90, [214, 226, 240]) });
+    const preview = page.getByRole("button", { name: "预览 draft.png", exact: true });
+    await preview.click();
+    await expect(page.locator(".selected-media-lightbox .zoomable-image")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(preview).toBeFocused();
+    await expect(draft).toHaveValue("先讨论这个方案");
+    await page.getByRole("button", { name: "移除 draft.png", exact: true }).click();
     await page.locator(".agent-console-reply input[type=file]").setInputFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("notes") });
     await page.screenshot({ path: testInfo.outputPath(`new-session-draft-${width}.png`) });
     expect(prepareCount).toBe(0);

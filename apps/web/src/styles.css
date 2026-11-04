@@ -782,7 +782,6 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-chat-draft-files { display: flex; flex-wrap: wrap; gap: 6px; }
 .agent-chat-draft-files > span { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 5px 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-inset); font-size: var(--text-xs); overflow-wrap: anywhere; }
 .agent-chat-draft-files > .agent-chat-draft-file { width: min(236px, 100%); min-width: 0; padding: 4px 2px 4px 4px; gap: 7px; overflow: hidden; }
-.agent-chat-draft-file-preview { width: 52px; height: 48px; flex: 0 0 52px; display: grid; place-items: center; overflow: hidden; color: var(--muted); background: var(--tile-bg); border-radius: var(--radius-xs); }
 .agent-chat-draft-file-preview img { width: 100%; height: 100%; object-fit: cover; }
 .agent-chat-draft-file-copy { min-width: 0; flex: 1; display: grid; gap: 3px; }
 .agent-chat-draft-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -791,7 +790,8 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
    the row; the chip hugs the preview and the remove button, at the same height
    as every other chip (AND-243). */
 .agent-chat-draft-files > .agent-chat-draft-file.agent-chat-draft-file-media { width: auto; padding-right: 0; }
-.agent-chat-draft-files button { width: 44px; height: 44px; flex: 0 0 auto; border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 0; display: grid; place-items: center; }
+.agent-chat-draft-file > button { width: 44px; height: 44px; flex: 0 0 auto; border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 0; display: grid; place-items: center; }
+.agent-chat-draft-file > .agent-chat-draft-file-preview { width: 52px; height: 48px; flex: 0 0 52px; display: grid; place-items: center; overflow: hidden; color: var(--muted); background: var(--tile-bg); border-radius: var(--radius-xs); }
 /* AND-234: anchors the shared drag overlay to the reply form. The overlay's
    sticky message assumes a tall capture dialog; this form is a couple of rows,
    so the message sits inline instead of reserving margin it cannot fill. */

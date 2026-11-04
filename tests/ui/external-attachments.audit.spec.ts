@@ -59,6 +59,12 @@ for (const kind of ["codex", "claude_code", "opencode"] as const) {
           { name: "reference.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4 fixture") },
         ]);
         await expect(page.locator(".agent-chat-draft-files > *")).toHaveCount(2);
+        const draftPreview = page.getByRole("button", { name: "预览 reference.png", exact: true });
+        await draftPreview.click();
+        await expect(page.locator(".selected-media-lightbox .zoomable-image img")).toHaveAttribute("alt", "reference.png");
+        await page.getByRole("button", { name: "关闭预览", exact: true }).click();
+        await expect(draftPreview).toBeFocused();
+        await expect(page.locator(".agent-chat-draft-files > *")).toHaveCount(2);
         await page.getByRole("button", { name: "发送回复", exact: true }).click();
         await expect(page.locator(".agent-chat-draft-files > *")).toHaveCount(2);
         await expect(page.getByRole("button", { name: "发送回复", exact: true })).toBeEnabled();
@@ -70,6 +76,10 @@ for (const kind of ["codex", "claude_code", "opencode"] as const) {
         await expect(page.getByText("暂时还没有可显示的消息。")).toHaveCount(0);
         await expect(page.locator(".agent-chat-attachment")).toHaveCount(1);
         await expect.poll(() => page.locator('.agent-chat-image img').evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(160);
+        await page.locator(".agent-chat-image-open").click();
+        await expect(page.locator(".selected-media-lightbox .zoomable-image")).toBeVisible();
+        await page.keyboard.press("Escape");
+        await expect(page.locator(".agent-chat-image-open")).toBeFocused();
         const picker = await page.getByRole("button", { name: "添加图片、文件或视频", exact: true }).boundingBox();
         expect(picker!.width).toBeGreaterThanOrEqual(44); expect(picker!.height).toBeGreaterThanOrEqual(44);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

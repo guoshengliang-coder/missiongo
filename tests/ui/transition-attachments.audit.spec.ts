@@ -148,6 +148,13 @@ test("paste and drop stage evidence, reject unsupported files, and explicit canc
     element.dispatchEvent(new ClipboardEvent("paste", { clipboardData: clipboard, bubbles: true, cancelable: true }));
   });
   await expect(dialog.locator(".agent-chat-draft-files img")).toBeVisible();
+  const preview = page.getByRole("button", { name: "预览 pasted.png", exact: true });
+  await preview.click();
+  await expect(page.locator(".selected-media-lightbox .zoomable-image")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".selected-media-lightbox")).toHaveCount(0);
+  await expect(preview).toBeFocused();
+  await expect(dialog.locator("textarea")).toBeVisible();
   await dialog.locator("form").evaluate(element => {
     const dataTransfer = new DataTransfer();
     dataTransfer.items.add(new File(["Dropped text"], "dropped.txt", { type: "text/plain" }));
