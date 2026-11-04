@@ -18,6 +18,7 @@ public protocol NodeAPI: Sendable {
     func claimNext(waitMs: Int, availableAgentKinds: [String]?) async throws -> DispatchRequest?
     func reportResult(dispatchId: String, report: DispatchReport) async throws
     func listAgentSessions() async throws -> [NodeAgentSession]
+    func listAgentInterrupts() async throws -> [NodeAgentSession]
     func artifactJobs() async throws -> [AgentArtifactJob]
     func reportArtifact(id: String, result: AgentArtifactResult) async throws
     func downloadAgentSessionAttachment(sessionId: String, attachmentId: String) async throws -> Data
@@ -41,6 +42,9 @@ public extension NodeAPI {
     func permitManaged(id: String, generation: Int) async throws -> ManagedExecutionPermit { throw LaunchError("Managed API unsupported") }
     func reportManaged(id: String, observation: ManagedExecutionObservation) async throws -> ManagedObservationReceipt { throw LaunchError("Managed API unsupported") }
     func listAgentSessions() async throws -> [NodeAgentSession] { [] }
+    func listAgentInterrupts() async throws -> [NodeAgentSession] {
+        try await listAgentSessions().filter { $0.agentKind == "codex" && $0.managedExecution == nil && $0.command?.kind == "interrupt" }
+    }
     func downloadAgentSessionAttachment(sessionId: String, attachmentId: String) async throws -> Data {
         throw CocoaError(.fileNoSuchFile)
     }
@@ -238,6 +242,7 @@ public final class NodeLoop: @unchecked Sendable {
     /// The signal the running loops sleep on. Held as an instance property so
     /// `retryNow()` can wake them; created once because `run()` runs once.
     private let stopSignal = StopSignal()
+    private let sessionSynchronization = SessionSynchronization()
 
     private let agentCache = Locked<(agents: [DetectedAgent], at: Date)?>(nil)
     private let lastReposFingerprint = Locked<[RepoMapping]?>(nil)
@@ -317,11 +322,12 @@ public final class NodeLoop: @unchecked Sendable {
             async let heartbeat: Void = heartbeatLoop(stop: stop, fatal: fatal)
             async let claim: Void = claimLoop(stop: stop, fatal: fatal)
             async let sessions: Void = sessionLoop(stop: stop, fatal: fatal)
+            async let interrupts: Void = interruptLoop(stop: stop, fatal: fatal)
             async let managed: Void = managedLoop(stop: stop)
             async let artifacts: Void = artifactLoop(stop: stop)
             async let statusChecks: Void = statusCheckLoop(stop: stop)
             async let releases: Void = releaseObservationLoop(stop: stop)
-            _ = await (heartbeat, claim, sessions, managed, artifacts, statusChecks, releases)
+            _ = await (heartbeat, claim, sessions, interrupts, managed, artifacts, statusChecks, releases)
         } onCancel: {
             stop.stop()
         }
@@ -552,6 +558,7 @@ public final class NodeLoop: @unchecked Sendable {
             let wakeGeneration = stop.generation
             await shielded {
                 do {
+                    let mirrorEpoch = await self.sessionSynchronization.epoch
                     let sessions = try await self.api.listAgentSessions()
                     self.noteSuccess("同步 Agent 会话出错")
                     self.reconcileCapacity(sessions)
@@ -572,7 +579,8 @@ public final class NodeLoop: @unchecked Sendable {
                     // kinds now run side by side; inside a kind the server's
                     // order is kept and sessions stay serialized, so the
                     // per-kind state above still changes one session at a time.
-                    let grouped = Dictionary(grouping: sessions, by: \.agentKind).sorted { $0.key < $1.key }
+                    let mirrors = sessions.filter { !($0.agentKind == "codex" && $0.managedExecution == nil && $0.command?.kind == "interrupt") }
+                    let grouped = Dictionary(grouping: mirrors, by: \.agentKind).sorted { $0.key < $1.key }
                     await withTaskGroup(of: Void.self) { taskGroup in
                         for entry in grouped {
                             let kindSessions = entry.value
@@ -580,7 +588,7 @@ public final class NodeLoop: @unchecked Sendable {
                                 for session in kindSessions {
                                     await self.synchronizeOne(
                                         session, reported: reported, awaitingReport: awaitingReport,
-                                        rejectedUntil: rejectedUntil, stop: stop, fatal: fatal
+                                        rejectedUntil: rejectedUntil, stop: stop, fatal: fatal, mirrorEpoch: mirrorEpoch
                                     )
                                 }
                             }
@@ -588,6 +596,49 @@ public final class NodeLoop: @unchecked Sendable {
                     }
                 } catch {
                     self.handle(error, what: "同步 Agent 会话出错", stop: stop, fatal: fatal)
+                }
+            }
+            await stop.sleep(timing.sessionInterval, unlessWokenSince: wakeGeneration)
+        }
+    }
+
+    /// Poll independently of transcript reads, including a read already in flight.
+    /// Keep the legacy ordinary path for other adapters and managed stop ownership.
+    private func interruptLoop(stop: StopSignal, fatal: Locked<APIError?>) async {
+        let reported = Locked<[String: Data]>([:])
+        let awaitingReport = Locked<[String: (commandId: String, report: AgentSessionReport)]>([:])
+        let rejectedUntil = Locked<[String: Date]>([:])
+        while !stop.isStopped {
+            let wakeGeneration = stop.generation
+            await shielded {
+                do {
+                    let sessions = try await self.api.listAgentInterrupts()
+                    self.noteSuccess("投递停止请求出错")
+                    await withTaskGroup(of: Void.self) { group in
+                        for session in sessions where session.agentKind == "codex" && session.managedExecution == nil && session.command?.kind == "interrupt" {
+                            group.addTask {
+                                await self.sessionSynchronization.beginStop(session.id)
+                                // Serialize only uploads, never wait for a slow mirror read.
+                                await self.sessionSynchronization.acquireUpload(session.id)
+                                do {
+                                    if session.command?.status == "queued", awaitingReport.current[session.id]?.commandId != session.command?.id {
+                                        // Reserve before the side effect. Expired/cancelled requests cannot execute.
+                                        try await self.api.reportAgentSession(sessionId: session.id,
+                                            report: AgentSessionReport(status: session.status, messages: [],
+                                                commandId: session.command?.id, commandStatus: "delivering"))
+                                    }
+                                    await self.synchronizeOne(session, reported: reported, awaitingReport: awaitingReport,
+                                        rejectedUntil: rejectedUntil, stop: stop, fatal: fatal)
+                                } catch {
+                                    self.handle(error, what: "投递停止请求出错", stop: stop, fatal: fatal)
+                                }
+                                await self.sessionSynchronization.releaseUpload(session.id)
+                                await self.sessionSynchronization.endStop(session.id)
+                            }
+                        }
+                    }
+                } catch {
+                    self.handle(error, what: "投递停止请求出错", stop: stop, fatal: fatal)
                 }
             }
             await stop.sleep(timing.sessionInterval, unlessWokenSince: wakeGeneration)
@@ -602,8 +653,10 @@ public final class NodeLoop: @unchecked Sendable {
         awaitingReport: Locked<[String: (commandId: String, report: AgentSessionReport)]>,
         rejectedUntil: Locked<[String: Date]>,
         stop: StopSignal,
-        fatal: Locked<APIError?>
+        fatal: Locked<APIError?>,
+        mirrorEpoch: Int? = nil
     ) async {
+        if let mirrorEpoch, !(await sessionSynchronization.isCurrent(session.id, epoch: mirrorEpoch)) { return }
         var session = session
         if var binding = session.managedExecution {
             if !managedExecutionEnabled {
@@ -627,7 +680,10 @@ public final class NodeLoop: @unchecked Sendable {
             // this with the real state.
             let report = AgentSessionReport(
                 status: "unavailable", messages: [],
-                error: "本机已停用 \(session.agentKind) 集成，会话暂不同步；重新启用后会自动恢复。"
+                error: "本机已停用 \(session.agentKind) 集成，会话暂不同步；重新启用后会自动恢复。",
+                commandId: session.command?.kind == "interrupt" ? session.command?.id : nil,
+                commandStatus: session.command?.kind == "interrupt" ? "failed" : nil,
+                commandError: session.command?.kind == "interrupt" ? "停止尚未确认：本机已停用集成，请在来源客户端核实。" : nil
             )
             await self.uploadAgentSessionReport(
                 report, for: session, reported: reported, awaitingReport: awaitingReport,
@@ -638,7 +694,7 @@ public final class NodeLoop: @unchecked Sendable {
         let report: AgentSessionReport
         if let waiting = awaitingReport.current[session.id],
            session.command?.id == waiting.commandId,
-           session.command?.status == "delivering" {
+           (session.command?.status == "delivering" || session.command?.kind == "interrupt") {
             report = waiting.report
         } else {
             _ = awaitingReport.withLock { $0.removeValue(forKey: session.id) }
@@ -648,8 +704,14 @@ public final class NodeLoop: @unchecked Sendable {
                     let sourceReport = try await adapter.synchronize(prepared)
                     let healthKey = session.externalBindingGeneration.map { "\(session.id):external:\($0)" } ?? session.id
                     // A failed observation is not evidence of source progress.
-                    report = sourceReport.status == "unavailable" ? sourceReport
-                        : self.sessionHealth.observe(sourceReport, key: healthKey)
+                    if let command = session.command, command.kind == "interrupt", sourceReport.commandId == nil {
+                        report = AgentSessionReport(status: sourceReport.status, messages: sourceReport.messages,
+                            error: sourceReport.error, commandId: command.id, commandStatus: "failed",
+                            commandError: "停止尚未确认：\(sourceReport.error ?? "节点未能执行停止请求，请在来源客户端核实。")")
+                    } else {
+                        report = sourceReport.status == "unavailable" ? sourceReport
+                            : self.sessionHealth.observe(sourceReport, key: healthKey)
+                    }
                 } catch {
                     // After the command reached Codex, a transport
                     // error cannot prove whether turn/start took it.
@@ -698,10 +760,18 @@ public final class NodeLoop: @unchecked Sendable {
                     sessionRef: session.sessionRef, model: report.model, api: api)
             } catch { log("Managed observation: \(error.localizedDescription)") }
         }
+        if let mirrorEpoch {
+            await sessionSynchronization.acquireUpload(session.id)
+            guard await sessionSynchronization.isCurrent(session.id, epoch: mirrorEpoch) else {
+                await sessionSynchronization.releaseUpload(session.id)
+                return
+            }
+        }
         await self.uploadAgentSessionReport(
             report, for: session, reported: reported, awaitingReport: awaitingReport,
             rejectedUntil: rejectedUntil, stop: stop, fatal: fatal
         )
+        if mirrorEpoch != nil { await sessionSynchronization.releaseUpload(session.id) }
     }
 
     /// Uploads one session's report unless it is byte-for-byte what the server
@@ -735,9 +805,10 @@ public final class NodeLoop: @unchecked Sendable {
         // the only thing standing between a timeout and a duplicate reply
         // (AND-226).
         if (session.agentKind == "codex" || session.agentKind == "opencode"),
-           session.command?.status == "delivering",
+           (session.command?.status == "delivering" || session.command?.kind == "interrupt"),
            let commandId = report.commandId,
-           report.commandStatus == "delivered" || report.commandStatus == "delivery_unknown" {
+           report.commandStatus == "delivered" || report.commandStatus == "delivery_unknown"
+            || (session.command?.kind == "interrupt" && report.commandStatus == "failed") {
             awaitingReport.withLock { $0[session.id] = (commandId, report) }
         }
         do {

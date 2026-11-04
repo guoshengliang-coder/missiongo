@@ -644,6 +644,14 @@ final class APIClientTests: XCTestCase {
         XCTAssertNotEqual(api.externalWorkerId, client().externalWorkerId)
     }
 
+    func testStopPollIsIndependentAndFiltersOldServersThatIgnoreTheQuery() async throws {
+        StubURLProtocol.install { _, _ in .response(status: 200, body: #"{"sessions":[{"id":"mirror","sessionRef":"a","status":"active"},{"id":"stop","sessionRef":"b","status":"active","command":{"id":"stop-command","kind":"interrupt","text":"stop","turnId":"old-turn","status":"queued","createdAt":""}}]}"#) }
+        let stops = try await client().listAgentInterrupts()
+        XCTAssertEqual(stops.map(\.id), ["stop"])
+        XCTAssertEqual(StubURLProtocol.recorded.first?.request.url?.query, "interruptsOnly=1")
+        XCTAssertEqual(StubURLProtocol.recorded.first?.request.value(forHTTPHeaderField: "Authorization"), "Bearer mgn_x")
+    }
+
     func testAutomaticNativeConnectionUsesZeroGenerationAndEchoesOnlyTheSelectedIdentity() async throws {
         StubURLProtocol.install { request, _ in
             if request.httpMethod == "GET" {

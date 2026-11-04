@@ -3352,13 +3352,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   };
   app.get("/api/v1/node/agent-sessions", async (request) => {
     const node = requireNode(request);
+    const interruptsOnly = (request.query as { interruptsOnly?: string }).interruptsOnly === "1";
     if (!options.managedExecution?.enabled) {
       const active = store.database.connection.prepare("SELECT id,generation FROM managed_execution_intents WHERE node_id=? AND ownership_held=1")
         .all(node.nodeId) as { id: string; generation: number }[];
       for (const intent of active) new ManagedExecutionStore(store.database).stopForNode(node, intent.id, intent.generation);
     }
     const acceptsAttachments = request.headers["x-missiongo-chat-attachments"] === "1";
-    const dispatchSessions = agentSessionStore.listForNode(node.nodeId).filter(session => {
+    const dispatchSessions = agentSessionStore.listForNode(node.nodeId, interruptsOnly).filter(session => {
       const dispatch = session.dispatchId ? dispatchStore.getDispatch(node.accountId,session.dispatchId) : undefined;
       if (!dispatch?.productId) return true;
       try { requireNodeAccountPermission(node.accountId,dispatch.productId,true); return true; } catch { return false; }
@@ -3384,7 +3385,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         ? { ...session, command: undefined, ...approvalControl }
         : { ...session, ...approvalControl };
     });
-    const external = request.headers["x-missiongo-external-sessions"] === "1"
+    const external = !interruptsOnly && request.headers["x-missiongo-external-sessions"] === "1"
       ? externalNativeStore.listForNode(node.accountId, node.nodeId, externalWorker(request),
         (productId, execute) => requireNodeAccountPermission(node.accountId, productId, execute), request.headers["x-missiongo-external-auto-connect"] === "1", request.headers["x-missiongo-external-settings"] === "1") : [];
     const externalAttachments = request.headers["x-missiongo-external-attachments"] === "1";

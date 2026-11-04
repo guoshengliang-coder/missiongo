@@ -782,13 +782,8 @@ public struct CodexLauncher: AgentAdapter {
             return AgentSessionReport(status: "unavailable", messages: [], commandId: command.id,
                 commandStatus: "failed", commandError: "终止未发送：缺少原回合标识，请在来源客户端核实。")
         }
-        let before = try? await control.readThreadStatus(socketPath: location.controlSocketPath, threadId: session.sessionRef)
-        if before?.status == "idle" {
-            return AgentSessionReport(status: "idle", stopConfirmed: true, messages: before?.messages ?? [], commandId: command.id,
-                commandStatus: "delivered", turnActive: false)
-        }
-        // Even when observation failed, the explicit command authorizes only
-        // this old turn. It cannot interrupt a newer turn or restart a daemon.
+        // Send the exact-turn interrupt before any observation. A slow status
+        // read must not postpone the user's stop. The RPC cannot target a newer turn.
         control.cancelApprovals(threadId: session.sessionRef, turnId: turnId)
         var interruptError: String?
         do {
@@ -802,7 +797,15 @@ public struct CodexLauncher: AgentAdapter {
         let after: CodexThreadSnapshot?
         var observationError: String?
         do {
-            after = try await control.readThreadStatus(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+            let deadline = Date().addingTimeInterval(2)
+            var observed = try await control.readThreadStatus(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+            // An interrupt ACK can precede the terminal event. Give the source
+            // a short confirmation window without ever sending the stop again.
+            while observed.status == "active", Date() < deadline {
+                try await Task.sleep(nanoseconds: 200_000_000)
+                observed = try await control.readThreadStatus(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+            }
+            after = observed
         } catch {
             after = nil
             observationError = CodexSessionFailure.redact(error.localizedDescription)

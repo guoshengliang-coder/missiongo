@@ -9,7 +9,7 @@ for (const agent of ["codex", "claude_code", "opencode"]) for (const phone of [f
     await page.emulateMedia({ colorScheme: dark ? "dark" : "light" });
     const id = "stop-lifecycle";
     const stamp = new Date().toISOString();
-    let phase: "running" | "queued" | "failed" | "background" | "continued" = "running";
+    let phase: "running" | "queued" | "delivering" | "failed" | "background" | "continued" = "running";
     const sent: string[] = [];
     await page.route("**/api/v1/dispatches/stop-dispatch/stop", async route => {
       phase = "queued";
@@ -25,7 +25,7 @@ for (const agent of ["codex", "claude_code", "opencode"]) for (const phone of [f
         return;
       }
       const stopCommand = phase === "running" ? undefined : { id: "stop", kind: "interrupt", text: "stop", createdAt: stamp,
-        stopConfirmed: phase === "background" || phase === "continued", status: phase === "queued" ? "queued" : phase === "failed" ? "failed" : "delivered", ...(phase === "failed" ? { error: "停止尚未确认" } : {}) };
+        stopConfirmed: phase === "background" || phase === "continued", status: phase === "queued" ? "queued" : phase === "delivering" ? "delivering" : phase === "failed" ? "failed" : "delivered", ...(phase === "failed" ? { error: "停止尚未确认" } : {}) };
       const command = phase === "continued" ? { id: "next", kind: "message", text: "继续处理", status: "delivered", createdAt: new Date(Date.now()+1000).toISOString() } : stopCommand;
       const common = { id, agentSessionId: id, dispatchId: "stop-dispatch", agentKind: agent, status: phase === "failed" ? "unavailable" : "active",
         createdAt: stamp, updatedAt: stamp, activityAt: stamp, nodeName: "Fixture", nodeConnectionState: "online", nodeRevoked: false,
@@ -48,8 +48,15 @@ for (const agent of ["codex", "claude_code", "opencode"]) for (const phone of [f
     const composer = page.locator(".agent-console-reply textarea");
     await expect(composer).toBeDisabled();
     await expect(page.locator(".agent-session-command")).toContainText("尚未确认原回合停止");
+    await expect(stop).toBeDisabled();
+    phase = "delivering"; await page.reload();
+    await expect(page.locator(".agent-session-command")).toContainText("正在中断并确认结果");
+    await expect(stop).toBeDisabled();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath("stop-delivering.png") });
     expect(sent).toEqual([]);
     phase = "failed"; await page.reload();
+    await expect(stop).toBeEnabled();
     await expect(page.locator(".agent-session-command")).toContainText("停止尚未确认");
     await expect(composer).toBeEnabled();
     phase = "background"; await page.reload();

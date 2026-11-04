@@ -545,6 +545,8 @@ export function AgentSessionConsole({
     ? send.data
     : undefined;
   const command = latestAgentSessionCommand(sessionQuery.data?.command, submittedCommand);
+  const stopCommand = sessionQuery.data?.stopCommand ?? selected?.stopCommand ?? (command?.kind === "interrupt" ? command : undefined);
+  const stopPending = stopCommand?.status === "queued" || stopCommand?.status === "delivering" || stopCommand?.status === "delivery_unknown";
   const pending = command?.status === "queued" || command?.status === "delivering"
     || command?.status === "delivery_unknown";
   const sendingSelected = send.isPending && send.variables?.sessionId === selected?.agentSessionId;
@@ -769,7 +771,7 @@ export function AgentSessionConsole({
         <button
           type="button"
           className="secondary-button"
-          disabled={retryDispatch.isPending || stopDispatch.isPending}
+          disabled={retryDispatch.isPending || stopDispatch.isPending || stopPending}
           onClick={async () => {
             if (await confirm(t("agentConsoleStopConfirm"))) stopDispatch.mutate();
           }}
@@ -1362,7 +1364,7 @@ export function AgentSessionConsole({
                 <p className="inline-error">{localizedErrorText(retryDispatch.error ?? stopDispatch.error, t)}</p>
               )}
               {archiveSession.isError && <p className="inline-error">{localizedErrorText(archiveSession.error, t)}</p>}
-              <AgentStopFeedback stop={sessionQuery.data?.stopCommand ?? selected.stopCommand ?? (command?.kind === "interrupt" ? command : undefined)}
+              <AgentStopFeedback stop={stopCommand}
                 latestCommand={command} turnActive={sessionQuery.data?.turnState?.turnActive ?? false}
                 backgroundRunning={(sessionQuery.data?.activities.length ?? 0) > 0} />
               {(selected.canReply || selected.replyBlockedReason === "starting") && selected.agentSessionId ? (

@@ -15,6 +15,7 @@ private final class FakeAPI: NodeAPI, @unchecked Sendable {
     let automaticRefs = Locked<[String]>([])
     let automaticError = Locked<APIError?>(nil)
     let sessionReportFailures = Locked(0)
+    let stopResultFailures = Locked(0)
     let rejectedSessionId = Locked<String?>(nil)
     let attachmentData = Locked<[String: Data]>([:])
     let queue: Locked<[Result<DispatchRequest?, Error>]>
@@ -73,6 +74,13 @@ private final class FakeAPI: NodeAPI, @unchecked Sendable {
 
     func reportAgentSession(sessionId: String, report: AgentSessionReport) async throws {
         sessionUploadAttempts.withLock { $0 += 1 }
+        if report.commandStatus == "delivered" || report.commandStatus == "failed" {
+            let drop = stopResultFailures.withLock { value -> Bool in
+                if value == 0 { return false }
+                value -= 1; return true
+            }
+            if drop { throw APIError.network(NetworkFailure(host: "mg.test", error: URLError(.networkConnectionLost))) }
+        }
         if rejectedSessionId.current == sessionId {
             throw APIError.http(operation: "上报会话", status: 400, detail: "Invalid snapshot")
         }
@@ -164,6 +172,29 @@ private final class SlowCodexAdapter: AgentAdapter {
     func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
         try await Task.sleep(nanoseconds: 1_500_000_000)
         return AgentSessionReport(status: "idle", messages: [])
+    }
+}
+
+private final class BlockedMirrorAdapter: AgentAdapter {
+    let kind = "codex"
+    let blockedId: String
+    let started = Locked(false)
+    let release = Locked(false)
+    let interruptions = Locked<[String]>([])
+    init(blockedId: String) { self.blockedId = blockedId }
+    func detect() async -> String? { "fixture" }
+    func launch(_ job: DispatchJob) async throws -> LaunchResult { throw LaunchError("not used") }
+    func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
+        if let command = session.command, command.kind == "interrupt" {
+            interruptions.withLock { $0.append(command.id) }
+            return AgentSessionReport(status: "idle", stopConfirmed: true, messages: [],
+                commandId: command.id, commandStatus: "delivered", turnActive: false)
+        }
+        if session.id == blockedId {
+            started.withLock { $0 = true }
+            while !release.current { try? await Task.sleep(nanoseconds: 10_000_000) }
+        }
+        return AgentSessionReport(status: "active", messages: [], turnActive: true)
     }
 }
 
@@ -277,15 +308,71 @@ final class NodeLoopTests: XCTestCase {
         let loop = NodeLoop(api: api, adapters: [CodexReplyAdapter(fail: true)], fallbackNodeName: "Fixture",
             timing: snapshotTiming(), log: { _ in })
         let task = Task { try await loop.run() }
-        await waitUntil { !api.sessionReports.current.isEmpty }
+        await waitUntil { api.sessionReports.current.contains { $0.1.commandStatus == "failed" } }
         task.cancel(); try await task.value
-        let report = try XCTUnwrap(api.sessionReports.current.first?.1)
+        let report = try XCTUnwrap(api.sessionReports.current.first { $0.1.commandStatus == "failed" }?.1)
         XCTAssertEqual(report.commandId, "stop")
         XCTAssertEqual(report.commandStatus, "failed")
         XCTAssertEqual(report.status, "unavailable")
         XCTAssertNil(report.turnActive)
         XCTAssertNil(report.observedAt)
         XCTAssertTrue(report.commandError?.contains("终止尚未确认") == true)
+    }
+
+    func testStopsBypassBlockedCodexReadsAndDiscardPreStopMirrors() async throws {
+        for blockedId in ["target", "another-session"] {
+            let api = FakeAPI(claims: [])
+            let target = NodeAgentSession(id: "target", agentKind: "codex", sessionRef: "thread", status: "active")
+            let blocked = NodeAgentSession(id: blockedId, agentKind: "codex", sessionRef: blockedId, status: "active")
+            api.sessionList.withLock { $0 = blockedId == "target" ? [target] : [blocked, target] }
+            let adapter = BlockedMirrorAdapter(blockedId: blockedId)
+            let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "Fixture", timing: snapshotTiming(), log: { _ in })
+            let task = Task { try await loop.run() }
+            await waitUntil { adapter.started.current }
+            api.sessionList.withLock { $0 = [NodeAgentSession(id: "target", agentKind: "codex", sessionRef: "thread", status: "active",
+                command: AgentSessionCommand(id: "stop", kind: "interrupt", text: "stop", turnId: "old-turn"))] }
+            await waitUntil({ api.sessionReports.current.contains { $0.1.commandStatus == "delivered" } }, timeout: 0.5)
+            let stoppedBeforeReadFinished = api.sessionReports.current.contains { $0.1.stopConfirmed == true }
+            // Re-polling the same command, including a stale queued snapshot,
+            // must replay the result report rather than the native side effect.
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            api.sessionList.withLock { $0 = [] }
+            adapter.release.withLock { $0 = true }
+            task.cancel(); try await task.value
+            XCTAssertTrue(stoppedBeforeReadFinished, "stop must bypass the blocked \(blockedId) read")
+            XCTAssertEqual(adapter.interruptions.current, ["stop"])
+            XCTAssertFalse(api.sessionReports.current.contains { $0.0 == "target" && $0.1.commandId == nil && $0.1.status == "active" },
+                "a mirror fetched before the stop must not restore stale running state")
+        }
+    }
+
+    func testLostStopResultRetriesOnlyTheReport() async throws {
+        let api = FakeAPI(claims: [])
+        api.stopResultFailures.withLock { $0 = 1 }
+        api.sessionList.withLock { $0 = [NodeAgentSession(id: "target", agentKind: "codex", sessionRef: "thread", status: "active",
+            command: AgentSessionCommand(id: "stop", kind: "interrupt", text: "stop", turnId: "old-turn"))] }
+        let adapter = BlockedMirrorAdapter(blockedId: "unused")
+        let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "Fixture", timing: snapshotTiming(), log: { _ in })
+        let task = Task { try await loop.run() }
+        await waitUntil { api.sessionReports.current.contains { $0.1.stopConfirmed == true } }
+        task.cancel(); try await task.value
+        XCTAssertTrue(api.sessionReports.current.contains { $0.1.stopConfirmed == true })
+        XCTAssertEqual(adapter.interruptions.current, ["stop"])
+        XCTAssertGreaterThanOrEqual(api.sessionUploadAttempts.current, 3, "reservation, lost result, retried result")
+    }
+
+    func testDisabledCodexIntegrationSettlesTheStopAsUnconfirmed() async throws {
+        let api = FakeAPI(claims: [])
+        api.sessionList.withLock { $0 = [NodeAgentSession(id: "target", agentKind: "codex", sessionRef: "thread", status: "active",
+            command: AgentSessionCommand(id: "stop", kind: "interrupt", text: "stop", turnId: "old-turn"))] }
+        let adapter = SnapshotAdapter(reports: [AgentSessionReport(status: "unavailable", messages: [], error: "集成已停用")], kind: "codex")
+        let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "Fixture", timing: snapshotTiming(), log: { _ in })
+        let task = Task { try await loop.run() }
+        await waitUntil { api.sessionReports.current.contains { $0.1.commandStatus == "failed" } }
+        task.cancel(); try await task.value
+        let failed = try XCTUnwrap(api.sessionReports.current.first { $0.1.commandStatus == "failed" }?.1)
+        XCTAssertTrue(failed.commandError?.contains("停止尚未确认") == true)
+        XCTAssertNil(failed.stopConfirmed)
     }
 
     private func waitUntil(_ condition: @escaping () -> Bool, timeout: TimeInterval = 5) async {

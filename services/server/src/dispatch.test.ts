@@ -2915,6 +2915,11 @@ describe("Claiming a dispatch on the node", () => {
     expect(interruptPoll.json()).toMatchObject({
       sessions: [{ command: { id: interruptId, kind: "interrupt", turnId: "t1", status: "queued" } }],
     });
+    const stopLane = await app.inject({ method: "GET", url: "/api/v1/node/agent-sessions?interruptsOnly=1",
+      headers: { authorization: `Bearer ${node.token}` } });
+    expect(stopLane.statusCode).toBe(200);
+    expect(stopLane.json()).toMatchObject({ sessions: [{ id: launched.agentSessionId, command: { id: interruptId } }] });
+    expect((await app.inject({ method: "GET", url: "/api/v1/node/agent-sessions?interruptsOnly=1" })).statusCode).toBe(401);
   });
 
   it("dispatches OpenCode plan work and records its shared-service session", async () => {
