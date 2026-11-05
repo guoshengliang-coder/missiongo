@@ -105,7 +105,7 @@ export class ImplementationPlans {
     const target=session.implementation_mode ?? desired.mode ?? session.mode;
     const mode=approved ? target : session.agent_kind==="codex" ? "read-only" : "plan";
     this.db.connection.prepare(`UPDATE agent_sessions SET implementation_mode=?,desired_settings_json=?,settings_revision=settings_revision+1 WHERE id=?`)
-      .run(target,JSON.stringify({...(session.model ? {model:session.model} : {}),...(session.effort ? {effort:session.effort} : {}),...desired,mode,planApproved:approved}),session.id);
+      .run(target,JSON.stringify({...(session.model ? {model:session.model} : {}),...(session.effort ? {effort:session.effort} : {}),...desired,mode,planning:!approved,planApproved:approved}),session.id);
   }
 
   canImplement(accountId:string,identity:string): boolean {
@@ -115,6 +115,11 @@ export class ImplementationPlans {
     if(!row) return false;
     const keys=(JSON.parse(row.scope_json) as {key:string}[]).map(entry=>entry.key);
     return row.scope_json===this.scope(keys);
+  }
+
+  hasRequest(accountId: string, identity: string): boolean {
+    return Boolean(this.db.connection.prepare("SELECT 1 FROM implementation_plan_requests WHERE account_id=? AND identity_key=?")
+      .get(accountId, identity));
   }
 
   attachCommand(accountId:string,identity:string,revision:string,commandId:string): void {

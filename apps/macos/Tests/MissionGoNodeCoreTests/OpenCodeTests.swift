@@ -662,6 +662,19 @@ final class OpenCodeTests: XCTestCase {
         XCTAssertTrue(prompt?.contains("切换到 build agent") == true)
     }
 
+    func testProjectSessionPreservesBuildAndExplicitPlan() async throws {
+        let repo = try temporaryRepo()
+        defer { try? FileManager.default.removeItem(at: repo) }
+        for mode in ["build", "plan"] {
+            let control = StubOpenCodeControl(mcpStatus: "connected")
+            let launcher = OpenCodeLauncher(control: control)
+            _ = try await launcher.launch(DispatchJob(dispatchId: "free", itemKeys: [], repoPath: repo.path,
+                mode: mode, nodeName: "Fixture", freeSession: true))
+            let agent = await control.createdAgent
+            XCTAssertEqual(agent, mode)
+        }
+    }
+
     /// OpenCode 2 rejects `order` combined with a cursor
     /// ("Cursor cannot be combined with order"). The first page asks for
     /// oldest-first; later pages must follow the cursor alone, or any session

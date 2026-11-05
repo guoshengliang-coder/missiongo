@@ -680,21 +680,26 @@ export class AgentSessionStore {
   createForDispatch(input: { dispatchId: string; nodeId: string; sessionRef: string; initialTurnId?: string }): string {
     assertDispatchExecution(this.database,input.dispatchId);
     const dispatch = this.database.connection
-      .prepare("SELECT d.agent_kind,n.agents_json FROM dispatches d JOIN nodes n ON n.id=d.node_id WHERE d.id = ? AND d.node_id = ?")
-      .get(input.dispatchId, input.nodeId) as unknown as { agent_kind: string; agents_json:string } | undefined;
+      .prepare("SELECT d.agent_kind,d.mode,n.agents_json FROM dispatches d JOIN nodes n ON n.id=d.node_id WHERE d.id = ? AND d.node_id = ?")
+      .get(input.dispatchId, input.nodeId) as unknown as { agent_kind: string; mode: string; agents_json:string } | undefined;
     if (!dispatch) throw notFound("Dispatch");
     if (dispatch.agent_kind !== "codex" && dispatch.agent_kind !== "claude_code" && dispatch.agent_kind !== "opencode") {
       throw invalidInput("This agent does not support mirrored sessions.");
     }
     const nativePlan=(JSON.parse(dispatch.agents_json) as {kind:string;planApprovalProtocol?:number}[]).some(agent=>agent.kind===dispatch.agent_kind && agent.planApprovalProtocol===1);
-    const initialMode=nativePlan ? dispatch.agent_kind==="codex" ? "read-only" : "plan" : null;
+    const free = Boolean(this.freeSession(input.dispatchId));
+    const initialMode = free ? dispatch.mode : nativePlan ? dispatch.agent_kind==="codex" ? "read-only" : "plan" : null;
+    // Persist the ordinary phase so Codex recovery/retry can restore it without
+    // mistaking the absence of an item-plan approval for native Plan mode.
+    const initialSettings = free ? JSON.stringify({mode: dispatch.mode, planning: false}) : null;
     const sessionRef = requiredText(input.sessionRef, "sessionRef", 200);
     const existing = this.database.connection
       .prepare("SELECT id FROM agent_sessions WHERE dispatch_id = ?")
       .get(input.dispatchId) as unknown as { id: string } | undefined;
     if (existing) {
-      this.database.connection.prepare("UPDATE agent_sessions SET agent_session_ref=?,status='active',mode=COALESCE(mode,?) WHERE id=? AND agent_session_ref=?")
-        .run(sessionRef,initialMode,existing.id,`pending:${input.dispatchId}`);
+      this.database.connection.prepare(`UPDATE agent_sessions SET agent_session_ref=?,status='active',mode=COALESCE(mode,?),
+        desired_settings_json=COALESCE(desired_settings_json,?),settings_revision=MAX(settings_revision,?) WHERE id=? AND agent_session_ref=?`)
+        .run(sessionRef,initialMode,initialSettings,free ? 1 : 0,existing.id,`pending:${input.dispatchId}`);
       this.bindStartupStop(existing.id, input.initialTurnId);
       return existing.id;
     }
@@ -703,10 +708,10 @@ export class AgentSessionStore {
     this.database.connection
       .prepare(
         `INSERT INTO agent_sessions
-          (id, dispatch_id, node_id, agent_kind, agent_session_ref, status, mode, created_at, updated_at, activity_at)
-         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`,
+          (id, dispatch_id, node_id, agent_kind, agent_session_ref, status, mode, desired_settings_json, settings_revision, created_at, updated_at, activity_at)
+         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, input.dispatchId, input.nodeId, dispatch.agent_kind, sessionRef, initialMode, now, now, now);
+      .run(id, input.dispatchId, input.nodeId, dispatch.agent_kind, sessionRef, initialMode, initialSettings, free ? 1 : 0, now, now, now);
     this.bindStartupStop(id, input.initialTurnId);
     return id;
   }
@@ -1182,12 +1187,18 @@ export class AgentSessionStore {
     const earlier = row.desired_settings_json ? JSON.parse(row.desired_settings_json) as AgentRunSettings : {};
     const next: AgentRunSettings = { ...earlier, ...change };
     requireOfferedModel(row.agent_kind, models, next);
-    const requestedMode=change.mode ?? row.implementation_mode ?? row.session_mode ?? row.dispatch_mode;
+    const requestedMode=change.mode ?? row.implementation_mode ?? row.dispatch_mode;
     const agent=(JSON.parse(row.node_agents_json ?? "[]") as {kind:string;modes?:import("@missiongo/domain").AgentModeCapability[]}[]).find(entry=>entry.kind===row.agent_kind);
     requireAvailableMode(row.agent_kind,requestedMode,agent?.modes,next.model ?? row.session_model ?? row.dispatch_model ?? undefined);
     if(change.mode) this.database.connection.prepare("UPDATE agent_sessions SET implementation_mode=? WHERE id=?").run(change.mode,sessionId);
-    const approved=binding && new ImplementationPlans(this.database).canImplement(accountId,`dispatch:${binding.dispatch_id}`);
-    const effective=approved ? next : {...next,mode:row.agent_kind==="codex" ? "read-only" : "plan"};
+    const plans = new ImplementationPlans(this.database);
+    const identity = `dispatch:${binding!.dispatch_id}`;
+    const requiresPlan = !this.freeSession(binding!.dispatch_id) || plans.hasRequest(accountId, identity);
+    const approved = plans.canImplement(accountId, identity);
+    const planning = requiresPlan && !approved;
+    const {planApproved: _previousApproval, ...choices} = next;
+    const effective: AgentRunSettings = {...choices, mode: planning ? row.agent_kind==="codex" ? "read-only" : "plan" : requestedMode,
+      planning, ...(requiresPlan ? {planApproved: approved} : {})};
     this.database.connection
       .prepare(
         "UPDATE agent_sessions SET desired_settings_json = ?, settings_revision = settings_revision + 1 WHERE id = ?",

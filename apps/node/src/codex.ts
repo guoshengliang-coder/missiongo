@@ -51,6 +51,7 @@ export class CodexAdapter implements Adapter {
   private closed = false;
   private lastApproval: Approval | undefined;
   constructor(private job: Dispatch, executable: string, private localSkillVersion?: string) {
+    this.planning = !job.freeSession;
     this.rpc = new JsonProcess(executable, ["app-server"], job.repoPath);
     this.rpc.onClose = () => {
       this.closed = true;
@@ -127,10 +128,10 @@ export class CodexAdapter implements Adapter {
     if (existsSync(worktreePath(this.job))) throw new Error("Dispatch worktree path already exists");
     await this.rpc.call("initialize", { clientInfo: { name: "missiongo_linux", version: "1" }, capabilities: { experimentalApi: true } });
     this.rpc.write({ method: "initialized" });
-    const result = await this.rpc.call("thread/start", { cwd: realpathSync(this.job.repoPath), ...codexPolicy("read-only"),
+    const result = await this.rpc.call("thread/start", { cwd: realpathSync(this.job.repoPath), ...codexPolicy(this.planning ? "read-only" : this.job.mode),
       runtimeWorkspaceRoots: [this.job.repoPath, worktreePath(this.job)], ...(this.job.model ? { model: this.job.model } : {}) });
     this.ref = id(result.thread?.id);
-    validatePolicy(result, this.job, true);
+    validatePolicy(result, this.job, this.planning);
     this.model=result.model ?? this.job.model ?? "";
     if(!this.model) throw new Error("Codex did not confirm the planning model");
     const response = await this.rpc.call("mcpServer/tool/call", { threadId: this.ref, server: "missiongo", tool: "get_current_account", arguments: {} });
@@ -198,7 +199,7 @@ export class CodexAdapter implements Adapter {
   async settings(settings: NonNullable<Session["desiredSettings"]>): Promise<void> {
     if (settings.mode) codexPolicy(settings.mode);
     const updated = { ...this.job, ...settings };
-    const planning=settings.planApproved===undefined ? this.planning : !settings.planApproved;
+    const planning=settings.planning ?? (settings.planApproved===undefined ? this.planning : !settings.planApproved);
     const result=await this.rpc.call("thread/resume", { threadId: this.ref, ...codexPolicy(planning ? "read-only" : updated.mode), ...(updated.model ? { model: updated.model } : {}) });
     validatePolicy(result,updated,planning);
     this.model=result.model ?? updated.model ?? this.model;

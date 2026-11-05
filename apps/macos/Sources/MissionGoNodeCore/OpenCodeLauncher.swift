@@ -1024,12 +1024,13 @@ public struct OpenCodeLauncher: AgentAdapter {
         let name = SessionLauncher.sessionName(for: job)
         let catalog = await lastCatalog()
         let modelRef = resolveModelRef(model: job.model, effort: job.effort, catalog: catalog)
+        let initialAgent = job.freeSession && job.mode != "plan" ? "build" : "plan"
         let id = try await control.createSession(
-            directory: job.repoPath, agent: "plan", model: modelRef
+            directory: job.repoPath, agent: initialAgent, model: modelRef
         )
         do {
             let effective = try await control.sessionInfo(id: id)
-            guard effective.agent == "plan" else { throw LaunchError("OpenCode 未确认原生 Plan，尚未发送任务。") }
+            guard effective.agent == initialAgent else { throw LaunchError("OpenCode 未确认所选原生 Agent，尚未发送任务。") }
             try await control.renameSession(id: id, title: name)
         } catch {
             // No prompt was sent yet; only remove the empty session we made.

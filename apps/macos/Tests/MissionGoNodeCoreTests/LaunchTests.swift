@@ -34,7 +34,9 @@ final class LaunchPromptTests: XCTestCase {
         XCTAssertTrue(prompt.contains("等待用户消息"))
         XCTAssertTrue(prompt.contains("不得自动创建、领取条目"))
         XCTAssertTrue(prompt.contains("独立 worktree"))
-        XCTAssertTrue(prompt.contains("原生计划模式"))
+        XCTAssertTrue(prompt.contains("所选原生权限模式"))
+        XCTAssertTrue(prompt.contains("需求登记与条目创建按用户明确授权"))
+        XCTAssertFalse(prompt.contains("文字同意须引导明确批准操作"))
         XCTAssertTrue(prompt.contains(#"claim_item 必须带 dispatchId: "free-session""#))
         XCTAssertTrue(prompt.contains("仅当用户后来明确指定处理条目时"))
         XCTAssertTrue(prompt.contains("不要另行登记主动处理会话"))
@@ -315,6 +317,33 @@ final class SessionLauncherProcessTests: XCTestCase {
         try Data("#!/bin/sh\n\(body)\n".utf8).write(to: URL(fileURLWithPath: path))
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
         return (bin, root)
+    }
+
+    func testHostedClaudeKeepsProjectPermissionsButPlansItemDispatches() async throws {
+        let (home, repoPath) = try makeTrustedRepo(trusted: true)
+        let script = try fakeScript("exit 0")
+        defer { try? FileManager.default.removeItem(atPath: script.root) }
+        let binary = "\(script.bin)/claude"
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: URL(fileURLWithPath: binary))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary)
+        for (index, pair) in [(true, "auto"), (true, "bypassPermissions"), (true, "plan"), (false, "bypassPermissions")].enumerated() {
+            let (free, mode) = pair
+            let sessions = "\(script.root)/sessions-\(index)"
+            let launcher = SessionLauncher(environment: ShellEnvironment(path: "\(script.bin):/usr/bin:/bin"),
+                run: fakeClaude(), home: home, logsDirectory: "\(script.root)/logs", sessionUrlTimeout: 1,
+                hostExecutable: "/usr/bin/true", sessionsDirectory: sessions)
+            do {
+                _ = try await launcher.launch(DispatchJob(dispatchId: "fixture-\(index)", itemKeys: free ? [] : ["AND-1"],
+                    repoPath: repoPath, mode: mode, nodeName: "Fixture", freeSession: free))
+                XCTFail("Fixture host must exit without launching an Agent")
+            } catch {
+                XCTAssertTrue(error.localizedDescription.contains("宿主已退出"), error.localizedDescription)
+            }
+            let refs = try FileManager.default.contentsOfDirectory(atPath: sessions)
+            let config = try JSONDecoder().decode(ClaudeHostConfiguration.self, from: Data(contentsOf: URL(fileURLWithPath:
+                ClaudeHostStore.configPath(root: sessions, sessionRef: try XCTUnwrap(refs.first)))))
+            XCTAssertEqual(config.mode, free ? mode : "plan")
+        }
     }
 
     func testStartsInTheRepositoryAndReturnsTheScrapedURL() async throws {

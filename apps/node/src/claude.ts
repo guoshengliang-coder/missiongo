@@ -9,7 +9,7 @@ export function claudeArguments(job: Dispatch, ref: string): string[] {
   if (!(CLAUDE_CODE_MODES as readonly string[]).includes(job.mode)) throw new Error("Unsupported Claude mode");
   return ["--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--replay-user-messages",
     "--permission-prompt-tool", "stdio", "--permission-prompts", "host", "--no-chrome",
-    "--disallowedTools", CLAUDE_DENIALS.join(","), "--permission-mode", "plan",
+    "--disallowedTools", CLAUDE_DENIALS.join(","), "--permission-mode", job.freeSession ? job.mode : "plan",
     "--session-id", ref, "--name", sessionName(job),
     ...(job.model ? ["--model", job.model] : []), ...(job.effort ? ["--effort", job.effort] : [])];
 }
@@ -54,6 +54,8 @@ export class ClaudeAdapter implements Adapter {
   private requests: Wire[] = [];
   private waits = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   constructor(job: Dispatch, executable: string, env = process.env) {
+    this.planning = !job.freeSession;
+    this.effectiveMode = job.freeSession ? job.mode : "plan";
     this.process = new JsonProcess(executable, claudeArguments(job, this.ref), job.repoPath, env);
     this.process.onEvent = (event) => this.event(event);
     this.process.onClose = () => {
@@ -186,7 +188,7 @@ export class ClaudeAdapter implements Adapter {
   async decide(): Promise<void> { throw new Error("Use the displayed Claude question to answer this request"); }
   async settings(settings: NonNullable<Session["desiredSettings"]>): Promise<void> {
     if (settings.mode && !(CLAUDE_CODE_MODES as readonly string[]).includes(settings.mode)) throw new Error("Unsupported Claude mode");
-    const planning=settings.planApproved===undefined ? this.planning : !settings.planApproved;
+    const planning=settings.planning ?? (settings.planApproved===undefined ? this.planning : !settings.planApproved);
     const mode=planning ? "plan" : settings.mode;
     for (const request of [settings.model ? { subtype: "set_model", model: settings.model } : undefined,
       mode ? { subtype: "set_permission_mode", mode } : undefined,

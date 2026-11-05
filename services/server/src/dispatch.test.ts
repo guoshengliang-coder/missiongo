@@ -13,6 +13,7 @@ import { buildApp } from "./app.js";
 import { createAiAccessToken, type AdminAccountConfig } from "./admin-auth.js";
 import { projectSessionTitle } from "./free-session-store.js";
 import { AgentSessionStore } from "./agent-session-store.js";
+import { ImplementationPlans } from "./implementation-plans.js";
 import { MISSIONGO_SKILL_VERSION } from "@missiongo/contracts";
 
 const apps: FastifyInstance[] = [];
@@ -4866,18 +4867,19 @@ describe("First dispatch defaults (AND-343)", () => {
 });
 
 describe("AND-369 project conversations", () => {
-  async function fixture() {
+  async function fixture(agentKind = "claude_code", mode = "plan") {
     const { app, cookie } = await signedInApp();
     const product = (await app.inject({ method: "POST", url: "/api/v1/products", headers: { cookie }, payload: { name: "Conversation project", keyPrefix: "CHAT" } })).json();
     const node = await registeredNode(app);
     const headers = { authorization: `Bearer ${node.token}` };
     await app.inject({ method: "POST", url: "/api/v1/node/heartbeat", headers, payload: {
-      supportsFreeSessions: true, supportsChatAttachments: true, agents: [{ kind: "claude_code", planApprovalProtocol: 1, ready: true,
+      supportsFreeSessions: true, supportsChatAttachments: true, agents: [{ kind: agentKind, planApprovalProtocol: 1, ready: true, models: [],
+        modes: [{mode: "auto", state: "available"}, {mode: "bypassPermissions", state: "available"}],
         skill: { localVersion: MISSIONGO_SKILL_VERSION, expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "ready" } }],
     } });
     await app.inject({ method: "PUT", url: "/api/v1/node/repos", headers,
       payload: { repos: [{ productId: product.id, repoPath: join(tmpdir(), "conversation-fixture") }] } });
-    const input = { productId: product.id, nodeId: node.nodeId, agentKind: "claude_code", mode: "plan", requestKey: randomUUID(), attachmentCount: 0, text: "讨论一下交互，先别动工" };
+    const input = { productId: product.id, nodeId: node.nodeId, agentKind, mode, requestKey: randomUUID(), attachmentCount: 0, text: "讨论一下交互，先别动工" };
     const prepare = (payload = input) => app.inject({ method: "POST", url: "/api/v1/project-conversations", headers: { cookie }, payload });
     const start = (id: string, attachmentIds: string[] = []) => app.inject({ method: "POST", url: `/api/v1/project-conversations/${id}/start`, headers: { cookie }, payload: { attachmentIds } });
     const claim = () => app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers });
@@ -4916,6 +4918,46 @@ describe("AND-369 project conversations", () => {
     expect(projectSessionTitle("\n\t", "12345678-abcd")).toBe("附件会话 · 12345678");
     expect(projectSessionTitle("😀".repeat(49), "12345678-abcd")).toBe(`${"😀".repeat(48)}… · 12345678`);
     expect(projectSessionTitle("hello\u0000world\tthere", "12345678-abcd")).toBe("hello world there · 12345678");
+  });
+
+  it.each([
+    ["codex", "auto", "read-only"], ["claude_code", "auto", "plan"],
+    ["claude_code", "bypassPermissions", "plan"], ["opencode", "build", "plan"],
+    ["codex", "read-only", "auto"], ["claude_code", "plan", "auto"], ["opencode", "plan", "build"],
+  ])("%s project conversation starts in %s and can change permissions without a fabricated plan approval", async (kind, mode, other) => {
+    const f = await fixture(kind, mode);
+    const d = (await f.prepare()).json();
+    expect((await f.start(d.id)).statusCode).toBe(200);
+    expect((await f.claim()).json()).toMatchObject({mode, freeSession: true});
+    expect((await f.app.inject({method:"POST", url:`/api/v1/node/dispatches/${d.id}/result`, headers:f.headers,
+      payload:{status:"launched",sessionRef:randomUUID()}})).statusCode).toBe(204);
+    const nodes = async () => (await f.app.inject({method:"GET",url:"/api/v1/node/agent-sessions",headers:f.headers})).json().sessions[0];
+    expect((await nodes()).desiredSettings).toMatchObject({mode,planning:false});
+    const change = async (mode: string) => f.app.inject({method:"PATCH",url:`/api/v1/agent-sessions/${d.agentSessionId}/settings`,headers:{cookie:f.cookie},payload:{mode}});
+    expect((await change(other)).statusCode).toBe(200);
+    expect((await nodes()).desiredSettings).toMatchObject({mode:other,planning:false});
+    expect((await change(mode)).statusCode).toBe(200);
+    const desired=(await nodes()).desiredSettings;
+    expect(desired).toMatchObject({mode,planning:false});
+    expect(desired.planApproved).toBeUndefined();
+    expect(f.app.missionGoStore.database.connection.prepare("SELECT COUNT(*) AS n FROM implementation_plan_approvals").get()).toMatchObject({n:0});
+    // A pre-fix session may already have reported the forced planning mode.
+    const forced = kind === "codex" ? "read-only" : "plan";
+    await f.app.inject({method:"POST",url:`/api/v1/node/agent-sessions/${d.agentSessionId}/snapshot`,headers:f.headers,
+      payload:{status:"idle",messages:[],mode:forced,settingsRevision:desired.revision}});
+    expect((await change(mode)).statusCode).toBe(200);
+    expect((await nodes()).desiredSettings).toMatchObject({mode,planning:false});
+    // An ordinary project conversation can later enter scoped item work. Its
+    // real proposal then owns the phase, even if the user changes permissions.
+    const store=f.app.missionGoStore, owner=accountsByApp.get(f.app)!.id;
+    const item=store.createWorkItem({productId:f.product.id,title:"Scoped work",description:"Implementation",status:"ready",type:"task",priority:"normal",environment:{platform:"shared"}});
+    const plans=new ImplementationPlans(store.database), identity=`dispatch:${d.id}`;
+    plans.request(owner,identity,"project-plan",{keys:[item.key],plan:"Implement the scoped change",validation:"Verify it"});
+    expect((await change(mode)).statusCode).toBe(200);
+    expect((await nodes()).desiredSettings).toMatchObject({mode:forced,planning:true,planApproved:false});
+    expect(()=>plans.assertClaim(owner,identity,item.key)).toThrow(/approve/);
+    plans.record({accountId:owner,identity,revision:"project-plan",planHash:"project-plan",keys:[item.key],source:"web"});
+    expect((await nodes()).desiredSettings).toMatchObject({mode,planning:false,planApproved:true});
   });
 
   it("reserves only on send, atomically starts once, and keeps itemless history alive after launch", async () => {

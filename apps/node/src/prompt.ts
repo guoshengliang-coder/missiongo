@@ -22,9 +22,9 @@ export function launchPrompt(job: Dispatch): string {
     return [
       "这是用户从 MissionGo 控制台发起的项目会话，不关联工作条目。",
       "本条是启动说明。现在只简短确认就绪并等待用户首条消息，不自行开始任务。首条消息将通过同一会话紧接着送达。",
-      "后续纯讨论或查询直接答复；开发任务必须先诊断澄清、给出方案和验证目标，用户明确批准后才实施。仅 Web 批准按钮或原生计划批准可记录方案批准，文字同意须引导明确批准操作。不得自动创建或领取条目。",
+      "后续纯讨论或查询直接答复；需求登记与条目创建按用户明确授权及创建规则执行，不要求先批准代码实施方案。开发任务必须先诊断澄清、给出方案和验证目标，用户明确批准后才实施。用户明确指定处理工作条目时，按条目流程记录方案批准。不得自动创建或领取条目。",
       `本项目会话的派单身份为 ${JSON.stringify(job.dispatchId)}。仅当用户后来明确指定处理条目时，使用 missiongo skill 完整读取并遵守计划批准要求；领取时 claim_item 必须带 dispatchId: ${JSON.stringify(job.dispatchId)}，复用原项目会话，不要另行登记主动处理会话。`,
-      "读取并遵守项目规则；修改前创建独立 worktree，不直接修改主工作区。原生计划模式、权限审批及 push、merge、发布授权仍须遵守。",
+      "读取并遵守项目规则；修改前创建独立 worktree，不直接修改主工作区。所选原生权限模式、权限审批及 push、merge、发布授权仍须遵守。",
       ...researchGuidance,
       ...(job.agentKind === "codex" ? [`本会话可写 worktree 路径（尚未创建）：${JSON.stringify(worktreePath(job))}。不得扩大到父目录。`] : []),
     ].join("\n\n");

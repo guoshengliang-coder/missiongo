@@ -42,7 +42,7 @@ export class OpenCodeAdapter implements Adapter {
   private planning = true;
   initialTurnId?: string;
   private path = "";
-  constructor(private job: Dispatch, readonly api = new OpenCodeAPI()) {}
+  constructor(private job: Dispatch, readonly api = new OpenCodeAPI()) { this.planning = !job.freeSession; }
   async start(prompt: string): Promise<string> {
     const info = await this.api.call("GET", "/api/info");
     if (!(Number(String(info.version).split(".")[0]) >= 2)) throw new Error("OpenCode 2 is required");
@@ -50,11 +50,12 @@ export class OpenCodeAdapter implements Adapter {
     if (!Array.isArray(mcp.data) || mcp.data.find((server: Wire) => server.name === "missiongo")?.status?.status !== "connected") {
       throw new Error("Authorize missiongo MCP in this OpenCode service and repository");
     }
-    const result = await this.api.call("POST", "/api/session", { agent: "plan", location: { directory: this.job.repoPath },
+    const agent = this.planning || this.job.mode === "plan" ? "plan" : "build";
+    const result = await this.api.call("POST", "/api/session", { agent, location: { directory: this.job.repoPath },
       ...(this.job.model ? { model: modelRef(this.job.model, this.job.effort) } : {}) });
     this.ref = id(result.data?.id); this.path = `/api/session/${encodeURIComponent(this.ref)}`;
     const effective=await this.api.call("GET",this.path);
-    if(effective.data?.agent!=="plan") throw new Error("OpenCode did not confirm native Plan; no task started");
+    if(effective.data?.agent!==agent) throw new Error("OpenCode did not confirm the selected native agent; no task started");
     const title = sessionName(this.job);
     try { await this.api.call("PATCH", this.path, { title }); }
     catch (error) { if (!(error instanceof OpenCodeHTTPError) || error.status !== 404) throw error; await this.api.call("POST", `${this.path}/rename`, { title }); }
@@ -165,7 +166,7 @@ export class OpenCodeAdapter implements Adapter {
   async decide(): Promise<void> { throw new Error("Answer the displayed OpenCode permission question"); }
   async settings(settings: NonNullable<Session["desiredSettings"]>): Promise<void> {
     if (settings.mode && !["plan", "build", "default"].includes(settings.mode)) throw new Error("Unsupported OpenCode mode");
-    if(settings.planApproved!==undefined) this.planning=!settings.planApproved;
+    this.planning = settings.planning ?? (settings.planApproved===undefined ? this.planning : !settings.planApproved);
     if (settings.mode) {
       const wanted=this.planning || settings.mode === "plan" ? "plan" : "build";
       await this.api.call("POST", `${this.path}/agent`, {agent:wanted});
