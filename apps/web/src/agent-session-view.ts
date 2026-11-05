@@ -109,6 +109,11 @@ export function formatAgentMessageTime(value: string, locale: string, now = new 
 }
 
 export type AgentSessionFilter = "unread" | "attention" | "active" | "all" | "failed" | "archived";
+/** Cross-project navigation has one scope for both rows and counters. */
+export function isGlobalAgentSessionFilter(filter: AgentSessionFilter): boolean {
+  return filter === "unread" || filter === "attention";
+}
+
 export type AgentAssociationFilter = "all" | "unlinked" | "linked";
 export type AgentKindFilter = "all" | AgentKind;
 
