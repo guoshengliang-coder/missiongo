@@ -47,3 +47,16 @@ Web 批准将领域决定与消息投递分开：已有命令响应保持兼容�
 原生接口参考：[Codex App Server](https://learn.chatgpt.com/docs/app-server)、[Claude Code 权限模式](https://code.claude.com/docs/en/permission-modes)、[OpenCode Agent](https://opencode.ai/v2/docs/agents)。
 
 AND-405 回归：`external-plan-approval.test.ts` 使用真实 MCP HTTP 请求覆盖首次外部会话、离线 Web 批准、原生多轮确认、签名状态校验、重复与过期方案、权限和真实 tools/list 一致性；`plan-approval.audit.spec.ts` 覆盖无回复连接的批准及保存/投递结果。此修复只涉及 Web/Server 及公开 Skill，无需改原生节点源码。
+
+
+### 升级前原生确认的正规恢复（AND-405 / Skill 5.39.0）
+
+仅针对迁移 202611051005 之前已存在、尚未取得正式批准的 Codex 派单请求。迁移冻结原请求修订、原条目内容边界、原会话/节点，以及原节点同步的最新 `plan` 和紧接着逐字完整引用该方案的 `PLEASE IMPLEMENT THIS PLAN` 用户输入的消息 ID 与摘要。迁移本身不批准、不领取，不生成执行凭据；升级后新增请求或后来补入的消息不进入候选。
+
+正常 `claim_item` 使用原账号/派单时，服务端重新检查产品操作与 AI 权限、当前 Builder、派单/节点未撤销、会话未归档、原请求修订与冻结范围、每个条目从未领取，及原生消息角色、顺序、全文、摘要均未变化。原生完整方案才是恢复后的正文，不能把 MCP 概述或普通“批准”聊天冒充用户接受的全文。更新请求在迁移后被取代、出现新原生方案或条目版本/范围变动时拒绝恢复。
+
+恢复保存 `source: native` 的当前批准和独立审计：旧请求修订、恢复后的原生方案修订、源会话、源消息 ID/摘要、原生接受时间、恢复账号/OAuth 客户端与实际恢复时间。`get_item_plan_approvals` 的 `approval.recovery` 返回上述来源引用与两个时间；不伪造历史批准时间或处理日志。原派单批准在账号/派单级复用，正常领取凭据仍绑定实际调用的 OAuth 客户端，其他客户端不能使用或恢复该凭据。
+
+批准恢复先独立持久化；若节点尚未确认原实施模式，领取继续被模式门禁拒绝，但不会回滚已恢复的真实决定。节点确认后沿用原领取参数/幂等键，正常生成本轮领取记录与凭据，再依次提交开发完成、发布待验证。幂等重试不重复恢复、不新建会话、不重复发送“批准”继续消息。现有 `recover_execution_authorization` 仍只恢复已经领取的凭据，不承担补领或审批恢复。
+
+隔离回归 `legacy-plan-approval-recovery.test.ts` 覆盖真实数据库升级和重启、正常 MCP 领取至待验证、模式等待、重复请求、普通聊天/拒绝/取消/AI 伪装、消息篡改、新方案、新请求、范围变更、跨账号、客户端凭据隔离、只读权限、节点撤销、派单失效、Builder 和多条目边界。此次增量仅改 Web/Server 与公开 Skill，无原生节点源码变化。

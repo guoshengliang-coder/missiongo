@@ -147,6 +147,14 @@ export interface PlanApprovalRecordView {
     readonly source: "web" | "native";
     readonly approvedAt: string;
     readonly commandId?: string;
+    readonly recovery?: {
+      readonly previousRevision: string;
+      readonly sessionId: string;
+      readonly planSourceId: string;
+      readonly acceptanceSourceId: string;
+      readonly nativeAcceptedAt: string;
+      readonly recoveredAt: string;
+    };
   };
   /** True only when a current-revision approval exists and the frozen scope still matches the items. */
   readonly approved: boolean;
@@ -480,6 +488,11 @@ export class McpAgentSessionReads {
         source: "web" | "native"; command_id: string | null; approved_at: string;
       } | undefined;
       const proposal = request.proposal_json ? JSON.parse(request.proposal_json) as { keys: string[]; plan: string; validation: string } | null : null;
+      const recovery = db.prepare(`SELECT previous_revision AS previousRevision,session_id AS sessionId,
+        plan_source_id AS planSourceId,acceptance_source_id AS acceptanceSourceId,
+        native_accepted_at AS nativeAcceptedAt,recovered_at AS recoveredAt FROM implementation_plan_recoveries
+        WHERE account_id=? AND identity_key=? AND revision=?`).get(accountId,request.identity_key,approval?.revision ?? "") as
+        NonNullable<PlanApprovalRecordView["approval"]>["recovery"] | undefined;
       const scopeJson = request.scope_json ?? approval?.scope_json ?? "[]";
       const keys = (JSON.parse(scopeJson) as Array<{ key: string }>).map((entry) => entry.key);
       let scopeValid = false;
@@ -501,6 +514,7 @@ export class McpAgentSessionReads {
           source: approval.source,
           approvedAt: approval.approved_at,
           ...(approval.command_id ? { commandId: approval.command_id } : {}),
+          ...(recovery ? { recovery } : {}),
         } } : {}),
         approved,
         scopeValid,
