@@ -30,7 +30,7 @@ import {
 
 import { api } from "./api";
 import { AgentSessionFailureNotice } from "./agent-session-failure-notice";
-import { AgentReplyFeedback, AgentRunDetails } from "./agent-session-feedback";
+import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, isHistoryLimited } from "./agent-session-feedback";
 import { AgentIcon } from "./agent-icons";
 import {
   activityLabelKey,
@@ -1218,12 +1218,14 @@ export function AgentSessionConsole({
                   </article>
                 )}
                 {resolveDelivery.isError && <p className="inline-error">{localizedErrorText(resolveDelivery.error, t)}</p>}
+                <AgentHistoryNotice error={sessionQuery.data ? sessionQuery.data.lastError : selected.lastError} />
                 {selected.source !== "external" && selected.agentKind === "codex" && sessionStatus === "failed" ? (
                   <AgentSessionFailureNotice status={sessionStatus}
                     failure={sessionQuery.data ? sessionQuery.data.failure : selected.failure}
                     legacyError={sessionQuery.data ? sessionQuery.data.lastError : selected.lastError} />
                 ) : (selected.agentKind !== "codex" || (sessionStatus !== "idle" && sessionStatus !== "active"))
-                  && (sessionQuery.data ? sessionQuery.data.lastError : selected.lastError) ? (
+                  && (sessionQuery.data ? sessionQuery.data.lastError : selected.lastError)
+                  && !isHistoryLimited(sessionQuery.data ? sessionQuery.data.lastError : selected.lastError) ? (
                   <p className="inline-error">{sessionQuery.data ? sessionQuery.data.lastError : selected.lastError}</p>
                 ) : null}
                 {showRecovery && (
