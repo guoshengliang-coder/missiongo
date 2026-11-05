@@ -21,8 +21,8 @@ final class LaunchPromptTests: XCTestCase {
                     XCTAssertTrue(prompt.contains("有边界的复现或实验计划"))
                     if freeSession { XCTAssertTrue(prompt.contains("不自行开始任务")) }
                     else if mode == "plan" {
-                        XCTAssertTrue(prompt.contains("用户批准之前不回写评论、不领取条目"))
-                        XCTAssertTrue(prompt.contains("先将已批准的计划以结构化评论"))
+                        XCTAssertTrue(prompt.contains("领取记录任务归属，不要求方案批准"))
+                        XCTAssertTrue(prompt.contains("将已批准的计划以结构化评论"))
                     }
                 }
             }

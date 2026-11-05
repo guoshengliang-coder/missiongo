@@ -423,3 +423,9 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 - 回归来源：`and-410-411-console.audit.spec.ts`、`and-375-session-loading.audit.spec.ts`、`and-391-stop-lifecycle.audit.spec.ts`、`agent-console-product-switch.audit.spec.ts` 及服务端会话聚合测试。覆盖两处入口、迟到响应、撤回竞态、跨项目去重与草稿、100条以上、明暗主题、320px与断点两侧、三档字号；Android WebView实际操作仍需实机核对。
 
 - 短高度会话为消息区保留可操作的视口，头部与输入区内容过高时分别可滚动，不能将授权、方案或错误提示压到无法点击。授权详情及重试回归包含812×375横屏、明暗和三档字号。
+
+### 同一方案一次批准与续办状态
+
+方案卡片、批准提示条与设置继续复用 `AgentPlanContent`、`AgentSessionQuickSettings` 和现有会话控制。`planApprovalState` 分别展示已批准、已排队、等待原连接恢复；已批准不再出现第二个批准入口，也不把未额外发消息说成未批准。审批不禁用本来可用的回复和停止，保留草稿、附件及滚动位置。
+
+回归入口：派单和外部会话、原生同步和 Web 决定；`plan-approval.audit.spec.ts` 覆盖桌面/320px、明暗、触控和字号，既有权限、控制与模型强度回归保持。

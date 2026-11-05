@@ -42,7 +42,7 @@ export async function testConsoleHeaders(app:import("fastify").FastifyInstance) 
  return {cookie:(Array.isArray(value)?value[0]:value)!.split(";")[0]!};
 }
 
-/** Establish the explicit plan-approval precondition in tests of other MCP contracts.
+/** Seed a scoped human plan decision for tests of follow-on MCP workflows.
  * Gate/approval tests deliberately do not use this fixture. Only synthetic test tokens belong here. */
 export function approvedClaimFixture(store: MissionGoStore, token: string, args: Record<string,unknown>) {
  const access=JSON.parse(Buffer.from(token.replace(/^mgai_/,"").split(".")[0]!,"base64url").toString()) as {id:string;clientId?:string};

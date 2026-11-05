@@ -64,7 +64,7 @@ export class ExternalAgentSessionStore {
     keys.forEach(authorizeItem);
   }
 
-  /** Explicit plan requests may be visible before claiming, without starting an execution or connecting a node. */
+  /** Explicit plan requests may be visible before claiming, without starting an execution. Native discovery uses the existing opt-in channel. */
   prepareApproval(owner: ExternalSessionOwner, identity: ExternalSessionIdentity, keys: readonly string[], revision: string): string {
     return this.store.database.transaction(() => {
       let row = this.db.prepare(`SELECT * FROM external_agent_sessions
@@ -83,6 +83,12 @@ export class ExternalAgentSessionStore {
           VALUES (?,?,?,?,?,?,?,'waiting_for_input',?,?,?,?)`)
           .run(id,owner.accountId,owner.clientId ?? "",identity.agentKind,identity.sessionRef,identity.refKind,identity.name ?? null,now,now,now,now);
         row = this.row(owner.accountId,id);
+      }
+      if (identity.autoConnect) {
+        if (identity.refKind !== "native" || !["codex","claude_code","opencode"].includes(identity.agentKind))
+          throw invalidInput("Automatic connection requires a supported native identity.");
+        // Discovery only. Preserve an explicit disconnect and never start a CLI.
+        this.db.prepare("UPDATE external_agent_sessions SET native_auto_connect=1 WHERE id=? AND native_generation=0").run(row.id);
       }
       const previous = this.db.prepare("SELECT revision FROM implementation_plan_requests WHERE account_id=? AND identity_key=?")
         .get(owner.accountId,`native:${owner.clientId ?? ""}:${identity.agentKind}:${identity.refKind}:${identity.sessionRef}`) as {revision:string}|undefined;
@@ -278,6 +284,8 @@ export class ExternalAgentSessionStore {
     this.row(accountId, sessionId);
     this.db.prepare("UPDATE external_agent_sessions SET archived_at = ?, auto_archive_suppressed = CASE WHEN ? = 0 AND archive_reason = 'auto' THEN 1 ELSE auto_archive_suppressed END, archive_reason = NULL WHERE id = ?")
       .run(archived ? new Date().toISOString() : null, archived ? 1 : 0, sessionId);
+    if(archived) this.db.prepare("UPDATE implementation_plan_continuations SET state='cancelled' WHERE account_id=? AND session_id=? AND state='waiting'")
+      .run(accountId,sessionId);
   }
 
   markRead(accountId: string, sessionId: string, through: string): void {

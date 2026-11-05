@@ -76,6 +76,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         setTimeout(() => emit({type:"control_cancel_request",request_id:"mcp-confirm-1"}), 100);
       }
     }
+    else if (message.message.content[0].text.includes("native-plan-fixture")) emit({ type: "control_request", request_id: "claude-plan-1",
+      request: { subtype: "can_use_tool", tool_name: "ExitPlanMode", input: { plan: "Implement the reviewed scope and verify the original entry points." } } });
     else if (prompt.includes("approval")) emit({ type: "control_request", request_id: "claude-native-1",
       request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "echo test" } } });
     else emit({ type: "result", is_error: false });

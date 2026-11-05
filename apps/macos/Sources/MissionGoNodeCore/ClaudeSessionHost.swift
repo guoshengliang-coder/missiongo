@@ -517,6 +517,7 @@ public struct ClaudeStreamSnapshot: Sendable {
     public mutating func recordExternalChild(_ pid: Int32) { state.externalChildPid = pid }
 
     public mutating func showExternalPermissionRequest(_ request: ClaudePermissionRequest) {
+        if request.toolName == "ExitPlanMode" { showPermissionRequest(request); return }
         let questions = (request.input["questions"] as? [[String: Any]] ?? []).compactMap { $0["question"] as? String }
         let offered = request.asksThroughToolUse ? [] : [request.question.detail ?? "",
             "可选答案：" + (request.question.options ?? []).joined(separator: " / ")]
@@ -550,9 +551,15 @@ public struct ClaudeStreamSnapshot: Sendable {
     /// person made marked on it (AND-227): the recordUserMessage beside it
     /// already carries the reply itself, but the card without the mark reads
     /// as an ask still waiting for an answer.
-    public mutating func markPermissionAnswered(requestId: String, answer: String) {
+    public mutating func markPermissionAnswered(requestId: String, answer: String, planAccepted: Bool = false) {
         guard let index = state.messages.firstIndex(where: { $0.sourceId == "permission-\(requestId)" }) else { return }
         let card = state.messages[index]
+        if card.role == "plan" {
+            state.messages[index] = AgentSessionMessage(sourceId: card.sourceId, turnId: card.turnId,
+                role: card.role, phase: planAccepted ? "plan_approved" : "plan_declined", text: card.text, occurredAt: card.occurredAt)
+            noteProgress()
+            return
+        }
         guard let questions = card.questions else { return }
         state.messages[index] = AgentSessionMessage(
             sourceId: card.sourceId, turnId: card.turnId, role: card.role,

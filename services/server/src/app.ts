@@ -109,7 +109,7 @@ import {
 } from "./oauth.js";
 import { DEVICE_GRANT, DeviceAuthorizationStore, DeviceGrantError } from "./device-authorization.js";
 import { MissionGoStore } from "./store.js";
-import { resumeRecoveredPlan } from "./recovered-plan-resume.js";
+import { synchronizeNativePlan } from "./native-plan-approval.js";
 import { COMMENT_BODY_KINDS, COMPONENT_KINDS, type ComponentKind } from "./types.js";
 import type { FeedbackLogEntry, SdkPrincipal } from "./types.js";
 import { WidgetDeviceStore } from "./widget-devices.js";
@@ -2741,7 +2741,28 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       for(const row of members) for(const item of row.items) assertBuilderExecution(store.database,store.getWorkItem(item.key).id,loaded.account.id);
     } catch {canApprovePlan=false;}
     if (!unavailableReason && (node.revokedAt || nodeConnectionState(node.lastSeenAt) !== "online")) unavailableReason = "connection_unavailable";
+    if (operate && !canApprovePlan) throw new MissionGoError("ai_not_permitted","This account may not approve this implementation plan.",403);
     return { session: { ...agentSessionResponse(loaded), attention, canApprovePlan }, unavailableReason };
+  };
+
+  const resumeApprovedPlan = (accountId:string,sessionId:string) => {
+    if (!store.database.connection.prepare(`SELECT 1 FROM implementation_plan_continuations
+      WHERE account_id=? AND session_id=? AND state='waiting' LIMIT 1`).get(accountId,sessionId)) return;
+    const external=externalSessionStore.has(sessionId);
+    const raw=external ? externalSessionStore.getForAccount(accountId,sessionId) : agentSessionStore.getForAccount(accountId,sessionId);
+    let enabled=true;
+    try {
+      if(external) assertExternalExecution(store.database,sessionId);
+      else if(raw.dispatchId) assertDispatchExecution(store.database,raw.dispatchId);
+      for(const row of consoleSessions.members(accountId,sessionId)) for(const linked of row.items) {
+        const item=store.getWorkItem(linked.key);
+        requireNodeAccountPermission(accountId,item.productId,true);
+        assertBuilderExecution(store.database,item.id,accountId);
+      }
+      if(raw.productId) requireNodeAccountPermission(accountId,raw.productId,true);
+    } catch { enabled=false; }
+    planApprovals.resume({...agentApprovalStore.withAttention(raw),attention:agentApprovalStore.withAttention(consoleSessions.getSummary(accountId,sessionId)).attention,canReply:raw.replyable},enabled,()=>external
+      ? externalNativeStore.enqueue(accountId,sessionId,"批准") : agentSessionStore.enqueue(accountId,sessionId,"批准"));
   };
 
   app.get("/api/v1/agent-sessions/:sessionId", async (request) => {
@@ -2764,7 +2785,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const command = store.database.transaction(() => {
       const external = externalSessionStore.has(sessionId);
       const { session, unavailableReason } = planApprovalContext(request, sessionId, true);
-      return planApprovals.approve(session, revision, unavailableReason === undefined || Boolean(planApprovals.registered(session)), () => external
+      return planApprovals.approve({...session,canReply:session.canReply && unavailableReason!=="connection_unavailable"}, revision, unavailableReason === undefined || Boolean(planApprovals.registered(session)), () => external
         ? externalNativeStore.enqueue(requireAccountId(request), sessionId, "批准")
         : agentSessionStore.enqueue(requireAccountId(request), sessionId, "批准"), unavailableReason===undefined);
     });
@@ -3538,6 +3559,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           ...(stringField(body, "commandError", false) ? { commandError: body.commandError as string } : {}),
         }, (productId, execute) => requireNodeAccountPermission(node.accountId, productId, execute));
         agentHistory.observe(node.accountId, node.nodeId, sessionId, body.history);
+        synchronizeNativePlan(store.database,node.accountId,sessionId);
+        resumeApprovedPlan(node.accountId,sessionId);
         return reply.status(204).send();
       }
       const projectSession = store.database.connection.prepare(`SELECT f.product_id FROM free_session_starts f
@@ -3609,7 +3632,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           status, stringField(body, "approvalRetryError", false));
       }
       new BuilderHandovers(store).forSession(sessionId);
-      resumeRecoveredPlan(store,node.accountId,node.nodeId,sessionId,productId=>requireNodeAccountPermission(node.accountId,productId,true));
+      synchronizeNativePlan(store.database,node.accountId,sessionId);
+      resumeApprovedPlan(node.accountId,sessionId);
       scheduleAttentionClassification(sessionId);
       return reply.status(204).send();
     },

@@ -4965,7 +4965,7 @@ describe("AND-369 project conversations", () => {
     plans.request(owner,identity,"project-plan",{keys:[item.key],plan:"Implement the scoped change",validation:"Verify it"});
     expect((await change(mode)).statusCode).toBe(200);
     expect((await nodes()).desiredSettings).toMatchObject({mode,planning:false});
-    expect(()=>plans.assertClaim(owner,identity,item.key)).toThrow(/approve/);
+    expect(()=>plans.assertApprovedScope(owner,identity,item.key)).toThrow(/approval/);
     plans.record({accountId:owner,identity,revision:"project-plan",planHash:"project-plan",keys:[item.key],source:"web"});
     expect((await nodes()).desiredSettings).toMatchObject({mode,planning:false});
   });

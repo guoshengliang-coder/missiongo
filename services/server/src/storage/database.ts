@@ -2381,5 +2381,30 @@ export class MissionGoDatabase {
       });
     }
 
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611051453").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611051453").get()) return;
+        this.connection.exec(`CREATE TABLE implementation_plan_continuations (
+          account_id TEXT NOT NULL, identity_key TEXT NOT NULL, revision TEXT NOT NULL, session_id TEXT NOT NULL,
+          source_digest TEXT NOT NULL, requested_at TEXT NOT NULL,
+          state TEXT NOT NULL CHECK(state IN ('waiting','queued','cancelled')), command_id TEXT,
+          PRIMARY KEY(account_id,identity_key,revision)
+        ) STRICT;
+        CREATE INDEX idx_plan_continuation_session ON implementation_plan_continuations(account_id,session_id,state);
+        UPDATE implementation_plan_recovery_resumes SET state='cancelled' WHERE state='waiting';
+        UPDATE implementation_plan_approvals AS a SET plan_hash=a.revision
+          WHERE a.plan_text<>'' AND EXISTS (SELECT 1 FROM implementation_plan_requests r
+            WHERE r.account_id=a.account_id AND r.identity_key=a.identity_key AND r.revision=a.revision AND r.proposal_json IS NULL);
+        UPDATE implementation_plan_requests AS r SET scope_json=a.scope_json,
+          proposal_json=json_object('keys',json((SELECT json_group_array(json_extract(value,'$.key')) FROM json_each(a.scope_json))),
+            'plan',a.plan_text,'validation',a.validation_text,'origin','attention','requestedAt',a.approved_at)
+          FROM implementation_plan_approvals a
+          WHERE r.account_id=a.account_id AND r.identity_key=a.identity_key AND r.revision=a.revision
+            AND r.proposal_json IS NULL AND a.plan_text<>'';`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611051453,new Date().toISOString());
+      });
+    }
+
   }
 }

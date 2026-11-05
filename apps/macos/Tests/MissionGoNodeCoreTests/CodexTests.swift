@@ -267,11 +267,12 @@ final class CodexModesTests: XCTestCase {
 }
 
 final class PlanPromptTests: XCTestCase {
-    func testClientsRequireApprovalWithoutForcingNativePlanMode() throws {
+    func testClientsHonorSingleApprovalWithoutForcingNativePlanMode() throws {
         for client in [LaunchPrompt.Client.claudeCode, .codex, .openCode] {
             let prompt = try LaunchPrompt.build(itemKeys: ["HG-8"], dispatchId: "abc", mode: "plan", client: client)
-            XCTAssertTrue(prompt.contains("用户批准之前不回写评论、不领取条目、不建分支或 worktree、不改代码"))
-            XCTAssertTrue(prompt.contains("用户批准之后，先将已批准的计划以结构化评论"))
+            XCTAssertTrue(prompt.contains("领取记录任务归属，不要求方案批准"))
+            XCTAssertTrue(prompt.contains("同一方案与范围只批准一次，原生或 MissionGo 任一入口的明确人工批准均有效"))
+            XCTAssertTrue(prompt.contains("将已批准的计划以结构化评论"))
             XCTAssertTrue(prompt.contains("先完整读取条目并调查可核查事实，再集中澄清必要取舍"))
             XCTAssertEqual(prompt.contains("仅当明确选择了原生"), client != .codex)
             XCTAssertEqual(prompt.contains("方案审批不切换"), client != .codex)
@@ -279,9 +280,9 @@ final class PlanPromptTests: XCTestCase {
         }
     }
 
-    func testEveryModeRequiresPlanApproval() throws {
+    func testEveryModeKeepsClaimingIndependentOfApproval() throws {
         for mode in ["default", "auto", "acceptEdits"] {
-            XCTAssertTrue(try LaunchPrompt.build(itemKeys: ["HG-8"], dispatchId: "abc", mode: mode).contains("用户批准之前不回写评论"), mode)
+            XCTAssertTrue(try LaunchPrompt.build(itemKeys: ["HG-8"], dispatchId: "abc", mode: mode).contains("领取记录任务归属，不要求方案批准"), mode)
         }
     }
 }

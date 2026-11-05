@@ -43,12 +43,16 @@ export class PlanApprovalService {
   }
   private planHash(session: Session): string {
     const last = [...session.messages].reverse().find(message => message.role !== "user");
-    return planDigest(last ? [last.sourceId,last.text] : []);
+    return planDigest(last?.text ?? "");
   }
 
   registered(session: Session) {
     const owner = this.owner(session);
-    return owner ? this.plans?.proposal(owner,this.identity(session)) : undefined;
+    const proposal = owner ? this.plans?.proposal(owner,this.identity(session)) : undefined;
+    const visible = [...session.messages].reverse().find(message=>message.role!=="user")?.text;
+    if (proposal?.origin === "attention" && session.attention.state === "needed" && session.attention.kind === "approval"
+      && visible && visible !== proposal.plan) return undefined;
+    return proposal;
   }
 
   /** Readable proposal survives approval, disconnection and scope changes. */
@@ -60,9 +64,16 @@ export class PlanApprovalService {
       approved: proposal.approved, valid: proposal.valid } : undefined;
   }
 
-  /** An explicitly registered plan is a domain decision, independent of its reply channel. */
+  /** A registered plan is a domain decision, independent of its optional reply channel. */
   private independent(session: Session): boolean {
     return Boolean(this.registered(session));
+  }
+
+  private awaitingNativePlan(session: Session): boolean {
+    const last=[...session.messages].reverse().find(message=>message.role!=="user");
+    return session.source!=="external" && session.agentKind==="claude_code" && session.turnState.waitingForInput===true
+      && last?.role==="plan" && /^(permission|request)-/.test(last.sourceId)
+      && last.phase!=="plan_approved" && last.phase!=="plan_declined";
   }
 
   approvalState(session: Session) {
@@ -71,13 +82,18 @@ export class PlanApprovalService {
     const owner = this.owner(session)!;
     const row = this.database!.connection.prepare(`SELECT command_id FROM implementation_plan_approvals
       WHERE account_id=? AND identity_key=? AND revision=?`).get(owner,this.identity(session),proposal.revision) as {command_id:string|null}|undefined;
-    return { approved: true as const, revision: proposal.revision, continuationQueued: Boolean(row?.command_id) };
+    const cancelled=row?.command_id && this.database!.connection.prepare(`SELECT 1 FROM agent_session_commands WHERE id=? AND status IN ('cancelled','failed')
+      UNION ALL SELECT 1 FROM external_native_commands WHERE id=? AND status IN ('cancelled','failed') LIMIT 1`).get(row.command_id,row.command_id);
+    const pending=this.database!.connection.prepare(`SELECT 1 FROM implementation_plan_continuations
+      WHERE account_id=? AND identity_key=? AND revision=? AND state='waiting'`).get(owner,this.identity(session),proposal.revision);
+    return { approved: true as const, revision: proposal.revision, continuationQueued: Boolean(row?.command_id) && !cancelled,
+      ...(pending ? {continuationPending:true as const} : {}) };
   }
 
   assess(session: Session, unavailableReason?: PlanApprovalBlockReason): PlanApprovalAssessment {
     const attention = session.attention;
     const owner = this.owner(session);
-    const prepared = owner ? this.plans?.proposal(owner,this.identity(session)) : undefined;
+    const prepared = this.registered(session);
     if(prepared?.approved) return {status:{code:this.independent(session) ? "approved" : "awaiting_source"}};
     const visiblePlan=[...session.messages].reverse().find(message=>message.role!=="user")?.text;
     if(!prepared && !visiblePlan?.trim()) return {status:{code:"not_approval"}};
@@ -96,7 +112,7 @@ export class PlanApprovalService {
     if (session.approval && !["approved", "resolved"].includes(session.approval.status)) return { status: { code: "permission_required" } };
     const command = session.command;
     if (command && ["queued", "delivering", "delivery_unknown"].includes(command.status)) return { status: { code: "reply_pending" } };
-    if (session.status !== "idle" || session.turnState.turnActive === true) return { status: { code: "running" } };
+    if ((session.status !== "idle" || session.turnState.turnActive === true) && !this.awaitingNativePlan(session)) return { status: { code: "running" } };
     if (owner && this.plans?.approved(owner,this.identity(session),this.planHash(session))) return { status: { code: "awaiting_source" } };
     const requestRevision = createHash("sha256").update(JSON.stringify(session.messages)).digest("hex");
     if (!this.plans && this.approvedRequests.get(session.id) === requestRevision) return { status: { code: "awaiting_source" } };
@@ -108,13 +124,15 @@ export class PlanApprovalService {
   }
 
   /** Reload and enqueue together in the caller's transaction; the queue prevents double submission. */
-  approve<T>(session: Session, revision: string, enabled: boolean, enqueue: () => T, deliveryAvailable=true): T | {approved:true;revision:string;continuationQueued:false} {
+  approve<T>(session: Session, revision: string, enabled: boolean, enqueue: () => T, deliveryAvailable=true): T | {approved:true;revision:string;continuationQueued:boolean;continuationPending?:true} {
+    const saved = this.approvalState(session);
+    if (saved?.revision === revision) return saved;
     const assessment = this.assess(session);
     if (!enabled || assessment.status.code !== "ready" || assessment.offer?.revision !== revision) {
       throw conflict("agent_plan_approval_changed", "The approval request changed or is unavailable. Refresh and review the conversation before approving.");
     }
-    // An explicit external proposal can be approved offline. Only queue when the original channel is ready.
-    const canContinue = deliveryAvailable && session.canReply && session.status === "idle" && session.turnState.turnActive !== true
+    // An explicit proposal can be approved offline. Only queue when the original channel is ready.
+    const canContinue = deliveryAvailable && session.canReply && (session.status === "idle" && session.turnState.turnActive !== true || this.awaitingNativePlan(session))
       && !session.lastError && (!session.nativeConnection || session.nativeConnection.state === "connected")
       && (!session.command || !["queued","delivering","delivery_unknown"].includes(session.command.status))
       && (!session.approval || ["approved","resolved"].includes(session.approval.status));
@@ -122,15 +140,62 @@ export class PlanApprovalService {
       ? {approved:true as const,revision,continuationQueued:false as const} : enqueue();
     const owner = this.owner(session);
     if (owner && this.plans) {
-      const prepared=this.plans.proposal(owner,this.identity(session));
+      const prepared=this.registered(session);
       const keys = prepared?.keys ?? (session.dispatchId ? this.plans.dispatchKeys(session.dispatchId)
         : (this.database!.connection.prepare(`SELECT w.item_key AS key FROM external_agent_session_items e JOIN work_items w ON w.id=e.item_id WHERE e.session_id=?`).all(session.id) as {key:string}[]).map(row => row.key));
-      this.plans.record({accountId:owner,identity:this.identity(session),revision,planHash:prepared?.revision ?? this.planHash(session),keys,source:"web",validation:prepared?.validation ?? "",plan:prepared?.plan ?? [...session.messages].reverse().find(message=>message.role!=="user")?.text ?? "",
+      const plan = prepared?.plan ?? [...session.messages].reverse().find(message=>message.role!=="user")?.text ?? "";
+      this.plans.request(owner,this.identity(session),revision,{keys,plan,validation:prepared?.validation ?? "",...(!prepared ? {origin:"attention" as const} : prepared.origin ? {origin:prepared.origin} : {})});
+      this.plans.record({accountId:owner,identity:this.identity(session),revision,planHash:revision,keys,source:"web",validation:prepared?.validation ?? "",plan,
         ...(result && typeof result === "object" && "id" in result ? {commandId:String(result.id)} : {})});
+      // Running sources continue themselves. Persist a single offline/blocked idle handoff.
+      if (result && typeof result === "object" && "continuationQueued" in result && !result.continuationQueued
+        && (session.status !== "active" && session.turnState.turnActive !== true || this.awaitingNativePlan(session))) {
+        this.database!.connection.prepare(`INSERT OR IGNORE INTO implementation_plan_continuations
+          (account_id,identity_key,revision,session_id,source_digest,requested_at,state) VALUES (?,?,?,?,?,?,'waiting')`)
+          .run(owner,this.identity(session),revision,session.id,this.sourceDigest(session),new Date().toISOString());
+      }
     }
     this.approvedRequests.delete(session.id);
     this.approvedRequests.set(session.id, createHash("sha256").update(JSON.stringify(session.messages)).digest("hex"));
     if (this.approvedRequests.size > 200) this.approvedRequests.delete(this.approvedRequests.keys().next().value!);
-    return result;
+    return result && typeof result==="object" && "approved" in result ? this.approvalState(session) ?? result : result;
   }
+
+  private sourceDigest(session: Session): string {
+    const user = [...session.messages].reverse().find(message=>message.role==="user");
+    const agent = [...session.messages].reverse().find(message=>message.role!=="user");
+    return planDigest([user?.turnId ?? null,user?.text ?? null,agent?.role ?? null,agent?.text ?? null,agent?.phase ?? null]);
+  }
+
+  /** Called after original-node reports. Existing queues remain the delivery authority. */
+  resume<T extends {id:string}>(session: Session, enabled: boolean, enqueue:()=>T): void {
+    if (!this.database) return;
+    this.database.transaction(()=>{
+      const owner=this.owner(session), identity=this.identity(session);
+      if (!owner) return;
+      const pending=this.database!.connection.prepare(`SELECT revision,source_digest,requested_at FROM implementation_plan_continuations
+        WHERE account_id=? AND identity_key=? AND state='waiting'`).get(owner,identity) as
+        {revision:string;source_digest:string;requested_at:string}|undefined;
+      if (!pending) return;
+      const settle=(state:string,commandId:string|null=null)=>this.database!.connection.prepare(`UPDATE implementation_plan_continuations
+        SET state=?,command_id=? WHERE account_id=? AND identity_key=? AND revision=? AND state='waiting'`)
+        .run(state,commandId,owner,identity,pending.revision);
+      const proposal=this.registered(session);
+      const subsequentInput=this.database!.connection.prepare(`SELECT 1 FROM agent_session_commands WHERE session_id=? AND created_at>=?
+        UNION ALL SELECT 1 FROM external_native_commands WHERE session_id=? AND created_at>=? LIMIT 1`)
+        .get(session.id,pending.requested_at,session.id,pending.requested_at);
+      if (!enabled || session.archivedAt || session.managedExecution || !proposal?.approved || proposal.revision!==pending.revision
+        || (session.status==="active" || session.turnState.turnActive===true) && !this.awaitingNativePlan(session) || subsequentInput || this.sourceDigest(session)!==pending.source_digest) {
+        settle("cancelled");return;
+      }
+      if (!session.canReply || session.status!=="idle" && !this.awaitingNativePlan(session) || session.lastError
+        || session.nativeConnection && session.nativeConnection.state!=="connected"
+        || session.approval && !["approved","resolved"].includes(session.approval.status)
+        || session.command && ["queued","delivering","delivery_unknown"].includes(session.command.status)) return;
+      const command=enqueue();
+      this.plans!.attachCommand(owner,identity,pending.revision,command.id);
+      settle("queued",command.id);
+    });
+  }
+
 }

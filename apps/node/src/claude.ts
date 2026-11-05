@@ -218,6 +218,9 @@ export class ClaudeAdapter implements Adapter {
       const response = claudeAnswer(request, command.text);
       // Answers always apply to the live native request, not a remembered tool grant.
       this.process.write({ type: "control_response", response: { subtype: "success", request_id: request.requestId, response } });
+      if (request.tool_name === "ExitPlanMode") this.add({sourceId:`request-${request.requestId}`,role:"plan",
+        text:request.input?.plan ?? [...this.state.messages].reverse().find(message=>message.role==="agent")?.text ?? "",
+        phase:response.behavior === "allow" ? "plan_approved" : "plan_declined"});
       if (request.subtype === "elicitation") this.add(confirmationCard(request, this.activeTurnId,
         { answered: response.action === "accept" ? "批准" : response.action === "decline" ? "拒绝" : "取消" }));
       this.requests.shift();

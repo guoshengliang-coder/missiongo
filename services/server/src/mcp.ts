@@ -1,8 +1,6 @@
-import { AgentSessionStore } from "./agent-session-store.js";
 import { AgentHandoffs } from "./agent-handoffs.js";
 import { ImplementationPlans, planDigest, requestNativePlanApproval } from "./implementation-plans.js";
 import { recoverLegacyPlanApproval } from "./legacy-plan-approval-recovery.js";
-import { armRecoveredPlanResume } from "./recovered-plan-resume.js";
 import { MissionGoError } from "./errors.js";
 import { Collaborations, collaborationDraftSchema } from "./collaboration.js";
 import { collaborationLinkedRead } from "./collaboration-policy.js";
@@ -892,7 +890,7 @@ export function createMissionGoMcpServer(
   server.registerTool(
     "request_plan_approval", {
     title: "Request human implementation-plan approval",
-    description: "After diagnosis and clarification, present this exact plan and validation goals in the conversation. Request explicit native human approval for the current item batch before claiming. This is separate from tool permissions. Use the original dispatchId or external conversation identity; never register another session. It does not claim, comment or change item status. It prepares an approval-only association for a first external conversation and returns its sessionId and reviewUrl; claiming later reuses this same record. Native confirmation uses the protocol's bound input-required round trip. Registered external plans can be approved on the Web without a native reply connection. Reuse an existing current approval without asking again. Changed scope requires fresh approval; never provide an approval answer as a tool argument.",
+    description: "After diagnosis and clarification, present this exact plan and validation goals in the conversation. When a plan still needs review, request one explicit human decision for the current item batch. Claiming responsibility is independent; never request a second decision for a plan already approved in the original native conversation or MissionGo. This is separate from tool permissions. Use the original dispatchId or external conversation identity; never register another session. It does not claim, comment or change item status. It prepares an approval-only association for a first external conversation and returns its sessionId and reviewUrl; claiming later reuses this same record. Native confirmation uses the protocol's bound input-required round trip. Registered external plans can be approved on the Web without a native reply connection. Reuse an existing current approval without asking again. Changed scope requires fresh approval; never provide an approval answer as a tool argument.",
     inputSchema: z.object({ itemKeys:z.array(z.string().min(2).max(50)).min(1).max(20),
       approvalMethod:z.enum(["native","web"]).optional(),
       plan:z.string().trim().min(1).max(3000), validation:z.string().trim().min(1).max(700),
@@ -919,7 +917,11 @@ export function createMissionGoMcpServer(
     const originalDispatchId=project?.dispatchId ?? dispatchId;
     if(project && keys.some(key=>store.getWorkItem(key).productId!==project.productId)) throw new Error("Project conversation scope changed.");
     const identity=planIdentity(access.clientId,session,originalDispatchId);
-    const scope=plans.scope(keys), revision=planDigest([identity,scope,plan,validation]);
+    const scope=plans.scope(keys);
+    const previous=plans.proposal(access.accountId,identity);
+    const reuseNative=previous?.origin==="native" && previous.approved && previous.valid && previous.plan===plan
+      && JSON.stringify([...previous.keys].sort())===JSON.stringify(keys) && plan.includes(validation);
+    const revision=reuseNative ? previous.revision : planDigest([identity,scope,plan,validation]);
     const nativeState = ctx.mcpReq.requestState<{revision:string}>();
     if (nativeState) {
       if (nativeState.revision !== revision) throw new Error("The native approval belongs to a different or changed plan. Keep the current proposal and review its exact scope.");
@@ -936,14 +938,17 @@ export function createMissionGoMcpServer(
     const reviewPath = sessionId ? `/?console=agent&session=${encodeURIComponent(sessionId)}` : undefined;
     const reviewUrl = reviewPath ? `${options.publicOrigin ?? ""}${reviewPath}` : undefined;
     const context = {...(sessionId ? {sessionId} : {}),...(reviewUrl ? {reviewUrl} : {})};
-    if(plans.approved(access.accountId,identity,revision)) return textResult({approved:true,revision,...context},"This exact plan is already approved for this original conversation. Reuse its approval; do not ask again.");
+    if(plans.approved(access.accountId,identity,revision)) {
+      plans.nativeContinued(access.accountId,identity,revision);
+      return textResult({approved:true,revision,...context},"This exact plan is already approved for this original conversation. Reuse its approval; do not ask again.");
+    }
     if(approvalMethod==="web") return textResult({approved:false,approvalRequired:true,revision,...context},`The exact plan and scope are ready for human review: ${reviewUrl ?? "open the original conversation"}. The item remains unclaimed. No native reply connection is required for a registered external plan.`);
     const confirmation = `MissionGo · 方案批准\n${keys.join("、")}\n${plan}\n验证目标：${validation}\n批准仅覆盖这份方案，不授予 push、merge 或发布权限。`;
     let accepted: boolean;
     if (options.protocolEra === "modern") {
       const capabilities = (ctx.mcpReq.envelope as Record<string,unknown> | undefined)?.["io.modelcontextprotocol/clientCapabilities"] as {elicitation?:{form?:unknown}}|undefined;
       if (!capabilities?.elicitation?.form) return textResult({approved:false,approvalRequired:true,revision,requiresWeb:true,code:"native_approval_unavailable",...context},
-        `This client has no native form approval capability. The same proposal is available at ${reviewUrl}. Approval and native reply connectivity are independent; preserve the existing human decision and do not repeat the plan review.`);
+        `This connection did not advertise native form confirmation. The same proposal is available at ${reviewUrl}. Approval and native reply connectivity are independent; preserve the existing human decision and do not repeat the plan review.`);
       const response = inputResponse(ctx.mcpReq.inputResponses,"planApproval");
       if (response.kind === "missing") {
         return inputRequired({requestState:await approvalStateCodec.mint({revision},ctx),inputRequests:{
@@ -965,7 +970,11 @@ export function createMissionGoMcpServer(
       return textResult({approved:false,approvalRequired:true,revision,requiresWeb:true,code:"native_approval_unavailable",...context},
         `The native confirmation could not be recorded by MissionGo. This is an approval handoff limitation, not evidence that the human declined. Preserve the original identity and proposal; do not ask them to review the plan again. Use the registered approval handoff at ${reviewUrl ?? "the original conversation"}. A registered external plan can be approved there without connecting a native reply channel.`);
     }
-    if(!accepted) return textResult({approved:false,revision,...context},"Plan was not approved. Do not claim or implement.");
+    if(plans.approved(access.accountId,identity,revision)) {
+      plans.nativeContinued(access.accountId,identity,revision);
+      return textResult({approved:true,revision,...context},"This plan was approved through the other entry point. Continue with that same decision; do not ask again.");
+    }
+    if(!accepted) return textResult({approved:false,revision,...context},"Plan was not approved. Do not implement this plan; claiming responsibility is a separate operation.");
     // The request may have waited hours. Recheck all current authority and scope.
     requireWriteScope(ctx);
     for(const key of keys) {
@@ -976,17 +985,9 @@ export function createMissionGoMcpServer(
     plans.assertRequest(access.accountId,identity,revision);
     if(plans.scope(keys)!==scope) throw new Error("Implementation scope changed while awaiting approval. Review the new plan.");
     plans.record({accountId:access.accountId,identity,revision,planHash:revision,keys,source:"native",plan,validation});
-    let continuationQueued=false;
-    if(originalDispatchId) {
-      const native=store.database.connection.prepare(`SELECT id,implementation_mode FROM agent_sessions WHERE dispatch_id=?`)
-        .get(originalDispatchId) as {id:string;implementation_mode:string|null}|undefined;
-      if(native) {
-        try {
-          const command=new AgentSessionStore(store.database).enqueue(access.accountId,native.id,"批准");
-          plans.attachCommand(access.accountId,identity,revision,command.id);continuationQueued=true;
-        } catch { /* Human approval remains valid; an existing pending delivery must be reconciled, never replayed. */ }
-      }
-    }
+    plans.nativeContinued(access.accountId,identity,revision);
+    // The native tool result resumes its own caller. Never start a second turn.
+    const continuationQueued=false;
     return textResult({approved:true,revision,continuationQueued,...context},"The human approved this exact implementation plan. Native permissions are independent of this approval; only an explicitly selected Plan mode requires a separate transition before writes. Save this revision; do not ask again for this unchanged plan.");
   });
 
@@ -994,7 +995,7 @@ export function createMissionGoMcpServer(
     "claim_item",
     {
       title: "Claim work or an explicitly authorized handoff",
-      description: "Claim the user-named ready item before editing code. In-progress work additionally requires a current human handoff bound to this original conversation, or the existing new-Builder takeover dispatch. A registered session alone grants no execution authority. Keep the business status unchanged on takeover. A persisted human-approved current plan is required, via the Web approval button or request_plan_approval. Mode or chat changes cannot satisfy this gate. For pre-upgrade Codex dispatches only, the server can restore a migration-frozen native plan decision from the node-synchronized exact plan and its complete PLEASE IMPLEMENT THIS PLAN user instruction. No caller-supplied approval is accepted; restored native evidence is audited separately from today's claim. If implementation mode is still applying, retain the same claim key and wait for the node; never ask for the same approval again. Tell the user before claiming. "
+      description: "Claim the user-named ready item before editing code. In-progress work additionally requires a current human handoff bound to this original conversation, or the existing new-Builder takeover dispatch. A registered session alone grants no execution authority. Keep the business status unchanged on takeover. Claiming records responsibility and requires the existing status, ownership, product permissions and idempotency checks. It does not require a plan approval record or confirmed native mode, and does not itself authorize implementation. Honor the user's plan decision once, from either the original native conversation or MissionGo; never require a second approval because of claiming or a new turn. Tell the user before claiming. "
         + "For an externally started conversation, pass session with a verified native ID or a stable conversation UUID marked tracking; "
         + "the returned sessionId records progress in the Web console. For a MissionGo-dispatched conversation, pass the dispatchId from its trusted launch prompt. "
         + "A project conversation may claim items in its own product using its original dispatchId; a verified native session identity also reuses that project conversation. "
@@ -1017,26 +1018,16 @@ export function createMissionGoMcpServer(
       const key = requireItemAccess(ctx, store, itemKey);
       assertBuilderExecution(store.database,store.getWorkItem(key).id,access.accountId);
       if (options.canOperate && !options.canOperate(access.accountId,store.getWorkItem(key).productId)) throw new Error("Product operation is not permitted.");
-      // Approval recovery is durable even when this claim must wait for the node's
-      // implementation-mode acknowledgement. It never issues a claim credential.
-      if (dispatchId) recoverLegacyPlanApproval(store, {
+      // Legacy provenance recovery is best-effort bookkeeping, never a claim prerequisite.
+      if (dispatchId) try { recoverLegacyPlanApproval(store, {
         accountId:access.accountId,clientId:access.clientId ?? "",dispatchId,itemKey:key,
         authorize: candidateKey => {
           requireItemAccess(ctx,store,candidateKey);
           if(options.canOperate&&!options.canOperate(access.accountId,store.getWorkItem(candidateKey).productId)) throw new Error("Product operation is not permitted.");
         },
-      });
-      if(dispatchId && store.database.connection.prepare(`SELECT 1 FROM implementation_plan_recoveries
-        WHERE account_id=? AND identity_key=? AND client_id=?`).get(access.accountId,`dispatch:${dispatchId}`,access.clientId ?? '')) {
-        try {plans.assertClaim(access.accountId,`dispatch:${dispatchId}`,key);}
-        catch(error) {
-          if(error instanceof MissionGoError && error.code==='implementation_mode_not_applied') {
-            if(armRecoveredPlanResume(store,access.accountId,access.clientId ?? '',dispatchId)) return textResult(
-              {itemKey:key,statusChanged:false,claimPending:true,continuationScheduled:true},
-              "The historical native approval is restored. This running turn must finish before the node can confirm the implementation mode. One continuation is registered for this original conversation after an authenticated idle-mode acknowledgement. End this turn with progress; the same conversation will resume without another approval. No claim or execution credential exists yet; keep the original claim key.");
-          }
-          throw error;
-        }
+      }); } catch (error) {
+        // Claim authority is checked independently below; stale provenance cannot block it.
+        if (!(error instanceof MissionGoError)) throw error;
       }
       const result = store.database.transaction(() => {
         const digest = createHash("sha256").update(JSON.stringify([key, agentId, session ?? null, dispatchId ?? null])).digest("hex");
@@ -1063,7 +1054,6 @@ export function createMissionGoMcpServer(
         // A legacy global idempotency key must not let another OAuth client
         // replay somebody else's claim and manufacture a second handling record.
         const identity = planIdentity(access.clientId,session,executionDispatchId);
-        plans.assertClaim(access.accountId,identity,key);
         const statusChanged = store.getWorkItem(key).status === "ready";
         const item = store.claimWorkItem({ itemKey: key, agentId, executionIdentity:identity, ...(executionDispatchId ? {dispatchId: executionDispatchId} : {}),
           attribution: { accountId: access.accountId, ...(access.clientId ? { clientId: access.clientId } : {}) },
