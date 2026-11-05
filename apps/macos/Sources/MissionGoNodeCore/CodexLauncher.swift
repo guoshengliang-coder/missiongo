@@ -505,7 +505,7 @@ public struct CodexLauncher: AgentAdapter {
     }
 
     public func launch(_ job: DispatchJob) async throws -> LaunchResult {
-        guard let settings = CodexModes.threadSettings(for: job.mode) else {
+        guard let settings = CodexModes.threadSettings(for: job.mode, planning: true) else {
             throw LaunchError("不支持的 Codex 模式：\(JSONValues.quote(job.mode))")
         }
         if let problem = AgentModelSettings.problem(model: job.model, effort: job.effort) {
@@ -682,6 +682,7 @@ public struct CodexLauncher: AgentAdapter {
         var model = snapshot.model
         var effort = snapshot.reasoningEffort
         var settingsRevision: Int?
+        var actualMode: String?
         var settingsError: String?
         // Settings change only between turns: a running turn keeps what it
         // started with, so an active thread gets the change at a later idle poll.
@@ -693,6 +694,7 @@ public struct CodexLauncher: AgentAdapter {
                 let applied = try await control.applySettings(
                     socketPath: location.controlSocketPath, threadId: session.sessionRef, overrides: overrides
                 )
+                actualMode = desired.mode.map(CodexModes.normalized)
                 model = applied.model ?? desired.model ?? model
                 effort = applied.reasoningEffort ?? effort
             } catch {
@@ -704,7 +706,7 @@ public struct CodexLauncher: AgentAdapter {
             turnStartedAt: snapshot.execution.turnStartedAt, lastOutputAt: snapshot.execution.lastOutputAt,
             waitingForInput: snapshot.waitingOnApproval || snapshot.waitingOnUserInput || ["pending", "inProgress"].contains(approval?.status ?? "")
         )
-        report = report.reportingSettings(model: report.model ?? model, effort: report.effort ?? effort,
+        report = report.reportingSettings(mode: actualMode, model: report.model ?? model, effort: report.effort ?? effort,
             settingsRevision: report.settingsRevision ?? settingsRevision, settingsError: report.settingsError ?? settingsError)
         if session.externalBindingGeneration != nil {
             report = report.reportingExternalSettings(supportedFields: ["model", "effort"])
@@ -728,7 +730,7 @@ public struct CodexLauncher: AgentAdapter {
                         socketPath: location.controlSocketPath, threadId: session.sessionRef,
                         text: "用户已在 MissionGo 控制台明确要求对刚被自动审查拒绝的操作发起一次人工审批重试。请重新评估该操作；若仍需执行，只尝试一次，并把实际授权请求交给人审查。不要自动重复其他操作。",
                         clientUserMessageId: retry.id,
-                        overrides: CodexTurnOverrides(settings: CodexModes.threadSettings(for: "default"))
+                        overrides: CodexTurnOverrides(settings: CodexModes.threadSettings(for: "default", planning: session.desiredSettings?.planApproved != true))
                     )
                     retryStatus = "delivered"
                     let deliveredMessages = ((try? await control.readThread(

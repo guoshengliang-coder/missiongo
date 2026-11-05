@@ -319,7 +319,7 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
         XCTAssertEqual(snapshot.state.activities.first?.title, "后台命令")
     }
 
-    func testProjectsPlanApprovalAsAVisibleQuestion() {
+    func testProjectsPlanApprovalSeparatelyFromOrdinaryQuestions() {
         var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
         snapshot.consume([
             "type": "assistant", "uuid": "frame-1", "parent_tool_use_id": NSNull(),
@@ -327,13 +327,10 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
                 "type": "tool_use", "name": "ExitPlanMode", "input": ["plan": "Do the work"],
             ]]],
         ])
-        XCTAssertEqual(snapshot.state.messages.last?.questions, [
-            AgentSessionQuestion(
-                header: "计划审批",
-                title: "是否批准这份计划并开始实施？",
-                options: ["批准并实施", "继续修改计划"]
-            ),
-        ])
+        XCTAssertEqual(snapshot.state.messages.last?.role, "plan")
+        XCTAssertEqual(snapshot.state.messages.last?.text, "Do the work")
+        XCTAssertNil(snapshot.state.messages.last?.questions)
+
     }
 
     func testOldHostStateDefaultsNewFields() throws {
@@ -553,15 +550,15 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
             makeRequestId: { ids.next()! }
         )
         XCTAssertEqual(change.requests.map(\.id), ["r1", "r2", "r3"])
-        XCTAssertEqual(change.requests[0].request as NSDictionary, ["subtype": "set_permission_mode", "mode": "acceptEdits"])
-        XCTAssertEqual(change.requests[1].request as NSDictionary, ["subtype": "set_model", "model": "sonnet"])
+        XCTAssertEqual(change.requests[1].request as NSDictionary, ["subtype": "set_permission_mode", "mode": "acceptEdits"])
+        XCTAssertEqual(change.requests[0].request as NSDictionary, ["subtype": "set_model", "model": "sonnet"])
         XCTAssertEqual(
             change.requests[2].request as NSDictionary,
             ["subtype": "apply_flag_settings", "settings": ["effortLevel": "low"]]
         )
         XCTAssertFalse(change.receive(requestId: "other", response: ["subtype": "success"]))
-        XCTAssertTrue(change.receive(requestId: "r1", response: ["subtype": "success"]))
-        XCTAssertTrue(change.receive(requestId: "r2", response: ["subtype": "error", "error": "model not available"]))
+        XCTAssertTrue(change.receive(requestId: "r2", response: ["subtype": "success", "response": ["mode": "acceptEdits"]]))
+        XCTAssertTrue(change.receive(requestId: "r1", response: ["subtype": "error", "error": "model not available"]))
         XCTAssertFalse(change.isComplete)
         XCTAssertTrue(change.receive(requestId: "r3", response: ["subtype": "success"]))
         XCTAssertTrue(change.isComplete)

@@ -1,3 +1,4 @@
+import type { AgentModeCapability } from "@missiongo/domain";
 import { assertBuilderExecution, assertDispatchExecution, latestBuilderHandover, hasOngoingItemExecution, requiresExecutionStopCheck } from "./builder-authority.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
@@ -18,11 +19,13 @@ import {
   type DispatchFailureStage,
 } from "@missiongo/domain";
 
-import { requireOfferedModel, type NodeAgentModel } from "./agent-settings.js";
+import { requireAvailableMode, requireOfferedModel, type NodeAgentModel } from "./agent-settings.js";
 import { conflict, invalidInput, notFound } from "./errors.js";
 import type { MissionGoDatabase } from "./storage/database.js";
 
 export interface NodeAgentReport {
+  readonly planApprovalProtocol?: number;
+  readonly modes?: readonly AgentModeCapability[] | undefined;
   readonly kind: AgentKind;
   readonly version?: string;
   /** Models this agent offers on the machine (AND-130); absent from clients that cannot choose one. */
@@ -728,6 +731,10 @@ export class DispatchStore {
       if (agent.ready === false) {
         throw conflict("agent_not_ready", agent.unavailableReason ?? "This agent is not ready for dispatch.");
       }
+      if (agent.planApprovalProtocol !== 1) {
+        throw conflict("node_upgrade_required", "Update the execution node to support explicit plan approval before dispatching work.");
+      }
+      requireAvailableMode(input.agentKind,input.mode,agent.modes,input.model);
       requireOfferedModel(input.agentKind, agent.models, {
         ...(input.model ? { model: input.model } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
@@ -1163,6 +1170,7 @@ export class DispatchStore {
           `SELECT d.id, d.agent_kind, d.mode, d.model, d.effort, d.repo_path, COALESCE(n.nickname, n.name) AS node_name
            FROM dispatches d JOIN nodes n ON n.id = d.node_id
            WHERE d.node_id = ? AND d.status = 'queued'
+             AND EXISTS (SELECT 1 FROM json_each(n.agents_json) a WHERE json_extract(a.value,'$.kind')=d.agent_kind AND json_extract(a.value,'$.planApprovalProtocol')=1)
              AND NOT EXISTS (SELECT 1 FROM free_session_starts f WHERE f.dispatch_id=d.id AND (f.ready=0 OR n.supports_free_sessions!=1 OR EXISTS (SELECT 1 FROM products p WHERE p.id=f.product_id AND p.archived_at IS NOT NULL)))
              AND NOT EXISTS (SELECT 1 FROM builder_revoked_dispatches r WHERE r.dispatch_id=d.id)
              AND NOT EXISTS (SELECT 1 FROM dispatch_items i JOIN work_items w ON w.id=i.item_id JOIN products p ON p.id=w.product_id
@@ -1563,7 +1571,7 @@ export class DispatchStore {
     // preserved rather than silently changing a different account's policy.
     return row
       ? JSON.parse(row.settings_json) as DispatchDefaults
-      : { agents: { claude_code: { mode: "bypassPermissions" } } };
+      : { agents: {} };
   }
 
   /**

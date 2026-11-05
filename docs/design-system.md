@@ -360,3 +360,9 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 `npm run check` 包含样式与浮层静态检查。`npm run test:ui` 验证行为、布局与字号；Linux 截图比较沿用现有 CI。工具栏专项覆盖 320px、断点两侧、三档字号、明暗主题和注入长英文标签（产品当前固定中文，不代表英文产品验收）。
 
 `style-baseline.json` 仅记录存量例外，含签名、数量、原因与跟踪项。`check:styles --update` 只能缩减；`check:styles --base <基准提交 SHA>` 拒绝手动扩大数量或新增签名。静态检查使用有限的源码模式匹配，动态 className、运行时构造及跨文档行为仍须由回归和评审覆盖。
+
+### Agent 模式与方案批准（AND-400）
+
+- 派单、新会话与快捷设置共用原生模式定义与能力结果；窄屏“更多设置”与同行选择器复用同一组选项。保留失效偏好并说明，禁止静默放宽权限。
+- 待批准会话复用注意力卡及共享队列，精确方案、条目范围与验证目标在原位展开；批准按钮始终可达。申请中、失败与实际生效分别展示，实施模式请求不代表方案批准。
+- 不新增“工作方式”或“沙箱范围”选择，不在派单常驻展示固定流程。协议与兼容规则见 [模式与批准](agent-modes-plan-approval.md)，回归沿用 `plan-approval.audit.spec.ts`、`new-session.audit.spec.ts`、`agent-settings-compact.audit.spec.ts` 与 `dispatch-capture-defaults.audit.spec.ts`。

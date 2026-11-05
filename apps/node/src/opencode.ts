@@ -38,6 +38,7 @@ export function openCodeMessages(entries: Wire[]): Message[] {
 }
 export class OpenCodeAdapter implements Adapter {
   private ref = "";
+  private planning = true;
   initialTurnId?: string;
   private path = "";
   constructor(private job: Dispatch, readonly api = new OpenCodeAPI()) {}
@@ -48,9 +49,11 @@ export class OpenCodeAdapter implements Adapter {
     if (!Array.isArray(mcp.data) || mcp.data.find((server: Wire) => server.name === "missiongo")?.status?.status !== "connected") {
       throw new Error("Authorize missiongo MCP in this OpenCode service and repository");
     }
-    const result = await this.api.call("POST", "/api/session", { agent: this.job.mode === "plan" ? "plan" : "build", location: { directory: this.job.repoPath },
+    const result = await this.api.call("POST", "/api/session", { agent: "plan", location: { directory: this.job.repoPath },
       ...(this.job.model ? { model: modelRef(this.job.model, this.job.effort) } : {}) });
     this.ref = id(result.data?.id); this.path = `/api/session/${encodeURIComponent(this.ref)}`;
+    const effective=await this.api.call("GET",this.path);
+    if(effective.data?.agent!=="plan") throw new Error("OpenCode did not confirm native Plan; no task started");
     const title = `${this.job.nodeName ?? "Linux"}-${this.job.itemKeys.join(",")}`;
     try { await this.api.call("PATCH", this.path, { title }); }
     catch (error) { if (!(error instanceof OpenCodeHTTPError) || error.status !== 404) throw error; await this.api.call("POST", `${this.path}/rename`, { title }); }
@@ -97,7 +100,7 @@ export class OpenCodeAdapter implements Adapter {
     const active = await this.api.call("GET", "/api/session/active");
     const running = active.data?.[this.ref] !== undefined;
     return { status: details.data?.outcome === "failed" ? "failed" : running ? "active" : "idle", messages: messages.slice(-2000),
-      turnActive: running, waitingForInput: choices.permissions.length + choices.forms.length > 0,
+      ...(typeof details.data?.agent==="string" ? {mode:details.data.agent} : {}), turnActive: running, waitingForInput: choices.permissions.length + choices.forms.length > 0,
       ...(cursor ? { error: "OpenCode message pagination exceeded the 3000-message limit" } : {}) };
   }
   private async stopState(): Promise<{ active: boolean; input?: string }> {
@@ -160,8 +163,14 @@ export class OpenCodeAdapter implements Adapter {
   }
   async decide(): Promise<void> { throw new Error("Answer the displayed OpenCode permission question"); }
   async settings(settings: NonNullable<Session["desiredSettings"]>): Promise<void> {
-    if (settings.mode && !["plan", "default"].includes(settings.mode)) throw new Error("Unsupported OpenCode mode");
-    if (settings.mode) await this.api.call("POST", `${this.path}/agent`, { agent: settings.mode === "plan" ? "plan" : "build" });
+    if (settings.mode && !["plan", "build", "default"].includes(settings.mode)) throw new Error("Unsupported OpenCode mode");
+    if(settings.planApproved!==undefined) this.planning=!settings.planApproved;
+    if (settings.mode) {
+      const wanted=this.planning || settings.mode === "plan" ? "plan" : "build";
+      await this.api.call("POST", `${this.path}/agent`, {agent:wanted});
+      const actual=await this.api.call("GET",this.path);
+      if(actual.data?.agent!==wanted) throw new Error("OpenCode did not confirm the selected native agent");
+    }
     if (settings.model) await this.api.call("POST", `${this.path}/model`, { model: modelRef(settings.model, settings.effort) });
   }
   async close(): Promise<void> { /* The shared service and source conversation belong to the user. */ }

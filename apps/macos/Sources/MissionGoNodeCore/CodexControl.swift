@@ -181,7 +181,7 @@ public struct CodexTurnOverrides: Equatable, Sendable {
     public init(desired: AgentSessionSettings) throws {
         var settings: CodexThreadSettings?
         if let mode = desired.mode {
-            guard let mapped = CodexModes.threadSettings(for: mode) else {
+            guard let mapped = CodexModes.threadSettings(for: mode, planning: desired.planApproved == false) else {
                 throw LaunchError("不支持的 Codex 模式：\(JSONValues.quote(mode))")
             }
             settings = mapped
@@ -368,16 +368,16 @@ public enum CodexProtocol {
               result["approvalPolicy"] as? String == request.settings.approvalPolicy,
               let cwd = result["cwd"] as? String, canonical(cwd) == canonical(request.cwd),
               let sandbox = result["sandbox"] as? [String: Any],
-              sandbox["type"] as? String == "workspaceWrite",
-              let writableRoots = sandbox["writableRoots"] as? [String],
-              let runtimeRoots = result["runtimeWorkspaceRoots"] as? [String]
-        else {
-            throw CodexControlError.rpc(method: "thread/start", message: "Codex 未确认派单要求的审批方式或工作区沙箱；尚未启动任务。请升级 Codex 后台服务或检查组织权限策略。")
+              sandbox["type"] as? String == (request.settings.sandbox == "read-only" ? "readOnly" : "workspaceWrite"),
+              let runtimeRoots = result["runtimeWorkspaceRoots"] as? [String],
+              request.workspaceRoots.allSatisfy({ Set(runtimeRoots.map(canonical)).contains(canonical($0)) }) else {
+            throw CodexControlError.rpc(method: "thread/start", message: "Codex 未确认实际审批方式与原生沙箱；尚未启动任务。")
         }
-        let effective = Set(([cwd] + writableRoots).map(canonical))
-        let runtime = Set(runtimeRoots.map(canonical))
-        guard request.workspaceRoots.allSatisfy({ effective.contains(canonical($0)) && runtime.contains(canonical($0)) }) else {
-            throw CodexControlError.rpc(method: "thread/start", message: "Codex 未将本次 worktree 加入精确可写工作区；尚未启动任务。请升级 Codex 后台服务或检查工作区权限。")
+        if request.settings.sandbox == "workspace-write" {
+            guard let writableRoots = sandbox["writableRoots"] as? [String],
+                  request.workspaceRoots.allSatisfy({ Set(([cwd] + writableRoots).map(canonical)).contains(canonical($0)) }) else {
+                throw CodexControlError.rpc(method: "thread/start", message: "Codex 未确认精确可写工作区；尚未启动任务。")
+            }
         }
     }
 
@@ -429,6 +429,11 @@ public enum CodexProtocol {
         if let settings = overrides?.settings {
             params["approvalPolicy"] = settings.approvalPolicy
             params["approvalsReviewer"] = settings.approvalsReviewer
+            if settings.sandbox == "read-only" { params["sandboxPolicy"] = ["type": "readOnly"] }
+            if let model = overrides?.model {
+                params["collaborationMode"] = ["mode": settings.planning ? "plan" : "default",
+                    "settings": ["model": model, "reasoning_effort": overrides?.effort as Any? ?? NSNull(), "developer_instructions": NSNull()]]
+            }
         }
         return params
     }
@@ -500,6 +505,15 @@ public enum CodexProtocol {
             params["sandbox"] = settings.sandbox
         }
         return params
+    }
+
+    public static func validateEffectiveSettings(_ result: [String: Any], settings: CodexThreadSettings) throws {
+        let sandbox = result["sandbox"] as? [String: Any]
+        guard result["approvalPolicy"] as? String == settings.approvalPolicy,
+              result["approvalsReviewer"] as? String == settings.approvalsReviewer,
+              sandbox?["type"] as? String == (settings.sandbox == "read-only" ? "readOnly" : "workspaceWrite") else {
+            throw LaunchError("Codex 未确认请求的原生权限模式，未发送消息或标记生效。")
+        }
     }
 
     public static func appliedSettings(fromResume result: [String: Any]) -> CodexAppliedSettings {
@@ -1002,6 +1016,9 @@ public struct CodexAppServerControl: CodexControl {
                             "thread/resume",
                             CodexProtocol.threadResumeParams(threadId: threadId, overrides: overrides)
                         )
+                        if overrides?.managed != true, let settings = overrides?.settings {
+                            try CodexProtocol.validateEffectiveSettings(resumed, settings: settings)
+                        }
                         if overrides?.managed == true, let settings = overrides?.settings, let context = overrides?.managedContext {
                             try ManagedCodexProtocol.validateResumed(resumed, settings: settings, context: context)
                             try ManagedCodexProtocol.validateMcp(connection.call("mcpServerStatus/list", ["threadId": threadId, "limit": 100]))
@@ -1026,7 +1043,8 @@ public struct CodexAppServerControl: CodexControl {
                                 threadId: threadId,
                                 prompt: text,
                                 clientUserMessageId: clientUserMessageId,
-                                overrides: overrides
+                                overrides: overrides.map { CodexTurnOverrides(model: $0.model ?? resumed["model"] as? String,
+                                    effort: $0.effort, settings: $0.settings, managed: $0.managed, managedContext: $0.managedContext) }
                             )
                         )
                     } catch {
@@ -1051,6 +1069,7 @@ public struct CodexAppServerControl: CodexControl {
                         "thread/resume",
                         CodexProtocol.threadResumeParams(threadId: threadId, overrides: overrides)
                     )
+                    if let settings = overrides.settings { try CodexProtocol.validateEffectiveSettings(result, settings: settings) }
                     return CodexProtocol.appliedSettings(fromResume: result)
                 })
             }
@@ -1213,10 +1232,13 @@ public struct CodexAppServerControl: CodexControl {
             // A thread that could not be named is still a working thread; failing the
             // dispatch here would leave it running with nobody told about it.
             _ = try? connection.call("thread/name/set", CodexProtocol.threadNameParams(threadId: threadId, name: request.name))
+            if request.settings.planning && (started["model"] as? String)?.isEmpty != false {
+                throw LaunchError("Codex 未确认原生规划模型，尚未启动任务。")
+            }
             let firstTurn = try connection.call("turn/start", CodexProtocol.turnStartParams(
                 threadId: threadId,
                 prompt: request.prompt,
-                overrides: CodexTurnOverrides(model: request.model, effort: request.effort)
+                overrides: CodexTurnOverrides(model: request.model ?? started["model"] as? String, effort: request.effort, settings: request.settings)
             ))
             initialTurnId = (firstTurn["turn"] as? [String:Any])?["id"] as? String
         } catch {

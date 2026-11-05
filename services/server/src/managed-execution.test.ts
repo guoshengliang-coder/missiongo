@@ -77,7 +77,7 @@ it.each(["separation", "separation-running", "baseline", "operate", "ai", "view-
         VALUES ('ordinary-item','AND-2',2,'p','task','normal','ready','Ordinary task','Data','now','now');`);
       const headers = { authorization: "Bearer " + node.token };
       const beat = await app.inject({ method: "POST", url: "/api/v1/node/heartbeat", headers, payload: {
-        agents: [{ kind: "codex", version: "synthetic", ready: true, models: [],
+        agents: [{ kind: "codex", planApprovalProtocol: 1, version: "synthetic", ready: true, models: [],
           skill: { localVersion: MISSIONGO_SKILL_VERSION, expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "ready" } }],
       } });
       expect(beat.statusCode).toBe(200);

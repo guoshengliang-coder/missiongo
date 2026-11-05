@@ -284,6 +284,8 @@ private func run(configPath: String) throws {
                 if change.isComplete {
                     settingsChange = nil
                     finishSettings(change)
+                } else if let next = change.nextRequest {
+                    try write(controlRequest(id: next.id, request: next.request), to: writer)
                 }
                 return
             }
@@ -408,9 +410,7 @@ private func run(configPath: String) throws {
                 // One change at a time; a newer one waits for its file to be read again.
                 if settingsChange != nil { continue }
                 let change = ClaudeSettingsChange(settings)
-                for (requestId, request) in change.requests {
-                    try write(controlRequest(id: requestId, request: request), to: writer)
-                }
+                if let next = change.nextRequest { try write(controlRequest(id: next.id, request: next.request), to: writer) }
                 if change.isComplete {
                     finishSettings(change)
                 } else {
@@ -442,6 +442,10 @@ private func run(configPath: String) throws {
                 pendingControlCommands[requestId] = command.id
                 try write(controlRequest(id: requestId, request: ["subtype": "interrupt"]), to: writer)
             } else {
+                if permissions.head?.toolName == "ExitPlanMode" && command.planApprovalRevision == nil {
+                    snapshot.commandFinished(id: command.id, status: "failed", error: "文字同意不代表方案批准，请使用方案批准按钮。")
+                    persist(); try? FileManager.default.removeItem(atPath: path); continue
+                }
                 if let answered = permissions.answerHead(command.text) {
                     try write(controlResponse(id: answered.requestId, result: answered.result), to: writer)
                     snapshot.recordUserMessage(

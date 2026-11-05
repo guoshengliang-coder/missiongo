@@ -13,7 +13,7 @@ function fixture() {
   const dispatches=new DispatchStore(store.database);
   function node(accountId="owner") {
     const node=dispatches.registerNode({accountId,name:`${accountId} Mac`,installationId:randomUUID()});
-    dispatches.recordHeartbeat(node.nodeId,[{kind:"codex",version:"test",ready:true}]);
+    dispatches.recordHeartbeat(node.nodeId,[{kind:"codex",planApprovalProtocol:1,version:"test",ready:true}]);
     dispatches.replaceRepos(accountId,node.nodeId,[{productId:product.id,repoPath:"/example/repository"}]);
     return node;
   }

@@ -33,6 +33,7 @@ export const MCP_TOOL_DEFINITIONS = [
   { name: "get_attachment", access: "read", purpose: "Obtain controlled access to one work item attachment." },
   { name: "get_comment_candidates", access: "read", purpose: "List eligible recipients within the user-named item project." },
   { name: "append_comment", access: "write", purpose: "Add one comment to a work item without changing anything a person wrote." },
+  { name: "request_plan_approval", access: "write", purpose: "Request native human approval for the exact current implementation plan and validation scope; never an Agent-supplied approval fact." },
   { name: "claim_item", access: "write", purpose: "Take a ready work item into progress." },
   { name: "recover_execution_authorization", access: "write", purpose: "Recover only this original conversation's unrevoked claim credential in the current round, without claiming or changing status." },
   { name: "submit_development_complete", access: "write", purpose: "Record verified GitHub/GitLab or local Git integration and its release requirements, or an explicit reason no release is needed." },

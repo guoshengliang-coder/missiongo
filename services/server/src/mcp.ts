@@ -1,3 +1,5 @@
+import { AgentSessionStore } from "./agent-session-store.js";
+import { ImplementationPlans, planDigest, requestNativePlanApproval } from "./implementation-plans.js";
 import { Collaborations, collaborationDraftSchema } from "./collaboration.js";
 import { transitionPolicy, itemRoles } from "./item-policy.js";
 import { deliveryRound } from "./delivery-round.js";
@@ -112,7 +114,7 @@ function accountAccess(ctx: ServerContext): McpAccountAccess {
  */
 export const WRITE_TOOLS_BY_TIER: Readonly<Record<McpWriteTier, readonly string[]>> = {
   none: [],
-  comments: ["prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
+  comments: ["prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "request_plan_approval", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
 };
 
 /**
@@ -171,6 +173,9 @@ export function createMissionGoMcpServer(
   const uploads = new McpAttachmentUploads(store, attachmentStorage);
   const sessions = new ExternalAgentSessionStore(store);
   const projectSessions = new ProjectSessionClaims(store);
+  const plans = new ImplementationPlans(store.database);
+  const planIdentity = (clientId: string | undefined, session: {agentKind:string;refKind:string;sessionRef:string}|undefined, dispatchId?: string) =>
+    dispatchId ? `dispatch:${dispatchId}` : session ? `native:${clientId ?? ""}:${session.agentKind}:${session.refKind}:${session.sessionRef}` : "";
   const sessionIdentity = z.object({
     agentKind: z.enum(EXTERNAL_AGENT_KINDS),
     sessionRef: z.string().trim().min(1).max(200).regex(/^[A-Za-z0-9:_-]+$/),
@@ -725,10 +730,77 @@ export function createMissionGoMcpServer(
   );
 
   server.registerTool(
+    "request_plan_approval", {
+    title: "Request human implementation-plan approval",
+    description: "After diagnosis and clarification, present this exact plan and validation goals in the conversation. Request explicit native human approval for the current item batch before claiming. This is separate from tool permissions. Use the original dispatchId or external conversation identity; never register another session. It does not claim, comment or change item status. Changed scope requires fresh approval. Clients without interactive elicitation must use the Web plan approval button; never provide an approval answer as a tool argument.",
+    inputSchema: z.object({ itemKeys:z.array(z.string().min(2).max(50)).min(1).max(20),
+      approvalMethod:z.enum(["native","web"]).optional(),
+      plan:z.string().trim().min(1).max(3000), validation:z.string().trim().min(1).max(700),
+      dispatchId:z.string().min(1).max(200).optional(), session:sessionIdentity.optional(),
+    }).refine(input => Boolean(input.dispatchId) !== Boolean(input.session), "Use exactly one conversation identity."),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({itemKeys,plan,validation,dispatchId,session,approvalMethod},ctx) => {
+    requireWriteScope(ctx);
+    const access=accountAccess(ctx);
+    const keys=[...new Set(itemKeys.map(key=>requireItemAccess(ctx,store,key)))].sort();
+    for (const key of keys) {
+      const item=store.getWorkItem(key);
+      assertBuilderExecution(store.database,item.id,access.accountId);
+      if(options.canOperate&&!options.canOperate(access.accountId,item.productId)) throw new Error("Product operation is not permitted.");
+      if(dispatchId) {
+        assertDispatchExecution(store.database,dispatchId);
+        const dispatched=store.database.connection.prepare(`SELECT d.id,f.product_id FROM dispatches d
+          LEFT JOIN free_session_starts f ON f.dispatch_id=d.id WHERE d.id=? AND d.account_id=? AND d.status IN ('launched','delivered')`)
+          .get(dispatchId,access.accountId) as {id:string;product_id:string|null}|undefined;
+        if(!dispatched || !(plans.dispatchKeys(dispatchId).includes(key)||dispatched.product_id===item.productId)) throw new Error("Dispatch scope does not contain this item.");
+      }
+    }
+    const project=session ? projectSessions.resolve(access.accountId,keys[0]!,{session}) : undefined;
+    const originalDispatchId=project?.dispatchId ?? dispatchId;
+    if(project && keys.some(key=>store.getWorkItem(key).productId!==project.productId)) throw new Error("Project conversation scope changed.");
+    const identity=planIdentity(access.clientId,session,originalDispatchId);
+    const scope=plans.scope(keys), revision=planDigest([identity,scope,plan,validation]);
+    if(plans.approved(access.accountId,identity,revision)) return textResult({approved:true,revision});
+    plans.request(access.accountId,identity,revision,{keys,plan,validation});
+    if(approvalMethod==="web") return textResult({approved:false,approvalRequired:true,revision},"The exact plan and scope are ready for the human to review with the Web plan approval button. Stop and wait; no implementation is authorized.");
+    let accepted: boolean;
+    try {
+      accepted=await requestNativePlanApproval(ctx,
+        `MissionGo · 方案批准\n${keys.join("、")}\n${plan}\n验证目标：${validation}\n批准仅覆盖这份方案，不授予 push、merge 或发布权限。`,revision);
+    } catch {
+      return textResult({approved:false,approvalRequired:true,revision,requiresWeb:true},
+        "This client could not complete native interactive plan approval. Review this exact registered proposal with the Web plan approval button. An unconnected external conversation requires a client supporting native elicitation; do not claim or implement.");
+    }
+    if(!accepted) return textResult({approved:false,revision},"Plan was not approved. Do not claim or implement.");
+    // The request may have waited hours. Recheck all current authority and scope.
+    requireWriteScope(ctx);
+    for(const key of keys) {
+      requireItemAccess(ctx,store,key);assertBuilderExecution(store.database,store.getWorkItem(key).id,access.accountId);
+      if(options.canOperate&&!options.canOperate(access.accountId,store.getWorkItem(key).productId)) throw new Error("Product operation is not permitted.");
+    }
+    if(originalDispatchId) assertDispatchExecution(store.database,originalDispatchId);
+    plans.assertRequest(access.accountId,identity,revision);
+    if(plans.scope(keys)!==scope) throw new Error("Implementation scope changed while awaiting approval. Review the new plan.");
+    plans.record({accountId:access.accountId,identity,revision,planHash:revision,keys,source:"native",plan,validation});
+    let continuationQueued=false;
+    if(originalDispatchId) {
+      const native=store.database.connection.prepare(`SELECT id,implementation_mode FROM agent_sessions WHERE dispatch_id=?`)
+        .get(originalDispatchId) as {id:string;implementation_mode:string|null}|undefined;
+      if(native) {
+        try {
+          const command=new AgentSessionStore(store.database).enqueue(access.accountId,native.id,"批准");
+          plans.attachCommand(access.accountId,identity,revision,command.id);continuationQueued=true;
+        } catch { /* Human approval remains valid; an existing pending delivery must be reconciled, never replayed. */ }
+      }
+    }
+    return textResult({approved:true,revision,continuationQueued},"The human approved this exact implementation plan. Native Plan restrictions still require an explicit transition before writes. Save this revision; do not ask again for this unchanged plan.");
+  });
+
+  server.registerTool(
     "claim_item",
     {
       title: "Claim a ready work item",
-      description: "Claim the user-named ready item before editing code. Tell the user before claiming. "
+      description: "Claim the user-named ready item before editing code. A persisted human-approved current plan is required, via the Web approval button or request_plan_approval. Mode or chat changes cannot satisfy this gate. Tell the user before claiming. "
         + "For an externally started conversation, pass session with a verified native ID or a stable conversation UUID marked tracking; "
         + "the returned sessionId records progress in the Web console. For a MissionGo-dispatched conversation, pass the dispatchId from its trusted launch prompt. "
         + "A project conversation may claim items in its own product using its original dispatchId; a verified native session identity also reuses that project conversation. "
@@ -776,6 +848,8 @@ export function createMissionGoMcpServer(
         // A legacy global idempotency key must not let another OAuth client
         // replay somebody else's claim and manufacture a second handling record.
         if (store.getWorkItem(key).status !== "ready" && !executionDispatchId) throw new Error("Only a ready work item can be claimed without a takeover dispatch.");
+        const identity = planIdentity(access.clientId,session,executionDispatchId);
+        plans.assertClaim(access.accountId,identity,key);
         const statusChanged = store.getWorkItem(key).status === "ready";
         const item = store.claimWorkItem({ itemKey: key, agentId, ...(executionDispatchId ? {dispatchId: executionDispatchId} : {}),
           attribution: { accountId: access.accountId, ...(access.clientId ? { clientId: access.clientId } : {}) },

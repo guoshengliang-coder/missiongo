@@ -1,4 +1,4 @@
-import { isSupportedDispatchMode, type AgentKind } from "@missiongo/domain";
+import { agentModeCapability, type AgentModeCapability, isSupportedDispatchMode, type AgentKind } from "@missiongo/domain";
 
 import { conflict, invalidInput } from "./errors.js";
 
@@ -21,6 +21,7 @@ export interface NodeAgentModel {
 
 /** A session's mode, model and effort. Absent model or effort: the Mac's own configuration. */
 export interface AgentRunSettings {
+  readonly planApproved?: boolean;
   readonly mode?: string;
   readonly model?: string;
   readonly effort?: string;
@@ -108,4 +109,21 @@ export function requireOfferedModel(
   if (!efforts.includes(settings.effort)) {
     throw invalidInput(`Effort ${settings.effort} is not offered${model ? ` by ${model.id}` : ""}.`);
   }
+}
+
+/** Native evidence is data from the node, never inferred from vendor or model spelling. */
+export function parseAgentModes(value: unknown): readonly AgentModeCapability[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > 20) throw invalidInput("modes must be a bounded capability list.");
+  return value.map(entry => {
+    if (!entry || typeof entry !== "object" || !["available","unavailable","unknown"].includes(entry.state)) throw invalidInput("Invalid native mode capability.");
+    return {mode:boundedName(entry.mode,"mode"),state:entry.state,
+      ...(entry.reason ? {reason:boundedName(entry.reason,"mode reason")} : {}),
+      ...(entry.model ? {model:boundedName(entry.model,"capability model")} : {})};
+  });
+}
+export function requireAvailableMode(kind: AgentKind, mode: string, modes?: readonly AgentModeCapability[], model?: string): void {
+  const capability = agentModeCapability(kind,mode,modes,model);
+  if (capability.state !== "available") throw conflict("agent_mode_unavailable",
+    `Mode ${mode} is ${capability.state}: ${capability.reason ?? "native capability unconfirmed"}. Choose an available mode.`);
 }

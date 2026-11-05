@@ -576,7 +576,7 @@ export function AgentSessionConsole({
   const approval = sessionQuery.data ? sessionQuery.data.approval : selected?.approval;
   const showPermissionApproval = Boolean(approval && (approvalNeedsAction(approval)
     || (approval.kind === "manual" && approval.status === "pending")));
-  const showPlanApproval = selected?.needsAttention && !selected.attention.dismissed && selected.attention.kind === "approval";
+  const showPlanApproval = Boolean(sessionQuery.data?.planApproval) || selected?.needsAttention && !selected.attention.dismissed && selected.attention.kind === "approval";
   const planApproval = sessionQuery.data?.planApproval;
   const planApprovalStatus = pending || sendingSelected ? { code: "reply_pending" }
     : sessionQuery.data?.planApprovalStatus;
@@ -1126,7 +1126,7 @@ export function AgentSessionConsole({
                     </article>
                   );
                 })}
-                {!showPermissionApproval && (selected.needsAttention || selected.attention.dismissed) && selected.attention.reason && (
+                {!showPermissionApproval && (showPlanApproval || (selected.needsAttention || selected.attention.dismissed) && selected.attention.reason) && (
                   <div className={`agent-console-attention-banner ${selected.attention.dismissed ? "dismissed" : ""}${showPlanApproval ? " agent-console-attention-banner--approval" : ""}`} role="status">
                     <BellRing size={16} />
                     <details>
@@ -1137,6 +1137,7 @@ export function AgentSessionConsole({
                       <div className="agent-console-attention-detail">
                         <p>{selected.attention.reason}</p>
                         {showPlanApproval && <p>{t("agentPlanReviewHelp")}</p>}
+                        {planApproval?.plan && <><p>{planApproval.itemKeys?.join("、")}</p><p className="timeline-note">{planApproval.plan}</p><p className="timeline-note">{planApproval.validation}</p></>}
                         {showPlanApproval && !canApprovePlan && <p className="agent-console-approve-reason" role="status">
                           {sessionQuery.isPending ? t("agentPlanChecking") : sessionQuery.isError ? t("agentPlanCheckFailed")
                             : t(planApprovalStatusKey(planApprovalStatus?.code ?? "reply_unavailable"))}

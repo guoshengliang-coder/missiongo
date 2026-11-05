@@ -2249,5 +2249,28 @@ export class MissionGoDatabase {
           .run(202611040657, new Date().toISOString());
       });
     }
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611050240").get()) {
+      this.transaction(() => {
+        this.connection.exec(`
+          ALTER TABLE agent_sessions ADD COLUMN implementation_mode TEXT;
+          CREATE TABLE implementation_plan_approvals (
+            id TEXT PRIMARY KEY, account_id TEXT NOT NULL, identity_key TEXT NOT NULL,
+            revision TEXT NOT NULL, plan_hash TEXT NOT NULL, scope_json TEXT NOT NULL,
+            plan_text TEXT NOT NULL, validation_text TEXT NOT NULL,
+            source TEXT NOT NULL CHECK(source IN ('web','native')), command_id TEXT UNIQUE,
+            approved_at TEXT NOT NULL,
+            UNIQUE(account_id,identity_key,revision)
+          ) STRICT;
+          CREATE INDEX idx_implementation_plan_identity ON implementation_plan_approvals(account_id,identity_key);
+          CREATE TABLE implementation_plan_requests (
+            account_id TEXT NOT NULL, identity_key TEXT NOT NULL, revision TEXT NOT NULL, proposal_json TEXT, scope_json TEXT,
+            PRIMARY KEY(account_id,identity_key)
+          ) STRICT;
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611050240, new Date().toISOString());
+      });
+    }
+
   }
 }

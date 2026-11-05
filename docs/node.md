@@ -185,27 +185,25 @@ Claude 配置。候选列表只来自这台节点已有的仓库映射，不再�
   取最大的。只算真正交到机器上的派单：排队时被取代的、启动失败的不算。
 - 提示词会点出哪些条目是返工，要求先读最近一次退回的说明和上一轮的 PR，再从最新的 main 另开分支。服务端只传返工
   条目的编号，具体怎么说由本机决定。
-- 这两项需要新版客户端；旧客户端照常能派，只是名字不带轮次、提示词里没有返工这段。
+- 这两项需要新版客户端；新开发任务还须满足下文的方案批准协议门禁，旧节点需升级后才能派单。
 
-## 模式
+## 模式与方案批准
 
-| 模式 | Claude Code | Codex | OpenCode |
-|---|---|---|---|
-| 计划 | 原生 plan 模式，加计划提示词 | 提示词要求等待方案批准；技术权限请求由自动审查处理，保留可写工作区沙箱 | 原生 plan agent；批准后手动切换到 build agent |
-| 默认 | default | 可写工作区沙箱；越出沙箱的操作由你在 App 里批准 | build agent，权限由 OpenCode 自身控制 |
-| 自动接受编辑 | acceptEdits | 不提供 | 不提供 |
-| 自动 | auto | 可写工作区沙箱；越出沙箱的操作交给 Codex 的自动审核 | 不提供 |
-| 无需确认（保留硬拦截） | bypassPermissions | 不提供 | 不提供 |
+模式使用各客户端的原生语义：Codex 为默认权限、自动审查、只读、完整访问权限；Claude Code 为 Default、Accept edits、Auto、Bypass permissions、Plan；OpenCode 为 Plan/Build。Codex 完整访问受当前受管工作区策略禁止，界面显示原因。
 
 开发任务先在已有授权内核查事实，再集中澄清确需用户决定的取舍。macOS/Linux 启动提示在全部支持的 Agent/模式和项目会话中遵守此顺序；项目会话先等用户给出任务。调查权限不足须单独说明动作与限制。计划模式下给出事实出处、推荐和备选成本、剩余不确定性及验证方法，再停下等待批准。批准前不评论、不领取、不建分支或 worktree、不改代码。
 选择题只收集用户取舍，快捷批准仅发送批准，均不证明调研充分；批准前审阅会话依据和未决项。实施阶段假设须标明并有边界地验证。
-批准后先写已批准的计划评论，再领取、创建 worktree 并实施；Claude Code 须先退出原生 plan 模式。Codex 的计划等待依赖提示词和 Skill，自动权限审查不代表方案已被批准。
+所有开发任务都必须先诊断、澄清、提出方案及验证目标，再通过 Web 按钮或原生人工批准。方案批准、模式与工具权限分别记录，普通文字同意或调整模式不授予实施权。Codex 在批准前使用原生 Plan collaboration mode 与只读约束；Claude/OpenCode 使用原生 Plan。节点确认所选实施模式实际生效后才可领取，明确选择 Plan 的用户仍须明确切换实施模式。
+
+新配置 Codex 默认自动审查、OpenCode 默认 Build；Claude Auto 由原生控制回执确认可用性，已确认支持时默认 Auto，确认不支持时默认 Bypass，未知且无明确偏好时必须选择可用模式。旧偏好与历史按原含义保留，失效值提示处理。节点未声明 `planApprovalProtocol: 1` 时禁止启动新任务，不能用提示词冒充原生限制。
+
+完整流程、能力来源与兼容边界见 [Agent 模式与方案批准](agent-modes-plan-approval.md)。
 
 节点登录与 AI 客户端 OAuth 是不同的授权，`mcp list` 显示已配置/已登录不能证明拥有写权限。Codex 在发送任务首轮之前通过该线程自己的 MCP 连接调用只读的 `get_current_account`，核对 `canComment`、`append_comment`、`claim_item` 以及本地/服务端 Skill 版本；能力缺失、版本不符或接口不支持时派单明确失败。节点不读取或借用客户端令牌。
 
 Claude Code 的权限能力由会话首步调用 `get_current_account` 核对，实施前需确认评论与领取能力；不把节点的登录当作 Claude Code 已授权。缺少授权时说明需要在哪个客户端完成授权，并停在实施之前。启动时优先尝试 Remote Control；若 CLI 明确不支持（包括自定义 API 地址），则保留同一会话的本机 MissionGo 控制，不重复启动第二个会话。
 
-Claude Code 的 `bypassPermissions` 仅按账户所有者明确配置后由 MissionGo 派单提供；节点仍通过
+Claude Code 的 `bypassPermissions` 按已保存的明确偏好或 Auto 已确认不可用时的新配置默认值提供；节点仍通过
 `--disallowedTools` 硬性拒绝不可逆 Git 清理和强制推送。`dontAsk` 仍不可用。Codex 的审批策略
 `never` 和沙箱 `danger-full-access` 仍由服务端和客户端拒绝。
 

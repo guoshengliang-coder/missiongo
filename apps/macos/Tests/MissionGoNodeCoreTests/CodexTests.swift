@@ -225,10 +225,10 @@ final class FakeAppServer: @unchecked Sendable {
 
 final class CodexModesTests: XCTestCase {
     func testEveryModeKeepsTheSandboxAndOnRequestApprovals() {
-        XCTAssertEqual(CodexModes.allowed, ["plan", "default", "auto"])
-        for mode in CodexModes.allowed {
+        XCTAssertEqual(CodexModes.allowed, ["default", "auto", "read-only", "full-access"])
+        for mode in CodexModes.allowed.filter({ $0 != "full-access" }) {
             let settings = CodexModes.threadSettings(for: mode)
-            XCTAssertEqual(settings?.sandbox, "workspace-write", mode)
+            XCTAssertEqual(settings?.sandbox, mode == "read-only" ? "read-only" : "workspace-write", mode)
             XCTAssertEqual(settings?.approvalPolicy, "on-request", mode)
         }
         XCTAssertEqual(CodexModes.threadSettings(for: "plan")?.approvalsReviewer, "auto_review")
@@ -237,7 +237,7 @@ final class CodexModesTests: XCTestCase {
     }
 
     func testRefusesEverythingElse() {
-        for mode in ["never", "danger-full-access", "bypassPermissions", "acceptEdits", "", "plan "] {
+        for mode in ["full-access", "never", "danger-full-access", "bypassPermissions", "acceptEdits", "", "plan "] {
             XCTAssertNil(CodexModes.threadSettings(for: mode), mode)
         }
     }
@@ -247,7 +247,7 @@ final class CodexModesTests: XCTestCase {
         let source = try String(contentsOfFile: #filePath.replacingOccurrences(
             of: "Tests/MissionGoNodeCoreTests/CodexTests.swift", with: "Sources/MissionGoNodeCore/CodexModes.swift"
         ))
-        XCTAssertTrue(source.contains(#"["plan", "default", "auto"]"#))
+        XCTAssertTrue(source.contains(#"["default", "auto", "read-only", "full-access"]"#))
     }
 }
 
@@ -263,9 +263,9 @@ final class PlanPromptTests: XCTestCase {
         }
     }
 
-    func testOtherModesGetNoPlanParagraph() throws {
+    func testEveryModeRequiresPlanApproval() throws {
         for mode in ["default", "auto", "acceptEdits"] {
-            XCTAssertFalse(try LaunchPrompt.build(itemKeys: ["HG-8"], dispatchId: "abc", mode: mode).contains("计划模式"), mode)
+            XCTAssertTrue(try LaunchPrompt.build(itemKeys: ["HG-8"], dispatchId: "abc", mode: mode).contains("用户批准之前不回写评论"), mode)
         }
     }
 }
@@ -869,7 +869,7 @@ final class CodexAppServerControlTests: XCTestCase {
         let server = try FakeAppServer { message in
             guard let id = message["id"] else { return [] }
             if message["method"] as? String == "thread/resume" {
-                return [["jsonrpc": "2.0", "id": id, "result": ["model": "gpt-5.1-codex", "reasoningEffort": "high", "thread": ["id": "thread-1"]]]]
+                return [["jsonrpc": "2.0", "id": id, "result": ["model": "gpt-5.1-codex", "reasoningEffort": "high", "approvalPolicy": "on-request", "approvalsReviewer": "user", "sandbox": ["type": "workspaceWrite"], "thread": ["id": "thread-1"]]]]
             }
             return [["jsonrpc": "2.0", "id": id, "result": [:]]]
         }
@@ -895,7 +895,7 @@ final class CodexAppServerControlTests: XCTestCase {
         let server = try FakeAppServer { message in
             guard let id = message["id"] else { return [] }
             let result: [String: Any] = message["method"] as? String == "thread/resume"
-                ? ["thread": ["id": "thread-1", "status": ["type": "idle"]]] : [:]
+                ? ["approvalPolicy": "on-request", "approvalsReviewer": "auto_review", "sandbox": ["type": "workspaceWrite"], "thread": ["id": "thread-1", "status": ["type": "idle"]]] : [:]
             return [["jsonrpc": "2.0", "id": id, "result": result]]
         }
         try await CodexAppServerControl(timeout: 5).sendMessage(
@@ -1749,7 +1749,7 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertEqual(sent.socketPath, machine.location.controlSocketPath)
         XCTAssertEqual(sent.cwd, machine.repoPath)
         XCTAssertEqual(sent.name, "Mac mini-AND-42")
-        XCTAssertEqual(sent.settings, CodexModes.threadSettings(for: "plan"))
+        XCTAssertEqual(sent.settings, CodexModes.threadSettings(for: "plan", planning: true))
         let path = try CodexWorkspace.worktreePath(repoPath: machine.repoPath, dispatchId: "d-1")
         XCTAssertEqual(sent.workspaceRoots, [machine.repoPath, path])
         XCTAssertFalse(FileManager.default.fileExists(atPath: path), "Plan dispatch must not create the worktree")

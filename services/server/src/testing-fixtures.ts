@@ -1,3 +1,5 @@
+import { normalizeAgentMode } from "@missiongo/domain";
+import { ImplementationPlans } from "./implementation-plans.js";
 import { hashPassword } from "./admin-auth.js";
 import { randomUUID } from "node:crypto";
 import type { MissionGoStore } from "./store.js";
@@ -38,4 +40,30 @@ export async function testConsoleHeaders(app:import("fastify").FastifyInstance) 
  if (response.statusCode !== 200) throw new Error(`Fixture sign-in failed: ${response.statusCode} ${response.body}`);
  const value=response.headers["set-cookie"];
  return {cookie:(Array.isArray(value)?value[0]:value)!.split(";")[0]!};
+}
+
+/** Establish the explicit plan-approval precondition in tests of other MCP contracts.
+ * Gate/approval tests deliberately do not use this fixture. Only synthetic test tokens belong here. */
+export function approvedClaimFixture(store: MissionGoStore, token: string, args: Record<string,unknown>) {
+ const access=JSON.parse(Buffer.from(token.replace(/^mgai_/,"").split(".")[0]!,"base64url").toString()) as {id:string;clientId?:string};
+ const session=args.session as {agentKind:string;refKind:string;sessionRef:string}|undefined;
+ const project=session?.refKind==="native" ? store.database.connection.prepare(`SELECT d.id FROM agent_sessions s JOIN dispatches d ON d.id=s.dispatch_id
+   JOIN free_session_starts f ON f.dispatch_id=d.id WHERE d.account_id=? AND s.agent_kind=? AND s.agent_session_ref=? LIMIT 1`).get(access.id,session.agentKind,session.sessionRef) as {id:string}|undefined : undefined;
+ const dispatchId=typeof args.dispatchId==="string" ? args.dispatchId : project?.id;
+ const identity=dispatchId ? `dispatch:${dispatchId}` : session ? `native:${access.clientId ?? ""}:${session.agentKind}:${session.refKind}:${session.sessionRef}` : "";
+ const plans=new ImplementationPlans(store.database);
+ let keys=dispatchId ? plans.dispatchKeys(dispatchId) : [];
+ if(!keys.includes(String(args.itemKey))) keys.push(String(args.itemKey));
+ try {
+  plans.record({accountId:access.id,identity,revision:`fixture:${plans.scope(keys)}`,planHash:"approved test plan",keys,source:"web"});
+  if(dispatchId) {
+   const session=store.database.connection.prepare("SELECT agent_kind,implementation_mode FROM agent_sessions WHERE dispatch_id=?").get(dispatchId) as {agent_kind:string;implementation_mode:string}|undefined;
+   if(session) {
+    const target=normalizeAgentMode(session.agent_kind,session.implementation_mode);
+    const applied=target==="plan" ? session.agent_kind==="opencode" ? "build" : "default" : target;
+    store.database.connection.prepare("UPDATE agent_sessions SET mode=?,implementation_mode=?,applied_settings_revision=settings_revision WHERE dispatch_id=?").run(applied,applied,dispatchId);
+   }
+  }
+ }
+ catch { /* Invalid-scope tests retain their original authorization failure. */ }
 }

@@ -60,7 +60,7 @@ it.each(["message", "settings", "restore", "delivery"])("AND-235 ordinary %s ign
   if (control === "message") expect(sessions.enqueue("owner", id, "Continue").status).toBe("queued");
   if (control === "settings") {
     expect(() => sessions.requestSettings("owner", id, { mode: "auto" })).not.toThrow();
-    expect(sessions.listForNode("n").find((s) => s.id === id)?.desiredSettings?.mode).toBe("auto");
+    expect(sessions.listForNode("n").find((s) => s.id === id)?.desiredSettings?.mode).toBe("read-only");
   }
   if (control === "restore") {
     expect(() => sessions.setArchived("owner", id, false)).not.toThrow();

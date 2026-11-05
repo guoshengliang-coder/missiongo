@@ -559,13 +559,23 @@ public enum DispatchPresentation {
 
     /// The permission mode it was dispatched with, worded as the console words
     /// it. Unknown modes are shown as they arrived, for the same reason.
-    public static func modeLabel(_ mode: String) -> String {
+    public static func modeLabel(_ mode: String, agentKind: String? = nil) -> String {
+        if agentKind == "codex" {
+            switch CodexModes.normalized(mode) {
+            case "default": return "默认权限"
+            case "auto": return "自动审查"
+            case "read-only": return "只读"
+            case "full-access": return "完整访问权限"
+            default: return mode
+            }
+        }
+        if agentKind == "opencode" { return mode == "plan" ? "Plan" : ["default", "build"].contains(mode) ? "Build" : mode }
         switch mode {
-        case "bypassPermissions": return "无需确认（保留硬拦截）"
-        case "plan": return "计划"
-        case "default": return "默认"
-        case "acceptEdits": return "自动接受编辑"
-        case "auto": return "自动"
+        case "bypassPermissions": return "Bypass permissions"
+        case "plan": return "Plan"
+        case "default": return "Default"
+        case "acceptEdits": return "Accept edits"
+        case "auto": return "Auto"
         default: return mode
         }
     }
@@ -573,7 +583,7 @@ public enum DispatchPresentation {
     /// The one line under the item keys: which agent, in which mode.
     public static func agentLine(agentKind: String, mode: String) -> String {
         let agent = agentLabel(agentKind)
-        let mode = modeLabel(mode)
+        let mode = modeLabel(mode, agentKind: agentKind)
         return mode.isEmpty ? agent : "\(agent) · \(mode)"
     }
 

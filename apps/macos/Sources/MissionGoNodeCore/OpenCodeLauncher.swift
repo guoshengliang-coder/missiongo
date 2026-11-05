@@ -1025,9 +1025,11 @@ public struct OpenCodeLauncher: AgentAdapter {
         let catalog = await lastCatalog()
         let modelRef = resolveModelRef(model: job.model, effort: job.effort, catalog: catalog)
         let id = try await control.createSession(
-            directory: job.repoPath, agent: job.mode == "plan" ? "plan" : "build", model: modelRef
+            directory: job.repoPath, agent: "plan", model: modelRef
         )
         do {
+            let effective = try await control.sessionInfo(id: id)
+            guard effective.agent == "plan" else { throw LaunchError("OpenCode 未确认原生 Plan，尚未发送任务。") }
             try await control.renameSession(id: id, title: name)
         } catch {
             // No prompt was sent yet; only remove the empty session we made.
@@ -1062,7 +1064,7 @@ public struct OpenCodeLauncher: AgentAdapter {
         // info must not fail the sync — the report then just says nothing
         // about the model, as it did before settings existed.
         let info = try? await control.sessionInfo(id: session.sessionRef)
-        var mode = info?.agent == "plan" ? "plan" : info?.agent == "build" ? "default" : info?.agent
+        var mode = info?.agent == "plan" ? "plan" : info?.agent == "build" ? "build" : info?.agent
         var model = info?.model?.compoundId
         var effort = info?.model?.variant
         var settingsRevision: Int?
@@ -1074,8 +1076,11 @@ public struct OpenCodeLauncher: AgentAdapter {
                     guard OpenCodeModes.isAllowed(chosenMode) else {
                         throw LaunchError("不支持的 OpenCode 模式：\(JSONValues.quote(chosenMode))")
                     }
-                    try await control.setAgent(id: session.sessionRef, agent: chosenMode == "plan" ? "plan" : "build")
-                    mode = chosenMode
+                    let target = chosenMode == "plan" ? "plan" : "build"
+                    try await control.setAgent(id: session.sessionRef, agent: target)
+                    let effective = try await control.sessionInfo(id: session.sessionRef)
+                    guard effective.agent == target else { throw LaunchError("OpenCode 未确认所选原生 Agent，未标记生效。") }
+                    mode = target
                 }
                 if desired.model != nil || desired.effort != nil {
                     if let problem = AgentModelSettings.problem(model: desired.model, effort: desired.effort) {

@@ -64,7 +64,7 @@ for (const width of [375,1440]) {
   test(`started dispatches cannot offer an ineffective override at ${width}px`,async({page,request},info)=>{
     const {product,item}=await createItem(request);
     const stamp=new Date().toISOString();
-    const node={id:"fixture-node",name:"Example Mac",deviceName:"Example Mac",online:true,agents:[{kind:"codex",ready:true,models:[]},{kind:"claude_code",ready:true,models:[]}],repos:[{productId:product.id,repoPath:"fixture-repository"}],repoCandidates:[],createdAt:stamp};
+    const node={id:"fixture-node",name:"Example Mac",deviceName:"Example Mac",online:true,agents:[{kind:"codex", planApprovalProtocol: 1,ready:true,models:[]},{kind:"claude_code", planApprovalProtocol: 1,ready:true,models:[]}],repos:[{productId:product.id,repoPath:"fixture-repository"}],repoCandidates:[],createdAt:stamp};
     await page.route("**/api/v1/nodes",route=>route.fulfill({json:{nodes:[node]}}));
     await page.route("**/api/v1/dispatch-defaults",route=>route.fulfill({json:{nodeId:node.id,agentKind:"codex",agents:{codex:{mode:"default"}}}}));
     await page.route("**/api/v1/dispatches/check",route=>route.fulfill({json:{allowed:false,requiresConfirmation:false,reason:"started",conflicts:[{dispatchId:"old",itemKey:item.key,nodeName:node.name,agentKind:"codex",status:"launched",createdAt:stamp,agentSessionId:"owned-session"}]}}));
