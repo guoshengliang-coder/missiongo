@@ -158,6 +158,16 @@ public struct ConsentedAgentAdapter: AgentAdapter {
         return try await base.launchManaged(job)
     }
 
+    public func historyPage(sessionRef: String, cursor: String) async throws -> AgentHistoryResult {
+        guard access.state(for: agent) != nil else { throw AgentArtifactError.nodeUnavailable }
+        return try await base.historyPage(sessionRef: sessionRef, cursor: cursor)
+    }
+
+    public func artifactMessages(sessionRef: String, sourceId: String) async throws -> [AgentSessionMessage] {
+        guard access.state(for: agent) != nil else { throw AgentArtifactError.nodeUnavailable }
+        return try await base.artifactMessages(sessionRef: sessionRef, sourceId: sourceId)
+    }
+
     public func artifactMessages(sessionRef: String) async throws -> [AgentSessionMessage] {
         guard access.state(for: agent) != nil else { throw AgentArtifactError.nodeUnavailable }
         return try await base.artifactMessages(sessionRef: sessionRef)

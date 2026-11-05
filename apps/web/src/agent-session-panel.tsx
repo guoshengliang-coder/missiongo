@@ -1,5 +1,6 @@
+import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
 import { AgentStopFeedback } from "./agent-stop-feedback.js";
-import { useState, useEffect, type FormEvent } from "react";
+import { useState, useEffect, useRef, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, SessionStatusIcon, isHistoryLimited } from "./agent-session-feedback";
@@ -56,6 +57,8 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
       ? agentSessionDetailRefetchInterval(documentVisible, query.state.fetchFailureCount)
       : false,
   });
+  const messagesRef = useRef<HTMLDivElement>(null);
+  const history = useAgentHistory(sessionId, session.data, messagesRef);
   const send = useMutation({
     mutationFn: (text: string) => api.sendAgentSessionCommand(sessionId, text),
     onSuccess: async () => {
@@ -115,12 +118,15 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                     : backgroundOnly ? t("agentSessionBackgroundStatus") : statusLabel(session.data.status, t)}
                 </span>
               </header>
-              {session.data.messages.length === 0 && (
+              {history.messages.length === 0 && (
                 <p className="agent-session-muted">{t("agentSessionNoMessages")}</p>
               )}
-              <div className="agent-session-messages">
-                {session.data.messages.filter((message) => !isWithdrawnCard(message)).map((message) => (
-                  <article key={message.id} className={`agent-session-message agent-session-message-${message.role}`}>
+              <div className="agent-session-messages" ref={messagesRef} onScroll={event => {
+                if (!history.error && event.currentTarget.scrollTop <= 48 && event.currentTarget.scrollHeight > event.currentTarget.clientHeight + 1) void history.loadMore();
+              }}>
+                <AgentHistoryLoader history={history} />
+                {history.messages.filter((message) => !isWithdrawnCard(message)).map((message) => (
+                  <article key={message.id} data-agent-message-id={`${message.role}:${message.sourceId || message.id}`} className={`agent-session-message agent-session-message-${message.role}`}>
                     <header className="agent-session-message-meta">
                       <small>{messageLabel(message.role, session.data.agentKind, t)}</small>
                       <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
@@ -130,7 +136,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                       <AgentSessionQuestions
                         questions={message.questions}
                         reply={reply}
-                        canReply={canReply && !pending && !send.isPending}
+                        canReply={canReply && !message.id.startsWith("history:") && !pending && !send.isPending}
                         onChange={setReply}
                       />
                     )}

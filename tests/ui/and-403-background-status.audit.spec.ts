@@ -28,11 +28,11 @@ async function mockSession(page: Page) {
   return state;
 }
 
-for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const) {
+for (const width of [320, 375, 1440]) for (const theme of ["light", "dark"] as const) {
   test.describe(`${width}px ${theme}`, () => {
-    test.use({ hasTouch: width === 320, isMobile: width === 320 });
+    test.use({ hasTouch: width < 1024, isMobile: width < 1024 });
     test(`background spinner and terminal transitions ${width}px ${theme}`, async ({ page }, testInfo) => {
-      await page.setViewportSize({ width, height: 900 });
+      await page.setViewportSize({ width, height: width === 375 ? 812 : 900 });
       await page.emulateMedia({ colorScheme: theme, reducedMotion: "no-preference" });
       const state = await mockSession(page);
       await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);

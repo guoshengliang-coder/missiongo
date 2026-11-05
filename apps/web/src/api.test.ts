@@ -105,7 +105,7 @@ describe("dispatch API", () => {
     await api.sendAgentSessionCommand("session 1", "continue");
     await api.cancelAgentSessionCommand("session 1", "command 1");
 
-    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/v1/agent-sessions/session%201", expect.objectContaining({
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/v1/agent-sessions/session%201?history=recent", expect.objectContaining({
       credentials: "same-origin",
     }));
     expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/v1/agent-sessions?productId=product%201", expect.objectContaining({

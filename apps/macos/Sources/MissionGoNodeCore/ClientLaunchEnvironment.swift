@@ -161,6 +161,14 @@ public final class RefreshingAgentAdapter: AgentAdapter, @unchecked Sendable {
     public func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
         try await adapter(session.sessionRef).synchronize(session)
     }
+    public func historyPage(sessionRef: String, cursor: String) async throws -> AgentHistoryResult {
+        try await adapter(sessionRef).historyPage(sessionRef: sessionRef, cursor: cursor)
+    }
+
+    public func artifactMessages(sessionRef: String, sourceId: String) async throws -> [AgentSessionMessage] {
+        try await adapter(sessionRef).artifactMessages(sessionRef: sessionRef, sourceId: sourceId)
+    }
+
     public func artifactMessages(sessionRef: String) async throws -> [AgentSessionMessage] {
         try await adapter(sessionRef).artifactMessages(sessionRef: sessionRef)
     }

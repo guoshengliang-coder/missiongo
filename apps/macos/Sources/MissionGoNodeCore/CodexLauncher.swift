@@ -646,6 +646,25 @@ public struct CodexLauncher: AgentAdapter {
         return control.approvalSnapshot(socketPath: location.controlSocketPath, threadId: session.sessionRef)
     }
 
+    public func historyPage(sessionRef: String, cursor: String) async throws -> AgentHistoryResult {
+        try await control.readHistoryPage(socketPath: location.controlSocketPath, threadId: sessionRef, cursor: cursor)
+    }
+
+    public func artifactMessages(sessionRef: String, sourceId: String) async throws -> [AgentSessionMessage] {
+        let recent = try await control.readArtifactThread(socketPath: location.controlSocketPath, threadId: sessionRef)
+        if recent.messages.contains(where: { $0.sourceId == sourceId }) { return recent.messages }
+        var cursor = recent.history?.cursor
+        var seen = Set<String>()
+        let started = Date()
+        for _ in 0..<64 {
+            guard let next = cursor, seen.insert(next).inserted, Date().timeIntervalSince(started) < 30 else { break }
+            let page = try await historyPage(sessionRef: sessionRef, cursor: next)
+            if page.messages.contains(where: { $0.sourceId == sourceId }) { return page.messages }
+            cursor = page.nextCursor
+        }
+        throw AgentArtifactError.referenceMissing
+    }
+
     public func artifactMessages(sessionRef: String) async throws -> [AgentSessionMessage] {
         try await control.readArtifactThread(socketPath: location.controlSocketPath, threadId: sessionRef).messages
     }
@@ -770,9 +789,9 @@ public struct CodexLauncher: AgentAdapter {
                 }
             }
         }
-        if snapshot.historyLimited { report = report.reportingHistoryLimit() }
+        if snapshot.history?.error != nil { report = report.reportingHistoryLimit() }
         return report.reportingApproval(approval, retryId: retryId,
-            retryStatus: retryStatus, retryError: retryError).reportingFailure(report.status == "failed" ? snapshot.failure : nil)
+            retryStatus: retryStatus, retryError: retryError).reportingFailure(report.status == "failed" ? snapshot.failure : nil).reportingHistory(snapshot.history)
     }
 
     /// What a person chose for this thread, passed on every turn MissionGo

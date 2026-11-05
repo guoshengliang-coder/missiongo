@@ -2272,6 +2272,25 @@ export class MissionGoDatabase {
       });
     }
 
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611050518").get()) {
+      this.transaction(() => {
+        this.connection.exec(`
+          CREATE TABLE agent_history_sources (
+            account_id TEXT NOT NULL, session_id TEXT NOT NULL, node_id TEXT NOT NULL, session_ref TEXT NOT NULL,
+            next_id TEXT, error TEXT, PRIMARY KEY(account_id,session_id)
+          ) STRICT;
+          CREATE TABLE agent_history_pages (
+            id TEXT PRIMARY KEY, account_id TEXT NOT NULL, session_id TEXT NOT NULL, node_id TEXT NOT NULL,
+            session_ref TEXT NOT NULL, cursor TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('idle','pending','ready','failed')),
+            result_json TEXT, next_id TEXT, error TEXT, updated_at TEXT NOT NULL,
+            UNIQUE(account_id,session_id,node_id,session_ref,cursor)
+          ) STRICT;
+          CREATE INDEX idx_agent_history_jobs ON agent_history_pages(account_id,node_id,status,updated_at);
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611050518, new Date().toISOString());
+      });
+    }
     // AND-404: only newly created project sessions get a shared title. No historical rename.
     if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611050724").get()) {
       this.transaction(() => {
