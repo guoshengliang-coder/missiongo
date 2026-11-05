@@ -4082,8 +4082,12 @@ describe("Model, effort and running-session settings (AND-130)", () => {
     const mission = await mappedProduct(app, cookie, node.nodeId);
     const base = { nodeId: node.nodeId, agentKind: "codex", mode: "plan", itemKeys: [mission.itemKey] };
 
-    expect((await dispatch(app, cookie, { ...base, model: "gpt-9" })).statusCode).toBe(400);
-    expect((await dispatch(app, cookie, { ...base, model: "gpt-5.5-mini", effort: "high" })).statusCode).toBe(400);
+    const invalidModel = await dispatch(app, cookie, { ...base, model: "gpt-9" });
+    expect(invalidModel.statusCode).toBe(400);
+    expect(invalidModel.json().code).toBe("agent_model_unavailable");
+    const invalidEffort = await dispatch(app, cookie, { ...base, model: "gpt-5.5-mini", effort: "high" });
+    expect(invalidEffort.statusCode).toBe(400);
+    expect(invalidEffort.json().code).toBe("agent_effort_unavailable");
     const created = await dispatch(app, cookie, { ...base, model: "gpt-5.5", effort: "high" });
     expect(created.statusCode).toBe(201);
     expect(created.json()).toMatchObject({ model: "gpt-5.5", effort: "high" });
@@ -4185,6 +4189,12 @@ describe("Model, effort and running-session settings (AND-130)", () => {
     const applied = await listSettings();
     expect(applied).toMatchObject({ mode: "default", effort: "high" });
     expect(applied.pending).toBeUndefined();
+    // A later model-only change must not silently discard an earlier explicit
+    // effort request. Refuse it without minting a revision or changing reality.
+    const incompatibleModel = await change({ model: "gpt-5.5-mini" });
+    expect(incompatibleModel.statusCode).toBe(400);
+    expect(incompatibleModel.json().code).toBe("agent_effort_unavailable");
+    expect(await listSettings()).toMatchObject({ model: "gpt-5.5", effort: "high" });
     // Nothing left to deliver, so the idle session drops out of the Mac's next poll.
     expect(await nodeSession()).toBeUndefined();
 
