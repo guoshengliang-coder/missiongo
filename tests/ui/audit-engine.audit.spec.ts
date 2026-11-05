@@ -8,6 +8,33 @@ interface Measurements {
   surfaces: { where: string; brand: boolean }[];
 }
 
+test("batched mandatory controls fail when a later target is missing", async ({ page }) => {
+  await page.setContent('<button style="width:48px;height:48px">first</button><button style="width:48px;height:48px">last</button>');
+  await expectUsableControls(page.locator("button"), true, { count: 2 });
+  await expect(expectUsableControls(page.locator("button"), true, { count: 3, timeout: 50 })).rejects.toThrow(/all required controls must be visible/);
+});
+
+test("batched controls check later targets for visibility even without touch sizing", async ({ page }) => {
+  await page.setContent('<button style="width:48px;height:48px">first</button><button style="width:48px;height:48px">last</button>');
+  const controls = page.locator("button");
+  for (const style of ["visibility:hidden", "display:none", "width:0;height:0;padding:0;border:0"]) {
+    await controls.last().evaluate((node, value) => { node.setAttribute("style", value); }, style);
+    await expect(expectUsableControls(controls, false, { count: 2, timeout: 50 })).rejects.toThrow(/all required controls must be visible/);
+  }
+  // Playwright visibility deliberately ignores opacity; retain that meaning.
+  await controls.last().evaluate(node => { node.setAttribute("style", "width:48px;height:48px;opacity:0"); });
+  await expect(controls.last()).toBeVisible();
+  await expectUsableControls(controls, true, { count: 2 });
+});
+
+test("batched controls remeasure clipping after an ancestor changes", async ({ page }) => {
+  await page.setContent('<div style="width:160px;overflow:hidden"><button style="width:48px;height:48px">first</button><button style="width:48px;height:48px">last</button></div>');
+  const controls = page.locator("button");
+  await expectUsableControls(controls, true, { count: 2 });
+  await page.locator("div").evaluate(node => { node.style.width = "30px"; });
+  await expect(expectUsableControls(controls, true, { count: 2 })).rejects.toThrow(/control must be fully visible/);
+});
+
 test("batched control measurements validate every target and retain the touch-size threshold", async ({ page }) => {
   await page.setContent('<button style="width:48px;height:48px">first</button><button style="width:48px;height:48px">last</button>');
   const controls = page.locator("button:visible");

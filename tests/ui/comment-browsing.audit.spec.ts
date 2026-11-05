@@ -4,7 +4,7 @@ const fixture=JSON.parse(readFileSync(new URL("./.auth/fixture.json",import.meta
 async function createItem(page:Page,title:string) {
   return (await page.request.post("/api/v1/items",{data:{productId:fixture.productId,type:"note",priority:"normal",title,description:"",environment:{platform:"web"}}})).json();
 }
-const url=(key:string)=>`/?product=${fixture.productId}&status=all&item=${key}`;
+const url=(key:string)=>`/?product=${fixture.productId}&status=all&q=${key}&item=${key}`;
 async function comment(page:Page,key:string,text:string,replyToCommentId?:string) {
   const response=await page.request.post(`/api/v1/items/${key}/comments`,{data:{text,...(replyToCommentId?{replyToCommentId}:{})}});
   expect(response.ok(),await response.text()).toBe(true);return response.json();
@@ -18,6 +18,7 @@ for(const width of [353,1440])for(const theme of ["light","dark"] as const){
       const replies=[];
       for(let i=1;i<=5;i++)replies.push(await comment(page,item.key,`第 ${i} 条回复：已核对这项规则。`,i===2?replies[0].id:old.id));
       await page.goto(url(item.key));
+      await expect(page.locator(".item-row")).toHaveCount(1);
       const groups=page.locator(".comment-discussion"),root=groups.filter({has:page.locator(`#comment-${old.id}`)});
       await expect(groups.first().locator(".comment-thread-root")).toHaveAttribute("id",`comment-${newer.id}`);
       await expect(root.locator(".comment-thread-reply")).toHaveCount(2);

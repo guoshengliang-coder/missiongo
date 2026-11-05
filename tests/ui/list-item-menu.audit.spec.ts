@@ -68,7 +68,10 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
         await expect(menu.getByRole("button", { name: "转交处理人", exact: true })).toHaveCount(0);
         await expect(menu.locator("button.danger")).toHaveCount(status === "done" || status === "cancelled" ? 0 : 1);
         // Every direct operation has a decorative icon; destinations are initially hidden.
-        for (const button of await menu.locator(".detail-action-group > button").all()) await expect(button.locator("svg[aria-hidden='true']")).toHaveCount(1);
+        await expect.poll(() => menu.locator(".detail-action-group > button").evaluateAll(buttons => ({
+          present: buttons.length > 0,
+          invalid: buttons.filter(button => button.querySelectorAll("svg[aria-hidden='true']").length !== 1).map(button => button.textContent),
+        }))).toEqual({ present: true, invalid: [] });
         const move = menu.locator(".detail-move-menu");
         if (!cases[status].moves.length) {
           await expect(move).toHaveCount(0);await page.keyboard.press("Escape");await expect(menu).not.toHaveAttribute("open","");continue;

@@ -183,9 +183,10 @@ for (const theme of ["light", "dark"] as const) test.describe(`reason layout ${t
           await button.scrollIntoViewIfNeeded(); await expectUsableControl(button);
         }
         expect(await dialog.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
-        for (const element of await dialog.locator("label, p, button").all()) {
-          if (await element.isVisible()) expect(await element.evaluate(node => parseFloat(getComputedStyle(node).fontSize))).toBeGreaterThanOrEqual(11);
-        }
+        const fonts = await dialog.locator("label:visible, p:visible, button:visible").evaluateAll(elements =>
+          elements.map(node => ({ text: node.textContent, size: parseFloat(getComputedStyle(node).fontSize) })));
+        expect(fonts.length).toBeGreaterThan(0);
+        for (const font of fonts) expect(font.size, font.text ?? "visible text").toBeGreaterThanOrEqual(11);
       }
     }
   });
