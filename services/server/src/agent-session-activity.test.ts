@@ -36,6 +36,19 @@ afterEach(() => {
   for (const database of databases.splice(0)) database.close();
 });
 
+it("limited history retains mirrored messages and runtime state without inventing activity", () => {
+  const { db, sessionId, snapshot, row } = fixture();
+  vi.setSystemTime(time(10));
+  snapshot({ status: "idle", messages: [], activityAt: time(1),
+    error: "codex_history_limited: recent history or runtime metadata only" });
+  expect(row()).toMatchObject({ status: "idle", activity_at: time(1),
+    last_error: "codex_history_limited: recent history or runtime metadata only" });
+  expect(db.prepare("SELECT source_id, text FROM agent_session_messages WHERE session_id = ?").all(sessionId))
+    .toEqual([{ source_id: message.sourceId, text: message.text }]);
+  snapshot({ status: "idle", messages: [message], activityAt: time(1) });
+  expect(row()).toMatchObject({ last_error: null, activity_at: time(1) });
+});
+
 it("connection failures, changed errors and recovery preserve list time and ordering", () => {
   const { store, sessionId, create, snapshot, row } = fixture();
   vi.setSystemTime(time(2));

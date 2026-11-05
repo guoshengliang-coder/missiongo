@@ -910,6 +910,14 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
         return report
     }
 
+    public func reportingHistoryLimit() -> AgentSessionReport {
+        var report = self
+        // Reuse the existing diagnostic transport; this code is recognized as
+        // a warning by both conversation views, without changing runtime state.
+        if report.error == nil { report.error = "codex_history_limited: recent history or runtime metadata only" }
+        return report
+    }
+
     /// The same report carrying the session's settings. Kept apart so every
     /// branch that decides status and commands need not repeat them.
     public func reportingSettings(mode: String? = nil, model: String?, effort: String?, modelEndpoint: String? = nil, settingsRevision: Int?, settingsError: String?, clearSessionUrl: Bool? = nil) -> AgentSessionReport {

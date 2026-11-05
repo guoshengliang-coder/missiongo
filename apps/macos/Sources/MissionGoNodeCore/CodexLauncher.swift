@@ -437,10 +437,10 @@ public struct CodexLauncher: AgentAdapter {
     let environment: ShellEnvironment
     let run: CommandRunner
     let location: CodexLocation
-    // A delivering reply beside a failed turn may be left over from an earlier
-    // attempt. Only a reservation made here can begin recovery; after a restart
-    // an unmirrored reservation remains unknown rather than being replayed.
+    // Failed-turn recovery and limited-history reads cannot prove an old
+    // delivery was absent. Only a local, single-use reservation may send it.
     private let failureReplyReservations = Locked<[String: String]>([:])
+    private let approvalRetryReservations = Locked<[String: String]>([:])
     let control: CodexControl
     let resources: CodexResourceChecking
     /// The MissionGo server this machine is logged in to, for the MCP hint.
@@ -654,6 +654,9 @@ public struct CodexLauncher: AgentAdapter {
         failureReplyReservations.withLock { reservations in
             if reservations[session.id] != session.command?.id { reservations[session.id] = nil }
         }
+        approvalRetryReservations.withLock { reservations in
+            if reservations[session.id] != session.approvalRetry?.id { reservations[session.id] = nil }
+        }
         if session.command?.kind == "interrupt" {
             return await synchronizeInterrupt(session)
         }
@@ -719,35 +722,42 @@ public struct CodexLauncher: AgentAdapter {
             if retry.status == "queued", approval?.kind == "auto",
                approval?.status == "denied", approval?.id == retry.reviewId {
                 // Reserve before turn/start, as with an ordinary reply.
+                approvalRetryReservations.withLock { $0[session.id] = retry.id }
                 retryStatus = "delivering"
             } else if retry.status == "delivering"
                 && snapshot.messages.contains(where: { $0.role == "user" && $0.sourceId == retry.id }) {
                 retryStatus = "delivered"
             } else if retry.status == "delivering" && snapshot.status == "idle",
                       approval?.status != "pending", approval?.status != "inProgress" {
-                do {
-                    try await control.sendMessage(
-                        socketPath: location.controlSocketPath, threadId: session.sessionRef,
-                        text: "用户已在 MissionGo 控制台明确要求对刚被自动审查拒绝的操作发起一次人工审批重试。请重新评估该操作；若仍需执行，只尝试一次，并把实际授权请求交给人审查。不要自动重复其他操作。",
-                        clientUserMessageId: retry.id,
-                        overrides: CodexTurnOverrides(settings: CodexModes.threadSettings(for: "default", planning: session.desiredSettings?.planApproved != true))
-                    )
-                    retryStatus = "delivered"
-                    let deliveredMessages = ((try? await control.readThread(
-                        socketPath: location.controlSocketPath, threadId: session.sessionRef
-                    ))?.messages) ?? report.messages
-                    report = AgentSessionReport(status: "active", messages: report.messages,
-                        activityAt: report.activityAt, model: model, effort: effort, turnActive: true)
-                        .replacingMessages(deliveredMessages)
-                } catch {
-                    // A turn/start transport failure cannot prove whether the
-                    // new turn began. The stable message id is checked next poll.
-                    retryError = CodexFailure.explain(error)
-                    retryStatus = "delivering"
+                let reserved = approvalRetryReservations.withLock { $0.removeValue(forKey: session.id) == retry.id }
+                if snapshot.historyLimited && !reserved {
+                    retryStatus = "failed"
+                    retryError = "人工审批重试的送达结果无法确认；请在原 Codex 会话核实，不会自动重发。"
+                } else {
+                    do {
+                        try await control.sendMessage(
+                            socketPath: location.controlSocketPath, threadId: session.sessionRef,
+                            text: "用户已在 MissionGo 控制台明确要求对刚被自动审查拒绝的操作发起一次人工审批重试。请重新评估该操作；若仍需执行，只尝试一次，并把实际授权请求交给人审查。不要自动重复其他操作。",
+                            clientUserMessageId: retry.id,
+                            overrides: CodexTurnOverrides(settings: CodexModes.threadSettings(for: "default", planning: session.desiredSettings?.planApproved != true))
+                        )
+                        retryStatus = "delivered"
+                        let deliveredMessages = ((try? await control.readThread(
+                            socketPath: location.controlSocketPath, threadId: session.sessionRef
+                        ))?.messages) ?? report.messages
+                        report = AgentSessionReport(status: "active", messages: report.messages,
+                            activityAt: report.activityAt, model: model, effort: effort, turnActive: true)
+                            .replacingMessages(deliveredMessages)
+                    } catch {
+                        // A turn/start transport failure cannot prove whether the
+                        // new turn began. The stable message id is checked next poll.
+                        retryError = CodexFailure.explain(error)
+                        retryStatus = "delivering"
+                    }
                 }
             } else if retry.status == "delivered" && snapshot.status == "idle" {
                 if let originalMode = session.approvalReviewMode,
-                   let settings = CodexModes.threadSettings(for: originalMode) {
+                   let settings = CodexModes.threadSettings(for: originalMode, planning: session.desiredSettings?.planApproved != true) {
                     do {
                         _ = try await control.applySettings(socketPath: location.controlSocketPath,
                             threadId: session.sessionRef, overrides: CodexTurnOverrides(settings: settings))
@@ -760,6 +770,7 @@ public struct CodexLauncher: AgentAdapter {
                 }
             }
         }
+        if snapshot.historyLimited { report = report.reportingHistoryLimit() }
         return report.reportingApproval(approval, retryId: retryId,
             retryStatus: retryStatus, retryError: retryError).reportingFailure(report.status == "failed" ? snapshot.failure : nil)
     }
@@ -940,15 +951,6 @@ public struct CodexLauncher: AgentAdapter {
                 sourceArchived: false, activityAt: snapshot.activityAt, turnActive: false
             )
         }
-        if recovering, command.status == "delivering",
-           !failureReplyReservations.withLock({ $0[session.id] == command.id }) {
-            return AgentSessionReport(
-                status: snapshot.status, messages: snapshot.messages,
-                commandId: command.id, commandStatus: "delivery_unknown",
-                commandError: "无法确认 Codex 是否收到回复，请核实后手动确认；不会自动重发。",
-                sourceArchived: false, activityAt: snapshot.activityAt, turnActive: false
-            )
-        }
         let canDeliver = snapshot.status == "idle" || recovering
             || (session.managedExecution == nil && snapshot.status == "active" && snapshot.activeTurnId != nil)
         guard canDeliver else {
@@ -972,7 +974,9 @@ public struct CodexLauncher: AgentAdapter {
         // the console says it is being delivered and no longer promises a
         // cancellation that could race the actual turn/start call below.
         if command.status == "queued" {
-            if recovering { failureReplyReservations.withLock { $0[session.id] = command.id } }
+            // Reserve ordinary replies too: history can become oversized
+            // between the queued observation and the delivering observation.
+            failureReplyReservations.withLock { $0[session.id] = command.id }
             return AgentSessionReport(
                 status: snapshot.status,
                 messages: snapshot.messages,
@@ -990,7 +994,17 @@ public struct CodexLauncher: AgentAdapter {
                 turnActive: snapshot.status == "active"
             )
         }
-        failureReplyReservations.withLock { $0[session.id] = nil }
+        // Consume atomically before the first input await, so concurrent polls
+        // cannot both use the same permission to deliver a limited-history reply.
+        let reserved = failureReplyReservations.withLock { $0.removeValue(forKey: session.id) == command.id }
+        if (recovering || snapshot.historyLimited), !reserved {
+            return AgentSessionReport(
+                status: snapshot.status, messages: snapshot.messages,
+                commandId: command.id, commandStatus: "delivery_unknown",
+                commandError: "无法确认 Codex 是否收到回复，请核实后手动确认；不会自动重发。",
+                sourceArchived: false, activityAt: snapshot.activityAt, turnActive: snapshot.status == "active"
+            )
+        }
         // Send browser-readable images as native vision input; the prompt also
         // retains local references for documents, video and other image formats.
         let imagePaths = session.externalBindingGeneration == nil ? [] : (command.attachments ?? [])
