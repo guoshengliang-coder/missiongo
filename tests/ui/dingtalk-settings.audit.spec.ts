@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { AUDIT_SOURCE } from "./audit-page.mjs";
+import { advanceDingTalkBindingsPoll } from "./polling";
 
 async function audit(page: Page, touch: boolean) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -150,6 +151,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 375, height: 812 
     });
 
     test("protects binding drafts, confirms removal and shows test progress without sending on open", async ({ page, request }, info) => {
+      await page.clock.install();
       const suffix = `${viewport.width}-${theme}`;
       const account = await (await request.post("/api/v1/accounts", { data: { email: `dingtalk-dialog-${suffix}@example.test`, password: "synthetic-notification-password", role: "member" } })).json();
       const config = await (await request.get("/api/v1/dingtalk/settings")).json();
@@ -208,6 +210,10 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 375, height: 812 
       expect(sends).toBe(0);
       await dialog.getByRole("button", { name: "发送测试通知", exact: true }).click();
       await expect(dialog.getByText("等待发送", { exact: true })).toBeVisible();
+      await expect.poll(() => polls).toBe(1);
+      await advanceDingTalkBindingsPoll(page);
+      await expect(dialog.getByText("已受理，待确认结果", { exact: true })).toBeVisible();
+      await advanceDingTalkBindingsPoll(page);
       await expect(dialog.getByText("发送成功", { exact: true })).toBeVisible({ timeout: 20_000 });
       expect(sends).toBe(1);
       await expect(dialog.getByRole("button", { name: "发送测试通知", exact: true })).toBeDisabled();

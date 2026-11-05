@@ -31,6 +31,10 @@ jobs:
       visual: ${{ steps.plan.outputs.visual }}
       shards: ${{ steps.plan.outputs.shards }}
       playwright_image: ${{ steps.playwright.outputs.image }}
+      platform_plan: ${{ steps.plan.outputs.platform_plan }}
+      android_required: ${{ steps.plan.outputs.android_required }}
+      macos_required: ${{ steps.plan.outputs.macos_required }}
+      linux_required: ${{ steps.plan.outputs.linux_required }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -60,7 +64,10 @@ jobs:
           UI_UPDATE_SNAPSHOTS: ${{ github.event_name == 'workflow_dispatch' && inputs.update_ui_snapshots }}
         run: node scripts/ui-test-plan.mjs
 
-  linux-node:
+  linux-node-build:
+    needs: ui-plan
+    if: needs.ui-plan.outputs.linux_required == 'true'
+    name: linux-node (${{ matrix.os }})
     strategy:
       matrix:
         os: [ubuntu-22.04, ubuntu-24.04]
@@ -202,7 +209,9 @@ jobs:
           UI_UPDATE_SNAPSHOTS: ${{ github.event_name == 'workflow_dispatch' && inputs.update_ui_snapshots }}
         run: node scripts/run-ui-tests.mjs --kind=check
 
-  android:
+  android-build:
+    needs: ui-plan
+    if: needs.ui-plan.outputs.android_required == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -228,10 +237,12 @@ jobs:
           :sample:assembleDebug
           :missiongo-android-app:assembleDebug
 
-  # The macOS client. Tests run on every change, and the bundle is assembled the
+  # The macOS client. Tests run on relevant PRs and every main/manual run; the bundle is assembled the
   # same way the publish script does it, so a change that breaks packaging fails
   # here rather than on the machine that happens to publish next.
-  macos:
+  macos-build:
+    needs: ui-plan
+    if: needs.ui-plan.outputs.macos_required == 'true'
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
@@ -242,3 +253,53 @@ jobs:
         run: swift test --package-path apps/macos
       - name: Build the app bundle
         run: ./scripts/build-macos-app.sh
+
+  # Stable check names for branch/release gates. A planned skip must match the
+  # build's exact outcome; failed/cancelled/missing planning never earns green.
+  android:
+    if: ${{ always() }}
+    needs: [ui-plan, android-build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.13.0
+      - name: Require Android result
+        env:
+          CI_PLATFORM_PLAN: ${{ needs.ui-plan.outputs.platform_plan }}
+          CI_PLAN_RESULT: ${{ needs.ui-plan.result }}
+          CI_BUILD_RESULT: ${{ needs.android-build.result }}
+        run: node scripts/ci-platform-plan.mjs android
+
+  macos:
+    if: ${{ always() }}
+    needs: [ui-plan, macos-build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.13.0
+      - name: Require macOS result
+        env:
+          CI_PLATFORM_PLAN: ${{ needs.ui-plan.outputs.platform_plan }}
+          CI_PLAN_RESULT: ${{ needs.ui-plan.result }}
+          CI_BUILD_RESULT: ${{ needs.macos-build.result }}
+        run: node scripts/ci-platform-plan.mjs macos
+
+  linux-node:
+    if: ${{ always() }}
+    needs: [ui-plan, linux-node-build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.13.0
+      - name: Require Linux result
+        env:
+          CI_PLATFORM_PLAN: ${{ needs.ui-plan.outputs.platform_plan }}
+          CI_PLAN_RESULT: ${{ needs.ui-plan.result }}
+          CI_BUILD_RESULT: ${{ needs.linux-node-build.result }}
+        run: node scripts/ci-platform-plan.mjs linuxNode
