@@ -56,6 +56,7 @@ main push 和普通手动运行执行全量 UI 测试；PR 先生成变更影响
 行为与截图任务使用官方 Playwright Resolute（Ubuntu 26）容器，保持现有 Linux 基线的系统版本；镜像版本由 `ui-plan` 安装的锁定 `playwright-core` 版本生成，
 与测试任务的同一份锁文件保持一致。镜像预装浏览器、系统库和字体，不再在每个分片中运行 apt 和浏览器下载。
 截图仍比对原有 Linux 基线，不自动改写；环境变化造成的差异必须先诊断。宿主固定 `ubuntu-24.04`，容器使用独立 IPC 配置运行 Chromium。
+官方容器未包含原 runner 的 DejaVu 等宽字体，因此只读挂载宿主现有 DejaVu 字体目录，刷新字体索引并确认 `monospace` 仍匹配 DejaVu Sans Mono；缺失或匹配变化直接失败，不下载替代字体或放宽图片阈值。任务时区显式设为 UTC。
 
 本机查看当前分支的 PR 计划：
 

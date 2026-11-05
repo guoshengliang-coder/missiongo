@@ -107,12 +107,19 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: ${{ needs.ui-plan.outputs.playwright_image }}
-      options: --init --ipc=host
+      options: --init --ipc=host --mount type=bind,source=/usr/share/fonts/truetype/dejavu,target=/usr/share/fonts/truetype/dejavu,readonly
+    env:
+      TZ: UTC
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - name: Trust this checkout inside the container
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Preserve the runner's baseline monospace font
+        run: |
+          test -f /usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf
+          fc-cache -f /usr/share/fonts/truetype/dejavu
+          test "$(fc-match -f '%{family}' monospace)" = "DejaVu Sans Mono"
       - uses: actions/setup-node@v7
         with:
           node-version: 22.13.0
@@ -141,12 +148,19 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: ${{ needs.ui-plan.outputs.playwright_image }}
-      options: --init --ipc=host
+      options: --init --ipc=host --mount type=bind,source=/usr/share/fonts/truetype/dejavu,target=/usr/share/fonts/truetype/dejavu,readonly
+    env:
+      TZ: UTC
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - name: Trust this checkout inside the container
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Preserve the runner's baseline monospace font
+        run: |
+          test -f /usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf
+          fc-cache -f /usr/share/fonts/truetype/dejavu
+          test "$(fc-match -f '%{family}' monospace)" = "DejaVu Sans Mono"
       - uses: actions/setup-node@v7
         with:
           node-version: 22.13.0
