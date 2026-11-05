@@ -165,7 +165,21 @@ test("plan validation rejects stale revisions, missing smoke tests and unknown e
   const args = playwrightArguments(value, "audit");
   assert(args.includes("--shard=1/1"));
   assert(args.includes("tests/ui/statistics\\.audit\\.spec\\.ts$"));
-  assert.deepEqual(playwrightArguments(choose(["apps/web/src/App.tsx"]), "audit", 8), ["test", "--project=audit", "--shard=8/8"]);
+  const full = choose(["apps/web/src/App.tsx"]);
+  const fullArgs = playwrightArguments(full, "audit", 8);
+  assert.deepEqual(fullArgs.slice(0, 3), ["test", "--project=audit", "--shard=1/1"]);
+  assert.equal(fullArgs.length, full.shardFiles[7].length + 3);
+  for (const file of full.shardFiles[7]) assert(fullArgs.includes(file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$"));
+});
+
+test("full plans reject missing, duplicated, unknown files and obsolete allocation formats", () => {
+  const full = choose(["apps/web/src/App.tsx"]);
+  const copy = () => structuredClone(full);
+  const missing = copy(); missing.shardFiles[0].pop();
+  const duplicate = copy(); duplicate.shardFiles[0].push(duplicate.shardFiles[1][0]);
+  const unknown = copy(); unknown.shardFiles[0][0] = "tests/ui/unknown.audit.spec.ts";
+  const empty = copy(); empty.shardFiles[0] = [];
+  for (const value of [missing, duplicate, unknown, empty, { ...full, version: 1 }, { ...full, shardFiles: undefined }]) assert.throws(() => validatePlan(value));
 });
 
 test("UI gate accepts only the exact successes/skips required by each permitted plan", () => {
@@ -192,7 +206,8 @@ test("CLI plans from real commits and validates the skip gate without installed 
     for (const file of catalog) put(file, "// fixture");
     for (const feature of Object.values(map.features)) put(`apps/web/src/${feature.entry}`, "// fixture");
     put("scripts/.keep", "");
-    for (const file of ["ui-test-plan.mjs", "run-ui-tests.mjs", "check-release-metadata.mjs", "release-notes.mjs"]) copyFileSync(new URL(`./${file}`, import.meta.url), join(directory, "scripts", file));
+    for (const file of ["ui-test-plan.mjs", "run-ui-tests.mjs", "check-release-metadata.mjs", "release-notes.mjs", "ui-shards.mjs"]) copyFileSync(new URL(`./${file}`, import.meta.url), join(directory, "scripts", file));
+    copyFileSync(new URL("../tests/ui/audit-durations.json", import.meta.url), join(directory, "tests/ui/audit-durations.json"));
     put("README.md", "before");
     git("init"); git("add", "."); git("-c", "user.name=UI Fixture", "-c", "user.email=ui@example.test", "commit", "-m", "base");
     const baseSha = git("rev-parse", "HEAD");

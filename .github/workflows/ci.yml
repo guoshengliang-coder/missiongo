@@ -30,6 +30,7 @@ jobs:
       audit: ${{ steps.plan.outputs.audit }}
       visual: ${{ steps.plan.outputs.visual }}
       shards: ${{ steps.plan.outputs.shards }}
+      playwright_image: ${{ steps.playwright.outputs.image }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -41,6 +42,10 @@ jobs:
           node-version: 22.13.0
           cache: npm
       - run: npm ci
+      - name: Select matching Playwright image
+        id: playwright
+        # Preserve the Ubuntu 26 environment used by the existing Linux baselines.
+        run: echo "image=mcr.microsoft.com/playwright:v$(node -p 'require("playwright-core/package.json").version')-resolute" >> "$GITHUB_OUTPUT"
       - name: Fetch the PR base
         if: github.event_name == 'pull_request'
         # Missing comparison evidence makes the planner choose full UI.
@@ -99,7 +104,10 @@ jobs:
       fail-fast: false
       matrix:
         shard: ${{ fromJSON(needs.ui-plan.outputs.shards) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.ui-plan.outputs.playwright_image }}
+      options: --init --ipc=host
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -108,7 +116,6 @@ jobs:
           node-version: 22.13.0
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps --only-shell chromium
       - run: npm run build:types
       - name: Audit interface behavior
         env:
@@ -129,7 +136,10 @@ jobs:
   ui-visual:
     needs: ui-plan
     if: needs.ui-plan.outputs.visual == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.ui-plan.outputs.playwright_image }}
+      options: --init --ipc=host
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -138,7 +148,6 @@ jobs:
           node-version: 22.13.0
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps --only-shell chromium
       - run: npm run build:types
       - name: Compare or explicitly update screenshots
         env:

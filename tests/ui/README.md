@@ -44,13 +44,18 @@ main push 和普通手动运行执行全量 UI 测试；PR 先生成变更影响
 
 全量模式下：
 
-- `ui-audit (1)` 到 `ui-audit (8)` 使用 `--shard=1/8` 到 `--shard=8/8`，按文件分片，各自启动独立的服务、数据库和账号。
+- `ui-audit (1)` 到 `ui-audit (8)` 根据 `audit-durations.json` 的历史文件耗时分配，优先把长文件放入预计最空闲的分片，各自启动独立的服务、数据库和账号。新增或改名文件以最大历史耗时估计，仍纳入完整目录；旧文件的估计不会导致执行已删除文件。
+- 计划包含每片完整文件清单，校验所有当前专项恰好覆盖一次；遗漏、重复、未知文件、旧版计划均不能执行。执行器直接传入本片文件，使用 `--shard=1/1`，不能再对该子集二次分片。
 - 每个分片仍只有一个 worker，文件内按原顺序执行；不要直接开启 `fullyParallel` 或增加 worker，共用账号的通知计数、派单默认值等会互相影响。
 - `ui-visual` 独立执行全部截图比对，不等行为测试结束。手动勾选更新基线时，只运行截图生成，仍使用 `--update-snapshots=all`。
 - `ui` 汇总前两类任务，保留发布门禁检查名；行为测试失败、取消或意外跳过，均不能通过汇总检查。
 
 行为报告与附件分别在 `ui-audit-1` 到 `ui-audit-8`；截图基线与报告仍在 `ui-snapshots`，互不覆盖。
 完整报告包含每条测试耗时，可用于后续对比分片耗时和调整测试组织。
+
+行为与截图任务使用官方 Playwright Resolute（Ubuntu 26）容器，保持现有 Linux 基线的系统版本；镜像版本由 `ui-plan` 安装的锁定 `playwright-core` 版本生成，
+与测试任务的同一份锁文件保持一致。镜像预装浏览器、系统库和字体，不再在每个分片中运行 apt 和浏览器下载。
+截图仍比对原有 Linux 基线，不自动改写；环境变化造成的差异必须先诊断。宿主固定 `ubuntu-24.04`，容器使用独立 IPC 配置运行 Chromium。
 
 本机查看当前分支的 PR 计划：
 
@@ -61,7 +66,8 @@ GITHUB_EVENT_NAME=pull_request UI_BASE_SHA="$(git rev-parse origin/main)" node s
 原有 `npm run test:ui`、`npm run test:ui:visual` 始终保持全量；只有 CI 的 `run-ui-tests.mjs`
 按已验证的计划选择文件，并校验计划提交与当前 checkout 一致。
 
-本机只运行一个分片可用 `npm run test:ui -- --shard=1/8`。不要在同一 checkout 同时启动多个
+本机运行与 CI 相同的一个分片，可将 `ui-test-plan.mjs` 的输出设为 `UI_TEST_PLAN`，再运行
+`node scripts/run-ui-tests.mjs --kind=audit --shard=1`。原生 `npm run test:ui -- --shard=1/8` 使用 Playwright 默认分配，覆盖总量相同但分组不同。不要在同一 checkout 同时启动多个
 Playwright 命令：它们会覆盖 `.auth` 和报告；并行验证须使用独立 checkout 和不同测试端口。
 
 验证状态随轮询刷新的测试，在导航前 `page.clock.install()`，修改 mock 或通过 API 更新夹具后，

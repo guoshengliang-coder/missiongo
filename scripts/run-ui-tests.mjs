@@ -9,8 +9,11 @@ export function playwrightArguments(value, kind, shard = 1) {
   validatePlan(value);
   if (kind === "audit") {
     if (!["full", "targeted"].includes(value.mode) || !value.shards.includes(shard)) throw new Error("Audit is not selected for this shard");
-    return ["test", "--project=audit", `--shard=${shard}/${value.shards.length}`,
-      ...value.auditFiles.map(file => file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$")];
+    const files = value.mode === "full" ? value.shardFiles[shard - 1] : value.auditFiles;
+    // The plan already allocated complete files; Playwright must not shard
+    // that subset again or it would silently omit part of the coverage.
+    return ["test", "--project=audit", "--shard=1/1",
+      ...files.map(file => file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$")];
   }
   if (kind !== "visual" || !value.visual) throw new Error("Visual tests are not selected");
   return ["test", "--project=visual", ...(value.mode === "snapshots" ? ["--update-snapshots=all"] : [])];

@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isReleaseMetadata, validateReleaseMetadata } from "./check-release-metadata.mjs";
+import { auditDurations, balancedAuditShards } from "./ui-shards.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -106,14 +107,16 @@ export function importGraph(directory = root) {
   return { reverse, uncertain };
 }
 
-function plan(mode, head, reasons, auditFiles = []) {
-  return { version: 1, head, mode, auditFiles: [...new Set(auditFiles)].sort(), shards: mode === "full" ? [...fullShards] : [1], visual: mode !== "skip", reasons };
+function plan(mode, head, reasons, auditFiles, catalog) {
+  return { version: 2, head, mode, auditFiles: [...new Set(auditFiles)].sort(), shards: mode === "full" ? [...fullShards] : [1],
+    shardFiles: mode === "full" ? balancedAuditShards(catalog, auditDurations()) : [], visual: mode !== "skip", reasons };
 }
 
 export function selectUITests({ eventName, snapshotUpdate = false, head, changes, map, catalog, graph, releaseMetadataValidated = false }) {
-  if (eventName === "workflow_dispatch" && snapshotUpdate) return plan("snapshots", head, ["Explicit snapshot generation"]);
-  if (eventName !== "pull_request") return plan("full", head, ["Main pushes and ordinary manual runs always run full UI"]);
-  if (!changes?.length) return plan("full", head, ["Missing or empty change evidence"]);
+  const makePlan = (mode, reasons, files = []) => plan(mode, head, reasons, files, catalog);
+  if (eventName === "workflow_dispatch" && snapshotUpdate) return makePlan("snapshots", ["Explicit snapshot generation"]);
+  if (eventName !== "pull_request") return makePlan("full", ["Main pushes and ordinary manual runs always run full UI"]);
+  if (!changes?.length) return makePlan("full", ["Missing or empty change evidence"]);
   const boundaries = new Map(Object.entries(map.features).filter(([, feature]) => {
     // New consumers expand a component's contract; require a map review rather
     // than silently inheriting the old feature's narrower test coverage.
@@ -123,7 +126,7 @@ export function selectUITests({ eventName, snapshotUpdate = false, head, changes
   const selected = new Set(), reasons = [];
   let visual = false;
   for (const { path, status } of changes) {
-    if (typeof path !== "string" || path.startsWith("/") || path.split("/").includes("..") || path.includes("\\")) return plan("full", head, ["Unsupported changed path"]);
+    if (typeof path !== "string" || path.startsWith("/") || path.split("/").includes("..") || path.includes("\\")) return makePlan("full", ["Unsupported changed path"]);
     if (isReleaseMetadata(path) && releaseMetadataValidated && ["A", "M"].includes(status)) {
       reasons.push(`Validated release metadata: ${path}`);
       continue;
@@ -148,26 +151,32 @@ export function selectUITests({ eventName, snapshotUpdate = false, head, changes
         continue;
       }
     }
-    return plan("full", head, [`Shared, unknown, deleted, or unresolved input: ${path}`]);
+    return makePlan("full", [`Shared, unknown, deleted, or unresolved input: ${path}`]);
   }
   if (selected.size) {
     for (const file of map.smoke) selected.add(ui + file);
     // Large combined feature changes are cheaper on the full-suite
     // runners than on one targeted runner, and deserve broader coverage.
-    if (selected.size > 12) return plan("full", head, ["Broad feature change"]);
-    return plan("targeted", head, [...new Set(reasons)], [...selected]);
+    if (selected.size > 12) return makePlan("full", ["Broad feature change"]);
+    return makePlan("targeted", [...new Set(reasons)], [...selected]);
   }
-  return visual ? plan("visual", head, ["Screenshot baselines only"]) : plan("skip", head, reasons.length ? reasons : ["Documentation, native clients, or unit tests only"]);
+  return visual ? makePlan("visual", ["Screenshot baselines only"]) : makePlan("skip", reasons.length ? reasons : ["Documentation, native clients, or unit tests only"]);
 }
 
 export function validatePlan(value, { head, catalog = auditCatalog() } = {}) {
-  if (value?.version !== 1 || !/^[a-f0-9]{40}$/.test(value.head ?? "") || (head && value.head !== head) || !modes.has(value.mode)) throw new Error("Invalid or stale UI plan");
+  if (value?.version !== 2 || !/^[a-f0-9]{40}$/.test(value.head ?? "") || (head && value.head !== head) || !modes.has(value.mode)) throw new Error("Invalid or stale UI plan");
   if (!Array.isArray(value.auditFiles) || new Set(value.auditFiles).size !== value.auditFiles.length
     || value.auditFiles.some(file => !catalog.includes(file))) throw new Error("Unknown UI test in plan");
   if (value.mode === "targeted") {
     if (!value.auditFiles.length || impactMap().smoke.some(file => !value.auditFiles.includes(ui + file))) throw new Error("Targeted UI must include core smoke coverage");
   } else if (value.auditFiles.length) throw new Error("Unexpected UI file filter");
   if (JSON.stringify(value.shards) !== JSON.stringify(value.mode === "full" ? fullShards : [1]) || value.visual !== (value.mode !== "skip")) throw new Error("Invalid UI plan execution shape");
+  if (!Array.isArray(value.shardFiles) || value.shardFiles.length !== (value.mode === "full" ? fullShards.length : 0)) throw new Error("Invalid UI file allocation");
+  if (value.mode === "full") {
+    if (value.shardFiles.some(files => !Array.isArray(files) || !files.length || files.some(file => typeof file !== "string"))) throw new Error("Invalid UI file allocation");
+    const assigned = value.shardFiles.flat();
+    if (new Set(assigned).size !== assigned.length || JSON.stringify([...assigned].sort()) !== JSON.stringify([...catalog].sort())) throw new Error("UI shards must cover every file exactly once");
+  }
   return value;
 }
 
