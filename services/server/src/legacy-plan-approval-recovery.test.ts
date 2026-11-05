@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
 import { AgentSessionStore, type AgentSessionMessageInput } from "./agent-session-store.js";
 import { buildApp } from "./app.js";
@@ -56,7 +57,11 @@ async function fixture(acceptance="native",upgrade=true,batch=false) {
     const row=app.missionGoStore.database.connection.prepare("SELECT settings_revision FROM agent_sessions WHERE id=?").get(sessionId) as {settings_revision:number};
     new AgentSessionStore(app.missionGoStore.database).recordSnapshot({nodeId:"node",sessionId,status:"idle",messages:[],settingsRevision:row.settings_revision});
   };
-  return {app,options,store:app.missionGoStore,db:app.missionGoStore.database.connection,item,items,product,sessionId,messages,planText,call,claimArgs,applyMode,tokenFor};
+  const nodeReport=async(payload:Record<string,unknown>)=>{
+    app.missionGoStore.database.connection.prepare("UPDATE nodes SET token_hash=? WHERE id='node'").run(createHash('sha256').update('fixture-node-token').digest('hex'));
+    return app.inject({method:'POST',url:`/api/v1/node/agent-sessions/${sessionId}/snapshot`,headers:{authorization:'Bearer fixture-node-token'},payload:{status:'idle',messages:[],...payload}});
+  };
+  return {app,options,store:app.missionGoStore,db:app.missionGoStore.database.connection,item,items,product,sessionId,messages,planText,call,claimArgs,applyMode,tokenFor,nodeReport};
 }
 
 it("freezes evidence without approving, then restores the exact native decision and completes a normal same-dispatch handoff",async()=>{
@@ -65,8 +70,8 @@ it("freezes evidence without approving, then restores the exact native decision 
   expect(f.db.prepare("SELECT COUNT(*) AS n FROM implementation_plan_approvals").get()).toMatchObject({n:0});
   expect(f.store.getWorkItem(f.item.key).status).toBe("ready");
   const first=await f.call("claim_item",f.claimArgs);
-  expect(first.isError,JSON.stringify(first)).toBe(true);
-  expect(first.content[0].text).toContain("implementation mode");
+  expect(first.isError,JSON.stringify(first)).not.toBe(true);
+  expect(first.structuredContent).toMatchObject({statusChanged:false,claimPending:true,continuationScheduled:true});
   expect(f.db.prepare("SELECT source,plan_text,validation_text FROM implementation_plan_approvals").get()).toEqual({source:"native",plan_text:f.planText,validation_text:""});
   const audit=f.db.prepare("SELECT * FROM implementation_plan_recoveries").get();
   expect(audit).toMatchObject({client_id:"original-client",previous_revision:"original-request",session_id:f.sessionId,plan_source_id:"native-plan",acceptance_source_id:"native-decision",native_accepted_at:f.messages[1]!.occurredAt});
@@ -162,4 +167,93 @@ it("keeps cross-client claim credentials isolated after native recovery",async()
   expect((await f.call("recover_execution_authorization",{itemKey:f.item.key,dispatchId:"original-dispatch"},f.tokenFor("other-client"))).isError).toBe(true);
   expect(f.store.getWorkItem(f.item.key).status).toBe("in_progress");
   expect(itemExecutionBlockers(f.store.database,f.item.id)).toEqual([]);
+});
+
+it("waits for an authenticated idle mode acknowledgement, queues one transparent continuation, then claims normally",async()=>{
+  const f=await fixture();
+  expect((await f.call('claim_item',f.claimArgs)).structuredContent.claimPending).toBe(true);
+  expect((await f.call('claim_item',f.claimArgs)).structuredContent.claimPending).toBe(true);
+  const info=(await f.call('get_item_plan_approvals',{itemKey:f.item.key})).structuredContent.sessions[0].formalRecords.records[0];
+  expect(info.approval.recovery.resume).toMatchObject({state:'waiting',commandId:null});
+  expect((await f.nodeReport({status:'active',turnState:{turnActive:true}})).statusCode).toBe(204);
+  expect(f.db.prepare('SELECT COUNT(*) AS n FROM agent_session_commands').get()).toMatchObject({n:0});
+  expect((await f.nodeReport({turnState:{turnActive:false}})).statusCode).toBe(204);
+  expect(f.db.prepare('SELECT COUNT(*) AS n FROM agent_session_commands').get()).toMatchObject({n:0});
+  const {settings_revision:revision}=f.db.prepare('SELECT settings_revision FROM agent_sessions WHERE id=?').get(f.sessionId) as {settings_revision:number};
+  const posted=await f.nodeReport({settingsRevision:revision,turnState:{turnActive:false}});
+  expect(posted.statusCode,posted.body).toBe(204);
+  expect((await f.nodeReport({settingsRevision:revision,turnState:{turnActive:false}})).statusCode).toBe(204);
+  const command=f.db.prepare('SELECT id,text FROM agent_session_commands').get()!;
+  expect(command.text).toContain('系统续办');expect(command.text).toContain('不是新的人工批准');
+  expect(f.db.prepare('SELECT COUNT(*) AS n FROM agent_session_commands').get()).toMatchObject({n:1});
+  expect(f.db.prepare('SELECT state,command_id FROM implementation_plan_recovery_resumes').get()).toMatchObject({state:'queued',command_id:command.id});
+  expect(f.db.prepare('SELECT COUNT(*) AS n FROM builder_execution_authorizations').get()).toMatchObject({n:0});
+  expect(f.store.getWorkItem(f.item.key).status).toBe('ready');
+  const claim=await f.call('claim_item',f.claimArgs);
+  expect(claim.isError,JSON.stringify(claim)).not.toBe(true);
+  expect(claim.structuredContent).toMatchObject({item:{status:'in_progress'},executionAuthorization:expect.any(String)});
+});
+
+it.each(['active','settings-error','source-error','permission','new-input','new-request','archive','stop','builder','taken','pending-reply','tool-permission'])("does not resume over the %s boundary",async(boundary)=>{
+  const f=await fixture();await f.call('claim_item',f.claimArgs);
+  const sessions=new AgentSessionStore(f.store.database);
+  f.applyMode();
+  if(boundary==='permission') f.app.missionGoAccounts.replacePermissions(config.id,[{productId:f.product.id,canView:true,canOperate:true,canUseAi:false}]);
+  if(boundary==='new-input') sessions.recordSnapshot({nodeId:'node',sessionId:f.sessionId,status:'idle',messages:[{sourceId:'user-steering',role:'user',turnId:'new-user-turn',text:'Pause this work.',occurredAt:new Date().toISOString()}]});
+  if(boundary==='new-request') new ImplementationPlans(f.store.database).request(config.id,'dispatch:original-dispatch','replacement',{keys:[f.item.key],plan:'Replacement plan requiring review',validation:'Replacement tests'});
+  if(boundary==='archive') {sessions.setArchived(config.id,f.sessionId,true);sessions.setArchived(config.id,f.sessionId,false);}
+  if(boundary==='stop') sessions.enqueueInterrupt(config.id,f.sessionId);
+  if(boundary==='builder') f.db.prepare("UPDATE work_items SET builder_account_id='new-owner' WHERE id=?").run(f.item.id);
+  if(boundary==='taken') await f.call('claim_item',f.claimArgs);
+  if(boundary==='pending-reply') sessions.enqueue(config.id,f.sessionId,'Existing explicit input');
+  if(boundary==='tool-permission') {
+    const {AgentApprovalStore}=await import('./agent-approval-store.js');
+    new AgentApprovalStore(f.store.database).record('node',f.sessionId,{id:'permission',kind:'manual',status:'pending',turnId:'tool-turn',action:'Review a tool request',startedAtMs:Date.now()});
+  }
+  const revision=(f.db.prepare('SELECT settings_revision FROM agent_sessions WHERE id=?').get(f.sessionId) as {settings_revision:number}).settings_revision;
+  const before=(f.db.prepare('SELECT COUNT(*) AS n FROM agent_session_commands').get() as {n:number}).n;
+  const result=await f.nodeReport(boundary==='active'?{status:'active',turnState:{turnActive:true}}:boundary==='settings-error'?{settingsRevision:revision,settingsError:'Native mode not confirmed',turnState:{turnActive:false}}:boundary==='source-error'?{error:'Native synchronization failed',turnState:{turnActive:false}}:{turnState:{turnActive:false}});
+  expect(result.statusCode,result.body).toBe(204);
+  expect(f.db.prepare('SELECT COUNT(*) AS n FROM agent_session_commands').get()).toMatchObject({n:before});
+  if(['permission','new-input','new-request','archive','stop','builder','taken'].includes(boundary)) expect(f.db.prepare('SELECT state FROM implementation_plan_recovery_resumes').get()).toMatchObject({state:'cancelled'});
+});
+
+it("never resends a cancelled continuation",async()=>{
+  const f=await fixture();await f.call('claim_item',f.claimArgs);f.applyMode();
+  await f.nodeReport({turnState:{turnActive:false}});
+  const command=f.db.prepare('SELECT id FROM agent_session_commands').get() as {id:string};
+  new AgentSessionStore(f.store.database).cancel(config.id,f.sessionId,command.id);
+  await f.nodeReport({turnState:{turnActive:false}});
+  expect(f.db.prepare('SELECT COUNT(*) AS n FROM agent_session_commands').get()).toMatchObject({n:1});
+  expect(f.db.prepare('SELECT state FROM implementation_plan_recovery_resumes').get()).toMatchObject({state:'cancelled'});
+});
+
+it("does not arm a recovered native decision from another OAuth client",async()=>{
+  const f=await fixture();await f.call('claim_item',f.claimArgs);
+  f.db.prepare('DELETE FROM implementation_plan_recovery_resumes').run();
+  expect((await f.call('claim_item',f.claimArgs,f.tokenFor('another-client'))).isError).toBe(true);
+  expect(f.db.prepare('SELECT COUNT(*) AS n FROM implementation_plan_recovery_resumes').get()).toMatchObject({n:0});
+});
+
+it("keeps original dispatch scope validation for ordinary plan requests",async()=>{
+  const f=await fixture('native',false);
+  const result=await f.call('request_plan_approval',{itemKeys:[f.item.key],dispatchId:'missing-dispatch',plan:'Do not accept an unrelated dispatch.',validation:'Check original ownership.',approvalMethod:'web'});
+  expect(result.isError).toBe(true);
+  expect(f.db.prepare("SELECT 1 FROM implementation_plan_requests WHERE identity_key='dispatch:missing-dispatch'").get()).toBeUndefined();
+  expect(f.db.prepare('SELECT COUNT(*) AS n FROM implementation_plan_recovery_resumes').get()).toMatchObject({n:0});
+});
+
+it("requires the authenticated original node, and keeps a waiting continuation across server restart",async()=>{
+  const f=await fixture();await f.call('claim_item',f.claimArgs);
+  const denied=await f.app.inject({method:'POST',url:`/api/v1/node/agent-sessions/${f.sessionId}/snapshot`,headers:{authorization:'Bearer untrusted-node'},payload:{status:'idle',messages:[],settingsRevision:999}});
+  expect(denied.statusCode).toBe(401);
+  expect(f.db.prepare('SELECT COUNT(*) AS n FROM agent_session_commands').get()).toMatchObject({n:0});
+  f.db.prepare("UPDATE nodes SET token_hash=? WHERE id='node'").run(createHash('sha256').update('fixture-node-token').digest('hex'));
+  const revision=(f.db.prepare('SELECT settings_revision FROM agent_sessions WHERE id=?').get(f.sessionId) as {settings_revision:number}).settings_revision;
+  await f.app.close();apps.delete(f.app);
+  const reopened=buildApp(f.options);apps.add(reopened);
+  const report=()=>reopened.inject({method:'POST',url:`/api/v1/node/agent-sessions/${f.sessionId}/snapshot`,headers:{authorization:'Bearer fixture-node-token'},payload:{status:'idle',messages:[],settingsRevision:revision,turnState:{turnActive:false}}});
+  expect((await report()).statusCode).toBe(204);expect((await report()).statusCode).toBe(204);
+  expect(reopened.missionGoStore.database.connection.prepare('SELECT state FROM implementation_plan_recovery_resumes').get()).toMatchObject({state:'queued'});
+  expect(reopened.missionGoStore.database.connection.prepare('SELECT COUNT(*) AS n FROM agent_session_commands').get()).toMatchObject({n:1});
 });

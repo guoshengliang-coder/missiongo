@@ -1125,6 +1125,8 @@ export class AgentSessionStore {
         archived ? now : null, archived ? "missiongo" : null, now, now,
         archived ? 1 : 0, archived ? 1 : 0, sessionId,
       );
+    if(archived) this.database.connection.prepare(`UPDATE implementation_plan_recovery_resumes SET state='cancelled'
+      WHERE account_id=? AND session_id=? AND state='waiting'`).run(accountId,sessionId);
     return this.getForAccount(accountId, sessionId);
   }
 
@@ -1391,6 +1393,8 @@ export class AgentSessionStore {
     const id = randomUUID();
     const now = new Date().toISOString();
     this.database.transaction(() => {
+      this.database.connection.prepare(`UPDATE implementation_plan_recovery_resumes SET state='cancelled'
+        WHERE account_id=? AND session_id=? AND state='waiting'`).run(accountId,sessionId);
       if (pending) {
         this.database.connection
           .prepare(
@@ -1446,6 +1450,8 @@ export class AgentSessionStore {
       if (changed.changes === 0) {
         throw conflict("agent_reply_changed", "The queued reply changed before it could be cancelled.");
       }
+      this.database.connection.prepare(`UPDATE implementation_plan_recovery_resumes SET state='cancelled'
+        WHERE account_id=? AND session_id=? AND command_id=?`).run(accountId,sessionId,commandId);
       this.database.connection
         .prepare("UPDATE agent_sessions SET updated_at = ?, activity_at = ?, activity_repair_pending = 0 WHERE id = ?")
         .run(now, now, sessionId);

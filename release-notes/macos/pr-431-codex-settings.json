@@ -1,0 +1,6 @@
+{
+  "pullRequest": 431,
+  "items": [
+    { "key": "AND-405", "title": "恢复原 Codex 会话时核对实际权限，确认生效后再继续处理" }
+  ]
+}

@@ -1,6 +1,8 @@
 import { AgentSessionStore } from "./agent-session-store.js";
 import { ImplementationPlans, planDigest, requestNativePlanApproval } from "./implementation-plans.js";
 import { recoverLegacyPlanApproval } from "./legacy-plan-approval-recovery.js";
+import { armRecoveredPlanResume } from "./recovered-plan-resume.js";
+import { MissionGoError } from "./errors.js";
 import { Collaborations, collaborationDraftSchema } from "./collaboration.js";
 import { transitionPolicy, itemRoles } from "./item-policy.js";
 import { deliveryRound } from "./delivery-round.js";
@@ -996,6 +998,18 @@ export function createMissionGoMcpServer(
           if(options.canOperate&&!options.canOperate(access.accountId,store.getWorkItem(candidateKey).productId)) throw new Error("Product operation is not permitted.");
         },
       });
+      if(dispatchId && store.database.connection.prepare(`SELECT 1 FROM implementation_plan_recoveries
+        WHERE account_id=? AND identity_key=? AND client_id=?`).get(access.accountId,`dispatch:${dispatchId}`,access.clientId ?? '')) {
+        try {plans.assertClaim(access.accountId,`dispatch:${dispatchId}`,key);}
+        catch(error) {
+          if(error instanceof MissionGoError && error.code==='implementation_mode_not_applied') {
+            if(armRecoveredPlanResume(store,access.accountId,access.clientId ?? '',dispatchId)) return textResult(
+              {itemKey:key,statusChanged:false,claimPending:true,continuationScheduled:true},
+              "The historical native approval is restored. This running turn must finish before the node can confirm the implementation mode. One continuation is registered for this original conversation after an authenticated idle-mode acknowledgement. End this turn with progress; the same conversation will resume without another approval. No claim or execution credential exists yet; keep the original claim key.");
+          }
+          throw error;
+        }
+      }
       const result = store.database.transaction(() => {
         const digest = createHash("sha256").update(JSON.stringify([key, agentId, session ?? null, dispatchId ?? null])).digest("hex");
         const receipt = store.database.connection.prepare("SELECT digest, result_json FROM mcp_agent_claim_receipts WHERE account_id = ? AND client_id = ? AND idempotency_key = ?")

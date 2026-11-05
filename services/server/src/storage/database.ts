@@ -2322,5 +2322,18 @@ export class MissionGoDatabase {
       });
     }
 
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611051043").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611051043").get()) return;
+        this.connection.exec(`CREATE TABLE implementation_plan_recovery_resumes (
+          account_id TEXT NOT NULL,identity_key TEXT NOT NULL,revision TEXT NOT NULL,
+          session_id TEXT NOT NULL,user_digest TEXT NOT NULL,requested_at TEXT NOT NULL,
+          state TEXT NOT NULL CHECK(state IN ('waiting','queued','cancelled')),
+          command_id TEXT UNIQUE,queued_at TEXT,PRIMARY KEY(account_id,identity_key)
+        ) STRICT; CREATE INDEX idx_recovered_plan_resume_session ON implementation_plan_recovery_resumes(account_id,session_id,state);`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202611051043,new Date().toISOString());
+      });
+    }
+
   }
 }
