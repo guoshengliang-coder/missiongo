@@ -520,8 +520,44 @@ public enum CodexProtocol {
         guard result["approvalPolicy"] as? String == settings.approvalPolicy,
               result["approvalsReviewer"] as? String == settings.approvalsReviewer,
               sandbox?["type"] as? String == (settings.sandbox == "read-only" ? "readOnly" : "workspaceWrite") else {
-            throw LaunchError("Codex 未确认请求的原生权限模式，未发送消息或标记生效。")
+            // Only emit known policy values, never arbitrary server payloads.
+            func actual(_ value: Any?, allowed: [String]) -> String {
+                guard let value else { return "missing" }
+                guard let text = value as? String, allowed.contains(text) else { return "unsupported" }
+                return text
+            }
+            let policy = actual(result["approvalPolicy"], allowed: ["on-request", "never", "untrusted", "on-failure"])
+            let reviewer = actual(result["approvalsReviewer"], allowed: ["user", "auto_review", "guardian_subagent"])
+            let sandboxType = actual(sandbox?["type"], allowed: ["readOnly", "workspaceWrite", "dangerFullAccess", "externalSandbox"])
+            let expectedSandbox = settings.sandbox == "read-only" ? "readOnly" : "workspaceWrite"
+            throw LaunchError("Codex 未确认请求的原生权限模式（approvalPolicy: \(policy)，期望 \(settings.approvalPolicy)；approvalsReviewer: \(reviewer)，期望 \(settings.approvalsReviewer)；sandbox.type: \(sandboxType)，期望 \(expectedSandbox)），未发送消息或标记生效。")
         }
+    }
+
+    /// Loaded threads can ignore thread/resume overrides. Update the live
+    /// settings explicitly, then use a fresh resume to verify the effective
+    /// policy. An empty update acknowledgement is not proof of application.
+    public static func threadSettingsUpdateParams(threadId: String, overrides: CodexTurnOverrides, resumed: [String: Any]) throws -> [String: Any] {
+        var params: [String: Any] = ["threadId": threadId]
+        if let model = overrides.model { params["model"] = model }
+        if let effort = overrides.effort { params["effort"] = effort }
+        if let settings = overrides.settings {
+            params["approvalPolicy"] = settings.approvalPolicy
+            params["approvalsReviewer"] = settings.approvalsReviewer
+            if settings.sandbox == "read-only" {
+                params["sandboxPolicy"] = ["type": "readOnly", "networkAccess": false]
+            } else {
+                guard let cwd = resumed["cwd"] as? String, cwd.hasPrefix("/") else {
+                    throw LaunchError("Codex 未返回工作目录，无法确认可写范围；未发送消息或标记生效。")
+                }
+                let roots = resumed["runtimeWorkspaceRoots"] as? [String] ?? [cwd]
+                guard roots.allSatisfy({ $0.hasPrefix("/") }) else {
+                    throw LaunchError("Codex 未返回有效工作区，无法确认可写范围；未发送消息或标记生效。")
+                }
+                params["sandboxPolicy"] = ["type": "workspaceWrite", "writableRoots": Array(Set([cwd] + roots)).sorted(), "networkAccess": false]
+            }
+        }
+        return params
     }
 
     public static func appliedSettings(fromResume result: [String: Any]) -> CodexAppliedSettings {
@@ -1126,13 +1162,7 @@ public struct CodexAppServerControl: CodexControl {
                                 throw LaunchError("Managed resume requires a frozen receipt.")
                             }
                         }
-                        let resumed = try connection.call(
-                            "thread/resume",
-                            CodexProtocol.threadResumeParams(threadId: threadId, overrides: overrides)
-                        )
-                        if overrides?.managed != true, let settings = overrides?.settings {
-                            try CodexProtocol.validateEffectiveSettings(resumed, settings: settings)
-                        }
+                        let resumed = try Self.resumeApplyingSettings(connection: connection, threadId: threadId, overrides: overrides)
                         if overrides?.managed == true, let settings = overrides?.settings, let context = overrides?.managedContext {
                             try ManagedCodexProtocol.validateResumed(resumed, settings: settings, context: context)
                             try ManagedCodexProtocol.validateMcp(connection.call("mcpServerStatus/list", ["threadId": threadId, "limit": 100]))
@@ -1191,15 +1221,45 @@ public struct CodexAppServerControl: CodexControl {
                     defer { connection.close() }
                     _ = try connection.call("initialize", CodexProtocol.initializeParams())
                     try connection.notify("initialized")
-                    let result = try connection.call(
-                        "thread/resume",
-                        CodexProtocol.threadResumeParams(threadId: threadId, overrides: overrides)
-                    )
+                    let result = try Self.resumeApplyingSettings(connection: connection, threadId: threadId, overrides: overrides)
                     if let settings = overrides.settings { try CodexProtocol.validateEffectiveSettings(result, settings: settings) }
                     return CodexProtocol.appliedSettings(fromResume: result)
                 })
             }
         }
+    }
+
+    private static func resumeApplyingSettings(connection: JSONRPCWebSocket, threadId: String, overrides: CodexTurnOverrides?) throws -> [String: Any] {
+        var result = try connection.call("thread/resume", CodexProtocol.threadResumeParams(threadId: threadId, overrides: overrides))
+        // Managed execution keeps its separate frozen-receipt validation.
+        guard let overrides, !overrides.managed, let settings = overrides.settings else { return result }
+        guard (result["thread"] as? [String: Any])?["id"] as? String == threadId else {
+            throw CodexControlError.invalidResponse(method: "thread/resume identity")
+        }
+        do {
+            try CodexProtocol.validateEffectiveSettings(result, settings: settings)
+            return result
+        } catch {
+            // Older servers that apply resume overrides take the path above.
+            // Never unload an existing thread or start a turn to change settings.
+            let thread = result["thread"] as? [String: Any]
+            guard (thread?["status"] as? [String: Any])?["type"] as? String != "active",
+                  !(thread?["turns"] as? [[String: Any]] ?? []).contains(where: { $0["status"] as? String == "inProgress" }) else {
+                throw LaunchError("原会话正在运行，请等待当前回合结束后再切换权限。")
+            }
+            let params = try CodexProtocol.threadSettingsUpdateParams(threadId: threadId, overrides: overrides, resumed: result)
+            do {
+                _ = try connection.call("thread/settings/update", params)
+            } catch let updateError {
+                throw LaunchError("\(error.localizedDescription) 权限更新失败：\(CodexSessionFailure.redact(updateError.localizedDescription))")
+            }
+            result = try connection.call("thread/resume", CodexProtocol.threadResumeParams(threadId: threadId))
+        }
+        guard (result["thread"] as? [String: Any])?["id"] as? String == threadId else {
+            throw CodexControlError.invalidResponse(method: "thread/resume identity")
+        }
+        try CodexProtocol.validateEffectiveSettings(result, settings: settings)
+        return result
     }
 
     public func listModels(socketPath: String) async throws -> [AgentModelOption] {
