@@ -47,3 +47,22 @@ it("keeps post-approval replies after the plan, including legacy plans and paged
   expect(ids(planTranscript(messages.slice(2), legacy))).toEqual(["submitted-plan", "accepted", "result"]);
   expect(planTranscript(messages, undefined)).toBe(messages);
 });
+
+it("ends the approval acknowledgement on native progress while retaining uncertain delivery", async () => {
+  const { planContinuationObserved } = await import("./agent-plan-content");
+  const base = { messages: [], status: "idle", implementationPlan: { revision: "reviewed", plan: "Plan", approvedAt: "2026-11-05T10:00:00.500Z" },
+    planApprovalState: { approved: true, revision: "reviewed", continuationQueued: true },
+    command: { text: "批准", status: "queued", createdAt: "2026-11-05T10:00:00.500Z" },
+    turnState: { turnActive: false, turnStartedAt: "2026-11-05T09:59:00Z" } } as unknown as AgentSession;
+  expect(planContinuationObserved(undefined)).toBe(false);
+  expect(planContinuationObserved(base)).toBe(false);
+  expect(planContinuationObserved({ ...base, command: { ...base.command!, status: "delivery_unknown" } })).toBe(false);
+  expect(planContinuationObserved({ ...base, status: "active", turnState: { turnActive: true, turnStartedAt: "2026-11-05T10:00:01Z" } })).toBe(true);
+  expect(planContinuationObserved({ ...base, turnState: { turnActive: false, lastOutputAt: "2026-11-05T10:01:00Z" } })).toBe(true);
+  expect(planContinuationObserved({ ...base, messages: [{ role: "agent", text: "Now implementing", occurredAt: "2026-11-05T10:00:00Z" } as AgentSessionMessage] })).toBe(true);
+  expect(planContinuationObserved({ ...base, implementationPlan: { ...base.implementationPlan!, revision: "new" },
+    turnState: { turnActive: true, turnStartedAt: "2026-11-05T10:00:01Z" } })).toBe(false);
+  const offline = { ...base, implementationPlan: undefined, command: undefined,
+    planApprovalState: { ...base.planApprovalState!, continuationQueued: false } } as unknown as AgentSession;
+  expect(planContinuationObserved(offline)).toBe(false);
+});

@@ -31,7 +31,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
           messages: [...Array.from({ length: 6 }, (_, n) => ({ id: `comment-${n}`, sourceId: `comment-${n}`, role: "agent", text: `过程正文 ${n + 1}`, occurredAt: stamp })),
             { id: "native-plan", sourceId: "native-plan", role: "plan", text: plan.plan, occurredAt: plan.submittedAt },
             ...(approved ? [{ id: "implementation-result", sourceId: "implementation-result", role: "agent", text: "批准后执行完成的最新正文", occurredAt: "2026-11-05T01:00:00.000Z" }] : [])],
-          implementationPlan: { ...plan, approved },
+          implementationPlan: { ...plan, approved, ...(approved ? { approvedAt: "2026-11-05T00:01:00.000Z" } : {}) },
           planApprovalStatus: { code: approved ? "approved" : "ready" },
           ...(approved ? { planApprovalState: { approved: true, revision: plan.revision, continuationQueued: false } }
             : { planApproval: { ...plan, reason: "等待审批" } }),
@@ -67,6 +67,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
       else approved = true;
       await advanceSessionDetailPoll(page);
       await expect(card).toContainText("方案已批准");
+      if (surface === "console") await expect(page.locator(".agent-console-attention-banner--approval")).toHaveCount(0);
       const result = area.locator('[data-agent-message-id="agent:implementation-result"]');
       await expect(result).toBeVisible();
       expect(await card.evaluate((node, result) => Boolean(node.compareDocumentPosition(result) & Node.DOCUMENT_POSITION_FOLLOWING), await result.elementHandle())).toBe(true);

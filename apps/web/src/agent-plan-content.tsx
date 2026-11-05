@@ -6,6 +6,24 @@ export function currentPlan(session: AgentSession | undefined) {
   return session?.implementationPlan ?? session?.planApproval;
 }
 
+/** The durable approval remains readable; its acknowledgement ends on actual native progress. */
+export function planContinuationObserved(session: AgentSession | undefined): boolean {
+  const approved = session?.planApprovalState;
+  if (!session || !approved) return false;
+  const plan = currentPlan(session);
+  if (plan && plan.revision !== approved.revision) return false;
+  const command = session.command;
+  const time = Date.parse(session.implementationPlan?.approvedAt
+    ?? (approved.continuationQueued && command?.text === "批准" ? command.createdAt : ""));
+  if (!Number.isFinite(time)) return false;
+  // Source adapters may round native timestamps to whole seconds.
+  const boundary = Math.floor(time / 1000) * 1000;
+  return session.messages.some(message => message.role === "agent" && !message.questions?.length
+    && Date.parse(message.occurredAt) >= boundary)
+    || Date.parse(session.turnState?.lastOutputAt ?? "") >= boundary
+    || session.turnState?.turnActive === true && Date.parse(session.turnState.turnStartedAt ?? "") >= boundary;
+}
+
 /** Hide only an exact duplicate plan; ordinary commentary is never deduplicated by text. */
 export function withoutDuplicatePlan<T extends AgentSessionMessage>(messages: readonly T[], session: AgentSession | undefined): readonly T[] {
   const text = currentPlan(session)?.plan?.trim();
