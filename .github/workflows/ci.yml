@@ -137,7 +137,16 @@ jobs:
         env:
           UI_TEST_PLAN: ${{ needs.ui-plan.outputs.plan }}
           UI_SHARD: ${{ matrix.shard }}
+          UI_TIMING_KIND: audit
         run: node scripts/run-ui-tests.mjs --kind=audit --shard="$UI_SHARD"
+      - name: Upload UI timing data
+        uses: actions/upload-artifact@v5
+        if: ${{ always() }}
+        with:
+          name: ci-timing-${{ github.run_attempt }}-audit-${{ matrix.shard }}
+          path: ci-timings/ui-audit-*.json
+          retention-days: 14
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v5
         if: ${{ always() }}
         with:
@@ -177,7 +186,16 @@ jobs:
       - name: Compare or explicitly update screenshots
         env:
           UI_TEST_PLAN: ${{ needs.ui-plan.outputs.plan }}
+          UI_TIMING_KIND: visual
         run: node scripts/run-ui-tests.mjs --kind=visual
+      - name: Upload UI timing data
+        uses: actions/upload-artifact@v5
+        if: ${{ always() }}
+        with:
+          name: ci-timing-${{ github.run_attempt }}-visual
+          path: ci-timings/ui-visual-*.json
+          retention-days: 14
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v5
         if: ${{ always() }}
         with:
@@ -249,10 +267,31 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22.13.0
+      - name: Identify Swift build cache
+        id: swift-key
+        run: node scripts/macos-ci-cache.mjs key
+      - name: Restore Swift build cache
+        id: swift-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: apps/macos/.build
+          key: ${{ steps.swift-key.outputs.key }}
+          restore-keys: ${{ steps.swift-key.outputs.prefix }}
+      - name: Restore unchanged build input timestamps
+        run: node scripts/macos-ci-cache.mjs restore
       - name: Test the macOS client
         run: swift test --package-path apps/macos
       - name: Build the app bundle
         run: ./scripts/build-macos-app.sh
+      - name: Snapshot Swift build inputs
+        if: github.event_name != 'pull_request' && steps.swift-cache.outputs.cache-hit != 'true'
+        run: node scripts/macos-ci-cache.mjs snapshot
+      - name: Save successful Swift build cache
+        if: github.event_name != 'pull_request' && steps.swift-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: apps/macos/.build
+          key: ${{ steps.swift-key.outputs.key }}
 
   # Stable check names for branch/release gates. A planned skip must match the
   # build's exact outcome; failed/cancelled/missing planning never earns green.
@@ -303,3 +342,36 @@ jobs:
           CI_PLAN_RESULT: ${{ needs.ui-plan.result }}
           CI_BUILD_RESULT: ${{ needs.linux-node-build.result }}
         run: node scripts/ci-platform-plan.mjs linuxNode
+
+  # Diagnostic data only. Existing build/UI gate names and checks stay intact.
+  ci-timing-report:
+    if: ${{ always() }}
+    needs: [ui-plan, ui, android, macos, linux-node, web-and-server]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.13.0
+      - name: Download timing data for this attempt
+        uses: actions/download-artifact@v5
+        continue-on-error: true
+        with:
+          pattern: ci-timing-${{ github.run_attempt }}-*
+          path: ci-timings
+          merge-multiple: true
+      - name: Summarize CI timings
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          UI_TEST_PLAN: ${{ needs.ui-plan.outputs.plan }}
+        run: node scripts/ci-timing-report.mjs
+      - uses: actions/upload-artifact@v5
+        if: ${{ always() }}
+        with:
+          name: ci-timing-summary-${{ github.run_attempt }}
+          path: ci-timings/
+          retention-days: 14
+          if-no-files-found: ignore

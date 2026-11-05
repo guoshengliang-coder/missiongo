@@ -65,6 +65,8 @@ main push 和普通手动运行执行全量 UI 测试；PR 先生成变更影响
 
 行为报告与附件分别在 `ui-audit-1` 到 `ui-audit-8`；截图基线与报告仍在 `ui-snapshots`，互不覆盖。
 完整报告包含每条测试耗时，可用于后续对比分片耗时和调整测试组织。
+`ci-timing-report` 另外汇总各 job、UI 分片和慢文件，输出轻量 JSON 与 Job Summary。
+制品名称、样本完整性规则和 macOS 编译缓存说明见 [CI 性能与耗时报告](../../docs/ci-performance.md)。
 
 行为与截图任务使用官方 Playwright Resolute（Ubuntu 26）容器，保持现有 Linux 基线的系统版本；镜像版本由 `ui-plan` 安装的锁定 `playwright-core` 版本生成，
 与测试任务的同一份锁文件保持一致。镜像预装浏览器、系统库和字体，不再在每个分片中运行 apt 和浏览器下载。

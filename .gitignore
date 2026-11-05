@@ -59,6 +59,7 @@ apps/web/public/maven/
 # Only the Linux baselines CI compares against are tracked; see tests/ui/README.md.
 test-results/
 playwright-report/
+ci-timings/
 tests/ui/.auth/
 tests/ui/**/*-darwin.png
 tests/ui/**/*-win32.png
