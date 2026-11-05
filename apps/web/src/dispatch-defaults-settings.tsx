@@ -8,7 +8,7 @@ import { type AgentKind } from "@missiongo/domain";
 
 import { api } from "./api";
 import { useSettingsDraft } from "./settings-drafts";
-import { effortLabelKey, effortOptions, groupModelsByProvider, modelDisplayLabel, modelsAcrossNodes } from "./agent-model-options";
+import { defaultModels, effortLabelKey, effortOptions, groupModelsByProvider, modelDisplayLabel, reconcileDefaultEfforts } from "./agent-model-options";
 import { SUPPORTED_AGENT_KINDS, agentLabelKey, dispatchModeOrDefault } from "./dispatch-eligibility";
 import { useI18n } from "./i18n";
 import type { DispatchDefaults } from "./types";
@@ -16,21 +16,24 @@ import type { DispatchDefaults } from "./types";
 /**
  * Where the dispatch dialog starts (AND-130). Per account, next to the Macs,
  * because the machine is part of it. Models come from every Mac's report: a
- * default is not tied to one machine, and the dialog drops a model the chosen
- * Mac does not offer.
+ * default may be tied to one machine. Retired model preferences stay visible;
+ * incompatible efforts follow the same rules as dispatch and draft controls.
  */
 export function DispatchDefaultsSettings({ onOpenDevices }: { onOpenDevices: () => void }) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes });
   const defaultsQuery = useQuery({ queryKey: ["dispatch-defaults"], queryFn: api.getDispatchDefaults });
-  const [draft, setDraft] = useState<DispatchDefaults | null>(null);
+  const [rawDraft, setDraft] = useState<DispatchDefaults | null>(null);
   const [saved, setSaved] = useState(false);
   const nodes = nodesQuery.data?.nodes ?? [];
+  const draft = rawDraft && nodesQuery.isSuccess ? reconcileDefaultEfforts(nodes, rawDraft) : rawDraft;
+  const effortAdjusted = rawDraft && Object.entries(rawDraft.agents).some(([kind, settings]) =>
+    settings.effort !== draft?.agents[kind as AgentKind]?.effort);
 
   useEffect(() => {
-    if (defaultsQuery.data && draft === null) setDraft(defaultsQuery.data);
-  }, [defaultsQuery.data, draft]);
+    if (defaultsQuery.data && rawDraft === null) setDraft(defaultsQuery.data);
+  }, [defaultsQuery.data, rawDraft]);
 
   const save = useMutation({
     mutationFn: (value: DispatchDefaults) => api.setDispatchDefaults(value),
@@ -41,7 +44,7 @@ export function DispatchDefaultsSettings({ onOpenDevices }: { onOpenDevices: () 
     },
   });
 
-  useSettingsDraft(draft !== null && JSON.stringify(draft) !== JSON.stringify(defaultsQuery.data), save.isPending);
+  useSettingsDraft(rawDraft !== null && JSON.stringify(rawDraft) !== JSON.stringify(defaultsQuery.data), save.isPending);
 
   if (nodesQuery.isError || defaultsQuery.isError) return <p role="alert">{t("settingsLoadFailed")} <button type="button" className="secondary-button" onClick={() => { void nodesQuery.refetch(); void defaultsQuery.refetch(); }}>{t("retry")}</button></p>;
 
@@ -110,7 +113,7 @@ export function DispatchDefaultsSettings({ onOpenDevices }: { onOpenDevices: () 
         </div>
         {[draft.agentKind ?? "claude_code"].map((kind) => {
           const current = draft.agents[kind] ?? {};
-          const models = modelsAcrossNodes(nodes, kind);
+          const models = defaultModels(nodes, draft, kind);
           const modes=nodes.find(node=>node.id===draft.nodeId)?.agents.find(agent=>agent.kind===kind)?.modes;
           return (
             <fieldset key={kind} className="dispatch-defaults-agent">
@@ -132,20 +135,20 @@ export function DispatchDefaultsSettings({ onOpenDevices }: { onOpenDevices: () 
                     onChange={(event) => updateAgent(kind, { model: event.target.value, effort: "" })}
                   >
                     <option value="">{t("dispatchModelLocal")}</option>
-                    {groupModelsByProvider(models).map((group) => (
+                    {groupModelsByProvider(models ?? []).map((group) => (
                       group.provider === null
                         ? group.models.map((model) => (
-                          <option key={model.id} value={model.id}>{modelDisplayLabel(model, models)}</option>
+                          <option key={model.id} value={model.id}>{modelDisplayLabel(model, models ?? [])}</option>
                         ))
                         : (
                           <optgroup key={group.provider} label={group.provider}>
                             {group.models.map((model) => (
-                              <option key={model.id} value={model.id}>{modelDisplayLabel(model, models)}</option>
+                              <option key={model.id} value={model.id}>{modelDisplayLabel(model, models ?? [])}</option>
                             ))}
                           </optgroup>
                         )
                     ))}
-                    {current.model && !models.some((model) => model.id === current.model) && (
+                    {current.model && !models?.some((model) => model.id === current.model) && (
                       <option value={current.model}>{current.model}</option>
                     )}
                   </Select>
@@ -153,6 +156,7 @@ export function DispatchDefaultsSettings({ onOpenDevices }: { onOpenDevices: () 
                 <label>{t("dispatchEffort")}
                   <Select value={current.effort ?? ""} onChange={(event) => updateAgent(kind, { effort: event.target.value })}>
                     <option value="">{t("dispatchModelLocal")}</option>
+                    {current.effort && !effortOptions(models, current.model).includes(current.effort) && <option value={current.effort} disabled>{effortLabel(current.effort)}</option>}
                     {effortOptions(models, current.model).map((value) => (
                       <option key={value} value={value}>{effortLabel(value)}</option>
                     ))}
@@ -160,6 +164,8 @@ export function DispatchDefaultsSettings({ onOpenDevices }: { onOpenDevices: () 
                 </label>
                 </div>
                 </details>
+                {current.model && models && !models.some(model => model.id === current.model) && <p className="dispatch-note" role="status">{t("dispatchModelUnavailable", { model: current.model })}</p>}
+                {effortAdjusted && <p className="dispatch-note" role="status">{t("dispatchEffortReset", { model: models?.find(model => model.id === current.model)?.label ?? (current.model || t("dispatchModelLocal")) })}</p>}
               </div>
             </fieldset>
           );

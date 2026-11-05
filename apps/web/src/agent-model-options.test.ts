@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { agentModels, effortLabelKey, effortOptions, modelDisplayLabel, modelsAcrossNodes, reconcileChoice } from "./agent-model-options";
+import { agentModels, effortLabelKey, effortOptions, modelDisplayLabel, modelsAcrossNodes, reconcileChoice, reconcileEffort, reconcileDefaultEfforts } from "./agent-model-options";
 import type { DispatchNode } from "./types";
 
 const models = [
@@ -16,6 +16,22 @@ function node(id: string, agentModelsList?: typeof models): DispatchNode {
 }
 
 describe("Model and effort choices (AND-130)", () => {
+  it("clears incompatible efforts but preserves unavailable model and permission preferences", () => {
+    expect(reconcileEffort(models, { model: "gpt-5.5-mini", effort: "high" })).toEqual({ model: "gpt-5.5-mini" });
+    expect(reconcileEffort(models, { model: "gpt-5.5", effort: "high" })).toEqual({ model: "gpt-5.5", effort: "high" });
+    expect(reconcileEffort([{ id: "gateway", label: "Gateway", efforts: [] }], { model: "gateway", effort: "high" })).toEqual({ model: "gateway" });
+    expect(reconcileEffort(undefined, { model: "retired", effort: "high" })).toEqual({ model: "retired", effort: "high" });
+    expect(reconcileEffort(models, { model: "retired", effort: "high" })).toEqual({ model: "retired", effort: "high" });
+    expect(reconcileEffort(models, { effort: "ultra" })).toEqual({});
+  });
+
+  it("uses the selected device instead of another device's wider effort capability", () => {
+    const defaults = { nodeId: "limited", agentKind: "codex" as const, agents: { codex: { mode: "read-only", model: "gpt-5.5-mini", effort: "high" }, claude_code: { mode: "auto", model: "retired", effort: "high" } } };
+    const nodes = [node("limited", [models[1]!]), node("flexible", [{ ...models[1]!, efforts: ["high"] }])];
+    expect(reconcileDefaultEfforts(nodes, defaults).agents).toEqual({ codex: { mode: "read-only", model: "gpt-5.5-mini" }, claude_code: defaults.agents.claude_code });
+    expect(reconcileDefaultEfforts(nodes, { ...defaults, nodeId: "flexible" }).agents.codex?.effort).toBe("high");
+    expect(reconcileDefaultEfforts(nodes, { agentKind: "codex", agents: defaults.agents }).agents.codex?.effort).toBe("high");
+  });
   it("offers nothing to choose on a Mac that did not report models", () => {
     expect(agentModels(node("old"), "codex")).toBeUndefined();
     expect(effortOptions(undefined, undefined)).toEqual([]);

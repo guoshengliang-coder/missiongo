@@ -6,6 +6,10 @@ import { errorMessageKey, localizedErrorText } from "./error-text";
 const t = (key: string) => `<${key}>`;
 
 describe("localizedErrorText", () => {
+  it("localizes capability rejections without leaking an internal model ID", () => {
+    expect(localizedErrorText(new ApiError(400, "agent_effort_unavailable", "Effort high is not offered by internal-model-id."), t)).toBe("<errorAgentEffortUnavailable>");
+    expect(localizedErrorText(new ApiError(400, "agent_model_unavailable", "Model retired."), t)).toBe("<errorAgentModelUnavailable>");
+  });
   it("explains how to recover a stale completion candidate", () => {
     for (const code of ["discovery_stale","discovery_source_changed"]) expect(errorMessageKey(new ApiError(409,code,"Changed"))).toBe("completionDiscoveryChanged");
   });

@@ -8,8 +8,8 @@ import { CirclePause, LoaderCircle, Rocket, TriangleAlert } from "lucide-react";
 import { AGENT_KINDS, type AgentKind } from "@missiongo/domain";
 
 import { api, ApiError } from "./api";
-import { localizedErrorText } from "./error-text";
-import { agentModels, effortLabelKey, effortOptions, groupModelsByProvider, modelDisplayLabel } from "./agent-model-options";
+import { errorMessageKey, localizedErrorText } from "./error-text";
+import { agentModels, effortLabelKey, effortOptions, groupModelsByProvider, modelDisplayLabel, reconcileEffort } from "./agent-model-options";
 import { NODE_LIST_REFETCH_MS } from "./node-install";
 import {
   ACTIVE_DISPATCHES_QUERY_KEY,
@@ -59,6 +59,7 @@ function ineligibilityText(
 /** The server's own title is kept for codes this build does not know about. */
 function dispatchErrorMessage(error: unknown, t: ReturnType<typeof useI18n>["t"], agent: string): string {
   if (error instanceof ApiError) {
+    if (errorMessageKey(error)) return localizedErrorText(error, t);
     const key = dispatchProblemKey(error.code);
     // For a not-ready agent the server's title is the machine's own reason;
     // keep it as the {reason} rather than dropping it (AND-151).
@@ -102,7 +103,8 @@ export function DispatchDialog({
   const [nodeId, setNodeId] = useState(newSession?.initialConfig?.nodeId ?? "");
   // Empty means "as configured on the Mac" (AND-130).
   const [model, setModel] = useState(newSession?.initialConfig?.model ?? "");
-  const [effort, setEffort] = useState(newSession?.initialConfig?.effort ?? "");
+  const [requestedEffort, setEffort] = useState(newSession?.initialConfig?.effort ?? "");
+  const [effortResetFor, setEffortResetFor] = useState<string | null>(null);
   const [modeExplicit, setModeExplicit] = useState(Boolean(newSession?.initialConfig?.mode));
   const [defaultsApplied, setDefaultsApplied] = useState(Boolean(newSession?.initialConfig));
   // Held here rather than read back from the selection: dispatching clears the
@@ -177,6 +179,16 @@ export function DispatchDialog({
   const modeIssue = modeProblem(agentKind,mode,selectedAgent?.modes,model || undefined);
   const models = agentModels(nodes.find((node) => node.id === nodeId), agentKind);
   const modelUnavailable=Boolean(model && models && !models.some(entry=>entry.id===model));
+  // Derive the submitted value in this render too: an effect alone leaves a
+  // window where the visible fallback and the request still disagree.
+  const effort = reconcileEffort(models, { model, effort: requestedEffort }).effort ?? "";
+  const catalogUnavailable = Boolean(!models && (model || requestedEffort));
+  const choiceKey = `${nodeId}|${agentKind}|${model}`;
+  useEffect(() => {
+    if (effort === requestedEffort) return;
+    setEffort(effort);
+    setEffortResetFor(choiceKey);
+  }, [effort, requestedEffort, choiceKey]);
 
   const saveDefaults = useMutation({
     mutationFn: (defaults: DispatchDefaults) => api.setDispatchDefaults(defaults),
@@ -303,7 +315,7 @@ export function DispatchDialog({
       onSubmit={(event) => {
         event.preventDefault();
         if (blocked) return;
-        if (modeIssue || modelUnavailable) return;
+        if (modeIssue || modelUnavailable || catalogUnavailable) return;
         if (newSession) newSession.onConfigured({productId:projectId,nodeId,agentKind,mode,
           ...(model ? {model} : {}), ...(effort ? {effort} : {}),
           nodeName:nodes.find(node => node.id === nodeId)?.name ?? "",
@@ -423,12 +435,13 @@ export function DispatchDialog({
           </Select>
         </label>
       </div>
-      {modelUnavailable && <p className="dispatch-note" role="status">{t("dispatchModelUnsupported")} · {model}</p>}
+      {modelUnavailable && <p className="dispatch-note" role="status">{t("dispatchModelUnavailable", { model })}</p>}
       {modeIssue && <p className="dispatch-note" role="status">{t(modeIssue)}</p>}
       <div className="field-row">
         <label>{t("dispatchModel")}
           <Select value={model} onChange={(event) => setModel(event.target.value)} disabled={!models}>
             <option value="">{t("dispatchModelLocal")}</option>
+            {model && (!models || modelUnavailable) && <option value={model}>{model}</option>}
             {groupModelsByProvider(models ?? []).map((group) => (
               group.provider === null
                 ? group.models.map((entry) => (
@@ -445,14 +458,16 @@ export function DispatchDialog({
           </Select>
         </label>
         <label>{t("dispatchEffort")}
-          <Select value={effort} onChange={(event) => setEffort(event.target.value)} disabled={!models}>
+          <Select value={effort} onChange={(event) => { setEffort(event.target.value); setEffortResetFor(null); }} disabled={!models}>
             <option value="">{t("dispatchModelLocal")}</option>
+            {effort && !effortOptions(models, model || undefined).includes(effort) && <option value={effort} disabled>{effortLabel(effort)}</option>}
             {effortOptions(models, model || undefined).map((value) => (
               <option key={value} value={value}>{effortLabel(value)}</option>
             ))}
           </Select>
         </label>
       </div>
+      {effortResetFor === choiceKey && <p className="dispatch-note" role="status">{t("dispatchEffortReset", { model: models?.find(entry => entry.id === model)?.label ?? (model || t("dispatchModelLocal")) })}</p>}
       {nodeId && !models && nodesQuery.isFetched && <p className="dispatch-note">{t("dispatchModelUnsupported")}</p>}
       <p className="dispatch-note">{t(newSession ? "newSessionDraftHint" : "dispatchDoesNotClaim")}</p>
 
@@ -466,12 +481,12 @@ export function DispatchDialog({
       <div className="form-footer">
         {savedCurrentDefaults && <span role="status">{t("dispatchDefaultsSaved")}</span>}
         <button type="button" className="secondary-button"
-          disabled={!nodeId || !defaultsApplied || !defaultsQuery.data || saveDefaults.isPending || mutation.isPending}
+          disabled={!nodeId || !defaultsApplied || !defaultsQuery.data || modelUnavailable || catalogUnavailable || saveDefaults.isPending || mutation.isPending}
           onClick={() => saveDefaults.mutate(currentDefaults)}>
           {saveDefaults.isPending && <LoaderCircle className="spin" size={16} />}{t("dispatchSetDefaults")}
         </button>
         <button type="button" className="secondary-button" disabled={mutation.isPending || saveDefaults.isPending} onClick={onClose}>{t(handoff ? "agentHandoffBack" : "cancel")}</button>
-        <button type="submit" className="primary-button" disabled={Boolean(modeIssue) || modelUnavailable || blocked || !defaultsApplied || mutation.isPending || saveDefaults.isPending}>
+        <button type="submit" className="primary-button" disabled={Boolean(modeIssue) || modelUnavailable || catalogUnavailable || blocked || !defaultsApplied || mutation.isPending || saveDefaults.isPending}>
           {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <Rocket size={16} />}
           {t(newSession ? "newSessionEnter" : handoff ? "agentHandoffConfirm" : "dispatchSubmit")}
         </button>
