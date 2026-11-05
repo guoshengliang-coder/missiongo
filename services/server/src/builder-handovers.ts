@@ -42,7 +42,7 @@ export class BuilderHandovers {
   private external(itemId: string): Array<{ id: string }> {
     // Progress "completed" alone is not a physical stop proof for a connected native session.
     return this.db.prepare(`SELECT s.id FROM external_agent_sessions s JOIN external_agent_session_items i ON i.session_id=s.id
-      WHERE i.item_id=? AND (json_extract(s.native_snapshot_json,'$.status') IN ('active','stalled','unavailable')
+      WHERE i.item_id=? AND i.link_kind='handling' AND (json_extract(s.native_snapshot_json,'$.status') IN ('active','stalled','unavailable')
         OR EXISTS (SELECT 1 FROM external_native_commands c WHERE c.session_id=s.id AND c.status IN ('queued','delivering','delivery_unknown'))
         OR NOT EXISTS (SELECT 1 FROM work_item_events e WHERE e.item_id=i.item_id
           AND e.created_at>=s.created_at AND e.to_status IN ('development_complete','pending_verification','done','cancelled')))
@@ -108,7 +108,7 @@ export class BuilderHandovers {
         SELECT d.id,?,0 FROM dispatches d JOIN dispatch_items i ON i.dispatch_id=d.id WHERE i.item_id=?
         AND NOT EXISTS (SELECT 1 FROM builder_revoked_dispatches r WHERE r.dispatch_id=d.id)`).run(id,item.id);
       this.db.prepare(`INSERT INTO builder_revoked_external_sessions(session_id,handover_id,requires_stop)
-        SELECT s.id,?,0 FROM external_agent_sessions s JOIN external_agent_session_items i ON i.session_id=s.id WHERE i.item_id=?
+        SELECT s.id,?,0 FROM external_agent_sessions s JOIN external_agent_session_items i ON i.session_id=s.id WHERE i.item_id=? AND i.link_kind='handling'
         AND NOT EXISTS (SELECT 1 FROM builder_revoked_external_sessions r WHERE r.session_id=s.id)`).run(id,item.id);
       this.store.recordDeliveryEvent(itemKey,accountId,"builder_handover_started",{handoverId:id,from:item.builderAccountId ?? null,to:targetId,note});
       this.stop(id);

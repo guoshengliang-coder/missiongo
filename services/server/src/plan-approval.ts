@@ -7,7 +7,7 @@ import type { AgentSessionAttention, AgentSessionSnapshot } from "./agent-sessio
 import { conflict } from "./errors.js";
 
 export type PlanApprovalStatusCode = "ready" | "connection_unavailable" | "reply_unavailable" | "running"
-  | "permission_required" | "reply_pending" | "not_approval" | "dismissed" | "awaiting_source";
+  | "permission_required" | "reply_pending" | "not_approval" | "dismissed" | "awaiting_source" | "approved";
 export type PlanApprovalBlockReason = Extract<PlanApprovalStatusCode, "connection_unavailable" | "reply_pending" | "dismissed">;
 export interface PlanApprovalOffer {
   readonly revision: string;
@@ -21,7 +21,7 @@ export interface PlanApprovalAssessment {
   readonly offer?: PlanApprovalOffer;
 }
 
-type Session = AgentSessionSnapshot & { readonly canReply: boolean; readonly approval?: AgentApproval; readonly attention: AgentSessionAttention };
+type Session = AgentSessionSnapshot & { readonly canReply: boolean; readonly approval?: AgentApproval; readonly attention: AgentSessionAttention; readonly canApprovePlan?: boolean };
 
 /** The existing attention label supplies the shortcut. No second semantic verdict. */
 export class PlanApprovalService {
@@ -46,16 +46,39 @@ export class PlanApprovalService {
     return planDigest(last ? [last.sourceId,last.text] : []);
   }
 
+  registered(session: Session) {
+    const owner = this.owner(session);
+    return owner ? this.plans?.proposal(owner,this.identity(session)) : undefined;
+  }
+
+  /** A registered external plan is a domain decision, independent of its optional reply channel. */
+  private independent(session: Session): boolean {
+    return session.source === "external" && Boolean(this.registered(session));
+  }
+
+  approvalState(session: Session) {
+    const proposal = this.registered(session);
+    if (!proposal?.approved) return undefined;
+    const owner = this.owner(session)!;
+    const row = this.database!.connection.prepare(`SELECT command_id FROM implementation_plan_approvals
+      WHERE account_id=? AND identity_key=? AND revision=?`).get(owner,this.identity(session),proposal.revision) as {command_id:string|null}|undefined;
+    return { approved: true as const, revision: proposal.revision, continuationQueued: Boolean(row?.command_id) };
+  }
+
   assess(session: Session, unavailableReason?: PlanApprovalBlockReason): PlanApprovalAssessment {
     const attention = session.attention;
     const owner = this.owner(session);
     const prepared = owner ? this.plans?.proposal(owner,this.identity(session)) : undefined;
-    if(prepared?.approved) return {status:{code:"awaiting_source"}};
+    if(prepared?.approved) return {status:{code:this.independent(session) ? "approved" : "awaiting_source"}};
     const visiblePlan=[...session.messages].reverse().find(message=>message.role!=="user")?.text;
     if(!prepared && !visiblePlan?.trim()) return {status:{code:"not_approval"}};
     if(prepared && !prepared.valid) return {status:{code:"not_approval"}};
     if (!prepared && attention.dismissed) return { status: { code: "dismissed" } };
     if (!prepared && (attention.state !== "needed" || attention.kind !== "approval")) return { status: { code: "not_approval" } };
+    if (this.independent(session)) {
+      if (session.archivedAt || session.managedExecution || session.canApprovePlan === false) return {status:{code:"reply_unavailable"}};
+      return {status:{code:"ready"},offer:{revision:prepared!.revision,reason:"请审阅当前方案与验证目标。",plan:prepared!.plan,validation:prepared!.validation,itemKeys:prepared!.keys}};
+    }
     if (unavailableReason) return { status: { code: unavailableReason } };
     if (!session.canReply || session.managedExecution || session.archivedAt) return { status: { code: "reply_unavailable" } };
     if (session.lastError || (session.nativeConnection && session.nativeConnection.state !== "connected")) return { status: { code: "connection_unavailable" } };
@@ -75,12 +98,18 @@ export class PlanApprovalService {
   }
 
   /** Reload and enqueue together in the caller's transaction; the queue prevents double submission. */
-  approve<T>(session: Session, revision: string, enabled: boolean, enqueue: () => T): T {
+  approve<T>(session: Session, revision: string, enabled: boolean, enqueue: () => T): T | {approved:true;revision:string;continuationQueued:false} {
     const assessment = this.assess(session);
     if (!enabled || assessment.status.code !== "ready" || assessment.offer?.revision !== revision) {
       throw conflict("agent_plan_approval_changed", "The approval request changed or is unavailable. Refresh and review the conversation before approving.");
     }
-    const result = enqueue();
+    // An explicit external proposal can be approved offline. Only queue when the original channel is ready.
+    const canContinue = session.canReply && session.status === "idle" && session.turnState.turnActive !== true
+      && !session.lastError && (!session.nativeConnection || session.nativeConnection.state === "connected")
+      && (!session.command || !["queued","delivering","delivery_unknown"].includes(session.command.status))
+      && (!session.approval || ["approved","resolved"].includes(session.approval.status));
+    const result = this.independent(session) && !canContinue
+      ? {approved:true as const,revision,continuationQueued:false as const} : enqueue();
     const owner = this.owner(session);
     if (owner && this.plans) {
       const prepared=this.plans.proposal(owner,this.identity(session));

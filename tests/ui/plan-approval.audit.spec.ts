@@ -167,3 +167,64 @@ test("the public Skill download matches the versioned source without adding a ne
   // single-file substitution in Docker. All workflow content must survive.
   expect(published.replaceAll(/https?:\/\/[^/\s`]+/g, "__MISSIONGO_PUBLIC_ORIGIN__")).toBe(source);
 });
+
+for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const) {
+  test.describe(`AND-405 offline approval ${width} ${theme}`, () => {
+    test.use({ hasTouch: true });
+    test("saves the decision without a native reply and never invents delivery or asks twice", async ({ page }, testInfo) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.emulateMedia({ colorScheme: theme });
+      const external = { ...summary, id: "external-preclaim", agentSessionId: "external-preclaim", dispatchId: undefined,
+        source: "external", approvalOnly: true, progressStatus: "waiting_for_input", status: "stalled", mode: "external", dispatchStatus: "external", canReply: false,
+        replyBlockedReason: "external_progress_only", nodeConnectionState: undefined };
+      let approved = false, attempts = 0;
+      let finish!: () => void;
+      const held = new Promise<void>(resolve => { finish = resolve; });
+      await page.route("**/api/v1/agent-sessions**", async route => {
+        const request = route.request(), path = new URL(request.url()).pathname;
+        if (request.method() === "POST" && path.endsWith("/plan-approval")) {
+          attempts++;
+          expect(request.postDataJSON()).toEqual({ revision: offer.revision });
+          await held;
+          approved = true;
+          return route.fulfill({ status: 201, json: { approved: true, revision: offer.revision, continuationQueued: false } });
+        }
+        if (request.method() !== "GET") return route.fulfill({ status: 204 });
+        const detail = { ...external, messages: [], canApprovePlan: !approved,
+          planApprovalStatus: { code: approved ? "approved" : "ready" },
+          ...(approved ? { planApprovalState: { approved: true, revision: offer.revision, continuationQueued: false } }
+            : { planApproval: { ...offer, plan: "领取前审阅的明确实施方案", validation: "验证同一会话领取", itemKeys: ["AND-405"] } }) };
+        return route.fulfill({ json: path === "/api/v1/agent-sessions" ? { sessions: [external] } : detail });
+      });
+      await page.goto(`/?product=${fixture.productId}&console=agent&session=${external.id}`);
+      const banner = page.locator(".agent-console-attention-banner");
+      const button = banner.getByRole("button", { name: "批准", exact: true });
+      await expect(button).toBeEnabled();
+      await expect(page.locator(".agent-console-connection-banner")).toContainText("领取前方案审批");
+      await banner.locator("summary").click();
+      await expect(banner).toContainText("领取前审阅的明确实施方案");
+      for (const scale of ["small", "medium", "large"]) {
+        await page.evaluate(scale => { document.documentElement.dataset.fontScale = scale; document.documentElement.dataset.consoleFontScale = scale; }, scale);
+        await expect(button).toBeVisible();
+        expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
+        const box = await button.boundingBox();
+        expect(box!.height).toBeGreaterThanOrEqual(44);
+        expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+      }
+      await button.dblclick();
+      await expect.poll(() => attempts).toBe(1);
+      finish();
+      await expect(banner.locator("summary")).toHaveText("方案已批准");
+      await expect(banner).toContainText("批准已保存，未发送继续消息");
+      await expect(banner).not.toContainText("方案待批准");
+      await expect(button).toHaveCount(0);
+      await expect(page.locator(".agent-console-message-outgoing")).toHaveCount(0);
+      await page.reload();
+      await expect(page.locator(".agent-console-attention-banner summary")).toHaveText("方案已批准");
+      expect(attempts).toBe(1);
+      await expect(page.locator(".agent-console-attention-banner").getByRole("button",{name:"无需处理"})).toHaveCount(0);
+      await page.locator(".agent-console-attention-banner summary").click();
+      await page.screenshot({ path: testInfo.outputPath(`and405-offline-${width}-${theme}.png`) });
+    });
+  });
+}

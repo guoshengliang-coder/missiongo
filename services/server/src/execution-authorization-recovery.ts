@@ -39,7 +39,7 @@ export function recoverExecutionAuthorization(store: MissionGoStore, accountId: 
     const identity = input.session;
     const matches: Conversation[] = db.prepare(`SELECT s.id AS sessionId FROM external_agent_sessions s
       JOIN external_agent_session_items i ON i.session_id=s.id
-      WHERE s.account_id=? AND s.client_id=? AND s.agent_kind=? AND s.ref_kind=? AND s.session_ref=? AND i.item_id=?`)
+      WHERE s.account_id=? AND s.client_id=? AND s.agent_kind=? AND s.ref_kind=? AND s.session_ref=? AND i.item_id=? AND i.link_kind='handling'`)
       .all(accountId, clientId, identity.agentKind, identity.refKind, identity.sessionRef, item.id) as Conversation[];
     if (identity.refKind === "native") {
       matches.push(...db.prepare(`SELECT d.id AS dispatchId FROM agent_sessions s
@@ -62,7 +62,7 @@ export function recoverExecutionAuthorization(store: MissionGoStore, accountId: 
   } else {
     assertExternalExecution(store.database, conversation.sessionId!);
     if (!db.prepare(`SELECT 1 FROM external_agent_sessions s JOIN external_agent_session_items i ON i.session_id=s.id
-      WHERE s.id=? AND s.account_id=? AND s.client_id=? AND i.item_id=?`)
+      WHERE s.id=? AND s.account_id=? AND s.client_id=? AND i.item_id=? AND i.link_kind='handling'`)
       .get(conversation.sessionId!, accountId, clientId, item.id)) unavailable();
   }
 

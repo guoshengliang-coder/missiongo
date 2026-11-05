@@ -375,7 +375,9 @@ export function AgentSessionConsole({
         setReplyFileErrorFor(input.sessionId, null);
       }
       queryClient.setQueryData<AgentSession>(["agent-session", input.sessionId], (current) => current
-        ? { ...current, command: created, planApproval: undefined, planApprovalStatus: { code: "reply_pending" } }
+        ? "approved" in created
+          ? {...current,planApproval:undefined,planApprovalState:created,canApprovePlan:false,planApprovalStatus:{code:"approved"}}
+          : { ...current, command: created, planApproval: undefined, planApprovalStatus: { code: "reply_pending" } }
         : current);
       void Promise.all([
         queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] }),
@@ -533,7 +535,7 @@ export function AgentSessionConsole({
       ]);
     },
   });
-  const submittedCommand = send.isSuccess && send.variables?.sessionId === selected?.agentSessionId
+  const submittedCommand = send.isSuccess && send.variables?.sessionId === selected?.agentSessionId && "id" in send.data
     ? send.data
     : undefined;
   const command = latestAgentSessionCommand(sessionQuery.data?.command, submittedCommand);
@@ -570,12 +572,13 @@ export function AgentSessionConsole({
   const approval = sessionQuery.data ? sessionQuery.data.approval : selected?.approval;
   const showPermissionApproval = Boolean(approval && (approvalNeedsAction(approval)
     || (approval.kind === "manual" && approval.status === "pending")));
-  const showPlanApproval = Boolean(sessionQuery.data?.planApproval) || selected?.needsAttention && !selected.attention.dismissed && selected.attention.kind === "approval";
+  const planApproved = sessionQuery.data?.planApprovalState;
+  const showPlanApproval = Boolean(planApproved || sessionQuery.data?.planApproval) || selected?.needsAttention && !selected.attention.dismissed && selected.attention.kind === "approval";
   const planApproval = sessionQuery.data?.planApproval;
   const planApprovalStatus = pending || sendingSelected ? { code: "reply_pending" }
     : sessionQuery.data?.planApprovalStatus;
   const canApprovePlan = Boolean(!showPermissionApproval && planApproval && planApprovalStatus?.code === "ready"
-    && sessionQuery.data?.canReply && selected?.canReply && !pending && !sendingSelected && !cancellingSelected);
+    && (sessionQuery.data?.canApprovePlan ?? (sessionQuery.data?.canReply && selected?.canReply)) && !pending && !sendingSelected && !cancellingSelected);
   const approvePlan = () => {
     if (!canApprovePlan || !planApproval || !selected?.agentSessionId) return;
     const key = `${selected.agentSessionId}:${planApproval.revision}`;
@@ -1053,8 +1056,8 @@ export function AgentSessionConsole({
                 {selected.source === "external" && (
                   <div className="agent-console-connection-banner" role="status">
                     <CircleAlert size={17} />
-                    <div><strong>{t("agentExternalSource")}</strong>
-                      <span>{selected.nativeConnection?.automatic && !selected.nativeConnection.nodeId ? t("agentExternalAutoConnecting") : selected.nativeConnection ? t(selected.nativeConnection.state === "connected" ? "agentExternalNativeConnected"
+                    <div><strong>{t(selected.approvalOnly ? "agentPlanPreclaimTitle" : "agentExternalSource")}</strong>
+                      <span>{selected.approvalOnly ? t("agentPlanPreclaimDetail") : selected.nativeConnection?.automatic && !selected.nativeConnection.nodeId ? t("agentExternalAutoConnecting") : selected.nativeConnection ? t(selected.nativeConnection.state === "connected" ? "agentExternalNativeConnected"
                         : selected.nativeConnection.state === "pending" ? "agentExternalNativePending"
                           : selected.nativeConnection.state === "disconnected" ? "agentExternalNativeDisconnected" : "agentExternalNativeUnavailable",
                       { node: selected.nativeConnection.nodeName ?? "" }) : t("agentExternalDetail")}</span>
@@ -1133,24 +1136,24 @@ export function AgentSessionConsole({
                     <details>
                       <summary>{selected.attention.dismissed
                         ? t("agentAttentionDismissedTitle")
-                        : showPlanApproval ? t("agentPlanReview") : attentionLabel(selected, t)}
+                        : planApproved ? t("agentPlanApproved") : showPlanApproval ? t("agentPlanReview") : attentionLabel(selected, t)}
                       </summary>
                       <div className="agent-console-attention-detail">
-                        <p>{selected.attention.reason}</p>
-                        {showPlanApproval && <p>{t("agentPlanReviewHelp")}</p>}
+                        {!planApproved && <p>{selected.attention.reason}</p>}
+                        {showPlanApproval && <p>{planApproved ? t(planApproved.continuationQueued ? "agentPlanApprovedQueued" : "agentPlanApprovedNoReply") : t("agentPlanReviewHelp")}</p>}
                         {planApproval?.plan && <><p>{planApproval.itemKeys?.join("、")}</p><p className="timeline-note">{planApproval.plan}</p><p className="timeline-note">{planApproval.validation}</p></>}
-                        {showPlanApproval && !canApprovePlan && <p className="agent-console-approve-reason" role="status">
+                        {showPlanApproval && !planApproved && !canApprovePlan && <p className="agent-console-approve-reason" role="status">
                           {sessionQuery.isPending ? t("agentPlanChecking") : sessionQuery.isError ? t("agentPlanCheckFailed")
                             : t(planApprovalStatusKey(planApprovalStatus?.code ?? "reply_unavailable"))}
                         </p>}
                       </div>
                     </details>
-                    {showPlanApproval && <div className="agent-console-approve-action">
+                    {showPlanApproval && !planApproved && <div className="agent-console-approve-action">
                       <button type="button" className="primary-button"
                         disabled={!canApprovePlan || dismissAttention.isPending}
                         onClick={approvePlan}>{t("agentPlanApprove")}</button>
                     </div>}
-                    {(showPlanApproval || selected.needsAttention
+                    {!planApproved && (showPlanApproval || selected.needsAttention
                       && selected.status !== "stalled"
                       && selected.agentSessionId
                       && selected.attention.revision) && (

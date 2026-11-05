@@ -235,3 +235,12 @@ AI 写入的评论会成为下一次读取的上下文，所以来源必须可�
 开发任务在已有授权内先调查可查明事实，再澄清真正需用户决定的取舍，最后在原模式要求下请求方案批准。选择/批准前提供证据出处、推荐及备选成本、剩余不确定性与验证方法。额外调查权限单独请求；实施阶段假设明确标注和限定实验范围。此为 Skill 与节点启动提示的行为约束，不新增 MCP 字段、状态或“调研充分”认证。
 
 `get_current_account.skill.expectedVersion` 与公开单文件 Skill 同步升级；macOS/Linux 节点沿用现有版本检查与同步格式。旧节点的内置提示需更新节点，已有会话须显式重读新版 Skill 或新开会话。快捷批准沿用修订和连接校验，仅发送人工批准，不代表系统已审核调查质量。案例与验证边界见 [AND-401 调研案例](and-401-research-cases.md)。
+
+
+### 领取前审批与原生衔接（AND-405 / Skill 5.38.0）
+
+`request_plan_approval` 返回原会话 `sessionId` 和 `reviewUrl`。外部原身份在领取前只创建审批关联，领取后原子升级同一关联；审批不会领取条目、登记执行或产生执行凭据。显式外部方案的 Web 批准不依赖原生连接，原生回复投递是独立结果。
+
+2026-07-28 原生确认使用 SDK 2.0 的多轮 `inputRequired` 协议，`requestState` 带完整性保护并绑定账号、OAuth 客户端、方法与当前方案修订。只有原生人工响应或经认证 Web 决定能保存批准；工具参数、普通文字、通用 Plan 切换或打开 URL 均不能冒充。旧协议原生确认不可用时返回 `code: native_approval_unavailable`、`requiresWeb: true` 和原会话入口；调用者不能据此声称用户未同意或重新登记会话。
+
+已批准的相同方案再次请求直接返回 `approved:true`，不再发出人工确认。Web 无投递结果为 `{approved:true, revision, continuationQueued:false}`，原可投递场景保持命令响应兼容；详情 `canApprovePlan` 表示当前可批准能力，`planApprovalState` 明确批准与投递状态。会话摘要和详情的 `approvalOnly` 区分领取前审批关联与已开始处理，界面展示“待领取”，无处理上报时不返回虚假的最近上报时间。

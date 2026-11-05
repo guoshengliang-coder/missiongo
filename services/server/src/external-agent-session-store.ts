@@ -6,6 +6,7 @@ import type { AgentKind } from "@missiongo/domain";
 import type { AgentSessionListItem, AgentSessionSnapshot, AgentSessionStatus } from "./agent-session-store.js";
 import { conflict, invalidInput, notFound } from "./errors.js";
 import type { MissionGoStore } from "./store.js";
+import { ImplementationPlans } from "./implementation-plans.js";
 import { ExternalNativeSessionStore } from "./external-native-session-store.js";
 
 export const EXTERNAL_AGENT_KINDS = ["codex", "claude_code", "opencode", "hermes", "other"] as const;
@@ -63,6 +64,43 @@ export class ExternalAgentSessionStore {
     keys.forEach(authorizeItem);
   }
 
+  /** Explicit plan requests may be visible before claiming, without starting an execution or connecting a node. */
+  prepareApproval(owner: ExternalSessionOwner, identity: ExternalSessionIdentity, keys: readonly string[], revision: string): string {
+    return this.store.database.transaction(() => {
+      let row = this.db.prepare(`SELECT * FROM external_agent_sessions
+        WHERE account_id=? AND client_id=? AND agent_kind=? AND session_ref=?`)
+        .get(owner.accountId, owner.clientId ?? "", identity.agentKind, identity.sessionRef) as unknown as SessionRow | undefined;
+      if (row) {
+        assertExternalExecution(this.store.database, row.id);
+        if (row.ref_kind !== identity.refKind || row.archived_at) throw conflict("session_identity_conflict", "Use this conversation's active original identity.");
+      }
+      for (const key of keys) assertBuilderExecution(this.store.database, this.store.getWorkItem(key).id, owner.accountId);
+      const now = new Date().toISOString();
+      if (!row) {
+        const id = randomUUID();
+        this.db.prepare(`INSERT INTO external_agent_sessions
+          (id,account_id,client_id,agent_kind,session_ref,ref_kind,name,progress_status,created_at,updated_at,activity_at,unread_at)
+          VALUES (?,?,?,?,?,?,?,'waiting_for_input',?,?,?,?)`)
+          .run(id,owner.accountId,owner.clientId ?? "",identity.agentKind,identity.sessionRef,identity.refKind,identity.name ?? null,now,now,now,now);
+        row = this.row(owner.accountId,id);
+      }
+      const previous = this.db.prepare("SELECT revision FROM implementation_plan_requests WHERE account_id=? AND identity_key=?")
+        .get(owner.accountId,`native:${owner.clientId ?? ""}:${identity.agentKind}:${identity.refKind}:${identity.sessionRef}`) as {revision:string}|undefined;
+      if (previous?.revision !== revision) {
+        const activityAt = new Date(Math.max(Date.now(),Date.parse(row.updated_at)+1)).toISOString();
+        this.db.prepare("UPDATE external_agent_sessions SET updated_at=?,activity_at=?,unread_at=? WHERE id=?").run(activityAt,activityAt,activityAt,row.id);
+      }
+      for (const key of keys) this.db.prepare(`INSERT OR IGNORE INTO external_agent_session_items(session_id,item_id,link_kind) VALUES (?,?,'approval')`)
+        .run(row.id,this.store.getWorkItem(key).id);
+      return row.id;
+    });
+  }
+
+  isHandling(sessionId: string, itemKey: string): boolean {
+    return Boolean(this.db.prepare(`SELECT 1 FROM external_agent_session_items i JOIN work_items w ON w.id=i.item_id
+      WHERE i.session_id=? AND w.item_key=? AND i.link_kind='handling'`).get(sessionId,itemKey));
+  }
+
   register(owner: ExternalSessionOwner, identity: ExternalSessionIdentity, itemKey: string, sessionId?: string): string {
     const item = this.store.getWorkItem(itemKey);
     return this.store.database.transaction(() => {
@@ -89,7 +127,8 @@ export class ExternalAgentSessionStore {
       const existing = this.db.prepare(`SELECT * FROM external_agent_sessions
         WHERE account_id = ? AND client_id = ? AND agent_kind = ? AND session_ref = ?`)
         .get(owner.accountId, owner.clientId ?? "", identity.agentKind, identity.sessionRef) as unknown as SessionRow | undefined;
-      if (existing && this.db.prepare("SELECT 1 FROM external_agent_session_items WHERE session_id = ? AND item_id = ?").get(existing.id, item.id)) {
+      if (existing && this.isHandling(existing.id, item.key)) {
+        assertExternalExecution(this.store.database, existing.id);
         if (existing.ref_kind !== identity.refKind) throw conflict("session_identity_conflict", "The reference kind cannot change.");
         if (identity.autoConnect) this.db.prepare("UPDATE external_agent_sessions SET native_auto_connect=1 WHERE id=? AND native_generation=0").run(existing.id);
         return existing.id;
@@ -105,7 +144,9 @@ export class ExternalAgentSessionStore {
         VALUES (?, ?, ?, ?, ?, ?, ?, 'working', ?, ?, ?)`)
         .run(id, owner.accountId, owner.clientId ?? "", identity.agentKind, identity.sessionRef, identity.refKind, identity.name ?? null, now, now, now);
       if (identity.autoConnect) this.db.prepare("UPDATE external_agent_sessions SET native_auto_connect=1 WHERE id=? AND native_generation=0").run(id);
-      const inserted = this.db.prepare("INSERT OR IGNORE INTO external_agent_session_items(session_id, item_id) VALUES (?, ?)").run(id, item.id);
+      if (existing) assertExternalExecution(this.store.database, existing.id);
+      const inserted = this.db.prepare(`INSERT INTO external_agent_session_items(session_id, item_id, link_kind) VALUES (?, ?, 'handling')
+        ON CONFLICT(session_id,item_id) DO UPDATE SET link_kind='handling' WHERE link_kind='approval'`).run(id, item.id);
       if (inserted.changes) this.report(owner, id, item.key, "working", `开始处理 ${item.key}`, `linked:${item.id}`);
       return id;
     });
@@ -121,6 +162,7 @@ export class ExternalAgentSessionStore {
   report(owner: ExternalSessionOwner, sessionId: string, itemKey: string, status: ExternalProgressStatus,
     text: string | undefined, idempotencyKey: string): void {
     this.authorize(owner, sessionId, itemKey, () => {});
+    if (!this.isHandling(sessionId,itemKey)) throw conflict("external_session_item_not_in_progress", "Claim this item before reporting handling progress.");
     this.store.database.transaction(() => {
       const digest = createHash("sha256").update(JSON.stringify({ itemKey, status, text: text ?? null })).digest("hex");
       const prior = this.db.prepare("SELECT digest FROM external_agent_session_reports WHERE session_id = ? AND idempotency_key = ?")
@@ -151,20 +193,25 @@ export class ExternalAgentSessionStore {
   getForAccount(accountId: string, sessionId: string): AgentSessionSnapshot {
     const row = this.row(accountId, sessionId);
     const { nativeMessages, ...native } = new ExternalNativeSessionStore(this.store).overlay(accountId, sessionId);
+    const proposal = new ImplementationPlans(this.store.database).proposal(accountId, `native:${row.client_id}:${row.agent_kind}:${row.ref_kind}:${row.session_ref}`);
     const reports = this.db.prepare("SELECT id, item_key, status, text, created_at FROM external_agent_session_reports WHERE session_id = ? ORDER BY created_at, rowid")
       .all(sessionId) as unknown as { id: string; item_key: string; status: ExternalProgressStatus; text: string | null; created_at: string }[];
     return {
       id: row.id, source: "external", agentKind: row.agent_kind, status: this.status(row),
-      progressStatus: row.progress_status, lastReportedAt: row.updated_at, refKind: row.ref_kind,
+      progressStatus: row.progress_status, refKind: row.ref_kind,
+      approvalOnly: !this.db.prepare("SELECT 1 FROM external_agent_session_items WHERE session_id=? AND link_kind='handling' LIMIT 1").get(sessionId),
+      ...(reports.length ? {lastReportedAt:reports.at(-1)!.created_at} : {}),
       updatedAt: row.updated_at, ...(row.archived_at ? { archivedAt: row.archived_at, archivedSource: "missiongo" as const } : {}),
       activities: [], turnState: {},
       ...native,
       messages: [...reports.map((report) => ({ id: report.id, sourceId: report.id, role: "agent" as const,
-        text: `${report.item_key} · ${report.text ?? report.status}`, occurredAt: report.created_at })), ...nativeMessages],
+        text: `${report.item_key} · ${report.text ?? report.status}`, occurredAt: report.created_at })), ...nativeMessages, ...(proposal && !reports.length && !nativeMessages.length ? [{id:`plan:${proposal.revision}`,sourceId:`plan:${proposal.revision}`,role:"plan" as const,text:proposal.plan,occurredAt:row.updated_at}] : [])],
     };
   }
 
   listForAccount(accountId: string, limit = 100): AgentSessionListItem[] {
+    const plans = new ImplementationPlans(this.store.database);
+    const requestIdentities = new Set((this.db.prepare("SELECT identity_key FROM implementation_plan_requests WHERE account_id=?").all(accountId) as {identity_key:string}[]).map(row=>row.identity_key));
     const rows = this.db.prepare("SELECT * FROM external_agent_sessions WHERE account_id = ? ORDER BY activity_at DESC, rowid DESC LIMIT ?")
       .all(accountId, limit) as unknown as SessionRow[];
     // AND-383: batch the per-row lookups (latest report, linked items) and
@@ -172,48 +219,56 @@ export class ExternalAgentSessionStore {
     const nativeStore = new ExternalNativeSessionStore(this.store);
     const ids = rows.map((row) => row.id);
     const holes = (values: readonly string[]) => `(${values.map(() => "?").join(",")})`;
-    const latestBySession = new Map<string, { id: string; text: string | null; status: ExternalProgressStatus; item_key: string }>();
-    const itemsBySession = new Map<string, Array<{ key: string; title: string; productId: string }>>();
+    const latestBySession = new Map<string, { id: string; text: string | null; status: ExternalProgressStatus; item_key: string; created_at:string }>();
+    const itemsBySession = new Map<string, Array<{ key: string; title: string; productId: string; linkKind:string }>>();
     if (ids.length) {
-      const reports = this.db.prepare(`SELECT session_id, id, text, status, item_key FROM (
-        SELECT session_id, id, text, status, item_key,
+      const reports = this.db.prepare(`SELECT session_id, id, text, status, item_key, created_at FROM (
+        SELECT session_id, id, text, status, item_key, created_at,
           ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY created_at DESC, rowid DESC) AS rn
         FROM external_agent_session_reports WHERE session_id IN ${holes(ids)}) WHERE rn = 1`)
-        .all(...ids) as unknown as Array<{ session_id: string; id: string; text: string | null; status: ExternalProgressStatus; item_key: string }>;
+        .all(...ids) as unknown as Array<{ session_id: string; id: string; text: string | null; status: ExternalProgressStatus; item_key: string; created_at:string }>;
       for (const report of reports) latestBySession.set(report.session_id, report);
-      const items = this.db.prepare(`SELECT i.session_id, w.item_key, w.title, w.product_id
+      const items = this.db.prepare(`SELECT i.session_id, w.item_key, w.title, w.product_id, i.link_kind
         FROM external_agent_session_items i JOIN work_items w ON w.id = i.item_id
         WHERE i.session_id IN ${holes(ids)} ORDER BY i.session_id, i.rowid`)
-        .all(...ids) as unknown as Array<{ session_id: string; item_key: string; title: string; product_id: string }>;
+        .all(...ids) as unknown as Array<{ session_id: string; item_key: string; title: string; product_id: string; link_kind:string }>;
       for (const item of items) {
         const list = itemsBySession.get(item.session_id) ?? [];
         itemsBySession.set(item.session_id, list);
-        list.push({ key: item.item_key, title: item.title, productId: item.product_id });
+        list.push({ key: item.item_key, title: item.title, productId: item.product_id, linkKind:item.link_kind });
       }
     }
     return rows.map((row) => {
       const { nativeMessages, ...native } = nativeStore.overlay(accountId, row.id, false);
       const latest = latestBySession.get(row.id);
+      const identity = `native:${row.client_id}:${row.agent_kind}:${row.ref_kind}:${row.session_ref}`;
+      const proposal = requestIdentities.has(identity) ? plans.proposal(accountId,identity) : undefined;
+      const pendingApproval = proposal && proposal.valid && !proposal.approved;
       const items = itemsBySession.get(row.id) ?? [];
-      const revision = latest?.id;
+      const revision = latest?.id ?? row.updated_at;
       const needsAttention = ["waiting_for_input", "blocked", "failed"].includes(row.progress_status)
         && row.dismissed_revision !== revision;
       return {
         id: row.id, source: "external", agentKind: row.agent_kind, status: this.status(row),
-        progressStatus: row.progress_status, lastReportedAt: row.updated_at, refKind: row.ref_kind,
+        progressStatus: row.progress_status, refKind: row.ref_kind, approvalOnly: items.every(item=>item.linkKind === "approval"),
+        ...(latest ? {lastReportedAt:latest.created_at} : {}),
         updatedAt: row.updated_at, ...(row.archived_at ? { archivedAt: row.archived_at, archivedSource: "missiongo" as const } : {}),
         activities: [], turnState: {}, agentSessionId: row.id, activityAt: row.activity_at,
         nodeName: row.name ?? row.agent_kind, nodeRevoked: false,
         mode: "external", dispatchStatus: "external", ...(row.name ? { sessionName: row.name } : {}),
         createdAt: row.created_at, items: items.map((item) => ({ key: item.key, title: item.title, productId: item.productId })),
         ...(latest ? { latestMessage: { role: "agent" as const, text: `${latest.item_key} · ${latest.text ?? latest.status}` } } : {}),
-        attention: { state: needsAttention ? "needed" : "not_needed", ...(needsAttention ? { kind: "action" as const,
-          reason: latest?.text ?? "请在原 Agent 客户端查看并处理。" } : {}),
+        attention: { state: needsAttention ? "needed" : "not_needed", ...(needsAttention ? { kind: latest ? "action" as const : "approval" as const,
+          reason: latest?.text ?? "方案等待批准，请审阅当前方案与验证目标。" } : {}),
           ...(revision ? { revision } : {}), ...(row.dismissed_revision === revision ? { dismissed: true } : {}) },
         needsAttention, waitingForReply: needsAttention, retryable: false, stoppable: false,
         unread: Boolean(row.unread_at && (!row.read_at || row.unread_at > row.read_at)),
         ...(row.unread_at ? { unreadAt: row.unread_at } : {}),
         ...native,
+        ...(pendingApproval ? {attention:{state:row.dismissed_revision === proposal.revision ? "not_needed" as const : "needed" as const,
+          kind:"approval" as const,reason:"方案等待批准，请审阅当前方案与验证目标。",revision:proposal.revision,
+          ...(row.dismissed_revision === proposal.revision ? {dismissed:true} : {})},needsAttention:row.dismissed_revision !== proposal.revision,waitingForReply:row.dismissed_revision !== proposal.revision} : {}),
+        ...(proposal?.approved && !latest ? {attention:{state:"not_needed" as const},needsAttention:false,waitingForReply:false} : {}),
         ...(nativeMessages.at(-1) ? { latestMessage: { role: nativeMessages.at(-1)!.role, text: nativeMessages.at(-1)!.text } } : {}),
       };
     });
@@ -235,7 +290,10 @@ export class ExternalAgentSessionStore {
   dismissAttention(accountId: string, sessionId: string, revision: string): void {
     const native = new ExternalNativeSessionStore(this.store).overlay(accountId, sessionId, false);
     const latest = this.db.prepare("SELECT id FROM external_agent_session_reports WHERE session_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1").get(sessionId) as { id: string } | undefined;
-    if ((native.attention?.revision ?? latest?.id) !== revision) throw conflict("agent_attention_changed", "New progress arrived; reload before dismissing.");
+    const row = this.row(accountId,sessionId);
+    const proposal = new ImplementationPlans(this.store.database).proposal(accountId,`native:${row.client_id}:${row.agent_kind}:${row.ref_kind}:${row.session_ref}`);
+    const expected = proposal?.valid && !proposal.approved ? proposal.revision : native.attention?.revision ?? latest?.id;
+    if (expected !== revision) throw conflict("agent_attention_changed", "New progress arrived; reload before dismissing.");
     this.db.prepare("UPDATE external_agent_sessions SET dismissed_revision = ? WHERE id = ?").run(revision, sessionId);
   }
 }

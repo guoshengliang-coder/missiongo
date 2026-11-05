@@ -5,7 +5,7 @@
 ## 开发流程
 
 1. Agent 读取条目和项目规则，完成诊断与澄清，提出方案及验证目标。
-2. `request_plan_approval` 使用原派单或原外部会话身份，登记明确条目范围、方案和验证目标。`approvalMethod: web` 将精确版本交给会话中的批准按钮；`native`（默认）请求原生人工交互。它不领取、不写评论、不登记另一会话。
+2. `request_plan_approval` 使用原派单或原外部会话身份，登记明确条目范围、方案和验证目标。`approvalMethod: web` 将精确版本交给会话中的批准按钮；`native`（默认）请求原生人工交互。它不领取、不写评论；首次外部会话按原身份建立待审批关联，批准和领取后沿用同一记录。
 3. Web 登录用户批准，或原生客户端返回人工接受后，服务端保存批准人、来源、方案正文、验证目标、版本与条目内容边界。普通工具参数不能自报批准，技术权限请求也不提供这份授权。
 4. 节点应用原先明确选择的实施模式，回报实际生效结果；之后才能领取和实施。OpenCode/Claude 明确选择 Plan 时仍保持 Plan，需要明确选择实施模式。同一批准方案切换模式不重复批准。
 5. 新方案取代旧请求，条目内容、返工或 Builder 交接边界变化使旧授权失效。旧版本、其他会话、其他账号、扩大的条目范围和未确认的原生模式不能用于领取。
@@ -32,10 +32,18 @@ Claude 的能力探测使用隔离的原生控制协议，不发模型请求、�
 
 节点 heartbeat 的 `planApprovalProtocol: 1` 表示本适配器具备原生阶段约束与回执检查；未声明的旧节点不能接收新派单，排队任务也不会被旧节点领取，`permit-start` 再次校验，需升级。旧偏好与历史不删除，不虚构旧任务的批准记录。
 
-不支持原生交互批准的客户端可使用已连接会话的 Web 入口；没有可读原生连接的外部会话需要支持 elicitation 的客户端。协议失败保留未批准状态，不能用工具参数代替人工回答。外部会话仍保留原客户端支持的设置边界，不能借 Web 回复扩大原生权限。
+注册了明确方案的外部会话可直接使用返回的 `reviewUrl`，无需原生回复连接。`approval` 关联只提供审批可见性，领取事务才把它升级为 `handling`；存量关联默认 `handling`。审批关联不产生执行凭据、开始处理日志或执行阻塞；普通会话登记、进展上报、执行授权恢复仍核对处理关联。
+
+MCP SDK 2.0 的 2026-07-28 协议通过 `inputRequired` / `inputResponses` 完成人工确认，不调用旧推送式 `elicitInput`。`requestState` 使用 SDK 的 HMAC codec，绑定账号、OAuth 客户端和方法，并携带当前方案修订版；篡改、过期、跨客户端、缺失状态及方案边界变化均不能生成批准。密钥按进程共享（单进程部署），重启后未完成的原生往返需重新获取状态；已经保存的批准仍可复用。旧的无状态 2025 协议不能保留原生确认能力时返回同一方案的 Web 衔接入口。
+
+Web 批准将领域决定与消息投递分开：已有命令响应保持兼容；不能投递时返回 `{approved:true, revision, continuationQueued:false}`。会话详情返回 `canApprovePlan` 与 `planApprovalState`，界面显示批准已保存及继续消息是否排队，不把批准当作已送达。显式外部方案的批准仍要求当前账号有操作/AI 权限且 Builder、修订、条目内容及范围有效；归档会话不提供批准。派单原有实施模式生效门禁保持。
+
+`native_approval_unavailable` 表示衔接失败，不说明用户未同意；不得把它解释为拒绝并反复要求审阅同一方案。原生通用“执行此计划”界面、普通文字和权限切换不提供绑定方案的 MCP 回执，不能从聊天补造正式记录；需要完成上述可核验往返或 Web 决定。协议失败保留真实状态，不能用工具参数代替人工回答。外部会话仍保留原客户端支持的设置边界，不能借 Web 回复扩大原生权限。
 
 必需发布产物为 Web/Server、macOS 客户端与 Linux CLI；无需重建 Android 壳或 Android SDK。交付时仍按实际 diff、发布覆盖门禁和公开制品核验，不能把测试通过当作已发布。
 
 契约回归：`implementation-plan-gate.test.ts`、`implementation-plans.test.ts`、`plan-approval-routes.test.ts`、`AgentModeCapabilityTests.swift`、Linux native fixture 及既有会话恢复测试。界面回归覆盖派单、新会话、快捷设置、方案批准及窄屏“更多设置”。真实供应商账号、组织策略变化和真实 Linux/OpenCode 服务仍需在对应环境核验；模拟协议不能证明全部外部环境都可用。
 
 原生接口参考：[Codex App Server](https://learn.chatgpt.com/docs/app-server)、[Claude Code 权限模式](https://code.claude.com/docs/en/permission-modes)、[OpenCode Agent](https://opencode.ai/v2/docs/agents)。
+
+AND-405 回归：`external-plan-approval.test.ts` 使用真实 MCP HTTP 请求覆盖首次外部会话、离线 Web 批准、原生多轮确认、签名状态校验、重复与过期方案、权限和真实 tools/list 一致性；`plan-approval.audit.spec.ts` 覆盖无回复连接的批准及保存/投递结果。此修复只涉及 Web/Server 及公开 Skill，无需改原生节点源码。
