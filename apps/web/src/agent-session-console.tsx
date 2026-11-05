@@ -1,3 +1,4 @@
+import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
 import { AgentPlanContent, withoutDuplicatePlan } from "./agent-plan-content";
 import { AgentStopFeedback } from "./agent-stop-feedback.js";
@@ -41,6 +42,7 @@ import {
   projectConversationMessages,
   agentSessionDetailRefetchInterval,
   agentSessionMatches,
+  isGlobalAgentSessionFilter,
   archivableVisibleSessionIds,
   byLatestActivity,
   canonicalAgentSessionId,
@@ -151,6 +153,8 @@ function attentionLabel(session: AgentSessionSummary, t: ReturnType<typeof useI1
 
 export function AgentSessionConsole({
   productId,
+  products,
+  onEnterProduct,
   initialFilter,
   search = "",
   allSessions,
@@ -166,6 +170,8 @@ export function AgentSessionConsole({
   onBackToSessions,
 }: {
   productId: string;
+  products: readonly { id: string; name: string }[];
+  onEnterProduct: (productId: string) => void;
   initialFilter: AgentSessionFilter | null;
   search?: string;
   allSessions: readonly AgentSessionSummary[];
@@ -227,27 +233,23 @@ export function AgentSessionConsole({
     () => allSessions.filter((session) => session.productId === productId || session.items.some((item) => item.productId === productId)),
     [allSessions, productId],
   );
-  const sessions = filter === "unread" ? allSessions : productSessions;
-  const productAgentSessions = useMemo(
-    () => productSessions.filter((session) => (agentFilter === "all" || session.agentKind === agentFilter)
-      && (association === "all" || (association === "linked") === (session.items.length > 0))),
-    [agentFilter, association, productSessions],
-  );
-  // AND-260: every unread number here counts what is waiting, not what a still
-  // running conversation is saying, so it matches the list the filter opens.
-  const counts = useMemo(() => ({
-    unread: allSessions.filter((session) => (association === "all" || (association === "linked") === (session.items.length > 0))
-      && !session.archivedAt && sessionCountsAsUnread(session)
-      && (agentFilter === "all" || session.agentKind === agentFilter)).length,
-    productUnread: productAgentSessions.filter((session) => !session.archivedAt
-      && !isAbnormalAgentSession(session) && sessionCountsAsUnread(session)).length,
-    failedUnread: productAgentSessions.filter((session) => !session.archivedAt && isAbnormalAgentSession(session) && sessionCountsAsUnread(session)).length,
-    attention: productAgentSessions.filter((session) => !session.archivedAt && session.needsAttention).length,
-    active: productAgentSessions.filter((session) => !session.archivedAt && session.status === "active").length,
-    all: productAgentSessions.filter((session) => !session.archivedAt && !isAbnormalAgentSession(session)).length,
-    failed: productAgentSessions.filter((session) => !session.archivedAt && isAbnormalAgentSession(session)).length,
-    archived: productAgentSessions.filter((session) => session.archivedAt).length,
-  }), [agentFilter, association, allSessions, productAgentSessions]);
+  const sessions = isGlobalAgentSessionFilter(filter) ? allSessions : productSessions;
+  const countMatches = (scope: readonly AgentSessionSummary[], key: AgentSessionFilter) =>
+    scope.filter(session => agentSessionMatches(session, key, agentFilter, search, association));
+  const counts = {
+    unread: countMatches(allSessions, "unread").length,
+    attention: countMatches(allSessions, "attention").length,
+    active: countMatches(productSessions, "active").length,
+    all: countMatches(productSessions, "all").length,
+    failed: countMatches(productSessions, "failed").length,
+    archived: countMatches(productSessions, "archived").length,
+    productUnread: countMatches(productSessions, "all").filter(sessionCountsAsUnread).length,
+    failedUnread: countMatches(productSessions, "failed").filter(sessionCountsAsUnread).length,
+  };
+  const sessionProducts = (session: AgentSessionSummary) => {
+    const ids = new Set([...(session.productId ? [session.productId] : []), ...session.items.map(item => item.productId)]);
+    return products.filter(product => ids.has(product.id));
+  };
   const visibleSessions = useMemo(
     () => byLatestActivity(sessions.filter((session) => agentSessionMatches(session, filter, agentFilter, search, association))),
     [agentFilter, association, filter, search, sessions],
@@ -356,6 +358,8 @@ export function AgentSessionConsole({
   // detail stays visible during polling and refetch errors; dispatches without
   // a native session have no detail request to wait for.
   const conversationReady = !selected?.agentSessionId || Boolean(sessionQuery.data);
+  const feedback = useAgentOperationFeedback(selected?.agentSessionId, sessionQuery.data?.turnState?.turnStartedAt);
+  const operationSessionId = selected?.agentSessionId ?? selected?.id ?? "";
   const planApprovalLocks = useRef(new Set<string>());
   const send = useMutation({
     mutationFn: async ({ sessionId, text, files, planApprovalRevision }: { sessionId: string; text: string; files: readonly File[]; occurredAt: string; planApprovalRevision?: string }) => {
@@ -370,6 +374,7 @@ export function AgentSessionConsole({
       }
     },
     onSuccess: (created, input) => {
+      feedback.clear(input.sessionId);
       if (!input.planApprovalRevision) {
         setReplyFor(input.sessionId, "");
         setReplyFilesFor(input.sessionId, []);
@@ -387,33 +392,39 @@ export function AgentSessionConsole({
     },
     onError: (_error, input) => {
       if (input.planApprovalRevision) planApprovalLocks.current.delete(`${input.sessionId}:${input.planApprovalRevision}`);
-      if (selected?.agentSessionId) void queryClient.invalidateQueries({ queryKey: ["agent-session", selected.agentSessionId] });
+      void queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] });
     },
   });
   const retryDispatch = useMutation({
-    mutationFn: () => api.retryDispatch(selected!.dispatchId!),
+    mutationFn: ({ dispatchId }: { sessionId: string; dispatchId: string }) => api.retryDispatch(dispatchId),
+    onMutate: input => feedback.begin(input.sessionId, "retry"),
+    onError: (error, _input, operation) => feedback.fail(error, operation),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
     },
   });
   const stopDispatch = useMutation({
-    mutationFn: () => api.stopDispatch(selected!.dispatchId!),
-    onSuccess: async () => {
+    mutationFn: ({ dispatchId }: { sessionId: string; dispatchId: string }) => api.stopDispatch(dispatchId),
+    onMutate: input => feedback.begin(input.sessionId, "stop"),
+    onError: (error, _input, operation) => feedback.fail(error, operation),
+    onSuccess: async (_created, input) => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["agent-session", selected?.agentSessionId] }),
+        queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] }),
         queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }),
       ]);
     },
   });
   const archiveSession = useMutation({
-    mutationFn: async (archived: boolean) => {
-      if (selected!.agentSessionId) await api.setAgentSessionArchived(selected!.agentSessionId, archived);
-      else await api.setDispatchArchived(selected!.dispatchId!, archived);
+    mutationFn: async (input: { sessionId: string; agentSessionId?: string | undefined; dispatchId?: string | undefined; archived: boolean }) => {
+      if (input.agentSessionId) await api.setAgentSessionArchived(input.agentSessionId, input.archived);
+      else await api.setDispatchArchived(input.dispatchId!, input.archived);
     },
-    onSuccess: async () => {
+    onMutate: input => feedback.begin(input.sessionId, "archive"),
+    onError: (error, _input, operation) => feedback.fail(error, operation),
+    onSuccess: async (_created, input) => {
       const invalidations = [queryClient.invalidateQueries({ queryKey: ["agent-sessions"] })];
-      if (selected?.agentSessionId) {
-        invalidations.push(queryClient.invalidateQueries({ queryKey: ["agent-session", selected.agentSessionId] }));
+      if (input.agentSessionId) {
+        invalidations.push(queryClient.invalidateQueries({ queryKey: ["agent-session", input.agentSessionId] }));
       }
       await Promise.all(invalidations);
     },
@@ -421,6 +432,8 @@ export function AgentSessionConsole({
   const dismissAttention = useMutation({
     mutationFn: ({ sessionId, revision }: { sessionId: string; revision: string }) =>
       api.dismissAgentSessionAttention(sessionId, revision),
+    onMutate: input => feedback.begin(input.sessionId, "dismiss"),
+    onError: (error, _input, operation) => feedback.fail(error, operation),
     onSuccess: async (_session, input) => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] }),
@@ -464,6 +477,12 @@ export function AgentSessionConsole({
   const cancel = useMutation({
     mutationFn: ({ sessionId, commandId }: { sessionId: string; commandId: string; text: string }) =>
       api.cancelAgentSessionCommand(sessionId, commandId),
+    onMutate: input => feedback.begin(input.sessionId, "cancel", input.commandId),
+    onError: (error, input, operation) => {
+      feedback.fail(error, operation);
+      void queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] });
+      void queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
+    },
     onSuccess: async (cancelled, input) => {
       setReplyFor(input.sessionId, input.text);
       queryClient.setQueryData<AgentSession>(["agent-session", input.sessionId], (current) => current ? { ...current, command: cancelled } : current);
@@ -497,6 +516,8 @@ export function AgentSessionConsole({
     mutationFn: ({ sessionId, commandId, outcome }: {
       sessionId: string; commandId: string; outcome: "received" | "not_received"; text: string;
     }) => api.resolveAgentSessionDelivery(sessionId, commandId, outcome),
+    onMutate: input => feedback.begin(input.sessionId, "resolve", input.commandId),
+    onError: (error, _input, operation) => feedback.fail(error, operation),
     onSuccess: async (_command, input) => {
       if (input.outcome === "not_received") {
         setReplyFor(input.sessionId, input.text);
@@ -512,9 +533,11 @@ export function AgentSessionConsole({
   const decideApproval = useMutation({
     mutationFn: ({ sessionId, approvalId, decision }: { sessionId: string; approvalId: string; decision: string }) =>
       api.decideAgentApproval(sessionId, approvalId, decision),
-    onSettled: async () => {
+    onMutate: input => feedback.begin(input.sessionId, "approval"),
+    onError: (error, _input, operation) => feedback.fail(error, operation),
+    onSettled: async (_data, _error, input) => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["agent-session", selected?.agentSessionId] }),
+        queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] }),
         queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }),
       ]);
     },
@@ -529,9 +552,11 @@ export function AgentSessionConsole({
   const retryApproval = useMutation({
     mutationFn: ({ sessionId, approvalId }: { sessionId: string; approvalId: string }) =>
       api.retryAgentApproval(sessionId, approvalId),
-    onSettled: async () => {
+    onMutate: input => feedback.begin(input.sessionId, "approvalRetry"),
+    onError: (error, _input, operation) => feedback.fail(error, operation),
+    onSettled: async (_data, _error, input) => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["agent-session", selected?.agentSessionId] }),
+        queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] }),
         queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }),
       ]);
     },
@@ -732,7 +757,7 @@ export function AgentSessionConsole({
   };
   const chooseFilter = (next: AgentSessionFilter) => {
     setFilter(next);
-    const nextSessions = next === "unread" ? allSessions : productSessions;
+    const nextSessions = isGlobalAgentSessionFilter(next) ? allSessions : productSessions;
     if (selectedId && !nextSessions.some((session) => session.id === selectedId
       && agentSessionMatches(session, next, agentFilter, search, association))) onSelectSession(null, false);
   };
@@ -766,7 +791,7 @@ export function AgentSessionConsole({
           onClick={async () => {
             const confirmation = selected.productId ? t("newSessionRetryConfirm") : selected.dispatchStatus === "delivered"
               ? t("agentConsoleRetryTimedOutConfirm") : t("agentConsoleRetryConfirm");
-            if (await confirm(confirmation)) retryDispatch.mutate();
+            if (await confirm(confirmation)) retryDispatch.mutate({ sessionId: operationSessionId, dispatchId: selected.dispatchId! });
           }}
         ><RotateCcw size={15} />{t(selected.productId ? "newSessionRetry" : "agentConsoleRetry")}</button>
       )}
@@ -776,7 +801,7 @@ export function AgentSessionConsole({
           className="secondary-button"
           disabled={retryDispatch.isPending || stopDispatch.isPending || stopPending}
           onClick={async () => {
-            if (await confirm(t("agentConsoleStopConfirm"))) stopDispatch.mutate();
+            if (await confirm(t("agentConsoleStopConfirm"))) stopDispatch.mutate({ sessionId: operationSessionId, dispatchId: selected.dispatchId! });
           }}
         ><Square size={16} />{t("agentConsoleStop")}</button>
       )}
@@ -793,7 +818,7 @@ export function AgentSessionConsole({
               : pending && !archived
                 ? t("agentSessionArchivePendingConfirm")
                 : t("agentSessionArchiveConfirm");
-            if (archived || await confirm(confirmation)) archiveSession.mutate(!archived);
+            if (archived || await confirm(confirmation)) archiveSession.mutate({ sessionId: operationSessionId, agentSessionId: selected.agentSessionId, dispatchId: selected.dispatchId, archived: !archived });
           }}
         >
           {archiveSession.isPending
@@ -806,37 +831,36 @@ export function AgentSessionConsole({
   );
 
   const filters: Array<{ key: AgentSessionFilter; icon: typeof BellRing; count: number; unread?: number; label: string }> = [
-    { key: "unread", icon: MessageSquare, count: counts.unread, label: t("agentConsoleUnread") },
     { key: "attention", icon: BellRing, count: counts.attention, label: t("agentConsoleNeedsAttention") },
+    { key: "unread", icon: MessageSquare, count: counts.unread, label: t("agentConsoleUnread") },
     { key: "active", icon: LoaderCircle, count: counts.active, label: t("agentConsoleActive") },
     { key: "all", icon: MessageSquare, count: counts.all, unread: counts.productUnread, label: t("agentConsoleAll") },
     { key: "failed", icon: CircleAlert, count: counts.failed, unread: counts.failedUnread, label: t("agentConsoleFailed") },
     { key: "archived", icon: Archive, count: counts.archived, label: t("agentConsoleArchived") },
   ];
 
+  const filterGroups = [
+    { label: t("agentConsoleAllProjects"), filters: filters.filter(entry => isGlobalAgentSessionFilter(entry.key)) },
+    { label: t("agentConsoleCurrentProject"), filters: filters.filter(entry => !isGlobalAgentSessionFilter(entry.key)) },
+  ];
+  const navigation = filterGroups.map(group => <div className="agent-console-filter-group" key={group.label} role="group" aria-label={group.label}>
+    <p className="sidebar-label">{group.label}</p>
+    <div className="agent-console-filter-items">
+      {group.filters.map(({ key, icon: Icon, count, unread, label }) => <button key={key} type="button"
+        className={`agent-console-filter ${filter === key ? "active" : ""}`} aria-pressed={filter === key} onClick={() => chooseFilter(key)}>
+        <Icon className={key === "active" && filter === key ? "spin-when-active" : ""} size={16} />
+        <span>{label}</span>
+        {Boolean(unread) && <em className="agent-console-filter-unread" title={t("agentConsoleUnreadCount", { count: unread! })}>{unread}</em>}
+        {sessionsLoaded && <small>{count}</small>}
+      </button>)}
+    </div>
+  </div>);
+
   return (
     <main className={`agent-console-page ${conversationOpen ? "mobile-conversation-open" : "mobile-list-open"}`}>
       <aside className="agent-console-filters" aria-label={t("agentConsoleFilters")}>
         <p className="sidebar-label">{t("agentConsoleTitle")}</p>
-        {filters.map(({ key, icon: Icon, count, unread, label }) => (
-          <button
-            key={key}
-            type="button"
-            className={`agent-console-filter ${filter === key ? "active" : ""}`}
-            aria-pressed={filter === key}
-            onClick={() => chooseFilter(key)}
-          >
-            <Icon className={key === "active" && filter === key ? "spin-when-active" : ""} size={16} />
-            <span>{label}</span>
-            {Boolean(unread) && (
-              <em className="agent-console-filter-unread" title={t("agentConsoleUnreadCount", { count: unread! })}>{unread}</em>
-            )}
-            {/* A count is only a fact once the list has arrived. Before that, or
-                after it failed, "0" reads as "nothing here" -- which is not what
-                anyone knows. */}
-            {sessionsLoaded && <small>{count}</small>}
-          </button>
-        ))}
+        {navigation}
         <p className="agent-console-scope-note">{t("agentConsoleScopeNote")}</p>
         <WebVersion />
       </aside>
@@ -844,11 +868,7 @@ export function AgentSessionConsole({
       <section className="agent-console-list" aria-label={t("agentConsoleSessions")}>
         {unavailableSessionId && <p className="inline-error" role="alert">{t("agentConsoleUnavailableLink")}</p>}
         <div className="agent-console-mobile-filters" aria-label={t("agentConsoleFilters")}>
-          {filters.map(({ key, count, unread, label }) => (
-            <button key={key} type="button" className={filter === key ? "active" : ""} aria-pressed={filter === key} onClick={() => chooseFilter(key)}>
-              {label}{Boolean(unread) && <em className="agent-console-filter-unread">{unread}</em>}{sessionsLoaded && <small>{count}</small>}
-            </button>
-          ))}
+          {navigation}
         </div>
         <div className="agent-console-list-controls">
           <Select aria-label={t("agentConsoleAssociationFilter")} value={association} onChange={event => {
@@ -994,6 +1014,7 @@ export function AgentSessionConsole({
                       {session.items.length === 0 && <span className="agent-console-unlinked-badge">{t("agentConsoleAssociationUnlinked")}</span>}
                       <time>{formatAgentMessageTime(session.activityAt ?? session.updatedAt, locale)}</time>
                     </span>
+                    {isGlobalAgentSessionFilter(filter) && <small className="agent-console-session-project">{sessionProducts(session).map(product => product.name).join(" · ")}</small>}
                     <small>{session.source === "external" ? t("agentExternalSource") : session.nodeName} · {agentLabel(session, t)}</small>
                     {attentionLabel(session, t) && (
                       <i className="agent-console-attention" title={session.attention.reason}>
@@ -1018,6 +1039,13 @@ export function AgentSessionConsole({
               <span className="agent-console-avatar"><AgentIcon kind={selected.agentKind} size={18} /></span>
               <div className="agent-console-heading">
                 <h2>{sessionTitle(selected, roundLabel)}{selected.items.length === 0 && <span className="agent-console-unlinked-badge">{t("agentConsoleAssociationUnlinked")}</span>}</h2>
+                <div className="agent-console-session-projects">
+                  {sessionProducts(selected).map(product => <span key={product.id}>{product.name}
+                    {product.id !== productId && <button type="button" className="text-button" onClick={() => onEnterProduct(product.id)}>
+                      {t("agentConsoleEnterProject")}
+                    </button>}
+                  </span>)}
+                </div>
                 {/* The items this session is working on stay in the head, where
                     scrolling the conversation cannot lose them (AND-159). */}
                 {selected.items.length > 0 && <div className="agent-console-dispatch agent-console-dispatch-head">
@@ -1173,7 +1201,6 @@ export function AgentSessionConsole({
                     )}
                   </div>
                 )}
-                {dismissAttention.isError && <p className="inline-error">{localizedErrorText(dismissAttention.error, t)}</p>}
                 {outgoing && (
                   <article className={`agent-console-message agent-console-message-user agent-console-message-outgoing agent-console-message-outgoing-${outgoing.status}`}>
                     <header className="agent-console-message-meta">
@@ -1223,7 +1250,6 @@ export function AgentSessionConsole({
                     )}
                   </article>
                 )}
-                {resolveDelivery.isError && <p className="inline-error">{localizedErrorText(resolveDelivery.error, t)}</p>}
                 <AgentHistoryNotice error={sessionQuery.data ? sessionQuery.data.lastError : selected.lastError} />
                 {selected.source !== "external" && selected.agentKind === "codex" && sessionStatus === "failed" ? (
                   <AgentSessionFailureNotice status={sessionStatus}
@@ -1310,14 +1336,15 @@ export function AgentSessionConsole({
                         {approval.retryError && <small>{approval.retryError}</small>}
                       </div>
                     )}
-                    {(decideApproval.isError || retryApproval.isError) && (
-                      <p className="inline-error">{localizedErrorText(decideApproval.error ?? retryApproval.error, t)}</p>
-                    )}
                   </section>
                 )}
+                <div className="agent-run-status" aria-label={t("agentRunFeedback")}>
+                  <AgentOperationFeedback failures={feedback.failures} sessionId={operationSessionId} command={command} />
+                  <AgentStopFeedback stop={stopCommand}
+                    latestCommand={command} turnActive={sessionQuery.data?.turnState?.turnActive ?? false}
+                    backgroundRunning={(sessionQuery.data?.activities.length ?? 0) > 0} />
                 {selected.agentSessionId && sessionQuery.data
-                  && !(selected.source !== "external" && selected.agentKind === "codex" && sessionStatus === "failed") && (
-                  <div className="agent-run-status" key={selected.id}>
+                  && !(selected.source !== "external" && selected.agentKind === "codex" && sessionStatus === "failed") && (<>
                     {["stalled", "unavailable", "failed"].includes(sessionStatus) && <p className="agent-run-warning" role="alert">{activityText}</p>}
                     <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={visualStatus} />}
                       label={selected.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected))
@@ -1358,8 +1385,8 @@ export function AgentSessionConsole({
                         </section>
                       )}
                     </AgentRunDetails>
-                  </div>
-                )}
+                </>)}
+                </div>
                 </>}
               </div>
               {newMessageCount > 0 && (
@@ -1370,13 +1397,6 @@ export function AgentSessionConsole({
               )}
             </div>
             <footer className="agent-console-reply">
-              {(retryDispatch.isError || stopDispatch.isError) && (
-                <p className="inline-error">{localizedErrorText(retryDispatch.error ?? stopDispatch.error, t)}</p>
-              )}
-              {archiveSession.isError && <p className="inline-error">{localizedErrorText(archiveSession.error, t)}</p>}
-              <AgentStopFeedback stop={stopCommand}
-                latestCommand={command} turnActive={sessionQuery.data?.turnState?.turnActive ?? false}
-                backgroundRunning={(sessionQuery.data?.activities.length ?? 0) > 0} />
               {(selected.canReply || selected.replyBlockedReason === "starting") && selected.agentSessionId ? (
                 <form onSubmit={submit} onPaste={replyPaste} {...dropHandlers}>
                   {isDraggingFiles && <FileDropOverlay remaining={Math.max(0, 10 - replyFiles.length)} limitReachedText={t("agentChatTooManyFiles")} />}
@@ -1428,7 +1448,6 @@ export function AgentSessionConsole({
                 </p>
               )}
               {((!selected.canReply && selected.replyBlockedReason !== "starting") || !selected.agentSessionId) && <AgentSessionQuickSettings session={selected} />}
-              {cancel.isError && <p className="inline-error">{localizedErrorText(cancel.error, t)}</p>}
             </footer>
           </>
         )}

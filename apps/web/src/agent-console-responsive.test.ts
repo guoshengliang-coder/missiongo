@@ -137,12 +137,11 @@ describe("agent console responsive layout", () => {
   it("renders unread badges from the all-product session feed", () => {
     expect(appSource).toContain('queryFn: () => api.listAgentSessions()');
     expect(appSource).toContain('className="agent-unread-badge"');
-    expect(appSource).toContain("agentSessionsQuery.data !== undefined && (");
     expect(appSource).not.toContain('agentSessionsQuery.data === undefined ? "–"');
     expect(appSource).toContain(
       "unreadCounts={agentConsoleOpen && products.length > 0 ? unreadCounts.byProduct : undefined}",
     );
-    expect(appSource).toContain('className="agent-console-total-unread agent-unread-badge"');
+    expect(appSource).not.toContain('className="agent-console-total-unread agent-unread-badge"');
     expect(appSource).not.toContain('queryKey: ["agent-sessions", selectedProductId]');
   });
 

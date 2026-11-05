@@ -52,7 +52,7 @@ export class AgentConsoleSessions {
 
   list(accountId: string): AgentSessionListItem[] {
     return this.groups(accountId).map((group) => this.summary(group))
-      .sort((a, b) => b.activityAt.localeCompare(a.activityAt) || b.id.localeCompare(a.id)).slice(0, 100);
+      .sort((a, b) => b.activityAt.localeCompare(a.activityAt) || b.id.localeCompare(a.id));
   }
 
   /**

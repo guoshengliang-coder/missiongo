@@ -57,3 +57,9 @@ describe("localizedErrorText", () => {
     expect(localizedErrorText("boom", t)).toBe("<somethingWentWrong>");
   });
 });
+
+it("localizes dispatch and external cancellation races", () => {
+  for (const code of ["agent_reply_not_pending", "agent_reply_not_cancellable"]) {
+    expect(errorMessageKey(new ApiError(409, code, "Only a queued reply can be cancelled."))).toBe("errorAgentReplyNotQueued");
+  }
+});

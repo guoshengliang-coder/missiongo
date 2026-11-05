@@ -56,6 +56,8 @@ export function errorMessageKey(error: unknown): MessageKey | null {
       agent_not_running: "errorAgentNotRunning",
       agent_turn_unavailable: "errorAgentTurnUnavailable",
       agent_command_pending: "errorAgentCommandPending",
+      agent_reply_not_pending: "errorAgentReplyNotQueued",
+      agent_reply_not_cancellable: "errorAgentReplyNotQueued",
       agent_reply_changed: "errorAgentReplyChanged",
       agent_attention_changed: "errorAgentAttentionChanged",
       agent_plan_approval_changed: "errorAgentPlanApprovalChanged",
