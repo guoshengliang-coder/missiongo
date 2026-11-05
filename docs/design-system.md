@@ -402,3 +402,5 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 - 两处会话入口复用 `useAgentOperationFeedback` 与 `AgentOperationFeedback`。会话操作失败及停止反馈与运行详情位于同一区域，失败保持展开可见；输入校验留在输入区，发送失败保留原文和恢复入口。撤回编辑与停止当前回合独立，撤回竞态刷新真实投递状态，不自动转为中断。
 - 操作反馈绑定原会话、操作与命令；重试清理对应旧错误，后续输入成功或新原生回合取代后清理过期反馈，迟到失败不能复活。普通读取成功不清除仍有效的操作失败。
 - 回归来源：`and-410-411-console.audit.spec.ts`、`and-375-session-loading.audit.spec.ts`、`and-391-stop-lifecycle.audit.spec.ts`、`agent-console-product-switch.audit.spec.ts` 及服务端会话聚合测试。覆盖两处入口、迟到响应、撤回竞态、跨项目去重与草稿、100条以上、明暗主题、320px与断点两侧、三档字号；Android WebView实际操作仍需实机核对。
+
+- 短高度会话为消息区保留可操作的视口，头部与输入区内容过高时分别可滚动，不能将授权、方案或错误提示压到无法点击。授权详情及重试回归包含812×375横屏、明暗和三档字号。

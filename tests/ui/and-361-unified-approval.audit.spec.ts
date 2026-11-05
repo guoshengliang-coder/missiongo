@@ -94,7 +94,7 @@ test("failed permission delivery keeps the choices and lets the person retry", a
   const panel = page.locator(".agent-console-approval");
   const always = panel.getByRole("button", { name: "始终允许", exact: true });
   await always.click();
-  await expect(panel.locator(".inline-error")).toBeVisible();
+  await expect(page.getByLabel("会话操作反馈").locator(".inline-error")).toBeVisible();
   await expect(always).toBeEnabled();
   fail = false;
   await always.focus();

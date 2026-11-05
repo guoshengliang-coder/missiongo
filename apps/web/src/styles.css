@@ -3389,3 +3389,10 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .agent-console-mobile-filters .agent-console-filter-items { display: flex; gap: 6px; overflow-x: auto; }
   .agent-console-mobile-filters .agent-console-filter { width: auto; }
 }
+
+/* Preserve an operable message viewport when header metadata and composer grow. */
+@media (max-height: 500px) {
+  .agent-console-conversation-head { flex-shrink: 1; max-height: 30%; overflow-y: auto; }
+  .agent-console-reply { flex-shrink: 1; max-height: 40%; overflow-y: auto; }
+  .agent-console-message-stage { min-height: 80px; }
+}
