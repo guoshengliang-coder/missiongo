@@ -16,6 +16,31 @@ afterEach(async () => {
 });
 
 describe("database migrations", () => {
+  it("AND-405 preserves existing handling links across migration and restart", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "missiongo-approval-links-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "missiongo.sqlite");
+    const seeded = new MissionGoDatabase(path);
+    seeded.connection.exec(`
+      INSERT INTO products(id,key_prefix,name,created_at,updated_at) VALUES ('p','LEG','Project','2026-11-01','2026-11-01');
+      INSERT INTO work_items(id,item_key,sequence,product_id,type,priority,status,title,description,created_at,updated_at)
+        VALUES ('i','LEG-1',1,'p','task','normal','in_progress','Existing','Existing work','2026-11-01','2026-11-01');
+      INSERT INTO external_agent_sessions(id,account_id,client_id,agent_kind,session_ref,ref_kind,progress_status,created_at,updated_at,activity_at)
+        VALUES ('s','a','c','codex','thread','native','working','2026-11-01','2026-11-01','2026-11-01');
+      INSERT INTO external_agent_session_items(session_id,item_id) VALUES ('s','i');
+      ALTER TABLE external_agent_session_items DROP COLUMN link_kind;
+      DELETE FROM schema_migrations WHERE version=202611050850;
+    `);
+    seeded.close();
+    for (let pass=0;pass<2;pass++) {
+      const migrated = new MissionGoDatabase(path);
+      try {
+        expect(migrated.connection.prepare("SELECT link_kind FROM external_agent_session_items").get()).toEqual({link_kind:"handling"});
+        expect(migrated.connection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+      } finally { migrated.close(); }
+    }
+  });
+
   it("AND-404 adds nullable project titles without rewriting existing session names", async () => {
     const directory = await mkdtemp(join(tmpdir(), "missiongo-project-title-migration-"));
     temporaryDirectories.push(directory);

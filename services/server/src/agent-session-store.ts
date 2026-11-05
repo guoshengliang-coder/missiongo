@@ -107,6 +107,7 @@ export interface AgentSessionSnapshot {
   readonly nativeConnection?: ExternalNativeConnection;
   readonly managedExecution?: ManagedSessionBinding;
   readonly source?: "dispatch" | "external";
+  readonly approvalOnly?: boolean;
   readonly progressStatus?: "working" | "waiting_for_input" | "blocked" | "completed" | "failed";
   readonly lastReportedAt?: string;
   readonly refKind?: "native" | "tracking";
@@ -144,6 +145,7 @@ export interface AgentSessionListItem {
   readonly nativeConnection?: ExternalNativeConnection;
   readonly managedExecution?: ManagedSessionBinding;
   readonly source?: "dispatch" | "external";
+  readonly approvalOnly?: boolean;
   readonly progressStatus?: "working" | "waiting_for_input" | "blocked" | "completed" | "failed";
   readonly lastReportedAt?: string;
   readonly refKind?: "native" | "tracking";

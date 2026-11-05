@@ -9,7 +9,7 @@ import { assertTransitionPolicy, transitionPolicy, itemRoles } from "./item-poli
 import { commentAudienceSchema, commentCandidates } from "./comment-discussions.js";
 import { ReleaseObservations } from "./release-observations.js";
 import { BuilderHandovers } from "./builder-handovers.js";
-import { assertDispatchExecution, assertExternalExecution, dispatchExecutionRevoked } from "./builder-authority.js";
+import { assertBuilderExecution, assertDispatchExecution, assertExternalExecution, dispatchExecutionRevoked } from "./builder-authority.js";
 import { parseItemFilters } from "./item-filters.js";
 import { AgentHistory } from "./agent-history.js";
 import { AgentArtifacts, ARTIFACT_PREVIEW_POLICY, ARTIFACT_PREVIEW_SHELL } from "./agent-artifacts.js";
@@ -2704,7 +2704,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     let unavailableReason: PlanApprovalBlockReason | undefined = members.some((row) => row.command && ["queued", "delivering", "delivery_unknown"].includes(row.command.status)) ? "reply_pending" : undefined;
     const attention = agentApprovalStore.withAttention(consoleSessions.getSummary(requireAccountId(request), sessionId)).attention;
     if (externalSessionStore.has(sessionId)) {
-      const session = { ...loadExternalSession(request, sessionId, operate, operate), attention };
+      const loaded = loadExternalSession(request, sessionId, operate, operate);
+      const account = requireAccount(request);
+      let canApprovePlan = members.every(row => row.items.every(item => accountStore.allows(account,item.productId,"operate") && accountStore.allows(account,item.productId,"ai")));
+      try {
+        assertExternalExecution(store.database,sessionId);
+        for (const row of members) for (const linked of row.items) assertBuilderExecution(store.database,store.getWorkItem(linked.key).id,account.id);
+      } catch { canApprovePlan = false; }
+      if (operate && !canApprovePlan) throw new MissionGoError("ai_not_permitted", "This account may not approve this implementation plan.", 403);
+      const session = { ...loaded, attention, canApprovePlan };
       if (!unavailableReason && session.nativeConnection?.state !== "connected") unavailableReason = "connection_unavailable";
       return { session, unavailableReason };
     }
@@ -2720,7 +2728,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const assessment = planApprovals.assess(session, unavailableReason);
     const window = (request.query as { history?: string }).history === "recent"
       ? agentHistory.window(requireAccountId(request), sessionId, session.messages) : undefined;
-    return { ...session, ...(window ? window : {}), planApprovalStatus: assessment.status, ...(assessment.offer ? { planApproval: assessment.offer } : {}) };
+    const planApprovalState = planApprovals.approvalState(session);
+    return { ...session, ...(window ? window : {}), canApprovePlan: assessment.status.code === "ready" && ("canApprovePlan" in session ? session.canApprovePlan : session.canReply),
+      planApprovalStatus: assessment.status, ...(assessment.offer ? { planApproval: assessment.offer } : {}), ...(planApprovalState ? {planApprovalState} : {}) };
   });
 
   // One scoped action: an explicitly clicked, content-bound chat approval. Never a tool permission decision.
@@ -2730,7 +2740,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const command = store.database.transaction(() => {
       const external = externalSessionStore.has(sessionId);
       const { session, unavailableReason } = planApprovalContext(request, sessionId, true);
-      return planApprovals.approve(session, revision, unavailableReason === undefined, () => external
+      return planApprovals.approve(session, revision, unavailableReason === undefined || external && Boolean(planApprovals.registered(session)), () => external
         ? externalNativeStore.enqueue(requireAccountId(request), sessionId, "批准")
         : agentSessionStore.enqueue(requireAccountId(request), sessionId, "批准"));
     });

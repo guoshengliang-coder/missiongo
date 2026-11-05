@@ -10,11 +10,11 @@ import { completionFields, completionPayload, normalizeCompletion } from "./comp
 import { insightInputSchema } from "./project-insights-query.js";
 import { StatusCheckHistory } from "./status-check-history.js";
 import { projectInsights } from "./project-insights.js";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { open, readFile, stat } from "node:fs/promises";
 import { basename } from "node:path";
 
-import { McpServer, createMcpHandler, type McpHttpHandler, type ServerContext } from "@modelcontextprotocol/server";
+import { McpServer, createMcpHandler, createRequestStateCodec, inputRequired, inputResponse, type RequestStateCodec, type McpHttpHandler, type ServerContext } from "@modelcontextprotocol/server";
 import { skillVersionInfo } from "@missiongo/contracts";
 import { INSIGHT_METRICS, MAX_ITEM_ATTACHMENTS, WORK_ITEM_PRIORITIES, WORK_ITEM_STATUSES, WORK_ITEM_TYPES } from "@missiongo/domain";
 import sharp from "sharp";
@@ -72,6 +72,8 @@ export interface MissionGoMcpOptions {
   readonly publicOrigin?: string;
   /** The app's approval-assessment state, so read tools agree with the console about awaiting-source sessions. */
   readonly planApprovals?: PlanApprovalService;
+  readonly protocolEra?: "legacy" | "modern";
+  readonly approvalStateCodec?: RequestStateCodec<{revision:string}>;
 }
 
 interface McpAccountAccess {
@@ -175,6 +177,10 @@ export function createMissionGoMcpServer(
   options: MissionGoMcpOptions = {},
 ): McpServer {
   const writeToolsTier = options.writeTools ?? "none";
+  const approvalStateCodec = options.approvalStateCodec ?? createRequestStateCodec<{revision:string}>({
+    key:randomBytes(32),ttlSeconds:3600,
+    bind:ctx => JSON.stringify([accountAccess(ctx).accountId,accountAccess(ctx).clientId ?? "",ctx.mcpReq.method]),
+  });
   const uploads = new McpAttachmentUploads(store, attachmentStorage);
   const sessions = new ExternalAgentSessionStore(store);
   const projectSessions = new ProjectSessionClaims(store);
@@ -198,7 +204,7 @@ export function createMissionGoMcpServer(
   };
   const server = new McpServer(
     { name: "missiongo", version: "0.1.0" },
-    { instructions: missionGoMcpInstructions(writeToolsTier) },
+    { instructions: missionGoMcpInstructions(writeToolsTier), requestState:{verify:approvalStateCodec.verify} },
   );
 
   const collaborations = new Collaborations(store);
@@ -839,7 +845,7 @@ export function createMissionGoMcpServer(
           },
           idempotencyKey,
         });
-        if (input.sessionId) {
+        if (input.sessionId && sessions.isHandling(input.sessionId,comment.itemKey)) {
           const actualText = comment.bodyKind === "free" ? (comment.body as { text: string }).text : JSON.stringify(comment.body);
           sessions.report(access, input.sessionId, comment.itemKey, "working", comment.summary ?? actualText, `comment:${comment.id}`);
         }
@@ -855,7 +861,7 @@ export function createMissionGoMcpServer(
   server.registerTool(
     "request_plan_approval", {
     title: "Request human implementation-plan approval",
-    description: "After diagnosis and clarification, present this exact plan and validation goals in the conversation. Request explicit native human approval for the current item batch before claiming. This is separate from tool permissions. Use the original dispatchId or external conversation identity; never register another session. It does not claim, comment or change item status. Changed scope requires fresh approval. Clients without interactive elicitation must use the Web plan approval button; never provide an approval answer as a tool argument.",
+    description: "After diagnosis and clarification, present this exact plan and validation goals in the conversation. Request explicit native human approval for the current item batch before claiming. This is separate from tool permissions. Use the original dispatchId or external conversation identity; never register another session. It does not claim, comment or change item status. It prepares an approval-only association for a first external conversation and returns its sessionId and reviewUrl; claiming later reuses this same record. Native confirmation uses the protocol's bound input-required round trip. Registered external plans can be approved on the Web without a native reply connection. Reuse an existing current approval without asking again. Changed scope requires fresh approval; never provide an approval answer as a tool argument.",
     inputSchema: z.object({ itemKeys:z.array(z.string().min(2).max(50)).min(1).max(20),
       approvalMethod:z.enum(["native","web"]).optional(),
       plan:z.string().trim().min(1).max(3000), validation:z.string().trim().min(1).max(700),
@@ -883,18 +889,52 @@ export function createMissionGoMcpServer(
     if(project && keys.some(key=>store.getWorkItem(key).productId!==project.productId)) throw new Error("Project conversation scope changed.");
     const identity=planIdentity(access.clientId,session,originalDispatchId);
     const scope=plans.scope(keys), revision=planDigest([identity,scope,plan,validation]);
-    if(plans.approved(access.accountId,identity,revision)) return textResult({approved:true,revision});
-    plans.request(access.accountId,identity,revision,{keys,plan,validation});
-    if(approvalMethod==="web") return textResult({approved:false,approvalRequired:true,revision},"The exact plan and scope are ready for the human to review with the Web plan approval button. Stop and wait; no implementation is authorized.");
-    let accepted: boolean;
-    try {
-      accepted=await requestNativePlanApproval(ctx,
-        `MissionGo · 方案批准\n${keys.join("、")}\n${plan}\n验证目标：${validation}\n批准仅覆盖这份方案，不授予 push、merge 或发布权限。`,revision);
-    } catch {
-      return textResult({approved:false,approvalRequired:true,revision,requiresWeb:true},
-        "This client could not complete native interactive plan approval. Review this exact registered proposal with the Web plan approval button. An unconnected external conversation requires a client supporting native elicitation; do not claim or implement.");
+    const nativeState = ctx.mcpReq.requestState<{revision:string}>();
+    if (nativeState) {
+      if (nativeState.revision !== revision) throw new Error("The native approval belongs to a different or changed plan. Keep the current proposal and review its exact scope.");
+      plans.assertRequest(access.accountId,identity,revision);
     }
-    if(!accepted) return textResult({approved:false,revision},"Plan was not approved. Do not claim or implement.");
+    const sessionId = store.database.transaction(() => {
+      const id = originalDispatchId
+        ? (store.database.connection.prepare("SELECT id FROM agent_sessions WHERE dispatch_id=?").get(originalDispatchId) as {id:string}|undefined)?.id
+        : sessions.prepareApproval(access,session!,keys,revision);
+      if (!originalDispatchId && id) sessions.authorize(access,id,keys[0]!,key => requireItemAccess(ctx,store,key));
+      if (!plans.approved(access.accountId,identity,revision)) plans.request(access.accountId,identity,revision,{keys,plan,validation});
+      return id;
+    });
+    const reviewPath = sessionId ? `/?console=agent&session=${encodeURIComponent(sessionId)}` : undefined;
+    const reviewUrl = reviewPath ? `${options.publicOrigin ?? ""}${reviewPath}` : undefined;
+    const context = {...(sessionId ? {sessionId} : {}),...(reviewUrl ? {reviewUrl} : {})};
+    if(plans.approved(access.accountId,identity,revision)) return textResult({approved:true,revision,...context},"This exact plan is already approved for this original conversation. Reuse its approval; do not ask again.");
+    if(approvalMethod==="web") return textResult({approved:false,approvalRequired:true,revision,...context},`The exact plan and scope are ready for human review: ${reviewUrl ?? "open the original conversation"}. The item remains unclaimed. No native reply connection is required for a registered external plan.`);
+    const confirmation = `MissionGo · 方案批准\n${keys.join("、")}\n${plan}\n验证目标：${validation}\n批准仅覆盖这份方案，不授予 push、merge 或发布权限。`;
+    let accepted: boolean;
+    if (options.protocolEra === "modern") {
+      const capabilities = (ctx.mcpReq.envelope as Record<string,unknown> | undefined)?.["io.modelcontextprotocol/clientCapabilities"] as {elicitation?:{form?:unknown}}|undefined;
+      if (!capabilities?.elicitation?.form) return textResult({approved:false,approvalRequired:true,revision,requiresWeb:true,code:"native_approval_unavailable",...context},
+        `This client has no native form approval capability. The same proposal is available at ${reviewUrl}. Approval and native reply connectivity are independent; preserve the existing human decision and do not repeat the plan review.`);
+      const response = inputResponse(ctx.mcpReq.inputResponses,"planApproval");
+      if (response.kind === "missing") {
+        return inputRequired({requestState:await approvalStateCodec.mint({revision},ctx),inputRequests:{
+          planApproval:inputRequired.elicit({message:confirmation,requestedSchema:{type:"object",properties:{},required:[],additionalProperties:false}}),
+        }});
+      }
+      if (!nativeState) throw new Error("A native approval response requires the original server-bound request state.");
+      accepted = response.kind === "elicit" && response.action === "accept" && z.object({}).strict().safeParse(response.content).success;
+    } else try {
+      accepted=await requestNativePlanApproval(ctx,confirmation,revision);
+    } catch {
+      // A URL handoff can use the authenticated Web decision when native forms are unavailable.
+      // Accepting/opening a URL itself never grants approval.
+      if (reviewUrl && /^https?:\/\//.test(reviewUrl)) {
+        try { await ctx.mcpReq.elicitInput({mode:"url",message:`MissionGo · 审阅并批准当前方案：${keys.join("、")}`,url:reviewUrl,elicitationId:revision}); }
+        catch { /* Preserve this one registered proposal for the original client to resume. */ }
+      }
+      if (plans.approved(access.accountId,identity,revision)) return textResult({approved:true,revision,...context},"The human approval was saved during the handoff. Reuse this same plan and conversation; do not ask again.");
+      return textResult({approved:false,approvalRequired:true,revision,requiresWeb:true,code:"native_approval_unavailable",...context},
+        `The native confirmation could not be recorded by MissionGo. This is an approval handoff limitation, not evidence that the human declined. Preserve the original identity and proposal; do not ask them to review the plan again. Use the registered approval handoff at ${reviewUrl ?? "the original conversation"}. A registered external plan can be approved there without connecting a native reply channel.`);
+    }
+    if(!accepted) return textResult({approved:false,revision,...context},"Plan was not approved. Do not claim or implement.");
     // The request may have waited hours. Recheck all current authority and scope.
     requireWriteScope(ctx);
     for(const key of keys) {
@@ -916,7 +956,7 @@ export function createMissionGoMcpServer(
         } catch { /* Human approval remains valid; an existing pending delivery must be reconciled, never replayed. */ }
       }
     }
-    return textResult({approved:true,revision,continuationQueued},"The human approved this exact implementation plan. Native Plan restrictions still require an explicit transition before writes. Save this revision; do not ask again for this unchanged plan.");
+    return textResult({approved:true,revision,continuationQueued,...context},"The human approved this exact implementation plan. Native Plan restrictions still require an explicit transition before writes. Save this revision; do not ask again for this unchanged plan.");
   });
 
   server.registerTool(
@@ -1344,7 +1384,11 @@ export function createMissionGoMcpHandler(
   attachmentStorage: AttachmentStorage,
   options: MissionGoMcpOptions = {},
 ): McpHttpHandler {
-  return createMcpHandler(() => createMissionGoMcpServer(store, attachmentStorage, options), {
+  // Stateless HTTP constructs a server per request. Keep the integrity key shared across native approval rounds.
+  const approvalStateCodec = createRequestStateCodec<{revision:string}>({key:randomBytes(32),ttlSeconds:3600,
+    bind:ctx => JSON.stringify([accountAccess(ctx).accountId,accountAccess(ctx).clientId ?? "",ctx.mcpReq.method]),
+  });
+  return createMcpHandler(ctx => createMissionGoMcpServer(store, attachmentStorage, {...options,protocolEra:ctx.era,approvalStateCodec}), {
     responseMode: "json",
   });
 }

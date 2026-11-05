@@ -666,7 +666,8 @@ export function approvalNeedsAction(approval: AgentApproval | undefined): boolea
   return approval.status === "denied" && (!approval.retryId || approval.retryStatus === "failed");
 }
 
-export function externalProgressLabelKey(session: Pick<AgentSessionSummary, "status" | "progressStatus">) {
+export function externalProgressLabelKey(session: Pick<AgentSessionSummary, "status" | "progressStatus" | "approvalOnly">) {
+  if (session.approvalOnly) return "agentPlanUnclaimed" as const;
   if (session.status === "unavailable") return "agentExternalStale" as const;
   return ({ working: "agentExternalWorking", waiting_for_input: "agentExternalWaiting", blocked: "agentExternalBlocked",
     completed: "agentExternalCompleted", failed: "agentExternalFailed" } as const)[session.progressStatus ?? "working"];

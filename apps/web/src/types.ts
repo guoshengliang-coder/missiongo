@@ -529,6 +529,8 @@ export interface AgentSessionCommand {
   readonly cancelledAt?: string;
 }
 
+export type AgentPlanApprovalResult = AgentSessionCommand | { readonly approved: true; readonly revision: string; readonly continuationQueued: false };
+
 export interface AgentSessionAttachment {
   readonly id: string;
   readonly filename: string;
@@ -542,10 +544,13 @@ export interface AgentSessionAttachment {
 export interface AgentSession {
   readonly history?: { readonly nextCursor?: string; readonly error?: string };
   readonly planApproval?: { readonly revision: string; readonly reason: string; readonly plan?: string; readonly validation?: string; readonly itemKeys?: readonly string[] } | undefined;
+  readonly canApprovePlan?: boolean;
+  readonly planApprovalState?: { readonly approved: true; readonly revision: string; readonly continuationQueued: boolean };
   readonly planApprovalStatus?: { readonly code: string; readonly detail?: string };
   readonly nativeConnection?: ExternalNativeConnection;
   readonly managedExecution?: { id: string; runId: string; stageId: string; generation: number; role: string; state: string; stopRequested: boolean };
   readonly source?: "dispatch" | "external";
+  readonly approvalOnly?: boolean;
   readonly progressStatus?: "working" | "waiting_for_input" | "blocked" | "completed" | "failed";
   readonly lastReportedAt?: string;
   readonly refKind?: "native" | "tracking";
@@ -594,6 +599,7 @@ export interface AgentSessionSummary {
   readonly canRegisterNative?: boolean;
   readonly canDisconnectNative?: boolean;
   readonly source?: "dispatch" | "external";
+  readonly approvalOnly?: boolean;
   readonly progressStatus?: "working" | "waiting_for_input" | "blocked" | "completed" | "failed";
   readonly lastReportedAt?: string;
   readonly refKind?: "native" | "tracking";

@@ -2301,5 +2301,15 @@ export class MissionGoDatabase {
       });
     }
 
+    // Approval visibility is not evidence of an execution. Preserve all existing handling links.
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611050850").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611050850").get()) return;
+        this.connection.exec("ALTER TABLE external_agent_session_items ADD COLUMN link_kind TEXT NOT NULL DEFAULT 'handling' CHECK(link_kind IN ('approval','handling'));");
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611050850, new Date().toISOString());
+      });
+    }
+
   }
 }
