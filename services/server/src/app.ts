@@ -109,6 +109,7 @@ import {
 } from "./oauth.js";
 import { DEVICE_GRANT, DeviceAuthorizationStore, DeviceGrantError } from "./device-authorization.js";
 import { MissionGoStore } from "./store.js";
+import { resumeRecoveredPlan } from "./recovered-plan-resume.js";
 import { COMMENT_BODY_KINDS, COMPONENT_KINDS, type ComponentKind } from "./types.js";
 import type { FeedbackLogEntry, SdkPrincipal } from "./types.js";
 import { WidgetDeviceStore } from "./widget-devices.js";
@@ -3585,6 +3586,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           status, stringField(body, "approvalRetryError", false));
       }
       new BuilderHandovers(store).forSession(sessionId);
+      resumeRecoveredPlan(store,node.accountId,node.nodeId,sessionId,productId=>requireNodeAccountPermission(node.accountId,productId,true));
       scheduleAttentionClassification(sessionId);
       return reply.status(204).send();
     },
