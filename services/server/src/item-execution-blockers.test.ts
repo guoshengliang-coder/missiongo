@@ -22,7 +22,7 @@ async function fixture() {
   const product = store.createProduct({name:"Execution lifecycle",keyPrefix:"LC",createdByAccountId:accountId});
   const dispatches = new DispatchStore(store.database);
   const node = dispatches.registerNode({accountId,installationId:randomUUID(),name:"Fixture node"});
-  dispatches.recordHeartbeat(node.nodeId,[{kind:"codex",ready:true}]);
+  dispatches.recordHeartbeat(node.nodeId,[{kind:"codex",planApprovalProtocol:1,ready:true}]);
   dispatches.replaceOwnRepos(node.nodeId,[{productId:product.id,repoPath:"/synthetic/lifecycle"}]);
   const external = new ExternalAgentSessionStore(store);
   const owner = {accountId,clientId:"lifecycle-test"};

@@ -27,7 +27,7 @@ for (const width of [320, 768, 1440]) for (const theme of ["light", "dark"] as c
       });
       const changes: object[] = [];
       await page.route("**/api/v1/nodes", route => route.fulfill({ json: { nodes: [{ id: "source-node", name: "Source", online: true,
-        agents: [{ kind, models: [{ id: "source-model", label: "来源模型", efforts: ["low", "high"] },
+        agents: [{ kind, planApprovalProtocol: 1, models: [{ id: "source-model", label: "来源模型", efforts: ["low", "high"] },
           { id: "other-model", label: "另一个来源模型", efforts: ["low", "high"] }] }] }] } }));
       await page.route("**/api/v1/agent-sessions**", async route => {
         const path = new URL(route.request().url()).pathname;

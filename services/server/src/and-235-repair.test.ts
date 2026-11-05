@@ -33,7 +33,7 @@ it.each(["running", "unknown", "stop", "wait-managed", "ordinary", "wait-ordinar
       const repo = db.prepare("SELECT id FROM node_product_repos WHERE node_id=?").get(node.nodeId) as { id: string };
       const headers = { authorization: `Bearer ${node.token}` };
       expect((await app.inject({ method: "POST", url: "/api/v1/node/heartbeat", headers, payload: {
-        agents: [{ kind: "codex", ready: true, models: [], skill: { localVersion: MISSIONGO_SKILL_VERSION,
+        agents: [{ kind: "codex", planApprovalProtocol: 1, ready: true, models: [], skill: { localVersion: MISSIONGO_SKILL_VERSION,
           expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "ready" } }],
       } })).statusCode).toBe(200);
       const login = await app.inject({ method: "POST", url: "/api/v1/auth/login", payload: {

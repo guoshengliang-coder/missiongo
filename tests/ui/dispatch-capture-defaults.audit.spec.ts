@@ -42,11 +42,11 @@ for (const width of [375, 1440]) {
     await page.setViewportSize({ width, height: 950 });
     const product = await (await request.post("/api/v1/products", { data: { name: `Dispatch defaults ${width}`, keyPrefix: `DD${width}` } })).json();
     const item = await (await request.post("/api/v1/items", { data: { productId: product.id, status: "ready", type: "task", priority: "normal", title: "派单默认配置", description: "Save a choice", environment: { platform: "web" } } })).json();
-    let defaults: DispatchDefaults = { agentKind: "codex", agents: { codex: { mode: "plan" }, claude_code: { mode: "default" } } };
+    let defaults: DispatchDefaults = { agentKind: "codex", agents: { codex: { mode: "auto" }, claude_code: { mode: "default" } } };
     let failSave = true;
     let dispatchCount = 0;
     const node = { id: "fixture-node", name: "Fixture Mac", deviceName: "Fixture Mac", online: true,
-      agents: [{ kind: "codex", ready: true, models: [{ id: "fixture-model", label: "Fixture model", efforts: ["high"] }] }, { kind: "claude_code", ready: true, models: [] }],
+      agents: [{ kind: "codex", planApprovalProtocol: 1, ready: true, models: [{ id: "fixture-model", label: "Fixture model", efforts: ["high"] }] }, { kind: "claude_code", planApprovalProtocol: 1, ready: true, models: [] }],
       repos: [{ productId: product.id, repoPath: "fixture-repository" }], repoCandidates: [], createdAt: new Date().toISOString() };
     await page.route("**/api/v1/nodes", route => route.fulfill({ json: { nodes: [node] } }));
     await page.route("**/api/v1/dispatches/active", route => route.fulfill({ json: { active: [], latest: [], current: [], handlers: [] } }));
@@ -80,7 +80,7 @@ for (const width of [375, 1440]) {
     await save.click();
     await expect(form.getByRole("status")).toHaveText("已保存");
     expect(dispatchCount).toBe(0);
-    expect(defaults).toEqual({ nodeId: node.id, agentKind: "codex", agents: { codex: { mode: "plan", model: "fixture-model", effort: "high" }, claude_code: { mode: "default" } } });
+    expect(defaults).toEqual({ nodeId: node.id, agentKind: "codex", agents: { codex: { mode: "auto", model: "fixture-model", effort: "high" }, claude_code: { mode: "default" } } });
     await page.screenshot({ path: testInfo.outputPath(`dispatch-defaults-${width}.png`) });
     expect(await form.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
     // Reloading closes the dialog without invoking its unsaved-choice guard.

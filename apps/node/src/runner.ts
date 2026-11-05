@@ -1,3 +1,4 @@
+import { probeClaudeCapabilities } from "./claude-capabilities.js";
 import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
@@ -22,7 +23,8 @@ export async function detectAgents(config: Config, expected?: string, resolveCla
       const launch = kind === "claude_code" ? await resolveClaude(settings) : { executable: settings.executable ?? kind, env: process.env };
       const text = kind === "opencode" ? (await new OpenCodeAPI().call("GET", "/api/info")).version : await probe(launch.executable, ["--version"], undefined, launch.env);
       const skill = await syncSkill(kind, config.server!, expected, launch.env);
-      agents.push({ kind, version: String(text).replace(/[^0-9a-zA-Z. _-]/g, "").slice(0, 100), ready: true, skill });
+      const native=kind==="claude_code" ? await probeClaudeCapabilities(launch.executable,process.cwd(),launch.env).catch(()=>undefined) : undefined;
+      agents.push({ ...native, planApprovalProtocol:1, kind, version: String(text).replace(/[^0-9a-zA-Z. _-]/g, "").slice(0, 100), ready: true, skill });
     } catch (error) { agents.push({ kind, ready: false, unavailableReason: safeError(error) }); }
   }
   return agents;

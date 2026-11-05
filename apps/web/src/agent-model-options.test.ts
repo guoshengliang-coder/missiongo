@@ -11,7 +11,7 @@ const models = [
 function node(id: string, agentModelsList?: typeof models): DispatchNode {
   return {
     id, name: id, deviceName: id, repos: [], repoCandidates: [], online: true, createdAt: "",
-    agents: [{ kind: "codex", ...(agentModelsList ? { models: agentModelsList } : {}) }],
+    agents: [{ kind: "codex", planApprovalProtocol: 1, ...(agentModelsList ? { models: agentModelsList } : {}) }],
   };
 }
 

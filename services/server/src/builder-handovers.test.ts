@@ -1,3 +1,4 @@
+import { approvedClaimFixture } from "./testing-fixtures.js";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "./app.js";
@@ -25,7 +26,7 @@ async function fixture() {
   const dispatches=new DispatchStore(store.database), sessions=new AgentSessionStore(store.database), handovers=new BuilderHandovers(store);
   const node=(accountId:string)=>{
     const node=dispatches.registerNode({accountId,installationId:randomUUID(),name:"Test node"});
-    dispatches.recordHeartbeat(node.nodeId,[{kind:"opencode",ready:true}]);
+    dispatches.recordHeartbeat(node.nodeId,[{kind:"opencode",planApprovalProtocol:1,ready:true}]);
     dispatches.replaceOwnRepos(node.nodeId,[{productId:product.id,repoPath:"/synthetic/repo"}]);
     return node;
   };
@@ -51,6 +52,7 @@ async function fixture() {
   };
   const mcp=async(account:typeof a,name:string,args:Record<string,unknown>,clientId="handover-test-client")=>{
     const token=createAiAccessToken(config,{id:account.id,username:account.email,role:account.role},accounts.credentialsStamp(account),clientId,["missiongo:read","missiongo:write"]).token;
+    if(name==="claim_item") approvedClaimFixture(store,token,args);
     const response=await app.inject({method:"POST",url:"/mcp",headers:{authorization:`Bearer ${token}`,accept:"application/json, text/event-stream"},
       payload:{jsonrpc:"2.0",id:1,method:"tools/call",params:{name,arguments:args}}});
     const payload=response.headers["content-type"]?.includes("text/event-stream")
@@ -121,7 +123,7 @@ describe("Builder execution handover",()=>{
     const blocked=f.transfer(item.key);
     expect(blocked.builderHandover).toMatchObject({status:"blocked"});
     expect(f.stopCommand(d.id)).toBeNull();
-    f.dispatches.recordHeartbeat(f.aNode.nodeId,[{kind:"opencode",ready:true}]);
+    f.dispatches.recordHeartbeat(f.aNode.nodeId,[{kind:"opencode",planApprovalProtocol:1,ready:true}]);
     f.handovers.reconcile(blocked.builderHandover!.id);
     expect(f.store.getWorkItem(item.key).builderHandover?.status).toBe("blocked");
     const url=`/api/v1/items/${item.key}/builder-handover/${blocked.builderHandover!.id}/retry`;
@@ -185,6 +187,7 @@ describe("Builder execution handover",()=>{
     const completion={kind:"commit",commit:"a".repeat(40),targetBranch:"main"};
     expect((await f.mcp(f.a,"submit_development_complete",{itemKey:item.key,completion,executionAuthorization:oldCredential,idempotencyKey:"late-old-agent"})).isError).toBe(true);
     const next=f.dispatch([item.key],f.b.id,f.bNode.nodeId);f.dispatches.claimNextDispatch(f.bNode.nodeId);
+    f.sessions.createForDispatch({dispatchId:next.id,nodeId:f.bNode.nodeId,sessionRef:randomUUID()});
     const takeover=await f.mcp(f.b,"claim_item",{itemKey:item.key,agentId:"New agent",dispatchId:next.id,idempotencyKey:"claim-takeover"});
     expect(takeover.isError).not.toBe(true);expect(takeover.structuredContent!.statusChanged).toBe(false);
     const credential=takeover.structuredContent!.executionAuthorization;

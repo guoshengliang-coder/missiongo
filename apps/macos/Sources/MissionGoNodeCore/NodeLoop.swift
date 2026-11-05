@@ -1069,6 +1069,7 @@ public final class NodeLoop: @unchecked Sendable {
                 kind: agent.kind,
                 version: agent.version,
                 models: await adapter.availableModels(),
+                modes: await adapter.availableModes(),
                 ready: skillReadiness == nil && resource == nil && availabilityReason == nil ? nil : ready,
                 unavailableReason: reason,
                 skill: skill,

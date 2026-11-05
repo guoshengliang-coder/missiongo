@@ -22,7 +22,7 @@ export function launchPrompt(job: Dispatch): string {
     return [
       "这是用户从 MissionGo 控制台发起的项目会话，不关联工作条目。",
       "本条是启动说明。现在只简短确认就绪并等待用户首条消息，不自行开始任务。首条消息将通过同一会话紧接着送达。",
-      "后续按用户消息讨论或执行；不得自动创建或领取条目，不套用条目处理 Skill 的领取前提。",
+      "后续纯讨论或查询直接答复；开发任务必须先诊断澄清、给出方案和验证目标，用户明确批准后才实施。仅 Web 批准按钮或原生计划批准可记录方案批准，文字同意须引导明确批准操作。不得自动创建或领取条目。",
       `本项目会话的派单身份为 ${JSON.stringify(job.dispatchId)}。仅当用户后来明确指定处理条目时，使用 missiongo skill 完整读取并遵守计划批准要求；领取时 claim_item 必须带 dispatchId: ${JSON.stringify(job.dispatchId)}，复用原项目会话，不要另行登记主动处理会话。`,
       "读取并遵守项目规则；修改前创建独立 worktree，不直接修改主工作区。原生计划模式、权限审批及 push、merge、发布授权仍须遵守。",
       ...researchGuidance,
@@ -40,8 +40,8 @@ export function launchPrompt(job: Dispatch): string {
   lines.push(...researchGuidance);
   if (job.agentKind === "codex") lines.push(`本次精确可写 worktree 路径为 ${JSON.stringify(worktreePath(job))}，尚未创建；不得扩大到父目录。`);
   if (job.reworkItemKeys?.some((key) => job.itemKeys.includes(key))) lines.push("本批含返工条目：先读最新退回说明与上一轮 PR，从最新 main 另开分支，不复用旧分支或工作区。");
-  if (job.mode === "plan") lines.push(
-    "本次为计划模式：先完整读取并调查可核查事实，再集中澄清必要取舍，在本会话提出有依据的计划并停下等待用户明确批准。",
+  lines.push(
+    "所有开发任务必须先批准方案：先完整读取并调查可核查事实，再集中澄清必要取舍，在本会话提出有依据的计划并停下等待用户明确批准。",
     "批准前不回写评论、不领取、不建分支/worktree、不改代码；批准后先将计划以结构化评论写入各条，再领取实施。技术权限审批不能代替方案批准。",
     ...(job.agentKind === "opencode" ? ["批准方案后先切换到原生 build agent，再回写、领取和修改。"] : []),
   );

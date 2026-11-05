@@ -7,31 +7,55 @@
 export const AGENT_KINDS = ["claude_code", "codex", "opencode", "hermes"] as const;
 export type AgentKind = (typeof AGENT_KINDS)[number];
 
-// MissionGo dispatches default to bypassPermissions at the account owner's
-// explicit choice. The node still passes its narrow irreversible-operation deny
-// list to Claude Code, so bypass never removes those hard stops.
-// `dontAsk` remains unavailable because it is not the configured MissionGo
-// operating mode and has no equivalent deny-list contract.
+// Client-native permissions are independent of implementation-plan approval.
 export const CLAUDE_CODE_MODES = ["bypassPermissions", "plan", "default", "acceptEdits", "auto"] as const;
 export type ClaudeCodeMode = (typeof CLAUDE_CODE_MODES)[number];
-
-// Codex has no permission modes of its own to pass through; each of these is a
-// fixed combination the node applies when it starts the thread. All three keep
-// the workspace-write sandbox and on-request approvals:
-// - plan: the session presents a plan and waits for human approval before any
-//   writes; technical sandbox approvals use auto-review independently.
-// - default: sandbox escapes are approved by a person in the Codex app.
-// - auto: sandbox escapes go to Codex's own auto-review instead of a person.
-// The approval policy `never` and the `danger-full-access` sandbox are
-// deliberately unreachable because MissionGo keeps Codex inside its managed
-// workspace-write sandbox with an approval path for sandbox escapes.
-export const CODEX_MODES = ["plan", "default", "auto"] as const;
+export const CODEX_MODES = ["default", "auto", "read-only", "full-access"] as const;
 export type CodexMode = (typeof CODEX_MODES)[number];
-
-// OpenCode V2 has native plan/build agents. Keep the first release in the
-// interactive modes; automatic permission replies need a separate review.
-export const OPENCODE_MODES = ["plan", "default"] as const;
+export const OPENCODE_MODES = ["plan", "build"] as const;
 export type OpenCodeMode = (typeof OPENCODE_MODES)[number];
+
+/** Compatibility preserves the actual old policy; it never grants more access. */
+export function normalizeAgentMode(agentKind: string, mode: string): string {
+  if (agentKind === "codex" && mode === "plan") return "auto";
+  if (agentKind === "opencode" && mode === "default") return "build";
+  return mode;
+}
+
+export interface AgentModeCapability {
+  readonly mode: string;
+  readonly state: "available" | "unavailable" | "unknown";
+  readonly reason?: string;
+  /** Capability evidence is scoped to the resolved model/connection, not a name heuristic. */
+  readonly model?: string;
+}
+
+export function agentModeCapability(agentKind: string, mode: string,
+  capabilities?: readonly AgentModeCapability[], model?: string): AgentModeCapability {
+  mode = normalizeAgentMode(agentKind, mode);
+  // Full access remains disallowed by MissionGo's managed-workspace policy.
+  if (agentKind === "codex" && mode === "full-access") return {
+    mode, state: "unavailable", reason: "managed_workspace_required",
+  };
+  const evidence = capabilities?.find(entry => entry.mode === mode && entry.model === model)
+    ?? (mode !== "auto" ? capabilities?.find(entry=>entry.mode===mode && entry.model===undefined) : undefined);
+  if (evidence) return evidence;
+  if (agentKind === "claude_code" && mode === "auto") return { mode, state: "unknown", reason: "native_capability_unconfirmed" };
+  return { mode, state: "available" };
+}
+
+/** No saved choice is invented when Claude Auto availability is unknown. */
+export function defaultAgentMode(agentKind: string, saved?: string,
+  capabilities?: readonly AgentModeCapability[], model?: string): string {
+  if (saved) return normalizeAgentMode(agentKind, saved);
+  if (agentKind === "codex") return "auto";
+  if (agentKind === "opencode") return "build";
+  if (agentKind === "claude_code") {
+    const auto = agentModeCapability(agentKind, "auto", capabilities, model);
+    return auto.state === "available" ? "auto" : auto.state === "unavailable" ? "bypassPermissions" : "";
+  }
+  return "";
+}
 
 export const DISPATCH_MODES_BY_AGENT: Readonly<Record<AgentKind, readonly string[]>> = {
   claude_code: CLAUDE_CODE_MODES,
@@ -41,7 +65,7 @@ export const DISPATCH_MODES_BY_AGENT: Readonly<Record<AgentKind, readonly string
 };
 
 export function isSupportedDispatchMode(agentKind: AgentKind, mode: string): boolean {
-  return DISPATCH_MODES_BY_AGENT[agentKind].includes(mode);
+  return DISPATCH_MODES_BY_AGENT[agentKind].includes(normalizeAgentMode(agentKind, mode));
 }
 
 // A Codex thread has no web address; the Codex app opens it by id.

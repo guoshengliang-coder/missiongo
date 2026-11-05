@@ -20,7 +20,7 @@ async function openConversation(page: Page) {
   const sent: string[] = [];
   await page.route("**/api/v1/nodes", route => route.fulfill({ json: { nodes: [{
     id: "compact-node", name: "Fixture Mac", repos: [], repoCandidates: [], online: true, createdAt: stamp,
-    agents: [{ kind: "codex", ready: true, models: [{ id: "fixture-model", label: modelName, efforts: ["medium", "high"] }] }],
+    agents: [{ kind: "codex", planApprovalProtocol: 1, ready: true, models: [{ id: "fixture-model", label: modelName, efforts: ["medium", "high"] }] }],
   }] } }));
   await page.route("**/api/v1/agent-sessions**", async route => {
     const request = route.request(), path = new URL(request.url()).pathname;

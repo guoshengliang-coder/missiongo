@@ -30,6 +30,7 @@ public protocol AgentAdapter: Sendable {
     /// nil for an adapter that cannot take a model at all. Any CLI probe must
     /// disable the user's hooks and must not send a model request.
     func availableModels() async -> [AgentModelOption]?
+    func availableModes() async -> [AgentModeCapability]?
 }
 
 public extension AgentAdapter {
@@ -47,6 +48,7 @@ public extension AgentAdapter {
     func resourceSnapshot() async -> AgentResourceSnapshot? { nil }
 
     func availableModels() async -> [AgentModelOption]? { nil }
+    func availableModes() async -> [AgentModeCapability]? { nil }
 
     func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
         throw LaunchError("\(kind) does not support mirrored sessions.")
@@ -413,6 +415,17 @@ public struct SessionLauncher: AgentAdapter {
     /// Refresh from this machine's CLI without a work turn. A failed probe
     /// exposes a clearly marked last-known list instead of silently treating
     /// an old catalog as current.
+    private let modeCapabilitiesCache = Locked<(Date, [AgentModeCapability])?>(nil)
+    public func availableModes() async -> [AgentModeCapability]? {
+        if let cached = modeCapabilitiesCache.current, Date().timeIntervalSince(cached.0) < 120 { return cached.1 }
+        let models = await availableModels() ?? []
+        let modes: [AgentModeCapability]? = await withCheckedContinuation { continuation in
+            DispatchQueue.global().async { continuation.resume(returning: ClaudeModeProbe.fetch(environment: environment, models: models)) }
+        }
+        if let modes { modeCapabilitiesCache.withLock { $0 = (Date(), modes) } }
+        return modes
+    }
+
     public func availableModels() async -> [AgentModelOption]? {
         if let fresh = modelCache.fresh() { return fresh }
         let now = Date()
@@ -507,7 +520,7 @@ public struct SessionLauncher: AgentAdapter {
         try ClaudeHostFiles.write(ClaudeHostConfiguration(
             claudeExecutable: claudeExecutable,
             cwd: job.repoPath,
-            mode: job.mode,
+            mode: "plan",
             sessionName: sessionName,
             sessionRef: sessionRef,
             prompt: prompt,
@@ -569,7 +582,7 @@ public struct SessionLauncher: AgentAdapter {
         )
         let sessionName = SessionLauncher.sessionName(nodeName: job.nodeName, itemKeys: job.itemKeys, round: job.round)
         let command = try SessionLauncher.launchCommand(
-            sessionName: sessionName, mode: job.mode, prompt: prompt, model: job.model, effort: job.effort
+            sessionName: sessionName, mode: "plan", prompt: prompt, model: job.model, effort: job.effort
         )
 
         let logPath = SessionLauncher.logPath(for: job.dispatchId, in: logsDirectory)
@@ -1025,7 +1038,7 @@ public struct SessionLauncher: AgentAdapter {
                 ClaudeHostCommand(
                     id: command.id, kind: command.kind ?? "message", text: command.promptText,
                     createdAt: command.createdAt.isEmpty ? nil : command.createdAt,
-                    turnId: command.turnId
+                    planApprovalRevision: command.planApprovalRevision, turnId: command.turnId
                 ),
                 to: path
             )

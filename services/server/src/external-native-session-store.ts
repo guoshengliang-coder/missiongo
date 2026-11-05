@@ -1,3 +1,4 @@
+import { ImplementationPlans } from "./implementation-plans.js";
 import { AgentSessionAttachments, type AgentSessionAttachment } from "./agent-session-attachments.js";
 import { assertExternalExecution } from "./builder-authority.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -7,9 +8,9 @@ import { nodeConnectionState } from "@missiongo/domain";
 import { sessionHealth } from "./agent-session-health.js";
 
 import type { AgentSessionActivity, AgentSessionCommand, AgentSessionMessageInput, AgentSessionStatus, AgentSessionTurnState } from "./agent-session-store.js";
-import { parseAgentModels, requireOfferedModel, type AgentRunSettings } from "./agent-settings.js";
+import { parseAgentModels, requireAvailableMode, requireOfferedModel, type AgentRunSettings } from "./agent-settings.js";
 import type { AgentSessionSettings } from "./agent-session-store.js";
-import type { AgentKind } from "@missiongo/domain";
+import type { AgentKind, AgentModeCapability } from "@missiongo/domain";
 import { conflict, invalidInput, notFound } from "./errors.js";
 import type { MissionGoStore } from "./store.js";
 import { autoArchiveFinishedConversations } from "./auto-archive.js";
@@ -82,7 +83,8 @@ export class ExternalNativeSessionStore {
     this.expireCommands(id);
     const row = this.db.prepare("SELECT * FROM external_native_commands WHERE session_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(id) as CommandRow | undefined;
     const attachments = row ? this.attachments.listForCommand(row.id) : [];
-    return row ? { id: row.id, kind: "message", text: row.text, status: row.status, createdAt: row.created_at,
+    return row ? { id: row.id, kind: "message", text: row.text,
+      ...(new ImplementationPlans(this.store.database).commandRevision(row.id) ? { planApprovalRevision: new ImplementationPlans(this.store.database).commandRevision(row.id) } : {}), status: row.status, createdAt: row.created_at,
       ...(attachments.length ? { attachments } : {}),
       ...(row.error ? { error: row.error } : {}), ...(row.delivering_at ? { deliveringAt: row.delivering_at } : {}),
       ...(row.delivered_at ? { deliveredAt: row.delivered_at } : {}), ...(row.cancelled_at ? { cancelledAt: row.cancelled_at } : {}) } : undefined;
@@ -201,11 +203,12 @@ export class ExternalNativeSessionStore {
       }
       const node = this.db.prepare("SELECT agents_json FROM nodes WHERE id=? AND account_id=? AND revoked_at IS NULL")
         .get(row.native_node_id!, accountId) as { agents_json: string } | undefined;
-      const agent = node && (JSON.parse(node.agents_json) as { kind: string; models?: unknown }[]).find((entry) => entry.kind === row.agent_kind);
+      const agent = node && (JSON.parse(node.agents_json) as { kind: string; models?: unknown; modes?: readonly AgentModeCapability[] }[]).find((entry) => entry.kind === row.agent_kind);
       const state = this.settingsState(row);
       // Carry only still-pending fields. Settled settings belong to the source,
       // which may have changed them in its own client in the meantime.
       const next = { ...(state.revision > state.settled ? state.desired : {}), ...change };
+      requireAvailableMode(row.agent_kind as AgentKind,next.mode ?? overlay.settings.mode,agent?.modes,next.model ?? overlay.settings.model);
       if (next.effort && !next.model && !overlay.settings.model) throw invalidInput("Choose a model before changing its effort.");
       requireOfferedModel(row.agent_kind as AgentKind, parseAgentModels(agent?.models), {
         ...next, ...(next.effort && !next.model && overlay.settings.model ? { model: overlay.settings.model } : {}) });

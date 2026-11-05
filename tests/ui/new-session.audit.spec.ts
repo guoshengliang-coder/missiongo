@@ -7,13 +7,13 @@ for (const width of [375, 768, 1440]) {
     const product = await (await request.post("/api/v1/products", { data: { name: `Project conversation ${width}`, keyPrefix: `PC${width}` } })).json();
     const now = new Date().toISOString();
     const node = { id: "fixture-node", name: "Fixture Mac", online: true, supportsFreeSessions: true, supportsChatAttachments: true,
-      agents: [{ kind: "codex", ready: true, models: [{ id: "draft-beta", label: "Draft Beta", efforts: ["low", "high"] }] }], repos: [{ productId: product.id, repoPath: "fixture-repository" }], repoCandidates: [], createdAt: now };
+      agents: [{ kind: "codex", planApprovalProtocol: 1, ready: true, models: [{ id: "draft-beta", label: "Draft Beta", efforts: ["low", "high"] }] }], repos: [{ productId: product.id, repoPath: "fixture-repository" }], repoCandidates: [], createdAt: now };
     await page.route("**/api/v1/nodes", route => route.fulfill({ json: { nodes: [node] } }));
-    await page.route("**/api/v1/dispatch-defaults", route => route.fulfill({ json: { nodeId: node.id, agentKind: "codex", agents: { codex: { mode: "plan" } } } }));
+    await page.route("**/api/v1/dispatch-defaults", route => route.fulfill({ json: { nodeId: node.id, agentKind: "codex", agents: { codex: { mode: "auto" } } } }));
     let prepareCount = 0, uploadCount = 0, startCount = 0;
     let started = false;
     const dispatch = { id: "free-dispatch", agentSessionId: "free-session", productId: product.id, nodeId: node.id, nodeName: node.name,
-      agentKind: "codex", mode: "plan", status: "queued", itemKeys: [], createdAt: now };
+      agentKind: "codex", mode: "auto", status: "queued", itemKeys: [], createdAt: now };
     const summary = { ...dispatch, id: "free-session", dispatchId: dispatch.id, status: "active", dispatchStatus: "queued",
       items: [], activities: [], updatedAt: now, activityAt: now, canReply: false, canArchive: true, canStop: true, canRetry: false,
       sessionName: "先讨论这个方案", unread: false, attention: { state: "not_needed" }, nodeConnectionState: "online", nodeRevoked: false,
@@ -37,7 +37,7 @@ for (const width of [375, 768, 1440]) {
       }
       prepareCount++;
       if (width === 1440 && prepareCount === 1) return route.fulfill({ status: 409, json: { code: "node_offline", title: "This node is offline" } });
-      expect(route.request().postDataJSON()).toMatchObject({ productId: product.id, nodeId: node.id, agentKind: "codex", mode: "plan", model: "draft-beta", effort: "high", text: "先讨论这个方案" });
+      expect(route.request().postDataJSON()).toMatchObject({ productId: product.id, nodeId: node.id, agentKind: "codex", mode: "auto", model: "draft-beta", effort: "high", text: "先讨论这个方案" });
       return route.fulfill({ status: 201, json: dispatch });
     });
     const openNew = async (name = "新会话") => {

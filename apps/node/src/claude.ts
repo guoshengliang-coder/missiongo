@@ -8,7 +8,7 @@ export function claudeArguments(job: Dispatch, ref: string): string[] {
   if (!(CLAUDE_CODE_MODES as readonly string[]).includes(job.mode)) throw new Error("Unsupported Claude mode");
   return ["--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--replay-user-messages",
     "--permission-prompt-tool", "stdio", "--permission-prompts", "host", "--no-chrome",
-    "--disallowedTools", CLAUDE_DENIALS.join(","), "--permission-mode", job.mode,
+    "--disallowedTools", CLAUDE_DENIALS.join(","), "--permission-mode", "plan",
     "--session-id", ref, "--name", `${job.nodeName ?? "Linux"}-${job.itemKeys.join(",")}`,
     ...(job.model ? ["--model", job.model] : []), ...(job.effort ? ["--effort", job.effort] : [])];
 }
@@ -46,6 +46,9 @@ export class ClaudeAdapter implements Adapter {
   private ref = randomUUID();
   initialTurnId?: string;
   private activeTurnId?: string;
+  private planning = true;
+  private effectiveMode = "plan";
+  private expectedModes=new Map<string,string>();
   private state: Snapshot = { status: "idle", messages: [], turnActive: false };
   private requests: Wire[] = [];
   private waits = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
@@ -70,11 +73,22 @@ export class ClaudeAdapter implements Adapter {
   private event(event: Wire): void {
     if (event.type === "control_response") {
       const response = event.response;
-      if (response?.subtype === "success") this.received(response.request_id);
+      const pending=response && this.waits.get(response.request_id);
+      const expected=response && this.expectedModes.get(response.request_id);
+      if(pending && (response.subtype!=="success" || expected && response.response?.mode!==expected)) {
+        clearTimeout(pending.timer);this.waits.delete(response.request_id);this.expectedModes.delete(response.request_id);
+        pending.reject(new Error("Native client did not confirm the requested mode or settings"));
+      } else if(response?.subtype==="success") {
+        if(typeof response.response?.model==="string") this.state.model=response.response.model;
+        if(expected) this.effectiveMode=expected;
+        this.received(response.request_id);this.expectedModes.delete(response.request_id);
+      }
       return;
     }
     if (event.type === "system" && event.subtype === "init") {
       if (event.session_id !== this.ref) { this.process.child.kill(); return; }
+      if(typeof event.model==="string") this.state.model=event.model;
+      if(typeof event.effort==="string") this.state.effort=event.effort;
       this.received("native-id");
     }
     if (event.type === "control_request" && event.request?.subtype === "can_use_tool") {
@@ -131,9 +145,13 @@ export class ClaudeAdapter implements Adapter {
       }));
       else questions = [{ title: `Claude Code 请求使用 ${request.tool_name}`, key: `授权请求 ${request.requestId}`,
         detail: JSON.stringify(request.input ?? {}).slice(0, 4000), options: JSON.stringify(request.input ?? {}).length > 4000 ? ["拒绝"] : ["批准", "拒绝"] }];
+      if(request.tool_name==="ExitPlanMode") {
+        messages.push({sourceId,role:"plan",text:request.input?.plan ?? [...this.state.messages].reverse().find(message=>message.role==="agent")?.text ?? "请审阅当前计划并使用方案批准按钮。"});
+        continue;
+      }
       messages.push({ sourceId, ...(this.activeTurnId ? { turnId: this.activeTurnId } : {}), role: "agent", text: request.tool_name === "ExitPlanMode" ? "计划已准备好，请明确批准或提出修改。" : `Claude Code 请求确认：${request.tool_name}`, questions });
     }
-    return { ...this.state, waitingForInput: this.requests.length > 0, messages };
+    return { ...this.state, mode:this.effectiveMode, waitingForInput: this.requests.length > 0, messages };
   }
   async stop(command: Command): Promise<Snapshot> {
     const target = command.turnId === "startup" ? this.initialTurnId : command.turnId;
@@ -154,6 +172,7 @@ export class ClaudeAdapter implements Adapter {
     if (command.kind === "interrupt") { await this.stop(command); return; }
     const request = this.requests[0];
     if (request) {
+      if(request.tool_name==="ExitPlanMode" && !command.planApprovalRevision) throw new Error("请使用方案批准按钮；文字同意不能退出 Plan。");
       const response = claudeAnswer(request, command.text);
       // Answers always apply to the live native request, not a remembered tool grant.
       this.process.write({ type: "control_response", response: { subtype: "success", request_id: request.requestId, response } });
@@ -165,13 +184,17 @@ export class ClaudeAdapter implements Adapter {
   }
   async decide(): Promise<void> { throw new Error("Use the displayed Claude question to answer this request"); }
   async settings(settings: NonNullable<Session["desiredSettings"]>): Promise<void> {
-    if (settings.effort) throw new Error("Changing Claude effort requires a new dispatch");
     if (settings.mode && !(CLAUDE_CODE_MODES as readonly string[]).includes(settings.mode)) throw new Error("Unsupported Claude mode");
-    for (const request of [settings.mode ? { subtype: "set_permission_mode", mode: settings.mode } : undefined,
-      settings.model ? { subtype: "set_model", model: settings.model } : undefined].filter(Boolean)) {
+    const planning=settings.planApproved===undefined ? this.planning : !settings.planApproved;
+    const mode=planning ? "plan" : settings.mode;
+    for (const request of [settings.model ? { subtype: "set_model", model: settings.model } : undefined,
+      mode ? { subtype: "set_permission_mode", mode } : undefined,
+      settings.effort ? {subtype:"apply_flag_settings",settings:{effortLevel:settings.effort}} : undefined].filter(Boolean)) {
       const requestId = randomUUID(); const ack = this.wait(requestId);
+      if(request?.subtype==="set_permission_mode" && request.mode) this.expectedModes.set(requestId,request.mode);
       this.process.write({ type: "control_request", request_id: requestId, request }); await ack;
     }
+    this.planning=planning; if(mode) this.effectiveMode=mode; if(settings.effort) this.state.effort=settings.effort;
   }
   async close(): Promise<void> { this.process.child.kill(); }
 }

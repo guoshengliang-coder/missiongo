@@ -1,14 +1,15 @@
+import { modeChoices, modeProblem, modeReasonKey } from "./agent-mode-options";
 import { Select } from "./select";
 import { useDialogDraft } from "./dialog-state";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CirclePause, LoaderCircle, Rocket, TriangleAlert } from "lucide-react";
 
-import { AGENT_KINDS, DISPATCH_MODES_BY_AGENT, type AgentKind } from "@missiongo/domain";
+import { AGENT_KINDS, type AgentKind } from "@missiongo/domain";
 
 import { api, ApiError } from "./api";
 import { localizedErrorText } from "./error-text";
-import { agentModels, effortLabelKey, effortOptions, groupModelsByProvider, modelDisplayLabel, reconcileChoice } from "./agent-model-options";
+import { agentModels, effortLabelKey, effortOptions, groupModelsByProvider, modelDisplayLabel } from "./agent-model-options";
 import { NODE_LIST_REFETCH_MS } from "./node-install";
 import {
   ACTIVE_DISPATCHES_QUERY_KEY,
@@ -22,7 +23,6 @@ import {
   NODE_INELIGIBILITY_KEYS,
   SUPPORTED_AGENT_KINDS,
   agentLabelKey,
-  dispatchModeHelpKey,
   dispatchModeLabelKey,
   dispatchModeOrDefault,
   dispatchProblemKey,
@@ -96,11 +96,12 @@ export function DispatchDialog({
   const [projectId, setProjectId] = useState(newSession?.productId ?? "");
   const [touched, setTouched] = useState(false);
   const [agentKind, setAgentKind] = useState<AgentKind>(newSession?.initialConfig?.agentKind ?? "claude_code");
-  const [mode, setMode] = useState<string>(newSession?.initialConfig?.mode ?? dispatchModeOrDefault("claude_code"));
+  const [mode, setMode] = useState<string>(dispatchModeOrDefault(newSession?.initialConfig?.agentKind ?? "claude_code",newSession?.initialConfig?.mode));
   const [nodeId, setNodeId] = useState(newSession?.initialConfig?.nodeId ?? "");
   // Empty means "as configured on the Mac" (AND-130).
   const [model, setModel] = useState(newSession?.initialConfig?.model ?? "");
   const [effort, setEffort] = useState(newSession?.initialConfig?.effort ?? "");
+  const [modeExplicit, setModeExplicit] = useState(Boolean(newSession?.initialConfig?.mode));
   const [defaultsApplied, setDefaultsApplied] = useState(Boolean(newSession?.initialConfig));
   // Held here rather than read back from the selection: dispatching clears the
   // selection, and the confirmation has to keep saying what was sent.
@@ -135,6 +136,7 @@ export function DispatchDialog({
     const saved = defaults.agents[kind] ?? {};
     setAgentKind(kind);
     setMode(dispatchModeOrDefault(kind, saved.mode));
+    setModeExplicit(Boolean(saved.mode));
     setModel(saved.model ?? "");
     setEffort(saved.effort ?? "");
     if (defaults.nodeId) setNodeId(defaults.nodeId);
@@ -166,14 +168,13 @@ export function DispatchDialog({
     setNodeId(firstEligible?.id ?? nodes[0]!.id);
   }, [defaultsApplied, ineligibility, nodeId, nodes]);
 
-  const models = agentModels(nodes.find((node) => node.id === nodeId), agentKind);
-  // Keep the choice valid for whichever machine and agent are selected now.
+  const selectedAgent = nodes.find(node=>node.id===nodeId)?.agents.find(agent=>agent.kind===agentKind);
   useEffect(() => {
-    if (!defaultsApplied || !nodesQuery.isFetched) return;
-    const next = reconcileChoice(models, { ...(model ? { model } : {}), ...(effort ? { effort } : {}) });
-    if ((next.model ?? "") !== model) setModel(next.model ?? "");
-    if ((next.effort ?? "") !== effort) setEffort(next.effort ?? "");
-  }, [defaultsApplied, effort, model, models, nodesQuery.isFetched]);
+    if (!modeExplicit) setMode(dispatchModeOrDefault(agentKind,undefined,selectedAgent?.modes,model || undefined));
+  },[agentKind,modeExplicit,selectedAgent?.modes,model]);
+  const modeIssue = modeProblem(agentKind,mode,selectedAgent?.modes,model || undefined);
+  const models = agentModels(nodes.find((node) => node.id === nodeId), agentKind);
+  const modelUnavailable=Boolean(model && models && !models.some(entry=>entry.id===model));
 
   const saveDefaults = useMutation({
     mutationFn: (defaults: DispatchDefaults) => api.setDispatchDefaults(defaults),
@@ -280,8 +281,8 @@ export function DispatchDialog({
   }
 
   const selectedReason = nodeId ? ineligibility.get(nodeId) ?? null : null;
-  const modes = DISPATCH_MODES_BY_AGENT[agentKind];
-  const modeHelp = dispatchModeHelpKey(agentKind, mode);
+  const modes = modeChoices(agentKind,mode,selectedAgent?.modes,model || undefined);
+
   const blocked = !nodeId || Boolean(selectedReason) || (newSession ? !products.some(product => product.id === projectId) || !nodes.some(node => node.id === nodeId) : itemKeys.length === 0 || !eligibility.isSuccess
     || !eligibility.data.allowed || (eligibility.data.requiresConfirmation && !redispatchConfirmed));
 
@@ -291,6 +292,7 @@ export function DispatchDialog({
       onSubmit={(event) => {
         event.preventDefault();
         if (blocked) return;
+        if (modeIssue || modelUnavailable) return;
         if (newSession) newSession.onConfigured({productId:projectId,nodeId,agentKind,mode,
           ...(model ? {model} : {}), ...(effort ? {effort} : {}),
           nodeName:nodes.find(node => node.id === nodeId)?.name ?? "",
@@ -386,6 +388,7 @@ export function DispatchDialog({
               // A mode from the previous agent is not a preference for this one.
               // Models are per agent too, so start from that agent's saved default.
               setMode(dispatchModeOrDefault(next, saved.mode));
+              setModeExplicit(Boolean(saved.mode));
               setModel(saved.model ?? "");
               setEffort(saved.effort ?? "");
             }}
@@ -401,14 +404,16 @@ export function DispatchDialog({
           </Select>
         </label>
         <label>{t("dispatchMode")}
-          <Select value={mode} onChange={(event) => setMode(event.target.value)}>
-            {modes.map((value) => (
-              <option key={value} value={value}>{modeLabel(agentKind, value)}</option>
-            ))}
+          <Select value={mode} onChange={(event) => {setMode(event.target.value);setModeExplicit(true);}}>
+            <option value="" disabled>{t("dispatchModeChoose")}</option>
+            {modes.map(choice => <option key={choice.value} value={choice.value} disabled={choice.state!=="available"}>
+              {modeLabel(agentKind,choice.value)}{choice.state!=="available" ? ` · ${t(modeReasonKey(choice))}` : ""}
+            </option>)}
           </Select>
         </label>
       </div>
-      {modeHelp && <p className="dispatch-note">{t(newSession ? "newSessionModeHelp" : modeHelp)}</p>}
+      {modelUnavailable && <p className="dispatch-note" role="status">{t("dispatchModelUnsupported")} · {model}</p>}
+      {modeIssue && <p className="dispatch-note" role="status">{t(modeIssue)}</p>}
       <div className="field-row">
         <label>{t("dispatchModel")}
           <Select value={model} onChange={(event) => setModel(event.target.value)} disabled={!models}>
@@ -455,7 +460,7 @@ export function DispatchDialog({
           {saveDefaults.isPending && <LoaderCircle className="spin" size={16} />}{t("dispatchSetDefaults")}
         </button>
         <button type="button" className="secondary-button" disabled={mutation.isPending || saveDefaults.isPending} onClick={onClose}>{t("cancel")}</button>
-        <button type="submit" className="primary-button" disabled={blocked || !defaultsApplied || mutation.isPending || saveDefaults.isPending}>
+        <button type="submit" className="primary-button" disabled={Boolean(modeIssue) || modelUnavailable || blocked || !defaultsApplied || mutation.isPending || saveDefaults.isPending}>
           {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <Rocket size={16} />}
           {t(newSession ? "newSessionEnter" : "dispatchSubmit")}
         </button>

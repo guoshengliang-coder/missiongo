@@ -132,3 +132,35 @@ it("offers immediately for existing approval attention with long history, even w
   expect((await f.get()).json()).toMatchObject({ planApprovalStatus: { code: "ready" }, planApproval: { revision: expect.any(String) } });
   expect(f.provider).not.toHaveBeenCalled();
 });
+
+it("persists Web approval across service recreation and never grants it for chat or a mode change",async()=>{
+ const f=await fixture();
+ const {ImplementationPlans}=await import("./implementation-plans.js");
+ const plans=new ImplementationPlans(f.store.database);
+ const key=plans.dispatchKeys("dispatch")[0]!;
+ expect(()=>plans.assertClaim("owner","dispatch:dispatch",key)).toThrow();
+ const offer=await f.offer();
+ expect(()=>plans.assertClaim("owner","dispatch:dispatch",key)).toThrow();
+ expect((await f.approve(offer.revision)).statusCode).toBe(201);
+ const fresh=new ImplementationPlans(f.store.database);
+ expect(()=>fresh.assertClaim("owner","dispatch:dispatch",key)).toThrow(/native implementation mode/);
+ const desired=f.dispatch.listForNode("node").find(session=>session.id===f.id)!.desiredSettings!;
+ f.dispatch.recordSnapshot({nodeId:"node",sessionId:f.id,status:"idle",messages:[],mode:"auto",settingsRevision:desired.revision});
+ expect(()=>fresh.assertClaim("owner","dispatch:dispatch",key)).not.toThrow();
+ const row=f.db.prepare("SELECT source,plan_text FROM implementation_plan_approvals").get();
+ expect(row).toMatchObject({source:"web",plan_text:f.messages.at(-1)!.text});
+ expect(fresh.commandRevision((await f.get()).json().command.id)).toBe(offer.revision);
+});
+
+it("approves a registered external proposal under its original native conversation identity",async()=>{
+ const f=await fixture(true);
+ const {ImplementationPlans}=await import("./implementation-plans.js");
+ const plans=new ImplementationPlans(f.store.database), identity="native:fixture:codex:native:thread";
+ const key=f.store.listWorkItems({productId:f.product.id})[0]!.key;
+ plans.request("owner",identity,"external-exact-v1",{keys:[key],plan:"Exact external implementation",validation:"Verify external identity"});
+ const offered=(await f.get()).json();
+ expect(offered.planApproval).toMatchObject({revision:"external-exact-v1",plan:"Exact external implementation",itemKeys:[key]});
+ expect((await f.approve("external-exact-v1")).statusCode).toBe(201);
+ expect(()=>plans.assertClaim("owner",identity,key)).not.toThrow();
+ expect(plans.canImplement("owner",`session:${f.id}`)).toBe(false);
+});

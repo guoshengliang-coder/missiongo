@@ -298,10 +298,10 @@ final class DispatchPresentationTests: XCTestCase {
         XCTAssertEqual(DispatchPresentation.agentLabel("codex"), "Codex")
         XCTAssertEqual(DispatchPresentation.agentLabel("opencode"), "OpenCode")
         XCTAssertEqual(DispatchPresentation.agentLabel("hermes"), "Hermes")
-        XCTAssertEqual(DispatchPresentation.modeLabel("plan"), "计划")
-        XCTAssertEqual(DispatchPresentation.modeLabel("acceptEdits"), "自动接受编辑")
-        XCTAssertEqual(DispatchPresentation.agentLine(agentKind: "claude_code", mode: "plan"), "Claude Code · 计划")
-        XCTAssertEqual(DispatchPresentation.agentLine(agentKind: "codex", mode: "default"), "Codex · 默认")
+        XCTAssertEqual(DispatchPresentation.modeLabel("plan"), "Plan")
+        XCTAssertEqual(DispatchPresentation.modeLabel("acceptEdits"), "Accept edits")
+        XCTAssertEqual(DispatchPresentation.agentLine(agentKind: "claude_code", mode: "plan"), "Claude Code · Plan")
+        XCTAssertEqual(DispatchPresentation.agentLine(agentKind: "codex", mode: "default"), "Codex · 默认权限")
     }
 
     func testShowsAnUnknownAgentOrModeAsItArrived() {

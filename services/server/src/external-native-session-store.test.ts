@@ -450,3 +450,9 @@ it("never invents confirmed values from a request when the source omits or norma
   expect(actual.effort).toBeUndefined();
   expect(actual.pending).toBeUndefined();
 });
+
+it("rejects policy-disabled full access through the external settings API too",()=>{
+ const f=settingsFixture("codex");
+ expect(()=>f.native.requestSettings("owner",f.id,{mode:"full-access"})).toThrow(/managed_workspace_required/);
+ expect(f.native.overlay("owner",f.id).settings.pending).toBeUndefined();
+});

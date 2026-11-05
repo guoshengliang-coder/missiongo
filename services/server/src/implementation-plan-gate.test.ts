@@ -1,0 +1,81 @@
+import { randomUUID } from "node:crypto";
+import { afterEach, expect, it } from "vitest";
+import { buildApp } from "./app.js";
+import { createAiAccessToken, hashPassword } from "./admin-auth.js";
+import { DispatchStore } from "./dispatch-store.js";
+import { AgentSessionStore } from "./agent-session-store.js";
+const apps:ReturnType<typeof buildApp>[]=[];
+afterEach(async()=>{await Promise.all(apps.splice(0).map(app=>app.close()));});
+const config={id:"plan-owner",username:"plans@example.test",passwordScrypt:hashPassword("fixture-password"),sessionSecret:"synthetic-plan-gate-signing-key",cookieSecure:false};
+
+it.each([{kind:"codex",mode:"auto"},{kind:"claude_code",mode:"bypassPermissions"},{kind:"opencode",mode:"build"},{kind:"opencode",mode:"plan"}] as const)("$kind/$mode cannot claim on mode changes, text, forged approval fields or a stale proposal",async ({kind,mode})=>{
+ const app=buildApp({adminAccount:config,writeTools:"comments"});apps.push(app);
+ const store=app.missionGoStore,accounts=app.missionGoAccounts;
+ const login=await app.inject({method:"POST",url:"/api/v1/auth/login",payload:{username:config.username,password:"fixture-password"}});
+ const headers={cookie:login.headers["set-cookie"]!.toString().split(";")[0]!};
+ const account=accounts.getAccount(config.id);
+ const token=createAiAccessToken(config,{id:account.id,username:account.email,role:account.role},accounts.credentialsStamp(account),"plan-client",["missiongo:read","missiongo:write"]).token;
+ const product=store.createProduct({name:"Scoped approval",keyPrefix:"SCOPE",createdByAccountId:config.id});
+ const item=store.createWorkItem({productId:product.id,status:"ready",title:"Scoped work",description:"Implementation scope",type:"task",priority:"normal",environment:{platform:"shared"}});
+ const dispatches=new DispatchStore(store.database),sessions=new AgentSessionStore(store.database);
+ const node=dispatches.registerNode({accountId:config.id,installationId:randomUUID(),name:"Native fixture"});
+ dispatches.recordHeartbeat(node.nodeId,[{kind,models:[],planApprovalProtocol:1}]);
+ dispatches.replaceOwnRepos(node.nodeId,[{productId:product.id,repoPath:"/synthetic/repository"}]);
+ const dispatch=dispatches.createDispatch({accountId:config.id,nodeId:node.nodeId,agentKind:kind,mode,itemKeys:[item.key]});
+ dispatches.claimNextDispatch(node.nodeId);dispatches.recordDispatchResult({nodeId:node.nodeId,dispatchId:dispatch.id,status:"launched"});
+ const id=sessions.createForDispatch({dispatchId:dispatch.id,nodeId:node.nodeId,sessionRef:randomUUID()});
+ sessions.recordSnapshot({nodeId:node.nodeId,sessionId:id,status:"idle",messages:[{sourceId:"plan",role:"plan",text:"Bound plan and validation targets"}],turnState:{turnActive:false}});
+ const call=async(name:string,args:Record<string,unknown>)=>{
+  const response=await app.inject({method:"POST",url:"/mcp",headers:{authorization:`Bearer ${token}`,accept:"application/json, text/event-stream"},payload:{jsonrpc:"2.0",id:1,method:"tools/call",params:{name,arguments:args}}});
+  const raw=response.headers["content-type"]?.includes("text/event-stream") ? response.body.split("\n").find(line=>line.startsWith("data: "))!.slice(6) : response.body;
+  return JSON.parse(raw).result;
+ };
+ const claimArgs={itemKey:item.key,dispatchId:dispatch.id,agentId:"Test agent",idempotencyKey:"one-claim"};
+ expect((await call("claim_item",claimArgs)).isError).toBe(true);
+ const proposal={itemKeys:[item.key],dispatchId:dispatch.id,plan:"Bound plan",validation:"Verify the new behavior",approvalMethod:"web",approved:true};
+ const first=await call("request_plan_approval",proposal);
+ expect(first.structuredContent).toMatchObject({approved:false,approvalRequired:true});
+ expect(store.getWorkItem(item.key).status).toBe("ready");
+ const changed=await app.inject({method:"PATCH",url:`/api/v1/agent-sessions/${id}/settings`,headers,payload:{mode:kind==="opencode" ? mode : "default"}});
+ expect(changed.statusCode,changed.body).toBe(200);
+ expect((await call("claim_item",claimArgs)).isError).toBe(true);
+ const second=await call("request_plan_approval",{...proposal,plan:"Revised bound plan"});
+ const old=await app.inject({method:"POST",url:`/api/v1/agent-sessions/${id}/plan-approval`,headers,payload:{revision:first.structuredContent.revision}});
+ expect(old.statusCode).toBe(409);
+ const detail=(await app.inject({method:"GET",url:`/api/v1/agent-sessions/${id}`,headers})).json();
+ expect(detail.planApproval).toMatchObject({revision:second.structuredContent.revision,itemKeys:[item.key],plan:"Revised bound plan"});
+ const approved=await app.inject({method:"POST",url:`/api/v1/agent-sessions/${id}/plan-approval`,headers,payload:{revision:detail.planApproval.revision}});
+ expect(approved.statusCode,approved.body).toBe(201);
+ expect((await call("claim_item",claimArgs)).isError).toBe(true);
+ let desired=sessions.listForNode(node.nodeId).find(session=>session.id===id)!.desiredSettings!;
+ if(kind==="opencode" && mode==="plan") {
+  sessions.recordSnapshot({nodeId:node.nodeId,sessionId:id,status:"idle",messages:[],mode:"plan",settingsRevision:desired.revision});
+  expect((await call("claim_item",claimArgs)).isError).toBe(true);
+  await app.inject({method:"PATCH",url:`/api/v1/agent-sessions/${id}/settings`,headers,payload:{mode:"build"}});
+  desired=sessions.listForNode(node.nodeId).find(session=>session.id===id)!.desiredSettings!;
+ }
+ sessions.recordSnapshot({nodeId:node.nodeId,sessionId:id,status:"idle",messages:[],mode:desired.mode!,settingsRevision:desired.revision});
+ const claimed=await call("claim_item",claimArgs);
+ expect(claimed.isError,JSON.stringify(claimed)).not.toBe(true);
+ expect(claimed.structuredContent.item.status).toBe("in_progress");
+ expect(store.database.connection.prepare("SELECT COUNT(*) AS n FROM external_agent_sessions").get()).toMatchObject({n:0});
+ expect(sessions.listForNode(node.nodeId).find(session=>session.id===id)?.desiredSettings).toMatchObject({mode:kind==="opencode" ? "build" : "default",planApproved:true});
+});
+
+it("refuses new dispatches and queued delivery to nodes without the native approval protocol",()=>{
+ const app=buildApp({adminAccount:config,writeTools:"comments"});apps.push(app);
+ const store=app.missionGoStore, dispatches=new DispatchStore(store.database);
+ const product=store.createProduct({name:"Node compatibility",keyPrefix:"COMP",createdByAccountId:config.id});
+ const item=store.createWorkItem({productId:product.id,status:"ready",title:"Protocol gate",description:"Upgrade required",type:"task",priority:"normal",environment:{platform:"shared"}});
+ const node=dispatches.registerNode({accountId:config.id,installationId:randomUUID(),name:"Legacy fixture"});
+ dispatches.replaceOwnRepos(node.nodeId,[{productId:product.id,repoPath:"/synthetic/repository"}]);
+ const input={accountId:config.id,nodeId:node.nodeId,agentKind:"codex" as const,mode:"auto",itemKeys:[item.key]};
+ dispatches.recordHeartbeat(node.nodeId,[{kind:"codex",ready:true}]);
+ expect(()=>dispatches.createDispatch(input)).toThrow(/Update the execution node/);
+ dispatches.recordHeartbeat(node.nodeId,[{kind:"codex",ready:true,planApprovalProtocol:1}]);
+ const dispatch=dispatches.createDispatch(input);
+ dispatches.recordHeartbeat(node.nodeId,[{kind:"codex",ready:true}]);
+ expect(dispatches.claimNextDispatch(node.nodeId)).toBeUndefined();
+ dispatches.recordHeartbeat(node.nodeId,[{kind:"codex",ready:true,planApprovalProtocol:1}]);
+ expect(dispatches.claimNextDispatch(node.nodeId)?.dispatchId).toBe(dispatch.id);
+});

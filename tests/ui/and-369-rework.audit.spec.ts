@@ -26,7 +26,7 @@ for (const width of [320, 768, 1023, 1024, 1440]) for (const theme of ["light", 
     const linked = { ...base, id: "linked", agentSessionId: "linked", dispatchId: "item-dispatch",
       sessionName: "条目任务", items: [{ key: "RW-1", title: "关联条目", productId }] };
     await page.route("**/api/v1/nodes", route => route.fulfill({ json: { nodes: [{ id: base.nodeId,
-      agents: [{ kind: "codex", models: [{ id: "fixture", label: "Fixture Model", efforts: ["high"] }] }] }] } }));
+      agents: [{ kind: "codex", planApprovalProtocol: 1, models: [{ id: "fixture", label: "Fixture Model", efforts: ["high"] }] }] }] } }));
     await page.route("**/api/v1/agent-sessions**", async route => {
       const path = new URL(route.request().url()).pathname;
       if (path.endsWith("/commands")) {

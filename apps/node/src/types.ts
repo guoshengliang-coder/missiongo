@@ -25,7 +25,7 @@ export interface Approval {
   reason?: string; startedAtMs: number; options?: { id: string; kind: string; label?: string; detail?: string }[];
 }
 export interface Command {
-  id: string; kind?: string; text: string; turnId?: string; status: string;
+  id: string; kind?: string; text: string; planApprovalRevision?: string; turnId?: string; status: string;
   createdAt?: string;
   attachments?: { id: string; filename: string; sizeBytes: number }[];
 }
@@ -33,14 +33,14 @@ export interface Session {
   id: string; dispatchId?: string; agentKind: Kind; sessionRef: string; lifecycle?: string;
   occupiesExecutionSlot?: boolean; command?: Command; approvalDecision?: { id: string; choice: string };
   approvalRetry?: { id: string; reviewId: string; status: string }; approvalReviewMode?: string;
-  desiredSettings?: { revision: number; mode?: string; model?: string; effort?: string };
+  desiredSettings?: { planApproved?: boolean; revision: number; mode?: string; model?: string; effort?: string };
   appliedSettingsRevision?: number; archiveInSource?: boolean; restoreInSource?: boolean;
 }
 export interface Snapshot {
   status: "active" | "idle" | "suspended" | "stalled" | "unavailable" | "failed";
   messages: Message[]; activities?: { id: string; title: string; detail?: string }[];
   stopConfirmed?: boolean;
-  turnActive?: boolean; waitingForInput?: boolean; error?: string; model?: string; effort?: string;
+  mode?: string; turnActive?: boolean; waitingForInput?: boolean; error?: string; model?: string; effort?: string;
   approval?: Approval; commandId?: string; commandStatus?: string; commandError?: string;
   sourceArchived?: boolean; sourceRestored?: boolean; sourceArchiveError?: string;
   settingsRevision?: number; settingsError?: string;
