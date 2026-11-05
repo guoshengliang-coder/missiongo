@@ -20,8 +20,8 @@ final class AgentModeCapabilityTests: XCTestCase {
     }
     func testPermissionChangeNeverCreatesPlanApproval() throws {
         let pending = try CodexTurnOverrides(desired: AgentSessionSettings(revision: 1, mode: "auto", planApproved: false))
-        XCTAssertEqual(pending.settings?.sandbox, "read-only")
-        XCTAssertEqual(pending.settings?.planning, true)
+        XCTAssertEqual(pending.settings?.sandbox, "workspace-write")
+        XCTAssertEqual(pending.settings?.planning, false)
         let approved = try CodexTurnOverrides(desired: AgentSessionSettings(revision: 2, mode: "auto", planApproved: true))
         XCTAssertEqual(approved.settings?.sandbox, "workspace-write")
         XCTAssertEqual(approved.settings?.approvalsReviewer, "auto_review")

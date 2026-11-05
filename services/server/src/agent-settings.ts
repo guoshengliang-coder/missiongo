@@ -21,7 +21,7 @@ export interface NodeAgentModel {
 
 /** A session's mode, model and effort. Absent model or effort: the Mac's own configuration. */
 export interface AgentRunSettings {
-  /** Native phase only; false does not grant implementation-plan approval. */
+  /** Legacy wire compatibility; approval never overrides the selected mode. */
   readonly planning?: boolean;
   readonly planApproved?: boolean;
   readonly mode?: string;

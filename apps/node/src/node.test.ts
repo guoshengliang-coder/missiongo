@@ -124,14 +124,14 @@ describe("headless configuration and scope", () => {
   });
 });
 describe("Codex native control", () => {
-  it.each(["auto", "default", "read-only"])("project session preserves %s through launch, settings and the next turn", async mode => {
+  it.each([false,true].flatMap(free=>["auto", "default", "read-only"].map(mode=>({free,mode}))))("Codex $mode preserves permissions from the first turn (free=$free)", async ({free,mode}) => {
     const root=temporary(), log=join(root,"events"); vi.stubEnv("TEST_AGENT_EVENTS",log);
-    const adapter=new CodexAdapter({...job(root),itemKeys:[],freeSession:true,mode},fixture); adapters.push(adapter);
+    const adapter=new CodexAdapter({...job(root),itemKeys:free ? [] : ["EX-1"],freeSession:free,mode},fixture); adapters.push(adapter);
     await adapter.start("ready");
     expect((await adapter.snapshot()).mode).toBe(mode);
     await adapter.settings({revision:1,mode:"read-only",planning:true,planApproved:false});
     expect((await adapter.snapshot()).mode).toBe("read-only");
-    await adapter.settings({revision:2,mode,planning:false});
+    await adapter.settings({revision:2,mode,planning:true,planApproved:false});
     await adapter.deliver({id:"ordinary-reply",status:"queued",text:"continue"});
     const requests=readFileSync(log,"utf8").trim().split("\n").map(line=>JSON.parse(line));
     expect(requests.find(r=>r.method==="thread/start").params).toMatchObject(codexPolicy(mode));
@@ -179,15 +179,15 @@ describe("Codex native control", () => {
   });
 });
 describe("Claude native control", () => {
-  it.each(["auto", "bypassPermissions", "default", "plan"])("project session preserves Claude %s and can leave the old forced Plan", async mode=>{
-    const input={...job(temporary(),"claude_code"),itemKeys:[],freeSession:true,mode};
+  it.each([false,true].flatMap(free=>["auto", "bypassPermissions", "default", "plan"].map(mode=>({free,mode}))))("Claude $mode preserves permissions from launch (free=$free)", async ({free,mode})=>{
+    const input={...job(temporary(),"claude_code"),itemKeys:free ? [] : ["EX-1"],freeSession:free,mode};
     const args=claudeArguments(input,"session");
     expect(args[args.indexOf("--permission-mode")+1]).toBe(mode);
     const adapter=new ClaudeAdapter(input,fixture); adapters.push(adapter);
     await adapter.start("ready"); expect((await adapter.snapshot()).mode).toBe(mode);
     await adapter.settings({revision:1,mode:"plan",planning:true,planApproved:false});
     expect((await adapter.snapshot()).mode).toBe("plan");
-    await adapter.settings({revision:2,mode,planning:false});
+    await adapter.settings({revision:2,mode,planning:true,planApproved:false});
     expect((await adapter.snapshot()).mode).toBe(mode);
   });
   it("uses real stdio approval surface and keeps irreversible-operation denials", () => {
@@ -238,7 +238,7 @@ describe("OpenCode shared-service control", () => {
     expect(pages[0]?.get("order")).toBe("desc");
     expect(pages.slice(1).every(query => !query.has("order"))).toBe(true);
   });
-  it.each(["build", "plan"])("project session preserves OpenCode %s and can recover from forced Plan",async mode=>{
+  it.each([false,true].flatMap(free=>["build", "plan"].map(mode=>({free,mode}))))("OpenCode $mode preserves permissions from launch (free=$free)",async ({free,mode})=>{
     let actual="", initial="";
     const api={call:async(method:string,path:string,body?:Wire):Promise<Wire>=>{
       if(path==="/api/info") return {version:"2.1.0"};
@@ -248,10 +248,10 @@ describe("OpenCode shared-service control", () => {
       if(path.endsWith("/agent")) actual=body!.agent;
       return {data:[]};
     }} as unknown as OpenCodeAPI;
-    const adapter=new OpenCodeAdapter({...job(temporary(),"opencode"),itemKeys:[],freeSession:true,mode},api);adapters.push(adapter);
+    const adapter=new OpenCodeAdapter({...job(temporary(),"opencode"),itemKeys:free ? [] : ["EX-1"],freeSession:free,mode},api);adapters.push(adapter);
     await adapter.start("ready");expect(initial).toBe(mode);
     await adapter.settings({revision:1,mode:"plan",planning:true,planApproved:false});expect(actual).toBe("plan");
-    await adapter.settings({revision:2,mode,planning:false});expect(actual).toBe(mode);
+    await adapter.settings({revision:2,mode,planning:true,planApproved:false});expect(actual).toBe(mode);
   });
   it("uses the existing V2 service, displays real form options and preserves permission denial", async () => {
     let pending = true; const calls: { method: string; path: string; body?: unknown }[] = [];

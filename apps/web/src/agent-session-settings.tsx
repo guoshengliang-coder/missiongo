@@ -99,7 +99,6 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
         effort={effortValue} effortDisplay={shownEffort} external={external} busy={apply.isPending} canChange={canChange}
         onChange={change => apply.mutate(change)} />
       {settings.requiresImplementationMode && <p className="agent-session-settings-note" role="status">{t("agentImplementationModeRequired")}</p>}
-      {settings.requestedMode && settings.requestedMode!==settings.mode && <p className="agent-session-settings-note" role="status">{t("agentImplementationMode",{mode:modeLabel(settings.requestedMode)})}</p>}
       {external && <p className="agent-session-settings-note">{t(!session.canReply && !settings.unavailableReason
         ? "agentSettingsExternalUnavailable"
         : settings.unavailableReason === "connect" ? "agentSettingsExternalConnect"

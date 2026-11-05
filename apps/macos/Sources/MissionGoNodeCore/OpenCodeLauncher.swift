@@ -1028,7 +1028,7 @@ public struct OpenCodeLauncher: AgentAdapter {
         let name = SessionLauncher.sessionName(for: job)
         let catalog = await lastCatalog()
         let modelRef = resolveModelRef(model: job.model, effort: job.effort, catalog: catalog)
-        let initialAgent = job.freeSession && job.mode != "plan" ? "build" : "plan"
+        let initialAgent = job.mode != "plan" ? "build" : "plan"
         let id = try await control.createSession(
             directory: job.repoPath, agent: initialAgent, model: modelRef
         )

@@ -753,17 +753,17 @@ final class OpenCodeTests: XCTestCase {
         let prompt = await control.lastPrompt
         XCTAssertEqual(agent, "plan")
         XCTAssertTrue(prompt?.contains("get_current_account") == true)
-        XCTAssertTrue(prompt?.contains("切换到 build agent") == true)
+        XCTAssertTrue(prompt?.contains("方案审批不切换 agent") == true)
     }
 
-    func testProjectSessionPreservesBuildAndExplicitPlan() async throws {
+    func testProjectAndItemSessionsPreserveBuildAndExplicitPlan() async throws {
         let repo = try temporaryRepo()
         defer { try? FileManager.default.removeItem(at: repo) }
-        for mode in ["build", "plan"] {
+        for (free, mode) in [(true, "build"), (true, "plan"), (false, "build"), (false, "plan")] {
             let control = StubOpenCodeControl(mcpStatus: "connected")
             let launcher = OpenCodeLauncher(control: control)
-            _ = try await launcher.launch(DispatchJob(dispatchId: "free", itemKeys: [], repoPath: repo.path,
-                mode: mode, nodeName: "Fixture", freeSession: true))
+            _ = try await launcher.launch(DispatchJob(dispatchId: "free", itemKeys: free ? [] : ["AND-2"], repoPath: repo.path,
+                mode: mode, nodeName: "Fixture", freeSession: free))
             let agent = await control.createdAgent
             XCTAssertEqual(agent, mode)
         }
@@ -910,7 +910,7 @@ final class OpenCodeTests: XCTestCase {
         let model = await control.createdModel
         let agent = await control.createdAgent
         XCTAssertEqual(model, OpenCodeModelRef(modelId: "glm-5.3", providerId: "zai-coding-plan", variant: "high"))
-        XCTAssertEqual(agent, "plan")
+        XCTAssertEqual(agent, "build")
     }
 
     /// A tier the model does not take is dropped, a model nobody can name is

@@ -55,8 +55,8 @@ public enum LaunchPrompt {
     /// name and in the process argv, so anything that is not a key has no
     /// legitimate reading and is rejected before a session starts.
     ///
-    /// Plan comments are written only after approval. Claude Code also needs to
-    /// leave its native plan mode before making any writes.
+    /// Plan comments are written only after approval, independently of native permissions.
+    /// An explicitly selected Plan mode must be changed separately before writes.
     ///
     /// Items in `reworkItemKeys` get a paragraph saying they came back: read why
     /// on the item and start again from main, since the earlier branch was merged
@@ -129,11 +129,11 @@ public enum LaunchPrompt {
                 "用户批准之后，先将已批准的计划以结构化评论写到各条条目，再领取、创建 worktree 并实施。已批准的方案不重复要求批准；权限审查不代替方案批准。",
             ]
             if client == .claudeCode {
-                lines.append("Claude Code 必须先通过原生计划确认流程退出 plan 模式，再执行评论、领取和代码写入；保留客户端的权限控制。")
+                lines.append("Claude Code 按所选原生权限模式从第一轮运行；方案审批不切换权限。仅当明确选择了原生 Plan 时，实施前才需另行退出 Plan；权限可写不代表方案已批准。")
             } else if client == .codex {
                 lines.append("Codex 的自动审查仅处理技术权限请求；仍须等待用户明确批准方案后才能实施。")
             } else {
-                lines.append("OpenCode 在原生 plan agent 中不得写入；用户批准方案后先切换到 build agent，再执行评论、领取和代码写入。")
+                lines.append("OpenCode 按所选原生 agent 从第一轮运行；方案审批不切换 agent。仅当明确选择了原生 plan 时，实施前才需另行切换 build；Build 不代表方案已批准。")
             }
         }
         return lines.joined(separator: "\n")

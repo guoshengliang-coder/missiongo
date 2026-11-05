@@ -38,6 +38,15 @@ function render(settings: AgentSessionSettings, overrides: Partial<AgentSessionS
 }
 
 describe("Claude Code session model choice", () => {
+  it("shows a pending native permission change independently of plan approval", () => {
+    const html = render({ mode: "plan", requestedMode: "bypassPermissions", adjustable: true,
+      pending: { revision: 2, mode: "bypassPermissions" } });
+    expect(html).toContain("Bypass permissions");
+    expect(html).toContain("等待 Mac 应用");
+    expect(html).not.toContain("方案批准后才生效");
+    expect(html).not.toContain("方案已批准");
+  });
+
   it("uses the dispatch catalog name without a redundant model-code note", () => {
     const html = render({
       mode: "bypassPermissions", requestedModel: "gateway-glm", model: "gateway-glm", adjustable: true,

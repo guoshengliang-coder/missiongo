@@ -2361,5 +2361,25 @@ export class MissionGoDatabase {
         this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202611051350,new Date().toISOString());
       });
     }
+    // Decouple approval from permissions without fabricating approvals or applied modes.
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611051359").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611051359").get()) return;
+        this.connection.exec(`UPDATE agent_sessions AS s SET
+          implementation_mode=COALESCE(s.implementation_mode,(SELECT d.mode FROM dispatches d WHERE d.id=s.dispatch_id)),
+          desired_settings_json=json_set(json_remove(COALESCE(s.desired_settings_json,'{}'),'$.planApproved'),
+            '$.mode',COALESCE(s.implementation_mode,(SELECT d.mode FROM dispatches d WHERE d.id=s.dispatch_id)),
+            '$.planning',json('false')),
+          settings_revision=s.settings_revision+1
+          WHERE NOT EXISTS (SELECT 1 FROM managed_execution_intents m WHERE m.id=s.dispatch_id)
+          AND (json_extract(s.desired_settings_json,'$.planning')=1
+            OR json_type(s.desired_settings_json,'$.planApproved') IS NOT NULL
+            OR (s.desired_settings_json IS NULL AND s.mode IN ('read-only','plan')
+              AND EXISTS (SELECT 1 FROM dispatch_items i WHERE i.dispatch_id=s.dispatch_id)));`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611051359,new Date().toISOString());
+      });
+    }
+
   }
 }
