@@ -55,3 +55,21 @@ it.each(["accept","decline","cancel"] as const)("native approval uses the source
  expect(await requestNativePlanApproval(ctx,"Exact plan and validation goals","version-1")).toBe(action==="accept");
  expect(elicitInput).toHaveBeenCalledWith(expect.objectContaining({message:"Exact plan and validation goals",_meta:{"missiongo/planApproval":"version-1"}}));
 });
+
+it("keeps each proposal's submission time stable and returns legacy approval time without inventing submission",()=>{
+ const {plans,item,store}=fixture();
+ const proposal={keys:[item.key],plan:"Reviewed proposal",validation:"Verify chronology"};
+ plans.request("owner","conversation","v1",proposal);
+ const submitted=plans.proposal("owner","conversation")!.submittedAt;
+ expect(Number.isFinite(Date.parse(submitted!))).toBe(true);
+ plans.request("owner","conversation","v1",proposal);
+ plans.record({accountId:"owner",identity:"conversation",revision:"v1",planHash:"v1",keys:[item.key],source:"web"});
+ expect(plans.proposal("owner","conversation")).toMatchObject({submittedAt:submitted,approvedAt:expect.any(String),approved:true});
+ // Existing requests predate submission metadata; the persisted approval remains the ordering boundary.
+ store.database.connection.prepare("UPDATE implementation_plan_requests SET proposal_json=? WHERE account_id=? AND identity_key=?")
+  .run(JSON.stringify(proposal),"owner","conversation");
+ expect(plans.proposal("owner","conversation")!.submittedAt).toBeUndefined();
+ expect(plans.proposal("owner","conversation")!.approvedAt).toEqual(expect.any(String));
+ plans.request("owner","conversation","v2",proposal);
+ expect(plans.proposal("owner","conversation")!.approvedAt).toBeUndefined();
+});

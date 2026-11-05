@@ -27,3 +27,23 @@ it("deduplicates only identical plan messages, preserving commentary and differe
   ] as AgentSessionMessage[];
   expect(withoutDuplicatePlan(messages, session).map(message => message.id)).toEqual(["different", "comment"]);
 });
+
+it("keeps post-approval replies after the plan, including legacy plans and paged history", async () => {
+  const { planTranscript } = await import("./agent-plan-content");
+  const messages = [
+    { id: "investigation", role: "agent", text: "Investigated", occurredAt: "2026-11-05T10:00:00Z" },
+    { id: "original", role: "plan", text: "Exact plan", occurredAt: "2026-11-05T10:01:00Z" },
+    { id: "accepted", role: "agent", text: "Approval received", occurredAt: "2026-11-05T10:02:00Z" },
+    { id: "result", role: "agent", text: "Implementation complete", occurredAt: "2026-11-05T11:00:00Z" },
+  ] as AgentSessionMessage[];
+  const ids = (rows: readonly (AgentSessionMessage | null)[]) => rows.map(row => row?.id ?? "submitted-plan");
+  const legacy = { implementationPlan: { plan: "Exact plan" } } as AgentSession;
+  expect(ids(planTranscript(messages, legacy))).toEqual(["investigation", "submitted-plan", "accepted", "result"]);
+  const registered = { implementationPlan: { plan: "Different registered proposal", submittedAt: "2026-11-05T10:01:30Z" } } as AgentSession;
+  expect(ids(planTranscript(messages, registered))).toEqual(["investigation", "original", "submitted-plan", "accepted", "result"]);
+  expect(ids(planTranscript(messages.slice(2), registered))).toEqual(["submitted-plan", "accepted", "result"]);
+  const oldApproved = { implementationPlan: { plan: "Different registered proposal", approvedAt: "2026-11-05T10:02:00.500Z" } } as AgentSession;
+  expect(ids(planTranscript(messages, oldApproved))).toEqual(["investigation", "original", "submitted-plan", "accepted", "result"]);
+  expect(ids(planTranscript(messages.slice(2), legacy))).toEqual(["submitted-plan", "accepted", "result"]);
+  expect(planTranscript(messages, undefined)).toBe(messages);
+});

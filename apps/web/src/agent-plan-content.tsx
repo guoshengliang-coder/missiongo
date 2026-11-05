@@ -12,6 +12,27 @@ export function withoutDuplicatePlan<T extends AgentSessionMessage>(messages: re
   return text ? messages.filter(message => message.role !== "plan" || message.text.trim() !== text) : messages;
 }
 
+/** A null entry renders the submitted plan at its source position, never pinned below later replies. */
+export function planTranscript<T extends AgentSessionMessage>(messages: readonly T[], session: AgentSession | undefined): readonly (T | null)[] {
+  const plan = currentPlan(session);
+  if (!plan?.plan) return messages;
+  const submitted = session?.implementationPlan?.submittedAt;
+  const approved = session?.implementationPlan?.approvedAt;
+  const exactIndex = messages.map(message => message.role === "plan" && message.text.trim() === plan.plan?.trim()).lastIndexOf(true);
+  // Legacy proposals have no submission time. Prefer their original message;
+  // otherwise use the recorded approval boundary. Unknown history stays above the current window.
+  let index = exactIndex;
+  const time = Date.parse(submitted ?? (exactIndex < 0 ? approved : undefined) ?? "");
+  if (Number.isFinite(time)) {
+    // Some native adapters report only whole seconds.
+    index = messages.findIndex(message => Date.parse(message.occurredAt) >= Math.floor(time / 1000) * 1000);
+    if (index < 0) index = messages.length;
+  }
+  if (index < 0) index = 0;
+  return [...withoutDuplicatePlan(messages.slice(0, index), session), null,
+    ...withoutDuplicatePlan(messages.slice(index), session)];
+}
+
 export function AgentPlanContent({ session, surface }: { session: AgentSession | undefined; surface: "console" | "panel" }) {
   const { t } = useI18n();
   const plan = currentPlan(session);

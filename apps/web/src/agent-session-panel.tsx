@@ -1,8 +1,8 @@
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
-import { AgentPlanContent, withoutDuplicatePlan } from "./agent-plan-content";
+import { AgentPlanContent, planTranscript } from "./agent-plan-content";
 import { AgentStopFeedback } from "./agent-stop-feedback.js";
-import { useState, useEffect, useRef, type FormEvent } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, SessionStatusIcon, isHistoryLimited, AgentSessionError } from "./agent-session-feedback";
@@ -64,6 +64,15 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
   const feedback = useAgentOperationFeedback(sessionId, session.data?.turnState?.turnStartedAt);
   const messagesRef = useRef<HTMLDivElement>(null);
   const history = useAgentHistory(sessionId, session.data, messagesRef);
+  const followLatest = useRef(true);
+  const previousHistoryRevision = useRef(history.revision);
+  useLayoutEffect(() => { followLatest.current = true; }, [sessionId, open]);
+  useLayoutEffect(() => {
+    const prepended = previousHistoryRevision.current !== history.revision;
+    previousHistoryRevision.current = history.revision;
+    const box = messagesRef.current;
+    if (open && box && followLatest.current && !prepended) box.scrollTop = box.scrollHeight;
+  }, [open, sessionId, history.messages, history.revision, session.data?.implementationPlan]);
   const send = useMutation({
     mutationFn: (text: string) => api.sendAgentSessionCommand(sessionId, text),
     onMutate: () => feedback.begin(sessionId, "send"),
@@ -140,10 +149,12 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                 <p className="agent-session-muted">{t("agentSessionNoMessages")}</p>
               )}
               <div className="agent-session-messages" ref={messagesRef} onScroll={event => {
+                followLatest.current = event.currentTarget.scrollHeight - event.currentTarget.scrollTop - event.currentTarget.clientHeight <= 32;
                 if (!history.error && event.currentTarget.scrollTop <= 48 && event.currentTarget.scrollHeight > event.currentTarget.clientHeight + 1) void history.loadMore();
               }}>
                 <AgentHistoryLoader history={history} />
-                {withoutDuplicatePlan(history.messages, session.data).filter((message) => !isWithdrawnCard(message)).map((message) => (
+                {planTranscript(history.messages.filter((message) => !isWithdrawnCard(message)), session.data).map((message) => message === null
+                  ? <AgentPlanContent key="submitted-plan" session={session.data} surface="panel" /> : (
                   <article key={message.id} data-agent-message-id={`${message.role}:${message.sourceId || message.id}`} className={`agent-session-message agent-session-message-${message.role}`}>
                     <header className="agent-session-message-meta">
                       <small>{messageLabel(message.role, session.data.agentKind, t)}</small>
@@ -160,7 +171,6 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                     )}
                   </article>
                 ))}
-                <AgentPlanContent session={session.data} surface="panel" />
               </div>
               <div className="agent-run-status" aria-label={t("agentRunFeedback")}>
                 <AgentOperationFeedback failures={feedback.failures} sessionId={sessionId} command={command} />

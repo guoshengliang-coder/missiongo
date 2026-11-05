@@ -13,7 +13,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
       let approved = false;
       const id = `plan-${agentKind}`;
       const plan = { revision: "reviewed-revision", plan: "## 当前实施方案\n\n**完整正文始终可见**\n\n- 恢复中间消息\n- 保留方案文件",
-        validation: "确认六条过程正文和完整方案均可见。", itemKeys: [fixture.detailKey], valid: true };
+        validation: "确认六条过程正文和完整方案均可见。", itemKeys: [fixture.detailKey], valid: true, submittedAt: "2026-11-05T00:00:30.000Z" };
       const summary = { id, agentSessionId: id, dispatchId: "plan-dispatch", agentKind, status: "idle",
         updatedAt: stamp, activityAt: stamp, createdAt: stamp, nodeName: "Fixture", nodeId: "fixture-node",
         nodeConnectionState: "online", nodeRevoked: false, mode: "plan", dispatchStatus: "launched",
@@ -29,7 +29,8 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
         if (route.request().method() !== "GET") return route.fulfill({ status: 204 });
         return route.fulfill({ json: path === "/api/v1/agent-sessions" ? { sessions: [summary] } : { ...summary,
           messages: [...Array.from({ length: 6 }, (_, n) => ({ id: `comment-${n}`, sourceId: `comment-${n}`, role: "agent", text: `过程正文 ${n + 1}`, occurredAt: stamp })),
-            { id: "native-plan", sourceId: "native-plan", role: "plan", text: plan.plan, occurredAt: stamp }],
+            { id: "native-plan", sourceId: "native-plan", role: "plan", text: plan.plan, occurredAt: plan.submittedAt },
+            ...(approved ? [{ id: "implementation-result", sourceId: "implementation-result", role: "agent", text: "批准后执行完成的最新正文", occurredAt: "2026-11-05T01:00:00.000Z" }] : [])],
           implementationPlan: { ...plan, approved },
           planApprovalStatus: { code: approved ? "approved" : "ready" },
           ...(approved ? { planApprovalState: { approved: true, revision: plan.revision, continuationQueued: false } }
@@ -61,10 +62,16 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
         await expect(card.locator("strong").first()).toBeVisible();
         expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
       }
+      await area.evaluate(node => { node.scrollTop = node.scrollHeight; node.dispatchEvent(new Event("scroll", { bubbles: true })); });
       if (surface === "console") await page.locator(".agent-console-attention-banner").getByRole("button", { name: "批准", exact: true }).click();
       else approved = true;
       await advanceSessionDetailPoll(page);
       await expect(card).toContainText("方案已批准");
+      const result = area.locator('[data-agent-message-id="agent:implementation-result"]');
+      await expect(result).toBeVisible();
+      expect(await card.evaluate((node, result) => Boolean(node.compareDocumentPosition(result) & Node.DOCUMENT_POSITION_FOLLOWING), await result.elementHandle())).toBe(true);
+      const bounds = await area.evaluate(node => ({ bottom: node.scrollHeight - node.clientHeight, top: node.scrollTop }));
+      expect(bounds.bottom - bounds.top).toBeLessThanOrEqual(2);
       await expect(card).toContainText(plan.validation);
       await expect(reply).toHaveValue("保留尚未发送的草稿");
       if (agentKind === "codex") {
