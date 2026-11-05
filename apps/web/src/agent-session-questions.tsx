@@ -64,7 +64,6 @@ export function AgentSessionQuestions({
             {question.header && <small>{question.header}</small>}
             <strong>{question.title}</strong>
             {question.answered !== undefined && <small className="agent-session-question-answered">{t("agentSessionQuestionAnswered")}</small>}
-            {draftSelected && <small className="agent-session-question-draft" role="status">{t("agentSessionQuestionDraftSelected")}</small>}
             {question.detail && <p className="agent-session-question-detail">{question.detail}</p>}
             {question.kind === "boolean" ? (
               <div className="agent-session-options">
@@ -117,6 +116,8 @@ export function AgentSessionQuestions({
                 )}
               </>
             )}
+            {/* Keep selection feedback after the controls so it cannot push a tapped option below the composer. */}
+            {draftSelected && <small className="agent-session-question-draft" role="status">{t("agentSessionQuestionDraftSelected")}</small>}
           </div>
         );
       })}
