@@ -1,11 +1,32 @@
 import { expect, test } from "@playwright/test";
 import { COLOUR_TOOLS_SOURCE } from "./audit-colour.mjs";
 import { AUDIT_SOURCE } from "./audit-page.mjs";
+import { expectUsableControl, expectUsableControls } from "./visible-control";
 
 interface Measurements {
   text: { sample: string; contrast: number }[];
   surfaces: { where: string; brand: boolean }[];
 }
+
+test("batched control measurements validate every target and retain the touch-size threshold", async ({ page }) => {
+  await page.setContent('<button style="width:48px;height:48px">first</button><button style="width:48px;height:48px">last</button>');
+  const controls = page.locator("button:visible");
+  expect(await expectUsableControls(controls)).toHaveLength(2);
+  await controls.last().evaluate(node => { node.style.width = "30px"; node.style.minWidth = "0"; });
+  await expect(expectUsableControls(controls)).rejects.toThrow(/toBeGreaterThanOrEqual/);
+  await expectUsableControls(controls, false);
+});
+
+test("single and batched control measurements reject clipping ancestors but respect modal top layers", async ({ page }) => {
+  await page.setContent('<div style="width:30px;overflow:hidden"><button style="width:48px;height:48px">clipped</button></div>');
+  const clipped = page.locator("button");
+  await expect(expectUsableControl(clipped)).rejects.toThrow(/control must be fully visible/);
+  await expect(expectUsableControls(clipped)).rejects.toThrow(/control must be fully visible/);
+  await page.setContent('<div style="width:1px;height:1px;overflow:hidden"><dialog><button style="width:48px;height:48px">modal</button></dialog></div>');
+  await page.locator("dialog").evaluate(node => node.showModal());
+  await expectUsableControl(page.locator("button"));
+  await expectUsableControls(page.locator("button:visible"));
+});
 
 for (const colour of [
   "color-mix(in srgb, white 75%, black)",
