@@ -2087,7 +2087,7 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertEqual(sent.socketPath, machine.location.controlSocketPath)
         XCTAssertEqual(sent.cwd, machine.repoPath)
         XCTAssertEqual(sent.name, "Mac mini-AND-42")
-        XCTAssertEqual(sent.settings, CodexModes.threadSettings(for: "plan", planning: true))
+        XCTAssertEqual(sent.settings, CodexModes.threadSettings(for: "plan"))
         let path = try CodexWorkspace.worktreePath(repoPath: machine.repoPath, dispatchId: "d-1")
         XCTAssertEqual(sent.workspaceRoots, [machine.repoPath, path])
         XCTAssertFalse(FileManager.default.fileExists(atPath: path), "Plan dispatch must not create the worktree")
@@ -2096,15 +2096,15 @@ final class CodexLauncherTests: XCTestCase {
         ))
     }
 
-    func testProjectSessionsStartInTheirSelectedPermissionMode() async throws {
-        for mode in ["auto", "default", "read-only"] {
+    func testProjectAndItemSessionsStartInTheirSelectedPermissionMode() async throws {
+        for (free, mode) in [(true, "auto"), (true, "read-only"), (false, "auto"), (false, "default"), (false, "read-only")] {
             let machine = try machine()
             defer { machine.listener.map { _ = close($0) } }
             let control = RecordingControl()
             let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: "https://missiongo.test",
                 run: fakeCodex(), location: machine.location, control: control)
-            _ = try await launcher.launch(DispatchJob(dispatchId: "free-\(mode)", itemKeys: [], repoPath: machine.repoPath,
-                mode: mode, nodeName: "Fixture", freeSession: true))
+            _ = try await launcher.launch(DispatchJob(dispatchId: "free-\(mode)", itemKeys: free ? [] : ["AND-42"], repoPath: machine.repoPath,
+                mode: mode, nodeName: "Fixture", freeSession: free))
             let sent = try XCTUnwrap(control.requests.current.first)
             XCTAssertEqual(sent.settings, CodexModes.threadSettings(for: mode))
             XCTAssertFalse(sent.settings.planning)
@@ -2344,7 +2344,7 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertEqual(reports.filter { $0.commandStatus == "delivery_unknown" }.count, 7)
     }
 
-    func testRestoringPermissionReviewCannotLeavePlanningWithoutPlanApproval() async throws {
+    func testRestoringPermissionReviewIsIndependentOfPlanApproval() async throws {
         for approved in [false, true] {
             let control = RecordingControl(threadId: "thread-1")
             let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
@@ -2354,8 +2354,8 @@ final class CodexLauncherTests: XCTestCase {
                 desiredSettings: AgentSessionSettings(revision: 0, mode: "auto", planApproved: approved)))
             XCTAssertEqual(report.approvalRetryStatus, "restored")
             let restored = try XCTUnwrap(control.appliedSettings.current.last?.1.settings)
-            XCTAssertEqual(restored.sandbox, approved ? "workspace-write" : "read-only")
-            XCTAssertEqual(restored.planning, !approved)
+            XCTAssertEqual(restored.sandbox, "workspace-write")
+            XCTAssertFalse(restored.planning)
         }
     }
 

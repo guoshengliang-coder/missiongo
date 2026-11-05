@@ -541,7 +541,7 @@ public struct SessionLauncher: AgentAdapter {
         try ClaudeHostFiles.write(ClaudeHostConfiguration(
             claudeExecutable: claudeExecutable,
             cwd: job.repoPath,
-            mode: job.freeSession ? job.mode : "plan",
+            mode: job.mode,
             sessionName: sessionName,
             sessionRef: sessionRef,
             prompt: prompt,
@@ -603,7 +603,7 @@ public struct SessionLauncher: AgentAdapter {
         )
         let sessionName = SessionLauncher.sessionName(for: job)
         let command = try SessionLauncher.launchCommand(
-            sessionName: sessionName, mode: job.freeSession ? job.mode : "plan", prompt: prompt, model: job.model, effort: job.effort
+            sessionName: sessionName, mode: job.mode, prompt: prompt, model: job.model, effort: job.effort
         )
 
         let logPath = SessionLauncher.logPath(for: job.dispatchId, in: logsDirectory)

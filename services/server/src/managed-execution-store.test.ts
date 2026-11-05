@@ -60,7 +60,7 @@ it.each(["message", "settings", "restore", "delivery"])("AND-235 ordinary %s ign
   if (control === "message") expect(sessions.enqueue("owner", id, "Continue").status).toBe("queued");
   if (control === "settings") {
     expect(() => sessions.requestSettings("owner", id, { mode: "auto" })).not.toThrow();
-    expect(sessions.listForNode("n").find((s) => s.id === id)?.desiredSettings?.mode).toBe("read-only");
+    expect(sessions.listForNode("n").find((s) => s.id === id)?.desiredSettings?.mode).toBe("auto");
   }
   if (control === "restore") {
     expect(() => sessions.setArchived("owner", id, false)).not.toThrow();
@@ -411,6 +411,7 @@ it("retains scoped manual reconciliation evidence without fencing ordinary conti
   expect(() => store.reconcileManual(() => "other-account", "manual", { generation: 1, deliveredAt: "observed-delivery", evidence: "fixture:stopped" })).toThrow();
   const sessions = new AgentSessionStore(db);
   const sessionId = sessions.createForDispatch({ dispatchId: "manual", nodeId: "n", sessionRef: "manual-thread" });
+  sessions.recordSnapshot({ nodeId: "n", sessionId, status: "idle", messages: [], mode: "default", settingsRevision: 1 });
   store.reconcileManual(access, "manual", { generation: 1, deliveredAt: "observed-delivery", evidence: "fixture:stopped" });
   expect(store.request(access, input).ownershipHeld).toBe(true);
   expect(sessions.enqueue("owner", sessionId, "Continue ordinary writer").status).toBe("queued");
@@ -516,6 +517,7 @@ it("lets a reconciled manual session reacquire a new execution generation withou
     INSERT INTO dispatch_items(dispatch_id,item_id,position) VALUES ('manual','i',0);`);
   const sessions = new AgentSessionStore(db);
   const session = sessions.createForDispatch({ dispatchId: "manual", nodeId: "n", sessionRef: "manual-native" });
+  sessions.recordSnapshot({ nodeId: "n", sessionId: session, status: "idle", messages: [], mode: "default", settingsRevision: 1 });
   store.reconcileManual(access, "manual", { generation: 1, deliveredAt: "delivery-one", evidence: "fixture:stopped" });
   const intent = store.request(access, input);
   expect(sessions.enqueue("owner", session, "Continue while managed owns its tree").status).toBe("queued");
@@ -574,6 +576,7 @@ it("restoring a reconciled manual mirror acquires a new generation even without 
     INSERT INTO dispatch_items(dispatch_id,item_id,position) VALUES ('manual','i',0);`);
   const sessions = new AgentSessionStore(db);
   const sessionId = sessions.createForDispatch({ dispatchId: "manual", nodeId: "n", sessionRef: "manual-thread" });
+  sessions.recordSnapshot({ nodeId: "n", sessionId, status: "idle", messages: [], mode: "default", settingsRevision: 1 });
   sessions.setArchived("owner", sessionId, true);
   store.reconcileManual(access, "manual", { generation: 1, deliveredAt: "delivery", evidence: "fixture:stopped" });
   sessions.setArchived("owner", sessionId, false);

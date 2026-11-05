@@ -319,7 +319,7 @@ final class SessionLauncherProcessTests: XCTestCase {
         return (bin, root)
     }
 
-    func testHostedClaudeKeepsProjectPermissionsButPlansItemDispatches() async throws {
+    func testHostedClaudeKeepsSelectedPermissionsForProjectAndItemDispatches() async throws {
         let (home, repoPath) = try makeTrustedRepo(trusted: true)
         let script = try fakeScript("exit 0")
         defer { try? FileManager.default.removeItem(atPath: script.root) }
@@ -342,7 +342,7 @@ final class SessionLauncherProcessTests: XCTestCase {
             let refs = try FileManager.default.contentsOfDirectory(atPath: sessions)
             let config = try JSONDecoder().decode(ClaudeHostConfiguration.self, from: Data(contentsOf: URL(fileURLWithPath:
                 ClaudeHostStore.configPath(root: sessions, sessionRef: try XCTUnwrap(refs.first)))))
-            XCTAssertEqual(config.mode, free ? mode : "plan")
+            XCTAssertEqual(config.mode, mode)
         }
     }
 

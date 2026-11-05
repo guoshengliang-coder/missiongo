@@ -10,7 +10,7 @@ export function claudeArguments(job: Dispatch, ref: string): string[] {
   if (!(CLAUDE_CODE_MODES as readonly string[]).includes(job.mode)) throw new Error("Unsupported Claude mode");
   return ["--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--replay-user-messages",
     "--permission-prompt-tool", "stdio", "--permission-prompts", "host", "--no-chrome",
-    "--disallowedTools", CLAUDE_DENIALS.join(","), "--permission-mode", job.freeSession ? job.mode : "plan",
+    "--disallowedTools", CLAUDE_DENIALS.join(","), "--permission-mode", job.mode,
     "--session-id", ref, "--name", sessionName(job),
     ...(job.model ? ["--model", job.model] : []), ...(job.effort ? ["--effort", job.effort] : [])];
 }
@@ -48,15 +48,13 @@ export class ClaudeAdapter implements Adapter {
   private ref = randomUUID();
   initialTurnId?: string;
   private activeTurnId?: string;
-  private planning = true;
   private effectiveMode = "plan";
   private expectedModes=new Map<string,string>();
   private state: Snapshot = { status: "idle", messages: [], turnActive: false };
   private requests: Wire[] = [];
   private waits = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   constructor(job: Dispatch, executable: string, env = process.env) {
-    this.planning = !job.freeSession;
-    this.effectiveMode = job.freeSession ? job.mode : "plan";
+    this.effectiveMode = job.mode;
     this.process = new JsonProcess(executable, claudeArguments(job, this.ref), job.repoPath, env);
     this.process.onEvent = (event) => this.event(event);
     this.process.onClose = () => {
@@ -190,8 +188,7 @@ export class ClaudeAdapter implements Adapter {
   async decide(): Promise<void> { throw new Error("Use the displayed Claude question to answer this request"); }
   async settings(settings: NonNullable<Session["desiredSettings"]>): Promise<void> {
     if (settings.mode && !(CLAUDE_CODE_MODES as readonly string[]).includes(settings.mode)) throw new Error("Unsupported Claude mode");
-    const planning=settings.planning ?? (settings.planApproved===undefined ? this.planning : !settings.planApproved);
-    const mode=planning ? "plan" : settings.mode;
+    const mode = settings.mode;
     for (const request of [settings.model ? { subtype: "set_model", model: settings.model } : undefined,
       mode ? { subtype: "set_permission_mode", mode } : undefined,
       settings.effort ? {subtype:"apply_flag_settings",settings:{effortLevel:settings.effort}} : undefined].filter(Boolean)) {
@@ -199,7 +196,7 @@ export class ClaudeAdapter implements Adapter {
       if(request?.subtype==="set_permission_mode" && request.mode) this.expectedModes.set(requestId,request.mode);
       this.process.write({ type: "control_request", request_id: requestId, request }); await ack;
     }
-    this.planning=planning; if(mode) this.effectiveMode=mode; if(settings.effort) this.state.effort=settings.effort;
+    if(mode) this.effectiveMode=mode; if(settings.effort) this.state.effort=settings.effort;
   }
   async close(): Promise<void> { this.process.child.kill(); }
 }
