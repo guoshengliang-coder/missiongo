@@ -124,6 +124,12 @@ cd "$(dirname "$0")/.."
 command -v rsync >/dev/null || { echo "rsync is required." >&2; exit 1; }
 command -v git >/dev/null || { echo "git is required." >&2; exit 1; }
 
+# BEGIN RELEASE TIMING
+source "${MISSIONGO_RELEASE_TOOLS:-$PWD/scripts}/release-timing.sh"
+release_timing_start
+release_timing_stage preflight
+# END RELEASE TIMING
+
 # What goes to the server is this directory, not a branch: rsync sends whatever
 # is on disk. So the commit is only an honest description of the release when the
 # tree is clean and matches something already pushed. Establish that first, and
@@ -361,6 +367,7 @@ release="$(remote date +%Y%m%d-%H%M%S)-${short_commit}"
 [ -z "$label" ] || release="${release}-${label}"
 target="${releases_dir}/${release}"
 
+release_timing_stage upload
 echo "==> Pushing ${release}"
 rsync -az --delete \
   --exclude='.git' --exclude='.private' \
@@ -372,6 +379,7 @@ rsync -az --delete \
   --rsync-path='sudo rsync' \
   ./ "${host}:${target}/"
 
+release_timing_stage inheritance
 # Carry the published SDK artifacts over from the release that is live now, when this
 # checkout has none of its own.
 #
@@ -447,6 +455,7 @@ deployed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 deployed_from=$(id -un)@$(hostname -s)
 PROVENANCE
 
+if [ "$skip_backup" -eq 0 ]; then release_timing_stage backup; else release_timing_skip backup; fi
 if [ "$skip_backup" -eq 1 ]; then
   echo "==> Skipping the backup (--skip-backup)"
 else
@@ -463,16 +472,19 @@ else
   echo "    Copy this off the machine; a backup beside the data does not survive a lost disk."
 fi
 
+release_timing_stage build_and_restart
 echo "==> Rebuilding and restarting"
 # sudo drops the environment, so the value is handed over explicitly. The
 # server reports it on /health, which is how a running deployment names itself.
 remote "cd '${target}/deploy' && sudo env MISSIONGO_RELEASE='${commit}' docker compose --env-file '${env_file}' up -d --build"
 
+release_timing_stage activate
 echo "==> Pointing ${current_link} at the new release"
 remote "sudo ln -sfn '${target}' '${current_link}'"
 remote "sudo docker ps --format '    {{.Names}} | {{.Status}}'"
 
 if [ "$publish_apk" -eq 1 ]; then
+  release_timing_stage publish_downloads
   release_apk="${downloads_dir}/${apk_name}"
   echo "==> Publishing ${apk_name} into ${downloads_dir}"
   remote "sudo mkdir -p '${downloads_dir}' && \
@@ -498,6 +510,7 @@ if [ "$publish_apk" -eq 1 ]; then
   echo "    ${apk_link} now serves ${apk_version_name} (${apk_version_code})."
 fi
 
+if [ "$keep" -gt 0 ]; then release_timing_stage prune; else release_timing_skip prune; fi
 if [ "$keep" -gt 0 ]; then
   echo "==> Keeping the newest ${keep} releases"
   # Resolve the symlink first and skip that directory explicitly: the live
@@ -525,6 +538,7 @@ if [ "$keep" -gt 0 ]; then
   fi
 fi
 
+if [ "$verify" -eq 1 ]; then release_timing_stage security_verification; else release_timing_skip security_verification; fi
 if [ "$verify" -eq 1 ]; then
   origin="${public_url%/}"
   echo "==> Verifying ${origin}"
@@ -558,6 +572,7 @@ if [ "$verify" -eq 1 ]; then
   esac
 fi
 
+if [ -n "$notice_origin" ]; then release_timing_stage public_verification; else release_timing_skip public_verification; fi
 if [ -n "$notice_origin" ]; then
   echo "==> Release notice receipt (JSON)"
   release_receipt="$(node scripts/release-receipt.mjs compare \
