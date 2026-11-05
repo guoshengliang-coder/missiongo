@@ -12,6 +12,10 @@ private actor StubOpenCodeControl: OpenCodeControlling {
     var info: (agent: String?, model: OpenCodeModelRef?)
     var appliedAgents: [String] = []
     var appliedModels: [OpenCodeModelRef] = []
+    var rejectAgentUpdates = false
+    var ignoreModelUpdates = false
+    func rejectAgentUpdatesForTest() { rejectAgentUpdates = true }
+    func ignoreModelUpdatesForTest() { ignoreModelUpdates = true }
     var snapshotStatus: String?
     var snapshotFailure: String?
     var snapshotMessages: [AgentSessionMessage] = []
@@ -89,8 +93,15 @@ private actor StubOpenCodeControl: OpenCodeControlling {
     func deleteSession(id: String) async throws {}
     func listModels() async throws -> OpenCodeModelCatalog { catalog }
     func sessionInfo(id: String) async throws -> (agent: String?, model: OpenCodeModelRef?) { info }
-    func setModel(id: String, model: OpenCodeModelRef) async throws { appliedModels.append(model) }
-    func setAgent(id: String, agent: String) async throws { appliedAgents.append(agent); info.agent = agent }
+    func setModel(id: String, model: OpenCodeModelRef) async throws {
+        appliedModels.append(model)
+        if !ignoreModelUpdates { info.model = model }
+    }
+    func setAgent(id: String, agent: String) async throws {
+        appliedAgents.append(agent)
+        if rejectAgentUpdates { throw LaunchError("fixture mode denied") }
+        info.agent = agent
+    }
     func pendingChoices(id: String) async throws -> [OpenCodeChoice] {
         if let choicesError { throw choicesError }
         return choices
@@ -106,6 +117,89 @@ private actor StubOpenCodeControl: OpenCodeControlling {
 }
 
 final class OpenCodeTests: XCTestCase {
+    func testLongHistoryStartsAtTheNewestEndAndDoesNotLoseItsLatestAnswer() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let registration = home.appendingPathComponent(".local/state/opencode/service.json")
+        try FileManager.default.createDirectory(at: registration.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"url":"http://127.0.0.1:9999","password":"test","version":"2.1.0"}"#.utf8).write(to: registration)
+        StubURLProtocol.install { request, _ in
+            if request.url?.path == "/api/session/active" { return .response(status: 200, body: #"{"data":{}}"#) }
+            if request.url?.path.hasSuffix("/message") == true {
+                let query = Self.query(of: request.url)
+                let page = Int(query["cursor"] ?? "0")!
+                let data = (0..<100).map { index in ["id": "msg-\(5000-page*100-index)", "type": "user", "text": "Message \(5000-page*100-index)"] }
+                let body = try! JSONSerialization.data(withJSONObject: ["data": data, "cursor": ["next": String(page+1)]])
+                return .response(status: 200, body: String(decoding: body, as: UTF8.self))
+            }
+            return .response(status: 200, body: #"{"data":{"id":"session"}}"#)
+        }
+        let snapshot = try await OpenCodeHTTPControl(home: home.path, session: StubURLProtocol.session()).snapshot(id: "session")
+        XCTAssertEqual(snapshot.messages.count, 2000)
+        XCTAssertEqual(snapshot.messages.first?.sourceId, "msg-3001")
+        XCTAssertEqual(snapshot.messages.last?.sourceId, "msg-5000")
+        XCTAssertTrue(snapshot.failure?.hasPrefix("agent_history_limited:") == true)
+        XCTAssertEqual(StubURLProtocol.recorded.filter { $0.request.url?.path.hasSuffix("/message") == true }.count, 20)
+    }
+
+    func testFailedAndSettledModeRevisionsCannotSendAnOrdinaryPrompt() async throws {
+        let control = StubOpenCodeControl(mcpStatus: "connected", info: ("build", nil))
+        await control.rejectAgentUpdatesForTest()
+        let launcher = OpenCodeLauncher(control: control)
+        for settled in [0, 1] {
+            let report = try await launcher.synchronize(NodeAgentSession(id: "s", agentKind: "opencode", sessionRef: "native", status: "idle",
+                command: AgentSessionCommand(id: "message-\(settled)", kind: "message", text: "must not arrive", status: "delivering"),
+                desiredSettings: AgentSessionSettings(revision: 1, mode: "plan"), appliedSettingsRevision: settled))
+            XCTAssertEqual(report.commandStatus, "failed")
+            XCTAssertTrue(report.commandError?.contains("未发送") == true)
+        }
+        let prompts = await control.promptCount
+        XCTAssertEqual(prompts, 0)
+        let stop = try await launcher.synchronize(NodeAgentSession(id: "s", agentKind: "opencode", sessionRef: "native", status: "idle",
+            command: AgentSessionCommand(id: "stop", kind: "interrupt", text: "", turnId: "old-turn", status: "delivering"),
+            desiredSettings: AgentSessionSettings(revision: 1, mode: "plan")))
+        XCTAssertEqual(stop.commandStatus, "delivered")
+    }
+
+    func testNativePermissionAnswersRemainUsableWhenModeChangeFails() async throws {
+        let choice = try XCTUnwrap(OpenCodeProtocol.permissionChoice(["id": "permit", "action": "bash", "resources": ["fixture"]]))
+        let control = StubOpenCodeControl(mcpStatus: "connected", info: ("build", nil), choices: [choice])
+        await control.rejectAgentUpdatesForTest()
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(id: "s", agentKind: "opencode", sessionRef: "native", status: "idle",
+            command: AgentSessionCommand(id: "answer", kind: "message", text: "授权请求 permit: 拒绝", status: "delivering"),
+            desiredSettings: AgentSessionSettings(revision: 1, mode: "plan")))
+        XCTAssertEqual(report.commandStatus, "delivered")
+        let answer = await control.repliedPermission
+        let prompts = await control.promptCount
+        XCTAssertEqual(answer?.decision, "reject")
+        XCTAssertEqual(prompts, 0)
+    }
+
+    func testAnIgnoredModelUpdateReportsTheActualModelAndBlocksThePrompt() async throws {
+        let control = StubOpenCodeControl(mcpStatus: "connected", info: ("build", .init(modelId: "old", providerId: "fixture")))
+        await control.ignoreModelUpdatesForTest()
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(id: "s", agentKind: "opencode", sessionRef: "native", status: "idle",
+            command: AgentSessionCommand(id: "message", kind: "message", text: "must not arrive", status: "delivering"),
+            desiredSettings: AgentSessionSettings(revision: 1, model: "fixture/new")))
+        XCTAssertEqual(report.model, "fixture/old")
+        XCTAssertNotNil(report.settingsError)
+        XCTAssertEqual(report.commandStatus, "failed")
+        let prompts = await control.promptCount
+        XCTAssertEqual(prompts, 0)
+    }
+
+    func testVerifiedModeAndModelUpdatesAllowExactlyOnePrompt() async throws {
+        let control = StubOpenCodeControl(mcpStatus: "connected", info: ("build", .init(modelId: "old", providerId: "fixture")))
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(id: "s", agentKind: "opencode", sessionRef: "native", status: "idle",
+            command: AgentSessionCommand(id: "message", kind: "message", text: "arrive", status: "delivering"),
+            desiredSettings: AgentSessionSettings(revision: 1, mode: "plan", model: "fixture/new")))
+        XCTAssertNil(report.settingsError)
+        XCTAssertEqual(report.model, "fixture/new")
+        XCTAssertEqual(report.mode, "plan")
+        XCTAssertEqual(report.commandStatus, "delivered")
+        let prompts = await control.promptCount
+        XCTAssertEqual(prompts, 1)
+    }
     func testStopBypassesHistoryAndPermissionFailureAndConfirmsIdle() async throws {
         let control = StubOpenCodeControl(mcpStatus: "connected")
         await control.configureStop([.init(active: true, inputId: "input-1"), .init(active: true, inputId: "input-1"), .init(active: false, inputId: nil)], snapshotError: LaunchError("history unavailable"))
@@ -697,9 +791,9 @@ final class OpenCodeTests: XCTestCase {
                     return .response(status: 400, body: #"{"_tag":"InvalidCursorError","message":"Cursor cannot be combined with order"}"#)
                 }
                 if query["cursor"] != nil {
-                    return .response(status: 200, body: #"{"data":[{"id":"msg_3","type":"user","text":"third","time":{"created":3000}}],"cursor":{"previous":"seen"}}"#)
+                    return .response(status: 200, body: #"{"data":[{"id":"msg_1","type":"user","text":"first","time":{"created":1000}}],"cursor":{"previous":"seen"}}"#)
                 }
-                return .response(status: 200, body: #"{"data":[{"id":"msg_1","type":"user","text":"first","time":{"created":1000}}],"cursor":{"next":"cursor-2"}}"#)
+                return .response(status: 200, body: #"{"data":[{"id":"msg_3","type":"user","text":"third","time":{"created":3000}}],"cursor":{"next":"cursor-2"}}"#)
             case ("GET", "/api/session/active"):
                 return .response(status: 200, body: #"{"data":{"ses_test":{"type":"running"}}}"#)
             default:
@@ -713,7 +807,7 @@ final class OpenCodeTests: XCTestCase {
         let pages = StubURLProtocol.recorded.filter { $0.request.url?.path == "/api/session/ses_test/message" }
         XCTAssertEqual(pages.count, 2)
         let first = OpenCodeTests.query(of: pages[0].request.url)
-        XCTAssertEqual(first["order"], "asc")
+        XCTAssertEqual(first["order"], "desc")
         XCTAssertNil(first["cursor"])
         let second = OpenCodeTests.query(of: pages[1].request.url)
         XCTAssertEqual(second["cursor"], "cursor-2")

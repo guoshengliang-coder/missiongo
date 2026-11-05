@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { CLAUDE_CODE_MODES } from "@missiongo/domain";
 import { JsonProcess } from "./process.js";
 import type { Adapter, Command, Dispatch, Message, Question, Session, Snapshot, Wire } from "./types.js";
+import { InputRejected } from "./types.js";
 
 export const CLAUDE_DENIALS = ["Bash(git reflog expire:*)", "Bash(git gc --prune=now:*)", "Bash(git push --force:*)", "Bash(git push -f:*)"];
 export function claudeArguments(job: Dispatch, ref: string): string[] {
@@ -171,7 +172,7 @@ export class ClaudeAdapter implements Adapter {
     }
     throw new Error("停止尚未确认：来源未报告原回合结束");
   }
-  async deliver(command: Command): Promise<void> {
+  async deliver(command: Command, options?: { controlOnly: boolean }): Promise<void> {
     if (command.kind === "interrupt") { await this.stop(command); return; }
     const request = this.requests[0];
     if (request) {
@@ -183,6 +184,7 @@ export class ClaudeAdapter implements Adapter {
       this.add({ sourceId: `answer-${command.id}`, role: "user", text: command.text });
       return;
     }
+    if (options?.controlOnly) throw new InputRejected("回复未发送：会话设置未确认，请重新应用设置后重试。");
     const ack = this.wait(command.id); this.send(command.id, command.text); await ack;
   }
   async decide(): Promise<void> { throw new Error("Use the displayed Claude question to answer this request"); }

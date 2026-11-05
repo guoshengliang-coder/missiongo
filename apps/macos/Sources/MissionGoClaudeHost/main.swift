@@ -67,7 +67,11 @@ private func userMessage(id: String, text: String) -> [String: Any] {
 private func commandFiles(in directory: String) -> [String] {
     ((try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? [])
         .filter { $0.hasSuffix(".json") }
-        .sorted()
+        .sorted {
+            let leftSettings = $0.hasPrefix("settings-")
+            let rightSettings = $1.hasPrefix("settings-")
+            return leftSettings != rightSettings ? leftSettings : $0 < $1
+        }
         .map { "\(directory)/\($0)" }
 }
 
@@ -144,6 +148,7 @@ private func run(configPath: String) throws {
     var pendingControlCommands: [String: String] = [:]
     var stopping: [String: (target: String, deadline: Date)] = [:]
     var settingsChange: ClaudeSettingsChange?
+    var settingsDeadline: Date?
     var permissions = ClaudePermissionQueue()
     var shouldContinue = true
     var lastCpu = ClaudeProcessActivity.totalCpuNanoseconds(rootPid: process.processIdentifier)
@@ -283,6 +288,7 @@ private func run(configPath: String) throws {
                 settingsChange = change
                 if change.isComplete {
                     settingsChange = nil
+                    settingsDeadline = nil
                     finishSettings(change)
                 } else if let next = change.nextRequest {
                     try write(controlRequest(id: next.id, request: next.request), to: writer)
@@ -415,6 +421,7 @@ private func run(configPath: String) throws {
                     finishSettings(change)
                 } else {
                     settingsChange = change
+                    settingsDeadline = Date().addingTimeInterval(30)
                 }
                 try? FileManager.default.removeItem(atPath: path)
                 continue
@@ -446,6 +453,15 @@ private func run(configPath: String) throws {
                     snapshot.commandFinished(id: command.id, status: "failed", error: "文字同意不代表方案批准，请使用方案批准按钮。")
                     persist(); try? FileManager.default.removeItem(atPath: path); continue
                 }
+                // Approval answers and interrupts must remain usable, but a
+                // new prompt cannot run under unconfirmed or failed settings.
+                if permissions.isEmpty {
+                    if settingsChange != nil { continue }
+                    if snapshot.state.settingsError != nil {
+                        snapshot.commandFinished(id: command.id, status: "failed", error: "回复未发送：会话设置未确认，请重新应用设置后重试。")
+                        persist(); try? FileManager.default.removeItem(atPath: path); continue
+                    }
+                }
                 if let answered = permissions.answerHead(command.text) {
                     try write(controlResponse(id: answered.requestId, result: answered.result), to: writer)
                     snapshot.recordUserMessage(
@@ -475,6 +491,12 @@ private func run(configPath: String) throws {
     }
 
     while shouldContinue && process.isRunning {
+        if var change = settingsChange, let deadline = settingsDeadline, Date() >= deadline {
+            change.timeOut()
+            settingsChange = nil
+            settingsDeadline = nil
+            finishSettings(change)
+        }
         if external && !controlReady && Date() > initializeDeadline {
             snapshot.fail("CLI 控制协议初始化超时；未尝试官方 Remote Control 或其它模型。")
             shouldContinue = false

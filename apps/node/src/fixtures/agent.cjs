@@ -10,21 +10,31 @@ const emit = (data) => process.stdout.write(JSON.stringify(data) + "\n");
 let turn = { id: "turn-1", status: "completed", items: [] };
 let ref = "thread-1";
 let policy;
+let claudeMode = args[args.indexOf("--permission-mode") + 1];
 createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line);
   if (process.env.TEST_AGENT_EVENTS) appendFileSync(process.env.TEST_AGENT_EVENTS, line + "\n");
   if (codex) {
     if (message.method === "initialize") emit({ id: message.id, result: {} });
     else if (["thread/start","thread/resume"].includes(message.method)) {
-      policy={...policy,...message.params,model:"fixture-model"};
-      emit({ id: message.id, result: {...policy,thread:{id:ref},
+      if (message.method === "thread/start" || !process.env.FAKE_IGNORE_RESUME) policy={...policy,...message.params,model:"fixture-model"};
+      emit({ id: message.id, result: {...policy,thread:{id:ref,status:{type:"idle"}},
         sandbox:{type:process.env.FAKE_BAD_POLICY ? "dangerFullAccess" : policy.sandbox==="read-only" ? "readOnly" : "workspaceWrite",writableRoots:policy.runtimeWorkspaceRoots}} });
+    }
+    else if (message.method === "thread/settings/update") {
+      if (process.env.FAKE_UNSUPPORTED_SETTINGS) emit({id:message.id,error:{code:-32601,message:"Method not found"}});
+      else {
+        if (!process.env.FAKE_UNCONFIRMED_UPDATE) policy={...policy,...message.params,sandbox:message.params.sandboxPolicy.type==="readOnly" ? "read-only" : "workspace-write"};
+        emit({id:message.id,result:{}});
+      }
     }
     else if (message.method === "mcpServer/tool/call") emit({ id: message.id, result: { structuredContent: {
       capabilities: { canComment: !process.env.FAKE_READ_ONLY, writeTools: process.env.FAKE_READ_ONLY ? [] : ["claim_item", "append_comment"] },
       skill: { expectedVersion: process.env.FAKE_SKILL_STALE ? "2.0.0" : "1.0.0" },
     } } });
     else if (message.method === "thread/read") emit({ id: message.id, result: { thread: { id: ref, turns: [turn] } } });
+    else if (message.method === "thread/turns/list") emit({ id: message.id, result: { data: [{ ...turn, items: [], itemsView: "notLoaded" }], nextCursor: null } });
+    else if (message.method === "thread/items/list") emit({ id: message.id, result: { data: [...turn.items].reverse().map(item => ({ turnId: turn.id, item })), nextCursor: null } });
     else if (["turn/start", "turn/steer"].includes(message.method)) {
       turn.items.push({ id: `user-${turn.items.length}`, type: "userMessage", content: message.params.input });
       emit({ id: message.id, result: { turn } });
@@ -37,8 +47,18 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       turn.items.push({ id: "decision", type: "agentMessage", text: message.result.decision });
     } else if (message.id) emit({ id: message.id, result: {} });
   } else if (message.type === "control_request") {
-    emit({ type: "control_response", response: { subtype: "success", request_id: message.request_id, response: message.request.subtype==="set_permission_mode" ? {mode:message.request.mode} : {} } });
+    const respond = () => {
+      if (message.request.subtype === "set_permission_mode" && process.env.FAKE_CLAUDE_REJECT_MODE === message.request.mode) {
+        emit({type:"control_response",response:{subtype:"error",request_id:message.request_id,error:"fixture mode denied"}}); return;
+      }
+      if (message.request.subtype === "set_permission_mode") claudeMode = message.request.mode;
+      emit({ type: "control_response", response: { subtype: "success", request_id: message.request_id,
+        response: message.request.subtype==="set_permission_mode" ? {mode:claudeMode} : {remote_control_available:false} } });
+    };
+    if (message.request.subtype === "set_permission_mode" && process.env.FAKE_CLAUDE_ACK_DELAY) setTimeout(respond, Number(process.env.FAKE_CLAUDE_ACK_DELAY));
+    else respond();
   } else if (message.type === "user") {
+    if (process.env.TEST_AGENT_EVENTS) appendFileSync(process.env.TEST_AGENT_EVENTS, JSON.stringify({fixture:"received_user",mode:claudeMode,uuid:message.uuid})+"\n");
     emit({ type: "system", subtype: "init", session_id: session });
     emit(message);
     emit({ type: "assistant", uuid: `agent-${message.uuid}`, message: { content: [{ type: "text", text: "fixture received" }] } });

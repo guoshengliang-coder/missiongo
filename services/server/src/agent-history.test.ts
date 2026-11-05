@@ -21,6 +21,18 @@ function fixture() {
 }
 afterEach(() => { for (const database of databases.splice(0)) database.close(); });
 
+it("replaces the legacy summary continuation with the item lane without deleting cached evidence", () => {
+  const f = fixture();
+  f.history.observe("owner", "node", f.id, { cursor: "legacy-summary", complete: false });
+  const old = f.head(); f.history.request("owner", f.id, old);
+  f.history.complete("owner", "node", old, { messages: [{ sourceId: "old-user", role: "user", text: "Start" }] });
+  f.history.observe("owner", "node", f.id, { cursor: "items-v1:body", complete: false });
+  expect(f.head()).not.toBe(old);
+  expect(f.history.get("owner", f.id, old).messages).toMatchObject([{ sourceId: "old-user" }]);
+  expect(f.history.request("owner", f.id, f.head()).status).toBe("pending");
+  expect(f.history.jobs("owner", "node")[0]?.cursor).toBe("items-v1:body");
+});
+
 it("queues source history independently and caches a page idempotently", () => {
   const f = fixture();
   f.history.observe("owner", "node", f.id, { cursor: "opaque-source-anchor", complete: false });

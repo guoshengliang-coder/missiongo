@@ -574,6 +574,15 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
         XCTAssertEqual(snapshot.state.settingsError, "切换模型失败：model not available")
     }
 
+    func testSettingsTimeoutDoesNotAcceptALateUnconfirmedMode() {
+        var change = ClaudeSettingsChange(AgentSessionSettings(revision: 8, mode: "plan"), makeRequestId: { "mode-request" })
+        change.timeOut()
+        XCTAssertTrue(change.isComplete)
+        XCTAssertNil(change.appliedSettings.mode)
+        XCTAssertFalse(change.errors.isEmpty)
+        XCTAssertFalse(change.receive(requestId: "mode-request", response: ["subtype": "success", "response": ["mode": "plan"]]))
+    }
+
     func testAMalformedSettingNeverReachesClaude() {
         let change = ClaudeSettingsChange(AgentSessionSettings(revision: 2, mode: "dontAsk", model: "-x"))
         XCTAssertTrue(change.requests.isEmpty)

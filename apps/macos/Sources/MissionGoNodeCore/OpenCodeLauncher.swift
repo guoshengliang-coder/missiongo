@@ -792,26 +792,27 @@ public struct OpenCodeHTTPControl: OpenCodeControlling {
         }
         let outcome = (try? OpenCodeProtocol.data(details))?["outcome"] as? String
         var messages: [AgentSessionMessage] = []
-        var executionBuilder = OpenCodeExecutionProgressBuilder()
+        var entries: [[String: Any]] = []
         var cursor: String?
+        var seenCursors = Set<String>()
         for _ in 0..<Self.snapshotPageLimit {
             // OpenCode 2 rejects `order` together with a cursor
             // (InvalidCursorError: Cursor cannot be combined with order); the
             // cursor already carries the order it was issued for. Ask for
-            // oldest-first only on the first page, then follow the cursor alone.
+            // newest-first only on the first page, then follow the cursor alone.
             var path = "/api/session/\(encoded(id))/message?limit=100"
-            if let cursor { path += "&cursor=\(encoded(cursor))" } else { path += "&order=asc" }
+            if let cursor { path += "&cursor=\(encoded(cursor))" } else { path += "&order=desc" }
             let page = try await call("GET", path)
-            messages += try OpenCodeProtocol.messages(page)
-            executionBuilder.append(page["data"] as? [[String: Any]] ?? [])
-            guard let next = OpenCodeProtocol.nextCursor(page), next != cursor else { cursor = nil; break }
+            messages = try OpenCodeProtocol.messages(["data": Array((page["data"] as? [[String: Any]] ?? []).reversed())]) + messages
+            entries = Array((page["data"] as? [[String: Any]] ?? []).reversed()) + entries
+            guard let next = OpenCodeProtocol.nextCursor(page) else { cursor = nil; break }
             cursor = next
+            if !seenCursors.insert(next).inserted { break }
+            if messages.count >= Self.snapshotMessageCap { break }
         }
         if cursor != nil {
-            // Past the page cap the newest messages may not have been reached;
-            // say so in the log instead of failing silently (AND-222). The
-            // newest of what was read still goes out below.
-            NSLog("MissionGo：OpenCode 会话 %@ 的消息超过 %d 条，本轮仅同步到第 %d 条附近。", id, Self.snapshotPageLimit * 100, Self.snapshotPageLimit * 100)
+            // The newest end was read first; make the older-history gap explicit.
+            NSLog("MissionGo：OpenCode 会话 %@ 本轮同步最近 %d 条消息，仍有更早历史未读取。", id, messages.count)
         }
         if messages.count > Self.snapshotMessageCap {
             // Keep the newest messages — the console reads a mirror for what
@@ -819,14 +820,17 @@ public struct OpenCodeHTTPControl: OpenCodeControlling {
             // long session never arrived at all (AND-222).
             messages = Array(messages.suffix(Self.snapshotMessageCap))
         }
+        var executionBuilder = OpenCodeExecutionProgressBuilder()
+        executionBuilder.append(entries)
         let active = try await call("GET", "/api/session/active")
         let running = (active["data"] as? [String: Any])?[id] != nil
         let execution = executionBuilder.snapshot()
-        if running { return OpenCodeSessionSnapshot("active", messages, nil, execution: execution) }
+        let historyError = cursor == nil ? nil : "agent_history_limited: only the latest OpenCode messages are synchronized"
+        if running { return OpenCodeSessionSnapshot("active", messages, historyError, execution: execution) }
         // `interrupted` is a person's own stop, not a failure; only a failed
         // outcome is reported as one.
         if outcome == "failed" { return OpenCodeSessionSnapshot("failed", messages, "OpenCode 报告该会话以失败结束。", execution: execution) }
-        return OpenCodeSessionSnapshot("idle", messages, nil, execution: execution)
+        return OpenCodeSessionSnapshot("idle", messages, historyError, execution: execution)
     }
 
     public func stopState(id: String) async throws -> OpenCodeStopState {
@@ -1064,7 +1068,7 @@ public struct OpenCodeLauncher: AgentAdapter {
         // now, and any change waiting for an idle moment. Failing to read the
         // info must not fail the sync — the report then just says nothing
         // about the model, as it did before settings existed.
-        let info = try? await control.sessionInfo(id: session.sessionRef)
+        var info = try? await control.sessionInfo(id: session.sessionRef)
         var mode = info?.agent == "plan" ? "plan" : info?.agent == "build" ? "build" : info?.agent
         var model = info?.model?.compoundId
         var effort = info?.model?.variant
@@ -1081,6 +1085,7 @@ public struct OpenCodeLauncher: AgentAdapter {
                     try await control.setAgent(id: session.sessionRef, agent: target)
                     let effective = try await control.sessionInfo(id: session.sessionRef)
                     guard effective.agent == target else { throw LaunchError("OpenCode 未确认所选原生 Agent，未标记生效。") }
+                    info = effective
                     mode = target
                 }
                 if desired.model != nil || desired.effort != nil {
@@ -1105,14 +1110,45 @@ public struct OpenCodeLauncher: AgentAdapter {
                         }
                         let ref = base.withVariant(desired.effort, efforts: catalog?.efforts(forCompoundId: base.compoundId))
                         try await control.setModel(id: session.sessionRef, model: ref)
-                        model = ref.compoundId
-                        effort = ref.variant
+                        let effective = try await control.sessionInfo(id: session.sessionRef)
+                        info = effective
+                        model = effective.model?.compoundId
+                        effort = effective.model?.variant
+                        guard effective.model?.compoundId == ref.compoundId,
+                              ref.variant == nil || effective.model?.variant == ref.variant else {
+                            throw LaunchError("OpenCode 未确认所选模型与推理强度，未标记生效。")
+                        }
                     } else if session.externalBindingGeneration != nil {
                         throw LaunchError("无法确认原会话的模型，未应用设置。")
                     }
                 }
             } catch {
                 settingsError = "OpenCode 未应用该设置：\(error.localizedDescription)"
+            }
+        }
+        // Recheck desired settings even after a failed revision was settled by
+        // the server. A later poll must not bypass the failed-settings gate.
+        // Native approval/form responses and interrupts do not start a turn.
+        if let command = session.command, command.kind != "interrupt",
+           !(command.attachments?.isEmpty != false && choices.first?.answer(from: command.text) != nil),
+           let desired = session.desiredSettings {
+            var problem = settingsError
+            if problem == nil {
+                if let wanted = desired.mode, info?.agent != (wanted == "plan" ? "plan" : "build") {
+                    problem = "OpenCode 未确认所选原生 Agent。"
+                } else if let wanted = desired.model, info?.model?.compoundId != wanted {
+                    problem = "OpenCode 未确认所选模型。"
+                } else if let wanted = desired.effort, info?.model?.variant != wanted {
+                    problem = "OpenCode 未确认所选推理强度。"
+                }
+            }
+            if let problem {
+                return AgentSessionReport(status: snapshot.status, messages: messages, error: snapshot.failure,
+                    commandId: command.id, commandStatus: "failed", commandError: "回复未发送：\(problem) 请重新应用设置后重试。",
+                    turnActive: snapshot.status == "active" && choices.isEmpty, waitingForInput: !choices.isEmpty)
+                    .reportingExecution(activities: execution.activities, revision: execution.revision,
+                        turnStartedAt: execution.turnStartedAt, lastOutputAt: execution.lastOutputAt)
+                    .reportingSettings(mode: mode, model: model, effort: effort, settingsRevision: desired.revision, settingsError: problem)
             }
         }
         let report: AgentSessionReport
