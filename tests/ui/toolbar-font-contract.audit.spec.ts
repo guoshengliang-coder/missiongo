@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 import { AUDIT_SOURCE } from "./audit-page.mjs";
-import { expectUsableControl } from "./visible-control";
+import { expectUsableControl, expectUsableControls } from "./visible-control";
 
 const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as { productId: string; detailKey: string };
 
@@ -21,13 +21,9 @@ for (const theme of ["light", "dark"] as const) for (const labels of ["normal", 
             const box = await bar.locator(".detail-more-menu > summary").boundingBox();
             return box!.x + box!.width;
           }).toBeLessThanOrEqual(width);
-          const edges: { top: number; bottom: number }[] = [];
-          for (const control of await bar.locator("button:visible, summary:visible").all()) {
-            if (await control.evaluate(el => Boolean(el.closest("details:not([open])") && el.tagName !== "SUMMARY"))) continue;
-            await expectUsableControl(control);
-            const box = (await control.boundingBox())!;
-            edges.push({ top: box.y, bottom: box.y + box.height });
-          }
+          // Keep summaries in closed details, excluding their hidden buttons.
+          // Read every control and clipping ancestor in a single browser call.
+          const edges = await expectUsableControls(bar.locator("button:visible:not(details:not([open]) *), summary:visible"));
           if (labels === "normal" && scale === "medium") {
             for (const edge of ["top", "bottom"] as const) expect(Math.max(...edges.map(box => box[edge])) - Math.min(...edges.map(box => box[edge])), `toolbar ${edge} alignment`).toBeLessThanOrEqual(1);
           }
