@@ -26,7 +26,14 @@ export function armRecoveredPlanResume(store:MissionGoStore,accountId:string,cli
   if(!user) return false;
   db.prepare(`INSERT INTO implementation_plan_recovery_resumes
     (account_id,identity_key,revision,session_id,user_digest,requested_at,state,user_digest_kind) VALUES (?,?,?,?,?,?,'waiting','turn')
-    ON CONFLICT(account_id,identity_key) DO NOTHING`)
+    ON CONFLICT(account_id,identity_key) DO UPDATE SET
+      user_digest=excluded.user_digest,requested_at=excluded.requested_at,state='waiting'
+    WHERE implementation_plan_recovery_resumes.state='cancelled'
+      AND implementation_plan_recovery_resumes.command_id IS NULL
+      AND implementation_plan_recovery_resumes.user_digest_kind='turn'
+      AND implementation_plan_recovery_resumes.user_digest<>excluded.user_digest
+      AND implementation_plan_recovery_resumes.revision=excluded.revision
+      AND implementation_plan_recovery_resumes.session_id=excluded.session_id`)
     .run(accountId,identity,recovered.revision,recovered.session_id,userIntentDigest(user),new Date().toISOString());
   return Boolean(db.prepare(`SELECT 1 FROM implementation_plan_recovery_resumes WHERE account_id=? AND identity_key=? AND state='waiting'`).get(accountId,identity));
 }
