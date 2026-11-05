@@ -30,11 +30,16 @@ for line in sys.stdin:
         text = value["message"]["content"][0]["text"]
         if text != "unacknowledged":
             emit({**value, "origin": {"kind": "human"}})
-        if text == "permission":
+        if text == "elicitation":
+            emit({"type": "control_request", "request_id": "form-1", "request": {"subtype": "elicitation", "mcp_server_name": "fixture", "mode": "form", "message": "Exact external plan", "requested_schema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}}})
+        elif text == "permission":
             emit({"type": "control_request", "request_id": "permission-1", "request": {"subtype": "can_use_tool", "tool_name": "Bash", "input": {"command": "synthetic command"}}})
         else:
             emit({"type": "assistant", "uuid": "answer-" + value["uuid"], "message": {"content": [{"type": "text", "text": "Result: " + text + " synthetic-secret https://gateway.invalid"}]}})
             emit({"type": "result", "subtype": "success"})
     elif value["type"] == "control_response":
-        assert value["response"]["request_id"] == "permission-1"
+        if value["response"]["request_id"] == "form-1":
+            assert value["response"]["response"] == {"action": "accept", "content": {}}
+        else:
+            assert value["response"]["request_id"] == "permission-1"
         emit({"type": "result", "subtype": "success"})

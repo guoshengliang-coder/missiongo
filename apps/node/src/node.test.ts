@@ -179,6 +179,39 @@ describe("Codex native control", () => {
   });
 });
 describe("Claude native control", () => {
+  it.each([["批准", "accept"], ["拒绝", "decline"], ["取消", "cancel"]])("completes MCP form confirmation %s through the original request", async (choice, action) => {
+    const adapter = new ClaudeAdapter(job(temporary(), "claude_code"), fixture); adapters.push(adapter);
+    await adapter.start("elicitation");
+    await vi.waitFor(async () => expect((await adapter.snapshot()).waitingForInput).toBe(true));
+    const pending = await adapter.snapshot();
+    expect(pending.messages.at(-1)?.sourceId).toBe("permission-mcp-confirm-1");
+    expect(pending.messages.at(-1)?.questions?.[0]).toMatchObject({ key: "授权请求 mcp-confirm-1", options: ["批准", "拒绝", "取消"] });
+    expect(pending.messages.at(-1)?.text).toContain("validation goals");
+    await expect(adapter.deliver({ id: "unbound", status: "queued", text: "批准" })).rejects.toThrow(/Stale/);
+    expect((await adapter.snapshot()).waitingForInput).toBe(true);
+    await adapter.deliver({ id: "answer", status: "queued", text: `授权请求 mcp-confirm-1: ${choice}` });
+    await vi.waitFor(async () => expect((await adapter.snapshot()).messages.some(message => message.text === action)).toBe(true));
+    expect((await adapter.snapshot()).waitingForInput).toBe(false);
+    expect((await adapter.snapshot()).messages.find(message => message.sourceId === "permission-mcp-confirm-1")?.questions?.[0]?.answered).toBe(choice);
+    await expect(adapter.deliver({ id: "late", status: "queued", text: "授权请求 mcp-confirm-1: 批准" })).rejects.toThrow(/授权请求已变化/);
+  });
+  it.each(["elicitation fields", "elicitation url", "elicitation unknown"])("returns unsupported %s to the MCP caller without leaving an invisible request", async prompt => {
+    const adapter = new ClaudeAdapter(job(temporary(), "claude_code"), fixture); adapters.push(adapter);
+    await adapter.start(prompt);
+    await vi.waitFor(async () => expect((await adapter.snapshot()).messages.some(message => message.text.includes("不支持此"))).toBe(true));
+    expect((await adapter.snapshot()).waitingForInput).toBe(false);
+  });
+  it("does not apply a cancelled MCP answer to the next pending confirmation", async () => {
+    const adapter = new ClaudeAdapter(job(temporary(), "claude_code"), fixture); adapters.push(adapter);
+    await adapter.start("elicitation parallel");
+    await vi.waitFor(async () => expect((await adapter.snapshot()).messages.at(-1)?.questions?.[0]?.key).toBe("授权请求 mcp-confirm-2"));
+    // Wait until the source withdraws the first request, rather than just appending the second.
+    await vi.waitFor(async () => expect((await adapter.snapshot()).messages.find(message => message.sourceId === "permission-mcp-confirm-1")?.questions?.[0]?.withdrawn).toBe(true));
+    await expect(adapter.deliver({ id: "stale", status: "queued", text: "授权请求 mcp-confirm-1: 批准" })).rejects.toThrow(/Stale/);
+    expect((await adapter.snapshot()).waitingForInput).toBe(true);
+    await adapter.deliver({ id: "current", status: "queued", text: "授权请求 mcp-confirm-2: 取消" });
+    await vi.waitFor(async () => expect((await adapter.snapshot()).waitingForInput).toBe(false));
+  });
   it.each([false,true].flatMap(free=>["auto", "bypassPermissions", "default", "plan"].map(mode=>({free,mode}))))("Claude $mode preserves permissions from launch (free=$free)", async ({free,mode})=>{
     const input={...job(temporary(),"claude_code"),itemKeys:free ? [] : ["EX-1"],freeSession:free,mode};
     const args=claudeArguments(input,"session");

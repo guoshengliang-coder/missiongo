@@ -525,6 +525,10 @@ public struct ClaudeStreamSnapshot: Sendable {
             text: ([request.promptText] + questions + offered + [instructions]).filter { !$0.isEmpty }.joined(separator: "\n")))
     }
 
+    public mutating func showUnsupportedControlRequest(requestId: String, reason: String) {
+        upsert(AgentSessionMessage(sourceId: "unsupported-\(requestId)", turnId: latestTurnId(), role: "agent", text: reason))
+    }
+
     /// An ordinary tool approval has no tool-use question of its own.
     public mutating func showPermissionRequest(_ request: ClaudePermissionRequest) {
         if request.toolName == "ExitPlanMode" {

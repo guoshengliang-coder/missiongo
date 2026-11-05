@@ -129,7 +129,14 @@ final class ClaudeExternalBridgeTests: XCTestCase {
         process.standardError = FileHandle.nullDevice
         try process.run()
         addTeardownBlock {
-            if process.isRunning { process.terminate(); process.waitUntilExit() }
+            if process.isRunning {
+                process.terminate()
+                let deadline = Date().addingTimeInterval(3)
+                while process.isRunning && Date() < deadline { usleep(10_000) }
+                // A failed fixture must never strand the test runner in
+                // Foundation's unbounded waitUntilExit on the main thread.
+                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            }
             if let state = try? ClaudeHostFiles.readState(config.statePath), let child = state.externalChildPid, ClaudeHostProcess.isRunning(child) {
                 kill(child, SIGKILL)
             }
@@ -208,6 +215,24 @@ final class ClaudeExternalBridgeTests: XCTestCase {
         try ClaudeHostFiles.write(ClaudeHostCommand(id: release, kind: "release", text: ""), to: config.commandsDirectory + "/" + release + ".json")
         _ = try waitState(config.statePath) { $0.status == "suspended" }
 
+    }
+
+    func testExternalMCPConfirmationRequiresTheExplicitLocalAnswerChannel() throws {
+        let (_, config, _) = try hostFixture()
+        _ = try waitState(config.statePath) { $0.launchReady && $0.status == "idle" }
+        func send(_ id: String, kind: String, text: String, request: String? = nil) throws {
+            try ClaudeHostFiles.write(ClaudeHostCommand(id: id, kind: kind, text: text, permissionRequestId: request),
+                to: config.commandsDirectory + "/" + id + ".json")
+        }
+        try send("request", kind: "message", text: "elicitation")
+        let pending = try waitState(config.statePath) { $0.waitingForInput }
+        XCTAssertTrue(pending.messages.last?.text.contains("/answer form-1") == true)
+        XCTAssertNil(pending.messages.last?.questions)
+        try send("web", kind: "message", text: "批准")
+        _ = try waitState(config.statePath) { $0.commandResults["web"]?.status == "failed" }
+        try send("local", kind: "permission_response", text: "批准", request: "form-1")
+        let settled = try waitState(config.statePath) { $0.commandResults["local"]?.status == "delivered" && !$0.waitingForInput && !$0.turnActive }
+        XCTAssertEqual(settled.status, "idle")
     }
 
     func testWrongNativeIDStopsBridgeBeforeItBecomesReplyable() throws {

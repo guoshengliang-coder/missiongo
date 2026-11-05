@@ -62,11 +62,33 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     emit({ type: "system", subtype: "init", session_id: session });
     emit(message);
     emit({ type: "assistant", uuid: `agent-${message.uuid}`, message: { content: [{ type: "text", text: "fixture received" }] } });
-    if (message.message.content[0].text.includes("approval")) emit({ type: "control_request", request_id: "claude-native-1",
+    const prompt = message.message.content[0].text;
+    if (prompt.startsWith("elicitation")) {
+      const request = { subtype: "elicitation", mcp_server_name: "fixture", mode: "form", message: "Review exact fixture plan and validation goals.",
+        requested_schema: { type: "object", properties: {}, required: [], additionalProperties: false } };
+      if (prompt.includes("fields")) request.requested_schema.properties = { name: { type: "string" } };
+      if (prompt.includes("url")) { request.mode = "url"; request.url = "https://fixture.invalid/review"; }
+      if (prompt.includes("unknown")) request.subtype = "future_confirmation";
+      emit({ type: "control_request", request_id: "mcp-confirm-1", request });
+      emit({ type: "tool_progress", tool_name: "mcp__fixture__confirm", elapsed_time_seconds: 30, heartbeat: true });
+      if (prompt.includes("parallel")) {
+        emit({ type: "control_request", request_id: "mcp-confirm-2", request });
+        setTimeout(() => emit({type:"control_cancel_request",request_id:"mcp-confirm-1"}), 100);
+      }
+    }
+    else if (prompt.includes("approval")) emit({ type: "control_request", request_id: "claude-native-1",
       request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "echo test" } } });
     else emit({ type: "result", is_error: false });
   } else if (message.type === "control_response") {
-    emit({ type: "assistant", uuid: "decision", message: { content: [{ type: "text", text: message.response.response.behavior }] } });
+    const response = message.response;
+    const answer = response.response;
+    if (response.request_id.startsWith("mcp-confirm-")) {
+      if (response.subtype === "success") {
+        if (!["accept", "decline", "cancel"].includes(answer.action) || "behavior" in answer) throw new Error("Incorrect elicitation response");
+        if (answer.action === "accept" && JSON.stringify(answer.content) !== "{}") throw new Error("Missing empty form content");
+      }
+    }
+    emit({ type: "assistant", uuid: "decision", message: { content: [{ type: "text", text: answer?.action ?? answer?.behavior ?? response.error }] } });
     emit({ type: "result", is_error: false });
   }
 });
