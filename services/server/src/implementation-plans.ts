@@ -35,16 +35,18 @@ export class ImplementationPlans {
     if(previous?.revision===revision) return;
     this.db.connection.prepare(`INSERT INTO implementation_plan_requests(account_id,identity_key,revision,proposal_json,scope_json) VALUES (?,?,?,?,?)
       ON CONFLICT(account_id,identity_key) DO UPDATE SET revision=excluded.revision,proposal_json=excluded.proposal_json,scope_json=excluded.scope_json`)
-      .run(accountId,identity,revision,proposal ? JSON.stringify(proposal) : null,proposal ? this.scope(proposal.keys) : null);
+      .run(accountId,identity,revision,proposal ? JSON.stringify({...proposal,submittedAt:new Date().toISOString()}) : null,proposal ? this.scope(proposal.keys) : null);
     });
   }
 
-  proposal(accountId:string,identity:string): {revision:string;keys:string[];plan:string;validation:string;approved:boolean;valid:boolean}|undefined {
+  proposal(accountId:string,identity:string): {revision:string;keys:string[];plan:string;validation:string;submittedAt?:string;approvedAt?:string;approved:boolean;valid:boolean}|undefined {
     const row=this.db.connection.prepare("SELECT revision,proposal_json,scope_json FROM implementation_plan_requests WHERE account_id=? AND identity_key=?")
       .get(accountId,identity) as {revision:string;proposal_json:string|null;scope_json:string|null}|undefined;
     if(!row?.proposal_json) return undefined;
-    const proposal=JSON.parse(row.proposal_json) as {keys:string[];plan:string;validation:string};
-    return {...proposal,revision:row.revision,approved:this.approved(accountId,identity,row.revision),valid:this.scope(proposal.keys)===row.scope_json};
+    const proposal=JSON.parse(row.proposal_json) as {keys:string[];plan:string;validation:string;submittedAt?:string};
+    const approval=this.db.connection.prepare("SELECT approved_at FROM implementation_plan_approvals WHERE account_id=? AND identity_key=? AND revision=?")
+      .get(accountId,identity,row.revision) as {approved_at:string}|undefined;
+    return {...proposal,...(approval ? {approvedAt:approval.approved_at} : {}),revision:row.revision,approved:this.approved(accountId,identity,row.revision),valid:this.scope(proposal.keys)===row.scope_json};
   }
 
   assertRequest(accountId:string,identity:string,revision:string): void {

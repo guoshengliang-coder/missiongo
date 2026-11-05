@@ -1,6 +1,6 @@
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
-import { AgentPlanContent, withoutDuplicatePlan } from "./agent-plan-content";
+import { AgentPlanContent, planContinuationObserved, planTranscript } from "./agent-plan-content";
 import { AgentStopFeedback } from "./agent-stop-feedback.js";
 import { ChatAttachments } from "./chat-attachments";
 import type { ReactNode } from "react";
@@ -599,7 +599,10 @@ export function AgentSessionConsole({
   const showPermissionApproval = Boolean(approval && (approvalNeedsAction(approval)
     || (approval.kind === "manual" && approval.status === "pending")));
   const planApproved = sessionQuery.data?.planApprovalState;
-  const showPlanApproval = Boolean(planApproved || sessionQuery.data?.planApproval) || selected?.needsAttention && !selected.attention.dismissed && selected.attention.kind === "approval";
+  const planContinued = planContinuationObserved(sessionQuery.data);
+  const stalePlanAttention = Boolean(planApproved && planContinued && selected?.attention.kind === "approval");
+  const showPlanApproval = !planContinued && (Boolean(planApproved || sessionQuery.data?.planApproval)
+    || selected?.needsAttention && !selected.attention.dismissed && selected.attention.kind === "approval");
   const planApproval = sessionQuery.data?.planApproval;
   const planApprovalStatus = pending || sendingSelected ? { code: "reply_pending" }
     : sessionQuery.data?.planApprovalStatus;
@@ -1136,7 +1139,8 @@ export function AgentSessionConsole({
                     {selected.sessionUrl && <p>{t("agentConsoleOpenExternalHelp")}</p>}
                   </div>
                 )}
-                {withoutDuplicatePlan(visibleMessages, sessionQuery.data).map((message) => {
+                {planTranscript(visibleMessages, sessionQuery.data).map((message) => {
+                  if (message === null) return <AgentPlanContent key="submitted-plan" session={sessionQuery.data} surface="console" />;
                   const labelKey = messageLabelKey(message.role, selected.agentKind);
                   return (
                     <article key={message.id} data-agent-message-id={`${message.role}:${message.sourceId || message.id}`} className={`agent-console-message agent-console-message-${message.role}`}>
@@ -1159,17 +1163,16 @@ export function AgentSessionConsole({
                     </article>
                   );
                 })}
-                <AgentPlanContent session={sessionQuery.data} surface="console" />
-                {!showPermissionApproval && (showPlanApproval || (selected.needsAttention || selected.attention.dismissed) && selected.attention.reason) && (
+                {!showPermissionApproval && (showPlanApproval || !stalePlanAttention && (selected.needsAttention || selected.attention.dismissed) && selected.attention.reason) && (
                   <div className={`agent-console-attention-banner ${selected.attention.dismissed ? "dismissed" : ""}${showPlanApproval ? " agent-console-attention-banner--approval" : ""}`} role="status">
                     <BellRing size={16} />
                     <details>
                       <summary>{selected.attention.dismissed
                         ? t("agentAttentionDismissedTitle")
-                        : planApproved ? t("agentPlanApproved") : showPlanApproval ? t("agentPlanReview") : attentionLabel(selected, t)}
+                        : showPlanApproval && planApproved ? t("agentPlanApproved") : showPlanApproval ? t("agentPlanReview") : attentionLabel(selected, t)}
                       </summary>
                       <div className="agent-console-attention-detail">
-                        {!planApproved && <p>{selected.attention.reason}</p>}
+                        {(!showPlanApproval || !planApproved) && <p>{selected.attention.reason}</p>}
                         {showPlanApproval && <p>{planApproved ? t(planApproved.continuationQueued ? "agentPlanApprovedQueued" : "agentPlanApprovedNoReply") : t("agentPlanReviewHelp")}</p>}
                         {showPlanApproval && !planApproved && !canApprovePlan && <p className="agent-console-approve-reason" role="status">
                           {sessionQuery.isPending ? t("agentPlanChecking") : sessionQuery.isError ? t("agentPlanCheckFailed")
@@ -1182,7 +1185,7 @@ export function AgentSessionConsole({
                         disabled={!canApprovePlan || dismissAttention.isPending}
                         onClick={approvePlan}>{t("agentPlanApprove")}</button>
                     </div>}
-                    {!planApproved && (showPlanApproval || selected.needsAttention
+                    {(!showPlanApproval || !planApproved) && (showPlanApproval || selected.needsAttention
                       && selected.status !== "stalled"
                       && selected.agentSessionId
                       && selected.attention.revision) && (

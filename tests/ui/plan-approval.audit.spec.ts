@@ -258,3 +258,55 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     });
   });
 }
+
+for (const viewport of [{ width: 320, height: 900, theme: "dark" }, { width: 1440, height: 900, theme: "light" }] as const) {
+  test(`approval acknowledgement ends on native continuation at ${viewport.width}px`, async ({ page }) => {
+    const { advanceSessionDetailPoll } = await import("./polling");
+    await page.clock.install();
+    await page.setViewportSize(viewport);
+    await page.emulateMedia({ colorScheme: viewport.theme });
+    for (const agentKind of ["codex", "claude_code", "opencode", "hermes"]) {
+      let phase: "queued" | "active" | "idle" | "action" | "new-plan" = "queued";
+      const approvedAt = "2026-10-30T01:01:00.500Z", resumedAt = "2026-10-30T01:02:00Z";
+      const detail = () => ({ ...summary, agentKind, status: phase === "active" ? "active" : "idle",
+        attention: phase === "action" ? { state: "needed", kind: "action", reason: "请处理新的独立事项" } : summary.attention,
+        messages: [{ id: "original-plan", sourceId: "original-plan", role: "plan", text: "保留这份方案正文", occurredAt: stamp }],
+        implementationPlan: { revision: phase === "new-plan" ? "new-revision" : "reviewed", plan: "保留这份方案正文", validation: "确认正文保留", itemKeys: [], approved: phase !== "new-plan", valid: true,
+          submittedAt: stamp, ...(phase !== "new-plan" ? { approvedAt } : {}) },
+        ...(phase !== "new-plan" ? { planApprovalState: { approved: true, revision: "reviewed", continuationQueued: true } }
+          : { planApproval: { revision: "new-revision", plan: "保留这份方案正文", reason: "新方案等待批准" } }),
+        planApprovalStatus: { code: phase === "new-plan" ? "ready" : "approved" },
+        command: { id: "continue", kind: "message", text: "批准", status: phase === "queued" ? "queued" : "delivered", createdAt: approvedAt },
+        turnState: { turnActive: phase === "active", turnStartedAt: phase === "queued" ? stamp : resumedAt,
+          ...(phase === "idle" || phase === "action" ? { lastOutputAt: resumedAt } : {}) },
+      });
+      await page.route("**/api/v1/agent-sessions**", route => route.request().method() !== "GET" ? route.fulfill({ status: 204 })
+        : route.fulfill({ json: new URL(route.request().url()).pathname === "/api/v1/agent-sessions" ? { sessions: [detail()] } : detail() }));
+      await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
+      const banner = page.locator(".agent-console-attention-banner--approval");
+      const plan = page.getByRole("article", { name: "提交审批的方案", exact: true });
+      await expect(banner.locator("summary")).toHaveText("方案已批准");
+      phase = "active";
+      await advanceSessionDetailPoll(page);
+      await expect(banner).toHaveCount(0);
+      await expect(plan).toContainText("方案已批准");
+      phase = "idle";
+      await advanceSessionDetailPoll(page);
+      await expect(banner).toHaveCount(0);
+      await page.reload();
+      await expect(plan).toContainText("方案已批准");
+      await expect(banner).toHaveCount(0);
+      phase = "action";
+      await page.reload();
+      const attention = page.locator(".agent-console-attention-banner");
+      await expect(attention).toBeVisible();
+      await attention.locator("summary").click();
+      await expect(attention).toContainText("请处理新的独立事项");
+      await expect(attention.locator("summary")).not.toHaveText("方案已批准");
+      phase = "new-plan";
+      await page.reload();
+      await expect(banner.getByRole("button", { name: "批准", exact: true })).toBeEnabled();
+      await page.unroute("**/api/v1/agent-sessions**");
+    }
+  });
+}

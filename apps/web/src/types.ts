@@ -547,6 +547,7 @@ export interface AgentSession {
   readonly history?: { readonly nextCursor?: string; readonly error?: string };
   readonly planApproval?: { readonly revision: string; readonly reason: string; readonly plan?: string; readonly validation?: string; readonly itemKeys?: readonly string[] } | undefined;
   readonly implementationPlan?: { readonly revision: string; readonly plan: string; readonly validation: string;
+    readonly submittedAt?: string; readonly approvedAt?: string;
     readonly itemKeys: readonly string[]; readonly approved: boolean; readonly valid: boolean };
   readonly canApprovePlan?: boolean;
   readonly planApprovalState?: { readonly approved: true; readonly revision: string; readonly continuationQueued: boolean };
