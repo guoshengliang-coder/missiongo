@@ -5,7 +5,7 @@ import type { AgentSessionStatus } from "./types";
 import type { OutgoingReply } from "./agent-session-view";
 
 export function isHistoryLimited(error: string | undefined): boolean {
-  return error?.startsWith("codex_history_limited:") === true;
+  return error?.startsWith("codex_history_limited:") === true || error?.startsWith("agent_history_limited:") === true;
 }
 
 /** History availability is independent of runtime and message delivery. */

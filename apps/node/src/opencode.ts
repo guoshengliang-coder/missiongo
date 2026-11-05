@@ -83,12 +83,16 @@ export class OpenCodeAdapter implements Adapter {
     const details = await this.api.call("GET", this.path);
     const messages: Message[] = [];
     let cursor: string | undefined;
+    const seen = new Set<string>();
     for (let page = 0; page < 30; page++) {
-      const query = new URLSearchParams({ limit: "100", ...(cursor ? { cursor } : { order: "asc" }) });
+      const query = new URLSearchParams({ limit: "100", ...(cursor ? { cursor } : { order: "desc" }) });
       const result = await this.api.call("GET", `${this.path}/message?${query}`);
-      messages.push(...openCodeMessages(result.data ?? []));
+      messages.unshift(...openCodeMessages([...(result.data ?? [])].reverse()));
       const next = result.nextCursor ?? result.cursor?.next;
-      if (!next || next === cursor) { cursor = undefined; break; } cursor = next;
+      if (!next) { cursor = undefined; break; } cursor = next;
+      if (seen.has(next)) break;
+      seen.add(next);
+      if (messages.length >= 1900) break;
     }
     const choices = await this.choices();
     for (const p of choices.permissions) messages.push({ sourceId: `permission-${p.id}`, role: "agent", text: p.message || `OpenCode 请求使用 ${p.action}`,
@@ -103,7 +107,7 @@ export class OpenCodeAdapter implements Adapter {
     const running = active.data?.[this.ref] !== undefined;
     return { status: details.data?.outcome === "failed" ? "failed" : running ? "active" : "idle", messages: messages.slice(-2000),
       ...(typeof details.data?.agent==="string" ? {mode:details.data.agent} : {}), turnActive: running, waitingForInput: choices.permissions.length + choices.forms.length > 0,
-      ...(cursor ? { error: "OpenCode message pagination exceeded the 3000-message limit" } : {}) };
+      ...(cursor ? { error: "agent_history_limited: only the latest OpenCode messages are synchronized" } : {}) };
   }
   private async stopState(): Promise<{ active: boolean; input?: string }> {
     const active = (await this.api.call("GET", "/api/session/active")).data?.[this.ref] !== undefined;

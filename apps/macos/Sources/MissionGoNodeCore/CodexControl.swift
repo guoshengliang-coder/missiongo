@@ -226,7 +226,7 @@ public struct CodexThreadSnapshot: Equatable, Sendable {
             && activeTurnId == nil
     }
     public let activeTurnId: String?
-    public let messages: [AgentSessionMessage]
+    public var messages: [AgentSessionMessage]
     public let archived: Bool
     public let activityAt: String?
     /// `thread.model` / `thread.reasoningEffort` as `thread/read` reports them.
@@ -968,8 +968,76 @@ public struct CodexAppServerControl: CodexControl {
         thread["turns"] = page.turns
         var snapshot = try CodexProtocol.threadSnapshot(fromRead: ["thread": thread])
         snapshot.historyLimited = true
-        snapshot.history = AgentHistoryMetadata(cursor: page.nextCursor, complete: page.nextCursor == nil && page.error == nil, error: page.error)
+        // Turn summaries omit commentary and plans. They supply runtime/turn
+        // metadata only; visible conversation content must come from item pages.
+        do {
+            let items = try visibleItemPage(connection: connection, threadId: threadId, cursor: nil, timeout: timeout)
+            if items.messages.isEmpty && !snapshot.messages.isEmpty {
+                throw CodexControlError.invalidResponse(method: "thread/items/list missing visible history")
+            }
+            snapshot.messages = items.messages
+            snapshot.history = AgentHistoryMetadata(cursor: items.nextCursor,
+                complete: items.nextCursor == nil && items.error == nil, error: items.error)
+        } catch {
+            snapshot.history = AgentHistoryMetadata(complete: false, error: "unavailable")
+        }
         return snapshot
+    }
+
+    struct VisibleItemPage {
+        let messages: [AgentSessionMessage]
+        let nextCursor: String?
+        var error: String? = nil
+    }
+
+    /// Version the cursor so cached turn-summary pages cannot silently be
+    /// mistaken for complete item history. Legacy cursors restart this same
+    /// bound thread's item lane; source IDs deduplicate the overlap.
+    static let itemCursorPrefix = "items-v1:"
+    static func visibleItemPage(connection: JSONRPCWebSocket, threadId: String,
+        cursor: String?, timeout: TimeInterval) throws -> VisibleItemPage {
+        var cursor = cursor.flatMap { $0.hasPrefix(itemCursorPrefix) ? String($0.dropFirst(itemCursorPrefix.count)) : nil }
+        var seen = Set<String>()
+        if let cursor { seen.insert(cursor) }
+        var messages: [AgentSessionMessage] = []
+        var visibleBytes = 0
+        let started = Date()
+        let initialBytes = connection.receivedBytes
+        for _ in 0..<8 {
+            var params: [String: Any] = ["threadId": threadId, "limit": 50, "sortDirection": "desc"]
+            if let cursor { params["cursor"] = cursor }
+            let previous = cursor
+            do {
+                let page = try connection.call("thread/items/list", params)
+                guard let entries = page["data"] as? [[String: Any]], entries.count <= 50 else {
+                    throw CodexControlError.invalidResponse(method: "thread/items/list")
+                }
+                let next = page["nextCursor"] as? String
+                if let next, next.isEmpty || next.utf16.count + itemCursorPrefix.count > 4096 || !seen.insert(next).inserted {
+                    throw CodexControlError.invalidResponse(method: "thread/items/list cursor")
+                }
+                for entry in entries {
+                    guard let turnId = entry["turnId"] as? String, var item = entry["item"] as? [String: Any] else {
+                        throw CodexControlError.invalidResponse(method: "thread/items/list entry")
+                    }
+                    item["createdAt"] = item["createdAt"] ?? entry["startedAtMs"] ?? entry["completedAtMs"]
+                    let parsed = try CodexProtocol.threadSnapshot(fromRead: ["thread": ["turns": [["id": turnId, "items": [item]]]]]).messages
+                    messages += parsed
+                    visibleBytes += parsed.reduce(0) { $0 + $1.text.utf8.count }
+                }
+                cursor = next
+                if next == nil || messages.count >= 50 || visibleBytes >= 512 * 1024
+                    || connection.receivedBytes - initialBytes >= 8 * 1024 * 1024
+                    || Date().timeIntervalSince(started) >= timeout { break }
+            } catch {
+                if case CodexControlError.invalidResponse = error { throw error }
+                guard let previous else { throw error }
+                return VisibleItemPage(messages: AgentSessionAnswerTrace.markingAnswered(Array(messages.reversed())),
+                    nextCursor: itemCursorPrefix + previous, error: "unavailable")
+            }
+        }
+        return VisibleItemPage(messages: AgentSessionAnswerTrace.markingAnswered(Array(messages.reversed())),
+            nextCursor: cursor.map { itemCursorPrefix + $0 })
     }
 
     private struct SummaryPage {
@@ -1025,12 +1093,11 @@ public struct CodexAppServerControl: CodexControl {
                     _ = try connection.call("initialize", CodexProtocol.initializeParams())
                     try connection.notify("initialized")
                     let metadata = try connection.call("thread/read", CodexProtocol.threadReadParams(threadId: threadId, includeTurns: false))
-                    guard var thread = metadata["thread"] as? [String: Any], thread["id"] as? String == threadId else {
+                    guard let thread = metadata["thread"] as? [String: Any], thread["id"] as? String == threadId else {
                         throw CodexControlError.invalidResponse(method: "thread/read identity")
                     }
-                    let page = try Self.summaryPage(connection: connection, threadId: threadId, cursor: cursor, timeout: timeout)
-                    thread["turns"] = page.turns
-                    return AgentHistoryResult(messages: try CodexProtocol.threadSnapshot(fromRead: ["thread": thread]).messages,
+                    let page = try Self.visibleItemPage(connection: connection, threadId: threadId, cursor: cursor, timeout: timeout)
+                    return AgentHistoryResult(messages: page.messages,
                         nextCursor: page.nextCursor)
                 })
             }

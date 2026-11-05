@@ -2730,8 +2730,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const window = (request.query as { history?: string }).history === "recent"
       ? agentHistory.window(requireAccountId(request), sessionId, session.messages) : undefined;
     const planApprovalState = planApprovals.approvalState(session);
+    const implementationPlan = planApprovals.content(session);
     return { ...session, ...(window ? window : {}), canApprovePlan: assessment.status.code === "ready" && ("canApprovePlan" in session ? session.canApprovePlan : session.canReply),
-      planApprovalStatus: assessment.status, ...(assessment.offer ? { planApproval: assessment.offer } : {}), ...(planApprovalState ? {planApprovalState} : {}) };
+      planApprovalStatus: assessment.status, ...(assessment.offer ? { planApproval: assessment.offer } : {}), ...(planApprovalState ? {planApprovalState} : {}),
+      ...(implementationPlan ? { implementationPlan } : {}) };
   });
 
   // One scoped action: an explicitly clicked, content-bound chat approval. Never a tool permission decision.

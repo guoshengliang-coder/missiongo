@@ -46,6 +46,7 @@ export interface Snapshot {
   sourceArchived?: boolean; sourceRestored?: boolean; sourceArchiveError?: string;
   settingsRevision?: number; settingsError?: string;
   approvalRetryId?: string; approvalRetryStatus?: string; approvalRetryError?: string;
+  history?: { cursor?: string; complete: boolean; error?: string };
 }
 export interface HostState {
   dispatch: Dispatch; pid: number; sessionRef?: string; sessionName: string; initialTurnId?: string;
@@ -57,6 +58,7 @@ export interface Adapter {
   start(prompt: string): Promise<string>;
   stop(command: Command): Promise<Snapshot>;
   snapshot(): Promise<Snapshot>;
+  historyPage?(cursor: string): Promise<{ messages: Message[]; nextCursor?: string; error?: string }>;
   deliver(command: Command): Promise<void>;
   decide(decision: { id: string; choice: string }): Promise<void>;
   settings?(settings: NonNullable<Session["desiredSettings"]>): Promise<void>;

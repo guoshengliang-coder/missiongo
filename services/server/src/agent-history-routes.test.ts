@@ -28,7 +28,7 @@ it("serves recent cached messages, queues an exact read-only page and authorizes
       payload: { status: "idle", messages, history: { cursor: "opaque-history-anchor", complete: false } } });
     expect(snapshot.statusCode).toBe(204);
     const context = new McpAgentSessionReads(store, "/synthetic/history-attachments").readConversation("owner", id, { itemKey: item.key });
-    expect(context.completeness.knownGaps.some(gap => gap.includes("recent-summary"))).toBe(true);
+    expect(context.completeness.knownGaps.some(gap => gap.includes("bounded history window"))).toBe(true);
     const login = await app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { username: "owner@example.test", password: "test-password" } });
     const headers = { cookie: login.headers["set-cookie"]!.split(";", 1)[0]! };
     const detail = await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${id}?history=recent`, headers });

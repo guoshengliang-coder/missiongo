@@ -1,4 +1,5 @@
 import { sessionName } from "./session-name.js";
+import { codexHistory } from "./codex-history.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { JsonProcess } from "./process.js";
@@ -50,6 +51,7 @@ export class CodexAdapter implements Adapter {
   private pending = new Map<string, { rpcId: unknown; snapshot: Approval; results: Map<string, unknown> }>();
   private closed = false;
   private lastApproval: Approval | undefined;
+  private lastMessages: Message[] = [];
   constructor(private job: Dispatch, executable: string, private localSkillVersion?: string) {
     this.planning = !job.freeSession;
     this.rpc = new JsonProcess(executable, ["app-server"], job.repoPath);
@@ -155,12 +157,31 @@ export class CodexAdapter implements Adapter {
   }
   async snapshot(): Promise<Snapshot> {
     if (this.closed) return { status: "unavailable", messages: [], error: "Codex control host disconnected; no automatic restart", ...(this.lastApproval ? { approval: this.lastApproval } : {}) };
-    const { thread } = await this.rpc.call("thread/read", { threadId: this.ref, includeTurns: true });
-    const active = (thread.turns ?? []).some((turn: Wire) => turn.status === "inProgress");
+    const { thread, lastTurn } = await this.runtime();
+    const active = thread.status?.type === "active" || lastTurn?.status === "inProgress";
     const approval = this.pending.values().next().value?.snapshot ?? this.lastApproval;
-    const lastTurn = thread.turns?.at(-1);
-    return { status: active ? "active" : lastTurn?.status === "failed" ? "failed" : "idle", messages: codexMessages(thread), turnActive: active,
+    let history: NonNullable<Snapshot["history"]>;
+    try {
+      const page = await codexHistory((method, params) => this.rpc.call(method, params), this.ref);
+      this.lastMessages = page.messages;
+      history = { ...(page.nextCursor ? { cursor: page.nextCursor } : {}), complete: !page.nextCursor && !page.error,
+        ...(page.error ? { error: page.error } : {}) };
+    } catch { history = { complete: false, error: "unavailable" }; }
+    return { status: active ? "active" : lastTurn?.status === "failed" ? "failed" : "idle", messages: this.lastMessages, turnActive: active, history,
+      ...(history.error ? { error: "codex_history_limited: visible item history could not be read" } : {}),
       mode:this.planning ? "read-only" : normalizeAgentMode("codex",this.job.mode), waitingForInput: approval?.status === "pending", ...(approval ? { approval } : {}) };
+  }
+  private async runtime(): Promise<{ thread: Wire; lastTurn: Wire | undefined }> {
+    const { thread } = await this.rpc.call("thread/read", { threadId: this.ref, includeTurns: false });
+    if (thread?.id !== this.ref) throw new Error("Codex returned a different thread");
+    const page = await this.rpc.call("thread/turns/list", { threadId: this.ref, limit: 1, sortDirection: "desc", itemsView: "notLoaded" });
+    if (!Array.isArray(page.data)) throw new Error("Invalid Codex turn metadata");
+    return { thread, lastTurn: page.data[0] };
+  }
+  async historyPage(cursor: string) {
+    const page = await codexHistory((method, params) => this.rpc.call(method, params), this.ref, cursor);
+    // A partial page is useful and its continuation can be retried separately.
+    return { messages: page.messages, ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}) };
   }
   async stop(command: Command): Promise<Snapshot> {
     const target = command.turnId === "startup" ? this.initialTurnId : command.turnId;
@@ -183,8 +204,8 @@ export class CodexAdapter implements Adapter {
   async deliver(command: Command): Promise<void> {
     if (command.kind === "interrupt") { await this.stop(command); return; }
     if (this.pending.size) throw new Error("Answer the pending request explicitly before sending another message");
-    const { thread } = await this.rpc.call("thread/read", { threadId: this.ref, includeTurns: true });
-    const turn = thread.turns?.find((t: Wire) => t.status === "inProgress");
+    const { lastTurn } = await this.runtime();
+    const turn = lastTurn?.status === "inProgress" ? lastTurn : undefined;
     if (turn) await this.rpc.call("turn/steer", { threadId: this.ref, expectedTurnId: turn.id,
       input: [{ type: "text", text: command.text }], clientUserMessageId: command.id });
     else await this.rpc.call("turn/start", this.turn(command.text, command.id));
@@ -200,7 +221,7 @@ export class CodexAdapter implements Adapter {
     if (settings.mode) codexPolicy(settings.mode);
     const updated = { ...this.job, ...settings };
     const planning=settings.planning ?? (settings.planApproved===undefined ? this.planning : !settings.planApproved);
-    const result=await this.rpc.call("thread/resume", { threadId: this.ref, ...codexPolicy(planning ? "read-only" : updated.mode), ...(updated.model ? { model: updated.model } : {}) });
+    const result=await this.rpc.call("thread/resume", { threadId: this.ref, excludeTurns: true, ...codexPolicy(planning ? "read-only" : updated.mode), ...(updated.model ? { model: updated.model } : {}) });
     validatePolicy(result,updated,planning);
     this.model=result.model ?? updated.model ?? this.model;
     this.planning=planning; this.job = updated;
@@ -208,8 +229,8 @@ export class CodexAdapter implements Adapter {
   async archive(restore: boolean): Promise<void> { await this.rpc.call(restore ? "thread/unarchive" : "thread/archive", { threadId: this.ref }); }
   async retryApproval(retry: NonNullable<Session["approvalRetry"]>): Promise<void> {
     if (this.lastApproval?.kind !== "auto" || this.lastApproval.status !== "denied" || this.lastApproval.id !== retry.reviewId) throw new InputRejected("Auto-review retry no longer matches the denied source request");
-    const { thread } = await this.rpc.call("thread/read", { threadId: this.ref, includeTurns: true });
-    if (thread.turns?.some((turn: Wire) => turn.status === "inProgress")) throw new InputRejected("Wait for the current turn to finish before retrying");
+    const { lastTurn } = await this.runtime();
+    if (lastTurn?.status === "inProgress") throw new InputRejected("Wait for the current turn to finish before retrying");
     await this.rpc.call("turn/start", { ...this.turn("用户已在 MissionGo 控制台明确要求对刚被自动审查拒绝的操作发起一次人工审批重试。请重新评估，只尝试一次，并将实际授权请求交给人审查。不要重复其他操作。", retry.id), approvalsReviewer: "user" });
   }
   async close(): Promise<void> { this.rpc.child.kill(); }

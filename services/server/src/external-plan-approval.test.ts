@@ -62,8 +62,11 @@ it("reads, submits, approves offline and claims the same original external conve
   expect(listed.sessions).toEqual([expect.objectContaining({ agentSessionId: requested.sessionId, approvalOnly: true, needsAttention: true, canReply: false })]);
   const detail = (await f.get(requested.sessionId)).json();
   expect(detail).toMatchObject({ approvalOnly: true, canReply: false, canApprovePlan: true, planApprovalStatus: { code: "ready" }, planApproval: { revision: requested.revision, plan: f.proposal.plan } });
+  expect(detail.implementationPlan).toMatchObject({ plan: f.proposal.plan, validation: f.proposal.validation, approved: false, valid: true });
   expect((await f.approve(requested.sessionId, requested.revision)).json()).toEqual({ approved: true, revision: requested.revision, continuationQueued: false });
   expect((await f.get(requested.sessionId)).json()).toMatchObject({ canReply: false, canApprovePlan: false, planApprovalState: { approved: true, continuationQueued: false } });
+  expect((await f.get(requested.sessionId)).json().implementationPlan).toMatchObject({
+    revision: requested.revision, plan: f.proposal.plan, validation: f.proposal.validation, approved: true, valid: true });
   expect(f.store.getWorkItem(f.item.key).status).toBe("ready");
   expect(itemExecutionBlockers(f.store.database, f.item.id)).toEqual([]);
   expect((await f.approve(requested.sessionId, requested.revision)).statusCode).toBe(409);

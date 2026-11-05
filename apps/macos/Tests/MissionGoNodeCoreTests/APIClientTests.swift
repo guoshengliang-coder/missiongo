@@ -634,6 +634,16 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(decoded, try APIClient.encoder.encode(report))
     }
 
+    func testHistoryRejectsAnOversizedSingleMessageWithAnExplicitPageError() async throws {
+        StubURLProtocol.install { _, _ in .response(status: 204, body: "") }
+        try await client().reportHistory(id: "page", result: AgentHistoryResult(messages: [
+            AgentSessionMessage(sourceId: "large", role: "plan", text: String(repeating: "x", count: 100_001))]))
+        let sent = try XCTUnwrap(StubURLProtocol.recorded.first)
+        let object = try JSONSerialization.jsonObject(with: sent.body) as? [String: Any]
+        XCTAssertEqual(object?["error"] as? String, "too_large")
+        XCTAssertEqual((object?["messages"] as? [Any])?.count, 0)
+    }
+
     func testExternalNativePollingAndSnapshotsShareOneWorkerAndFenceTheBinding() async throws {
         StubURLProtocol.install { request, _ in
             if request.httpMethod == "GET" {

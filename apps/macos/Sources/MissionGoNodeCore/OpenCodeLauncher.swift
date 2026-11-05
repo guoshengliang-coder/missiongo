@@ -792,26 +792,27 @@ public struct OpenCodeHTTPControl: OpenCodeControlling {
         }
         let outcome = (try? OpenCodeProtocol.data(details))?["outcome"] as? String
         var messages: [AgentSessionMessage] = []
-        var executionBuilder = OpenCodeExecutionProgressBuilder()
+        var entries: [[String: Any]] = []
         var cursor: String?
+        var seenCursors = Set<String>()
         for _ in 0..<Self.snapshotPageLimit {
             // OpenCode 2 rejects `order` together with a cursor
             // (InvalidCursorError: Cursor cannot be combined with order); the
             // cursor already carries the order it was issued for. Ask for
-            // oldest-first only on the first page, then follow the cursor alone.
+            // newest-first only on the first page, then follow the cursor alone.
             var path = "/api/session/\(encoded(id))/message?limit=100"
-            if let cursor { path += "&cursor=\(encoded(cursor))" } else { path += "&order=asc" }
+            if let cursor { path += "&cursor=\(encoded(cursor))" } else { path += "&order=desc" }
             let page = try await call("GET", path)
-            messages += try OpenCodeProtocol.messages(page)
-            executionBuilder.append(page["data"] as? [[String: Any]] ?? [])
-            guard let next = OpenCodeProtocol.nextCursor(page), next != cursor else { cursor = nil; break }
+            messages = try OpenCodeProtocol.messages(["data": Array((page["data"] as? [[String: Any]] ?? []).reversed())]) + messages
+            entries = Array((page["data"] as? [[String: Any]] ?? []).reversed()) + entries
+            guard let next = OpenCodeProtocol.nextCursor(page) else { cursor = nil; break }
             cursor = next
+            if !seenCursors.insert(next).inserted { break }
+            if messages.count >= Self.snapshotMessageCap { break }
         }
         if cursor != nil {
-            // Past the page cap the newest messages may not have been reached;
-            // say so in the log instead of failing silently (AND-222). The
-            // newest of what was read still goes out below.
-            NSLog("MissionGo：OpenCode 会话 %@ 的消息超过 %d 条，本轮仅同步到第 %d 条附近。", id, Self.snapshotPageLimit * 100, Self.snapshotPageLimit * 100)
+            // The newest end was read first; make the older-history gap explicit.
+            NSLog("MissionGo：OpenCode 会话 %@ 本轮同步最近 %d 条消息，仍有更早历史未读取。", id, messages.count)
         }
         if messages.count > Self.snapshotMessageCap {
             // Keep the newest messages — the console reads a mirror for what
@@ -819,14 +820,17 @@ public struct OpenCodeHTTPControl: OpenCodeControlling {
             // long session never arrived at all (AND-222).
             messages = Array(messages.suffix(Self.snapshotMessageCap))
         }
+        var executionBuilder = OpenCodeExecutionProgressBuilder()
+        executionBuilder.append(entries)
         let active = try await call("GET", "/api/session/active")
         let running = (active["data"] as? [String: Any])?[id] != nil
         let execution = executionBuilder.snapshot()
-        if running { return OpenCodeSessionSnapshot("active", messages, nil, execution: execution) }
+        let historyError = cursor == nil ? nil : "agent_history_limited: only the latest OpenCode messages are synchronized"
+        if running { return OpenCodeSessionSnapshot("active", messages, historyError, execution: execution) }
         // `interrupted` is a person's own stop, not a failure; only a failed
         // outcome is reported as one.
         if outcome == "failed" { return OpenCodeSessionSnapshot("failed", messages, "OpenCode 报告该会话以失败结束。", execution: execution) }
-        return OpenCodeSessionSnapshot("idle", messages, nil, execution: execution)
+        return OpenCodeSessionSnapshot("idle", messages, historyError, execution: execution)
     }
 
     public func stopState(id: String) async throws -> OpenCodeStopState {

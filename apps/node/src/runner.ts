@@ -7,7 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { completeImageArtifacts } from "./artifacts.js";
 import { API, APIError } from "./api.js";
 import { directories, loadConfig, privateDir, readPrivate, safeError, savePrivate } from "./storage.js";
-import { hostCall, hostDirectory, socketPath } from "./host.js";
+import { hostCall, hostHistoryCall, hostDirectory, socketPath } from "./host.js";
 import { launchPrompt } from "./prompt.js";
 import { probe } from "./process.js";
 import { syncSkill } from "./skills.js";
@@ -16,6 +16,7 @@ import { ClaudeEnvironmentCache, resolveClaudeLaunch } from "./environment.js";
 import type { Config, Dispatch, HostState, Kind, RepoMapping, Session, Snapshot, AgentConfig } from "./types.js";
 
 declare const NODE_VERSION: string;
+interface WireHistoryJob { id: string; sessionId: string; sessionRef: string; agentKind: string; cursor: string }
 export const version = typeof NODE_VERSION === "string" ? NODE_VERSION : "development";
 export async function detectAgents(config: Config, expected?: string, resolveClaude = resolveClaudeLaunch) {
   const agents = [];
@@ -116,6 +117,23 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
       await api.call("POST", `/api/v1/node/agent-sessions/${encodeURIComponent(session.id)}/snapshot`, snapshot);
     }
   }
+  async function history(): Promise<void> {
+    let jobs: WireHistoryJob[];
+    try { jobs = (await api.call("GET", "/api/v1/node/agent-history")).jobs; }
+    catch (error) { if (error instanceof APIError && error.status === 404) return; throw error; }
+    if (!jobs.length) return;
+    const available: Session[] = (await api.call("GET", "/api/v1/node/agent-sessions")).sessions;
+    for (const job of jobs) {
+      let page;
+      try {
+        const source = available.find(session => session.id === job.sessionId && session.sessionRef === job.sessionRef
+          && session.agentKind === "codex" && job.agentKind === "codex");
+        if (!source?.dispatchId) throw new Error("History source unavailable");
+        page = await hostHistoryCall(root, source.dispatchId, source.sessionRef, job.cursor);
+      } catch { page = { messages: [], error: "node_unavailable" }; }
+      await api.call("POST", `/api/v1/node/agent-history/${encodeURIComponent(job.id)}`, page);
+    }
+  }
   try {
     // Establish permitted mappings and expected Skill before advertising readiness.
     const heartbeat = async () => {
@@ -127,7 +145,7 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
     };
     await heartbeat();
     const loops = [
-      retry(heartbeat, 30_000), retry(sessions, 2000), retry(() => completeImageArtifacts(root, api), 2000),
+      retry(heartbeat, 30_000), retry(sessions, 2000), retry(history, 2000), retry(() => completeImageArtifacts(root, api), 2000),
       retry(async () => {
         const active = await api.call("GET", "/api/v1/node/agent-sessions");
         if (active.sessions.filter((s: Session) => s.occupiesExecutionSlot).length >= 10) return;

@@ -1,4 +1,5 @@
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
+import { AgentPlanContent, withoutDuplicatePlan } from "./agent-plan-content";
 import { AgentStopFeedback } from "./agent-stop-feedback.js";
 import { useState, useEffect, useRef, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -125,7 +126,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                 if (!history.error && event.currentTarget.scrollTop <= 48 && event.currentTarget.scrollHeight > event.currentTarget.clientHeight + 1) void history.loadMore();
               }}>
                 <AgentHistoryLoader history={history} />
-                {history.messages.filter((message) => !isWithdrawnCard(message)).map((message) => (
+                {withoutDuplicatePlan(history.messages, session.data).filter((message) => !isWithdrawnCard(message)).map((message) => (
                   <article key={message.id} data-agent-message-id={`${message.role}:${message.sourceId || message.id}`} className={`agent-session-message agent-session-message-${message.role}`}>
                     <header className="agent-session-message-meta">
                       <small>{messageLabel(message.role, session.data.agentKind, t)}</small>
@@ -142,6 +143,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                     )}
                   </article>
                 ))}
+                <AgentPlanContent session={session.data} surface="panel" />
               </div>
               <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={visualStatus} />} label={waiting
                 ? t(session.data.agentKind === "codex" ? "agentRunApproval" : "agentRunWaiting", { agent: agentName })
