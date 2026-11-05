@@ -2,6 +2,26 @@ import XCTest
 @testable import MissionGoNodeCore
 
 final class AgentSkillSyncTests: XCTestCase {
+    func testRepositorySkillUpgradesOldClientsWithoutChangingItsSingleFileFormat() async throws {
+        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("../../../../skills/missiongo/SKILL.md").standardizedFileURL
+        let remote = try String(contentsOf: source, encoding: .utf8)
+        let expected = try XCTUnwrap(SkillSync.version(ofSkill: remote))
+        let root = try directory()
+        let targets = ["claude", "codex", "shared-codex", "opencode"].map {
+            root.appendingPathComponent("\($0)/SKILL.md")
+        }
+        for target in targets {
+            try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try skill("5.34.0").write(to: target, atomically: true, encoding: .utf8)
+        }
+        StubURLProtocol.install { _, _ in .response(status: 200, body: remote) }
+        let result = await SkillSync.check(serverUrl: "https://example.test", targets: targets.map(\.path),
+            expectedVersion: expected, session: StubURLProtocol.session())
+        XCTAssertEqual(result.syncState, "ready")
+        for target in targets { XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), remote) }
+    }
+
     private func skill(_ version: String) -> String {
         "---\nname: missiongo\nversion: \(version)\n---\n# Fixture\n"
     }

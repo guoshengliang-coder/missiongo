@@ -37,6 +37,14 @@ public enum LaunchPrompt {
     // The dispatch id is interpolated too, and only ever an opaque identifier.
     static let dispatchIdPattern = AnchoredPattern("[A-Za-z0-9_-]+")
 
+    private static let researchGuidance = [
+        "收到开发任务后，先在已授权范围内调查代码、历史、契约、已有测试和运行证据，核对最新主线及相关部署版本；仍有可执行的调查步骤时继续，不把未批准改代码当作不能只读调研。",
+        "先区分可自行查明的事实与产品取舍。只将产品偏好、风险接受、授权、外部依赖或确实无法自行取得的资料集中澄清；真正阻塞的问题及时提出，无待决问题不强凑选项。",
+        "请求选择或批准前，提供已核实事实及出处、主要结论、推荐理由、备选成本与影响、剩余不确定性及验证方法；每个问题说明为何必须由用户决定。",
+        "调查需要额外权限或环境时，说明具体动作与限制，单独申请调查授权；实施阶段才能验证的假设需标明并提出有边界的复现或实验计划，不冒充事实或用户决策。",
+        "澄清与方案批准分开：填完选项、出现批准按钮、命令数量、耗时或自述已充分调研都不能证明调查完成。保留原有实施批准和权限边界，技术权限审查不代替方案批准。",
+    ]
+
     public static func isValidItemKey(_ key: String) -> Bool {
         return itemKeyPattern.matches(key)
     }
@@ -73,6 +81,7 @@ public enum LaunchPrompt {
                 "读取并遵守当前项目规则；修改代码前创建独立 worktree，不直接修改主工作区。",
                 "是否动手由用户指令决定；原生计划模式、权限审批、push、merge 和发布授权仍须遵守。"
             ]
+            lines += researchGuidance
             if let worktreePath { lines.append("本会话可写 worktree 路径（尚未创建）：\(JSONValues.quote(worktreePath))。遵守项目规则，不扩大到父目录。") }
             return lines.joined(separator: "\n")
         }
@@ -95,6 +104,7 @@ public enum LaunchPrompt {
             "会话起在仓库主目录，动手改代码前先按仓库规则建独立 worktree，不要直接在主工作区修改。",
             "开始时先调用 get_current_account，核对 Skill 版本和本次连接的实际权限。实施前必须确认 canComment 为 true 且 writeTools 包含 claim_item；缺少权限时说明需要在哪个客户端完成授权，不得把已配置 MCP 当作拥有写权限，也不得跳过领取直接改代码。",
         ]
+        lines += researchGuidance
         if client == .codex, let worktreePath {
             lines += [
                 "本次 Codex 派单已为以下独立 worktree 路径配置写权限（JSON 字符串）：\(JSONValues.quote(worktreePath))。路径尚未创建。",
@@ -113,7 +123,7 @@ public enum LaunchPrompt {
         if mode == "plan" {
             lines += [
                 "",
-                "本次派单是计划模式：先完整读取条目，把会影响方案的待确认项一次问齐，在本会话里给出处理计划，然后停下等用户批准。",
+                "本次派单是计划模式：先完整读取条目并调查可核查事实，再集中澄清必要取舍，在本会话给出有依据的处理计划，然后停下等用户批准。",
                 "用户批准之前不回写评论、不领取条目、不建分支或 worktree、不改代码。",
                 "用户批准之后，先将已批准的计划以结构化评论写到各条条目，再领取、创建 worktree 并实施。已批准的方案不重复要求批准；权限审查不代替方案批准。",
             ]

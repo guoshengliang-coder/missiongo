@@ -124,3 +124,46 @@ for (const theme of ["light", "dark"] as const) {
     await page.screenshot({ path: testInfo.outputPath(`approval-reason-${theme}.png`) });
   });
 }
+
+// The shortcut is available from source attention, even when the conversation
+// still has uncertainties. Show the review boundary rather than certify quality.
+for (const theme of ["light", "dark"] as const) {
+  test.describe(`research review ${theme}`, () => {
+    test.use({ hasTouch: true });
+    test("keeps evidence and unresolved assumptions reviewable without approving automatically", async ({ page }) => {
+      await page.setViewportSize({ width: 320, height: 720 });
+      await page.emulateMedia({ colorScheme: theme });
+      let approvals = 0;
+      await page.route("**/api/v1/agent-sessions**", async route => {
+        if (route.request().method() === "POST" && route.request().url().endsWith("/plan-approval")) approvals++;
+        if (route.request().method() !== "GET") return route.fulfill({ status: 204 });
+        const current = { ...summary, planApproval: offer, planApprovalStatus: { code: "ready" }, messages: [
+          { id: "evidence", sourceId: "evidence", role: "agent", occurredAt: stamp,
+            text: "事实依据：已核对协议和历史测试。推荐：复用原会话关联。取舍：新增字段需要迁移。剩余不确定性：旧环境需在隔离实验中复现。" },
+        ] };
+        return route.fulfill({ status: 200, json: new URL(route.request().url()).pathname === "/api/v1/agent-sessions" ? { sessions: [current] } : current });
+      });
+      await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
+      const banner = page.locator(".agent-console-attention-banner");
+      await expect(banner.locator("summary")).toHaveText("审阅方案");
+      await expect(banner.getByRole("button", { name: "批准", exact: true })).toBeEnabled();
+      await banner.locator("summary").click();
+      await expect(banner).toContainText("不判断调研是否充分");
+      await expect(page.locator(".agent-console-message-agent")).toContainText("剩余不确定性");
+      expect(approvals).toBe(0);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    });
+  });
+}
+
+test("the public Skill download matches the versioned source without adding a new distribution format", async ({ request }) => {
+  const response = await request.get("/downloads/missiongo-skill/SKILL.md");
+  expect(response.ok()).toBe(true);
+  expect(response.headers()["content-type"]).toContain("text/markdown");
+  const source = readFileSync(fileURLToPath(new URL("../../skills/missiongo/SKILL.md", import.meta.url)), "utf8");
+  const published = await response.text();
+  expect(published).not.toContain("__MISSIONGO_PUBLIC_ORIGIN__");
+  // Vite substitutes the configured public origin; production uses the same
+  // single-file substitution in Docker. All workflow content must survive.
+  expect(published.replaceAll(/https?:\/\/[^/\s`]+/g, "__MISSIONGO_PUBLIC_ORIGIN__")).toBe(source);
+});

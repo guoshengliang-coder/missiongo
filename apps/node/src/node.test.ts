@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { CodexAdapter, codexPolicy, codexMessages } from "./codex.js";
 import { ClaudeAdapter, claudeAnswer, claudeArguments } from "./claude.js";
 import { OpenCodeAdapter, OpenCodeAPI } from "./opencode.js";
+import { DISPATCH_MODES_BY_AGENT } from "@missiongo/domain";
 import { launchPrompt } from "./prompt.js";
 import { loadConfig, privateDir, readPrivate, saveConfig, savePrivate } from "./storage.js";
 import { serviceUnit } from "./service.js";
@@ -37,6 +38,29 @@ describe("headless configuration and scope", () => {
     expect(() => launchPrompt({ ...free, freeSession: false })).toThrow();
     expect(() => launchPrompt({ ...free, itemKeys: ["EX-1"] })).toThrow();
   });
+  // Exercise both early-return project sessions and every supported dispatch mode.
+  for (const agentKind of ["claude_code", "codex", "opencode"] as const) {
+    for (const mode of DISPATCH_MODES_BY_AGENT[agentKind]) {
+      it(`preserves investigation and approval boundaries for ${agentKind}/${mode}`, () => {
+        for (const freeSession of [false, true]) {
+          const prompt = launchPrompt({ ...job(temporary(), agentKind), mode, freeSession, itemKeys: freeSession ? [] : ["EX-1"] });
+          const investigate = prompt.indexOf("先在已授权范围内调查");
+          const ask = prompt.indexOf("只将产品偏好");
+          const approve = prompt.indexOf("请求选择或批准前");
+          expect(investigate).toBeGreaterThan(-1);
+          expect(ask).toBeGreaterThan(investigate);
+          expect(approve).toBeGreaterThan(ask);
+          expect(prompt).toContain("单独申请调查授权");
+          expect(prompt).toContain("有边界的复现或实验计划");
+          if (freeSession) expect(prompt).toContain("不自行开始任务");
+          else if (mode === "plan") {
+            expect(prompt).toContain("批准前不回写评论、不领取");
+            expect(prompt).toContain("批准后先将计划以结构化评论写入各条");
+          }
+        }
+      });
+    }
+  }
   it("keeps recent messages and explicitly marks omitted history", () => {
     const snapshot = boundedSnapshot({ status: "idle", messages: Array.from({ length: 2200 }, (_, index) => ({ sourceId: String(index), role: "agent", text: "message" })) });
     expect(snapshot.messages).toHaveLength(2000); expect(snapshot.messages.at(-1)?.sourceId).toBe("2199"); expect(snapshot.error).toContain("仅同步最近内容");
