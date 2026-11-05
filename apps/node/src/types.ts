@@ -15,7 +15,7 @@ export interface Config {
 }
 export interface Question {
   title: string; key?: string; header?: string; detail?: string; options?: string[];
-  kind?: "text" | "number" | "boolean"; multiSelect?: boolean; custom?: boolean; answered?: string;
+  kind?: "text" | "number" | "boolean"; multiSelect?: boolean; custom?: boolean; answered?: string; withdrawn?: boolean;
 }
 export interface Message {
   sourceId: string; role: "user" | "agent" | "plan"; text: string; turnId?: string;

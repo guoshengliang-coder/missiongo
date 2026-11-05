@@ -62,23 +62,30 @@ public struct ClaudePermissionRequest {
     public let description: String?
     public let permissionSuggestions: [[String: Any]]
     public let suppressAlwaysAllowRule: Bool
+    public let isElicitation: Bool
 
     public init(requestId: String, toolName: String, input: [String: Any], description: String? = nil,
-                permissionSuggestions: [[String: Any]] = [], suppressAlwaysAllowRule: Bool = false) {
+                permissionSuggestions: [[String: Any]] = [], suppressAlwaysAllowRule: Bool = false, isElicitation: Bool = false) {
         self.requestId = requestId
         self.toolName = toolName
         self.input = input
         self.description = description
         self.permissionSuggestions = permissionSuggestions
         self.suppressAlwaysAllowRule = suppressAlwaysAllowRule
+        self.isElicitation = isElicitation
     }
 
-    /// Reads a `control_request` event; nil for anything but `can_use_tool`.
+    /// MCP confirmations use a distinct control request and response protocol.
     public init?(event: [String: Any]) {
         guard event["type"] as? String == "control_request",
               let requestId = event["request_id"] as? String,
-              let request = event["request"] as? [String: Any],
-              request["subtype"] as? String == "can_use_tool",
+              let request = event["request"] as? [String: Any]
+        else { return nil }
+        if request["subtype"] as? String == "elicitation" {
+            self.init(requestId: requestId, toolName: "MCP", input: request, isElicitation: true)
+            return
+        }
+        guard request["subtype"] as? String == "can_use_tool",
               let toolName = request["tool_name"] as? String
         else { return nil }
         self.init(
@@ -100,6 +107,10 @@ public struct ClaudePermissionRequest {
     /// What the person sees for an ordinary tool: which tool, what it is for,
     /// and the one argument that decides whether to allow it.
     public var question: AgentSessionQuestion {
+        if isElicitation {
+            return AgentSessionQuestion(header: "授权请求", title: "MCP 服务 \(input["mcp_server_name"] as? String ?? "MCP") 请求确认",
+                detail: promptText, options: [Self.approveOption, Self.denyOption, "取消"], key: answerKey)
+        }
         let remembered = rememberedOptions
         return AgentSessionQuestion(
             header: "授权请求",
@@ -147,6 +158,7 @@ public struct ClaudePermissionRequest {
     }
 
     public var promptText: String {
+        if isElicitation { return input["message"] as? String ?? "MCP 服务请求确认。" }
         var lines: [String] = []
         let purpose = (description ?? input["description"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -173,6 +185,9 @@ public struct ClaudePermissionRequest {
     /// Remembered grants from Web carry the displayed request key. External
     /// bridge answers instead bind their explicit /answer request ID.
     public func isStalePermissionAnswer(_ answer: String, boundRequestId: String? = nil) -> Bool {
+        if isElicitation {
+            return boundRequestId != requestId && !answer.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix(answerKey + ": ")
+        }
         guard !asksThroughToolUse, boundRequestId != requestId else { return false }
         let text = answer.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.hasPrefix("授权请求 ") { return !text.hasPrefix(answerKey + ": ") }
@@ -181,6 +196,14 @@ public struct ClaudePermissionRequest {
 
     /// The `can_use_tool` response for a person's reply.
     public func result(answer: String, boundRequestId: String? = nil) -> [String: Any] {
+        if isElicitation {
+            guard unsupportedReason == nil, !isStalePermissionAnswer(answer, boundRequestId: boundRequestId) else { return ["action": "cancel"] }
+            let text = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+            let prefix = answerKey + ": "
+            let choice = text.hasPrefix(prefix) ? String(text.dropFirst(prefix.count)) : text
+            if choice == Self.approveOption { return ["action": "accept", "content": [String: Any]()] }
+            return ["action": choice == Self.denyOption ? "decline" : "cancel"]
+        }
         if toolName == "AskUserQuestion" {
             return ["behavior": "allow", "updatedInput": answeredQuestions(answer)]
         }
@@ -197,6 +220,21 @@ public struct ClaudePermissionRequest {
         }
         let message = normalized == Self.denyOption ? "用户拒绝了这次操作。" : normalized
         return ["behavior": "deny", "message": message]
+    }
+
+    /// The shared question UI can faithfully represent an empty confirmation,
+    /// not arbitrary data-entry schemas or URL authorization. Fail explicitly
+    /// so the MCP server can offer its Web handoff instead of waiting forever.
+    public var unsupportedReason: String? {
+        guard isElicitation else { return nil }
+        guard (input["mode"] as? String ?? "form") == "form",
+              let message = input["message"] as? String, !message.isEmpty, message.count <= 16_000,
+              let schema = input["requested_schema"] as? [String: Any], schema["type"] as? String == "object",
+              let properties = schema["properties"] as? [String: Any], properties.isEmpty,
+              schema["required"] == nil || (schema["required"] as? [String])?.isEmpty == true,
+              Set(schema.keys).isSubset(of: ["type", "properties", "required", "additionalProperties", "title", "description", "$schema"])
+        else { return "当前客户端不支持此 MCP 确认表单，请使用服务提供的网页入口或原生客户端继续。" }
+        return nil
     }
 
     private func answeredQuestions(_ answer: String) -> [String: Any] {

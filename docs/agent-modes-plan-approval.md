@@ -41,3 +41,21 @@ Claude 的能力探测使用隔离的原生控制协议，不发模型请求、�
 ### 处理中条目的显式 Agent 接手（AND-409）
 
 人工在条目详情核实旧执行并指定原会话或新派单，保持处理中及 Builder。交接授权、方案决定、工作权限和实际领取分别生效。普通处理中条目不能直接重新领取；领取须消费有效交接授权并签发本轮凭据，不能因取消方案领取门禁绕过接手检查。接口与验证边界见 [AND-409 交接说明](and-409-agent-handoff.md)。
+
+## Claude MCP 原生确认兼容
+
+Claude 的 `ExitPlanMode` 使用 `can_use_tool`，MCP 的原生方案确认另用
+`control_request.request.subtype=elicitation`。macOS 托管、外部桥接和 Linux 节点均须处理后者，
+不能只转发普通工具授权，否则 MCP 调用会持续心跳却永远收不到人工结果。
+
+- 现有 MissionGo 原生审批是空对象表单。复用会话问题卡及审批队列，保留服务名、完整确认内容、
+  原请求 ID，展示批准／拒绝／取消；等待期间上报 `waitingForInput=true`，心跳不解除等待。
+- 人工答复回传 `action=accept|decline|cancel`；批准同时带 `content={}`，不能使用工具权限的
+  `behavior=allow|deny`。托管会话的答复绑定问题键，外部桥接仍只接受本机 `/answer <请求ID>`，
+  普通 Web 文字不能代替外部审批。来源取消只撤销对应请求，迟到答复不能批准下一请求。
+- 需要填写数据的表单、URL 确认和未知控制请求明确返回不支持错误并给出说明，让服务端走已有
+  Web 交接；不能丢弃请求，也不能替用户填数据或批准。此兼容修复不更改方案修订和批准契约：
+  同一修订复用既有批准，改写方案或验证目标仍产生不同修订。
+- 协议及真实宿主子进程回归见 `ClaudeElicitationTests`、`ClaudeExternalBridgeTests` 和
+  `apps/node/src/node.test.ts`；界面沿用 `AgentSessionQuestions`，验证见
+  `tests/ui/agent-approval-visibility.audit.spec.ts`。

@@ -1,0 +1,9 @@
+{
+  "pullRequest": 444,
+  "items": [
+    {
+      "key": "AND-405",
+      "title": "修复 Claude MCP 方案确认静默等待，显示批准、拒绝和取消并保留原请求"
+    }
+  ]
+}
