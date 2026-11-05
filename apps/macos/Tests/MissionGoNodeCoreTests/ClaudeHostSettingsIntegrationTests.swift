@@ -4,7 +4,7 @@ import XCTest
 
 /// Exercise the shipped host's command loop with an isolated protocol fixture.
 /// No real provider, hook, model request or user conversation is involved.
-private final class SettingsHostFixture {
+final class SettingsHostFixture {
     let root: URL
     let commands: URL
     let statePath: String

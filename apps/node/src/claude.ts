@@ -23,6 +23,13 @@ export function labelledAnswers(text: string): Record<string, string> {
   return answers;
 }
 export function claudeAnswer(request: Wire, text: string): Wire {
+  if (request.subtype === "elicitation") {
+    const prefix = `授权请求 ${request.requestId}: `;
+    if (!text.trim().startsWith(prefix)) throw new Error("Stale MCP confirmation request");
+    const answer = text.trim().slice(prefix.length);
+    if (elicitationProblem(request)) return { action: "cancel" };
+    return answer === "批准" ? { action: "accept", content: {} } : { action: answer === "拒绝" ? "decline" : "cancel" };
+  }
   if (request.tool_name === "AskUserQuestion") {
     const questions: Wire[] = request.input?.questions ?? [];
     const labelled = labelledAnswers(text);
@@ -42,6 +49,22 @@ export function claudeAnswer(request: Wire, text: string): Wire {
     return { behavior: "allow", updatedInput: request.input ?? {} };
   }
   return { behavior: "deny", message: answer || "用户拒绝了这次操作。" };
+}
+function elicitationProblem(request: Wire): string | undefined {
+  const schema = request.requested_schema;
+  const keys = new Set(["type", "properties", "required", "additionalProperties", "title", "description", "$schema"]);
+  if ((request.mode ?? "form") !== "form" || typeof request.message !== "string" || !request.message.length || request.message.length > 16_000
+      || !schema || schema.type !== "object" || !schema.properties || Array.isArray(schema.properties) || typeof schema.properties !== "object"
+      || Object.keys(schema.properties).length || schema.required !== undefined && (!Array.isArray(schema.required) || schema.required.length)
+      || Object.keys(schema).some(key => !keys.has(key))) {
+    return "当前客户端不支持此 MCP 确认表单，请使用服务提供的网页入口或原生客户端继续。";
+  }
+  return undefined;
+}
+function confirmationCard(request: Wire, turnId?: string, outcome?: Pick<Question, "answered" | "withdrawn">): Message {
+  return { sourceId: `permission-${request.requestId}`, ...(turnId ? { turnId } : {}), role: "agent", text: request.message,
+    questions: [{ header: "授权请求", title: `MCP 服务 ${request.mcp_server_name ?? "MCP"} 请求确认`, key: `授权请求 ${request.requestId}`,
+      detail: request.message, options: ["批准", "拒绝", "取消"], ...outcome }] };
 }
 export class ClaudeAdapter implements Adapter {
   private process: JsonProcess;
@@ -93,14 +116,28 @@ export class ClaudeAdapter implements Adapter {
       if(typeof event.effort==="string") this.state.effort=event.effort;
       this.received("native-id");
     }
-    if (event.type === "control_request" && event.request?.subtype === "can_use_tool") {
-      this.requests.push({ ...event.request, requestId: event.request_id });
+    if (event.type === "control_request") {
+      const problem = event.request?.subtype === "elicitation" ? elicitationProblem(event.request)
+        : event.request?.subtype === "can_use_tool" ? undefined : "当前客户端不支持此确认请求，请使用服务提供的网页入口或原生客户端继续。";
+      if (problem) {
+        this.process.write({ type: "control_response", response: { subtype: "error", request_id: event.request_id, error: problem } });
+        this.add({ sourceId: `unsupported-${event.request_id}`, role: "agent", text: problem });
+        return;
+      }
+      const request = { ...event.request, requestId: event.request_id };
+      this.requests.push(request);
+      if (request.subtype === "elicitation") this.add(confirmationCard(request, this.activeTurnId));
       this.state.waitingForInput = true; return;
     }
     if (event.type === "control_cancel_request") {
+      const request = this.requests.find(request => request.requestId === event.request_id);
+      if (request?.subtype === "elicitation") this.add(confirmationCard(request, this.activeTurnId, { withdrawn: true }));
       this.requests = this.requests.filter((r) => r.requestId !== event.request_id); return;
     }
     if (event.type === "result") {
+      for (const request of this.requests) {
+        if (request.subtype === "elicitation") this.add(confirmationCard(request, this.activeTurnId, { withdrawn: true }));
+      }
       const cancelled = ["aborted_streaming", "aborted_tools"].includes(event.terminal_reason);
       this.state.status = event.is_error && !cancelled ? "failed" : "idle";
       this.state.turnActive = false; this.state.waitingForInput = false; this.requests = [];
@@ -140,6 +177,9 @@ export class ClaudeAdapter implements Adapter {
   async snapshot(): Promise<Snapshot> {
     const messages = [...this.state.messages];
     for (const request of this.requests) {
+      // Confirmation cards live in history with explicit settled/withdrawn
+      // markers, so server-side history cannot resurrect an obsolete question.
+      if (request.subtype === "elicitation") continue;
       const sourceId = `request-${request.requestId}`;
       let questions: Question[];
       if (request.tool_name === "AskUserQuestion") questions = (request.input?.questions ?? []).map((q: Wire) => ({
@@ -178,10 +218,13 @@ export class ClaudeAdapter implements Adapter {
       const response = claudeAnswer(request, command.text);
       // Answers always apply to the live native request, not a remembered tool grant.
       this.process.write({ type: "control_response", response: { subtype: "success", request_id: request.requestId, response } });
+      if (request.subtype === "elicitation") this.add(confirmationCard(request, this.activeTurnId,
+        { answered: response.action === "accept" ? "批准" : response.action === "decline" ? "拒绝" : "取消" }));
       this.requests.shift();
       this.add({ sourceId: `answer-${command.id}`, role: "user", text: command.text });
       return;
     }
+    if (command.text.trim().startsWith("授权请求 ")) throw new InputRejected("授权请求已变化，请重新选择当前请求。");
     if (options?.controlOnly) throw new InputRejected("回复未发送：会话设置未确认，请重新应用设置后重试。");
     const ack = this.wait(command.id); this.send(command.id, command.text); await ack;
   }

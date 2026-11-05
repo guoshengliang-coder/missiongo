@@ -213,6 +213,12 @@ private func run(configPath: String) throws {
             snapshot.commandFinished(id: id, status: "delivered")
         }
         if let request = ClaudePermissionRequest(event: event) {
+            if let reason = request.unsupportedReason {
+                try write(["type": "control_response", "response": ["subtype": "error", "request_id": request.requestId, "error": reason]], to: writer)
+                snapshot.showUnsupportedControlRequest(requestId: request.requestId, reason: reason)
+                persist()
+                return
+            }
             // Every approval Claude Code asks for waits here for a person;
             // none is answered on their behalf.
             permissions.enqueue(request)
@@ -224,11 +230,20 @@ private func run(configPath: String) throws {
             persist()
             return
         }
+        if event["type"] as? String == "control_request", let requestId = event["request_id"] as? String {
+            let reason = "当前客户端不支持此确认请求，请使用服务提供的网页入口或原生客户端继续。"
+            try write(["type": "control_response", "response": ["subtype": "error", "request_id": requestId, "error": reason]], to: writer)
+            snapshot.showUnsupportedControlRequest(requestId: requestId, reason: reason)
+            persist()
+            return
+        }
         if event["type"] as? String == "control_cancel_request",
            let requestId = event["request_id"] as? String,
            permissions.cancel(requestId: requestId) {
             // Answered on the claude.ai page instead of in MissionGo.
+            snapshot.withdrawPermissions([requestId])
             showNextPermission()
+            if !permissions.isEmpty { snapshot.setWaitingForInput(true) }
             persist()
             return
         }

@@ -4,7 +4,7 @@ import { expect, test } from "@playwright/test";
 
 const fixture = JSON.parse(readFileSync(
   fileURLToPath(new URL("./.auth/fixture.json", import.meta.url)), "utf8",
-)) as { productId: string };
+)) as { productId: string; detailKey: string };
 const id = "and-272-approval-fixture";
 const now = "2026-09-30T09:00:00.000Z";
 const summary = {
@@ -250,3 +250,79 @@ test("Claude authorization shows rule scope and sends the selected lifetime as i
   await expect.poll(() => sent.length).toBe(1);
   expect(sent[0]).toMatchObject({ text: answer });
 });
+
+for (const viewport of [
+  { width: 320, height: 568, touch: true, surface: "console" },
+  { width: 812, height: 375, touch: true, surface: "console" },
+  { width: 1440, height: 900, touch: false, surface: "console" },
+  { width: 320, height: 568, touch: true, surface: "panel" },
+  { width: 1440, height: 900, touch: false, surface: "panel" },
+]) for (const theme of ["light", "dark"] as const) {
+  test.describe(`Claude MCP confirmation ${viewport.surface} ${viewport.width} ${theme}`, () => {
+    test.use({ viewport, hasTouch: viewport.touch, colorScheme: theme });
+    test("shows the exact request while waiting and submits only the selected request-bound answer", async ({ page }, testInfo) => {
+      const sent: unknown[] = [];
+      const plan = "确认当前方案与验证目标。\n" + "Review the exact plan, scope and validation goals. ".repeat(36);
+      const question = { header: "授权请求", title: "MCP 服务 fixture 请求确认", key: "授权请求 mcp-confirm-1",
+        detail: plan, options: ["批准", "拒绝", "取消"] };
+      let answered: string | undefined;
+      await page.route("**/api/v1/agent-sessions**", async route => {
+        if (route.request().method() === "POST") {
+          sent.push(route.request().postDataJSON());
+          answered = "取消";
+          return route.fulfill({ json: { command: { id: "answer", status: "delivered" } } });
+        }
+        const session = { ...summary, agentKind: "claude_code", status: "idle",
+          items: [{ key: fixture.detailKey, title: "MCP confirmation fixture", productId: fixture.productId }],
+          turnState: { turnActive: answered === undefined, waitingForInput: answered === undefined },
+          attention: answered ? { state: "not_needed" } : { state: "needed", kind: "question" },
+          needsAttention: answered === undefined, waitingForReply: answered === undefined,
+          messages: [{ id: "form", sourceId: "permission-mcp-confirm-1", role: "agent", text: plan,
+            questions: [{ ...question, ...(answered ? { answered } : {}) }] }] };
+        return route.fulfill({ json: new URL(route.request().url()).pathname === "/api/v1/agent-sessions" ? { sessions: [session] } : session });
+      });
+      if (viewport.surface === "console") await page.goto('/?product=' + fixture.productId + '&console=agent&session=' + id);
+      else {
+        await page.route("**/api/v1/items/*/dispatches", route => route.fulfill({ json: { dispatches: [{
+          id: summary.dispatchId, agentSessionId: id, agentKind: "claude_code", mode: "plan", nodeName: "Fixture", status: "launched", createdAt: now, itemKeys: [fixture.detailKey],
+        }] } }));
+        await page.goto(`/?product=${fixture.productId}&item=${fixture.detailKey}`);
+        await page.locator(".execution-history > summary").click();
+        await page.locator(".execution-record > summary").filter({ hasText: "派单 · Fixture" }).click();
+        await page.locator(".agent-session-toggle").click();
+      }
+      const reply = page.locator(viewport.surface === "console" ? ".agent-console-reply" : ".agent-session-reply");
+      const card = page.locator(".agent-session-question");
+      await expect(card.getByText(question.title, { exact: true })).toBeVisible();
+      await expect(card.locator(".agent-session-question-detail")).toHaveText(plan);
+      if (viewport.surface === "console") await expect(page.locator(".agent-console-activity")).toContainText(/等待|awaiting/);
+      expect(sent).toEqual([]);
+      for (const scale of ["small", "medium", "large"]) {
+        await page.evaluate(value => {
+          document.documentElement.dataset.fontScale = value;
+          document.documentElement.dataset.consoleFontScale = value;
+        }, scale);
+        for (const button of await card.getByRole("button").all()) {
+          await button.scrollIntoViewIfNeeded();
+          await expect(button).toBeInViewport();
+          const metrics = await button.evaluate(element => ({ height: element.getBoundingClientRect().height,
+            font: parseFloat(getComputedStyle(element).fontSize), overflow: element.scrollWidth > element.clientWidth }));
+          expect(metrics.font).toBeGreaterThanOrEqual(11);
+          if (viewport.touch) expect(metrics.height).toBeGreaterThanOrEqual(44);
+          expect(metrics.overflow).toBe(false);
+        }
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      }
+      const path = testInfo.outputPath("claude-mcp-confirmation.png");
+      await page.screenshot({ path, animations: "disabled" });
+      await testInfo.attach("confirmation", { path, contentType: "image/png" });
+      await card.getByRole("button", { name: "取消", exact: true }).click();
+      await expect(reply.locator("textarea")).toHaveValue("授权请求 mcp-confirm-1: 取消");
+      expect(sent).toEqual([]);
+      await reply.locator("button[type=submit]").click();
+      await expect.poll(() => sent.length).toBe(1);
+      expect(sent[0]).toMatchObject({ text: "授权请求 mcp-confirm-1: 取消" });
+      await expect(card.getByRole("button", { name: "批准", exact: true })).toBeDisabled();
+    });
+  });
+}
