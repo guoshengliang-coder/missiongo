@@ -1758,6 +1758,9 @@ describe("MissionGo REST API", () => {
       "get_attachment",
       "get_collaboration_attachment",
       "get_comment_candidates",
+      "list_item_agent_sessions",
+      "get_agent_session",
+      "get_item_plan_approvals",
     ]);
     expect(names.some((name) => name.toLowerCase().includes("sql"))).toBe(false);
 

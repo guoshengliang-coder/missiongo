@@ -247,17 +247,21 @@ export class AttachmentStorage {
    * original is never altered and remains what a download returns.
    */
   async readDrawableImage(attachment: Pick<AttachmentRecord, "storageFilename" | "contentType">): Promise<{ bytes: Buffer; contentType: string }> {
-    const original = this.resolveStoredFile(attachment.storageFilename);
-    if (!BROWSER_UNREADABLE_IMAGE_TYPES.has(attachment.contentType)) {
-      return { bytes: await readFile(original), contentType: attachment.contentType };
+    return this.readDrawableImageFrom(this.resolveStoredFile(attachment.storageFilename), attachment.contentType, attachment.storageFilename);
+  }
+
+  /** Drawable bytes for a file already resolved to its path; agent-session attachments live in subdirectories of the same root. */
+  async readDrawableImageFrom(path: string, contentType: string, storageFilename: string): Promise<{ bytes: Buffer; contentType: string }> {
+    if (!BROWSER_UNREADABLE_IMAGE_TYPES.has(contentType)) {
+      return { bytes: await readFile(path), contentType };
     }
-    const cached = this.decodedPreviewPath(attachment.storageFilename);
+    const cached = this.decodedPreviewPath(storageFilename);
     try {
       return { bytes: await readFile(cached), contentType: "image/jpeg" };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    const jpeg = await heicToJpeg(await readFile(original));
+    const jpeg = await heicToJpeg(await readFile(path));
     await mkdir(this.decodedPreviewDirectory(), { recursive: true, mode: 0o700 });
     // Written aside and renamed into place, so a request racing this one reads
     // either nothing or a whole file, never a half-written JPEG.
