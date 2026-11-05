@@ -12,6 +12,10 @@ private actor StubOpenCodeControl: OpenCodeControlling {
     var info: (agent: String?, model: OpenCodeModelRef?)
     var appliedAgents: [String] = []
     var appliedModels: [OpenCodeModelRef] = []
+    var rejectAgentUpdates = false
+    var ignoreModelUpdates = false
+    func rejectAgentUpdatesForTest() { rejectAgentUpdates = true }
+    func ignoreModelUpdatesForTest() { ignoreModelUpdates = true }
     var snapshotStatus: String?
     var snapshotFailure: String?
     var snapshotMessages: [AgentSessionMessage] = []
@@ -89,8 +93,15 @@ private actor StubOpenCodeControl: OpenCodeControlling {
     func deleteSession(id: String) async throws {}
     func listModels() async throws -> OpenCodeModelCatalog { catalog }
     func sessionInfo(id: String) async throws -> (agent: String?, model: OpenCodeModelRef?) { info }
-    func setModel(id: String, model: OpenCodeModelRef) async throws { appliedModels.append(model) }
-    func setAgent(id: String, agent: String) async throws { appliedAgents.append(agent); info.agent = agent }
+    func setModel(id: String, model: OpenCodeModelRef) async throws {
+        appliedModels.append(model)
+        if !ignoreModelUpdates { info.model = model }
+    }
+    func setAgent(id: String, agent: String) async throws {
+        appliedAgents.append(agent)
+        if rejectAgentUpdates { throw LaunchError("fixture mode denied") }
+        info.agent = agent
+    }
     func pendingChoices(id: String) async throws -> [OpenCodeChoice] {
         if let choicesError { throw choicesError }
         return choices
@@ -129,6 +140,65 @@ final class OpenCodeTests: XCTestCase {
         XCTAssertEqual(snapshot.messages.last?.sourceId, "msg-5000")
         XCTAssertTrue(snapshot.failure?.hasPrefix("agent_history_limited:") == true)
         XCTAssertEqual(StubURLProtocol.recorded.filter { $0.request.url?.path.hasSuffix("/message") == true }.count, 20)
+    }
+
+    func testFailedAndSettledModeRevisionsCannotSendAnOrdinaryPrompt() async throws {
+        let control = StubOpenCodeControl(mcpStatus: "connected", info: ("build", nil))
+        await control.rejectAgentUpdatesForTest()
+        let launcher = OpenCodeLauncher(control: control)
+        for settled in [0, 1] {
+            let report = try await launcher.synchronize(NodeAgentSession(id: "s", agentKind: "opencode", sessionRef: "native", status: "idle",
+                command: AgentSessionCommand(id: "message-\(settled)", kind: "message", text: "must not arrive", status: "delivering"),
+                desiredSettings: AgentSessionSettings(revision: 1, mode: "plan"), appliedSettingsRevision: settled))
+            XCTAssertEqual(report.commandStatus, "failed")
+            XCTAssertTrue(report.commandError?.contains("未发送") == true)
+        }
+        let prompts = await control.promptCount
+        XCTAssertEqual(prompts, 0)
+        let stop = try await launcher.synchronize(NodeAgentSession(id: "s", agentKind: "opencode", sessionRef: "native", status: "idle",
+            command: AgentSessionCommand(id: "stop", kind: "interrupt", text: "", turnId: "old-turn", status: "delivering"),
+            desiredSettings: AgentSessionSettings(revision: 1, mode: "plan")))
+        XCTAssertEqual(stop.commandStatus, "delivered")
+    }
+
+    func testNativePermissionAnswersRemainUsableWhenModeChangeFails() async throws {
+        let choice = try XCTUnwrap(OpenCodeProtocol.permissionChoice(["id": "permit", "action": "bash", "resources": ["fixture"]]))
+        let control = StubOpenCodeControl(mcpStatus: "connected", info: ("build", nil), choices: [choice])
+        await control.rejectAgentUpdatesForTest()
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(id: "s", agentKind: "opencode", sessionRef: "native", status: "idle",
+            command: AgentSessionCommand(id: "answer", kind: "message", text: "授权请求 permit: 拒绝", status: "delivering"),
+            desiredSettings: AgentSessionSettings(revision: 1, mode: "plan")))
+        XCTAssertEqual(report.commandStatus, "delivered")
+        let answer = await control.repliedPermission
+        let prompts = await control.promptCount
+        XCTAssertEqual(answer?.decision, "reject")
+        XCTAssertEqual(prompts, 0)
+    }
+
+    func testAnIgnoredModelUpdateReportsTheActualModelAndBlocksThePrompt() async throws {
+        let control = StubOpenCodeControl(mcpStatus: "connected", info: ("build", .init(modelId: "old", providerId: "fixture")))
+        await control.ignoreModelUpdatesForTest()
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(id: "s", agentKind: "opencode", sessionRef: "native", status: "idle",
+            command: AgentSessionCommand(id: "message", kind: "message", text: "must not arrive", status: "delivering"),
+            desiredSettings: AgentSessionSettings(revision: 1, model: "fixture/new")))
+        XCTAssertEqual(report.model, "fixture/old")
+        XCTAssertNotNil(report.settingsError)
+        XCTAssertEqual(report.commandStatus, "failed")
+        let prompts = await control.promptCount
+        XCTAssertEqual(prompts, 0)
+    }
+
+    func testVerifiedModeAndModelUpdatesAllowExactlyOnePrompt() async throws {
+        let control = StubOpenCodeControl(mcpStatus: "connected", info: ("build", .init(modelId: "old", providerId: "fixture")))
+        let report = try await OpenCodeLauncher(control: control).synchronize(NodeAgentSession(id: "s", agentKind: "opencode", sessionRef: "native", status: "idle",
+            command: AgentSessionCommand(id: "message", kind: "message", text: "arrive", status: "delivering"),
+            desiredSettings: AgentSessionSettings(revision: 1, mode: "plan", model: "fixture/new")))
+        XCTAssertNil(report.settingsError)
+        XCTAssertEqual(report.model, "fixture/new")
+        XCTAssertEqual(report.mode, "plan")
+        XCTAssertEqual(report.commandStatus, "delivered")
+        let prompts = await control.promptCount
+        XCTAssertEqual(prompts, 1)
     }
     func testStopBypassesHistoryAndPermissionFailureAndConfirmsIdle() async throws {
         let control = StubOpenCodeControl(mcpStatus: "connected")

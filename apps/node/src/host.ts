@@ -156,10 +156,10 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
               try {
                 if (command.attachments?.length) throw new Error("Attachments are not enabled on this node");
                 if (command.kind === "interrupt") stopSnapshot = await adapter.stop(command);
-                else await adapter.deliver(command);
+                else await adapter.deliver(command, { controlOnly: state.snapshot.settingsError !== undefined });
                 if (command.kind === "interrupt" && stopSnapshot) stopSnapshot.stopConfirmed = true;
                 state.commands[key] = { status: "delivered", ...(stopSnapshot?.stopConfirmed ? { stopConfirmed: true } : {}) };
-              } catch (error) { state.commands[key] = { status: command.kind === "interrupt" ? "failed" : "delivery_unknown", error: safeError(error) }; }
+              } catch (error) { state.commands[key] = { status: command.kind === "interrupt" || error instanceof InputRejected ? "failed" : "delivery_unknown", error: safeError(error) }; }
               persist();
             }
             const outcome = state.commands[key]!;

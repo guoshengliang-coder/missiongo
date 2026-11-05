@@ -1011,6 +1011,11 @@ public struct ClaudeSettingsChange {
     public var isComplete: Bool { pending.isEmpty }
     public var nextRequest: (id: String, request: [String: Any])? { requests.first { pending[$0.id] != nil } }
 
+    public mutating func timeOut() {
+        if !pending.isEmpty { errors.append("会话设置确认超时；未发送后续消息。") }
+        pending.removeAll()
+    }
+
     /// Takes one `control_response`'s inner `response`; false when it
     /// answers a request that is not part of this change.
     public mutating func receive(requestId: String, response: [String: Any]) -> Bool {
