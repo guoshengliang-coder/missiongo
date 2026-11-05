@@ -8,7 +8,7 @@ const apps:ReturnType<typeof buildApp>[]=[];
 afterEach(async()=>{await Promise.all(apps.splice(0).map(app=>app.close()));});
 const config={id:"plan-owner",username:"plans@example.test",passwordScrypt:hashPassword("fixture-password"),sessionSecret:"synthetic-plan-gate-signing-key",cookieSecure:false};
 
-it.each([{kind:"codex",mode:"auto"},{kind:"claude_code",mode:"bypassPermissions"},{kind:"opencode",mode:"build"},{kind:"opencode",mode:"plan"}] as const)("$kind/$mode cannot claim on mode changes, text, forged approval fields or a stale proposal",async ({kind,mode})=>{
+it.each([{kind:"codex",mode:"auto"},{kind:"claude_code",mode:"bypassPermissions"},{kind:"claude_code",mode:"plan"},{kind:"opencode",mode:"build"},{kind:"opencode",mode:"plan"}] as const)("$kind/$mode cannot claim on mode changes, text, forged approval fields or a stale proposal",async ({kind,mode})=>{
  const app=buildApp({adminAccount:config,writeTools:"comments"});apps.push(app);
  const store=app.missionGoStore,accounts=app.missionGoAccounts;
  const login=await app.inject({method:"POST",url:"/api/v1/auth/login",payload:{username:config.username,password:"fixture-password"}});
@@ -24,6 +24,10 @@ it.each([{kind:"codex",mode:"auto"},{kind:"claude_code",mode:"bypassPermissions"
  const dispatch=dispatches.createDispatch({accountId:config.id,nodeId:node.nodeId,agentKind:kind,mode,itemKeys:[item.key]});
  dispatches.claimNextDispatch(node.nodeId);dispatches.recordDispatchResult({nodeId:node.nodeId,dispatchId:dispatch.id,status:"launched"});
  const id=sessions.createForDispatch({dispatchId:dispatch.id,nodeId:node.nodeId,sessionRef:randomUUID()});
+ const settings=()=>{
+  const row=store.database.connection.prepare("SELECT desired_settings_json,settings_revision FROM agent_sessions WHERE id=?").get(id) as {desired_settings_json:string;settings_revision:number};
+  return {...JSON.parse(row.desired_settings_json),revision:row.settings_revision};
+ };
  sessions.recordSnapshot({nodeId:node.nodeId,sessionId:id,status:"idle",messages:[{sourceId:"plan",role:"plan",text:"Bound plan and validation targets"}],turnState:{turnActive:false}});
  const call=async(name:string,args:Record<string,unknown>)=>{
   const response=await app.inject({method:"POST",url:"/mcp",headers:{authorization:`Bearer ${token}`,accept:"application/json, text/event-stream"},payload:{jsonrpc:"2.0",id:1,method:"tools/call",params:{name,arguments:args}}});
@@ -33,33 +37,42 @@ it.each([{kind:"codex",mode:"auto"},{kind:"claude_code",mode:"bypassPermissions"
  const claimArgs={itemKey:item.key,dispatchId:dispatch.id,agentId:"Test agent",idempotencyKey:"one-claim"};
  expect((await call("claim_item",claimArgs)).isError).toBe(true);
  const proposal={itemKeys:[item.key],dispatchId:dispatch.id,plan:"Bound plan",validation:"Verify the new behavior",approvalMethod:"web",approved:true};
+ const initial=settings();
+ expect(initial).toMatchObject({mode,planning:false});
+ expect(initial.planApproved).toBeUndefined();
  const first=await call("request_plan_approval",proposal);
+ expect(settings()).toEqual(initial);
  expect(first.structuredContent).toMatchObject({approved:false,approvalRequired:true});
  expect(store.getWorkItem(item.key).status).toBe("ready");
- const changed=await app.inject({method:"PATCH",url:`/api/v1/agent-sessions/${id}/settings`,headers,payload:{mode:kind==="opencode" ? mode : "default"}});
+ const changed=await app.inject({method:"PATCH",url:`/api/v1/agent-sessions/${id}/settings`,headers,payload:{mode:mode==="plan" ? "plan" : kind==="opencode" ? mode : "default"}});
  expect(changed.statusCode,changed.body).toBe(200);
+ expect((await call("claim_item",claimArgs)).isError).toBe(true);
+ const chosen=settings();
+ sessions.recordSnapshot({nodeId:node.nodeId,sessionId:id,status:"idle",messages:[],mode:chosen.mode!,settingsRevision:chosen.revision});
+ // Even confirmed writable permissions cannot authorize implementation.
  expect((await call("claim_item",claimArgs)).isError).toBe(true);
  const second=await call("request_plan_approval",{...proposal,plan:"Revised bound plan"});
  const old=await app.inject({method:"POST",url:`/api/v1/agent-sessions/${id}/plan-approval`,headers,payload:{revision:first.structuredContent.revision}});
  expect(old.statusCode).toBe(409);
  const detail=(await app.inject({method:"GET",url:`/api/v1/agent-sessions/${id}`,headers})).json();
  expect(detail.planApproval).toMatchObject({revision:second.structuredContent.revision,itemKeys:[item.key],plan:"Revised bound plan"});
+ const beforeApproval=settings();
  const approved=await app.inject({method:"POST",url:`/api/v1/agent-sessions/${id}/plan-approval`,headers,payload:{revision:detail.planApproval.revision}});
  expect(approved.statusCode,approved.body).toBe(201);
- expect((await call("claim_item",claimArgs)).isError).toBe(true);
- let desired=sessions.listForNode(node.nodeId).find(session=>session.id===id)!.desiredSettings!;
- if(kind==="opencode" && mode==="plan") {
-  sessions.recordSnapshot({nodeId:node.nodeId,sessionId:id,status:"idle",messages:[],mode:"plan",settingsRevision:desired.revision});
+ expect(settings()).toEqual(beforeApproval);
+ let desired=settings();
+ if(mode==="plan") {
   expect((await call("claim_item",claimArgs)).isError).toBe(true);
-  await app.inject({method:"PATCH",url:`/api/v1/agent-sessions/${id}/settings`,headers,payload:{mode:"build"}});
-  desired=sessions.listForNode(node.nodeId).find(session=>session.id===id)!.desiredSettings!;
+  await app.inject({method:"PATCH",url:`/api/v1/agent-sessions/${id}/settings`,headers,payload:{mode:kind==="opencode" ? "build" : "default"}});
+  desired=settings();
+  sessions.recordSnapshot({nodeId:node.nodeId,sessionId:id,status:"idle",messages:[],mode:desired.mode!,settingsRevision:desired.revision});
  }
- sessions.recordSnapshot({nodeId:node.nodeId,sessionId:id,status:"idle",messages:[],mode:desired.mode!,settingsRevision:desired.revision});
+ // Approval can authorize an already-confirmed mode without another settings round trip.
  const claimed=await call("claim_item",claimArgs);
  expect(claimed.isError,JSON.stringify(claimed)).not.toBe(true);
  expect(claimed.structuredContent.item.status).toBe("in_progress");
  expect(store.database.connection.prepare("SELECT COUNT(*) AS n FROM external_agent_sessions").get()).toMatchObject({n:0});
- expect(sessions.listForNode(node.nodeId).find(session=>session.id===id)?.desiredSettings).toMatchObject({mode:kind==="opencode" ? "build" : "default",planApproved:true});
+ expect(settings()).toMatchObject({mode:kind==="opencode" ? "build" : "default",planning:false});
 });
 
 it("refuses new dispatches and queued delivery to nodes without the native approval protocol",()=>{

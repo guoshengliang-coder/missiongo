@@ -185,7 +185,7 @@ public struct CodexTurnOverrides: Equatable, Sendable {
     public init(desired: AgentSessionSettings) throws {
         var settings: CodexThreadSettings?
         if let mode = desired.mode {
-            guard let mapped = CodexModes.threadSettings(for: mode, planning: desired.nativePlanning) else {
+            guard let mapped = CodexModes.threadSettings(for: mode) else {
                 throw LaunchError("不支持的 Codex 模式：\(JSONValues.quote(mode))")
             }
             settings = mapped

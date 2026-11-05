@@ -959,7 +959,7 @@ export function createMissionGoMcpServer(
         } catch { /* Human approval remains valid; an existing pending delivery must be reconciled, never replayed. */ }
       }
     }
-    return textResult({approved:true,revision,continuationQueued,...context},"The human approved this exact implementation plan. Native Plan restrictions still require an explicit transition before writes. Save this revision; do not ask again for this unchanged plan.");
+    return textResult({approved:true,revision,continuationQueued,...context},"The human approved this exact implementation plan. Native permissions are independent of this approval; only an explicitly selected Plan mode requires a separate transition before writes. Save this revision; do not ask again for this unchanged plan.");
   });
 
   server.registerTool(

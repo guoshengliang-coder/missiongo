@@ -48,3 +48,28 @@ test("registered plan presents its exact scope and validation without classifier
  await expect(plan).toBeVisible();await expect(plan).toContainText(session.planApproval.plan);await expect(plan).toContainText(session.planApproval.validation);await expect(plan).toContainText("AND-400");
  await expect(banner.getByRole("button",{name:"批准",exact:true})).toBeEnabled();
 });
+
+for (const [kind, mode] of [["claude_code", "bypassPermissions"], ["codex", "auto"], ["opencode", "build"]]) {
+ for (const width of [320, 1280]) {
+  test(`${kind}: selected ${mode} stays visible while plan approval is pending at ${width}px`, async ({page}) => {
+   await page.setViewportSize({width,height:900});
+   await page.emulateMedia({colorScheme:width===320 ? "dark" : "light"});
+   const stamp=new Date().toISOString(), id=`independent-${kind}`;
+   const session={id,agentSessionId:id,dispatchId:"independent-dispatch",agentKind:kind,status:"idle",nodeId:"mode-node",nodeName:"Fixture",
+    nodeConnectionState:"online",createdAt:stamp,updatedAt:stamp,activityAt:stamp,items:[{key:"AND-400",title:"Scoped work",productId}],
+    activities:[],settings:{mode,requestedMode:mode,adjustable:true},canReply:true,canArchive:true,canApprovePlan:true,
+    attention:{state:"not_needed"},needsAttention:false,messages:[],planApprovalStatus:{code:"ready"},
+    planApproval:{revision:"independent-v1",plan:"Implement the scoped change",validation:"Verify approved behavior",itemKeys:["AND-400"]}};
+   await page.route("**/api/v1/nodes",route=>route.fulfill({json:{nodes:[{id:"mode-node",name:"Fixture",online:true,
+    repos:[],repoCandidates:[],agents:[{kind,ready:true,models:[]}]}]}}));
+   await page.route("**/api/v1/agent-sessions**",route=>route.fulfill({json:new URL(route.request().url()).pathname==="/api/v1/agent-sessions" ? {sessions:[session]} : session}));
+   await page.goto(`/?product=${productId}&console=agent&session=${id}`);
+   if(width===320) await page.locator(".agent-session-quick-settings").getByRole("button",{name:"更多操作",exact:true}).click();
+   await expect(page.locator(".agent-session-quick-settings").getByRole("combobox",{name:"权限模式",exact:true})).toHaveAttribute("data-value",mode!);
+   if(width===320) await page.keyboard.press("Escape");
+   await expect(page.locator(".agent-console-attention-banner").getByRole("button",{name:"批准",exact:true})).toBeEnabled();
+   await expect(page.getByText("方案批准后才生效",{exact:false})).toHaveCount(0);
+   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  });
+ }
+}
