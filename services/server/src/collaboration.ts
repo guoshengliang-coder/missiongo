@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import type {
   ActorKind,
+  WorkItemEnvironment,
+  WorkItemReport,
   WorkItemSnapshot,
   WorkItemStatus,
 } from "@missiongo/domain";
@@ -11,10 +13,30 @@ import { conflict, invalidInput, notFound, MissionGoError } from "./errors.js";
 import {
   assertCollaborationAcyclic,
   collaborationBlockers,
+  collaborationLinkedRead,
 } from "./collaboration-policy.js";
 import { enqueuePersonalNotification } from "./personal-notifications.js";
 
 const text = z.string().trim().min(1);
+const occurrenceFrequency = z.enum(["unknown", "once", "intermittent", "frequent", "always"]);
+// AND-406: the request carries the same report and environment a normal
+// creation does, so the target item does not lose what the sender filled in.
+export const collaborationReportSchema = z.object({
+  overview: z.string().trim().min(1).max(20000),
+  reproductionSteps: z.string().trim().max(20000).optional(),
+  expectedOutcome: z.string().trim().max(20000).optional(),
+  impact: z.string().trim().max(10000).optional(),
+  occurrenceFrequency: occurrenceFrequency.optional(),
+});
+export const collaborationEnvironmentSchema = z.object({
+  platform: z.enum(["android", "macos", "web", "server", "shared", "other"]),
+  appVersion: z.string().trim().max(500).optional(),
+  buildNumber: z.string().trim().max(500).optional(),
+  sourceRevision: z.string().trim().max(500).optional(),
+  osVersion: z.string().trim().max(500).optional(),
+  deviceModel: z.string().trim().max(500).optional(),
+  metadata: z.record(z.string().trim().min(1).max(100), z.string().max(2000)).optional(),
+});
 export const collaborationDraftSchema = z.object({
   grantId: text.max(100),
   title: text.max(300),
@@ -22,7 +44,11 @@ export const collaborationDraftSchema = z.object({
   acceptance: text.max(10000),
   type: z.enum(["bug", "requirement"]).default("requirement"),
   priority: z.enum(["urgent", "high", "normal", "low"]).default("normal"),
+  // Kept for old drafts and the MCP draft path; new requests read the source
+  // item directly and no longer copy selected attachments.
   attachmentIds: z.array(text.max(100)).max(10).default([]),
+  report: collaborationReportSchema.optional(),
+  environment: collaborationEnvironmentSchema.optional(),
 });
 export type CollaborationDraftInput = z.infer<typeof collaborationDraftSchema>;
 export const collaborationGrantSchema = z.object({
@@ -80,6 +106,36 @@ interface Payload extends CollaborationDraftInput {
   attachments: SharedAttachment[];
 }
 const terminal = (s: string) => s === "done" || s === "cancelled";
+
+/** Drop absent optional fields so the strict report type stays satisfied. */
+function reportFromDraft(value: Payload["report"]): WorkItemReport | undefined {
+  if (!value) return undefined;
+  return {
+    overview: value.overview,
+    ...(value.reproductionSteps ? { reproductionSteps: value.reproductionSteps } : {}),
+    ...(value.expectedOutcome ? { expectedOutcome: value.expectedOutcome } : {}),
+    ...(value.impact ? { impact: value.impact } : {}),
+    ...(value.occurrenceFrequency ? { occurrenceFrequency: value.occurrenceFrequency } : {}),
+  };
+}
+
+function environmentFromDraft(
+  value: Payload["environment"],
+  fallback: WorkItemEnvironment["platform"],
+): WorkItemEnvironment {
+  if (!value) return { platform: fallback };
+  return {
+    platform: value.platform,
+    ...(value.appVersion ? { appVersion: value.appVersion } : {}),
+    ...(value.buildNumber ? { buildNumber: value.buildNumber } : {}),
+    ...(value.sourceRevision ? { sourceRevision: value.sourceRevision } : {}),
+    ...(value.osVersion ? { osVersion: value.osVersion } : {}),
+    ...(value.deviceModel ? { deviceModel: value.deviceModel } : {}),
+    ...(value.metadata && Object.keys(value.metadata).length > 0
+      ? { metadata: value.metadata }
+      : {}),
+  };
+}
 
 export class Collaborations {
   readonly accounts: AccountStore;
@@ -545,8 +601,13 @@ export class Collaborations {
             "collaboration_stale",
             "草稿版本已失效，请重新预览批准。",
           );
-        if (draft.submitted_request_id)
-          return { id: draft.submitted_request_id };
+        if (draft.submitted_request_id) {
+          const existing = this.row(draft.submitted_request_id);
+          return {
+            id: draft.submitted_request_id,
+            targetKey: this.item(existing.target_item_id).key,
+          };
+        }
         const g = this.activeGrant(draft.grant_id, s),
           payload = JSON.parse(draft.payload_json) as Payload;
         for (const f of payload.attachments) {
@@ -573,6 +634,7 @@ export class Collaborations {
           b && this.accounts.allows(b, g.target_product_id, "operate")
             ? b.id
             : undefined;
+        const report = reportFromDraft(payload.report);
         const target = this.store.createWorkItem({
           productId: g.target_product_id,
           status: "ready",
@@ -581,7 +643,8 @@ export class Collaborations {
           title: payload.title,
           description:
             payload.description + "\n\n验收标准\n" + payload.acceptance,
-          environment: { platform: module?.kind ?? "shared" },
+          ...(report ? { report } : {}),
+          environment: environmentFromDraft(payload.environment, module?.kind ?? "shared"),
           ...(module ? { sourceComponentId: module.id } : {}),
           ...(builder ? { builderAccountId: builder } : {}),
           attribution: { accountId },
@@ -612,7 +675,7 @@ export class Collaborations {
           `协作请求已提交：${target.key}。由接收方安排处理，待验证时通知提需方验收。`,
           accountId,
         );
-        return { id };
+        return { id, targetKey: target.key };
       },
     );
   }
@@ -748,17 +811,31 @@ export class Collaborations {
   context(accountId: string, itemKey: string) {
     const a = this.account(accountId),
       item = this.store.getWorkItem(itemKey);
-    this.view(a, item.productId);
-    const rows = this.db
-      .prepare(
-        "SELECT * FROM collaboration_requests WHERE source_item_id=? OR target_item_id=? ORDER BY created_at",
-      )
-      .all(item.id, item.id) as unknown as CollaborationRow[];
-    const drafts = this.db
-      .prepare(
-        "SELECT * FROM collaboration_drafts WHERE source_item_id=? AND invalidated_at IS NULL AND submitted_request_id IS NULL",
-      )
-      .all(item.id) as unknown as Draft[];
+    // AND-406: a linked reader of the source item is not a member of its
+    // project. They see the relationships their own side already knows about,
+    // never that project's unsubmitted drafts.
+    const linkedRead =
+      !this.accounts.allows(a, item.productId, "view") &&
+      collaborationLinkedRead(this.store.database, item, a.id);
+    if (!linkedRead) this.view(a, item.productId);
+    const rows = (
+      this.db
+        .prepare(
+          "SELECT * FROM collaboration_requests WHERE source_item_id=? OR target_item_id=? ORDER BY created_at",
+        )
+        .all(item.id, item.id) as unknown as CollaborationRow[]
+    ).filter(
+      (r) =>
+        !linkedRead ||
+        this.accounts.allows(a, this.item(r.target_item_id).productId, "view"),
+    );
+    const drafts = linkedRead
+      ? []
+      : (this.db
+          .prepare(
+            "SELECT * FROM collaboration_drafts WHERE source_item_id=? AND invalidated_at IS NULL AND submitted_request_id IS NULL",
+          )
+          .all(item.id) as unknown as Draft[]);
     return {
       blocked: collaborationBlockers(this.store.database, item.id) > 0,
       requests: rows.map((r) =>

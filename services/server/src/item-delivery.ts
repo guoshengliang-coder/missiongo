@@ -10,6 +10,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { AccountSnapshot, AccountStore } from "./accounts-store.js";
 import type { MissionGoStore } from "./store.js";
 import { conflict, invalidInput, notFound, MissionGoError } from "./errors.js";
+import { collaborationLinkedRead } from "./collaboration-policy.js";
 
 interface Options { store: MissionGoStore; accounts: AccountStore; requireAccount: (request: FastifyRequest) => AccountSnapshot }
 interface ExecutionRow {
@@ -90,7 +91,27 @@ export function registerItemDeliveryRoutes(app: FastifyInstance, {store, account
   });
   app.get("/api/v1/items/:itemKey/delivery", async request => {
     const {itemKey} = request.params as {itemKey:string}; let item = store.getWorkItem(itemKey);
-    const account = visible(request, item.productId);
+    const account = requireAccount(request);
+    const productVisible = accounts.allows(account, item.productId, "view");
+    // AND-406: the receiving side may read the linked source item's execution
+    // record. Roster, candidates and management stay closed.
+    const linkedRead = !productVisible && collaborationLinkedRead(store.database, item, account.id);
+    if (!productVisible && !linkedRead) throw notFound("Product");
+    if (linkedRead) return {
+      builderHandover: null,
+      canTakeOver: false,
+      builderAccountId: item.builderAccountId ?? null,
+      builderName: item.builderName ?? null,
+      builderNeedsReassignment: false,
+      canManage: false,
+      canManageBuilder: false,
+      currentAccountId: account.id,
+      candidates: [],
+      performers: [],
+      executions: list(itemKey),
+      executionBlockers: [],
+      readOnlySource: true,
+    };
     if (item.builderHandover) { handovers.reconcile(item.builderHandover.id); item = store.getWorkItem(itemKey); }
     let canHandoffToAgent=manages(account,item) && accounts.allows(account,item.productId,"ai") && item.status==="in_progress";
     try {assertBuilderExecution(store.database,item.id,account.id);} catch {canHandoffToAgent=false;}

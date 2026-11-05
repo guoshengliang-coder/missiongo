@@ -44,18 +44,30 @@ export const COLLABORATION_EN = {
   collaborationTitleField: "Request title",
   collaborationShare: "Attachments to share",
   collaborationPreview: "Preview and confirm",
+  collaborationNewFiles: "New material (saved with the target item)",
+  collaborationPendingUploads: "Files for {key} are not uploaded yet",
+  collaborationPendingUploadsHelp:
+    "The request already created the target item. Retry the uploads here; nothing is created twice.",
+  collaborationRetryUploads: "Retry upload",
+  collaborationDiscardUploads: "Discard remaining files",
+  collaborationUploadFailed:
+    "Created {key}, but {count} file(s) failed to upload. Retry — no second item will be created.",
+  collaborationPendingTitle: "Finish uploading to {key}",
   collaborationApprove: "Approve and submit",
   collaborationApproval: "Confirm collaboration request",
   collaborationConsent:
     "I reviewed the request and shared scope, and approve submission and the delivery dependency.",
   collaborationDraftHelp:
-    "Only this request, selected evidence and shared discussion will be visible to the receiving project. Other records remain private.",
+    "After submission the receiving side can read this source item read-only. Files added here belong to the target item; other project records remain private.",
   collaborationApprovalHelp:
     "Submission creates a ready item for the receiving team. You will be the human verifier; no Agent starts automatically.",
   collaborationVerifier: "Human verifier",
   collaborationDetail: "Shared collaboration details",
+  collaborationOpenSource: "View source item",
+  collaborationReadOnlySource:
+    "Read-only collaboration content from {project}. Only this item is shared; its project and other items stay closed.",
   collaborationSharedHelp:
-    "Only approved context is shown here. Internal project comments and execution records remain private.",
+    "The receiving side can read the source item read-only. Only this request, shared discussion and delivery evidence are shown here.",
   collaborationDiscussion: "Shared discussion and delivery evidence",
   collaborationNote: "Explanation / result",
   collaborationSend: "Send shared comment",
@@ -147,17 +159,29 @@ export const COLLABORATION_ZH: Record<keyof typeof COLLABORATION_EN, string> = {
   collaborationTitleField: "请求标题",
   collaborationShare: "共享附件",
   collaborationPreview: "预览并确认",
+  collaborationNewFiles: "新增资料（随目标条目保存）",
+  collaborationPendingUploads: "发往 {key} 的资料尚未上传完成",
+  collaborationPendingUploadsHelp:
+    "目标条目已创建。在此重试上传即可，不会重复创建条目。",
+  collaborationRetryUploads: "重试上传",
+  collaborationDiscardUploads: "放弃剩余文件",
+  collaborationUploadFailed:
+    "已创建 {key}，有 {count} 个文件上传失败；可重试，不会重复创建条目。",
+  collaborationPendingTitle: "完成上传到 {key}",
   collaborationApprove: "批准并提交",
   collaborationApproval: "确认协作请求",
   collaborationConsent: "我已审阅请求与共享范围，同意提交并建立交付依赖。",
   collaborationDraftHelp:
-    "仅共享本次请求、选中的证据和协作讨论；原条目的其他记录保持原权限。",
+    "提交后接收方可只读查看本原条目；此处新增的资料随目标条目保存，原项目其他记录保持原权限。",
   collaborationApprovalHelp:
     "提交后在接收项目创建待处理条目；你将作为人工验收人，不自动启动对方 Agent。",
   collaborationVerifier: "人工验收人",
   collaborationDetail: "协作条目详情",
+  collaborationOpenSource: "查看原条目",
+  collaborationReadOnlySource:
+    "来自「{project}」的协作只读内容；仅共享本条目，原项目其他条目与操作保持原权限。",
   collaborationSharedHelp:
-    "此处仅展示批准的共享上下文；项目内部评论和执行记录保持原权限。",
+    "接收方可只读查看原条目；此处展示本次请求、共享讨论与交付证据。",
   collaborationDiscussion: "共享讨论与交付证据",
   collaborationNote: "说明 / 处理结果",
   collaborationSend: "发送共享评论",

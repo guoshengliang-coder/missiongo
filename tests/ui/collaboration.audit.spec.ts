@@ -141,14 +141,28 @@ for (const width of [375, 1440])
           grants.targets[0].id,
         );
         await dialog
-          .getByLabel("请求标题", { exact: true })
+          .getByPlaceholder("请输入清晰、具体的标题")
           .fill("Support idempotent retries");
+        await chooseOption(
+          dialog.getByRole("combobox", { name: "所属平台必填", exact: true }),
+          "web",
+        );
         await dialog
-          .getByLabel("问题与共享证据", { exact: true })
+          .getByPlaceholder("请说明实际发生了什么，以及异常表现是什么。", { exact: true })
           .fill("Approved public reproduction");
         await dialog
           .getByLabel("交付要求与验收条件", { exact: true })
           .fill("Repeated request returns exactly once");
+        // AND-406: the request picks up the same file capability as any other
+        // creation; the material is saved with the target item.
+        await dialog
+          .locator('input[type="file"][accept*=".txt"]')
+          .setInputFiles({
+            name: "collaboration-evidence.txt",
+            mimeType: "text/plain",
+            buffer: Buffer.from("request evidence"),
+          });
+        await expect(dialog.getByText("collaboration-evidence.txt")).toBeVisible();
         await dialog
           .getByRole("button", { name: "预览并确认", exact: true })
           .click();
@@ -192,6 +206,14 @@ for (const width of [375, 1440])
             )
           ).status(),
         ).toBe(404);
+        const uploaded = await (
+          await targetContext.request.get(
+            `/api/v1/items/${relation.targetKey}/attachments`,
+          )
+        ).json();
+        expect(
+          uploaded.attachments.map((attachment: { filename: string }) => attachment.filename),
+        ).toContain("collaboration-evidence.txt");
         const targetPage = await targetContext.newPage();
         await targetPage.goto(
           `/?product=${target.id}&item=${relation.targetKey}`,
@@ -305,6 +327,31 @@ for (const width of [375, 1440])
         ).toBe(false);
         await sourcePage.keyboard.press("Escape");
         await expect(dialog).toHaveCount(0);
+
+        // AND-406: the receiving side opens the linked source item read-only.
+        await targetPage.reload();
+        const receivingAgain = targetPage.getByRole("region", {
+          name: "协作与依赖",
+          exact: true,
+        });
+        await openRelation(receivingAgain, original.key);
+        await targetPage
+          .getByRole("dialog")
+          .getByRole("button", { name: "查看原条目", exact: true })
+          .click();
+        const readOnlyDetail = targetPage.locator(".detail-pane");
+        await expect(readOnlyDetail).toContainText("Retry issue");
+        await expect(readOnlyDetail).toContainText("Private source context");
+        await expect(readOnlyDetail).toContainText("协作只读内容");
+        await expect(
+          readOnlyDetail.getByRole("button", { name: "编辑", exact: true }),
+        ).toHaveCount(0);
+        await expect(
+          readOnlyDetail.getByRole("textbox"),
+        ).toHaveCount(0);
+        await targetPage.screenshot({
+          path: test.info().outputPath("source-read-only.png"),
+        });
       } finally {
         await sourceContext.close();
         await targetContext.close();
@@ -346,13 +393,13 @@ test("cancel source explicitly withdraws dependencies without cancelling receive
     .getByRole("button", { name: "发起协作请求", exact: true })
     .click();
   let dialog = page.getByRole("dialog");
-  await dialog.getByLabel("请求标题", { exact: true }).fill("Unsaved draft");
+  await dialog.getByPlaceholder("请输入清晰、具体的标题").fill("Unsaved draft");
   await dialog.getByRole("button", { name: "取消", exact: true }).click();
   await expect(
     dialog.getByRole("heading", { name: "放弃修改？", exact: true }),
   ).toBeVisible();
   await dialog.getByRole("button", { name: "继续编辑", exact: true }).click();
-  await expect(dialog.getByLabel("请求标题", { exact: true })).toHaveValue(
+  await expect(dialog.getByPlaceholder("请输入清晰、具体的标题")).toHaveValue(
     "Unsaved draft",
   );
   await page.reload();

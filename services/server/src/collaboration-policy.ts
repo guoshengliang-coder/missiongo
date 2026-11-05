@@ -3,6 +3,61 @@ import type { MissionGoDatabase } from "./storage/database.js";
 import { AccountStore } from "./accounts-store.js";
 import { conflict } from "./errors.js";
 
+/**
+ * Read-only reach across one collaboration link.
+ *
+ * The receiving side of an active request may read the source item it was
+ * asked to deliver -- that material is the request. The reach is item-scoped,
+ * never project-wide, and disappears as soon as the request is withdrawn or
+ * its access is revoked.
+ */
+export function collaborationLinkedRead(
+  database: MissionGoDatabase,
+  item: { id: string },
+  accountId?: string,
+): boolean {
+  if (!accountId) return false;
+  const rows = database.connection
+    .prepare(
+      `SELECT t.product_id AS targetProductId
+         FROM collaboration_requests r
+         JOIN work_items t ON t.id = r.target_item_id
+        WHERE r.source_item_id = ? AND r.withdrawn_at IS NULL AND r.access_revoked_at IS NULL`,
+    )
+    .all(item.id) as Array<{ targetProductId: string }>;
+  if (!rows.length) return false;
+  const accounts = new AccountStore(database);
+  const account = accounts.findActive(accountId);
+  return Boolean(
+    account &&
+      rows.some((row) => accounts.allows(account, row.targetProductId, "view")),
+  );
+}
+
+/**
+ * Whether this account may add the request's new material to the target item.
+ *
+ * The requester gets exactly one narrow write: attachments on the item their
+ * active request created. It never becomes ordinary write access to the target
+ * project, and it ends with the request.
+ */
+export function collaborationUploadAllowed(
+  database: MissionGoDatabase,
+  itemId: string,
+  accountId?: string,
+): boolean {
+  if (!accountId) return false;
+  return Boolean(
+    database.connection
+      .prepare(
+        `SELECT 1 FROM collaboration_requests r
+          WHERE r.target_item_id = ? AND r.withdrawn_at IS NULL AND r.access_revoked_at IS NULL
+            AND (r.owner_account_id = ? OR r.verifier_account_id = ?)`,
+      )
+      .get(itemId, accountId, accountId),
+  );
+}
+
 export function collaborationBlockers(
   database: MissionGoDatabase,
   itemId: string,
