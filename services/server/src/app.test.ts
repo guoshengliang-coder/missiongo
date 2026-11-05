@@ -1,3 +1,4 @@
+import { approvedClaimFixture } from "./testing-fixtures.js";
 import { versionedTestRequest } from "./testing-fixtures.js";
 import { createHash, randomUUID, scryptSync } from "node:crypto";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -87,6 +88,7 @@ describe("Commenting over MCP", () => {
     const executionCredentials=new Map<string,string>();
     const call = async (token: string, id: number, method: string, params: Readonly<Record<string, unknown>> = {}) => {
       const args=params.arguments as Record<string,unknown>|undefined;
+      if(params.name==="claim_item" && args) approvedClaimFixture(app.missionGoStore,token,args);
       const scoped = args && typeof args.itemKey === "string" && ["submit_development_complete","submit_for_verification"].includes(String(params.name));
       if (scoped && args.executionAuthorization === undefined && executionCredentials.has(args.itemKey as string)) params={...params,arguments:{...args,executionAuthorization:executionCredentials.get(args.itemKey as string)}};
       const response = await app.inject({
@@ -427,7 +429,7 @@ describe("Commenting over MCP", () => {
     const writer = await call(writeToken, 2, "tools/call", { name: "get_current_account", arguments: {} });
     expect(writer.result?.structuredContent).toMatchObject({
       capabilities: {
-        writeTools: ["prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
+        writeTools: ["prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "request_plan_approval", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
         canComment: true,
         canCreateItems: true,
       },
@@ -1021,7 +1023,7 @@ describe("Commenting over MCP", () => {
     const db = f.app.missionGoStore.database.connection;
     const dispatches = new DispatchStore(f.app.missionGoStore.database);
     const node = dispatches.registerNode({ accountId: f.adminAccount.id, installationId: randomUUID(), name: "Project node" });
-    dispatches.recordHeartbeat(node.nodeId, [{ kind, ready: true }]);
+    dispatches.recordHeartbeat(node.nodeId, [{ kind,planApprovalProtocol:1, ready: true }]);
     const native = new AgentSessionStore(f.app.missionGoStore.database);
     const sessionRef = randomUUID();
     const createConversation = (productId = f.productId, ref = sessionRef, project = true) => {
@@ -1330,6 +1332,9 @@ describe("Commenting over MCP", () => {
       VALUES ('web-dispatch',?,'test-node','codex','default','launched','/synthetic/repo',?)`).run(adminAccount.id, now);
     db.prepare("INSERT INTO dispatch_items(dispatch_id,item_id,position) VALUES ('web-dispatch',?,0)")
       .run(app.missionGoStore.getWorkItem("HG-1").id);
+    new AgentSessionStore(app.missionGoStore.database).createForDispatch({
+      dispatchId: "web-dispatch", nodeId: "test-node", sessionRef: "fixture-dispatch-thread",
+    });
     const claimed = await call(writeToken, 2, "tools/call", { name: "claim_item", arguments: {
       itemKey: "HG-1", agentId: "codex", dispatchId: "web-dispatch", idempotencyKey: "dispatch-claim" } });
     expect(claimed.result!.structuredContent).toMatchObject({ item: { status: "in_progress" } });

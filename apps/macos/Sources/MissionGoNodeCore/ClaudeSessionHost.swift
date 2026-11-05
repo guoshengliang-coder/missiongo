@@ -297,11 +297,12 @@ public struct ClaudeHostCommand: Codable, Equatable, Sendable {
     public let settings: AgentSessionSettings?
     /// Explicit local permission answer; Web text never implicitly approves a tool.
     public let permissionRequestId: String?
+    public let planApprovalRevision: String?
     public let webReply: Bool?
     public let expiresAt: Date?
     public let turnId: String?
 
-    public init(id: String, kind: String, text: String, createdAt: String? = nil, settings: AgentSessionSettings? = nil, permissionRequestId: String? = nil, webReply: Bool? = nil, expiresAt: Date? = nil, turnId: String? = nil) {
+    public init(id: String, kind: String, text: String, createdAt: String? = nil, settings: AgentSessionSettings? = nil, permissionRequestId: String? = nil, planApprovalRevision: String? = nil, webReply: Bool? = nil, expiresAt: Date? = nil, turnId: String? = nil) {
         self.turnId = turnId
         self.id = id
         self.kind = kind
@@ -309,6 +310,7 @@ public struct ClaudeHostCommand: Codable, Equatable, Sendable {
         self.createdAt = createdAt
         self.settings = settings
         self.permissionRequestId = permissionRequestId
+        self.planApprovalRevision = planApprovalRevision
         self.webReply = webReply
         self.expiresAt = expiresAt
     }
@@ -419,7 +421,9 @@ public struct ClaudeStreamSnapshot: Sendable {
                 .joined(separator: "\n")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let questions = Self.questions(content)
-            if !text.isEmpty || !questions.isEmpty {
+            let nativePlan = content.first { $0["type"] as? String == "tool_use" && $0["name"] as? String == "ExitPlanMode" }
+            let planText = (nativePlan?["input"] as? [String: Any])?["plan"] as? String
+            if !text.isEmpty || !questions.isEmpty || nativePlan != nil {
                 state.lastOutputAt = Self.timestampNow()
                 finishThinking()
                 let previous = state.messages.first(where: { $0.sourceId == sourceId })
@@ -431,8 +435,8 @@ public struct ClaudeStreamSnapshot: Sendable {
                 upsert(AgentSessionMessage(
                     sourceId: sourceId,
                     turnId: turnId,
-                    role: "agent",
-                    text: combinedText.isEmpty ? "Claude Code 正在等待你的选择。" : combinedText,
+                    role: nativePlan == nil ? "agent" : "plan",
+                    text: planText ?? (combinedText.isEmpty ? "Claude Code 正在等待你的选择。" : combinedText),
                     occurredAt: previous?.occurredAt ?? CodexProtocol.sourceActivityTimestamp(
                         value["timestamp"] ?? value["createdAt"] ?? value["created_at"]
                     ),
@@ -523,6 +527,11 @@ public struct ClaudeStreamSnapshot: Sendable {
 
     /// An ordinary tool approval has no tool-use question of its own.
     public mutating func showPermissionRequest(_ request: ClaudePermissionRequest) {
+        if request.toolName == "ExitPlanMode" {
+            let text = request.input["plan"] as? String ?? state.messages.last(where: { $0.role == "agent" })?.text ?? "计划已准备好，请审阅后使用方案批准按钮。"
+            upsert(AgentSessionMessage(sourceId: "permission-\(request.requestId)", turnId: latestTurnId(), role: "plan", text: text))
+            return
+        }
         guard !request.asksThroughToolUse else { return }
         upsert(AgentSessionMessage(
             sourceId: "permission-\(request.requestId)",
@@ -869,13 +878,6 @@ public struct ClaudeStreamSnapshot: Sendable {
                     multiSelect: question["multiSelect"] as? Bool
                 )
             }
-        } + content.compactMap { block -> AgentSessionQuestion? in
-            guard block["type"] as? String == "tool_use", block["name"] as? String == "ExitPlanMode" else { return nil }
-            return AgentSessionQuestion(
-                header: "计划审批",
-                title: "是否批准这份计划并开始实施？",
-                options: ["批准并实施", "继续修改计划"]
-            )
         }
     }
 }
@@ -976,7 +978,7 @@ public struct ClaudeSettingsChange {
             else { errors.append("不支持的 Claude Code 模式：\(JSONValues.quote(mode))") }
         }
         if let model = settings.model {
-            if AgentModelSettings.isValidModel(model) { parts.append(.model(model)) }
+            if AgentModelSettings.isValidModel(model) { parts.insert(.model(model), at: 0) }
             else { errors.append("不支持的模型名：\(JSONValues.quote(model))") }
         }
         if let effort = settings.effort {
@@ -1007,12 +1009,16 @@ public struct ClaudeSettingsChange {
     }
 
     public var isComplete: Bool { pending.isEmpty }
+    public var nextRequest: (id: String, request: [String: Any])? { requests.first { pending[$0.id] != nil } }
 
     /// Takes one `control_response`'s inner `response`; false when it
     /// answers a request that is not part of this change.
     public mutating func receive(requestId: String, response: [String: Any]) -> Bool {
         guard let part = pending.removeValue(forKey: requestId) else { return false }
-        if response["subtype"] as? String == "success" {
+        let actualMode = (response["response"] as? [String: Any])?["mode"] as? String
+        let modeConfirmed: Bool
+        if case let .mode(mode) = part { modeConfirmed = actualMode == mode } else { modeConfirmed = true }
+        if response["subtype"] as? String == "success" && modeConfirmed {
             applied.append(part)
         } else {
             let reason = (response["error"] as? String) ?? "未知错误"

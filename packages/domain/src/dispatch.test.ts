@@ -78,3 +78,17 @@ describe("Node liveness", () => {
     expect(nodeConnectionState(undefined, now)).toBe("offline");
   });
 });
+
+it("AND-400 preserves saved permissions and chooses defaults only from native evidence", async () => {
+ const {defaultAgentMode,agentModeCapability,normalizeAgentMode}=await import("./dispatch.js");
+ expect(defaultAgentMode("codex")).toBe("auto");
+ expect(defaultAgentMode("claude_code")).toBe("");
+ expect(defaultAgentMode("claude_code",undefined,[{mode:"auto",state:"available"}])).toBe("auto");
+ expect(defaultAgentMode("claude_code",undefined,[{mode:"auto",state:"unavailable"}])).toBe("bypassPermissions");
+ expect(defaultAgentMode("claude_code","default",[{mode:"auto",state:"available"}])).toBe("default");
+ expect(defaultAgentMode("claude_code","invalid")).toBe("invalid");
+ expect(agentModeCapability("claude_code","auto",[{mode:"auto",model:"first",state:"available"}],"second").state).toBe("unknown");
+ expect(agentModeCapability("codex","full-access").state).toBe("unavailable");
+ expect(normalizeAgentMode("codex","plan")).toBe("auto");
+ expect(normalizeAgentMode("opencode","default")).toBe("build");
+});

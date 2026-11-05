@@ -157,6 +157,7 @@ describe("OpenCode shared-service control", () => {
       if (path === "/api/info") return { version: "2.1.0" };
       if (path.startsWith("/api/mcp")) return { data: [{ name: "missiongo", status: { status: "connected" } }] };
       if (path === "/api/session") return { data: { id: "session-1" } };
+      if(path==="/api/session/session-1") return {data:{agent:"plan"}};
       if (path.endsWith("/permission") && method === "GET") return { data: pending ? [{ id: "permit-1", action: "bash", resources: ["echo test"] }] : [] };
       if (path.endsWith("/form")) return { data: [] };
       if (path.endsWith("/permission/permit-1/reply")) { pending = false; return {}; }
@@ -211,6 +212,7 @@ describe("AND-391 scoped native stops", () => {
         if (path === "/api/info") return { version: "2.1.0" };
         if (path.startsWith("/api/mcp?")) return { data: [{ name: "missiongo", status: { status: "connected" } }] };
         if (path === "/api/session" && method === "POST") return { data: { id: "scoped-session" } };
+        if(path==="/api/session/scoped-session") return {data:{agent:"plan"}};
         if (path === "/api/session/active") return { data: active ? { "scoped-session": {} } : {} };
         if (path.includes("/message?")) return { data: [{ id: inputId, type: "user", text: "fixture" }] };
         if (path.endsWith("/interrupt")) { interrupts++; active = false; throw new Error("lost ACK"); }

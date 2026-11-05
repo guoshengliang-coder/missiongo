@@ -1,4 +1,4 @@
-import { AGENT_KINDS, CLAUDE_CODE_MODES, CODEX_MODES, OPENCODE_MODES, DISPATCH_MODES_BY_AGENT, DISPATCH_STATUSES, isCodexThreadLink, type AgentKind } from "@missiongo/domain";
+import { defaultAgentMode, type AgentModeCapability, AGENT_KINDS, CLAUDE_CODE_MODES, CODEX_MODES, OPENCODE_MODES, DISPATCH_STATUSES, isCodexThreadLink, type AgentKind } from "@missiongo/domain";
 
 import type { MessageKey } from "./i18n";
 import type { DispatchNode, Product, WorkItemStatus } from "./types";
@@ -14,12 +14,9 @@ export function isDispatchable(status: WorkItemStatus): boolean {
 }
 
 /** A saved mode belongs to its agent; an unset OpenCode mode starts in Build. */
-export function dispatchModeOrDefault(agentKind: AgentKind, savedMode?: string): string {
-  const modes = DISPATCH_MODES_BY_AGENT[agentKind];
-  if (savedMode && modes.includes(savedMode)) return savedMode;
-  if (agentKind === "claude_code") return "bypassPermissions";
-  if (agentKind === "opencode") return "default";
-  return modes[0] ?? "";
+export function dispatchModeOrDefault(agentKind: AgentKind, savedMode?: string,
+  capabilities?: readonly AgentModeCapability[], model?: string): string {
+  return defaultAgentMode(agentKind, savedMode, capabilities, model);
 }
 
 /**
@@ -95,6 +92,7 @@ export type NodeIneligibility =
   | { readonly reason: "revoked" }
   | { readonly reason: "offline" }
   | { readonly reason: "agent_unavailable" }
+  | { readonly reason: "node_upgrade_required" }
   | { readonly reason: "agent_not_ready"; readonly unavailableReason?: string }
   | { readonly reason: "repo_unmapped"; readonly productIds: readonly string[] }
   | { readonly reason: "repo_conflict"; readonly repoPaths: readonly string[] };
@@ -115,15 +113,13 @@ export function nodeIneligibility(
   if (!node.online) return { reason: "offline" };
   const agent = node.agents.find((candidate) => candidate.kind === batch.agentKind);
   if (!agent) return { reason: "agent_unavailable" };
-  // `ready` is absent from an older client and the server's own gate is
-  // `ready !== false`, so absent means ready here too. The machine's wording for
-  // why it paused travels with the report and names what to fix on that Mac, so
-  // it is kept rather than replaced.
+  // Preserve the native readiness reason before checking protocol compatibility.
   if (agent.ready === false) {
     return agent.unavailableReason
       ? { reason: "agent_not_ready", unavailableReason: agent.unavailableReason }
       : { reason: "agent_not_ready" };
   }
+  if (agent.planApprovalProtocol !== 1) return { reason: "node_upgrade_required" };
 
   const unmapped: string[] = [];
   const repoPaths = new Set<string>();
@@ -159,6 +155,9 @@ const MODE_LABEL_KEYS: Readonly<Record<DispatchModeName, MessageKey>> = {
   default: "dispatchModeDefault",
   acceptEdits: "dispatchModeAcceptEdits",
   auto: "dispatchModeAuto",
+  build: "dispatchModeBuild",
+  "read-only": "dispatchCodexReadOnlyLabel",
+  "full-access": "dispatchCodexFullAccessLabel",
 };
 
 const DISPATCH_STATUS_LABEL_KEYS: Readonly<Record<(typeof DISPATCH_STATUSES)[number], MessageKey>> = {
@@ -173,6 +172,7 @@ export const NODE_INELIGIBILITY_KEYS: Readonly<Record<NodeIneligibility["reason"
   revoked: "nodeRevoked",
   offline: "nodeOffline",
   agent_unavailable: "nodeAgentMissing",
+  node_upgrade_required: "nodePlanApprovalUpgrade",
   // The fallback when the report carried no wording of its own; the machine's
   // reason is shown next to it whenever there is one.
   agent_not_ready: "nodeAgentNotReady",
@@ -189,6 +189,7 @@ const DISPATCH_PROBLEM_KEYS: Readonly<Record<string, MessageKey>> = {
   node_offline: "dispatchNodeOffline",
   node_revoked: "dispatchNodeRevoked",
   agent_unavailable: "dispatchAgentUnavailable",
+  node_upgrade_required: "nodePlanApprovalUpgrade",
   // The dialog could not know yet (AND-151); the server's title carries the
   // machine's own reason, which this wording keeps as the {reason}.
   agent_not_ready: "dispatchAgentNotReady",
@@ -220,7 +221,13 @@ export function agentLabelKey(agentKind: string): MessageKey | null {
  */
 export function dispatchModeLabelKey(agentKind: string, mode: string): MessageKey | null {
   if (!Object.hasOwn(MODE_LABEL_KEYS, mode)) return null;
-  if (agentKind === "opencode" && mode === "default") return "dispatchModeBuild";
+  if (agentKind === "codex") {
+    if (mode === "plan" || mode === "auto") return "dispatchCodexAutoLabel";
+    if (mode === "default") return "dispatchCodexDefaultLabel";
+    if (mode === "read-only") return "dispatchCodexReadOnlyLabel";
+    if (mode === "full-access") return "dispatchCodexFullAccessLabel";
+  }
+  if (agentKind === "opencode" && ["default", "build"].includes(mode)) return "dispatchModeBuild";
   return MODE_LABEL_KEYS[mode as DispatchModeName];
 }
 

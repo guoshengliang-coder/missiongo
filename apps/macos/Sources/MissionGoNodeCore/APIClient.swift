@@ -92,6 +92,8 @@ public struct AgentResourceSnapshot: Codable, Equatable, Sendable {
 }
 
 public struct DetectedAgent: Codable, Equatable, Sendable {
+    public let planApprovalProtocol: Int?
+    public let modes: [AgentModeCapability]?
     public let kind: String
     public let version: String
     /// The models a dispatch may pick for this agent. Its presence, even as an
@@ -109,11 +111,13 @@ public struct DetectedAgent: Codable, Equatable, Sendable {
     public let mcpAuth: McpAuthSnapshot?
 
     public init(
-        kind: String, version: String, models: [AgentModelOption]? = nil,
+        kind: String, version: String, models: [AgentModelOption]? = nil, modes: [AgentModeCapability]? = nil,
         ready: Bool? = nil, unavailableReason: String? = nil,
         skill: AgentSkillSnapshot? = nil, resource: AgentResourceSnapshot? = nil,
         mcpAuth: McpAuthSnapshot? = nil
     ) {
+        self.planApprovalProtocol = 1
+        self.modes = modes
         self.kind = kind
         self.version = version
         self.models = models
@@ -299,6 +303,7 @@ public struct AgentModelOption: Codable, Equatable, Sendable {
 /// The mode, model and effort a person wants a running session to use.
 /// Each field left out means "leave this one as it is".
 public struct AgentSessionSettings: Codable, Equatable, Sendable {
+    public let planApproved: Bool?
     /// Grows with every change a person makes; the node reports back the one
     /// it has applied, so a change is applied once however often it is sent.
     public let revision: Int
@@ -306,7 +311,8 @@ public struct AgentSessionSettings: Codable, Equatable, Sendable {
     public let model: String?
     public let effort: String?
 
-    public init(revision: Int, mode: String? = nil, model: String? = nil, effort: String? = nil) {
+    public init(revision: Int, mode: String? = nil, model: String? = nil, effort: String? = nil, planApproved: Bool? = nil) {
+        self.planApproved = planApproved
         self.revision = revision
         self.mode = mode
         self.model = model
@@ -314,11 +320,12 @@ public struct AgentSessionSettings: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case revision, mode, model, effort
+        case revision, mode, model, effort, planApproved
     }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        planApproved = try values.decodeIfPresent(Bool.self, forKey: .planApproved)
         revision = try values.decodeIfPresent(Int.self, forKey: .revision) ?? 0
         mode = try values.decodeIfPresent(String.self, forKey: .mode)
         model = try values.decodeIfPresent(String.self, forKey: .model)
@@ -525,6 +532,7 @@ public struct AgentSessionAttachment: Codable, Equatable, Sendable {
 }
 
 public struct AgentSessionCommand: Codable, Equatable, Sendable {
+    public let planApprovalRevision: String?
     public let id: String
     /// Absent when talking to a server from before interrupt commands.
     public let kind: String?
@@ -536,9 +544,10 @@ public struct AgentSessionCommand: Codable, Equatable, Sendable {
     public let createdAt: String
     public let deliveredAt: String?
 
-    public init(id: String, kind: String? = nil, text: String, turnId: String? = nil, status: String = "queued", error: String? = nil, createdAt: String = "", deliveredAt: String? = nil, attachments: [AgentSessionAttachment]? = nil) {
+    public init(id: String, kind: String? = nil, text: String, planApprovalRevision: String? = nil, turnId: String? = nil, status: String = "queued", error: String? = nil, createdAt: String = "", deliveredAt: String? = nil, attachments: [AgentSessionAttachment]? = nil) {
         self.id = id
         self.kind = kind
+        self.planApprovalRevision = planApprovalRevision
         self.text = text
         self.attachments = attachments
         self.turnId = turnId
@@ -898,6 +907,14 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
         var report = self
         report.failure = status == "failed" ? failure : nil
         if let failure = report.failure { report.error = failure.detail ?? failure.code }
+        return report
+    }
+
+    public func reportingHistoryLimit() -> AgentSessionReport {
+        var report = self
+        // Reuse the existing diagnostic transport; this code is recognized as
+        // a warning by both conversation views, without changing runtime state.
+        if report.error == nil { report.error = "codex_history_limited: recent history or runtime metadata only" }
         return report
     }
 

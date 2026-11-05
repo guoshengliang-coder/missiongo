@@ -2,7 +2,7 @@ import { AgentStopFeedback } from "./agent-stop-feedback.js";
 import { useState, useEffect, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { AgentReplyFeedback, AgentRunDetails } from "./agent-session-feedback";
+import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, isHistoryLimited } from "./agent-session-feedback";
 import { MarkdownText } from "./markdown-text";
 import { AgentArtifactMarkdown } from "./agent-artifact-viewer";
 import { api } from "./api";
@@ -159,7 +159,8 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                   </section>
                 )}
               </AgentRunDetails>
-              {session.data.lastError && <p className="inline-error">{session.data.lastError}</p>}
+              <AgentHistoryNotice error={session.data.lastError} />
+              {session.data.lastError && !isHistoryLimited(session.data.lastError) && <p className="inline-error">{session.data.lastError}</p>}
               <AgentStopFeedback stop={session.data.stopCommand ?? (command?.kind === "interrupt" ? command : undefined)}
                 latestCommand={command} turnActive={session.data.turnState?.turnActive ?? false} backgroundRunning={session.data.activities.length > 0} />
               {command?.kind === "message" && (

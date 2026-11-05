@@ -1,3 +1,4 @@
+import { approvedClaimFixture } from "./testing-fixtures.js";
 import { ExternalAgentSessionStore } from "./external-agent-session-store.js";
 import { hasOngoingItemExecution } from "./builder-authority.js";
 import { createAiAccessToken } from "./admin-auth.js";
@@ -179,6 +180,7 @@ function policyAiToken(role:string) {
  return createAiAccessToken(config,{id:account.id,username:account.email,role:account.role},app.missionGoAccounts.credentialsStamp(account),"policy-client",["missiongo:read","missiongo:write"]).token;
 }
 async function rawMcp(token:string,name:string,args:Record<string,unknown>) {
+ if(name==="claim_item") approvedClaimFixture(app.missionGoStore,token,args);
  const response=await app.inject({method:"POST",url:"/mcp",headers:{authorization:`Bearer ${token}`,"content-type":"application/json",accept:"application/json, text/event-stream"},payload:{jsonrpc:"2.0",id:1,method:"tools/call",params:{name,arguments:args}}});
  const body=response.headers["content-type"]?.includes("text/event-stream") ? response.body.split("\n").find(line=>line.startsWith("data: "))!.slice(6) : response.body;
  return {status:response.statusCode,...JSON.parse(body)};

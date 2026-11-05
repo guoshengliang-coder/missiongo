@@ -6,6 +6,7 @@ import { AgentSessionAttachments, type AgentSessionAttachment } from "./agent-se
 import { AgentSessionStore, type AgentSessionActivity, type AgentSessionListItem, type AgentSessionStatus, type AgentSessionTurnState } from "./agent-session-store.js";
 import { ExternalAgentSessionStore } from "./external-agent-session-store.js";
 import { invalidInput, notFound } from "./errors.js";
+import { ImplementationPlans } from "./implementation-plans.js";
 import { PlanApprovalService, type PlanApprovalStatusCode } from "./plan-approval.js";
 import type { MissionGoStore } from "./store.js";
 
@@ -128,6 +129,31 @@ export interface ReadConversationResult {
   readonly attachments: readonly SessionAttachmentView[];
 }
 
+/** A persisted implementation-plan record for one conversation identity (AND-400). */
+export interface PlanApprovalRecordView {
+  /** Conversation identity the record is keyed by: `dispatch:<id>` or `native:<client>:<kind>:<refKind>:<ref>`. */
+  readonly identity: string;
+  /** Current request revision; approvals for older revisions are superseded. */
+  readonly revision: string;
+  readonly keys: readonly string[];
+  readonly plan: string;
+  readonly validation: string;
+  /** Latest approval written for this identity, when one exists. */
+  readonly approval?: {
+    readonly revision: string;
+    /** False when a newer request revision superseded this approval. */
+    readonly current: boolean;
+    readonly planHash: string;
+    readonly source: "web" | "native";
+    readonly approvedAt: string;
+    readonly commandId?: string;
+  };
+  /** True only when a current-revision approval exists and the frozen scope still matches the items. */
+  readonly approved: boolean;
+  /** False when the item versions or boundaries moved past the frozen scope. */
+  readonly scopeValid: boolean;
+}
+
 export interface PlanApprovalConversationInfo {
   readonly sessionId: string;
   readonly agentKind: string;
@@ -140,7 +166,12 @@ export interface PlanApprovalConversationInfo {
   readonly assessment: { readonly code: PlanApprovalStatusCode; readonly reason?: string; readonly revision?: string };
   /** Codex source permission request, when one is open or recent. A different concept from plan approval. */
   readonly toolPermissionApproval?: { readonly kind: "manual" | "auto"; readonly status: string; readonly action: string; readonly reason?: string; readonly decision?: string };
-  readonly formalRecords: { readonly available: false; readonly note: string };
+  readonly formalRecords: {
+    readonly available: boolean;
+    readonly records?: readonly PlanApprovalRecordView[];
+    /** Present when no persisted record exists for this conversation. */
+    readonly note?: string;
+  };
 }
 
 interface DispatchMessageRow {
@@ -157,9 +188,9 @@ interface CommandRow { id: string; text: string; status: string; created_at: str
 
 const MAX_CONVERSATION_MESSAGES = 10_000;
 
-const FORMAL_RECORDS_NOTE = "No persisted formal plan-approval records exist on this server yet (see AND-400). "
-  + "Console one-click approvals are delivered as ordinary chat replies and leave no formal record; "
-  + "never report a plan as approved based on a comment, a reply, or transcript text.";
+const FORMAL_RECORDS_NOTE = "No persisted implementation-plan record exists for this conversation. "
+  + "Nothing in this result proves approval; never report a plan as approved based on a comment, a chat reply, "
+  + "a mode change, or transcript text.";
 
 const AVAILABILITY_RANK: Record<SessionContentAvailability, number> = { synced: 2, progress_only: 1, not_started: 0 };
 
@@ -222,7 +253,11 @@ function recordView(row: AgentSessionListItem): SessionRecordView {
 
 function conversationView(summary: AgentSessionListItem, members: readonly AgentSessionListItem[]): ItemConversationView {
   const records = members.map(recordView);
-  const preferred = members.find((row) => row.agentSessionId) ?? members.find((row) => row.source === "external") ?? members[0]!;
+  // External list rows reuse their own ID as agentSessionId (console archive
+  // routing), so dispatch-ness must come from `source`, never from the ID.
+  const preferred = members.find((row) => row.source !== "external" && row.agentSessionId)
+    ?? members.find((row) => row.agentSessionId)
+    ?? members[0]!;
   const best = records.reduce((a, b) => (AVAILABILITY_RANK[b.contentAvailability] > AVAILABILITY_RANK[a.contentAvailability] ? b : a));
   const lastSyncedAt = records.flatMap((record) => record.lastSyncedAt ? [record.lastSyncedAt] : []).sort().at(-1);
   return {
@@ -244,6 +279,7 @@ export class McpAgentSessionReads {
   private readonly external: ExternalAgentSessionStore;
   private readonly console: AgentConsoleSessions;
   private readonly approvals: AgentApprovalStore;
+  private readonly plans: ImplementationPlans;
   private readonly sessionAttachments: AgentSessionAttachments;
   private readonly externalAttachments: AgentSessionAttachments;
 
@@ -256,6 +292,7 @@ export class McpAgentSessionReads {
     this.external = new ExternalAgentSessionStore(store);
     this.console = new AgentConsoleSessions(store, this.dispatch, this.external);
     this.approvals = new AgentApprovalStore(store.database);
+    this.plans = new ImplementationPlans(store.database);
     this.sessionAttachments = new AgentSessionAttachments(store.database, attachmentsRoot);
     this.externalAttachments = new AgentSessionAttachments(store.database, attachmentsRoot, true);
   }
@@ -287,10 +324,10 @@ export class McpAgentSessionReads {
     const knownGaps = [...new Set(records.flatMap((record) => record.knownGaps))];
     if (truncated) knownGaps.push(`Only the newest ${MAX_CONVERSATION_MESSAGES} messages were read; the full native history is longer.`);
     const primary = orderedMembers[0]!;
-    const snapshot = primary.agentSessionId
-      ? this.dispatch.getForAccount(accountId, primary.agentSessionId)
-      : primary.source === "external"
-        ? this.external.getForAccount(accountId, primary.id)
+    const snapshot = primary.source === "external"
+      ? this.external.getForAccount(accountId, primary.id)
+      : primary.agentSessionId
+        ? this.dispatch.getForAccount(accountId, primary.agentSessionId)
         : undefined;
     return {
       sessionId: primary.agentSessionId ?? primary.id,
@@ -346,10 +383,12 @@ export class McpAgentSessionReads {
   /** Plan and approval state for every linked conversation that has a readable record. */
   planApprovalInfos(accountId: string, itemKey: string): readonly PlanApprovalConversationInfo[] {
     return this.console.listForItem(accountId, itemKey).flatMap(({ summary, members }) => {
-      const live = members.find((row) => row.agentSessionId) ?? members.find((row) => row.source === "external");
+      const live = members.find((row) => row.source !== "external" && row.agentSessionId)
+        ?? members.find((row) => row.source === "external")
+        ?? members.find((row) => row.agentSessionId);
       if (!live) return [];
-      const readId = live.agentSessionId ?? live.id;
-      const external = !live.agentSessionId;
+      const external = live.source === "external";
+      const readId = external ? live.id : live.agentSessionId!;
       const snapshot = external
         ? this.external.getForAccount(accountId, readId)
         : this.dispatch.getForAccount(accountId, readId);
@@ -399,9 +438,70 @@ export class McpAgentSessionReads {
         } } : {}),
         assessment: { code: assessment.status.code, ...(assessment.offer?.reason ? { reason: assessment.offer.reason } : {}), ...(assessment.offer ? { revision: assessment.offer.revision } : {}) },
         ...(permission ? { toolPermissionApproval: permission } : {}),
-        formalRecords: { available: false, note: FORMAL_RECORDS_NOTE },
+        formalRecords: this.implementationPlanRecords(accountId, members),
       }];
     });
+  }
+
+  /**
+   * Persisted implementation-plan records (AND-400) for every identity this
+   * conversation can have: `dispatch:<id>` for dispatch/project members, and the
+   * writer's native identity for external members. External identities embed the
+   * writing OAuth client, which a reader cannot know, so they are matched by
+   * their stable agent/ref suffix instead of guessing.
+   */
+  private implementationPlanRecords(accountId: string, members: readonly AgentSessionListItem[]): PlanApprovalConversationInfo["formalRecords"] {
+    const db = this.store.database.connection;
+    const dispatchIdentities = new Set(members
+      .filter((row) => row.source !== "external" && row.dispatchId)
+      .map((row) => `dispatch:${row.dispatchId}`));
+    const externalIdentity = (id: string) => db.prepare("SELECT agent_kind, session_ref, ref_kind FROM external_agent_sessions WHERE id=?").get(id) as
+      { agent_kind: string; session_ref: string; ref_kind: string } | undefined;
+    const nativeSuffixes = members
+      .filter((row) => row.source === "external")
+      .map((row) => externalIdentity(row.id))
+      .filter((row): row is NonNullable<ReturnType<typeof externalIdentity>> => Boolean(row))
+      .map((row) => `:${row.agent_kind}:${row.ref_kind}:${row.session_ref}`);
+    const requests = db.prepare("SELECT identity_key, revision, proposal_json, scope_json FROM implementation_plan_requests WHERE account_id=?")
+      .all(accountId) as Array<{ identity_key: string; revision: string; proposal_json: string | null; scope_json: string | null }>;
+    const matched = requests.filter((request) => dispatchIdentities.has(request.identity_key)
+      || (request.identity_key.startsWith("native:") && nativeSuffixes.some((suffix) => request.identity_key.endsWith(suffix))));
+    if (!matched.length) return { available: false, note: FORMAL_RECORDS_NOTE };
+    const records = matched.map((request) => {
+      const approval = db.prepare(`SELECT revision, plan_hash, scope_json, plan_text, validation_text, source, command_id, approved_at
+        FROM implementation_plan_approvals WHERE account_id=? AND identity_key=? ORDER BY approved_at DESC, rowid DESC LIMIT 1`)
+        .get(accountId, request.identity_key) as {
+        revision: string; plan_hash: string; scope_json: string; plan_text: string; validation_text: string;
+        source: "web" | "native"; command_id: string | null; approved_at: string;
+      } | undefined;
+      const proposal = request.proposal_json ? JSON.parse(request.proposal_json) as { keys: string[]; plan: string; validation: string } | null : null;
+      const scopeJson = request.scope_json ?? approval?.scope_json ?? "[]";
+      const keys = (JSON.parse(scopeJson) as Array<{ key: string }>).map((entry) => entry.key);
+      let scopeValid = false;
+      try { scopeValid = this.plans.scope(keys) === scopeJson; } catch { /* A scoped item disappearing invalidates the frozen scope. */ }
+      let approved = false;
+      if (scopeValid) {
+        try { approved = this.plans.approved(accountId, request.identity_key, request.revision); } catch { approved = false; }
+      }
+      return {
+        identity: request.identity_key,
+        revision: request.revision,
+        keys,
+        plan: proposal?.plan ?? approval?.plan_text ?? "",
+        validation: proposal?.validation ?? approval?.validation_text ?? "",
+        ...(approval ? { approval: {
+          revision: approval.revision,
+          current: approval.revision === request.revision,
+          planHash: approval.plan_hash,
+          source: approval.source,
+          approvedAt: approval.approved_at,
+          ...(approval.command_id ? { commandId: approval.command_id } : {}),
+        } } : {}),
+        approved,
+        scopeValid,
+      };
+    });
+    return { available: true, records };
   }
 
   /** Resolve one conversation ID for the MCP layer: linkage validation plus every product the conversation spans. */

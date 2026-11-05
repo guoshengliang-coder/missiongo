@@ -1,9 +1,10 @@
+import { modeChoices, modeReasonKey } from "./agent-mode-options";
 import { Select } from "./select";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LoaderCircle, MoreHorizontal } from "lucide-react";
 
-import { type AgentKind, DISPATCH_MODES_BY_AGENT } from "@missiongo/domain";
+import { normalizeAgentMode, type AgentKind, type AgentModeCapability } from "@missiongo/domain";
 
 import { api, ApiError } from "./api";
 import { useOverlay } from "./overlay";
@@ -29,6 +30,7 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
   const canChange = (field: "mode" | "model" | "effort") => settings.adjustable
     && (!external || !replyPending && Boolean(session.canReply) && Boolean(settings.supportedFields?.includes(field)));
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes, enabled: Boolean(nodeId) });
+  const modeCapabilities=nodesQuery.data?.nodes.find(node=>node.id===nodeId)?.agents.find(agent=>agent.kind===session.agentKind)?.modes;
   const models = session.agentKind === "other" ? undefined : agentModels(nodesQuery.data?.nodes.find((node) => node.id === nodeId), session.agentKind);
 
   const apply = useMutation({
@@ -93,9 +95,11 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
 
   return (
     <div className="agent-session-quick-settings">
-      <AgentSettingsControls agentKind={session.agentKind} models={models} mode={modeValue} model={modelValue}
+      <AgentSettingsControls agentKind={session.agentKind} modes={modeCapabilities} models={models} mode={modeValue} model={modelValue}
         effort={effortValue} effortDisplay={shownEffort} external={external} busy={apply.isPending} canChange={canChange}
         onChange={change => apply.mutate(change)} />
+      {settings.requiresImplementationMode && <p className="agent-session-settings-note" role="status">{t("agentImplementationModeRequired")}</p>}
+      {settings.requestedMode && settings.requestedMode!==settings.mode && <p className="agent-session-settings-note" role="status">{t("agentImplementationMode",{mode:modeLabel(settings.requestedMode)})}</p>}
       {external && <p className="agent-session-settings-note">{t(!session.canReply && !settings.unavailableReason
         ? "agentSettingsExternalUnavailable"
         : settings.unavailableReason === "connect" ? "agentSettingsExternalConnect"
@@ -118,8 +122,9 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
 }
 
 /** Shared reply-bar controls. Local drafts never call the session settings API. */
-export function AgentSettingsControls({ agentKind, models, mode: modeValue, model: modelValue, effort: effortValue,
+export function AgentSettingsControls({ agentKind, modes, models, mode: modeValue, model: modelValue, effort: effortValue,
   external = false, busy = false, allowLocalDefaults = false, effortDisplay, canChange, onChange }: {
+  modes?: readonly AgentModeCapability[] | undefined;
   agentKind: AgentKind | "other"; models: readonly NodeAgentModel[] | undefined;
   mode: string; model: string; effort: string; external?: boolean; busy?: boolean; allowLocalDefaults?: boolean; effortDisplay?: string;
   canChange: (field: "mode" | "model" | "effort") => boolean;
@@ -160,19 +165,23 @@ export function AgentSettingsControls({ agentKind, models, mode: modeValue, mode
     }
     closeMore();
   };
+  const modeOptions = <>
+    {external && <option value={normalizeAgentMode(agentKind,modeValue)}>{modeLabel(modeValue)}</option>}
+    {!modeValue && <option value="" disabled>{t("dispatchModeChoose")}</option>}
+    {(agentKind === "other" ? [] : modeChoices(agentKind,modeValue,modes,modelValue || undefined))
+      .filter(choice=>!external || choice.value!==normalizeAgentMode(agentKind,modeValue)).map(choice=><option key={choice.value}
+        value={choice.value} disabled={choice.state!=="available"}>{modeLabel(choice.value)}{choice.state!=="available" ? ` · ${t(modeReasonKey(choice))}` : ""}</option>)}
+  </>;
   return <>
       <div className="agent-session-quick-settings-row">
         <Select
           className="agent-settings-mode"
           aria-label={t("dispatchMode")}
-          value={modeValue}
+          value={normalizeAgentMode(agentKind,modeValue)}
           disabled={busy || !canChange("mode")}
           onChange={(event) => changeMode(event.target.value)}
         >
-          {external && <option value={modeValue}>{modeLabel(modeValue)}</option>}
-          {(agentKind === "other" ? [] : DISPATCH_MODES_BY_AGENT[agentKind]).filter(value => !external || value !== modeValue).map((value) => (
-            <option key={value} value={value}>{modeLabel(value)}</option>
-          ))}
+          {modeOptions}
         </Select>
         <Select
           className="agent-settings-model"
@@ -220,9 +229,8 @@ export function AgentSettingsControls({ agentKind, models, mode: modeValue, mode
           <button ref={moreRef} type="button" className="secondary-button" aria-label={t("moreActions")} aria-expanded={moreOpen} onClick={() => (moreOpen ? closeMore() : openMore())}><MoreHorizontal size={18} /></button>
           {moreOpen && <div className="agent-settings-more-panel">
             <label>{t("dispatchMode")}
-              <Select value={modeValue} disabled={busy || !canChange("mode")} onChange={(event) => changeMode(event.target.value)}>
-                {external && <option value={modeValue}>{modeLabel(modeValue)}</option>}
-                {(agentKind === "other" ? [] : DISPATCH_MODES_BY_AGENT[agentKind]).filter(value => !external || value !== modeValue).map((value) => <option key={value} value={value}>{modeLabel(value)}</option>)}
+              <Select value={normalizeAgentMode(agentKind,modeValue)} disabled={busy || !canChange("mode")} onChange={(event) => changeMode(event.target.value)}>
+                {modeOptions}
               </Select>
             </label>
             <label>{t("dispatchEffort")}
@@ -247,7 +255,7 @@ export function DraftSessionQuickSettings({ config, disabled, onChange }: {
   const nodes = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes });
   const models = agentModels(nodes.data?.nodes.find(node => node.id === config.nodeId), config.agentKind);
   return <div className="agent-session-quick-settings">
-    <AgentSettingsControls agentKind={config.agentKind} models={models} mode={config.mode}
+    <AgentSettingsControls agentKind={config.agentKind} modes={nodes.data?.nodes.find(node=>node.id===config.nodeId)?.agents.find(agent=>agent.kind===config.agentKind)?.modes} models={models} mode={config.mode}
       allowLocalDefaults model={config.model ?? ""} effort={config.effort ?? ""} canChange={() => !disabled}
       onChange={change => {
         if (change.mode !== undefined) { onChange({ ...config, mode: change.mode }); return; }

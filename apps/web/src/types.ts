@@ -1,3 +1,4 @@
+import type { AgentModeCapability } from "@missiongo/domain";
 import type { CommentDiscussion } from "@missiongo/domain";
 import type { AgentKind, DispatchStatus, CodexSessionFailure } from "@missiongo/domain";
 
@@ -291,6 +292,8 @@ export interface NodeAgentModel {
 }
 
 export interface NodeAgentReport {
+  readonly planApprovalProtocol?: number;
+  readonly modes?: readonly AgentModeCapability[];
   readonly kind: AgentKind;
   readonly version?: string;
   /** Absent: this Mac's client cannot choose a model or change a running session. */
@@ -323,6 +326,8 @@ export interface AgentSessionSettings {
   readonly effort?: string;
   /** Host of the custom endpoint the agent's requests go to; absent = official API (AND-161). */
   readonly modelEndpoint?: string;
+  readonly requiresImplementationMode?: boolean;
+  readonly requestedMode?: string;
   readonly requestedModel?: string;
   readonly requestedEffort?: string;
   readonly pending?: { readonly revision: number; readonly mode?: string; readonly model?: string; readonly effort?: string };
@@ -535,7 +540,7 @@ export interface AgentSessionAttachment {
 }
 
 export interface AgentSession {
-  readonly planApproval?: { readonly revision: string; readonly reason: string } | undefined;
+  readonly planApproval?: { readonly revision: string; readonly reason: string; readonly plan?: string; readonly validation?: string; readonly itemKeys?: readonly string[] } | undefined;
   readonly planApprovalStatus?: { readonly code: string; readonly detail?: string };
   readonly nativeConnection?: ExternalNativeConnection;
   readonly managedExecution?: { id: string; runId: string; stageId: string; generation: number; role: string; state: string; stopRequested: boolean };

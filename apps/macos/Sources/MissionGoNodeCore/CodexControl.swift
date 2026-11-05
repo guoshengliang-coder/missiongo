@@ -181,7 +181,7 @@ public struct CodexTurnOverrides: Equatable, Sendable {
     public init(desired: AgentSessionSettings) throws {
         var settings: CodexThreadSettings?
         if let mode = desired.mode {
-            guard let mapped = CodexModes.threadSettings(for: mode) else {
+            guard let mapped = CodexModes.threadSettings(for: mode, planning: desired.planApproved == false) else {
                 throw LaunchError("不支持的 Codex 模式：\(JSONValues.quote(mode))")
             }
             settings = mapped
@@ -205,6 +205,9 @@ public struct CodexAppliedSettings: Equatable, Sendable {
 }
 
 public struct CodexThreadSnapshot: Equatable, Sendable {
+    /// A bounded history window or metadata-only read must never prove that a
+    /// previously delivering message was absent from the source transcript.
+    public var historyLimited = false
     public let execution: NativeExecutionProgress
     public let failure: CodexSessionFailure?
     public let status: String
@@ -368,16 +371,16 @@ public enum CodexProtocol {
               result["approvalPolicy"] as? String == request.settings.approvalPolicy,
               let cwd = result["cwd"] as? String, canonical(cwd) == canonical(request.cwd),
               let sandbox = result["sandbox"] as? [String: Any],
-              sandbox["type"] as? String == "workspaceWrite",
-              let writableRoots = sandbox["writableRoots"] as? [String],
-              let runtimeRoots = result["runtimeWorkspaceRoots"] as? [String]
-        else {
-            throw CodexControlError.rpc(method: "thread/start", message: "Codex 未确认派单要求的审批方式或工作区沙箱；尚未启动任务。请升级 Codex 后台服务或检查组织权限策略。")
+              sandbox["type"] as? String == (request.settings.sandbox == "read-only" ? "readOnly" : "workspaceWrite"),
+              let runtimeRoots = result["runtimeWorkspaceRoots"] as? [String],
+              request.workspaceRoots.allSatisfy({ Set(runtimeRoots.map(canonical)).contains(canonical($0)) }) else {
+            throw CodexControlError.rpc(method: "thread/start", message: "Codex 未确认实际审批方式与原生沙箱；尚未启动任务。")
         }
-        let effective = Set(([cwd] + writableRoots).map(canonical))
-        let runtime = Set(runtimeRoots.map(canonical))
-        guard request.workspaceRoots.allSatisfy({ effective.contains(canonical($0)) && runtime.contains(canonical($0)) }) else {
-            throw CodexControlError.rpc(method: "thread/start", message: "Codex 未将本次 worktree 加入精确可写工作区；尚未启动任务。请升级 Codex 后台服务或检查工作区权限。")
+        if request.settings.sandbox == "workspace-write" {
+            guard let writableRoots = sandbox["writableRoots"] as? [String],
+                  request.workspaceRoots.allSatisfy({ Set(([cwd] + writableRoots).map(canonical)).contains(canonical($0)) }) else {
+                throw CodexControlError.rpc(method: "thread/start", message: "Codex 未确认精确可写工作区；尚未启动任务。")
+            }
         }
     }
 
@@ -429,6 +432,11 @@ public enum CodexProtocol {
         if let settings = overrides?.settings {
             params["approvalPolicy"] = settings.approvalPolicy
             params["approvalsReviewer"] = settings.approvalsReviewer
+            if settings.sandbox == "read-only" { params["sandboxPolicy"] = ["type": "readOnly"] }
+            if let model = overrides?.model {
+                params["collaborationMode"] = ["mode": settings.planning ? "plan" : "default",
+                    "settings": ["model": model, "reasoning_effort": overrides?.effort as Any? ?? NSNull(), "developer_instructions": NSNull()]]
+            }
         }
         return params
     }
@@ -491,7 +499,7 @@ public enum CodexProtocol {
 
     /// `thread/resume` takes no effort; that one rides on the next `turn/start`.
     public static func threadResumeParams(threadId: String, overrides: CodexTurnOverrides? = nil) -> [String: Any] {
-        var params: [String: Any] = ["threadId": threadId]
+        var params: [String: Any] = ["threadId": threadId, "excludeTurns": true]
         if overrides?.managed == true { params["config"] = ["mcp_servers.missiongo.enabled": false] }
         if let model = overrides?.model { params["model"] = model }
         if let settings = overrides?.settings {
@@ -500,6 +508,15 @@ public enum CodexProtocol {
             params["sandbox"] = settings.sandbox
         }
         return params
+    }
+
+    public static func validateEffectiveSettings(_ result: [String: Any], settings: CodexThreadSettings) throws {
+        let sandbox = result["sandbox"] as? [String: Any]
+        guard result["approvalPolicy"] as? String == settings.approvalPolicy,
+              result["approvalsReviewer"] as? String == settings.approvalsReviewer,
+              sandbox?["type"] as? String == (settings.sandbox == "read-only" ? "readOnly" : "workspaceWrite") else {
+            throw LaunchError("Codex 未确认请求的原生权限模式，未发送消息或标记生效。")
+        }
     }
 
     public static func appliedSettings(fromResume result: [String: Any]) -> CodexAppliedSettings {
@@ -761,6 +778,7 @@ public struct CodexAppServerControl: CodexControl {
     private let archiveCache: CodexArchiveCache
     private let approvalMonitor: CodexApprovalMonitor
     private let successfulReads = Locked<[String: Date]>([:])
+    private let oversizedHistories = Locked<[String: Date]>([:])
 
     public init(timeout: TimeInterval = 30, readTimeout: TimeInterval = 10) {
         self.timeout = timeout
@@ -819,6 +837,8 @@ public struct CodexAppServerControl: CodexControl {
         let timeout = timeoutOverride ?? self.readTimeout
         let archiveCache = self.archiveCache
         let successfulReads = self.successfulReads
+        let oversizedHistories = self.oversizedHistories
+        let historyKey = socketPath + "\n" + threadId
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async {
                 continuation.resume(with: Result {
@@ -827,6 +847,12 @@ public struct CodexAppServerControl: CodexControl {
                     var connection: JSONRPCWebSocket?
                     defer { connection?.close() }
                     do {
+                        if includeTurns, !includeExecutionItems,
+                           oversizedHistories.current[historyKey].map({ $0 > Date() }) == true {
+                            return try Self.readBoundedHistory(socketPath: socketPath, threadId: threadId,
+                                timeout: timeout, checkArchiveList: checkArchiveList, requireLoaded: requireLoaded,
+                                archiveCache: archiveCache)
+                        }
                         let channel = try JSONRPCWebSocket(socketPath: socketPath, timeout: timeout)
                         connection = channel
                         stage = "initialize"
@@ -854,6 +880,20 @@ public struct CodexAppServerControl: CodexControl {
                             }
                         }
                         return snapshot
+                    } catch is WebSocketFrame.FrameTooLarge where includeTurns && !includeExecutionItems {
+                        // The unread oversized frame cannot be reused for another RPC.
+                        connection?.close()
+                        connection = nil
+                        oversizedHistories.withLock { values in
+                            values = values.filter { $0.value > Date() }
+                            if values.count >= 128, let oldest = values.min(by: { $0.value < $1.value })?.key {
+                                values.removeValue(forKey: oldest)
+                            }
+                            values[historyKey] = Date().addingTimeInterval(300)
+                        }
+                        return try Self.readBoundedHistory(socketPath: socketPath, threadId: threadId,
+                            timeout: timeout, checkArchiveList: checkArchiveList, requireLoaded: requireLoaded,
+                            archiveCache: archiveCache)
                     } catch let error as CodexControlError {
                         let reason: String
                         switch error {
@@ -871,6 +911,56 @@ public struct CodexAppServerControl: CodexControl {
                 })
             }
         }
+    }
+
+    /// Recover a long conversation using metadata and small display-summary
+    /// pages. Old servers and even an oversized single turn still leave runtime
+    /// state usable. The server keeps previously mirrored messages by source id.
+    private static func readBoundedHistory(socketPath: String, threadId: String, timeout: TimeInterval,
+        checkArchiveList: Bool, requireLoaded: Bool, archiveCache: CodexArchiveCache) throws -> CodexThreadSnapshot {
+        let connection = try JSONRPCWebSocket(socketPath: socketPath, timeout: timeout)
+        defer { connection.close() }
+        _ = try connection.call("initialize", CodexProtocol.initializeParams())
+        try connection.notify("initialized")
+        if checkArchiveList, ((try? archiveCache.value(socketPath: socketPath) {
+            try archivedThreadIds(connection: connection)
+        }.contains(threadId)) ?? false) {
+            return CodexThreadSnapshot(status: "unavailable", messages: [], archived: true)
+        }
+        let result = try connection.call("thread/read", CodexProtocol.threadReadParams(threadId: threadId, includeTurns: false))
+        guard var thread = result["thread"] as? [String: Any], thread["id"] as? String == threadId else {
+            throw CodexControlError.invalidResponse(method: "thread/read identity")
+        }
+        if requireLoaded { try requireExternalRuntime(result, threadId: threadId) }
+        var turns: [[String: Any]] = []
+        var cursor: String?
+        var seen = Set<String>()
+        let started = Date()
+        let initialBytes = connection.receivedBytes
+        // Read newest first so state and new output survive even if an older
+        // page is too large. Bound both work and accumulated transport bytes.
+        for _ in 0..<8 {
+            var params: [String: Any] = ["threadId": threadId, "limit": 1,
+                "sortDirection": "desc", "itemsView": "summary"]
+            if let cursor { params["cursor"] = cursor }
+            do {
+                let page = try connection.call("thread/turns/list", params)
+                guard let data = page["data"] as? [[String: Any]] else { break }
+                guard connection.receivedBytes - initialBytes <= WebSocketFrame.maxPayload else { break }
+                turns += data
+                cursor = page["nextCursor"] as? String
+                guard let cursor, seen.insert(cursor).inserted,
+                      Date().timeIntervalSince(started) < timeout else { break }
+            } catch {
+                // No input was sent on this read connection. Keep confirmed
+                // metadata and any pages already received, never infer stopped.
+                break
+            }
+        }
+        thread["turns"] = Array(turns.reversed())
+        var snapshot = try CodexProtocol.threadSnapshot(fromRead: ["thread": thread])
+        snapshot.historyLimited = true
+        return snapshot
     }
 
     public func archiveThread(socketPath: String, threadId: String) async throws {
@@ -961,7 +1051,7 @@ public struct CodexAppServerControl: CodexControl {
                         defer { connection.close() }
                         _ = try connection.call("initialize", CodexProtocol.initializeParams())
                         try connection.notify("initialized")
-                        let source = try connection.call("thread/read", CodexProtocol.threadReadParams(threadId: threadId))
+                        let source = try connection.call("thread/read", CodexProtocol.threadReadParams(threadId: threadId, includeTurns: false))
                         try Self.requireExternalRuntime(source, threadId: threadId)
                         guard ((source["thread"] as? [String: Any])?["status"] as? [String: Any])?["type"] as? String == "idle" else {
                             throw CodexControlError.rpc(method: "turn/start", message: "原会话状态已变化，请等待同步后再回复。")
@@ -1002,6 +1092,9 @@ public struct CodexAppServerControl: CodexControl {
                             "thread/resume",
                             CodexProtocol.threadResumeParams(threadId: threadId, overrides: overrides)
                         )
+                        if overrides?.managed != true, let settings = overrides?.settings {
+                            try CodexProtocol.validateEffectiveSettings(resumed, settings: settings)
+                        }
                         if overrides?.managed == true, let settings = overrides?.settings, let context = overrides?.managedContext {
                             try ManagedCodexProtocol.validateResumed(resumed, settings: settings, context: context)
                             try ManagedCodexProtocol.validateMcp(connection.call("mcpServerStatus/list", ["threadId": threadId, "limit": 100]))
@@ -1009,7 +1102,19 @@ public struct CodexAppServerControl: CodexControl {
                         guard let thread = resumed["thread"] as? [String: Any], thread["id"] as? String == threadId else {
                             throw CodexControlError.invalidResponse(method: "thread/resume")
                         }
-                        let snapshot = try CodexProtocol.threadSnapshot(fromRead: resumed)
+                        var resumeState = resumed
+                        // Recovering a failed turn needs its error classification,
+                        // not every historical tool result. Normal idle sends use
+                        // the live state returned by resume without loading history.
+                        if (thread["status"] as? [String: Any])?["type"] as? String == "systemError",
+                           (thread["turns"] as? [[String: Any]] ?? []).isEmpty {
+                            let page = try connection.call("thread/turns/list", ["threadId": threadId,
+                                "limit": 1, "sortDirection": "desc", "itemsView": "summary"])
+                            var recent = thread
+                            recent["turns"] = page["data"] as? [[String: Any]] ?? []
+                            resumeState["thread"] = recent
+                        }
+                        let snapshot = try CodexProtocol.threadSnapshot(fromRead: resumeState)
                         // Codex keeps systemError after a failed turn and clears
                         // it only when the next turn starts. Requiring idle here
                         // would block the manual recovery allowed by the launcher.
@@ -1026,7 +1131,8 @@ public struct CodexAppServerControl: CodexControl {
                                 threadId: threadId,
                                 prompt: text,
                                 clientUserMessageId: clientUserMessageId,
-                                overrides: overrides
+                                overrides: overrides.map { CodexTurnOverrides(model: $0.model ?? resumed["model"] as? String,
+                                    effort: $0.effort, settings: $0.settings, managed: $0.managed, managedContext: $0.managedContext) }
                             )
                         )
                     } catch {
@@ -1051,6 +1157,7 @@ public struct CodexAppServerControl: CodexControl {
                         "thread/resume",
                         CodexProtocol.threadResumeParams(threadId: threadId, overrides: overrides)
                     )
+                    if let settings = overrides.settings { try CodexProtocol.validateEffectiveSettings(result, settings: settings) }
                     return CodexProtocol.appliedSettings(fromResume: result)
                 })
             }
@@ -1213,10 +1320,13 @@ public struct CodexAppServerControl: CodexControl {
             // A thread that could not be named is still a working thread; failing the
             // dispatch here would leave it running with nobody told about it.
             _ = try? connection.call("thread/name/set", CodexProtocol.threadNameParams(threadId: threadId, name: request.name))
+            if request.settings.planning && (started["model"] as? String)?.isEmpty != false {
+                throw LaunchError("Codex 未确认原生规划模型，尚未启动任务。")
+            }
             let firstTurn = try connection.call("turn/start", CodexProtocol.turnStartParams(
                 threadId: threadId,
                 prompt: request.prompt,
-                overrides: CodexTurnOverrides(model: request.model, effort: request.effort)
+                overrides: CodexTurnOverrides(model: request.model ?? started["model"] as? String, effort: request.effort, settings: request.settings)
             ))
             initialTurnId = (firstTurn["turn"] as? [String:Any])?["id"] as? String
         } catch {
@@ -1586,6 +1696,9 @@ final class JSONRPCWebSocket {
             while let frame = try WebSocketFrame.decode(&buffer) {
                 switch frame.opcode {
                 case WebSocketFrame.text, WebSocketFrame.continuation:
+                    guard frame.payload.count <= WebSocketFrame.maxPayload - fragments.count else {
+                        throw WebSocketFrame.FrameTooLarge()
+                    }
                     fragments += frame.payload
                     guard frame.fin else { continue }
                     let parsed = try? JSONSerialization.jsonObject(with: Data(fragments))
@@ -1627,8 +1740,8 @@ enum WebSocketFrame {
     static let ping: UInt8 = 0x9
     static let pong: UInt8 = 0xA
 
-    /// Far above any JSON-RPC answer this client waits for; a length beyond it
-    /// is a broken stream, not a message to allocate for.
+    /// Allocation guard, not a claim about valid conversation size. Long
+    /// histories use bounded summary pages instead of removing this guard.
     static let maxPayload = 16 * 1024 * 1024
 
     struct Frame: Equatable {
@@ -1637,7 +1750,9 @@ enum WebSocketFrame {
         let payload: [UInt8]
     }
 
-    struct FrameTooLarge: Error {}
+    struct FrameTooLarge: LocalizedError {
+        var errorDescription: String? { "Codex 返回的数据超过单条消息读取上限。" }
+    }
 
     static func randomMask() -> [UInt8] {
         return (0..<4).map { _ in UInt8.random(in: 0...255) }

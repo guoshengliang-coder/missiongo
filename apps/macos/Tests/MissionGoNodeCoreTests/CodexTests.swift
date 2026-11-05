@@ -95,54 +95,69 @@ final class FakeAppServer: @unchecked Sendable {
     private let finished = DispatchSemaphore(value: 0)
 
     /// Given a request, the messages to send back, in order.
-    init(path: String? = nil, respond: @escaping @Sendable ([String: Any]) -> [[String: Any]]) throws {
+    init(path: String? = nil, connections: Int = 1,
+         rawRespond: (@Sendable ([String: Any]) -> [UInt8]?)? = nil,
+         respond: @escaping @Sendable ([String: Any]) -> [[String: Any]]) throws {
         self.path = try path ?? shortTemporaryDirectory() + "/c.sock"
         listener = try listeningSocket(at: self.path)
         let listener = self.listener
         DispatchQueue.global().async { [self] in
             defer { finished.signal() }
-            let connection = accept(listener, nil, nil)
-            guard connection >= 0 else { return }
-            connected.withLock { $0 = connection }
-            defer { connected.withLock { $0 = nil; close(connection) } }
-            var buffer: [UInt8] = []
-            func readMore() -> Bool {
-                var chunk = [UInt8](repeating: 0, count: 65_536)
-                let count = recv(connection, &chunk, chunk.count, 0)
-                guard count > 0 else { return false }
-                buffer += chunk[..<count]
-                return true
-            }
-            func send(_ bytes: [UInt8]) {
-                _ = bytes.withUnsafeBytes { Darwin.send(connection, $0.baseAddress, $0.count, 0) }
-            }
-            let terminator = Array("\r\n\r\n".utf8)
-            while buffer.firstRange(of: terminator) == nil {
-                guard readMore() else { return }
-            }
-            let end = buffer.firstRange(of: terminator)!
-            let head = String(decoding: buffer[..<end.lowerBound], as: UTF8.self)
-            buffer.removeSubrange(..<end.upperBound)
-            let key = head.components(separatedBy: "\r\n")
-                .first { $0.lowercased().hasPrefix("sec-websocket-key:") }?
-                .split(separator: ":", maxSplits: 1)[1].trimmingCharacters(in: .whitespaces) ?? ""
-            send(Array("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: \(WebSocketFrame.acceptValue(key: key))\r\n\r\n".utf8))
-            while true {
-                guard let frame = try? WebSocketFrame.decode(&buffer) else {
+            func serve(_ connection: Int32) {
+                connected.withLock { $0 = connection }
+                defer { connected.withLock { $0 = nil; close(connection) } }
+                var buffer: [UInt8] = []
+                func readMore() -> Bool {
+                    var chunk = [UInt8](repeating: 0, count: 65_536)
+                    let count = recv(connection, &chunk, chunk.count, 0)
+                    guard count > 0 else { return false }
+                    buffer += chunk[..<count]
+                    return true
+                }
+                func send(_ bytes: [UInt8]) {
+                    bytes.withUnsafeBytes { raw in
+                        var offset = 0
+                        while offset < raw.count {
+                            let count = Darwin.send(connection, raw.baseAddress!.advanced(by: offset), raw.count - offset, 0)
+                            guard count > 0 else { return }
+                            offset += count
+                        }
+                    }
+                }
+                let terminator = Array("\r\n\r\n".utf8)
+                while buffer.firstRange(of: terminator) == nil {
                     guard readMore() else { return }
-                    continue
                 }
-                if frame.opcode == WebSocketFrame.close {
-                    clientClosed.withLock { $0 = true }
-                    return
+                let end = buffer.firstRange(of: terminator)!
+                let head = String(decoding: buffer[..<end.lowerBound], as: UTF8.self)
+                buffer.removeSubrange(..<end.upperBound)
+                let key = head.components(separatedBy: "\r\n")
+                    .first { $0.lowercased().hasPrefix("sec-websocket-key:") }?
+                    .split(separator: ":", maxSplits: 1)[1].trimmingCharacters(in: .whitespaces) ?? ""
+                send(Array("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: \(WebSocketFrame.acceptValue(key: key))\r\n\r\n".utf8))
+                while true {
+                    guard let frame = try? WebSocketFrame.decode(&buffer) else {
+                        guard readMore() else { return }
+                        continue
+                    }
+                    if frame.opcode == WebSocketFrame.close {
+                        clientClosed.withLock { $0 = true }
+                        return
+                    }
+                    let text = String(decoding: frame.payload, as: UTF8.self)
+                    received.withLock { $0.append(text) }
+                    guard let message = try? JSONSerialization.jsonObject(with: Data(frame.payload)) as? [String: Any] else { continue }
+                    if let bytes = rawRespond?(message) { send(bytes); continue }
+                    for answer in respond(message) {
+                        let data = try! JSONSerialization.data(withJSONObject: answer)
+                        send(WebSocketFrame.encode(opcode: WebSocketFrame.text, payload: Array(data), mask: nil))
+                    }
                 }
-                let text = String(decoding: frame.payload, as: UTF8.self)
-                received.withLock { $0.append(text) }
-                guard let message = try? JSONSerialization.jsonObject(with: Data(frame.payload)) as? [String: Any] else { continue }
-                for answer in respond(message) {
-                    let data = try! JSONSerialization.data(withJSONObject: answer)
-                    send(WebSocketFrame.encode(opcode: WebSocketFrame.text, payload: Array(data), mask: nil))
-                }
+            }
+            for _ in 0..<connections {
+                let connection = accept(listener, nil, nil)
+                guard connection >= 0 else { return }
+                serve(connection)
             }
         }
     }
@@ -225,10 +240,10 @@ final class FakeAppServer: @unchecked Sendable {
 
 final class CodexModesTests: XCTestCase {
     func testEveryModeKeepsTheSandboxAndOnRequestApprovals() {
-        XCTAssertEqual(CodexModes.allowed, ["plan", "default", "auto"])
-        for mode in CodexModes.allowed {
+        XCTAssertEqual(CodexModes.allowed, ["default", "auto", "read-only", "full-access"])
+        for mode in CodexModes.allowed.filter({ $0 != "full-access" }) {
             let settings = CodexModes.threadSettings(for: mode)
-            XCTAssertEqual(settings?.sandbox, "workspace-write", mode)
+            XCTAssertEqual(settings?.sandbox, mode == "read-only" ? "read-only" : "workspace-write", mode)
             XCTAssertEqual(settings?.approvalPolicy, "on-request", mode)
         }
         XCTAssertEqual(CodexModes.threadSettings(for: "plan")?.approvalsReviewer, "auto_review")
@@ -237,7 +252,7 @@ final class CodexModesTests: XCTestCase {
     }
 
     func testRefusesEverythingElse() {
-        for mode in ["never", "danger-full-access", "bypassPermissions", "acceptEdits", "", "plan "] {
+        for mode in ["full-access", "never", "danger-full-access", "bypassPermissions", "acceptEdits", "", "plan "] {
             XCTAssertNil(CodexModes.threadSettings(for: mode), mode)
         }
     }
@@ -247,7 +262,7 @@ final class CodexModesTests: XCTestCase {
         let source = try String(contentsOfFile: #filePath.replacingOccurrences(
             of: "Tests/MissionGoNodeCoreTests/CodexTests.swift", with: "Sources/MissionGoNodeCore/CodexModes.swift"
         ))
-        XCTAssertTrue(source.contains(#"["plan", "default", "auto"]"#))
+        XCTAssertTrue(source.contains(#"["default", "auto", "read-only", "full-access"]"#))
     }
 }
 
@@ -263,9 +278,9 @@ final class PlanPromptTests: XCTestCase {
         }
     }
 
-    func testOtherModesGetNoPlanParagraph() throws {
+    func testEveryModeRequiresPlanApproval() throws {
         for mode in ["default", "auto", "acceptEdits"] {
-            XCTAssertFalse(try LaunchPrompt.build(itemKeys: ["HG-8"], dispatchId: "abc", mode: mode).contains("计划模式"), mode)
+            XCTAssertTrue(try LaunchPrompt.build(itemKeys: ["HG-8"], dispatchId: "abc", mode: mode).contains("用户批准之前不回写评论"), mode)
         }
     }
 }
@@ -474,6 +489,120 @@ final class WebSocketFrameTests: XCTestCase {
 }
 
 final class CodexAppServerControlTests: XCTestCase {
+    func testOversizedHistoryUsesRecentPagesAndBacksOffFullReads() async throws {
+        let server = try FakeAppServer(connections: 3, rawRespond: { message in
+            let params = message["params"] as? [String: Any]
+            guard message["method"] as? String == "thread/read", params?["includeTurns"] as? Bool == true else { return nil }
+            // Advertise an oversized frame without allocating its payload.
+            return [0x81, 127, 0, 0, 0, 0, 1, 0, 0, 1]
+        }) { message in
+            guard let id = message["id"] else { return [] }
+            let method = message["method"] as? String
+            var result: [String: Any] = [:]
+            if method == "thread/list" { result = ["data": []] }
+            if method == "thread/read" {
+                result = ["thread": ["id": "long-thread", "status": ["type": "active", "activeFlags": ["waitingOnApproval"]]]]
+            }
+            if method == "thread/turns/list" {
+                let older = (message["params"] as? [String: Any])?["cursor"] as? String != nil
+                result = ["data": [["id": older ? "old-turn" : "live-turn", "status": older ? "completed" : "inProgress",
+                    "items": [["id": older ? "old-answer" : "new-answer", "type": "agentMessage", "text": older ? "Old" : "New"]]]]]
+                if !older { result["nextCursor"] = "older" }
+            }
+            return [["id": id, "result": result]]
+        }
+        let control = CodexAppServerControl()
+        for _ in 0..<2 {
+            let snapshot = try await control.readThread(socketPath: server.path, threadId: "long-thread")
+            XCTAssertTrue(snapshot.historyLimited)
+            XCTAssertEqual(snapshot.status, "active")
+            XCTAssertEqual(snapshot.activeTurnId, "live-turn")
+            XCTAssertTrue(snapshot.waitingOnApproval)
+            XCTAssertEqual(snapshot.messages.map(\.text), ["Old", "New"])
+        }
+        server.waitUntilDone()
+        let reads = server.received.current.compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+            .filter { $0["method"] as? String == "thread/read" }
+        XCTAssertEqual(reads.filter { ($0["params"] as? [String: Any])?["includeTurns"] as? Bool == true }.count, 1)
+        XCTAssertEqual(server.params(of: "thread/turns/list")?["itemsView"] as? String, "summary")
+        XCTAssertFalse(server.methods.contains("thread/resume"))
+    }
+
+    func testOversizedHistoryOnOldServerRetainsLiveMetadata() async throws {
+        let server = try FakeAppServer(connections: 2, rawRespond: { message in
+            if (message["params"] as? [String: Any])?["includeTurns"] as? Bool == true {
+                return [0x81, 127, 0, 0, 0, 0, 1, 0, 0, 1]
+            }
+            return nil
+        }) { message in
+            guard let id = message["id"] else { return [] }
+            switch message["method"] as? String {
+            case "thread/read": return [["id": id, "result": ["thread": ["id": "long-thread", "status": ["type": "idle"]]]]]
+            case "thread/turns/list": return [["id": id, "error": ["code": -32601, "message": "Method not found"]]]
+            default: return [["id": id, "result": ["data": []]]]
+            }
+        }
+        let snapshot = try await CodexAppServerControl().readThread(socketPath: server.path, threadId: "long-thread")
+        server.waitUntilDone()
+        XCTAssertTrue(snapshot.historyLimited)
+        XCTAssertEqual(snapshot.status, "idle")
+        XCTAssertTrue(snapshot.messages.isEmpty)
+    }
+
+    func testOversizedSingleSummaryKeepsRuntimeActiveWithoutInventingATurn() async throws {
+        let server = try FakeAppServer(connections: 2, rawRespond: { message in
+            if (message["params"] as? [String: Any])?["includeTurns"] as? Bool == true
+                || message["method"] as? String == "thread/turns/list" {
+                return [0x81, 127, 0, 0, 0, 0, 1, 0, 0, 1]
+            }
+            return nil
+        }) { message in
+            guard let id = message["id"] else { return [] }
+            let result: [String: Any] = message["method"] as? String == "thread/read"
+                ? ["thread": ["id": "long-thread", "status": ["type": "active"]]] : ["data": []]
+            return [["id": id, "result": result]]
+        }
+        let snapshot = try await CodexAppServerControl().readThread(socketPath: server.path, threadId: "long-thread")
+        server.waitUntilDone()
+        XCTAssertTrue(snapshot.historyLimited)
+        XCTAssertEqual(snapshot.status, "active")
+        XCTAssertNil(snapshot.activeTurnId)
+    }
+
+    func testReplyRecoversUsingOnlyTheLatestFailedTurnAfterMetadataOnlyResume() async throws {
+        let server = try FakeAppServer { message in
+            guard let id = message["id"] else { return [] }
+            var result: [String: Any] = [:]
+            if message["method"] as? String == "thread/resume" {
+                result = ["thread": ["id": "thread-1", "status": ["type": "systemError"], "turns": []]]
+            } else if message["method"] as? String == "thread/turns/list" {
+                result = ["data": [["id": "failed-turn", "status": "failed", "items": [],
+                    "error": ["codexErrorInfo": "serverOverloaded"]]]]
+            }
+            return [["id": id, "result": result]]
+        }
+        try await CodexAppServerControl().sendMessage(socketPath: server.path, threadId: "thread-1", text: "Continue",
+            clientUserMessageId: "reply", overrides: nil)
+        server.waitUntilDone()
+        XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/resume", "thread/turns/list", "turn/start"])
+        XCTAssertEqual(server.params(of: "thread/resume")?["excludeTurns"] as? Bool, true)
+        XCTAssertEqual(server.params(of: "thread/turns/list")?["limit"] as? Int, 1)
+    }
+
+    func testFragmentedMessageCannotBypassThePayloadBudget() throws {
+        let server = try FakeAppServer(rawRespond: { message in
+            guard message["id"] != nil else { return nil }
+            let payload = [UInt8](repeating: 32, count: WebSocketFrame.maxPayload / 2 + 1)
+            var first = WebSocketFrame.encode(opcode: WebSocketFrame.text, payload: payload, mask: nil)
+            first[0] = WebSocketFrame.text // FIN unset
+            return first + WebSocketFrame.encode(opcode: WebSocketFrame.continuation, payload: payload, mask: nil)
+        }) { _ in [] }
+        let channel = try JSONRPCWebSocket(socketPath: server.path, timeout: 5)
+        XCTAssertThrowsError(try channel.call("initialize", [:])) { XCTAssertTrue($0 is WebSocketFrame.FrameTooLarge) }
+        channel.close()
+        server.waitUntilDone()
+    }
+
     func testStopStateReadExcludesHistoryAndNeverResumesOrLists() async throws {
         let server = try FakeAppServer { message in
             guard let id = message["id"] else { return [] }
@@ -869,7 +998,7 @@ final class CodexAppServerControlTests: XCTestCase {
         let server = try FakeAppServer { message in
             guard let id = message["id"] else { return [] }
             if message["method"] as? String == "thread/resume" {
-                return [["jsonrpc": "2.0", "id": id, "result": ["model": "gpt-5.1-codex", "reasoningEffort": "high", "thread": ["id": "thread-1"]]]]
+                return [["jsonrpc": "2.0", "id": id, "result": ["model": "gpt-5.1-codex", "reasoningEffort": "high", "approvalPolicy": "on-request", "approvalsReviewer": "user", "sandbox": ["type": "workspaceWrite"], "thread": ["id": "thread-1"]]]]
             }
             return [["jsonrpc": "2.0", "id": id, "result": [:]]]
         }
@@ -895,7 +1024,7 @@ final class CodexAppServerControlTests: XCTestCase {
         let server = try FakeAppServer { message in
             guard let id = message["id"] else { return [] }
             let result: [String: Any] = message["method"] as? String == "thread/resume"
-                ? ["thread": ["id": "thread-1", "status": ["type": "idle"]]] : [:]
+                ? ["approvalPolicy": "on-request", "approvalsReviewer": "auto_review", "sandbox": ["type": "workspaceWrite"], "thread": ["id": "thread-1", "status": ["type": "idle"]]] : [:]
             return [["jsonrpc": "2.0", "id": id, "result": result]]
         }
         try await CodexAppServerControl(timeout: 5).sendMessage(
@@ -905,6 +1034,7 @@ final class CodexAppServerControlTests: XCTestCase {
         server.waitUntilDone()
 
         XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/resume", "turn/start"])
+        XCTAssertEqual(server.params(of: "thread/resume")?["excludeTurns"] as? Bool, true)
         XCTAssertEqual(server.params(of: "thread/resume")?["model"] as? String, "gpt-5.1-codex")
         let turn = server.params(of: "turn/start")
         XCTAssertEqual(turn?["model"] as? String, "gpt-5.1-codex")
@@ -973,7 +1103,12 @@ final class CodexAppServerControlTests: XCTestCase {
                     "A local readiness check is not a Codex RPC rejection")
             }
             server.waitUntilDone()
-            XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/resume"])
+            let expected = thread["id"] as? String == "thread-1"
+                && (thread["status"] as? [String: Any])?["type"] as? String == "systemError"
+                && (thread["turns"] as? [[String: Any]] ?? []).isEmpty
+                ? ["initialize", "initialized", "thread/resume", "thread/turns/list"]
+                : ["initialize", "initialized", "thread/resume"]
+            XCTAssertEqual(server.methods, expected)
         }
     }
 
@@ -1749,7 +1884,7 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertEqual(sent.socketPath, machine.location.controlSocketPath)
         XCTAssertEqual(sent.cwd, machine.repoPath)
         XCTAssertEqual(sent.name, "Mac mini-AND-42")
-        XCTAssertEqual(sent.settings, CodexModes.threadSettings(for: "plan"))
+        XCTAssertEqual(sent.settings, CodexModes.threadSettings(for: "plan", planning: true))
         let path = try CodexWorkspace.worktreePath(repoPath: machine.repoPath, dispatchId: "d-1")
         XCTAssertEqual(sent.workspaceRoots, [machine.repoPath, path])
         XCTAssertFalse(FileManager.default.fileExists(atPath: path), "Plan dispatch must not create the worktree")
@@ -1929,6 +2064,97 @@ final class CodexLauncherTests: XCTestCase {
         let result = try await launcher.launch(job(repoPath: machine.repoPath))
         XCTAssertNil(result.sessionUrl)
         XCTAssertEqual(result.sessionName, "Mac mini-AND-42")
+    }
+
+    func testLimitedHistorySendsFreshReplyOnceAndNeverReplaysUnconfirmedDelivery() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot.historyLimited = true
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        func session(_ status: String) -> NodeAgentSession {
+            NodeAgentSession(id: "long-session", sessionRef: "thread-1", status: "idle",
+                command: AgentSessionCommand(id: "reply", text: "Continue", status: status))
+        }
+        let queued = try await launcher.synchronize(session("queued"))
+        XCTAssertEqual(queued.commandStatus, "delivering")
+        XCTAssertEqual(queued.error, "codex_history_limited: recent history or runtime metadata only")
+        let delivered = try await launcher.synchronize(session("delivering"))
+        XCTAssertEqual(delivered.commandStatus, "delivered")
+        // Simulate a lost report; no mirrored user message can prove delivery.
+        let uncertain = try await launcher.synchronize(session("delivering"))
+        XCTAssertEqual(uncertain.commandStatus, "delivery_unknown")
+        XCTAssertEqual(control.replies.current.count, 1)
+        let restarted = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        let afterRestart = try await restarted.synchronize(session("delivering"))
+        XCTAssertEqual(afterRestart.commandStatus, "delivery_unknown")
+        XCTAssertEqual(control.replies.current.count, 1)
+    }
+
+    func testLimitedHistoryConcurrentPollsConsumeOneDeliveryReservation() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot.historyLimited = true
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        _ = try await launcher.synchronize(NodeAgentSession(id: "long-session", sessionRef: "thread-1", status: "idle",
+            command: AgentSessionCommand(id: "reply", text: "Continue")))
+        let session = NodeAgentSession(id: "long-session", sessionRef: "thread-1", status: "idle",
+            command: AgentSessionCommand(id: "reply", text: "Continue", status: "delivering"))
+        let reports = try await withThrowingTaskGroup(of: AgentSessionReport.self) { group in
+            for _ in 0..<8 { group.addTask { try await launcher.synchronize(session) } }
+            var reports: [AgentSessionReport] = []
+            for try await report in group { reports.append(report) }
+            return reports
+        }
+        XCTAssertEqual(control.replies.current.count, 1)
+        XCTAssertEqual(reports.filter { $0.commandStatus == "delivered" }.count, 1)
+        XCTAssertEqual(reports.filter { $0.commandStatus == "delivery_unknown" }.count, 7)
+    }
+
+    func testRestoringPermissionReviewCannotLeavePlanningWithoutPlanApproval() async throws {
+        for approved in [false, true] {
+            let control = RecordingControl(threadId: "thread-1")
+            let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+                location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+            let report = try await launcher.synchronize(NodeAgentSession(id: "restore-session", sessionRef: "thread-1", status: "idle",
+                approvalRetry: CodexApprovalRetry(id: "retry", reviewId: "review", status: "delivered"), approvalReviewMode: "auto",
+                desiredSettings: AgentSessionSettings(revision: 0, mode: "auto", planApproved: approved)))
+            XCTAssertEqual(report.approvalRetryStatus, "restored")
+            let restored = try XCTUnwrap(control.appliedSettings.current.last?.1.settings)
+            XCTAssertEqual(restored.sandbox, approved ? "workspace-write" : "read-only")
+            XCTAssertEqual(restored.planning, !approved)
+        }
+    }
+
+    func testLimitedHistoryNeverReplaysAnUnreservedApprovalRetry() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot.historyLimited = true
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        let report = try await launcher.synchronize(NodeAgentSession(id: "long-session", sessionRef: "thread-1", status: "idle",
+            approvalRetry: CodexApprovalRetry(id: "retry", reviewId: "review", status: "delivering")))
+        XCTAssertEqual(report.approvalRetryStatus, "failed")
+        XCTAssertTrue(report.approvalRetryError?.contains("不会自动重发") == true)
+        XCTAssertTrue(control.replies.current.isEmpty)
+    }
+
+    func testLimitedHistoryAcknowledgesMirroredReplyAndPreservesApprovalWait() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = CodexThreadSnapshot(status: "active", activeTurnId: "turn-1",
+            messages: [AgentSessionMessage(sourceId: "reply", role: "user", text: "Continue")])
+        control.snapshot.historyLimited = true
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        let delivered = try await launcher.synchronize(NodeAgentSession(id: "long-session", sessionRef: "thread-1", status: "active",
+            command: AgentSessionCommand(id: "reply", text: "Continue", status: "delivering")))
+        XCTAssertEqual(delivered.commandStatus, "delivered")
+        XCTAssertTrue(control.replies.current.isEmpty)
+        control.snapshot = CodexThreadSnapshot(status: "active", activeTurnId: "turn-1", messages: [], waitingOnApproval: true)
+        control.snapshot.historyLimited = true
+        let waiting = try await launcher.synchronize(NodeAgentSession(id: "long-session", sessionRef: "thread-1", status: "active",
+            command: AgentSessionCommand(id: "next", text: "Continue")))
+        XCTAssertNil(waiting.commandStatus)
+        XCTAssertTrue(control.steerings.current.isEmpty)
     }
 
     func testAnIdleThreadReservesThenDeliversTheQueuedWebReply() async throws {

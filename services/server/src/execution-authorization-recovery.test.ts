@@ -1,3 +1,4 @@
+import { approvedClaimFixture } from "./testing-fixtures.js";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "./app.js";
@@ -33,6 +34,7 @@ async function fixture() {
     const token = createAiAccessToken(config, { id: account.id, username: account.email, role: account.role },
       accounts.credentialsStamp(account), options.clientId ?? "original-client", options.scopes ?? ["missiongo:read", "missiongo:write"]).token;
     // Deliberately no credential cache: this is a fresh client call after context loss.
+    if(name==="claim_item") approvedClaimFixture(store,token,args);
     const response = await app.inject({ method: "POST", url: "/mcp",
       headers: { authorization: `Bearer ${token}`, accept: "application/json, text/event-stream" },
       payload: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } } });
@@ -52,7 +54,7 @@ async function fixture() {
   const launch = () => {
     const dispatches = new DispatchStore(store.database);
     const node = dispatches.registerNode({ accountId: owner.id, installationId: randomUUID(), name: "Recovery node" });
-    dispatches.recordHeartbeat(node.nodeId, [{ kind: "codex", ready: true }]);
+    dispatches.recordHeartbeat(node.nodeId, [{ kind: "codex",planApprovalProtocol:1, ready: true }]);
     dispatches.replaceOwnRepos(node.nodeId, [{ productId: product.id, repoPath: "/synthetic/recovery" }]);
     const dispatch = dispatches.createDispatch({ accountId: owner.id, nodeId: node.nodeId, agentKind: "codex", mode: "default", itemKeys: [item.key] });
     dispatches.claimNextDispatch(node.nodeId);

@@ -11,6 +11,7 @@ import { buildApp } from "./app.js";
 import { AgentSessionStore } from "./agent-session-store.js";
 import { ExternalAgentSessionStore } from "./external-agent-session-store.js";
 import { ExternalNativeSessionStore } from "./external-native-session-store.js";
+import { ImplementationPlans, planDigest } from "./implementation-plans.js";
 import { McpAgentSessionReads } from "./mcp-agent-session-reads.js";
 import { MissionGoStore } from "./store.js";
 
@@ -304,6 +305,50 @@ it("serves the three read tools on a read-only connection and enforces product s
     .toEqual([expect.objectContaining({ sessionId, items: expect.arrayContaining([expect.objectContaining({ key: item.key }), expect.objectContaining({ key: crossItem.key })]) })]);
   const adminRead = await call("tools/call", { name: "get_agent_session", arguments: { sessionId, itemKey: item.key, limit: 10 } });
   expect((adminRead.result?.structuredContent as { messages?: Array<{ sourceId?: string }> })?.messages).toEqual([expect.objectContaining({ sourceId: "user-1" })]);
+});
+
+it("reports persisted implementation-plan records honestly across revisions, scope drift and external identities", async () => {
+  const f = await fixture();
+  f.createDispatchSession("dispatch", "native-thread");
+  const plans = new ImplementationPlans(f.store.database);
+  const identity = "dispatch:dispatch";
+  const keys = [f.item.key];
+  const infos = () => f.reads.planApprovalInfos("owner", f.item.key);
+
+  const revision = planDigest([identity, plans.scope(keys), "方案 A", "验证 A"]);
+  plans.request("owner", identity, revision, { keys, plan: "方案 A", validation: "验证 A" });
+  expect(infos()[0]!.formalRecords).toMatchObject({
+    available: true,
+    records: [{ identity, revision, keys, plan: "方案 A", approved: false, scopeValid: true }],
+  });
+
+  plans.record({ accountId: "owner", identity, revision, planHash: revision, keys, source: "web", plan: "方案 A", validation: "验证 A" });
+  expect(infos()[0]!.formalRecords.records![0]).toMatchObject({
+    approved: true, scopeValid: true, plan: "方案 A", approval: { source: "web", current: true, revision },
+  });
+
+  // A newer request revision supersedes the old approval.
+  const revision2 = planDigest([identity, plans.scope(keys), "方案 B", "验证 B"]);
+  plans.request("owner", identity, revision2, { keys, plan: "方案 B", validation: "验证 B" });
+  expect(infos()[0]!.formalRecords.records![0]).toMatchObject({
+    revision: revision2, approved: false, approval: { current: false },
+  });
+
+  // Approving the current revision counts -- until the item content drifts past
+  // the frozen scope.
+  plans.record({ accountId: "owner", identity, revision: revision2, planHash: revision2, keys, source: "native", plan: "方案 B", validation: "验证 B" });
+  expect(infos()[0]!.formalRecords.records![0]).toMatchObject({ approved: true });
+  f.db.prepare("UPDATE work_items SET content_version=content_version+1 WHERE id=?").run(f.item.id);
+  expect(infos()[0]!.formalRecords.records![0]).toMatchObject({ approved: false, scopeValid: false });
+
+  // External conversations are matched through their native identity suffix.
+  const externalId = f.external.register(owner, { agentKind: "codex", sessionRef: "ext-thread", refKind: "native" }, f.item.key);
+  const extIdentity = "native:writer-client:codex:native:ext-thread";
+  const extRevision = planDigest([extIdentity, plans.scope(keys), "外部方案", "外部验证"]);
+  plans.request("owner", extIdentity, extRevision, { keys, plan: "外部方案", validation: "外部验证" });
+  plans.record({ accountId: "owner", identity: extIdentity, revision: extRevision, planHash: extRevision, keys, source: "web", plan: "外部方案", validation: "外部验证" });
+  const externalInfo = infos().find((info) => info.sessionId === externalId)!;
+  expect(externalInfo.formalRecords.records![0]).toMatchObject({ identity: extIdentity, approved: true });
 });
 
 it("keeps reads side-effect free on item and session state", async () => {

@@ -261,6 +261,13 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 - 等待节点接收与节点接收后正在中断分开展示。停止待处理期间禁用重复提交，未确认失败后恢复入口；超时不能显示为已停止。AND-394 回归沿用下述生命周期与同步恢复测试。
 - 操作复用确认弹窗、工具栏和触控尺寸；回归见 `and-391-stop-lifecycle.audit.spec.ts` 和 `agent-stop-feedback.test.tsx`，协议边界见 [停止协议](agent-session-stopping.md)。
 
+### Codex 大体积会话历史
+
+- 历史读取超限与来源运行状态分开表达。普通及外部 Codex 会话降级为近期回合摘要或运行元数据，保留服务端已同步消息；控制台与条目内会话共用 `AgentHistoryNotice`、现有警告令牌和中英文案，不显示原始 Swift 异常或把历史受限直接判作会话不可用。
+- 降级保留帧和拼接消息的 16 MiB 内存保护，近期摘要最多读取 8 个回合，全量历史超限后 5 分钟内不重复拉取。旧协议不支持摘要或单回合仍超限时只展示已核实的运行状态；拿不到当前回合标识时不猜测引导目标。受管执行仍要求原有完整执行证据，不以摘要代替。
+- 新回复须通过实时状态与权限检查；历史不完整不能证明旧回复未送达。单次发送预留需原子消费，重启或回执丢失后结果不明不得自动重发。停止沿用独立的精确回合协议。
+- 验证覆盖 `CodexAppServerControlTests`、`CodexLauncherTests`、`WebSocketFrameTests`、服务端 `agent-session-activity.test.ts` 和 `codex-large-history.audit.spec.ts`：超限与分片总量、旧协议、近期消息、去重、权限等待、消息保留，以及 320px/桌面、明暗和三档字号。未对截图中的原会话进行线上复测。
+
 ### 中断后的执行核实（AND-393）
 
 - 条目回到待处理/草稿后，未结束的旧会话和执行安排逐条显示停止核实入口与具体标识；执行安排同时显示工作范围。旧进展 `working` 不自动代表实际活动，也不阻止人核实；观察到来源活动或待处理命令时不提供核实入口。
@@ -360,3 +367,9 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 `npm run check` 包含样式与浮层静态检查。`npm run test:ui` 验证行为、布局与字号；Linux 截图比较沿用现有 CI。工具栏专项覆盖 320px、断点两侧、三档字号、明暗主题和注入长英文标签（产品当前固定中文，不代表英文产品验收）。
 
 `style-baseline.json` 仅记录存量例外，含签名、数量、原因与跟踪项。`check:styles --update` 只能缩减；`check:styles --base <基准提交 SHA>` 拒绝手动扩大数量或新增签名。静态检查使用有限的源码模式匹配，动态 className、运行时构造及跨文档行为仍须由回归和评审覆盖。
+
+### Agent 模式与方案批准（AND-400）
+
+- 派单、新会话与快捷设置共用原生模式定义与能力结果；窄屏“更多设置”与同行选择器复用同一组选项。保留失效偏好并说明，禁止静默放宽权限。
+- 待批准会话复用注意力卡及共享队列，精确方案、条目范围与验证目标在原位展开；批准按钮始终可达。申请中、失败与实际生效分别展示，实施模式请求不代表方案批准。
+- 不新增“工作方式”或“沙箱范围”选择，不在派单常驻展示固定流程。协议与兼容规则见 [模式与批准](agent-modes-plan-approval.md)，回归沿用 `plan-approval.audit.spec.ts`、`new-session.audit.spec.ts`、`agent-settings-compact.audit.spec.ts` 与 `dispatch-capture-defaults.audit.spec.ts`。

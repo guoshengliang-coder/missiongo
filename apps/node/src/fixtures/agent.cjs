@@ -9,15 +9,17 @@ const session = args[args.indexOf("--session-id") + 1];
 const emit = (data) => process.stdout.write(JSON.stringify(data) + "\n");
 let turn = { id: "turn-1", status: "completed", items: [] };
 let ref = "thread-1";
+let policy;
 createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line);
   if (process.env.TEST_AGENT_EVENTS) appendFileSync(process.env.TEST_AGENT_EVENTS, line + "\n");
   if (codex) {
     if (message.method === "initialize") emit({ id: message.id, result: {} });
-    else if (message.method === "thread/start") emit({ id: message.id, result: {
-      ...message.params, thread: { id: ref },
-      sandbox: { type: process.env.FAKE_BAD_POLICY ? "dangerFullAccess" : "workspaceWrite", writableRoots: message.params.runtimeWorkspaceRoots },
-    } });
+    else if (["thread/start","thread/resume"].includes(message.method)) {
+      policy={...policy,...message.params,model:"fixture-model"};
+      emit({ id: message.id, result: {...policy,thread:{id:ref},
+        sandbox:{type:process.env.FAKE_BAD_POLICY ? "dangerFullAccess" : policy.sandbox==="read-only" ? "readOnly" : "workspaceWrite",writableRoots:policy.runtimeWorkspaceRoots}} });
+    }
     else if (message.method === "mcpServer/tool/call") emit({ id: message.id, result: { structuredContent: {
       capabilities: { canComment: !process.env.FAKE_READ_ONLY, writeTools: process.env.FAKE_READ_ONLY ? [] : ["claim_item", "append_comment"] },
       skill: { expectedVersion: process.env.FAKE_SKILL_STALE ? "2.0.0" : "1.0.0" },
@@ -35,7 +37,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       turn.items.push({ id: "decision", type: "agentMessage", text: message.result.decision });
     } else if (message.id) emit({ id: message.id, result: {} });
   } else if (message.type === "control_request") {
-    emit({ type: "control_response", response: { subtype: "success", request_id: message.request_id, response: {} } });
+    emit({ type: "control_response", response: { subtype: "success", request_id: message.request_id, response: message.request.subtype==="set_permission_mode" ? {mode:message.request.mode} : {} } });
   } else if (message.type === "user") {
     emit({ type: "system", subtype: "init", session_id: session });
     emit(message);

@@ -148,7 +148,7 @@ test("models retain existing service configuration and explain their independent
 test("dispatch defaults remain account-wide after a product switch", async ({ page, request }) => {
   const before = await (await request.get("/api/v1/dispatch-defaults")).json();
   const product = await (await request.post("/api/v1/products", { data: { name: "Dispatch context", keyPrefix: "DCT" } })).json();
-  await page.route("**/api/v1/nodes", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ nodes: [{ id: "defaults-node", name: "Default Mac", deviceName: "Default Mac", online: true, agents: [{ kind: "claude_code", version: "1" }, { kind: "codex", version: "1" }], repos: [], repoCandidates: [], createdAt: new Date().toISOString() }] }) }));
+  await page.route("**/api/v1/nodes", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ nodes: [{ id: "defaults-node", name: "Default Mac", deviceName: "Default Mac", online: true, agents: [{ kind: "claude_code", planApprovalProtocol: 1, version: "1" }, { kind: "codex", planApprovalProtocol: 1, version: "1" }], repos: [], repoCandidates: [], createdAt: new Date().toISOString() }] }) }));
   try {
     await page.goto(`/settings/agent/dispatch?product=${fixture.productId}`);
     await chooseOption(page.getByRole("combobox", { name: "Agent", exact: true }), "codex");

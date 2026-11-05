@@ -120,7 +120,7 @@ test("requires deliberate token creation and does not show dispatch fields befor
 });
 
 test("shows one Agent at a time, keeps advanced choices optional and protects dispatch drafts", async ({ page }) => {
-  await page.route("**/api/v1/nodes", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ nodes: [{ id: "review-node", name: "Review Mac", deviceName: "Review Mac", agents: [{ kind: "claude_code", version: "1" }, { kind: "codex", version: "1" }], repos: [], repoCandidates: [], online: true, createdAt: new Date().toISOString() }] }) }));
+  await page.route("**/api/v1/nodes", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ nodes: [{ id: "review-node", name: "Review Mac", deviceName: "Review Mac", agents: [{ kind: "claude_code", planApprovalProtocol: 1, version: "1" }, { kind: "codex", planApprovalProtocol: 1, version: "1" }], repos: [], repoCandidates: [], online: true, createdAt: new Date().toISOString() }] }) }));
   await page.goto("/settings/dispatch");
   await expect(page.locator(".dispatch-defaults-agent")).toHaveCount(1);
   await chooseOption(page.getByRole("combobox", { name: "Agent", exact: true }), "codex");
@@ -165,7 +165,7 @@ test("creates a product in its own scope and opens the newly saved product witho
 });
 
 test("keeps multiple devices compact and protects a device nickname draft", async ({ page }) => {
-  await page.route("**/api/v1/nodes", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ nodes: ["A", "B"].map(id => ({ id, name: `Review Mac ${id}`, deviceName: `Review Mac ${id}`, agents: [{ kind: "codex", version: "1" }], repos: [], repoCandidates: [], online: true, createdAt: new Date().toISOString() })) }) }));
+  await page.route("**/api/v1/nodes", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ nodes: ["A", "B"].map(id => ({ id, name: `Review Mac ${id}`, deviceName: `Review Mac ${id}`, agents: [{ kind: "codex", planApprovalProtocol: 1, version: "1" }], repos: [], repoCandidates: [], online: true, createdAt: new Date().toISOString() })) }) }));
   await page.goto("/settings/devices");
   await expect(page.locator(".settings-device-row")).toHaveCount(2);
   await expect(page.locator(".node-card")).toHaveCount(0);

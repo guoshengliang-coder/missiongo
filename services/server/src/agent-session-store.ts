@@ -1,3 +1,4 @@
+import { ImplementationPlans } from "./implementation-plans.js";
 import { assertDispatchExecution, dispatchExecutionRevoked } from "./builder-authority.js";
 import { createHash, randomUUID } from "node:crypto";
 
@@ -7,7 +8,7 @@ import { sessionHealth, executionTurnState } from "./agent-session-health.js";
 
 import type { AgentAttentionClassification, AgentAttentionKind as ClassifiedAttentionKind } from "./ai-title.js";
 import type { AgentSessionAttachment, AgentSessionAttachments } from "./agent-session-attachments.js";
-import { parseAgentModels, requireOfferedModel, type AgentRunSettings } from "./agent-settings.js";
+import { parseAgentModels, requireAvailableMode, requireOfferedModel, type AgentRunSettings } from "./agent-settings.js";
 import { autoArchiveFinishedDispatches, autoArchiveFinishedConversations } from "./auto-archive.js";
 import { deliveredDispatchTimedOut } from "./dispatch-store.js";
 import { conflict, invalidInput, notFound } from "./errors.js";
@@ -84,6 +85,7 @@ export interface AgentSessionCommand {
   readonly id: string;
   readonly kind: "message" | "interrupt";
   readonly text: string;
+  readonly planApprovalRevision?: string | undefined;
   readonly attachments?: readonly AgentSessionAttachment[];
   readonly turnId?: string;
   readonly stopConfirmed?: boolean;
@@ -226,6 +228,8 @@ export interface AgentSessionSettings {
    */
   readonly modelEndpoint?: string;
   /** Latest model choice, including a running-session change; absent means the Mac's own configuration. */
+  readonly requiresImplementationMode?: boolean;
+  readonly requestedMode?: string;
   readonly requestedModel?: string;
   readonly requestedEffort?: string;
   /** A change a person asked for that the Mac has not confirmed yet. */
@@ -286,6 +290,7 @@ interface SessionRow {
 }
 
 interface SessionSettingsColumns {
+  implementation_mode?: string | null;
   agent_kind: AgentKind;
   dispatch_mode: string;
   dispatch_model: string | null;
@@ -315,6 +320,8 @@ function sessionSettings(row: SessionSettingsColumns, open: boolean): AgentSessi
   const settled = Math.max(row.applied_settings_revision ?? 0, row.settings_error_revision ?? 0);
   return {
     mode: row.session_mode ?? row.dispatch_mode,
+    requestedMode: row.implementation_mode ?? row.dispatch_mode,
+    ...(desired?.planApproved===true && row.agent_kind!=="codex" && desired.mode==="plan" ? {requiresImplementationMode:true} : {}),
     ...(row.session_model ? { model: row.session_model } : {}),
     ...(row.session_model_endpoint ? { modelEndpoint: row.session_model_endpoint } : {}),
     ...(row.session_effort ? { effort: row.session_effort } : {}),
@@ -673,19 +680,21 @@ export class AgentSessionStore {
   createForDispatch(input: { dispatchId: string; nodeId: string; sessionRef: string; initialTurnId?: string }): string {
     assertDispatchExecution(this.database,input.dispatchId);
     const dispatch = this.database.connection
-      .prepare("SELECT agent_kind FROM dispatches WHERE id = ? AND node_id = ?")
-      .get(input.dispatchId, input.nodeId) as unknown as { agent_kind: string } | undefined;
+      .prepare("SELECT d.agent_kind,n.agents_json FROM dispatches d JOIN nodes n ON n.id=d.node_id WHERE d.id = ? AND d.node_id = ?")
+      .get(input.dispatchId, input.nodeId) as unknown as { agent_kind: string; agents_json:string } | undefined;
     if (!dispatch) throw notFound("Dispatch");
     if (dispatch.agent_kind !== "codex" && dispatch.agent_kind !== "claude_code" && dispatch.agent_kind !== "opencode") {
       throw invalidInput("This agent does not support mirrored sessions.");
     }
+    const nativePlan=(JSON.parse(dispatch.agents_json) as {kind:string;planApprovalProtocol?:number}[]).some(agent=>agent.kind===dispatch.agent_kind && agent.planApprovalProtocol===1);
+    const initialMode=nativePlan ? dispatch.agent_kind==="codex" ? "read-only" : "plan" : null;
     const sessionRef = requiredText(input.sessionRef, "sessionRef", 200);
     const existing = this.database.connection
       .prepare("SELECT id FROM agent_sessions WHERE dispatch_id = ?")
       .get(input.dispatchId) as unknown as { id: string } | undefined;
     if (existing) {
-      this.database.connection.prepare("UPDATE agent_sessions SET agent_session_ref=?,status='active' WHERE id=? AND agent_session_ref=?")
-        .run(sessionRef,existing.id,`pending:${input.dispatchId}`);
+      this.database.connection.prepare("UPDATE agent_sessions SET agent_session_ref=?,status='active',mode=COALESCE(mode,?) WHERE id=? AND agent_session_ref=?")
+        .run(sessionRef,initialMode,existing.id,`pending:${input.dispatchId}`);
       this.bindStartupStop(existing.id, input.initialTurnId);
       return existing.id;
     }
@@ -694,10 +703,10 @@ export class AgentSessionStore {
     this.database.connection
       .prepare(
         `INSERT INTO agent_sessions
-          (id, dispatch_id, node_id, agent_kind, agent_session_ref, status, created_at, updated_at, activity_at)
-         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
+          (id, dispatch_id, node_id, agent_kind, agent_session_ref, status, mode, created_at, updated_at, activity_at)
+         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`,
       )
-      .run(id, input.dispatchId, input.nodeId, dispatch.agent_kind, sessionRef, now, now, now);
+      .run(id, input.dispatchId, input.nodeId, dispatch.agent_kind, sessionRef, initialMode, now, now, now);
     this.bindStartupStop(id, input.initialTurnId);
     return id;
   }
@@ -795,7 +804,7 @@ export class AgentSessionStore {
                 d.created_at, d.delivered_at, d.completed_at, d.archived_at AS dispatch_archived_at,
                 d.unread_at, d.read_at,
                 d.mode AS dispatch_mode, d.model AS dispatch_model, d.effort AS dispatch_effort,
-                s.mode AS session_mode, s.model AS session_model,
+                s.implementation_mode, s.mode AS session_mode, s.model AS session_model,
                 s.model_endpoint AS session_model_endpoint, s.effort AS session_effort,
                 s.desired_settings_json, s.settings_revision, s.applied_settings_revision,
                 s.settings_error, s.settings_error_revision, n.agents_json AS node_agents_json
@@ -1146,7 +1155,7 @@ export class AgentSessionStore {
     const row = this.database.connection
       .prepare(
         `SELECT s.agent_kind, d.mode AS dispatch_mode, d.model AS dispatch_model, d.effort AS dispatch_effort,
-                s.mode AS session_mode, s.model AS session_model,
+                s.implementation_mode, s.mode AS session_mode, s.model AS session_model,
                 s.model_endpoint AS session_model_endpoint, s.effort AS session_effort,
                 s.desired_settings_json, s.settings_revision, s.applied_settings_revision,
                 s.settings_error, s.settings_error_revision, n.agents_json AS node_agents_json,
@@ -1173,14 +1182,20 @@ export class AgentSessionStore {
     const earlier = row.desired_settings_json ? JSON.parse(row.desired_settings_json) as AgentRunSettings : {};
     const next: AgentRunSettings = { ...earlier, ...change };
     requireOfferedModel(row.agent_kind, models, next);
+    const requestedMode=change.mode ?? row.implementation_mode ?? row.session_mode ?? row.dispatch_mode;
+    const agent=(JSON.parse(row.node_agents_json ?? "[]") as {kind:string;modes?:import("@missiongo/domain").AgentModeCapability[]}[]).find(entry=>entry.kind===row.agent_kind);
+    requireAvailableMode(row.agent_kind,requestedMode,agent?.modes,next.model ?? row.session_model ?? row.dispatch_model ?? undefined);
+    if(change.mode) this.database.connection.prepare("UPDATE agent_sessions SET implementation_mode=? WHERE id=?").run(change.mode,sessionId);
+    const approved=binding && new ImplementationPlans(this.database).canImplement(accountId,`dispatch:${binding.dispatch_id}`);
+    const effective=approved ? next : {...next,mode:row.agent_kind==="codex" ? "read-only" : "plan"};
     this.database.connection
       .prepare(
         "UPDATE agent_sessions SET desired_settings_json = ?, settings_revision = settings_revision + 1 WHERE id = ?",
       )
-      .run(JSON.stringify(next), sessionId);
+      .run(JSON.stringify(effective), sessionId);
     return sessionSettings({
       ...row,
-      desired_settings_json: JSON.stringify(next),
+      desired_settings_json: JSON.stringify(effective),
       settings_revision: (row.settings_revision ?? 0) + 1,
     }, true);
   }
@@ -1543,7 +1558,9 @@ export class AgentSessionStore {
       const managed = this.managedBinding(row.id);
       const revoked = dispatchExecutionRevoked(this.database,row.dispatch_id);
       const pending = this.pendingCommand(row.id);
-      const command = pending?.kind === "interrupt" ? pending : (managed && (managed.stopRequested || !["running", "waiting"].includes(managed.state))) ? undefined : pending;
+      const desired=row.desired_settings_json ? JSON.parse(row.desired_settings_json) as AgentRunSettings : undefined;
+      const phasePending=desired?.planApproved===true && ((row.settings_revision ?? 0)>(row.applied_settings_revision ?? 0) || row.agent_kind!=="codex" && desired.mode==="plan");
+      const command = pending?.kind === "interrupt" ? pending : phasePending || (managed && (managed.stopRequested || !["running", "waiting"].includes(managed.state))) ? undefined : pending;
       const autoArchived = row.archive_reason === "auto";
       return {
         id: row.id,
@@ -2226,6 +2243,7 @@ export class AgentSessionStore {
       id: row.id,
       kind: row.kind,
       text: row.text,
+      ...(new ImplementationPlans(this.database).commandRevision(row.id) ? { planApprovalRevision: new ImplementationPlans(this.database).commandRevision(row.id) } : {}),
       ...(attachments.length ? { attachments } : {}),
       ...(row.turn_id ? { turnId: row.turn_id } : {}),
       ...(row.kind === "interrupt" && row.stop_confirmed === 1 ? { stopConfirmed: true } : {}),

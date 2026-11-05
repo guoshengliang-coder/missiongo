@@ -122,7 +122,7 @@ async function heartbeat(
     headers: { authorization: `Bearer ${token}` },
     payload: {
       agents: [{
-        kind,
+        kind, planApprovalProtocol: 1,
         version: "2.1.232",
         ready: true,
         skill: { localVersion: MISSIONGO_SKILL_VERSION, expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "ready" },
@@ -165,7 +165,7 @@ describe("Agent chat attachments", () => {
       .json<{ canAttach: boolean }>().canAttach).toBe(false);
     expect((await upload()).statusCode).toBe(409);
     await app.inject({ method: "POST", url: "/api/v1/node/heartbeat", headers: nodeHeaders(node.token),
-      payload: { agents: [{ kind: "claude_code", version: "2.1.232", ready: true,
+      payload: { agents: [{ kind: "claude_code", planApprovalProtocol: 1, version: "2.1.232", ready: true,
         skill: { localVersion: MISSIONGO_SKILL_VERSION, expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "ready" } }],
         supportsChatAttachments: true } });
     expect((await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${sessionId}`, headers: { cookie } }))
@@ -234,7 +234,7 @@ describe("Registering a Mac by signing in", () => {
       headers: { authorization: `Bearer ${node.token}` },
       payload: {
         agents: [{
-          kind: "claude_code",
+          kind: "claude_code", planApprovalProtocol: 1,
           version: "2.1.232",
           ready: true,
           skill: { localVersion: MISSIONGO_SKILL_VERSION, expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "ready" },
@@ -1210,7 +1210,7 @@ describe("Dispatching a batch", () => {
       headers: { authorization: `Bearer ${node.token}` },
       payload: {
         agents: [{
-          kind: "codex", version: "0.155.1", ready: false,
+          kind: "codex", planApprovalProtocol: 1, version: "0.155.1", ready: false,
           unavailableReason: "MissionGo Skill is not synchronized.",
           skill: { localVersion: "5.9.0", expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "stale" },
         }],
@@ -1450,6 +1450,8 @@ describe("Claiming a dispatch on the node", () => {
       const f = await queuedDispatch(undefined, kind);
       const headers = { authorization: `Bearer ${f.node.token}` };
       await f.app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers });
+      const nodeRow=f.app.missionGoStore.database.connection.prepare("SELECT agents_json FROM nodes WHERE id=?").get(f.node.nodeId) as {agents_json:string};
+      f.app.missionGoStore.database.connection.prepare("UPDATE nodes SET agents_json=? WHERE id=?").run(JSON.stringify(JSON.parse(nodeRow.agents_json).map((agent:object)=>({...agent,planApprovalProtocol:1}))),f.node.nodeId);
       expect((await f.app.inject({ method: "POST", url: `/api/v1/node/dispatches/${f.dispatchId}/permit-start`, headers })).json()).toEqual({ allowed: true });
       await f.app.inject({ method: "POST", url: `/api/v1/dispatches/${f.dispatchId}/stop`, headers: { cookie: f.cookie } });
       expect((await f.app.inject({ method: "POST", url: `/api/v1/node/dispatches/${f.dispatchId}/result`, headers,
@@ -4047,7 +4049,7 @@ describe("Model, effort and running-session settings (AND-130)", () => {
       headers: { authorization: `Bearer ${token}` },
       payload: {
         agents: [{
-          kind: "codex", version: "0.155.1", ...(models ? { models } : {}), ready: true,
+          kind: "codex", planApprovalProtocol: 1, version: "0.155.1", ...(models ? { models } : {}), ready: true,
           skill: { localVersion: MISSIONGO_SKILL_VERSION, expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "ready" },
         }],
         repoCandidates: [],
@@ -4127,7 +4129,7 @@ describe("Model, effort and running-session settings (AND-130)", () => {
       headers: { authorization: `Bearer ${node.token}` },
       payload: {
         agents: [{
-          kind: "codex", version: "0.155.1", ready: true,
+          kind: "codex", planApprovalProtocol: 1, version: "0.155.1", ready: true,
           models: [{ id: "m", label: "M", provider: 7, efforts: [] }],
           skill: { localVersion: MISSIONGO_SKILL_VERSION, expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "ready" },
         }],
@@ -4159,7 +4161,7 @@ describe("Model, effort and running-session settings (AND-130)", () => {
     });
 
     await report({ model: "gpt-5.5", effort: "medium" });
-    expect(await listSettings()).toMatchObject({ mode: "plan", model: "gpt-5.5", effort: "medium", adjustable: true });
+    expect(await listSettings()).toMatchObject({ mode: "read-only", model: "gpt-5.5", effort: "medium", adjustable: true });
 
     const change = (payload: Record<string, unknown>) => app.inject({
       method: "PATCH",
@@ -4171,15 +4173,15 @@ describe("Model, effort and running-session settings (AND-130)", () => {
     expect((await change({ mode: "acceptEdits" })).statusCode).toBe(400);
     const requested = await change({ mode: "default", effort: "high" });
     expect(requested.statusCode).toBe(200);
-    expect(requested.json()).toMatchObject({ pending: { mode: "default", effort: "high", revision: 1 } });
+    expect(requested.json()).toMatchObject({ pending: { mode: "read-only", effort: "high", revision: 1 } });
     expect(await nodeSession()).toMatchObject({
-      desiredSettings: { mode: "default", effort: "high", revision: 1 },
+      desiredSettings: { mode: "read-only", effort: "high", revision: 1 },
       appliedSettingsRevision: 0,
     });
 
     expect((await report({ model: "gpt-5.5", effort: "high", settingsRevision: 1 })).statusCode).toBe(204);
     const applied = await listSettings();
-    expect(applied).toMatchObject({ mode: "default", effort: "high" });
+    expect(applied).toMatchObject({ mode: "read-only", effort: "high" });
     expect(applied.pending).toBeUndefined();
     // Nothing left to deliver, so the idle session drops out of the Mac's next poll.
     expect(await nodeSession()).toBeUndefined();
@@ -4188,7 +4190,7 @@ describe("Model, effort and running-session settings (AND-130)", () => {
     await change({ model: "gpt-5.5-mini", effort: "low" });
     await report({ settingsRevision: 2, settingsError: "set_model failed" });
     const failed = await listSettings();
-    expect(failed).toMatchObject({ error: "set_model failed", mode: "default", requestedModel: "gpt-5.5-mini" });
+    expect(failed).toMatchObject({ error: "set_model failed", mode: "read-only", requestedModel: "gpt-5.5-mini" });
     expect(failed.pending).toBeUndefined();
     expect(await nodeSession()).toBeUndefined();
 
@@ -4246,7 +4248,7 @@ describe("Model, effort and running-session settings (AND-130)", () => {
     const { app, cookie } = await signedInApp();
     const node = await registeredNode(app);
     expect((await app.inject({ method: "GET", url: "/api/v1/dispatch-defaults", headers: { cookie } })).json())
-      .toEqual({ agents: { claude_code: { mode: "bypassPermissions" } } });
+      .toEqual({ agents: {} });
     const saved = await app.inject({
       method: "PUT",
       url: "/api/v1/dispatch-defaults",
@@ -4440,7 +4442,7 @@ describe("Widget summary (AND-149)", () => {
       headers: { authorization: `Bearer ${node.token}` },
       payload: {
         agents: [{
-          kind: "codex", version: "0.166.0", ready: true,
+          kind: "codex", planApprovalProtocol: 1, version: "0.166.0", ready: true,
           skill: { localVersion: MISSIONGO_SKILL_VERSION, expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "ready" },
         }],
         clientVersion: "1.2.3", repoCandidates: [], supportsFreeSessions: true,
@@ -4802,7 +4804,7 @@ describe("First dispatch defaults (AND-343)", () => {
     } });
     expect((await app.inject({ method: "POST", url: "/api/v1/node/heartbeat",
       headers: { authorization: `Bearer ${node.token}` }, payload: {
-        agents: [{ kind: "codex", ready: true, models: [{ id: "fixture-model", label: "Fixture", efforts: ["high"] }],
+        agents: [{ kind: "codex", planApprovalProtocol: 1, ready: true, models: [{ id: "fixture-model", label: "Fixture", efforts: ["high"] }],
           skill: { localVersion: MISSIONGO_SKILL_VERSION, expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "ready" } }],
         clientVersion: "1.2.3", repoCandidates: [],
       } })).statusCode).toBe(200);
@@ -4849,7 +4851,7 @@ describe("First dispatch defaults (AND-343)", () => {
   it("does not initialize on rejection and lets only one accepted concurrent creation initialize", async () => {
     const f = await fixture();
     expect((await f.dispatch("DF-99999")).statusCode).toBe(404);
-    expect(await f.defaults()).toEqual({ agents: { claude_code: { mode: "bypassPermissions" } } });
+    expect(await f.defaults()).toEqual({ agents: {} });
     const responses = await Promise.all([f.dispatch(), f.dispatch(f.secondKey, "default")]);
     expect(responses.map(response => response.statusCode)).toEqual([201, 201]);
     const defaults = await f.defaults();
@@ -4858,7 +4860,7 @@ describe("First dispatch defaults (AND-343)", () => {
     const login = await f.app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { username: other.email, password: "synthetic defaults password" } });
     const cookie = login.headers["set-cookie"]!.toString().split(";")[0]!;
     expect((await f.app.inject({ method: "GET", url: "/api/v1/dispatch-defaults", headers: { cookie } })).json())
-      .toEqual({ agents: { claude_code: { mode: "bypassPermissions" } } });
+      .toEqual({ agents: {} });
   });
 });
 
@@ -4869,7 +4871,7 @@ describe("AND-369 project conversations", () => {
     const node = await registeredNode(app);
     const headers = { authorization: `Bearer ${node.token}` };
     await app.inject({ method: "POST", url: "/api/v1/node/heartbeat", headers, payload: {
-      supportsFreeSessions: true, supportsChatAttachments: true, agents: [{ kind: "claude_code", ready: true,
+      supportsFreeSessions: true, supportsChatAttachments: true, agents: [{ kind: "claude_code", planApprovalProtocol: 1, ready: true,
         skill: { localVersion: MISSIONGO_SKILL_VERSION, expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "ready" } }],
     } });
     await app.inject({ method: "PUT", url: "/api/v1/node/repos", headers,

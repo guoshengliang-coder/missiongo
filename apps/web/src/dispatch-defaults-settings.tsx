@@ -1,14 +1,15 @@
+import { modeChoices, modeReasonKey } from "./agent-mode-options";
 import { Select } from "./select";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, CirclePause, LoaderCircle } from "lucide-react";
 
-import { DISPATCH_MODES_BY_AGENT, type AgentKind } from "@missiongo/domain";
+import { type AgentKind } from "@missiongo/domain";
 
 import { api } from "./api";
 import { useSettingsDraft } from "./settings-drafts";
 import { effortLabelKey, effortOptions, groupModelsByProvider, modelDisplayLabel, modelsAcrossNodes } from "./agent-model-options";
-import { SUPPORTED_AGENT_KINDS, agentLabelKey, dispatchModeLabelKey, dispatchModeOrDefault } from "./dispatch-eligibility";
+import { SUPPORTED_AGENT_KINDS, agentLabelKey, dispatchModeOrDefault } from "./dispatch-eligibility";
 import { useI18n } from "./i18n";
 import type { DispatchDefaults } from "./types";
 
@@ -110,14 +111,16 @@ export function DispatchDefaultsSettings({ onOpenDevices }: { onOpenDevices: () 
         {[draft.agentKind ?? "claude_code"].map((kind) => {
           const current = draft.agents[kind] ?? {};
           const models = modelsAcrossNodes(nodes, kind);
+          const modes=nodes.find(node=>node.id===draft.nodeId)?.agents.find(agent=>agent.kind===kind)?.modes;
           return (
             <fieldset key={kind} className="dispatch-defaults-agent">
               <legend>{label(agentLabelKey(kind), kind)}</legend>
               <div className="field-row">
                 <label>{t("dispatchMode")}
-                  <Select value={dispatchModeOrDefault(kind, current.mode)} onChange={(event) => updateAgent(kind, { mode: event.target.value })}>
-                    {DISPATCH_MODES_BY_AGENT[kind].map((value) => (
-                      <option key={value} value={value}>{label(dispatchModeLabelKey(kind, value), value)}</option>
+                  <Select value={dispatchModeOrDefault(kind, current.mode,modes,current.model)} onChange={(event) => updateAgent(kind, { mode: event.target.value })}>
+                    <option value="">{t("dispatchModeChoose")}</option>
+                    {modeChoices(kind,current.mode ?? "",modes,current.model).map(choice => (
+                      <option key={choice.value} value={choice.value} disabled={choice.state!=="available"}>{label(choice.labelKey,choice.value)}{choice.state!=="available" ? ` · ${t(modeReasonKey(choice))}` : ""}</option>
                     ))}
                   </Select>
                 </label>

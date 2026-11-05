@@ -1,23 +1,25 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { JsonProcess } from "./process.js";
-import { localArtifactPath } from "@missiongo/domain";
+import { normalizeAgentMode, localArtifactPath } from "@missiongo/domain";
 import { pathToFileURL } from "node:url";
 import { worktreePath } from "./prompt.js";
 import type { Adapter, Approval, Command, Dispatch, Message, Session, Snapshot, Wire } from "./types.js";
 import { id, object, InputRejected } from "./types.js";
 
 export function codexPolicy(mode: string) {
-  if (!["plan", "auto", "default"].includes(mode)) throw new Error("Unsupported Codex mode");
-  return { sandbox: "workspace-write", approvalPolicy: "on-request", approvalsReviewer: mode === "default" ? "user" : "auto_review" };
+  mode=normalizeAgentMode("codex",mode);
+  if (!["auto", "default", "read-only"].includes(mode)) throw new Error("Unsupported Codex mode or managed-workspace policy");
+  return { sandbox: mode==="read-only" ? "read-only" : "workspace-write", approvalPolicy: "on-request", approvalsReviewer: mode === "auto" ? "auto_review" : "user" };
 }
-export function validatePolicy(result: Wire, job: Dispatch): void {
-  const policy = codexPolicy(job.mode);
+export function validatePolicy(result: Wire, job: Dispatch, planning = false): void {
+  const policy = codexPolicy(planning ? "read-only" : job.mode);
+  const roots=[job.repoPath,worktreePath(job)];
   if (result.approvalPolicy !== policy.approvalPolicy || result.approvalsReviewer !== policy.approvalsReviewer
-    || result.cwd !== job.repoPath || result.sandbox?.type !== "workspaceWrite"
-    || !Array.isArray(result.sandbox.writableRoots) || !Array.isArray(result.runtimeWorkspaceRoots)
-    || ![job.repoPath, worktreePath(job)].every((root) => result.runtimeWorkspaceRoots.includes(root)
-      && [result.cwd, ...result.sandbox.writableRoots].includes(root))) {
+    || result.cwd !== job.repoPath || result.sandbox?.type !== (policy.sandbox==="read-only" ? "readOnly" : "workspaceWrite")
+    || !Array.isArray(result.runtimeWorkspaceRoots) || !roots.every(root=>result.runtimeWorkspaceRoots.includes(root))
+    || policy.sandbox==="workspace-write" && (!Array.isArray(result.sandbox.writableRoots)
+      || !roots.every(root=>[result.cwd,...result.sandbox.writableRoots].includes(root)))) {
     throw new Error("Codex did not confirm the exact workspace and reviewer policy; no task started");
   }
 }
@@ -41,6 +43,8 @@ export function codexMessages(thread: Wire): Message[] {
 export class CodexAdapter implements Adapter {
   private rpc: JsonProcess;
   private ref = "";
+  private planning = true;
+  private model = "";
   initialTurnId?: string;
   private pending = new Map<string, { rpcId: unknown; snapshot: Approval; results: Map<string, unknown> }>();
   private closed = false;
@@ -122,10 +126,12 @@ export class CodexAdapter implements Adapter {
     if (existsSync(worktreePath(this.job))) throw new Error("Dispatch worktree path already exists");
     await this.rpc.call("initialize", { clientInfo: { name: "missiongo_linux", version: "1" }, capabilities: { experimentalApi: true } });
     this.rpc.write({ method: "initialized" });
-    const result = await this.rpc.call("thread/start", { cwd: realpathSync(this.job.repoPath), ...codexPolicy(this.job.mode),
+    const result = await this.rpc.call("thread/start", { cwd: realpathSync(this.job.repoPath), ...codexPolicy("read-only"),
       runtimeWorkspaceRoots: [this.job.repoPath, worktreePath(this.job)], ...(this.job.model ? { model: this.job.model } : {}) });
     this.ref = id(result.thread?.id);
-    validatePolicy(result, this.job);
+    validatePolicy(result, this.job, true);
+    this.model=result.model ?? this.job.model ?? "";
+    if(!this.model) throw new Error("Codex did not confirm the planning model");
     const response = await this.rpc.call("mcpServer/tool/call", { threadId: this.ref, server: "missiongo", tool: "get_current_account", arguments: {} });
     const account = response.structuredContent ?? JSON.parse(response.content?.find((c: Wire) => c.type === "text")?.text ?? "{}");
     if (response.isError || account.capabilities?.canComment !== true || !account.capabilities?.writeTools?.includes("claim_item") || !account.capabilities?.writeTools?.includes("append_comment")) {
@@ -140,7 +146,10 @@ export class CodexAdapter implements Adapter {
   private turn(text: string, commandId: string): Wire {
     return { threadId: this.ref, input: [{ type: "text", text }], clientUserMessageId: commandId,
       ...(this.job.model ? { model: this.job.model } : {}), ...(this.job.effort ? { effort: this.job.effort } : {}),
-      approvalPolicy: "on-request", approvalsReviewer: codexPolicy(this.job.mode).approvalsReviewer };
+      approvalPolicy:"on-request",approvalsReviewer:codexPolicy(this.planning ? "read-only" : this.job.mode).approvalsReviewer,
+      sandboxPolicy:this.planning || this.job.mode==="read-only" ? {type:"readOnly"} : {
+        type:"workspaceWrite",writableRoots:[this.job.repoPath,worktreePath(this.job)],networkAccess:false,excludeTmpdirEnvVar:false,excludeSlashTmp:false},
+      collaborationMode:{mode:this.planning ? "plan" : "default",settings:{model:this.model,reasoning_effort:this.job.effort ?? null,developer_instructions:null}} };
   }
   async snapshot(): Promise<Snapshot> {
     if (this.closed) return { status: "unavailable", messages: [], error: "Codex control host disconnected; no automatic restart", ...(this.lastApproval ? { approval: this.lastApproval } : {}) };
@@ -149,7 +158,7 @@ export class CodexAdapter implements Adapter {
     const approval = this.pending.values().next().value?.snapshot ?? this.lastApproval;
     const lastTurn = thread.turns?.at(-1);
     return { status: active ? "active" : lastTurn?.status === "failed" ? "failed" : "idle", messages: codexMessages(thread), turnActive: active,
-      waitingForInput: approval?.status === "pending", ...(approval ? { approval } : {}) };
+      mode:this.planning ? "read-only" : normalizeAgentMode("codex",this.job.mode), waitingForInput: approval?.status === "pending", ...(approval ? { approval } : {}) };
   }
   async stop(command: Command): Promise<Snapshot> {
     const target = command.turnId === "startup" ? this.initialTurnId : command.turnId;
@@ -188,8 +197,11 @@ export class CodexAdapter implements Adapter {
   async settings(settings: NonNullable<Session["desiredSettings"]>): Promise<void> {
     if (settings.mode) codexPolicy(settings.mode);
     const updated = { ...this.job, ...settings };
-    await this.rpc.call("thread/resume", { threadId: this.ref, ...codexPolicy(updated.mode), ...(updated.model ? { model: updated.model } : {}) });
-    this.job = updated;
+    const planning=settings.planApproved===undefined ? this.planning : !settings.planApproved;
+    const result=await this.rpc.call("thread/resume", { threadId: this.ref, ...codexPolicy(planning ? "read-only" : updated.mode), ...(updated.model ? { model: updated.model } : {}) });
+    validatePolicy(result,updated,planning);
+    this.model=result.model ?? updated.model ?? this.model;
+    this.planning=planning; this.job = updated;
   }
   async archive(restore: boolean): Promise<void> { await this.rpc.call(restore ? "thread/unarchive" : "thread/archive", { threadId: this.ref }); }
   async retryApproval(retry: NonNullable<Session["approvalRetry"]>): Promise<void> {

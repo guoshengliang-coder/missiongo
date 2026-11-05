@@ -87,7 +87,7 @@ import {
   type AgentMessageRole,
   type AgentSessionStatus,
 } from "./agent-session-store.js";
-import { optionalName, parseAgentModels } from "./agent-settings.js";
+import { optionalName, parseAgentModes, parseAgentModels } from "./agent-settings.js";
 import { DispatchStore } from "./dispatch-store.js";
 import { ManagedExecutionStore } from "./managed-execution-store.js";
 import { registerManagedExecutionRoutes } from "./managed-execution-routes.js";
@@ -654,7 +654,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     log: app.log,
   });
   const attentionClassifications = new Map<string, Promise<void>>();
-  const planApprovals = new PlanApprovalService();
+  const planApprovals = new PlanApprovalService(store.database);
   const scheduleAttentionClassification = (sessionId: string): void => {
     if (!aiTitle.attentionEnabled() || attentionClassifications.has(sessionId)) return;
     const candidate = agentSessionStore.pendingAttention(sessionId);
@@ -3573,6 +3573,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           }
           return {
             kind: stringField(agent, "kind")! as AgentKind,
+            ...(agent.planApprovalProtocol===1 ? {planApprovalProtocol:1} : {}),
+            ...(agent.modes !== undefined ? {modes:parseAgentModes(agent.modes)} : {}),
             ...(stringField(agent, "version", false) ? { version: agent.version as string } : {}),
             ...(models ? { models } : {}),
             ...(typeof agent.ready === "boolean" ? { ready: agent.ready } : {}),
@@ -3676,7 +3678,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const dispatch = dispatchStore.getDispatch(node.accountId, dispatchId);
     if (dispatch.productId) requireNodeAccountPermission(node.accountId, dispatch.productId, true);
     for (const key of dispatch.itemKeys) requireNodeAccountPermission(node.accountId, store.getWorkItem(key).productId, true);
-    return { allowed: agentSessionStore.permitDispatchStart(node.nodeId, dispatchId) };
+    const allowed=agentSessionStore.permitDispatchStart(node.nodeId, dispatchId);
+    const agent=dispatchStore.getNode(node.accountId,node.nodeId).agents.find(entry=>entry.kind===dispatch.agentKind);
+    if(allowed && agent?.planApprovalProtocol!==1) throw conflict("node_upgrade_required","Update this node before starting: native implementation-plan restrictions are not confirmed.");
+    return { allowed };
   });
 
   app.post("/api/v1/node/dispatches/:dispatchId/result", async (request, reply) => {

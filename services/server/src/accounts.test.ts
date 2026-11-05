@@ -808,7 +808,7 @@ describe("Dispatch configuration per account (item 2.3)", () => {
       method: "POST",
       url: "/api/v1/node/heartbeat",
       headers: { authorization: `Bearer ${node.token}` },
-      payload: { agents: [{ kind: "claude_code", version: "2.1.232" }], repoCandidates: [] },
+      payload: { agents: [{ kind: "claude_code", planApprovalProtocol: 1, version: "2.1.232" }], repoCandidates: [] },
     });
     expect(heartbeat.json<{ products: Array<{ id: string }> }>().products).toMatchObject([{ id: shared.id }]);
   });
@@ -828,7 +828,7 @@ describe("Dispatch configuration per account (item 2.3)", () => {
       method: "POST", url: "/api/v1/node/heartbeat", headers: authorization,
       payload: {
         agents: [{
-          kind: "codex", version: "1.0", ready: true,
+          kind: "codex", planApprovalProtocol: 1, version: "1.0", ready: true,
           skill: { localVersion: MISSIONGO_SKILL_VERSION, expectedVersion: MISSIONGO_SKILL_VERSION, syncState: "ready" },
         }],
         repoCandidates: [],

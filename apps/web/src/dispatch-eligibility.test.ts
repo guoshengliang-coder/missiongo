@@ -37,7 +37,7 @@ const node = (overrides: Partial<DispatchNode> = {}): DispatchNode => ({
   id: "node-1",
   name: "MacBook",
   deviceName: "MacBook",
-  agents: [{ kind: "claude_code", version: "2.1.0" }],
+  agents: [{ kind: "claude_code", planApprovalProtocol: 1, version: "2.1.0" }],
   repos: [],
   repoCandidates: [],
   online: true,
@@ -47,11 +47,11 @@ const node = (overrides: Partial<DispatchNode> = {}): DispatchNode => ({
 
 describe("dispatch mode defaults (AND-250)", () => {
   it("starts an unset OpenCode mode in Build while preserving a saved Plan choice", () => {
-    expect(dispatchModeOrDefault("opencode")).toBe("default");
+    expect(dispatchModeOrDefault("opencode")).toBe("build");
     expect(dispatchModeOrDefault("opencode", "plan")).toBe("plan");
-    expect(dispatchModeOrDefault("opencode", "unsupported")).toBe("default");
-    expect(dispatchModeOrDefault("claude_code")).toBe("bypassPermissions");
-    expect(dispatchModeOrDefault("codex")).toBe("plan");
+    expect(dispatchModeOrDefault("opencode", "unsupported")).toBe("unsupported");
+    expect(dispatchModeOrDefault("claude_code")).toBe("");
+    expect(dispatchModeOrDefault("codex")).toBe("auto");
   });
 });
 
@@ -186,13 +186,13 @@ describe("which machine can take a batch", () => {
   });
 
   it("refuses a machine that never reported the chosen agent", () => {
-    expect(nodeIneligibility(node({ agents: [{ kind: "codex" }], repos: [withRepo] }), batch))
+    expect(nodeIneligibility(node({ agents: [{ kind: "codex", planApprovalProtocol: 1 }], repos: [withRepo] }), batch))
       .toEqual({ reason: "agent_unavailable" });
   });
 
   it("refuses a machine whose agent says it is not ready, carrying the machine's own reason (AND-151)", () => {
     expect(nodeIneligibility(node({
-      agents: [{ kind: "claude_code", ready: false, unavailableReason: "Codex managed daemon cannot be verified." }],
+      agents: [{ kind: "claude_code", planApprovalProtocol: 1, ready: false, unavailableReason: "Codex managed daemon cannot be verified." }],
       repos: [withRepo],
     }), batch)).toEqual({
       reason: "agent_not_ready",
@@ -200,13 +200,13 @@ describe("which machine can take a batch", () => {
     });
     // No wording from the machine: the console has a fallback of its own.
     expect(nodeIneligibility(node({
-      agents: [{ kind: "claude_code", ready: false }],
+      agents: [{ kind: "claude_code", planApprovalProtocol: 1, ready: false }],
       repos: [withRepo],
     }), batch)).toEqual({ reason: "agent_not_ready" });
   });
 
   it("keeps a machine usable when its report predates the ready flag", () => {
-    expect(nodeIneligibility(node({ agents: [{ kind: "claude_code", version: "2.1.0" }], repos: [withRepo] }), batch))
+    expect(nodeIneligibility(node({ agents: [{ kind: "claude_code", planApprovalProtocol: 1, version: "2.1.0" }], repos: [withRepo] }), batch))
       .toBeNull();
   });
 
@@ -265,7 +265,7 @@ describe("wording for values that come from the server", () => {
     expect(dispatchModeLabelKey("opencode", "default")).toBe("dispatchModeBuild");
     // Other agents keep the shared wording for the same mode name.
     expect(dispatchModeLabelKey("claude_code", "default")).toBe("dispatchModeDefault");
-    expect(dispatchModeLabelKey("codex", "default")).toBe("dispatchModeDefault");
+    expect(dispatchModeLabelKey("codex", "default")).toBe("dispatchCodexDefaultLabel");
   });
 
   it("does not promise a web page for a Codex thread", () => {
@@ -327,7 +327,7 @@ describe("whether start work can offer an AI (AND-68)", () => {
     expect(aiAvailability(product, [node({ online: false, ...mapped })])).toEqual({ kind: "not_configured", reason: "offline" });
     expect(aiAvailability(product, [node({ agents: [{ kind: "hermes" }], ...mapped })]))
       .toEqual({ kind: "not_configured", reason: "agent_unavailable" });
-    expect(aiAvailability(product, [node({ agents: [{ kind: "claude_code", ready: false }], ...mapped })]))
+    expect(aiAvailability(product, [node({ agents: [{ kind: "claude_code", planApprovalProtocol: 1, ready: false }], ...mapped })]))
       .toEqual({ kind: "not_configured", reason: "agent_not_ready" });
   });
 
@@ -337,10 +337,10 @@ describe("whether start work can offer an AI (AND-68)", () => {
     // One ready machine among paused ones is enough, and a report that predates
     // the flag counts as ready.
     expect(aiAvailability(product, [
-      node({ agents: [{ kind: "claude_code", ready: false }], ...mapped }),
+      node({ agents: [{ kind: "claude_code", planApprovalProtocol: 1, ready: false }], ...mapped }),
       node({ id: "node-2", ...mapped }),
     ])).toEqual({ kind: "available" });
-    expect(aiAvailability(product, [node({ agents: [{ kind: "claude_code", version: "2.1.0" }], ...mapped })]))
+    expect(aiAvailability(product, [node({ agents: [{ kind: "claude_code", planApprovalProtocol: 1, version: "2.1.0" }], ...mapped })]))
       .toEqual({ kind: "available" });
     // A server that does not report access yet: offer it, the route still decides.
     expect(aiAvailability({ id: "p1" }, [node(mapped)])).toEqual({ kind: "available" });

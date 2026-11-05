@@ -63,6 +63,7 @@ private actor StubOpenCodeControl: OpenCodeControlling {
     func missionGoMcpStatus(directory: String?) async throws -> String? { mcpStatus }
     func createSession(directory: String, agent: String, model: OpenCodeModelRef?) async throws -> String {
         createdAgent = agent
+        info.agent = agent
         createdModel = model
         return "ses_test"
     }
@@ -88,7 +89,7 @@ private actor StubOpenCodeControl: OpenCodeControlling {
     func listModels() async throws -> OpenCodeModelCatalog { catalog }
     func sessionInfo(id: String) async throws -> (agent: String?, model: OpenCodeModelRef?) { info }
     func setModel(id: String, model: OpenCodeModelRef) async throws { appliedModels.append(model) }
-    func setAgent(id: String, agent: String) async throws { appliedAgents.append(agent) }
+    func setAgent(id: String, agent: String) async throws { appliedAgents.append(agent); info.agent = agent }
     func pendingChoices(id: String) async throws -> [OpenCodeChoice] {
         if let choicesError { throw choicesError }
         return choices
@@ -789,7 +790,7 @@ final class OpenCodeTests: XCTestCase {
         let model = await control.createdModel
         let agent = await control.createdAgent
         XCTAssertEqual(model, OpenCodeModelRef(modelId: "glm-5.3", providerId: "zai-coding-plan", variant: "high"))
-        XCTAssertEqual(agent, "build")
+        XCTAssertEqual(agent, "plan")
     }
 
     /// A tier the model does not take is dropped, a model nobody can name is

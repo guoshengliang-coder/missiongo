@@ -36,6 +36,7 @@ export const MCP_TOOL_DEFINITIONS = [
   { name: "get_agent_session", access: "read", purpose: "Page one linked conversation's merged transcript, execution records and attachments with explicit completeness limits." },
   { name: "get_item_plan_approvals", access: "read", purpose: "Read plan-message references and live approval assessments for linked conversations without ever proving an approval." },
   { name: "append_comment", access: "write", purpose: "Add one comment to a work item without changing anything a person wrote." },
+  { name: "request_plan_approval", access: "write", purpose: "Request native human approval for the exact current implementation plan and validation scope; never an Agent-supplied approval fact." },
   { name: "claim_item", access: "write", purpose: "Take a ready work item into progress." },
   { name: "recover_execution_authorization", access: "write", purpose: "Recover only this original conversation's unrevoked claim credential in the current round, without claiming or changing status." },
   { name: "submit_development_complete", access: "write", purpose: "Record verified GitHub/GitLab or local Git integration and its release requirements, or an explicit reason no release is needed." },
