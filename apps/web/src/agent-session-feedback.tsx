@@ -3,6 +3,17 @@ import { ChevronDown, CircleCheck, Clock3, LoaderCircle, Pencil } from "lucide-r
 import { useI18n } from "./i18n";
 import type { OutgoingReply } from "./agent-session-view";
 
+export function isHistoryLimited(error: string | undefined): boolean {
+  return error?.startsWith("codex_history_limited:") === true;
+}
+
+/** History availability is independent of runtime and message delivery. */
+export function AgentHistoryNotice({ error }: { error: string | undefined }) {
+  const { t } = useI18n();
+  return isHistoryLimited(error)
+    ? <p className="agent-console-attention-banner" role="status">{t("agentHistoryLimited")}</p> : null;
+}
+
 /** Delivery describes a message, never whether the Agent has started its turn. */
 export function AgentReplyFeedback({ status, cancelling = false, onEdit }: {
   status: OutgoingReply["status"]; cancelling?: boolean; onEdit?: (() => void) | undefined;
