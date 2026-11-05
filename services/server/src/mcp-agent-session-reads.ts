@@ -333,7 +333,7 @@ export class McpAgentSessionReads {
     if (members.some(member => this.store.database.connection.prepare(
       "SELECT 1 FROM agent_history_sources WHERE account_id=? AND session_id=? AND (next_id IS NOT NULL OR error IS NOT NULL)",
     ).get(accountId, member.agentSessionId ?? member.id))) {
-      knownGaps.push("This native conversation uses recent-summary synchronization. Earlier history may require interactive pagination in MissionGo or reading the original Codex conversation; this response does not prove the full native history was read.");
+      knownGaps.push("This native conversation has a bounded history window or an incomplete source read. Earlier messages may require interactive pagination in MissionGo or reading the original client; this response does not prove the full native history was read.");
     }
     if (truncated) knownGaps.push(`Only the newest ${MAX_CONVERSATION_MESSAGES} messages were read; the full native history is longer.`);
     const primary = orderedMembers[0]!;

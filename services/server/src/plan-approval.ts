@@ -51,6 +51,14 @@ export class PlanApprovalService {
     return owner ? this.plans?.proposal(owner,this.identity(session)) : undefined;
   }
 
+  /** Readable proposal survives approval, disconnection and scope changes. */
+  content(session: Session) {
+    const proposal = this.registered(session);
+    return proposal ? { revision: proposal.revision, itemKeys: proposal.keys,
+      plan: proposal.plan, validation: proposal.validation,
+      approved: proposal.approved, valid: proposal.valid } : undefined;
+  }
+
   /** A registered external plan is a domain decision, independent of its optional reply channel. */
   private independent(session: Session): boolean {
     return session.source === "external" && Boolean(this.registered(session));

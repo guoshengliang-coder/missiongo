@@ -25,6 +25,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       skill: { expectedVersion: process.env.FAKE_SKILL_STALE ? "2.0.0" : "1.0.0" },
     } } });
     else if (message.method === "thread/read") emit({ id: message.id, result: { thread: { id: ref, turns: [turn] } } });
+    else if (message.method === "thread/turns/list") emit({ id: message.id, result: { data: [{ ...turn, items: [], itemsView: "notLoaded" }], nextCursor: null } });
+    else if (message.method === "thread/items/list") emit({ id: message.id, result: { data: [...turn.items].reverse().map(item => ({ turnId: turn.id, item })), nextCursor: null } });
     else if (["turn/start", "turn/steer"].includes(message.method)) {
       turn.items.push({ id: `user-${turn.items.length}`, type: "userMessage", content: message.params.input });
       emit({ id: message.id, result: { turn } });

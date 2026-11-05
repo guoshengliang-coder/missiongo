@@ -60,6 +60,7 @@ it("reconnects the original detached host after a node restart and never replays
     if (path === "/downloads/missiongo-skill/SKILL.md") return new Response("---\nname: missiongo\nversion: 1.0.0\n---\nFixture only");
     if (path.endsWith("/node/heartbeat")) return Response.json({ repos: [{ productId: "product", repoPath: directory }], expectedSkillVersion: "1.0.0" });
     if (path.endsWith("/node/agent-artifacts")) return Response.json({ jobs: [] });
+    if (path.endsWith("/node/agent-history")) return Response.json({ jobs: [] });
     if (path.endsWith("/claim-next")) {
       if (!claimed) { claimed = true; return Response.json(dispatch); }
       await delay(25); return new Response(null, { status: 204 });

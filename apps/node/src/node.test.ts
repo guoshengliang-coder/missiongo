@@ -209,6 +209,35 @@ describe("Claude native control", () => {
   });
 });
 describe("OpenCode shared-service control", () => {
+  it("keeps the latest answers when a long source exceeds the snapshot window", async () => {
+    const pages: URLSearchParams[] = [];
+    class HistoryAPI extends OpenCodeAPI {
+      override async call(method: string, path: string): Promise<Wire> {
+        if (path === "/api/info") return { version: "2.1.0" };
+        if (path.startsWith("/api/mcp?")) return { data: [{ name: "missiongo", status: { status: "connected" } }] };
+        if (path === "/api/session" && method === "POST") return { data: { id: "long-session" } };
+        if (path === "/api/session/long-session") return { data: { agent: "plan" } };
+        if (path === "/api/session/active") return { data: {} };
+        if (path.includes("/message?")) {
+          const query = new URL(path, "http://fixture.test").searchParams;
+          if (query.get("limit") === "1") return { data: [{ id: "start", type: "user", text: "Start" }] };
+          pages.push(query);
+          const page = Number(query.get("cursor") ?? 0);
+          return { data: Array.from({ length: 100 }, (_, index) => ({ id: `message-${5000-page*100-index}`,
+            type: "assistant", content: [{ type: "text", text: `Message ${5000-page*100-index}` }] })), nextCursor: String(page+1) };
+        }
+        return { data: [] };
+      }
+    }
+    const adapter = new OpenCodeAdapter(job(temporary(), "opencode"), new HistoryAPI()); adapters.push(adapter);
+    await adapter.start("Fixture only");
+    const snapshot = await adapter.snapshot();
+    expect(snapshot.messages.at(-1)?.sourceId).toBe("message-5000");
+    expect(snapshot.messages).toHaveLength(1900);
+    expect(snapshot.error).toContain("agent_history_limited:");
+    expect(pages[0]?.get("order")).toBe("desc");
+    expect(pages.slice(1).every(query => !query.has("order"))).toBe(true);
+  });
   it.each(["build", "plan"])("project session preserves OpenCode %s and can recover from forced Plan",async mode=>{
     let actual="", initial="";
     const api={call:async(method:string,path:string,body?:Wire):Promise<Wire>=>{

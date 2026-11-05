@@ -191,6 +191,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
         }
         if (request.method() !== "GET") return route.fulfill({ status: 204 });
         const detail = { ...external, messages: [], canApprovePlan: !approved,
+          implementationPlan: { revision: offer.revision, plan: "领取前审阅的明确实施方案", validation: "验证同一会话领取", itemKeys: ["AND-405"], approved, valid: true },
           planApprovalStatus: { code: approved ? "approved" : "ready" },
           ...(approved ? { planApprovalState: { approved: true, revision: offer.revision, continuationQueued: false } }
             : { planApproval: { ...offer, plan: "领取前审阅的明确实施方案", validation: "验证同一会话领取", itemKeys: ["AND-405"] } }) };
@@ -202,7 +203,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
       await expect(button).toBeEnabled();
       await expect(page.locator(".agent-console-connection-banner")).toContainText("领取前方案审批");
       await banner.locator("summary").click();
-      await expect(banner).toContainText("领取前审阅的明确实施方案");
+      await expect(page.getByRole("article", { name: "提交审批的方案" })).toContainText("领取前审阅的明确实施方案");
       for (const scale of ["small", "medium", "large"]) {
         await page.evaluate(scale => { document.documentElement.dataset.fontScale = scale; document.documentElement.dataset.consoleFontScale = scale; }, scale);
         await expect(button).toBeVisible();

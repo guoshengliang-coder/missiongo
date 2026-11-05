@@ -1632,7 +1632,9 @@ public struct APIClient: Sendable {
     }
 
     public func reportHistory(id: String, result: AgentHistoryResult) async throws {
-        let bounded = try APIClient.encoder.encode(result).count <= 900_000 ? result : AgentHistoryResult(error: "too_large")
+        let validMessages = result.messages.count <= Self.snapshotMessageCountLimit
+            && result.messages.allSatisfy { !$0.text.isEmpty && $0.text.utf16.count <= Self.snapshotMessageTextLimit }
+        let bounded = try validMessages && APIClient.encoder.encode(result).count <= 900_000 ? result : AgentHistoryResult(error: "too_large")
         let response = try await send("POST", "/api/v1/node/agent-history/\(APIClient.encodePathComponent(id))",
             body: bounded, bearer: try nodeToken(), gzipBody: true)
         try requireSuccess(response, operation: "保存会话历史")

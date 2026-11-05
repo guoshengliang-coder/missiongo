@@ -1,4 +1,5 @@
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
+import { AgentPlanContent, withoutDuplicatePlan } from "./agent-plan-content";
 import { AgentStopFeedback } from "./agent-stop-feedback.js";
 import { ChatAttachments } from "./chat-attachments";
 import type { ReactNode } from "react";
@@ -1107,7 +1108,7 @@ export function AgentSessionConsole({
                     {selected.sessionUrl && <p>{t("agentConsoleOpenExternalHelp")}</p>}
                   </div>
                 )}
-                {visibleMessages.map((message) => {
+                {withoutDuplicatePlan(visibleMessages, sessionQuery.data).map((message) => {
                   const labelKey = messageLabelKey(message.role, selected.agentKind);
                   return (
                     <article key={message.id} data-agent-message-id={`${message.role}:${message.sourceId || message.id}`} className={`agent-console-message agent-console-message-${message.role}`}>
@@ -1130,6 +1131,7 @@ export function AgentSessionConsole({
                     </article>
                   );
                 })}
+                <AgentPlanContent session={sessionQuery.data} surface="console" />
                 {!showPermissionApproval && (showPlanApproval || (selected.needsAttention || selected.attention.dismissed) && selected.attention.reason) && (
                   <div className={`agent-console-attention-banner ${selected.attention.dismissed ? "dismissed" : ""}${showPlanApproval ? " agent-console-attention-banner--approval" : ""}`} role="status">
                     <BellRing size={16} />
@@ -1141,7 +1143,6 @@ export function AgentSessionConsole({
                       <div className="agent-console-attention-detail">
                         {!planApproved && <p>{selected.attention.reason}</p>}
                         {showPlanApproval && <p>{planApproved ? t(planApproved.continuationQueued ? "agentPlanApprovedQueued" : "agentPlanApprovedNoReply") : t("agentPlanReviewHelp")}</p>}
-                        {planApproval?.plan && <><p>{planApproval.itemKeys?.join("、")}</p><p className="timeline-note">{planApproval.plan}</p><p className="timeline-note">{planApproval.validation}</p></>}
                         {showPlanApproval && !planApproved && !canApprovePlan && <p className="agent-console-approve-reason" role="status">
                           {sessionQuery.isPending ? t("agentPlanChecking") : sessionQuery.isError ? t("agentPlanCheckFailed")
                             : t(planApprovalStatusKey(planApprovalStatus?.code ?? "reply_unavailable"))}

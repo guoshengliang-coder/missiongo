@@ -106,6 +106,30 @@ private actor StubOpenCodeControl: OpenCodeControlling {
 }
 
 final class OpenCodeTests: XCTestCase {
+    func testLongHistoryStartsAtTheNewestEndAndDoesNotLoseItsLatestAnswer() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let registration = home.appendingPathComponent(".local/state/opencode/service.json")
+        try FileManager.default.createDirectory(at: registration.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"url":"http://127.0.0.1:9999","password":"test","version":"2.1.0"}"#.utf8).write(to: registration)
+        StubURLProtocol.install { request, _ in
+            if request.url?.path == "/api/session/active" { return .response(status: 200, body: #"{"data":{}}"#) }
+            if request.url?.path.hasSuffix("/message") == true {
+                let query = Self.query(of: request.url)
+                let page = Int(query["cursor"] ?? "0")!
+                let data = (0..<100).map { index in ["id": "msg-\(5000-page*100-index)", "type": "user", "text": "Message \(5000-page*100-index)"] }
+                let body = try! JSONSerialization.data(withJSONObject: ["data": data, "cursor": ["next": String(page+1)]])
+                return .response(status: 200, body: String(decoding: body, as: UTF8.self))
+            }
+            return .response(status: 200, body: #"{"data":{"id":"session"}}"#)
+        }
+        let snapshot = try await OpenCodeHTTPControl(home: home.path, session: StubURLProtocol.session()).snapshot(id: "session")
+        XCTAssertEqual(snapshot.messages.count, 2000)
+        XCTAssertEqual(snapshot.messages.first?.sourceId, "msg-3001")
+        XCTAssertEqual(snapshot.messages.last?.sourceId, "msg-5000")
+        XCTAssertTrue(snapshot.failure?.hasPrefix("agent_history_limited:") == true)
+        XCTAssertEqual(StubURLProtocol.recorded.filter { $0.request.url?.path.hasSuffix("/message") == true }.count, 20)
+    }
     func testStopBypassesHistoryAndPermissionFailureAndConfirmsIdle() async throws {
         let control = StubOpenCodeControl(mcpStatus: "connected")
         await control.configureStop([.init(active: true, inputId: "input-1"), .init(active: true, inputId: "input-1"), .init(active: false, inputId: nil)], snapshotError: LaunchError("history unavailable"))
@@ -697,9 +721,9 @@ final class OpenCodeTests: XCTestCase {
                     return .response(status: 400, body: #"{"_tag":"InvalidCursorError","message":"Cursor cannot be combined with order"}"#)
                 }
                 if query["cursor"] != nil {
-                    return .response(status: 200, body: #"{"data":[{"id":"msg_3","type":"user","text":"third","time":{"created":3000}}],"cursor":{"previous":"seen"}}"#)
+                    return .response(status: 200, body: #"{"data":[{"id":"msg_1","type":"user","text":"first","time":{"created":1000}}],"cursor":{"previous":"seen"}}"#)
                 }
-                return .response(status: 200, body: #"{"data":[{"id":"msg_1","type":"user","text":"first","time":{"created":1000}}],"cursor":{"next":"cursor-2"}}"#)
+                return .response(status: 200, body: #"{"data":[{"id":"msg_3","type":"user","text":"third","time":{"created":3000}}],"cursor":{"next":"cursor-2"}}"#)
             case ("GET", "/api/session/active"):
                 return .response(status: 200, body: #"{"data":{"ses_test":{"type":"running"}}}"#)
             default:
@@ -713,7 +737,7 @@ final class OpenCodeTests: XCTestCase {
         let pages = StubURLProtocol.recorded.filter { $0.request.url?.path == "/api/session/ses_test/message" }
         XCTAssertEqual(pages.count, 2)
         let first = OpenCodeTests.query(of: pages[0].request.url)
-        XCTAssertEqual(first["order"], "asc")
+        XCTAssertEqual(first["order"], "desc")
         XCTAssertNil(first["cursor"])
         let second = OpenCodeTests.query(of: pages[1].request.url)
         XCTAssertEqual(second["cursor"], "cursor-2")

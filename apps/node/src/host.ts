@@ -3,6 +3,7 @@ import { createServer, request } from "node:http";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { CodexAdapter } from "./codex.js";
+import type { HistoryResult } from "./codex-history.js";
 import { ClaudeAdapter } from "./claude.js";
 import { OpenCodeAdapter } from "./opencode.js";
 import { launchPrompt } from "./prompt.js";
@@ -19,13 +20,14 @@ export function boundedSnapshot(snapshot: Snapshot): Snapshot {
   let bytes = 0;
   let truncated = false;
   for (const message of [...snapshot.messages].reverse()) {
-    const clipped = message.text.length > 100_000 ? { ...message, text: `[早期内容已省略]\n${message.text.slice(-100_000)}` } : message;
+    const clipped = message.text.length > 100_000 ? { ...message, text: `[早期内容已省略]\n${message.text.slice(-99_980)}` } : message;
     const size = Buffer.byteLength(JSON.stringify(clipped));
     if (messages.length >= 2000 || bytes + size > 8 * 1024 * 1024) { truncated = true; break; }
     if (clipped !== message) truncated = true;
     messages.unshift(clipped); bytes += size;
   }
-  return { ...snapshot, messages, ...(truncated ? { error: "镜像历史超出限制，仅同步最近内容；完整记录请在原会话核对。" } : {}) };
+  return { ...snapshot, messages, ...(truncated ? { error: snapshot.error ?? "agent_history_limited: 镜像历史超出限制，仅同步最近内容；完整记录请在原会话核对。",
+    ...(snapshot.history ? { history: { ...snapshot.history, complete: false, error: "unavailable" } } : {}) } : {}) };
 }
 export function socketPath(root: string, dispatchId: string): string {
   // Linux sockaddr_un is bounded. Keep names short even for long dispatch IDs.
@@ -34,18 +36,32 @@ export function socketPath(root: string, dispatchId: string): string {
   return path;
 }
 export async function hostCall(root: string, dispatchId: string, session?: Session): Promise<Snapshot> {
+  return callHost<Snapshot>(root, dispatchId, "/sync", session ?? {});
+}
+export async function hostHistoryCall(root: string, dispatchId: string, sessionRef: string, cursor: string): Promise<HistoryResult> {
+  return callHost<HistoryResult>(root, dispatchId, "/history", { sessionRef, cursor });
+}
+export async function readHostHistory(adapter: Adapter | undefined, sessionRef: string | undefined, input: unknown): Promise<HistoryResult> {
+  const request = input as { sessionRef?: unknown; cursor?: unknown } | null;
+  if (!adapter?.historyPage || !sessionRef || !request || request.sessionRef !== sessionRef
+    || typeof request.cursor !== "string" || !request.cursor || request.cursor.length > 4096) throw new Error("History source unavailable");
+  const page = await adapter.historyPage(request.cursor);
+  const validMessages = page.messages.length <= 2000 && page.messages.every(message => message.text.length > 0 && message.text.length <= 100_000);
+  return validMessages && Buffer.byteLength(JSON.stringify(page)) <= 900_000 ? page : { messages: [], error: "too_large" };
+}
+async function callHost<T>(root: string, dispatchId: string, path: string, body: unknown): Promise<T> {
   const socket = socketPath(root, dispatchId);
   const stat = lstatSync(socket);
   if (!stat.isSocket() || stat.uid !== process.getuid?.() || stat.mode & 0o077) throw new Error("Invalid private host socket");
   return new Promise((resolve, reject) => {
-    const client = request({ socketPath: socket, path: "/sync", method: "POST", timeout: 120_000, headers: { "Content-Type": "application/json" } }, (response) => {
+    const client = request({ socketPath: socket, path, method: "POST", timeout: 120_000, headers: { "Content-Type": "application/json" } }, (response) => {
       let text = ""; response.setEncoding("utf8"); response.on("data", (part: string) => {
         text += part; if (text.length > 16 * 1024 * 1024) client.destroy(new Error("Oversized host snapshot"));
       });
       response.on("end", () => { try { if (response.statusCode !== 200) throw new Error("Local host rejected request"); resolve(JSON.parse(text)); } catch (error) { reject(error); } });
     });
     client.on("timeout", () => client.destroy(new Error("Local host response timed out")));
-    client.on("error", reject); client.end(JSON.stringify(session ?? {}));
+    client.on("error", reject); client.end(JSON.stringify(body));
   });
 }
 export async function runHost(root: string, dispatchId: string): Promise<void> {
@@ -72,6 +88,17 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
     let body = "";
     req.setEncoding("utf8"); req.on("data", (part: string) => { body += part; if (body.length > 1024 * 1024) req.destroy(); });
     req.on("end", () => {
+      // History reads do not enter the command queue or write its journal.
+      if (req.method === "POST" && req.url === "/history") {
+        void (async () => {
+          try {
+            if (!launchFinished || state.phase !== "launched") throw new Error("History source unavailable");
+            const result = await readHostHistory(adapter, state.sessionRef, JSON.parse(body));
+            res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(result));
+          } catch { res.writeHead(409).end(); }
+        })();
+        return;
+      }
       queue = queue.then(async () => {
         if (req.method !== "POST" || req.url !== "/sync") { res.writeHead(404).end(); return; }
         try {
