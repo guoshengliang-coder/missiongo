@@ -2344,6 +2344,23 @@ export class MissionGoDatabase {
       });
     }
 
+    // AND-409: no historical handoff or approval is inferred during upgrade.
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611051350").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611051350").get()) return;
+        this.connection.exec(`CREATE TABLE agent_handoffs (
+          id TEXT PRIMARY KEY,item_id TEXT NOT NULL REFERENCES work_items(id),account_id TEXT NOT NULL,
+          created_by TEXT NOT NULL,target_identity TEXT NOT NULL,target_session_id TEXT,target_dispatch_id TEXT,
+          scope_json TEXT NOT NULL,round_key TEXT,checkpoint TEXT NOT NULL,note TEXT NOT NULL,
+          idempotency_key TEXT NOT NULL,request_digest TEXT NOT NULL,result_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,consumed_at TEXT,superseded_at TEXT,
+          UNIQUE(created_by,item_id,idempotency_key),CHECK(target_session_id IS NOT NULL OR target_dispatch_id IS NOT NULL)
+        ) STRICT;
+        CREATE UNIQUE INDEX idx_agent_handoff_pending ON agent_handoffs(item_id) WHERE consumed_at IS NULL AND superseded_at IS NULL;
+        CREATE INDEX idx_agent_handoff_dispatch ON agent_handoffs(target_dispatch_id);`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202611051350,new Date().toISOString());
+      });
+    }
     // Decouple approval from permissions without fabricating approvals or applied modes.
     if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611051359").get()) {
       this.transaction(() => {

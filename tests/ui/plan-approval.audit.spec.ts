@@ -15,6 +15,35 @@ const summary = {
   attention: { state: "needed", kind: "approval", reason: "方案待批准", revision: "attention-revision" }, needsAttention: true, waitingForReply: true,
 };
 
+for(const width of [320,1440]) for(const theme of ["light","dark"] as const) test.describe(`registered dispatch offline ${width}px ${theme}`,()=>{
+  test.use({viewport:{width,height:900},colorScheme:theme,hasTouch:width===320,isMobile:width===320});
+  test("saves approval separately from the unavailable native channel and shows recovery instructions",async({page},info)=>{
+    const offline={...summary,id:"offline-dispatch",agentSessionId:"offline-dispatch",source:"dispatch",status:"unavailable",canReply:false,
+      nodeConnectionState:"offline",lastError:"Codex rejected thread/read: thread not loaded: exact-original-thread"};
+    let approved=false,posts=0;
+    await page.route("**/api/v1/agent-sessions**",async route=>{
+      const path=new URL(route.request().url()).pathname;
+      if(path.endsWith("/plan-approval") && route.request().method()==="POST") {
+        posts++;approved=true;return route.fulfill({status:201,json:{approved:true,revision:"explicit-offline",continuationQueued:false}});
+      }
+      if(route.request().method()!=="GET") return route.fulfill({status:204});
+      const plan={revision:"explicit-offline",plan:"明确登记的派单实施方案",validation:"核实接手授权和实施模式",itemKeys:["AND-310"]};
+      const detail={...offline,messages:[],canApprovePlan:!approved,implementationPlan:{...plan,approved,valid:true},
+        planApprovalStatus:{code:approved?"approved":"ready"},...(approved?{planApprovalState:{approved:true,revision:plan.revision,continuationQueued:false}}:{planApproval:plan})};
+      return route.fulfill({json:path==="/api/v1/agent-sessions"?{sessions:[offline]}:detail});
+    });
+    await page.goto(`/?product=${fixture.productId}&console=agent&session=${offline.id}`);
+    const banner=page.locator(".agent-console-attention-banner");
+    await expect(page.getByText(/该会话尚未加载到已连接的 Codex 运行时/)).toBeVisible();
+    const button=banner.getByRole("button",{name:"批准",exact:true});await expect(button).toBeEnabled();
+    await button.click();await expect(banner).toContainText("批准已保存，未发送继续消息");
+    expect(posts).toBe(1);await expect(page.locator(".agent-console-message-outgoing")).toHaveCount(0);
+    await expect(page.getByText("明确登记的派单实施方案",{exact:true})).toBeVisible();
+    await page.screenshot({path:info.outputPath("offline-plan-approval.png")});
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth-innerWidth)).toBeLessThanOrEqual(1);
+  });
+});
+
 for (const viewport of [{ width: 353, height: 757 }, { width: 1440, height: 900 }]) {
   test(`approval sends the fixed reply once and retains the draft and attachments at ${viewport.width}px`, async ({ page }, testInfo) => {
     await page.setViewportSize(viewport);

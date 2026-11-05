@@ -164,3 +164,22 @@ it("approves a registered external proposal under its original native conversati
  expect(()=>plans.assertClaim("owner",identity,key)).not.toThrow();
  expect(plans.canImplement("owner",`session:${f.id}`)).toBe(false);
 });
+
+
+it("saves an explicit dispatch plan offline without queuing a continuation or weakening the mode gate",async()=>{
+  const f=await fixture();
+  const {ImplementationPlans}=await import("./implementation-plans.js");
+  const plans=new ImplementationPlans(f.store.database),identity="dispatch:dispatch";
+  const key=plans.dispatchKeys("dispatch")[0]!;
+  plans.request("owner",identity,"dispatch-explicit-offline",{keys:[key],plan:"Exact dispatch handoff plan",validation:"Verify offline approval separately from execution"});
+  f.db.prepare("UPDATE nodes SET last_seen_at=? WHERE id='node'").run(new Date(Date.now()-10*60_000).toISOString());
+  f.dispatch.recordSnapshot({nodeId:"node",sessionId:f.id,status:"unavailable",messages:[],error:"Codex rejected thread/read: thread not loaded"});
+  expect((await f.get()).json()).toMatchObject({canReply:true,canApprovePlan:true,planApprovalStatus:{code:"ready"},planApproval:{revision:"dispatch-explicit-offline"}});
+  const result=await f.approve("dispatch-explicit-offline");
+  expect(result.statusCode,result.body).toBe(201);
+  expect(result.json()).toEqual({approved:true,revision:"dispatch-explicit-offline",continuationQueued:false});
+  expect(f.db.prepare("SELECT COUNT(*) AS n FROM agent_session_commands").get()).toMatchObject({n:0});
+  expect((await f.get()).json()).toMatchObject({canApprovePlan:false,planApprovalState:{approved:true,continuationQueued:false}});
+  expect((await f.approve("dispatch-explicit-offline")).statusCode).toBe(409);
+  expect(()=>plans.assertClaim("owner",identity,key)).toThrow(/native implementation mode/);
+});

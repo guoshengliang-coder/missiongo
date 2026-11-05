@@ -5,7 +5,7 @@ import { AgentStopFeedback } from "./agent-stop-feedback.js";
 import { useState, useEffect, useRef, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, SessionStatusIcon, isHistoryLimited } from "./agent-session-feedback";
+import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, SessionStatusIcon, isHistoryLimited, AgentSessionError } from "./agent-session-feedback";
 import { MarkdownText } from "./markdown-text";
 import { AgentArtifactMarkdown } from "./agent-artifact-viewer";
 import { api } from "./api";
@@ -190,7 +190,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
               </AgentRunDetails>
               </div>
               <AgentHistoryNotice error={session.data.lastError} />
-              {session.data.lastError && !isHistoryLimited(session.data.lastError) && <p className="inline-error">{session.data.lastError}</p>}
+              {session.data.lastError && !isHistoryLimited(session.data.lastError) && <AgentSessionError error={session.data.lastError} onRetry={()=>void session.refetch()} />}
               {command?.kind === "message" && (
                 <div className={`agent-session-command agent-session-command-${command.status}`}>
                   <span>

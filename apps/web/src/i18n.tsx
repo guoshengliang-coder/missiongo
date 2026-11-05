@@ -8,6 +8,20 @@ import { ITEM_STATUSES, type WorkItemPriority, type WorkItemStatus, type WorkIte
 export type Locale = "zh-CN" | "en";
 
 const EN_MESSAGES = {
+  agentHandoffTitle: "Hand over to Agent",
+  agentHandoffPending: "A receiving conversation is authorized. Waiting for its Agent to obtain current plan approval and claim; execution has not been handed over yet.",
+  agentHandoffHelp: "Keep this item in progress and its Builder unchanged. Verify each earlier execution has stopped, then authorize one specific conversation. The Agent still needs an approved current plan before claiming.",
+  agentHandoffTarget: "Receiving conversation",
+  agentHandoffNewDispatch: "Choose a machine and start a dispatch",
+  agentHandoffExistingHelp: "First ask your terminal Agent to submit an exact plan for this item. Your original conversation in this project will then appear here. Connecting a conversation alone does not grant execution authority.",
+  agentHandoffNote: "Handoff scope and reason",
+  agentHandoffChooseNode: "Choose machine and Agent",
+  agentHandoffBack: "Back to handoff details",
+  agentHandoffConfirm: "Authorize this conversation to take over",
+  agentHandoffSaved: "Handoff authorization saved. The item remains in progress. The receiving Agent must obtain plan approval, then claim with its original conversation identity.",
+  agentHandoffChanged: "The item, receiving conversation or earlier execution changed. Refresh and review the handoff again.",
+  agentHandoffRequired: "This in-progress item needs an explicit human handoff to this conversation before the Agent can claim it.",
+  agentThreadNotLoaded: "This conversation is not loaded in the connected Codex runtime. Open the original conversation in its original client, confirm that it uses this node's control channel, then retry syncing. A registered plan can be approved independently; connection status does not prove an execution stopped.",
   productTagline: PRODUCT_TAGLINES.en,
   executionStopBlocked: "An earlier execution has not been confirmed stopped. Close dispatch and check Execution records in the item details.",
   executionStopHeading: "Check the earlier execution before starting again",
@@ -1471,6 +1485,20 @@ export type MessageKey = keyof typeof EN_MESSAGES;
 const ZH_MESSAGES: Record<MessageKey, string> = {
   productTagline: PRODUCT_TAGLINES["zh-CN"],
   executionStopBlocked: "原执行尚未确认结束。请关闭派单窗口，在条目详情的执行记录中核对阻塞原因。",
+  agentHandoffTitle: "交给 Agent 接手",
+  agentHandoffPending: "已指定接手会话，等待 Agent 取得当前方案批准并领取；实际执行尚未交接。",
+  agentHandoffHelp: "条目保持处理中，Builder 不变。先逐条核实旧执行已停止，再明确授权一个接手会话。Agent 仍须取得当前方案批准后才能领取。",
+  agentHandoffTarget: "接手会话",
+  agentHandoffNewDispatch: "选择机器并发起新派单",
+  agentHandoffExistingHelp: "使用终端会话时，先让该 Agent 为本条目提交明确方案审批，本账号在此项目的原会话随后会显示在这里。仅同步会话不会授予处理权限。",
+  agentHandoffNote: "交接范围与原因",
+  agentHandoffChooseNode: "选择机器和 Agent",
+  agentHandoffBack: "返回交接信息",
+  agentHandoffConfirm: "授权此会话接手",
+  agentHandoffSaved: "交接授权已保存，条目仍为处理中。接手 Agent 须取得方案批准，再使用原会话身份领取。",
+  agentHandoffChanged: "条目、目标会话或旧执行已有变化，请刷新并重新核对交接。",
+  agentHandoffRequired: "该处理中条目需要人工明确交给本会话接手，Agent 才能领取。",
+  agentThreadNotLoaded: "该会话尚未加载到已连接的 Codex 运行时。请在原客户端打开原会话，确认使用此节点的控制通道后重试同步。已登记的明确方案可独立批准；连接状态不能证明执行已停止。",
   executionStopHeading: "启动新执行前，请核实原执行",
   executionStopActive: "来源仍上报活动，请先在原客户端停止，并等待新的状态回报。",
   executionStopCommands: "仍有排队中、送达中或送达结果不确定的命令，请先在原会话处理。",
@@ -2987,8 +3015,8 @@ const ACTOR_LABELS: Record<Locale, Record<string, string>> = {
 };
 
 const EVENT_LABELS: Record<Locale, Record<string, string>> = {
-  en: { execution_stop_confirmed: "Human stop confirmation", collaboration_updated: "Collaboration update", builder_handover_started: "Builder handover started", builder_handover_blocked: "Builder handover blocked", execution_taken_over: "Execution taken over", handover_human_confirmed: "Human handover confirmation", item_created: "Item created", item_updated: "Item updated", item_transferred_in: "Item transferred in", item_transferred_out: "Item transferred out", attachment_added: "Attachment added", attachment_removed: "Attachment deleted", attachment_replaced: "Attachment edited", derived_item_created: "Split off an item", comment_added: "Comment", comment_withdrawn: "Comment withdrawn", dispatched: "Dispatched to an agent" },
-  "zh-CN": { execution_stop_confirmed: "人工核实执行停止", collaboration_updated: "协作进展", builder_handover_started: "开始交接 Builder", builder_handover_blocked: "Builder 交接受阻", execution_taken_over: "接手执行", builder_changed: "Builder 变更", execution_assigned: "安排执行", execution_handed_over: "执行交接", execution_follow_up: "后续或返工执行", execution_updated: "执行进展", handover_human_confirmed: "人工确认交接", item_created: "已创建条目", item_updated: "已更新详情", item_transferred_in: "条目已迁入", item_transferred_out: "条目已迁出", attachment_added: "已添加附件", attachment_removed: "已删除附件", attachment_replaced: "已编辑附件", derived_item_created: "已衍生条目", comment_added: "评论", comment_withdrawn: "已撤回评论", dispatched: "已派给 Agent" },
+  en: { agent_handoff_requested: "Agent handoff authorized", execution_stop_confirmed: "Human stop confirmation", collaboration_updated: "Collaboration update", builder_handover_started: "Builder handover started", builder_handover_blocked: "Builder handover blocked", execution_taken_over: "Execution taken over", handover_human_confirmed: "Human handover confirmation", item_created: "Item created", item_updated: "Item updated", item_transferred_in: "Item transferred in", item_transferred_out: "Item transferred out", attachment_added: "Attachment added", attachment_removed: "Attachment deleted", attachment_replaced: "Attachment edited", derived_item_created: "Split off an item", comment_added: "Comment", comment_withdrawn: "Comment withdrawn", dispatched: "Dispatched to an agent" },
+  "zh-CN": { agent_handoff_requested: "已授权 Agent 接手", execution_stop_confirmed: "人工核实执行停止", collaboration_updated: "协作进展", builder_handover_started: "开始交接 Builder", builder_handover_blocked: "Builder 交接受阻", execution_taken_over: "接手执行", builder_changed: "Builder 变更", execution_assigned: "安排执行", execution_handed_over: "执行交接", execution_follow_up: "后续或返工执行", execution_updated: "执行进展", handover_human_confirmed: "人工确认交接", item_created: "已创建条目", item_updated: "已更新详情", item_transferred_in: "条目已迁入", item_transferred_out: "条目已迁出", attachment_added: "已添加附件", attachment_removed: "已删除附件", attachment_replaced: "已编辑附件", derived_item_created: "已衍生条目", comment_added: "评论", comment_withdrawn: "已撤回评论", dispatched: "已派给 Agent" },
 };
 
 interface I18nValue {

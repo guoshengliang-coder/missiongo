@@ -132,7 +132,7 @@ describe("work-item event attribution", () => {
       itemKey: item.key,
       agentId: "agent-2",
       idempotencyKey: "claim-2",
-    })).toThrowError(/Only a ready work item can be claimed/);
+    })).toThrowError(/人工明确交给本会话接手/);
   });
 
   it("records a merged PR before a verified release", async () => {

@@ -90,10 +90,10 @@ function sessionObservations(database: MissionGoDatabase, itemId: string, exclud
 }
 
 /** Unknown connections are not physical stop evidence, nor does progress completion alone release them. */
-export function itemExecutionBlockers(database: MissionGoDatabase, itemId: string, excludeDispatchId = ""): ItemExecutionBlocker[] {
+export function itemExecutionBlockers(database: MissionGoDatabase, itemId: string, excludeDispatchId = "", excludeExternalSessionId = ""): ItemExecutionBlocker[] {
   const db = database.connection;
   const item = db.prepare("SELECT revision FROM work_items WHERE id=?").get(itemId) as {revision: number};
-  const rows = sessionObservations(database,itemId,excludeDispatchId);
+  const rows = sessionObservations(database,itemId,excludeDispatchId).filter(row=>row.source!=="external" || row.id!==excludeExternalSessionId);
   const resolutions = db.prepare(`SELECT source,execution_id,evidence_key FROM item_execution_stop_confirmations
     WHERE item_id=? AND invalidated_at IS NULL`).all(itemId) as {source:string;execution_id:string;evidence_key:string}[];
   const blockers: ItemExecutionBlocker[] = [];
@@ -139,6 +139,18 @@ export function itemExecutionBlockers(database: MissionGoDatabase, itemId: strin
       revision:digest([item.revision,key,linked])});
   }
   return blockers;
+}
+
+/** Freeze meaningful old work, not heartbeat/read timestamps. The target's planning activity is separate. */
+export function itemExecutionCheckpoint(database:MissionGoDatabase,itemId:string,excludeDispatchId="",excludeExternalSessionId=""):string {
+  const sessions=sessionObservations(database,itemId,excludeDispatchId)
+    .filter(row=>row.source!=="external" || row.id!==excludeExternalSessionId)
+    .map(row=>[row.source,row.id,executionObservationKey(row)]).sort((a,b)=>String(a[1]).localeCompare(String(b[1])));
+  const db=database.connection;
+  return digest([sessions,db.prepare("SELECT id,status,stop_generation FROM item_executions WHERE item_id=? ORDER BY id").all(itemId),
+    db.prepare("SELECT id,status FROM ai_executions WHERE item_id=? ORDER BY id").all(itemId),
+    db.prepare(`SELECT s.id,s.status FROM managed_runs r JOIN managed_stages s ON s.run_id=r.id,
+      json_each(r.scope_json,'$.itemKeys') i JOIN work_items w ON w.item_key=i.value WHERE w.id=? ORDER BY s.id`).all(itemId)]);
 }
 
 /** Called only within the cookie-authenticated human confirmation transaction, after checking the revision. */

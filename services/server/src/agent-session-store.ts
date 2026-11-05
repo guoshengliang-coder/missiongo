@@ -1,4 +1,5 @@
 import { ImplementationPlans } from "./implementation-plans.js";
+import { handoffDispatchIsCurrent } from "./agent-handoffs.js";
 import { assertDispatchExecution, dispatchExecutionRevoked } from "./builder-authority.js";
 import { createHash, randomUUID } from "node:crypto";
 
@@ -1344,6 +1345,7 @@ export class AgentSessionStore {
       if (dispatch.status === "cancelled") return false;
       if (dispatch.status !== "delivered") throw conflict("dispatch_result_not_expected", "Dispatch is not awaiting launch.");
       assertDispatchExecution(this.database, dispatchId);
+      if(!handoffDispatchIsCurrent(this.database,dispatchId)) return false;
       const stop = this.database.connection.prepare(`SELECT c.id,s.id AS session_id FROM agent_session_commands c
         JOIN agent_sessions s ON s.id=c.session_id WHERE s.dispatch_id=? AND c.kind='interrupt'
         AND c.status IN ('queued','delivering','delivery_unknown')`).get(dispatchId) as { id: string; session_id: string } | undefined;

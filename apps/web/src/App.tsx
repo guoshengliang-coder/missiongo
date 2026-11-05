@@ -3166,7 +3166,7 @@ function DetailPane({
                       {event.eventType === "collaboration_updated" && typeof event.payload.note === "string" && <p>{event.payload.note}</p>}
                       {event.eventType === "builder_changed" && <p>{String(event.payload.fromName ?? "待分配")} → {String(event.payload.toName ?? "待分配")}：{String(event.payload.note ?? "")}</p>}
                       {["execution_assigned","execution_handed_over","execution_follow_up","execution_updated"].includes(event.eventType) && <p>{String(event.payload.performer ?? "")}{event.payload.scope ? ` · ${String(event.payload.scope)}` : ""}{event.payload.status ? ` · ${String(event.payload.status)}` : ""} {String(event.payload.note ?? event.payload.result ?? "")}</p>}
-                      {["execution_stop_confirmed","handover_human_confirmed"].includes(event.eventType) && <p>{typeof event.payload.note === "string" ? event.payload.note : ""}</p>}
+                      {["execution_stop_confirmed","handover_human_confirmed","agent_handoff_requested"].includes(event.eventType) && <p>{typeof event.payload.note === "string" ? event.payload.note : ""}</p>}
                       {typeof event.payload.completion === "object" && event.payload.completion !== null && "commit" in event.payload.completion && typeof event.payload.completion.commit === "string" && <p><code>{event.payload.completion.commit}</code></p>}
                       {/* Why it moved. Going back to Ready has to say so, which is
                           the case this is here for; a handover carries the agent's

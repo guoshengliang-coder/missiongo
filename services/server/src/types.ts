@@ -323,6 +323,8 @@ export interface CreateCommentInput extends CommentAudienceInput {
 }
 
 export interface ClaimWorkItemInput {
+  /** Internal, server-resolved conversation identity; never accepted as an MCP argument. */
+  readonly executionIdentity?: string;
   readonly dispatchId?: string;
   readonly itemKey: string;
   /** Which AI is picking it up, recorded on the timeline so a person can tell them apart. */
