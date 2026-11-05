@@ -3161,7 +3161,7 @@ describe("Claiming a dispatch on the node", () => {
       method: "POST",
       url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
       headers: { authorization: `Bearer ${node.token}` },
-      payload: { status: "idle", messages: [], sourceArchived: false },
+      payload: { status: "idle", messages: [], sourceArchived: false, settingsRevision: 1 },
     })).statusCode).toBe(204);
     expect((await app.inject({
       method: "GET",
@@ -4162,8 +4162,8 @@ describe("Model, effort and running-session settings (AND-130)", () => {
       payload: { status: "idle", messages: [], ...payload },
     });
 
-    await report({ model: "gpt-5.5", effort: "medium" });
-    expect(await listSettings()).toMatchObject({ mode: "read-only", model: "gpt-5.5", effort: "medium", adjustable: true });
+    await report({ mode: "auto", model: "gpt-5.5", effort: "medium", settingsRevision: 1 });
+    expect(await listSettings()).toMatchObject({ mode: "auto", model: "gpt-5.5", effort: "medium", adjustable: true });
 
     const change = (payload: Record<string, unknown>) => app.inject({
       method: "PATCH",
@@ -4175,35 +4175,35 @@ describe("Model, effort and running-session settings (AND-130)", () => {
     expect((await change({ mode: "acceptEdits" })).statusCode).toBe(400);
     const requested = await change({ mode: "default", effort: "high" });
     expect(requested.statusCode).toBe(200);
-    expect(requested.json()).toMatchObject({ pending: { mode: "read-only", effort: "high", revision: 1 } });
+    expect(requested.json()).toMatchObject({ pending: { mode: "default", effort: "high", revision: 2 } });
     expect(await nodeSession()).toMatchObject({
-      desiredSettings: { mode: "read-only", effort: "high", revision: 1 },
-      appliedSettingsRevision: 0,
+      desiredSettings: { mode: "default", effort: "high", revision: 2 },
+      appliedSettingsRevision: 1,
     });
 
-    expect((await report({ model: "gpt-5.5", effort: "high", settingsRevision: 1 })).statusCode).toBe(204);
+    expect((await report({ mode: "default", model: "gpt-5.5", effort: "high", settingsRevision: 2 })).statusCode).toBe(204);
     const applied = await listSettings();
-    expect(applied).toMatchObject({ mode: "read-only", effort: "high" });
+    expect(applied).toMatchObject({ mode: "default", effort: "high" });
     expect(applied.pending).toBeUndefined();
     // Nothing left to deliver, so the idle session drops out of the Mac's next poll.
     expect(await nodeSession()).toBeUndefined();
 
     // A change the Mac cannot apply is reported once and not sent again.
     await change({ model: "gpt-5.5-mini", effort: "low" });
-    await report({ settingsRevision: 2, settingsError: "set_model failed" });
+    await report({ settingsRevision: 3, settingsError: "set_model failed" });
     const failed = await listSettings();
-    expect(failed).toMatchObject({ error: "set_model failed", mode: "read-only", requestedModel: "gpt-5.5-mini" });
+    expect(failed).toMatchObject({ error: "set_model failed", mode: "default", requestedModel: "gpt-5.5-mini" });
     expect(failed.pending).toBeUndefined();
     expect(await nodeSession()).toBeUndefined();
 
     // The selected code remains distinct from the Mac's reported id after a
     // successful change and after a later change that only touches effort.
     await change({ model: "gpt-5.5-mini" });
-    await report({ model: "gpt-5.5", settingsRevision: 3 });
+    await report({ model: "gpt-5.5", settingsRevision: 4 });
     expect(await listSettings()).toMatchObject({ requestedModel: "gpt-5.5-mini", model: "gpt-5.5" });
     await change({ effort: "medium" });
-    expect(await listSettings()).toMatchObject({ requestedModel: "gpt-5.5-mini", pending: { revision: 4 } });
-    await report({ settingsRevision: 4 });
+    expect(await listSettings()).toMatchObject({ requestedModel: "gpt-5.5-mini", pending: { revision: 5 } });
+    await report({ settingsRevision: 5 });
     expect(await listSettings()).toMatchObject({ requestedModel: "gpt-5.5-mini", model: "gpt-5.5" });
   });
 
@@ -4948,16 +4948,16 @@ describe("AND-369 project conversations", () => {
     expect((await change(mode)).statusCode).toBe(200);
     expect((await nodes()).desiredSettings).toMatchObject({mode,planning:false});
     // An ordinary project conversation can later enter scoped item work. Its
-    // real proposal then owns the phase, even if the user changes permissions.
+    // real proposal gates implementation without changing native permissions.
     const store=f.app.missionGoStore, owner=accountsByApp.get(f.app)!.id;
     const item=store.createWorkItem({productId:f.product.id,title:"Scoped work",description:"Implementation",status:"ready",type:"task",priority:"normal",environment:{platform:"shared"}});
     const plans=new ImplementationPlans(store.database), identity=`dispatch:${d.id}`;
     plans.request(owner,identity,"project-plan",{keys:[item.key],plan:"Implement the scoped change",validation:"Verify it"});
     expect((await change(mode)).statusCode).toBe(200);
-    expect((await nodes()).desiredSettings).toMatchObject({mode:forced,planning:true,planApproved:false});
+    expect((await nodes()).desiredSettings).toMatchObject({mode,planning:false});
     expect(()=>plans.assertClaim(owner,identity,item.key)).toThrow(/approve/);
     plans.record({accountId:owner,identity,revision:"project-plan",planHash:"project-plan",keys:[item.key],source:"web"});
-    expect((await nodes()).desiredSettings).toMatchObject({mode,planning:false,planApproved:true});
+    expect((await nodes()).desiredSettings).toMatchObject({mode,planning:false});
   });
 
   it("reserves only on send, atomically starts once, and keeps itemless history alive after launch", async () => {

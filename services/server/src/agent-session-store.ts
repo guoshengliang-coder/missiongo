@@ -2,7 +2,7 @@ import { ImplementationPlans } from "./implementation-plans.js";
 import { assertDispatchExecution, dispatchExecutionRevoked } from "./builder-authority.js";
 import { createHash, randomUUID } from "node:crypto";
 
-import { sessionErrorFields, storedSessionError, type CodexSessionFailure, isAcceptedSessionUrl, nodeConnectionState, type AgentKind, type NodeConnectionState } from "@missiongo/domain";
+import { normalizeAgentMode, sessionErrorFields, storedSessionError, type CodexSessionFailure, isAcceptedSessionUrl, nodeConnectionState, type AgentKind, type NodeConnectionState } from "@missiongo/domain";
 
 import { sessionHealth, executionTurnState } from "./agent-session-health.js";
 
@@ -323,7 +323,7 @@ function sessionSettings(row: SessionSettingsColumns, open: boolean): AgentSessi
   return {
     mode: row.session_mode ?? row.dispatch_mode,
     requestedMode: row.implementation_mode ?? row.dispatch_mode,
-    ...(desired?.planApproved===true && row.agent_kind!=="codex" && desired.mode==="plan" ? {requiresImplementationMode:true} : {}),
+    ...(row.agent_kind!=="codex" && row.session_mode==="plan" ? {requiresImplementationMode:true} : {}),
     ...(row.session_model ? { model: row.session_model } : {}),
     ...(row.session_model_endpoint ? { modelEndpoint: row.session_model_endpoint } : {}),
     ...(row.session_effort ? { effort: row.session_effort } : {}),
@@ -688,20 +688,17 @@ export class AgentSessionStore {
     if (dispatch.agent_kind !== "codex" && dispatch.agent_kind !== "claude_code" && dispatch.agent_kind !== "opencode") {
       throw invalidInput("This agent does not support mirrored sessions.");
     }
-    const nativePlan=(JSON.parse(dispatch.agents_json) as {kind:string;planApprovalProtocol?:number}[]).some(agent=>agent.kind===dispatch.agent_kind && agent.planApprovalProtocol===1);
-    const free = Boolean(this.freeSession(input.dispatchId));
-    const initialMode = free ? dispatch.mode : nativePlan ? dispatch.agent_kind==="codex" ? "read-only" : "plan" : null;
-    // Persist the ordinary phase so Codex recovery/retry can restore it without
-    // mistaking the absence of an item-plan approval for native Plan mode.
-    const initialSettings = free ? JSON.stringify({mode: dispatch.mode, planning: false}) : null;
+    const initialMode = normalizeAgentMode(dispatch.agent_kind, dispatch.mode);
+    // Native permissions apply from the first turn, independently of approval.
+    const initialSettings = JSON.stringify({mode: initialMode, planning: false});
     const sessionRef = requiredText(input.sessionRef, "sessionRef", 200);
     const existing = this.database.connection
       .prepare("SELECT id FROM agent_sessions WHERE dispatch_id = ?")
       .get(input.dispatchId) as unknown as { id: string } | undefined;
     if (existing) {
-      this.database.connection.prepare(`UPDATE agent_sessions SET agent_session_ref=?,status='active',mode=COALESCE(mode,?),
+      this.database.connection.prepare(`UPDATE agent_sessions SET agent_session_ref=?,status='active',mode=COALESCE(mode,?),implementation_mode=COALESCE(implementation_mode,?),
         desired_settings_json=COALESCE(desired_settings_json,?),settings_revision=MAX(settings_revision,?) WHERE id=? AND agent_session_ref=?`)
-        .run(sessionRef,initialMode,initialSettings,free ? 1 : 0,existing.id,`pending:${input.dispatchId}`);
+        .run(sessionRef,initialMode,initialMode,initialSettings,1,existing.id,`pending:${input.dispatchId}`);
       this.bindStartupStop(existing.id, input.initialTurnId);
       return existing.id;
     }
@@ -710,10 +707,10 @@ export class AgentSessionStore {
     this.database.connection
       .prepare(
         `INSERT INTO agent_sessions
-          (id, dispatch_id, node_id, agent_kind, agent_session_ref, status, mode, desired_settings_json, settings_revision, created_at, updated_at, activity_at)
-         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`,
+          (id, dispatch_id, node_id, agent_kind, agent_session_ref, status, mode, implementation_mode, desired_settings_json, settings_revision, created_at, updated_at, activity_at)
+         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, input.dispatchId, input.nodeId, dispatch.agent_kind, sessionRef, initialMode, initialSettings, free ? 1 : 0, now, now, now);
+      .run(id, input.dispatchId, input.nodeId, dispatch.agent_kind, sessionRef, initialMode, initialMode, initialSettings, 1, now, now, now);
     this.bindStartupStop(id, input.initialTurnId);
     return id;
   }
@@ -1195,14 +1192,8 @@ export class AgentSessionStore {
     const agent=(JSON.parse(row.node_agents_json ?? "[]") as {kind:string;modes?:import("@missiongo/domain").AgentModeCapability[]}[]).find(entry=>entry.kind===row.agent_kind);
     requireAvailableMode(row.agent_kind,requestedMode,agent?.modes,next.model ?? row.session_model ?? row.dispatch_model ?? undefined);
     if(change.mode) this.database.connection.prepare("UPDATE agent_sessions SET implementation_mode=? WHERE id=?").run(change.mode,sessionId);
-    const plans = new ImplementationPlans(this.database);
-    const identity = `dispatch:${binding!.dispatch_id}`;
-    const requiresPlan = !this.freeSession(binding!.dispatch_id) || plans.hasRequest(accountId, identity);
-    const approved = plans.canImplement(accountId, identity);
-    const planning = requiresPlan && !approved;
     const {planApproved: _previousApproval, ...choices} = next;
-    const effective: AgentRunSettings = {...choices, mode: planning ? row.agent_kind==="codex" ? "read-only" : "plan" : requestedMode,
-      planning, ...(requiresPlan ? {planApproved: approved} : {})};
+    const effective: AgentRunSettings = {...choices, mode: requestedMode, planning: false};
     this.database.connection
       .prepare(
         "UPDATE agent_sessions SET desired_settings_json = ?, settings_revision = settings_revision + 1 WHERE id = ?",
@@ -1577,9 +1568,7 @@ export class AgentSessionStore {
       const managed = this.managedBinding(row.id);
       const revoked = dispatchExecutionRevoked(this.database,row.dispatch_id);
       const pending = this.pendingCommand(row.id);
-      const desired=row.desired_settings_json ? JSON.parse(row.desired_settings_json) as AgentRunSettings : undefined;
-      const phasePending=desired?.planApproved===true && ((row.settings_revision ?? 0)>(row.applied_settings_revision ?? 0) || row.agent_kind!=="codex" && desired.mode==="plan");
-      const command = pending?.kind === "interrupt" ? pending : phasePending || (managed && (managed.stopRequested || !["running", "waiting"].includes(managed.state))) ? undefined : pending;
+      const command = pending?.kind === "interrupt" ? pending : (managed && (managed.stopRequested || !["running", "waiting"].includes(managed.state))) ? undefined : pending;
       const autoArchived = row.archive_reason === "auto";
       return {
         id: row.id,

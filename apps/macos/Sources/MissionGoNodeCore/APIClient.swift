@@ -303,7 +303,8 @@ public struct AgentModelOption: Codable, Equatable, Sendable {
 /// The mode, model and effort a person wants a running session to use.
 /// Each field left out means "leave this one as it is".
 public struct AgentSessionSettings: Codable, Equatable, Sendable {
-    /// Native phase control, independent of an implementation approval record.
+    /// Legacy phase/approval fields are decoded for wire compatibility only.
+    /// Native permissions come exclusively from mode.
     public let planning: Bool?
     public let planApproved: Bool?
     /// Grows with every change a person makes; the node reports back the one
@@ -336,7 +337,6 @@ public struct AgentSessionSettings: Codable, Equatable, Sendable {
         effort = try values.decodeIfPresent(String.self, forKey: .effort)
     }
 
-    public var nativePlanning: Bool { planning ?? (planApproved == false) }
 }
 
 /// Model names and efforts arrive over the wire and end up in argv or an RPC

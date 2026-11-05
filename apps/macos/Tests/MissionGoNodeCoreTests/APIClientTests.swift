@@ -140,14 +140,13 @@ final class APIClientTests: XCTestCase {
     func testNativePhaseDecodesWithoutInventingAnImplementationApproval() throws {
         let settings = try JSONDecoder().decode(AgentSessionSettings.self,
             from: Data(#"{"revision":1,"mode":"auto","planning":false}"#.utf8))
-        XCTAssertFalse(settings.nativePlanning)
         XCTAssertNil(settings.planApproved)
         XCTAssertFalse(try XCTUnwrap(CodexTurnOverrides(desired: settings).settings).planning)
         let encoded = try JSONEncoder().encode(settings)
         XCTAssertEqual(try JSONDecoder().decode(AgentSessionSettings.self, from: encoded), settings)
         let legacy = try JSONDecoder().decode(AgentSessionSettings.self,
             from: Data(#"{"revision":2,"mode":"read-only","planApproved":false}"#.utf8))
-        XCTAssertTrue(legacy.nativePlanning)
+        XCTAssertFalse(try XCTUnwrap(CodexTurnOverrides(desired: legacy).settings).planning)
     }
 
     func testSnapshotCarriesSettingsFieldsOnlyWhenKnown() throws {

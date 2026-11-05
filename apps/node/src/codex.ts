@@ -14,8 +14,8 @@ export function codexPolicy(mode: string) {
   if (!["auto", "default", "read-only"].includes(mode)) throw new Error("Unsupported Codex mode or managed-workspace policy");
   return { sandbox: mode==="read-only" ? "read-only" : "workspace-write", approvalPolicy: "on-request", approvalsReviewer: mode === "auto" ? "auto_review" : "user" };
 }
-export function validatePolicy(result: Wire, job: Dispatch, planning = false): void {
-  const policy = codexPolicy(planning ? "read-only" : job.mode);
+export function validatePolicy(result: Wire, job: Dispatch): void {
+  const policy = codexPolicy(job.mode);
   const roots=[job.repoPath,worktreePath(job)];
   if (result.approvalPolicy !== policy.approvalPolicy || result.approvalsReviewer !== policy.approvalsReviewer
     || result.cwd !== job.repoPath || result.sandbox?.type !== (policy.sandbox==="read-only" ? "readOnly" : "workspaceWrite")
@@ -45,7 +45,6 @@ export function codexMessages(thread: Wire): Message[] {
 export class CodexAdapter implements Adapter {
   private rpc: JsonProcess;
   private ref = "";
-  private planning = true;
   private model = "";
   initialTurnId?: string;
   private pending = new Map<string, { rpcId: unknown; snapshot: Approval; results: Map<string, unknown> }>();
@@ -53,7 +52,6 @@ export class CodexAdapter implements Adapter {
   private lastApproval: Approval | undefined;
   private lastMessages: Message[] = [];
   constructor(private job: Dispatch, executable: string, private localSkillVersion?: string) {
-    this.planning = !job.freeSession;
     this.rpc = new JsonProcess(executable, ["app-server"], job.repoPath);
     this.rpc.onClose = () => {
       this.closed = true;
@@ -130,12 +128,12 @@ export class CodexAdapter implements Adapter {
     if (existsSync(worktreePath(this.job))) throw new Error("Dispatch worktree path already exists");
     await this.rpc.call("initialize", { clientInfo: { name: "missiongo_linux", version: "1" }, capabilities: { experimentalApi: true } });
     this.rpc.write({ method: "initialized" });
-    const result = await this.rpc.call("thread/start", { cwd: realpathSync(this.job.repoPath), ...codexPolicy(this.planning ? "read-only" : this.job.mode),
+    const result = await this.rpc.call("thread/start", { cwd: realpathSync(this.job.repoPath), ...codexPolicy(this.job.mode),
       runtimeWorkspaceRoots: [this.job.repoPath, worktreePath(this.job)], ...(this.job.model ? { model: this.job.model } : {}) });
     this.ref = id(result.thread?.id);
-    validatePolicy(result, this.job, this.planning);
+    validatePolicy(result, this.job);
     this.model=result.model ?? this.job.model ?? "";
-    if(!this.model) throw new Error("Codex did not confirm the planning model");
+    if(!this.model) throw new Error("Codex did not confirm the selected model");
     const response = await this.rpc.call("mcpServer/tool/call", { threadId: this.ref, server: "missiongo", tool: "get_current_account", arguments: {} });
     const account = response.structuredContent ?? JSON.parse(response.content?.find((c: Wire) => c.type === "text")?.text ?? "{}");
     if (response.isError || account.capabilities?.canComment !== true || !account.capabilities?.writeTools?.includes("claim_item") || !account.capabilities?.writeTools?.includes("append_comment")) {
@@ -150,10 +148,10 @@ export class CodexAdapter implements Adapter {
   private turn(text: string, commandId: string): Wire {
     return { threadId: this.ref, input: [{ type: "text", text }], clientUserMessageId: commandId,
       ...(this.job.model ? { model: this.job.model } : {}), ...(this.job.effort ? { effort: this.job.effort } : {}),
-      approvalPolicy:"on-request",approvalsReviewer:codexPolicy(this.planning ? "read-only" : this.job.mode).approvalsReviewer,
-      sandboxPolicy:this.planning || this.job.mode==="read-only" ? {type:"readOnly"} : {
+      approvalPolicy:"on-request",approvalsReviewer:codexPolicy(this.job.mode).approvalsReviewer,
+      sandboxPolicy:this.job.mode==="read-only" ? {type:"readOnly"} : {
         type:"workspaceWrite",writableRoots:[this.job.repoPath,worktreePath(this.job)],networkAccess:false,excludeTmpdirEnvVar:false,excludeSlashTmp:false},
-      collaborationMode:{mode:this.planning ? "plan" : "default",settings:{model:this.model,reasoning_effort:this.job.effort ?? null,developer_instructions:null}} };
+      collaborationMode:{mode:"default",settings:{model:this.model,reasoning_effort:this.job.effort ?? null,developer_instructions:null}} };
   }
   async snapshot(): Promise<Snapshot> {
     if (this.closed) return { status: "unavailable", messages: [], error: "Codex control host disconnected; no automatic restart", ...(this.lastApproval ? { approval: this.lastApproval } : {}) };
@@ -169,7 +167,7 @@ export class CodexAdapter implements Adapter {
     } catch { history = { complete: false, error: "unavailable" }; }
     return { status: active ? "active" : lastTurn?.status === "failed" ? "failed" : "idle", messages: this.lastMessages, turnActive: active, history,
       ...(history.error ? { error: "codex_history_limited: visible item history could not be read" } : {}),
-      mode:this.planning ? "read-only" : normalizeAgentMode("codex",this.job.mode), waitingForInput: approval?.status === "pending", ...(approval ? { approval } : {}) };
+      mode:normalizeAgentMode("codex",this.job.mode), waitingForInput: approval?.status === "pending", ...(approval ? { approval } : {}) };
   }
   private async runtime(): Promise<{ thread: Wire; lastTurn: Wire | undefined }> {
     const { thread } = await this.rpc.call("thread/read", { threadId: this.ref, includeTurns: false });
@@ -221,11 +219,10 @@ export class CodexAdapter implements Adapter {
   async settings(settings: NonNullable<Session["desiredSettings"]>): Promise<void> {
     if (settings.mode) codexPolicy(settings.mode);
     const updated = { ...this.job, ...settings };
-    const planning=settings.planning ?? (settings.planApproved===undefined ? this.planning : !settings.planApproved);
-    const policy = codexPolicy(planning ? "read-only" : updated.mode);
+    const policy = codexPolicy(updated.mode);
     let result=await this.rpc.call("thread/resume", { threadId: this.ref, excludeTurns: true, ...policy, ...(updated.model ? { model: updated.model } : {}) });
     if (result.thread?.id !== this.ref) throw new InputRejected("Codex resumed a different native thread; settings were not applied");
-    try { validatePolicy(result, updated, planning); }
+    try { validatePolicy(result, updated); }
     catch {
       // Loaded threads may ignore resume overrides. Do not unload or send a
       // turn to apply permissions: update explicitly, then verify live state.
@@ -240,9 +237,9 @@ export class CodexAdapter implements Adapter {
       result = await this.rpc.call("thread/resume", { threadId: this.ref, excludeTurns: true });
       if (result.thread?.id !== this.ref) throw new InputRejected("Codex resumed a different native thread; settings were not confirmed");
     }
-    validatePolicy(result,updated,planning);
+    validatePolicy(result,updated);
     this.model=result.model ?? updated.model ?? this.model;
-    this.planning=planning; this.job = updated;
+    this.job = updated;
   }
   async archive(restore: boolean): Promise<void> { await this.rpc.call(restore ? "thread/unarchive" : "thread/archive", { threadId: this.ref }); }
   async retryApproval(retry: NonNullable<Session["approvalRetry"]>): Promise<void> {
