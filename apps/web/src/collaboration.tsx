@@ -73,6 +73,21 @@ function Failure({ error }: { error: string }) {
   ) : null;
 }
 
+/** Place the dependency menu inside the detail scroller, above or below the trigger. */
+function placeCollaborationMenu(menu: HTMLDetailsElement) {
+  const box = menu.getBoundingClientRect();
+  const area = menu.closest(".detail-scroll")?.getBoundingClientRect();
+  const below = Math.min(innerHeight, area?.bottom ?? innerHeight) - box.bottom;
+  const above = box.top - Math.max(0, area?.top ?? 0);
+  const popover = menu.querySelector(".detail-more-menu-popover");
+  const height = popover?.scrollHeight ?? 0;
+  const openAbove = below < height + 7 && above > below;
+  menu.dataset.side = openAbove ? "above" : "below";
+  menu.style.setProperty("--collaboration-menu-height", `${Math.max(44, (openAbove ? above : below) - 7)}px`);
+  menu.dataset.align = "end";
+  if ((popover?.getBoundingClientRect().left ?? 0) < Math.max(8, area?.left ?? 0)) menu.dataset.align = "start";
+}
+
 export function CollaborationPanel({
   item,
   requestedAction,
@@ -105,6 +120,17 @@ export function CollaborationPanel({
     queryFn: () => collab.context(item.key),
     refetchInterval: 15000,
   });
+  // Native <details> can open before React's toggle handler is in play (a click
+  // right after a viewport change). Observe the attribute so placement never
+  // depends on that race.
+  useEffect(() => {
+    const menu = addMenu.current;
+    if (!menu) return undefined;
+    const place = () => { if (menu.open) placeCollaborationMenu(menu); };
+    const observer = new MutationObserver(place);
+    observer.observe(menu, { attributes: true, attributeFilter: ["open"] });
+    return () => observer.disconnect();
+  }, [q.data?.canRequest]);
   const refresh = async () => {
     await Promise.all([
       client.invalidateQueries({ queryKey: ["collaboration"] }),
@@ -180,18 +206,7 @@ export function CollaborationPanel({
             }}
             onToggle={(event) => {
               const menu = event.currentTarget;
-              if (!menu.open) return;
-              const box = menu.getBoundingClientRect();
-              const area = menu.closest(".detail-scroll")?.getBoundingClientRect();
-              const below = Math.min(innerHeight, area?.bottom ?? innerHeight) - box.bottom;
-              const above = box.top - Math.max(0, area?.top ?? 0);
-              const popover = menu.querySelector(".detail-more-menu-popover");
-              const height = popover?.scrollHeight ?? 0;
-              const openAbove = below < height + 7 && above > below;
-              menu.dataset.side = openAbove ? "above" : "below";
-              menu.style.setProperty("--collaboration-menu-height", `${Math.max(44, (openAbove ? above : below) - 7)}px`);
-              menu.dataset.align = "end";
-              if ((popover?.getBoundingClientRect().left ?? 0) < Math.max(8, area?.left ?? 0)) menu.dataset.align = "start";
+              if (menu.open) placeCollaborationMenu(menu);
             }}
           >
             <summary className="text-button"><Plus size={16} aria-hidden="true" />{t("collaborationAddDependency")}</summary>
@@ -609,8 +624,15 @@ function CollaborationRequest({
   const remainingSlots = Math.max(0, COLLABORATION_FILE_LIMIT - (draft.diagnosticLog.trim() ? 1 : 0) - files.length);
   const { isDraggingFiles, dropHandlers } = useFileDropZone(addIncomingFiles, { canAccept: remainingSlots > 0 });
   const target = targets.data?.targets.find((g) => g.id === grantId);
-  const dirty = !pendingUpload && Boolean(
-    hasCaptureDraftContent(draft) || grantId || acceptance.trim() || files.length > 0 || preview,
+  // A saved draft opened for review is not "unsaved" until something changes;
+  // Escape closes it directly, as the dependency audit expects.
+  const [initialSnapshot] = useState(() => JSON.stringify({
+    draft: initial ? draftFromServer(initial) : EMPTY_CAPTURE_DRAFT,
+    grantId: initial?.grantId ?? "",
+    acceptance: initial?.acceptance ?? "",
+  }));
+  const dirty = !pendingUpload && (
+    JSON.stringify({ draft, grantId, acceptance }) !== initialSnapshot || files.length > 0
   );
 
   const clearLocalDraft = async () => {
