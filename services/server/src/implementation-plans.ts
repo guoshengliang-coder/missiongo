@@ -7,7 +7,8 @@ import type { MissionGoDatabase } from "./storage/database.js";
 export const planDigest = (value: unknown): string => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 interface ApprovalRow { revision: string; plan_hash: string; scope_json: string; command_id: string | null }
 
-/** Approval facts are written only by an authenticated human route or a native elicitation response.
+/** Approval facts are written only by an authenticated human route, native elicitation response,
+ * or the migration-frozen exact native implementation instruction recovery adapter.
  * No MCP argument, prose classifier, setting change or tool approval can grant this authority. */
 export class ImplementationPlans {
   constructor(private readonly db: MissionGoDatabase) {}

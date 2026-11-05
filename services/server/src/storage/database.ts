@@ -12,6 +12,7 @@ import { INITIAL_SCHEMA, MANAGED_RUN_SCHEMA } from "./schema.js";
 import { MANAGED_EXECUTION_SCHEMA } from "./managed-execution-schema.js";
 import { DECISION_SCHEMA } from "./decision-schema.js";
 import { DINGTALK_SCHEMA } from "./dingtalk-schema.js";
+import { LEGACY_PLAN_RECOVERY_SCHEMA, captureLegacyPlanRecoveries } from "./legacy-plan-recovery.js";
 
 const LEGACY_CODEX_THREAD_LINK = /^codex:\/\/threads\/[A-Za-z0-9-]{1,100}$/;
 
@@ -2308,6 +2309,16 @@ export class MissionGoDatabase {
         this.connection.exec("ALTER TABLE external_agent_session_items ADD COLUMN link_kind TEXT NOT NULL DEFAULT 'handling' CHECK(link_kind IN ('approval','handling'));");
         this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
           .run(202611050850, new Date().toISOString());
+      });
+    }
+
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611051005").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611051005").get()) return;
+        this.connection.exec(LEGACY_PLAN_RECOVERY_SCHEMA);
+        const now = new Date().toISOString();
+        captureLegacyPlanRecoveries(this.connection, now);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202611051005, now);
       });
     }
 

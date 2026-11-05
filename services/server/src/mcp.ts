@@ -1,5 +1,6 @@
 import { AgentSessionStore } from "./agent-session-store.js";
 import { ImplementationPlans, planDigest, requestNativePlanApproval } from "./implementation-plans.js";
+import { recoverLegacyPlanApproval } from "./legacy-plan-approval-recovery.js";
 import { Collaborations, collaborationDraftSchema } from "./collaboration.js";
 import { transitionPolicy, itemRoles } from "./item-policy.js";
 import { deliveryRound } from "./delivery-round.js";
@@ -963,7 +964,7 @@ export function createMissionGoMcpServer(
     "claim_item",
     {
       title: "Claim a ready work item",
-      description: "Claim the user-named ready item before editing code. A persisted human-approved current plan is required, via the Web approval button or request_plan_approval. Mode or chat changes cannot satisfy this gate. Tell the user before claiming. "
+      description: "Claim the user-named ready item before editing code. A persisted human-approved current plan is required, via the Web approval button or request_plan_approval. Mode or chat changes cannot satisfy this gate. For pre-upgrade Codex dispatches only, the server can restore a migration-frozen native plan decision from the node-synchronized exact plan and its complete PLEASE IMPLEMENT THIS PLAN user instruction. No caller-supplied approval is accepted; restored native evidence is audited separately from today's claim. If implementation mode is still applying, retain the same claim key and wait for the node; never ask for the same approval again. Tell the user before claiming. "
         + "For an externally started conversation, pass session with a verified native ID or a stable conversation UUID marked tracking; "
         + "the returned sessionId records progress in the Web console. For a MissionGo-dispatched conversation, pass the dispatchId from its trusted launch prompt. "
         + "A project conversation may claim items in its own product using its original dispatchId; a verified native session identity also reuses that project conversation. "
@@ -986,6 +987,15 @@ export function createMissionGoMcpServer(
       const key = requireItemAccess(ctx, store, itemKey);
       assertBuilderExecution(store.database,store.getWorkItem(key).id,access.accountId);
       if (options.canOperate && !options.canOperate(access.accountId,store.getWorkItem(key).productId)) throw new Error("Product operation is not permitted.");
+      // Approval recovery is durable even when this claim must wait for the node's
+      // implementation-mode acknowledgement. It never issues a claim credential.
+      if (dispatchId) recoverLegacyPlanApproval(store, {
+        accountId:access.accountId,clientId:access.clientId ?? "",dispatchId,itemKey:key,
+        authorize: candidateKey => {
+          requireItemAccess(ctx,store,candidateKey);
+          if(options.canOperate&&!options.canOperate(access.accountId,store.getWorkItem(candidateKey).productId)) throw new Error("Product operation is not permitted.");
+        },
+      });
       const result = store.database.transaction(() => {
         const digest = createHash("sha256").update(JSON.stringify([key, agentId, session ?? null, dispatchId ?? null])).digest("hex");
         const receipt = store.database.connection.prepare("SELECT digest, result_json FROM mcp_agent_claim_receipts WHERE account_id = ? AND client_id = ? AND idempotency_key = ?")
