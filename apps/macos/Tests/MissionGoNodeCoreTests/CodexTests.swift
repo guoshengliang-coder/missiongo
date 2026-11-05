@@ -1118,6 +1118,130 @@ final class CodexAppServerControlTests: XCTestCase {
         XCTAssertEqual(turn?["clientUserMessageId"] as? String, "command-1")
     }
 
+    func testReplyUpdatesLoadedThreadWhenResumeKeepsPreviousPermissions() async throws {
+        for mode in ["read-only", "auto"] {
+            let updated = Locked(false)
+            let settings = try XCTUnwrap(CodexModes.threadSettings(for: mode))
+            let server = try FakeAppServer { message in
+                guard let id = message["id"] else { return [] }
+                let method = message["method"] as? String
+                if method == "thread/settings/update" { updated.withLock { $0 = true } }
+                let result: [String: Any] = method == "thread/resume" ? [
+                    "cwd": "/synthetic/repo", "runtimeWorkspaceRoots": ["/synthetic/repo", "/synthetic/worktree"],
+                    "model": "test-model", "approvalPolicy": updated.current ? "on-request" : "never",
+                    "approvalsReviewer": updated.current ? settings.approvalsReviewer : "user",
+                    "sandbox": ["type": updated.current ? (mode == "read-only" ? "readOnly" : "workspaceWrite") : "dangerFullAccess"],
+                    "thread": ["id": "thread-1", "status": ["type": "idle"]],
+                ] : [:]
+                return [["jsonrpc": "2.0", "id": id, "result": result]]
+            }
+            try await CodexAppServerControl(timeout: 5).sendMessage(socketPath: server.path, threadId: "thread-1",
+                text: "Continue", clientUserMessageId: "command-1", overrides: CodexTurnOverrides(settings: settings))
+            server.waitUntilDone()
+            XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/resume", "thread/settings/update", "thread/resume", "turn/start"])
+            let params = try XCTUnwrap(server.params(of: "thread/settings/update"))
+            XCTAssertEqual(params["approvalPolicy"] as? String, "on-request")
+            XCTAssertEqual(params["approvalsReviewer"] as? String, settings.approvalsReviewer)
+            XCTAssertNil(params["sandbox"], "The live-update method takes sandboxPolicy, not sandbox")
+            let policy = try XCTUnwrap(params["sandboxPolicy"] as? [String: Any])
+            XCTAssertEqual(policy["type"] as? String, mode == "read-only" ? "readOnly" : "workspaceWrite")
+            XCTAssertEqual(policy["networkAccess"] as? Bool, false)
+            if mode == "auto" {
+                XCTAssertEqual(policy["writableRoots"] as? [String], ["/synthetic/repo", "/synthetic/worktree"])
+            }
+            XCTAssertEqual(server.params(of: "turn/start")?["clientUserMessageId"] as? String, "command-1")
+        }
+    }
+
+    func testUpdateAcknowledgementAloneCannotAllowAReply() async throws {
+        let server = try FakeAppServer { message in
+            guard let id = message["id"] else { return [] }
+            let result: [String: Any] = message["method"] as? String == "thread/resume" ? [
+                "approvalPolicy": "never", "approvalsReviewer": "user", "sandbox": ["type": "dangerFullAccess"],
+                "thread": ["id": "thread-1", "status": ["type": "idle"]],
+            ] : [:]
+            return [["jsonrpc": "2.0", "id": id, "result": result]]
+        }
+        do {
+            try await CodexAppServerControl(timeout: 5).sendMessage(socketPath: server.path, threadId: "thread-1",
+                text: "Must not arrive", clientUserMessageId: "command-1", overrides: CodexTurnOverrides(settings: CodexModes.threadSettings(for: "read-only")))
+            XCTFail("An update acknowledgement must not count as effective permissions")
+        } catch let error as CodexControlError {
+            guard case .messageNotSent(let detail) = error else { return XCTFail("Unexpected error: \(error)") }
+            XCTAssertTrue(detail.contains("approvalPolicy: never，期望 on-request"))
+            XCTAssertTrue(detail.contains("sandbox.type: dangerFullAccess，期望 readOnly"))
+        }
+        server.waitUntilDone()
+        XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/resume", "thread/settings/update", "thread/resume"])
+    }
+
+    func testUnsupportedLiveUpdateDoesNotSendOrRestartTheThread() async throws {
+        let server = try FakeAppServer { message in
+            guard let id = message["id"] else { return [] }
+            if message["method"] as? String == "thread/settings/update" {
+                return [["jsonrpc": "2.0", "id": id, "error": ["code": -32601, "message": "Method not found"]]]
+            }
+            let result: [String: Any] = message["method"] as? String == "thread/resume" ? [
+                "approvalPolicy": "never", "approvalsReviewer": "user", "sandbox": ["type": "dangerFullAccess"],
+                "thread": ["id": "thread-1", "status": ["type": "idle"]],
+            ] : [:]
+            return [["jsonrpc": "2.0", "id": id, "result": result]]
+        }
+        do {
+            try await CodexAppServerControl(timeout: 5).sendMessage(socketPath: server.path, threadId: "thread-1",
+                text: "Must not arrive", clientUserMessageId: "command-1", overrides: CodexTurnOverrides(settings: CodexModes.threadSettings(for: "read-only")))
+            XCTFail("Unsupported live updates must fail closed")
+        } catch let error as CodexControlError {
+            guard case .messageNotSent = error else { return XCTFail("Unexpected error: \(error)") }
+        }
+        server.waitUntilDone()
+        XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/resume", "thread/settings/update"])
+    }
+
+    func testApplySettingsVerifiesTheLiveUpdateBeforeReportingSuccess() async throws {
+        let updated = Locked(false)
+        let server = try FakeAppServer { message in
+            guard let id = message["id"] else { return [] }
+            let method = message["method"] as? String
+            if method == "thread/settings/update" { updated.withLock { $0 = true } }
+            let result: [String: Any] = method == "thread/resume" ? [
+                "model": updated.current ? "test-model" : "old-model", "reasoningEffort": updated.current ? "high" : "low",
+                "approvalPolicy": updated.current ? "on-request" : "never", "approvalsReviewer": "user",
+                "sandbox": ["type": updated.current ? "readOnly" : "dangerFullAccess"], "thread": ["id": "thread-1"],
+            ] : [:]
+            return [["jsonrpc": "2.0", "id": id, "result": result]]
+        }
+        let result = try await CodexAppServerControl(timeout: 5).applySettings(socketPath: server.path, threadId: "thread-1",
+            overrides: CodexTurnOverrides(model: "test-model", effort: "high", settings: CodexModes.threadSettings(for: "read-only")))
+        server.waitUntilDone()
+        XCTAssertEqual(result, CodexAppliedSettings(model: "test-model", reasoningEffort: "high"))
+        XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/resume", "thread/settings/update", "thread/resume"])
+        XCTAssertEqual(server.params(of: "thread/settings/update")?["effort"] as? String, "high")
+    }
+
+    func testPermissionRecoveryRejectsWrongIdentityBusyThreadAndUnknownWorkspace() async throws {
+        for problem in ["identity", "busy", "workspace"] {
+            let server = try FakeAppServer { message in
+                guard let id = message["id"] else { return [] }
+                let result: [String: Any] = message["method"] as? String == "thread/resume" ? [
+                    "approvalPolicy": "never", "approvalsReviewer": "user", "sandbox": ["type": "dangerFullAccess"],
+                    "thread": ["id": problem == "identity" ? "another-thread" : "thread-1",
+                               "status": ["type": problem == "busy" ? "active" : "idle"]],
+                ] : [:]
+                return [["jsonrpc": "2.0", "id": id, "result": result]]
+            }
+            do {
+                try await CodexAppServerControl(timeout: 5).sendMessage(socketPath: server.path, threadId: "thread-1",
+                    text: "Must not arrive", clientUserMessageId: "command-1", overrides: CodexTurnOverrides(settings: CodexModes.threadSettings(for: "auto")))
+                XCTFail("Must reject unsafe permission recovery: \(problem)")
+            } catch let error as CodexControlError {
+                guard case .messageNotSent = error else { return XCTFail("Unexpected error: \(error)") }
+            }
+            server.waitUntilDone()
+            XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/resume"], problem)
+        }
+    }
+
     func testReplyContinuesAfterTransientSystemErrorFromResume() async throws {
         for info in ["serverOverloaded", "internalServerError", "httpConnectionFailed", "rateLimitExceeded"] {
             // Codex 0.163.0 reports a provider HTTP 503 in this object form.
