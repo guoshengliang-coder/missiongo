@@ -254,6 +254,48 @@ it.each(['new-text','new-turn'])("cancels when a native user input has %s, rathe
   expect(f.db.prepare('SELECT COUNT(*) AS n FROM agent_session_commands').get()).toMatchObject({n:0});
 });
 
+it("allows a fresh original claim after new input cancelled an unsent intent, without repeating approval",async()=>{
+  const f=await fixture();await f.call('claim_item',f.claimArgs);
+  await f.nodeReport({status:'active',turnState:{turnActive:true},messages:[{sourceId:'login-restored',role:'user',turnId:'user-turn',text:'The original node login is restored; continue this task.',occurredAt:new Date().toISOString()}]});
+  expect(f.db.prepare('SELECT state FROM implementation_plan_recovery_resumes').get()).toMatchObject({state:'cancelled'});
+  // Reports alone never revive the cancelled request. Only this authenticated
+  // original claim opts into a new wait for the now-current user input.
+  await f.nodeReport({status:'active',turnState:{turnActive:true}});
+  expect(f.db.prepare('SELECT state FROM implementation_plan_recovery_resumes').get()).toMatchObject({state:'cancelled'});
+  expect((await f.call('claim_item',f.claimArgs,f.tokenFor('another-client'))).isError).toBe(true);
+  expect(f.db.prepare('SELECT state FROM implementation_plan_recovery_resumes').get()).toMatchObject({state:'cancelled'});
+  const rearmed=await f.call('claim_item',f.claimArgs);
+  expect(rearmed.isError,JSON.stringify(rearmed)).not.toBe(true);
+  expect(rearmed.structuredContent).toMatchObject({claimPending:true,statusChanged:false,continuationScheduled:true});
+  expect(f.db.prepare('SELECT state FROM implementation_plan_recovery_resumes').get()).toMatchObject({state:'waiting'});
+  expect(f.db.prepare('SELECT COUNT(*) AS n FROM implementation_plan_approvals').get()).toMatchObject({n:1});
+  expect(f.db.prepare('SELECT COUNT(*) AS n FROM builder_execution_authorizations').get()).toMatchObject({n:0});
+  const revision=(f.db.prepare('SELECT settings_revision FROM agent_sessions WHERE id=?').get(f.sessionId) as {settings_revision:number}).settings_revision;
+  await f.nodeReport({settingsRevision:revision,turnState:{turnActive:false}});
+  await f.nodeReport({settingsRevision:revision,turnState:{turnActive:false}});
+  expect(f.db.prepare('SELECT COUNT(*) AS n FROM agent_session_commands').get()).toMatchObject({n:1});
+  expect((await f.call('claim_item',f.claimArgs)).structuredContent).toMatchObject({item:{status:'in_progress'},executionAuthorization:expect.any(String)});
+});
+
+it("does not revive a stopped wait on a repeated claim without new native user input",async()=>{
+  const f=await fixture();await f.call('claim_item',f.claimArgs);
+  new AgentSessionStore(f.store.database).enqueueInterrupt(config.id,f.sessionId);
+  expect((await f.call('claim_item',f.claimArgs)).isError).toBe(true);
+  expect(f.db.prepare('SELECT state FROM implementation_plan_recovery_resumes').get()).toMatchObject({state:'cancelled'});
+});
+
+it("never rearms a previously queued cancelled command even when native user input changes",async()=>{
+  const f=await fixture();await f.call('claim_item',f.claimArgs);f.applyMode();
+  await f.nodeReport({turnState:{turnActive:false}});
+  const command=f.db.prepare('SELECT id FROM agent_session_commands').get() as {id:string};
+  new AgentSessionStore(f.store.database).cancel(config.id,f.sessionId,command.id);
+  const {armRecoveredPlanResume}=await import('./recovered-plan-resume.js');
+  await f.nodeReport({messages:[{sourceId:'later-user',role:'user',turnId:'later-turn',text:'Continue after review.',occurredAt:new Date().toISOString()}]});
+  expect(armRecoveredPlanResume(f.store,config.id,'original-client','original-dispatch')).toBe(false);
+  expect(f.db.prepare('SELECT state,command_id FROM implementation_plan_recovery_resumes').get()).toMatchObject({state:'cancelled',command_id:command.id});
+  expect(f.db.prepare('SELECT COUNT(*) AS n FROM agent_session_commands').get()).toMatchObject({n:1});
+});
+
 it("retains the original source fingerprint semantics of pre-upgrade waiting intents",async()=>{
   const f=await fixture();await f.call('claim_item',f.claimArgs);f.applyMode();
   const {nativeMessageDigest}=await import('./storage/legacy-plan-recovery.js');
