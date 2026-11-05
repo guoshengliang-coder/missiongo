@@ -8,7 +8,7 @@ const apps:ReturnType<typeof buildApp>[]=[];
 afterEach(async()=>{await Promise.all(apps.splice(0).map(app=>app.close()));});
 const config={id:"plan-owner",username:"plans@example.test",passwordScrypt:hashPassword("fixture-password"),sessionSecret:"synthetic-plan-gate-signing-key",cookieSecure:false};
 
-it.each([{kind:"codex",mode:"auto"},{kind:"claude_code",mode:"bypassPermissions"},{kind:"claude_code",mode:"plan"},{kind:"opencode",mode:"build"},{kind:"opencode",mode:"plan"}] as const)("$kind/$mode cannot claim on mode changes, text, forged approval fields or a stale proposal",async ({kind,mode})=>{
+it.each([{kind:"codex",mode:"auto"},{kind:"claude_code",mode:"bypassPermissions"},{kind:"claude_code",mode:"plan"},{kind:"opencode",mode:"build"},{kind:"opencode",mode:"plan"}] as const)("$kind/$mode claims independently of approval and native mode; plan decisions remain scope-bound",async ({kind,mode})=>{
  const app=buildApp({adminAccount:config,writeTools:"comments"});apps.push(app);
  const store=app.missionGoStore,accounts=app.missionGoAccounts;
  const login=await app.inject({method:"POST",url:"/api/v1/auth/login",payload:{username:config.username,password:"fixture-password"}});
@@ -35,7 +35,7 @@ it.each([{kind:"codex",mode:"auto"},{kind:"claude_code",mode:"bypassPermissions"
   return JSON.parse(raw).result;
  };
  const claimArgs={itemKey:item.key,dispatchId:dispatch.id,agentId:"Test agent",idempotencyKey:"one-claim"};
- expect((await call("claim_item",claimArgs)).isError).toBe(true);
+ expect((await call("claim_item",claimArgs)).isError).not.toBe(true);
  const proposal={itemKeys:[item.key],dispatchId:dispatch.id,plan:"Bound plan",validation:"Verify the new behavior",approvalMethod:"web",approved:true};
  const initial=settings();
  expect(initial).toMatchObject({mode,planning:false});
@@ -43,14 +43,14 @@ it.each([{kind:"codex",mode:"auto"},{kind:"claude_code",mode:"bypassPermissions"
  const first=await call("request_plan_approval",proposal);
  expect(settings()).toEqual(initial);
  expect(first.structuredContent).toMatchObject({approved:false,approvalRequired:true});
- expect(store.getWorkItem(item.key).status).toBe("ready");
+ expect(store.getWorkItem(item.key).status).toBe("in_progress");
  const changed=await app.inject({method:"PATCH",url:`/api/v1/agent-sessions/${id}/settings`,headers,payload:{mode:mode==="plan" ? "plan" : kind==="opencode" ? mode : "default"}});
  expect(changed.statusCode,changed.body).toBe(200);
- expect((await call("claim_item",claimArgs)).isError).toBe(true);
+ expect((await call("claim_item",claimArgs)).isError).not.toBe(true);
  const chosen=settings();
  sessions.recordSnapshot({nodeId:node.nodeId,sessionId:id,status:"idle",messages:[],mode:chosen.mode!,settingsRevision:chosen.revision});
- // Even confirmed writable permissions cannot authorize implementation.
- expect((await call("claim_item",claimArgs)).isError).toBe(true);
+ // Mode changes neither grant plan approval nor interfere with a claim receipt.
+ expect((await call("claim_item",claimArgs)).isError).not.toBe(true);
  const second=await call("request_plan_approval",{...proposal,plan:"Revised bound plan"});
  const old=await app.inject({method:"POST",url:`/api/v1/agent-sessions/${id}/plan-approval`,headers,payload:{revision:first.structuredContent.revision}});
  expect(old.statusCode).toBe(409);
@@ -62,7 +62,7 @@ it.each([{kind:"codex",mode:"auto"},{kind:"claude_code",mode:"bypassPermissions"
  expect(settings()).toEqual(beforeApproval);
  let desired=settings();
  if(mode==="plan") {
-  expect((await call("claim_item",claimArgs)).isError).toBe(true);
+  expect((await call("claim_item",claimArgs)).isError).not.toBe(true);
   await app.inject({method:"PATCH",url:`/api/v1/agent-sessions/${id}/settings`,headers,payload:{mode:kind==="opencode" ? "build" : "default"}});
   desired=settings();
   sessions.recordSnapshot({nodeId:node.nodeId,sessionId:id,status:"idle",messages:[],mode:desired.mode!,settingsRevision:desired.revision});

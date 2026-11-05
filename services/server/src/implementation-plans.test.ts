@@ -12,24 +12,24 @@ function fixture(path=":memory:") {
  const item=store.createWorkItem({productId:product.id,status:"ready",type:"task",title:"Implement scoped work",description:"Current scope",priority:"normal",environment:{platform:"shared"}});
  return {store,item,plans:new ImplementationPlans(store.database)};
 }
-it("denies unapproved claims, wrong owners, other sessions and a widened batch",()=>{
+it("keeps approval scope separate from claiming responsibility",()=>{
  const {plans,item}=fixture();
- expect(()=>plans.assertClaim("owner","conversation",item.key)).toThrow(/approve/);
+ expect(()=>plans.assertApprovedScope("owner","conversation",item.key)).toThrow(/approval/);
  plans.record({accountId:"owner",identity:"conversation",revision:"v1",planHash:"plan",keys:[item.key],source:"native"});
- expect(()=>plans.assertClaim("owner","conversation",item.key)).not.toThrow();
- expect(()=>plans.assertClaim("other","conversation",item.key)).toThrow();
- expect(()=>plans.assertClaim("owner","other-session",item.key)).toThrow();
- expect(()=>plans.assertClaim("owner","conversation","PLAN-999")).toThrow();
+ expect(()=>plans.assertApprovedScope("owner","conversation",item.key)).not.toThrow();
+ expect(()=>plans.assertApprovedScope("other","conversation",item.key)).toThrow();
+ expect(()=>plans.assertApprovedScope("owner","other-session",item.key)).toThrow();
+ expect(()=>plans.assertApprovedScope("owner","conversation","PLAN-999")).toThrow();
 });
 it("invalidates changed requirements and superseded proposals without treating chat or mode changes as approval",()=>{
  const {plans,item,store}=fixture();
  plans.record({accountId:"owner",identity:"conversation",revision:"v1",planHash:"plan",keys:[item.key],source:"web"});
  plans.request("owner","conversation","v2");
- expect(()=>plans.assertClaim("owner","conversation",item.key)).toThrow();
+ expect(()=>plans.assertApprovedScope("owner","conversation",item.key)).toThrow();
  expect(()=>plans.assertRequest("owner","conversation","v1")).toThrow(/newer/);
  plans.record({accountId:"owner",identity:"conversation",revision:"v2",planHash:"new plan",keys:[item.key],source:"web"});
  store.database.connection.prepare("UPDATE work_items SET content_version=content_version+1 WHERE id=?").run(item.id);
- expect(()=>plans.assertClaim("owner","conversation",item.key)).toThrow();
+ expect(()=>plans.assertApprovedScope("owner","conversation",item.key)).toThrow();
 });
 it("retains the approval after a real database restart and keeps its original human provenance",()=>{
  const root=mkdtempSync(join(tmpdir(),"implementation-plan-"));
@@ -40,7 +40,7 @@ it("retains the approval after a real database restart and keeps its original hu
   store.close();stores.splice(stores.indexOf(store),1);
   const reopened=new MissionGoStore(path);stores.push(reopened);
   const next=new ImplementationPlans(reopened.database);
-  expect(()=>next.assertClaim("owner","conversation",item.key)).not.toThrow();
+  expect(()=>next.assertApprovedScope("owner","conversation",item.key)).not.toThrow();
   expect(next.commandRevision("approved-command")).toBe("v1");
   expect(reopened.database.connection.prepare("SELECT source FROM implementation_plan_approvals").get()).toMatchObject({source:"web"});
   reopened.close();stores.splice(stores.indexOf(reopened),1);

@@ -1,4 +1,3 @@
-import { normalizeAgentMode } from "@missiongo/domain";
 import type { ServerContext } from "@modelcontextprotocol/server";
 import { createHash, randomUUID } from "node:crypto";
 import { conflict } from "./errors.js";
@@ -8,7 +7,7 @@ export const planDigest = (value: unknown): string => createHash("sha256").updat
 interface ApprovalRow { revision: string; plan_hash: string; scope_json: string; command_id: string | null }
 
 /** Approval facts are written only by an authenticated human route, native elicitation response,
- * or the migration-frozen exact native implementation instruction recovery adapter.
+ * or an exact native implementation instruction bound to the original pending plan.
  * No MCP argument, prose classifier, setting change or tool approval can grant this authority. */
 export class ImplementationPlans {
   constructor(private readonly db: MissionGoDatabase) {}
@@ -29,17 +28,17 @@ export class ImplementationPlans {
       WHERE d.dispatch_id=? ORDER BY w.item_key`).all(dispatchId) as {key:string}[]).map(row => row.key);
   }
 
-  request(accountId: string, identity: string, revision: string, proposal?: {keys: readonly string[];plan:string;validation:string}): void {
+  request(accountId: string, identity: string, revision: string, proposal?: {keys: readonly string[];plan:string;validation:string;origin?:"native"|"attention"}): void {
     this.db.transaction(() => {
     const previous=this.db.connection.prepare("SELECT revision FROM implementation_plan_requests WHERE account_id=? AND identity_key=?").get(accountId,identity) as {revision:string}|undefined;
     if(previous?.revision===revision) return;
     this.db.connection.prepare(`INSERT INTO implementation_plan_requests(account_id,identity_key,revision,proposal_json,scope_json) VALUES (?,?,?,?,?)
       ON CONFLICT(account_id,identity_key) DO UPDATE SET revision=excluded.revision,proposal_json=excluded.proposal_json,scope_json=excluded.scope_json`)
-      .run(accountId,identity,revision,proposal ? JSON.stringify({...proposal,submittedAt:new Date().toISOString()}) : null,proposal ? this.scope(proposal.keys) : null);
+      .run(accountId,identity,revision,proposal ? JSON.stringify({...proposal,submittedAt:new Date().toISOString(),requestedAt:new Date().toISOString()}) : null,proposal ? this.scope(proposal.keys) : null);
     });
   }
 
-  proposal(accountId:string,identity:string): {revision:string;keys:string[];plan:string;validation:string;submittedAt?:string;approvedAt?:string;approved:boolean;valid:boolean}|undefined {
+  proposal(accountId:string,identity:string): {revision:string;keys:string[];plan:string;validation:string;origin?:"native"|"attention";submittedAt?:string;approvedAt?:string;requestedAt?:string;nativeSourceId?:string;approved:boolean;valid:boolean}|undefined {
     const row=this.db.connection.prepare("SELECT revision,proposal_json,scope_json FROM implementation_plan_requests WHERE account_id=? AND identity_key=?")
       .get(accountId,identity) as {revision:string;proposal_json:string|null;scope_json:string|null}|undefined;
     if(!row?.proposal_json) return undefined;
@@ -74,27 +73,17 @@ export class ImplementationPlans {
     return row.scope_json===this.scope((JSON.parse(row.scope_json) as {key:string}[]).map(entry=>entry.key));
   }
 
-  assertClaim(accountId: string, identity: string, key: string): void {
+  assertApprovedScope(accountId: string, identity: string, key: string): void {
     const rows = this.db.connection.prepare(`SELECT revision,plan_hash,scope_json,command_id FROM implementation_plan_approvals
       WHERE account_id=? AND identity_key=? AND revision=(SELECT revision FROM implementation_plan_requests WHERE account_id=? AND identity_key=?) ORDER BY approved_at DESC,rowid DESC LIMIT 1`).all(accountId,identity,accountId,identity) as unknown as ApprovalRow[];
     const row = rows[0];
     if (row) {
       const keys = (JSON.parse(row.scope_json) as {key:string}[]).map(entry => entry.key);
       if (keys.includes(key) && row.scope_json === this.scope(keys)) {
-        if(identity.startsWith("dispatch:")) {
-          const session=this.db.connection.prepare(`SELECT s.agent_kind,s.mode,s.implementation_mode,s.settings_revision,s.applied_settings_revision,s.settings_error_revision,s.settings_error
-            FROM agent_sessions s JOIN dispatches d ON d.id=s.dispatch_id WHERE d.id=? AND d.account_id=?`).get(identity.slice(9),accountId) as {agent_kind:string;mode:string|null;implementation_mode:string|null;settings_revision:number;applied_settings_revision:number;settings_error_revision:number|null;settings_error:string|null}|undefined;
-          if(!session || session.applied_settings_revision<session.settings_revision
-            || (session.settings_error!==null && (session.settings_error_revision ?? -1)>=session.settings_revision)
-            || normalizeAgentMode(session.agent_kind,session.mode ?? "")!==normalizeAgentMode(session.agent_kind,session.implementation_mode ?? "")
-            || session.agent_kind!=="codex" && session.mode==="plan") {
-            throw conflict("implementation_mode_not_applied","The plan is approved, but the native implementation mode is not confirmed. Leave native Plan explicitly and wait for the node to apply the chosen mode; do not approve the plan again.");
-          }
-        }
         return;
       }
     }
-    throw conflict("implementation_plan_approval_required", "Review the current implementation plan and approve it with the Web approval button or request_plan_approval in the native client before claiming. Mode changes and chat text are not plan approval.");
+    throw conflict("implementation_plan_approval_required", "The current implementation plan has no approval for this scope. Claiming responsibility and native permissions are independent.");
   }
 
   canImplement(accountId:string,identity:string): boolean {
@@ -114,6 +103,22 @@ export class ImplementationPlans {
   attachCommand(accountId:string,identity:string,revision:string,commandId:string): void {
     this.db.connection.prepare(`UPDATE implementation_plan_approvals SET command_id=?
       WHERE account_id=? AND identity_key=? AND revision=? AND command_id IS NULL`).run(commandId,accountId,identity,revision);
+  }
+
+  /** The original native caller has continued. Cancel only our unsent handoff;
+   * never touch human input, in-flight or uncertain deliveries. */
+  nativeContinued(accountId:string,identity:string,revision:string): void {
+    this.db.transaction(()=>{
+      const row=this.db.connection.prepare(`SELECT command_id FROM implementation_plan_approvals
+        WHERE account_id=? AND identity_key=? AND revision=?`).get(accountId,identity,revision) as {command_id:string|null}|undefined;
+      if(row?.command_id) for(const table of ["agent_session_commands","external_native_commands"]) {
+        this.db.connection.prepare(`UPDATE ${table} SET status='cancelled',cancelled_at=? WHERE id=? AND status='queued'`)
+          .run(new Date().toISOString(),row.command_id);
+      }
+      this.db.connection.prepare(`UPDATE implementation_plan_continuations SET state='cancelled'
+        WHERE account_id=? AND identity_key=? AND revision=? AND state IN ('waiting','queued')`)
+        .run(accountId,identity,revision);
+    });
   }
 
   commandRevision(commandId: string): string | undefined {

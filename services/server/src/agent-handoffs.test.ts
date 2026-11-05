@@ -88,7 +88,7 @@ it("hands human work to the exact original external conversation and claims once
   expect(f.db.prepare("SELECT COUNT(*) AS n FROM work_item_events WHERE item_id=? AND event_type='execution_taken_over'").get(f.item.id)).toMatchObject({n:1});
 });
 
-it("creates a bound dispatch atomically, preserves plan/mode gates, and permits no ordinary in-progress dispatch",async()=>{
+it("creates a bound dispatch atomically, claims independently of plan/mode, and permits no ordinary in-progress dispatch",async()=>{
   const f=await fixture();await f.confirm();
   const dispatches=new DispatchStore(f.store.database),sessions=new AgentSessionStore(f.store.database);
   const node=dispatches.registerNode({accountId:config.id,name:"Handoff fixture",installationId:randomUUID()});
@@ -106,11 +106,7 @@ it("creates a bound dispatch atomically, preserves plan/mode gates, and permits 
   const id=sessions.createForDispatch({dispatchId:d.id,nodeId:node.nodeId,sessionRef:"handoff-thread"});
   sessions.recordSnapshot({nodeId:node.nodeId,sessionId:id,status:"idle",messages:[],turnState:{turnActive:false}});
   const identity={dispatchId:d.id};
-  expect((await f.claim(identity)).isError).toBe(true);
-  const p=await f.propose(identity);await f.approve(p);
-  expect((await f.claim(identity)).isError).toBe(true);
-  const desired=sessions.listForNode(node.nodeId).find(row=>row.id===id)!.desiredSettings!;
-  sessions.recordSnapshot({nodeId:node.nodeId,sessionId:id,status:"idle",messages:[],mode:desired.mode!,settingsRevision:desired.revision});
+  // The human handoff supplies execution ownership; plan approval and mode do not gate claiming.
   const result=await f.claim(identity);
   expect(result.isError,JSON.stringify(result)).not.toBe(true);
   expect(result.structuredContent).toMatchObject({statusChanged:false,item:{status:"in_progress"},executionAuthorization:expect.any(String)});

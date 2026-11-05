@@ -1173,7 +1173,7 @@ export function AgentSessionConsole({
                       </summary>
                       <div className="agent-console-attention-detail">
                         {(!showPlanApproval || !planApproved) && <p>{selected.attention.reason}</p>}
-                        {showPlanApproval && <p>{planApproved ? t(planApproved.continuationQueued ? "agentPlanApprovedQueued" : "agentPlanApprovedNoReply") : t("agentPlanReviewHelp")}</p>}
+                        {showPlanApproval && <p>{planApproved ? t(planApproved.continuationQueued ? "agentPlanApprovedQueued" : planApproved.continuationPending ? "agentPlanApprovedWaiting" : "agentPlanApprovedNoReply") : t("agentPlanReviewHelp")}</p>}
                         {showPlanApproval && !planApproved && !canApprovePlan && <p className="agent-console-approve-reason" role="status">
                           {sessionQuery.isPending ? t("agentPlanChecking") : sessionQuery.isError ? t("agentPlanCheckFailed")
                             : t(planApprovalStatusKey(planApprovalStatus?.code ?? "reply_unavailable"))}

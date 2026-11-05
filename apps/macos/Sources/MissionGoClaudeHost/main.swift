@@ -399,7 +399,7 @@ private func run(configPath: String) throws {
                 }
                 try write(controlResponse(id: answered.requestId, result: answered.result), to: writer)
                 snapshot.recordUserMessage(id: command.id, text: command.text, occurredAt: command.createdAt)
-                snapshot.markPermissionAnswered(requestId: answered.requestId, answer: command.text)
+                snapshot.markPermissionAnswered(requestId: answered.requestId, answer: command.text, planAccepted: answered.result["behavior"] as? String == "allow")
                 snapshot.commandFinished(id: command.id, status: "delivered")
                 showNextPermission()
                 persist()
@@ -469,7 +469,7 @@ private func run(configPath: String) throws {
                     )
                     // The card keeps its place in the transcript; mark what was
                     // picked on it so it stops reading as an open ask (AND-227).
-                    snapshot.markPermissionAnswered(requestId: answered.requestId, answer: command.text)
+                    snapshot.markPermissionAnswered(requestId: answered.requestId, answer: command.text, planAccepted: answered.result["behavior"] as? String == "allow")
                 } else {
                     snapshot.makeUserMessageVisible(id: command.id)
                     if external {

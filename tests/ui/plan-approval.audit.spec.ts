@@ -216,13 +216,13 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
           expect(request.postDataJSON()).toEqual({ revision: offer.revision });
           await held;
           approved = true;
-          return route.fulfill({ status: 201, json: { approved: true, revision: offer.revision, continuationQueued: false } });
+          return route.fulfill({ status: 201, json: { approved: true, revision: offer.revision, continuationQueued: false, continuationPending: true } });
         }
         if (request.method() !== "GET") return route.fulfill({ status: 204 });
         const detail = { ...external, messages: [], canApprovePlan: !approved,
           implementationPlan: { revision: offer.revision, plan: "领取前审阅的明确实施方案", validation: "验证同一会话领取", itemKeys: ["AND-405"], approved, valid: true },
           planApprovalStatus: { code: approved ? "approved" : "ready" },
-          ...(approved ? { planApprovalState: { approved: true, revision: offer.revision, continuationQueued: false } }
+          ...(approved ? { planApprovalState: { approved: true, revision: offer.revision, continuationQueued: false, continuationPending: true } }
             : { planApproval: { ...offer, plan: "领取前审阅的明确实施方案", validation: "验证同一会话领取", itemKeys: ["AND-405"] } }) };
         return route.fulfill({ json: path === "/api/v1/agent-sessions" ? { sessions: [external] } : detail });
       });
@@ -245,7 +245,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
       await expect.poll(() => attempts).toBe(1);
       finish();
       await expect(banner.locator("summary")).toHaveText("方案已批准");
-      await expect(banner).toContainText("批准已保存，未发送继续消息");
+      await expect(banner).toContainText("批准已保存，等待原连接恢复后续办一次");
       await expect(banner).not.toContainText("方案待批准");
       await expect(button).toHaveCount(0);
       await expect(page.locator(".agent-console-message-outgoing")).toHaveCount(0);

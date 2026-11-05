@@ -62,7 +62,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     emit({ type: "system", subtype: "init", session_id: session });
     emit(message);
     emit({ type: "assistant", uuid: `agent-${message.uuid}`, message: { content: [{ type: "text", text: "fixture received" }] } });
-    if (message.message.content[0].text.includes("approval")) emit({ type: "control_request", request_id: "claude-native-1",
+    if (message.message.content[0].text.includes("native-plan-fixture")) emit({ type: "control_request", request_id: "claude-plan-1",
+      request: { subtype: "can_use_tool", tool_name: "ExitPlanMode", input: { plan: "Implement the reviewed scope and verify the original entry points." } } });
+    else if (message.message.content[0].text.includes("approval")) emit({ type: "control_request", request_id: "claude-native-1",
       request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "echo test" } } });
     else emit({ type: "result", is_error: false });
   } else if (message.type === "control_response") {

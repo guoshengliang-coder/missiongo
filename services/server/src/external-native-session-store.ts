@@ -125,6 +125,7 @@ export class ExternalNativeSessionStore {
     this.store.database.transaction(() => {
       this.row(accountId, id);
       this.requireNoPending(id);
+      this.db.prepare("UPDATE implementation_plan_continuations SET state='cancelled' WHERE account_id=? AND session_id=? AND state='waiting'").run(accountId,id);
       this.db.prepare("UPDATE external_agent_sessions SET native_node_id=NULL, native_auto_connect=0, native_generation=native_generation+1, native_settings_json=NULL WHERE id=?").run(id);
     });
   }

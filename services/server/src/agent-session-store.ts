@@ -1123,8 +1123,9 @@ export class AgentSessionStore {
         archived ? now : null, archived ? "missiongo" : null, now, now,
         archived ? 1 : 0, archived ? 1 : 0, sessionId,
       );
-    if(archived) this.database.connection.prepare(`UPDATE implementation_plan_recovery_resumes SET state='cancelled'
-      WHERE account_id=? AND session_id=? AND state='waiting'`).run(accountId,sessionId);
+    if(archived) for(const table of ["implementation_plan_recovery_resumes","implementation_plan_continuations"])
+      this.database.connection.prepare(`UPDATE ${table} SET state='cancelled'
+        WHERE account_id=? AND session_id=? AND state='waiting'`).run(accountId,sessionId);
     return this.getForAccount(accountId, sessionId);
   }
 
@@ -1386,8 +1387,9 @@ export class AgentSessionStore {
     const id = randomUUID();
     const now = new Date().toISOString();
     this.database.transaction(() => {
-      this.database.connection.prepare(`UPDATE implementation_plan_recovery_resumes SET state='cancelled'
-        WHERE account_id=? AND session_id=? AND state='waiting'`).run(accountId,sessionId);
+      for(const table of ["implementation_plan_recovery_resumes","implementation_plan_continuations"])
+        this.database.connection.prepare(`UPDATE ${table} SET state='cancelled'
+          WHERE account_id=? AND session_id=? AND state='waiting'`).run(accountId,sessionId);
       if (pending) {
         this.database.connection
           .prepare(

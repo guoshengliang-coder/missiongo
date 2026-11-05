@@ -531,7 +531,7 @@ export interface AgentSessionCommand {
   readonly cancelledAt?: string;
 }
 
-export type AgentPlanApprovalResult = AgentSessionCommand | { readonly approved: true; readonly revision: string; readonly continuationQueued: false };
+export type AgentPlanApprovalResult = AgentSessionCommand | { readonly approved: true; readonly revision: string; readonly continuationQueued: boolean; readonly continuationPending?: boolean };
 
 export interface AgentSessionAttachment {
   readonly id: string;
@@ -550,7 +550,7 @@ export interface AgentSession {
     readonly submittedAt?: string; readonly approvedAt?: string;
     readonly itemKeys: readonly string[]; readonly approved: boolean; readonly valid: boolean };
   readonly canApprovePlan?: boolean;
-  readonly planApprovalState?: { readonly approved: true; readonly revision: string; readonly continuationQueued: boolean };
+  readonly planApprovalState?: { readonly approved: true; readonly revision: string; readonly continuationQueued: boolean; readonly continuationPending?: boolean };
   readonly planApprovalStatus?: { readonly code: string; readonly detail?: string };
   readonly nativeConnection?: ExternalNativeConnection;
   readonly managedExecution?: { id: string; runId: string; stageId: string; generation: number; role: string; state: string; stopRequested: boolean };

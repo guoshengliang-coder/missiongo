@@ -49,7 +49,7 @@ it("reads, submits, approves offline and claims the same original external conve
   expect((await f.request()).sessionId).toBe(requested.sessionId);
   expect(db.prepare("SELECT COUNT(*) AS n FROM external_agent_sessions").get()).toMatchObject({ n: 1 });
   expect(db.prepare("SELECT link_kind FROM external_agent_session_items").get()).toMatchObject({ link_kind: "approval" });
-  expect(db.prepare("SELECT native_auto_connect FROM external_agent_sessions").get()).toMatchObject({ native_auto_connect: 0 });
+  expect(db.prepare("SELECT native_auto_connect FROM external_agent_sessions").get()).toMatchObject({ native_auto_connect: 1 });
   for (const table of ["external_agent_session_reports", "builder_execution_authorizations", "mcp_agent_claim_receipts"]) expect(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).toMatchObject({ n: 0 });
   expect(itemExecutionBlockers(f.store.database, f.item.id)).toEqual([]);
   const comment = await f.call("append_comment", { itemKey:f.item.key,sessionId:requested.sessionId,agentName:"Fixture",bodyKind:"free",summary:"Plan investigation",text:"The reviewed plan is ready.",idempotencyKey:"approval-only-comment" });
@@ -63,14 +63,14 @@ it("reads, submits, approves offline and claims the same original external conve
   const detail = (await f.get(requested.sessionId)).json();
   expect(detail).toMatchObject({ approvalOnly: true, canReply: false, canApprovePlan: true, planApprovalStatus: { code: "ready" }, planApproval: { revision: requested.revision, plan: f.proposal.plan } });
   expect(detail.implementationPlan).toMatchObject({ plan: f.proposal.plan, validation: f.proposal.validation, submittedAt: expect.any(String), approved: false, valid: true });
-  expect((await f.approve(requested.sessionId, requested.revision)).json()).toEqual({ approved: true, revision: requested.revision, continuationQueued: false });
+  expect((await f.approve(requested.sessionId, requested.revision)).json()).toMatchObject({ approved: true, revision: requested.revision, continuationQueued: false, continuationPending: true });
   expect((await f.get(requested.sessionId)).json()).toMatchObject({ canReply: false, canApprovePlan: false, planApprovalState: { approved: true, continuationQueued: false } });
   expect((await f.get(requested.sessionId)).json().implementationPlan).toMatchObject({
     revision: requested.revision, plan: f.proposal.plan, validation: f.proposal.validation,
     submittedAt: detail.implementationPlan.submittedAt, approvedAt: expect.any(String), approved: true, valid: true });
   expect(f.store.getWorkItem(f.item.key).status).toBe("ready");
   expect(itemExecutionBlockers(f.store.database, f.item.id)).toEqual([]);
-  expect((await f.approve(requested.sessionId, requested.revision)).statusCode).toBe(409);
+  expect((await f.approve(requested.sessionId, requested.revision)).statusCode).toBe(201);
   expect(await f.request({ approvalMethod: "native" })).toMatchObject({ approved: true, revision: requested.revision, sessionId: requested.sessionId });
   const claim = await f.call("claim_item", { itemKey: f.item.key, agentId: "Fixture", session: f.session, idempotencyKey: "approved-original-claim" });
   expect(claim.isError, JSON.stringify(claim)).not.toBe(true);
@@ -91,7 +91,7 @@ it("returns a usable same-session handoff when native confirmation is unavailabl
   expect(await f.request({ approvalMethod: "native" })).toMatchObject({ approved: true, revision: native.revision, sessionId: native.sessionId });
 });
 
-it("invalidates old revisions and frozen content, and rejects forged native approval or another OAuth client's claim", async () => {
+it("invalidates old plan revisions without using approval as a claim permission", async () => {
   const f = await fixture();
   const first = await f.request({ approved: true });
   expect(first.approved).toBe(false);
@@ -99,11 +99,11 @@ it("invalidates old revisions and frozen content, and rejects forged native appr
   expect(second.sessionId).toBe(first.sessionId);
   expect((await f.approve(first.sessionId, first.revision)).statusCode).toBe(409);
   expect((await f.approve(second.sessionId, second.revision)).statusCode).toBe(201);
-  expect((await f.call("claim_item", { itemKey: f.item.key, agentId: "Fixture", session: f.session, idempotencyKey: "other-client" }, f.tokenFor("other-client"))).isError).toBe(true);
   f.store.database.connection.prepare("UPDATE work_items SET content_version=content_version+1 WHERE id=?").run(f.item.id);
-  expect((await f.call("claim_item", { itemKey: f.item.key, agentId: "Fixture", session: f.session, idempotencyKey: "stale-claim" })).isError).toBe(true);
-  expect(f.store.getWorkItem(f.item.key).status).toBe("ready");
-  expect(itemExecutionBlockers(f.store.database, f.item.id)).toEqual([]);
+  expect((await f.get(first.sessionId)).json().implementationPlan).toMatchObject({approved:false,valid:false});
+  expect((await f.call("claim_item", { itemKey: f.item.key, agentId: "Fixture", session: f.session, idempotencyKey: "independent-claim" })).isError).not.toBe(true);
+  expect((await f.call("claim_item", { itemKey: f.item.key, agentId: "Fixture", session: f.session, idempotencyKey: "other-client" }, f.tokenFor("other-client"))).isError).toBe(true);
+  expect(f.store.getWorkItem(f.item.key).status).toBe("in_progress");
 });
 
 it("rechecks permissions at approval and keeps a revised batch on one original conversation", async () => {
@@ -215,4 +215,48 @@ it("rejects an expired signed native response and leaves the unclaimed item unch
   expect(expired.rpcError, JSON.stringify(expired)).toMatchObject({ message: expect.stringContaining("requestState") });
   expect(f.store.database.connection.prepare("SELECT COUNT(*) AS n FROM implementation_plan_approvals").get()).toMatchObject({ n: 0 });
   expect(f.store.getWorkItem(f.item.key).status).toBe("ready");
+});
+
+it("requests native discovery before claiming, but never revives an explicitly disconnected connection",async()=>{
+  const f=await fixture(),db=f.store.database.connection;
+  const first=await f.request();
+  expect(db.prepare("SELECT native_auto_connect,native_node_id FROM external_agent_sessions WHERE id=?").get(first.sessionId))
+    .toMatchObject({native_auto_connect:1,native_node_id:null});
+  db.prepare("UPDATE external_agent_sessions SET native_generation=2,native_auto_connect=0 WHERE id=?").run(first.sessionId);
+  await f.request({plan:"A changed proposal preserves the original disconnected choice."});
+  expect(db.prepare("SELECT native_auto_connect,native_generation FROM external_agent_sessions WHERE id=?").get(first.sessionId))
+    .toMatchObject({native_auto_connect:0,native_generation:2});
+  expect(db.prepare("SELECT COUNT(*) AS n FROM builder_execution_authorizations").get()).toMatchObject({n:0});
+});
+
+it("native MCP approval resumes its dispatched caller without enqueueing a second turn",async()=>{
+  const f=await fixture(),db=f.store.database.connection,now=new Date().toISOString();
+  const {AgentSessionStore}=await import("./agent-session-store.js");
+  db.prepare(`INSERT INTO nodes(id,account_id,installation_id,name,token_hash,agents_json,last_seen_at,created_at,updated_at)
+    VALUES ('native-node',?,'native-fixture','Fixture','synthetic','[]',?,?,?)`).run(config.id,now,now,now);
+  db.prepare(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at)
+    VALUES ('native-dispatch',?,'native-node','codex','auto','launched','synthetic-repo',?)`).run(config.id,now);
+  db.prepare("INSERT INTO dispatch_items(dispatch_id,item_id,position) VALUES ('native-dispatch',?,0)").run(f.item.id);
+  const id=new AgentSessionStore(f.store.database).createForDispatch({dispatchId:"native-dispatch",nodeId:"native-node",sessionRef:"native-original"});
+  const params={name:"request_plan_approval",arguments:{itemKeys:[f.item.key],dispatchId:"native-dispatch",plan:f.proposal.plan,validation:f.proposal.validation,approvalMethod:"native"},_meta:modernMeta};
+  const first=await f.rpc("tools/call",params);
+  expect(first).toMatchObject({resultType:"input_required"});
+  const accepted=await f.rpc("tools/call",{...params,requestState:first.requestState,inputResponses:{planApproval:{action:"accept",content:{}}}});
+  expect(accepted).toMatchObject({structuredContent:{approved:true,continuationQueued:false}});
+  expect((await f.approve(id,accepted.structuredContent.revision)).json()).toMatchObject({approved:true,continuationQueued:false});
+  expect(db.prepare("SELECT COUNT(*) AS n FROM agent_session_commands").get()).toMatchObject({n:0});
+  expect(db.prepare("SELECT COUNT(*) AS n FROM implementation_plan_approvals").get()).toMatchObject({n:1});
+});
+
+it("Web approval wins while a native form is pending; dismissing that form does not revoke the decision",async()=>{
+  const f=await fixture();
+  const params={name:"request_plan_approval",arguments:{...f.proposal,approvalMethod:"native"},_meta:modernMeta};
+  const first=await f.rpc("tools/call",params);
+  const request=f.store.database.connection.prepare("SELECT revision FROM implementation_plan_requests").get() as {revision:string};
+  const session=f.store.database.connection.prepare("SELECT id FROM external_agent_sessions").get() as {id:string};
+  expect((await f.approve(session.id,request.revision)).statusCode).toBe(201);
+  const resumed=await f.rpc("tools/call",{...params,requestState:first.requestState,inputResponses:{planApproval:{action:"cancel",content:null}}});
+  expect(resumed).toMatchObject({structuredContent:{approved:true,revision:request.revision}});
+  expect(f.store.database.connection.prepare("SELECT state FROM implementation_plan_continuations").get()).toMatchObject({state:"cancelled"});
+  expect(f.store.database.connection.prepare("SELECT COUNT(*) AS n FROM implementation_plan_approvals").get()).toMatchObject({n:1});
 });

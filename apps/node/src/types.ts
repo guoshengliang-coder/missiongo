@@ -19,7 +19,7 @@ export interface Question {
 }
 export interface Message {
   sourceId: string; role: "user" | "agent" | "plan"; text: string; turnId?: string;
-  occurredAt?: string; questions?: Question[];
+  occurredAt?: string; phase?: string; questions?: Question[];
 }
 export interface Approval {
   id: string; kind: "manual" | "auto"; status: string; turnId: string; action: string;

@@ -333,6 +333,21 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
 
     }
 
+    func testNativePlanDecisionCarriesOnlyTheActualBoundResponse() {
+        for accepted in [false, true] {
+            var snapshot = ClaudeStreamSnapshot(sessionRef: "native-plan-session")
+            let request = ClaudePermissionRequest(requestId: "plan-request", toolName: "ExitPlanMode",
+                input: ["plan": "Implement the reviewed scope and verify the original entry points."])
+            snapshot.showExternalPermissionRequest(request)
+            XCTAssertEqual(snapshot.state.messages.last?.role, "plan")
+            XCTAssertNil(snapshot.state.messages.last?.phase)
+            snapshot.markPermissionAnswered(requestId: "unrelated", answer: "批准", planAccepted: true)
+            XCTAssertNil(snapshot.state.messages.last?.phase)
+            snapshot.markPermissionAnswered(requestId: "plan-request", answer: accepted ? "批准" : "拒绝", planAccepted: accepted)
+            XCTAssertEqual(snapshot.state.messages.last?.phase, accepted ? "plan_approved" : "plan_declined")
+        }
+    }
+
     func testOldHostStateDefaultsNewFields() throws {
         let data = Data(#"{"status":"idle","sessionRef":"session-1","messages":[],"commandResults":{}}"#.utf8)
         let state = try JSONDecoder().decode(ClaudeHostState.self, from: data)
