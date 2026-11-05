@@ -7,10 +7,24 @@ import { ImplementationPlans } from "../../services/server/dist/implementation-p
 import { DispatchStore } from "../../services/server/dist/dispatch-store.js";
 import { chooseOption } from "./select-helpers";
 
-function setup() {
+const fixtureNodes: string[] = [];
+test.afterEach(()=>{
+  if(!fixtureNodes.length) return;
+  const store=isolatedStore();
+  try {
+    const nodes=new DispatchStore(store.database);
+    for(const id of fixtureNodes.splice(0)) nodes.revokeNode("ui-fixture",id);
+  } finally {store.close();}
+});
+
+function isolatedStore() {
   const data=process.env.MISSIONGO_UI_FIXTURE_DATA;
   if(!data) throw new Error("Isolated UI fixture is required");
-  const store=new MissionGoStore(join(data,"missiongo.sqlite"));
+  return new MissionGoStore(join(data,"missiongo.sqlite"));
+}
+
+function setup() {
+  const store=isolatedStore();
   try {
     const accountId="ui-fixture",clientId="handoff-ui";
     const product=store.createProduct({name:"Agent handoff review",keyPrefix:`AH${randomUUID().slice(0,6).toUpperCase()}`,createdByAccountId:accountId});
@@ -21,6 +35,7 @@ function setup() {
     const sessionId=new ExternalAgentSessionStore(store).prepareApproval({accountId,clientId},identity,[item.key],"handoff-ui-plan");
     plans.request(accountId,`native:${clientId}:codex:native:${identity.sessionRef}`,"handoff-ui-plan",scope);
     const nodes=new DispatchStore(store.database),node=nodes.registerNode({accountId,installationId:randomUUID(),name:"Handoff UI node"});
+    fixtureNodes.push(node.nodeId);
     nodes.recordHeartbeat(node.nodeId,[{kind:"codex",ready:true,planApprovalProtocol:1,models:[]}]);
     nodes.replaceOwnRepos(node.nodeId,[{productId:product.id,repoPath:"/synthetic/ui-handoff"}]);
     return {item,product,sessionId,nodeId:node.nodeId};
