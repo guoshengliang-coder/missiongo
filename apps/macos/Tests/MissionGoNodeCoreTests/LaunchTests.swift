@@ -2,6 +2,33 @@ import XCTest
 @testable import MissionGoNodeCore
 
 final class LaunchPromptTests: XCTestCase {
+    func testInvestigationPrecedesQuestionsAcrossClientsModesAndProjectSessions() throws {
+        let matrix: [(LaunchPrompt.Client, [String])] = [
+            (.claudeCode, ["plan", "default", "bypassPermissions", "acceptEdits", "auto"]),
+            (.codex, ["plan", "default", "auto"]), (.openCode, ["plan", "default"]),
+        ]
+        for (client, modes) in matrix {
+            for mode in modes {
+                for freeSession in [false, true] {
+                    let prompt = try LaunchPrompt.build(itemKeys: freeSession ? [] : ["AND-1"],
+                        dispatchId: "research", mode: mode, client: client, freeSession: freeSession)
+                    let investigate = try XCTUnwrap(prompt.range(of: "先在已授权范围内调查"))
+                    let questions = try XCTUnwrap(prompt.range(of: "只将产品偏好"))
+                    let approval = try XCTUnwrap(prompt.range(of: "请求选择或批准前"))
+                    XCTAssertLessThan(investigate.lowerBound, questions.lowerBound)
+                    XCTAssertLessThan(questions.lowerBound, approval.lowerBound)
+                    XCTAssertTrue(prompt.contains("单独申请调查授权"))
+                    XCTAssertTrue(prompt.contains("有边界的复现或实验计划"))
+                    if freeSession { XCTAssertTrue(prompt.contains("不自行开始任务")) }
+                    else if mode == "plan" {
+                        XCTAssertTrue(prompt.contains("用户批准之前不回写评论、不领取条目"))
+                        XCTAssertTrue(prompt.contains("先将已批准的计划以结构化评论"))
+                    }
+                }
+            }
+        }
+    }
+
     func testProjectConversationWaitsForUserWithoutClaimingAnItem() throws {
         let prompt = try LaunchPrompt.build(itemKeys: [], dispatchId: "free-session", mode: "plan", freeSession: true)
         XCTAssertTrue(prompt.contains("等待用户消息"))

@@ -257,7 +257,7 @@ final class PlanPromptTests: XCTestCase {
             let prompt = try LaunchPrompt.build(itemKeys: ["HG-8"], dispatchId: "abc", mode: "plan", client: client)
             XCTAssertTrue(prompt.contains("用户批准之前不回写评论、不领取条目、不建分支或 worktree、不改代码"))
             XCTAssertTrue(prompt.contains("用户批准之后，先将已批准的计划以结构化评论"))
-            XCTAssertTrue(prompt.contains("待确认项一次问齐"))
+            XCTAssertTrue(prompt.contains("先完整读取条目并调查可核查事实，再集中澄清必要取舍"))
             XCTAssertEqual(prompt.contains("退出 plan 模式"), client == .claudeCode)
             XCTAssertEqual(prompt.contains("自动审查仅处理技术权限请求"), client == .codex)
         }

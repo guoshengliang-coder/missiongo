@@ -1132,10 +1132,11 @@ export function AgentSessionConsole({
                     <details>
                       <summary>{selected.attention.dismissed
                         ? t("agentAttentionDismissedTitle")
-                        : attentionLabel(selected, t)}
+                        : showPlanApproval ? t("agentPlanReview") : attentionLabel(selected, t)}
                       </summary>
                       <div className="agent-console-attention-detail">
                         <p>{selected.attention.reason}</p>
+                        {showPlanApproval && <p>{t("agentPlanReviewHelp")}</p>}
                         {showPlanApproval && !canApprovePlan && <p className="agent-console-approve-reason" role="status">
                           {sessionQuery.isPending ? t("agentPlanChecking") : sessionQuery.isError ? t("agentPlanCheckFailed")
                             : t(planApprovalStatusKey(planApprovalStatus?.code ?? "reply_unavailable"))}
