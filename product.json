@@ -25,7 +25,7 @@
     "path": "apps/node",
     "npmPackage": "@missiongo/node",
     "command": "missiongo-node",
-    "version": "0.1.7"
+    "version": "0.1.8"
   },
   "web": {
     "version": "1.1.21"

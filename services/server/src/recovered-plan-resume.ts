@@ -1,7 +1,7 @@
 import { AgentSessionStore } from "./agent-session-store.js";
 import { AgentApprovalStore } from "./agent-approval-store.js";
 import { assertBuilderExecution, assertDispatchExecution } from "./builder-authority.js";
-import { ImplementationPlans } from "./implementation-plans.js";
+import { ImplementationPlans, planDigest } from "./implementation-plans.js";
 import { nativeMessageDigest, type NativePlanMessage } from "./storage/legacy-plan-recovery.js";
 import type { MissionGoStore } from "./store.js";
 
@@ -10,6 +10,11 @@ function latestUser(store:MissionGoStore,sessionId:string) {
     WHERE session_id=? AND role='user' ORDER BY occurred_at DESC,position DESC,rowid DESC LIMIT 1`)
     .get(sessionId) as NativePlanMessage|undefined;
 }
+
+// Mirrored/backfilled native history can replace a summary source ID or improve
+// its timestamp without adding a user instruction. A new turn or changed text
+// still fences the continuation; this never supplies plan approval authority.
+const userIntentDigest=(message:NativePlanMessage)=>planDigest([message.turn_id ?? message.source_id,message.text]);
 
 /** An authenticated original claim only requests one continuation, never a new approval or claim. */
 export function armRecoveredPlanResume(store:MissionGoStore,accountId:string,clientId:string,dispatchId:string): boolean {
@@ -20,9 +25,9 @@ export function armRecoveredPlanResume(store:MissionGoStore,accountId:string,cli
   const user=latestUser(store,recovered.session_id);
   if(!user) return false;
   db.prepare(`INSERT INTO implementation_plan_recovery_resumes
-    (account_id,identity_key,revision,session_id,user_digest,requested_at,state) VALUES (?,?,?,?,?,?,'waiting')
+    (account_id,identity_key,revision,session_id,user_digest,requested_at,state,user_digest_kind) VALUES (?,?,?,?,?,?,'waiting','turn')
     ON CONFLICT(account_id,identity_key) DO NOTHING`)
-    .run(accountId,identity,recovered.revision,recovered.session_id,nativeMessageDigest(user),new Date().toISOString());
+    .run(accountId,identity,recovered.revision,recovered.session_id,userIntentDigest(user),new Date().toISOString());
   return Boolean(db.prepare(`SELECT 1 FROM implementation_plan_recovery_resumes WHERE account_id=? AND identity_key=? AND state='waiting'`).get(accountId,identity));
 }
 
@@ -35,7 +40,7 @@ export function resumeRecoveredPlan(store:MissionGoStore,accountId:string,nodeId
   store.database.transaction(()=>{
     const intent=db.prepare(`SELECT * FROM implementation_plan_recovery_resumes
       WHERE account_id=? AND session_id=? AND state='waiting'`).get(accountId,sessionId) as
-      {identity_key:string;revision:string;user_digest:string}|undefined;
+      {identity_key:string;revision:string;user_digest:string;user_digest_kind:'source'|'turn'}|undefined;
     if(!intent) return;
     const cancel=()=>db.prepare(`UPDATE implementation_plan_recovery_resumes SET state='cancelled'
       WHERE account_id=? AND identity_key=? AND state='waiting'`).run(accountId,intent.identity_key);
@@ -47,7 +52,7 @@ export function resumeRecoveredPlan(store:MissionGoStore,accountId:string,nodeId
     if(!session || session.archived_at || session.revoked_at || !['delivered','launched'].includes(session.dispatch_status)
       || !proposal?.approved || proposal.revision!==intent.revision || !proposal.valid) {cancel();return;}
     const user=latestUser(store,sessionId);
-    if(!user || nativeMessageDigest(user)!==intent.user_digest) {cancel();return;}
+    if(!user || (intent.user_digest_kind==='turn'?userIntentDigest(user):nativeMessageDigest(user))!==intent.user_digest) {cancel();return;}
     try {
       assertDispatchExecution(store.database,session.dispatch_id);
       for(const key of proposal.keys) {
