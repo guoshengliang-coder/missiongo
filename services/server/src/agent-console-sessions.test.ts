@@ -164,3 +164,20 @@ it("includes every linked item for boundary authorization instead of losing a hi
   f.external.register(owner, { agentKind: "codex", sessionRef: "native-thread", refKind: "native" }, item.key);
   expect(f.console.list("owner")[0]!.items.map((item) => item.key)).toEqual([f.item.key, item.key]);
 });
+
+it("keeps older attention sessions beyond 100 newer conversations without loading histories", () => {
+  const f = fixture();
+  f.external.report(owner, f.externalId, f.item.key, "blocked", "Older request still needs action", "old-ask");
+  for (let index = 0; index < 110; index++) {
+    vi.advanceTimersByTime(1000);
+    f.createDispatch(`new-dispatch-${index}`, `new-thread-${index}`);
+  }
+  const messages = vi.spyOn(f.dispatch, "getForAccount");
+  const started = performance.now();
+  const rows = f.console.list("owner");
+  expect(rows).toHaveLength(111);
+  expect(rows.find(row => row.id === f.sessionId)?.needsAttention).toBe(true);
+  expect(messages).not.toHaveBeenCalled();
+  // Generous regression bound: an in-memory summary scan must not fetch histories.
+  expect(performance.now() - started).toBeLessThan(5000);
+});

@@ -1,3 +1,4 @@
+import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
 import { AgentPlanContent, withoutDuplicatePlan } from "./agent-plan-content";
 import { AgentStopFeedback } from "./agent-stop-feedback.js";
@@ -41,6 +42,8 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [reply, setReply] = useState("");
+  const currentSessionId = useRef(sessionId);
+  currentSessionId.current = sessionId;
   const [documentVisible, setDocumentVisible] = useState(() => typeof document === "undefined" || document.visibilityState === "visible");
   useEffect(() => {
     const update = () => setDocumentVisible(document.visibilityState === "visible");
@@ -58,29 +61,43 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
       ? agentSessionDetailRefetchInterval(documentVisible, query.state.fetchFailureCount)
       : false,
   });
+  const feedback = useAgentOperationFeedback(sessionId, session.data?.turnState?.turnStartedAt);
   const messagesRef = useRef<HTMLDivElement>(null);
   const history = useAgentHistory(sessionId, session.data, messagesRef);
   const send = useMutation({
     mutationFn: (text: string) => api.sendAgentSessionCommand(sessionId, text),
-    onSuccess: async () => {
-      setReply("");
-      await queryClient.invalidateQueries({ queryKey: ["agent-session", sessionId] });
+    onMutate: () => feedback.begin(sessionId, "send"),
+    onError: (error, _input, operation) => feedback.fail(error, operation),
+    onSuccess: async (_command, _input, operation) => {
+      if (!operation) return;
+      feedback.clear(operation.sessionId);
+      if (currentSessionId.current === operation.sessionId) setReply("");
+      await queryClient.invalidateQueries({ queryKey: ["agent-session", operation.sessionId] });
     },
   });
   const cancel = useMutation({
     mutationFn: ({ commandId }: { commandId: string; text: string }) =>
       api.cancelAgentSessionCommand(sessionId, commandId),
-    onSuccess: async (_command, input) => {
-      setReply(input.text);
-      await queryClient.invalidateQueries({ queryKey: ["agent-session", sessionId] });
+    onMutate: input => feedback.begin(sessionId, "cancel", input.commandId),
+    onError: (error, _input, operation) => {
+      feedback.fail(error, operation);
+      if (operation) void queryClient.invalidateQueries({ queryKey: ["agent-session", operation.sessionId] });
+    },
+    onSuccess: async (_command, input, operation) => {
+      if (!operation) return;
+      if (currentSessionId.current === operation.sessionId) setReply(input.text);
+      await queryClient.invalidateQueries({ queryKey: ["agent-session", operation.sessionId] });
     },
   });
   const resolveDelivery = useMutation({
     mutationFn: ({ commandId, outcome }: { commandId: string; outcome: "received" | "not_received" }) =>
       api.resolveAgentSessionDelivery(sessionId, commandId, outcome),
-    onSuccess: async (command, input) => {
-      if (input.outcome === "not_received") setReply(command.text);
-      await queryClient.invalidateQueries({ queryKey: ["agent-session", sessionId] });
+    onMutate: input => feedback.begin(sessionId, "resolve", input.commandId),
+    onError: (error, _input, operation) => feedback.fail(error, operation),
+    onSuccess: async (command, input, operation) => {
+      if (!operation) return;
+      if (input.outcome === "not_received" && currentSessionId.current === operation.sessionId) setReply(command.text);
+      await queryClient.invalidateQueries({ queryKey: ["agent-session", operation.sessionId] });
     },
   });
   const command = session.data?.command;
@@ -145,6 +162,10 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                 ))}
                 <AgentPlanContent session={session.data} surface="panel" />
               </div>
+              <div className="agent-run-status" aria-label={t("agentRunFeedback")}>
+                <AgentOperationFeedback failures={feedback.failures} sessionId={sessionId} command={command} />
+                <AgentStopFeedback stop={session.data.stopCommand ?? (command?.kind === "interrupt" ? command : undefined)}
+                  latestCommand={command} turnActive={session.data.turnState?.turnActive ?? false} backgroundRunning={session.data.activities.length > 0} />
               <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={visualStatus} />} label={waiting
                 ? t(session.data.agentKind === "codex" ? "agentRunApproval" : "agentRunWaiting", { agent: agentName })
                 : backgroundOnly ? t("agentRunBackground") : session.data.status === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(session.data.status, t)}>
@@ -167,10 +188,9 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                   </section>
                 )}
               </AgentRunDetails>
+              </div>
               <AgentHistoryNotice error={session.data.lastError} />
               {session.data.lastError && !isHistoryLimited(session.data.lastError) && <p className="inline-error">{session.data.lastError}</p>}
-              <AgentStopFeedback stop={session.data.stopCommand ?? (command?.kind === "interrupt" ? command : undefined)}
-                latestCommand={command} turnActive={session.data.turnState?.turnActive ?? false} backgroundRunning={session.data.activities.length > 0} />
               {command?.kind === "message" && (
                 <div className={`agent-session-command agent-session-command-${command.status}`}>
                   <span>
@@ -213,9 +233,6 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                       {send.isPending ? t("agentSessionSending") : t("agentSessionSend")}
                     </button>
                   </form>
-                  {send.isError && <p className="inline-error">{localizedErrorText(send.error, t)}</p>}
-                  {cancel.isError && <p className="inline-error">{localizedErrorText(cancel.error, t)}</p>}
-                  {resolveDelivery.isError && <p className="inline-error">{localizedErrorText(resolveDelivery.error, t)}</p>}
                 </>
               ) : (
                 <p className="agent-session-muted" role="note">

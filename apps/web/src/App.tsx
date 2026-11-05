@@ -39,7 +39,6 @@ import {
   BarChart3,
   Archive,
   ArrowRight,
-  BellRing,
   Bot,
   Bug,
   Camera,
@@ -523,10 +522,6 @@ export function App() {
   const workspaceRef = useRef<HTMLElement>(null);
   const listScrollTopRef = useRef(0);
   const previousAgentConsoleOpenRef = useRef(agentConsoleOpen);
-  // The console aligns the selected product with the open session once
-  // (AND-263). This ref holds the session id that alignment already ran for,
-  // so the 5s refetch or a manual switch never bounces the user back.
-  const agentConsoleProductAlignedRef = useRef<string | null>(null);
 
   useEffect(() => {
     const update = () => setDocumentVisible(document.visibilityState === "visible");
@@ -643,8 +638,6 @@ export function App() {
     }
     syncBackDepth();
     setAgentSessionId(sessionId);
-    // A freshly opened session gets one alignment pass (AND-263).
-    agentConsoleProductAlignedRef.current = null;
     setAgentConversationOpen(agentConsoleSinglePane);
     setAgentConsoleBulkMode(false);
     setAgentConsoleOpen(true);
@@ -697,8 +690,6 @@ export function App() {
     }
     syncBackDepth();
     setAgentSessionId(sessionId);
-    // Re-selecting a session starts a fresh alignment pass (AND-263).
-    agentConsoleProductAlignedRef.current = null;
     setAgentConversationOpen(conversation);
   };
 
@@ -1071,20 +1062,6 @@ export function App() {
     if (accountId) draftAccountId.current = accountId;
   }, [bootstrapQuery.data?.user.id]);
   const allAgentSessions = agentSessionsQuery.data?.sessions ?? [];
-  useEffect(() => {
-    if (!agentConsoleOpen || !agentSessionId) return;
-    // Align once per session (AND-263). Without the ref guard this effect
-    // re-ran on every 5s refetch and on every selectedProductId change,
-    // bouncing the user back to the session's product right after a switch.
-    if (agentConsoleProductAlignedRef.current === agentSessionId) return;
-    const linked = allAgentSessions.find((session) => session.id === agentSessionId);
-    if (!linked) return;
-    agentConsoleProductAlignedRef.current = agentSessionId;
-    if (linked.productId !== selectedProductId && !linked.items.some((item) => item.productId === selectedProductId)) {
-      const productId = linked.productId ?? linked.items[0]?.productId;
-      if (productId) setSelectedProductId(productId);
-    }
-  }, [agentConsoleOpen, agentSessionId, allAgentSessions, selectedProductId]);
   const unreadCounts = useMemo(() => agentUnreadCounts(allAgentSessions), [allAgentSessions]);
 
   useEffect(() => {
@@ -1441,11 +1418,6 @@ export function App() {
             unreadCountsLoaded={agentSessionsQuery.data !== undefined}
             onSelect={(productId) => {
               agentConsoleMoreRef.current?.removeAttribute("open");
-              // A manual pick wins over session alignment (AND-263): mark the
-              // open session as aligned so the refetch loop never bounces back.
-              if (agentConsoleOpen && agentSessionId) {
-                agentConsoleProductAlignedRef.current = agentSessionId;
-              }
               if (newSessionPending) return;
               setNewSessionOpen(false);
               setSelectedProductId(productId);
@@ -1460,13 +1432,6 @@ export function App() {
               clearItemPage();
             }}
           />
-          {agentConsoleOpen && agentSessionsQuery.data !== undefined && (
-            <span
-              className="agent-console-total-unread agent-unread-badge"
-              aria-label={t("agentConsoleUnreadCount", { count: unreadCounts.total })}
-              title={t("agentConsoleUnreadCount", { count: unreadCounts.total })}
-            ><BellRing size={13} aria-hidden="true" />{unreadCounts.total}</span>
-          )}
         </div>
         {products.length > 0 && !agentConsoleOpen && (
           <button
@@ -1797,6 +1762,8 @@ export function App() {
       {agentConsoleOpen && selectedProductId && (
         <AgentSessionConsole
           productId={selectedProductId}
+          products={products}
+          onEnterProduct={setSelectedProductId}
           search={agentConsoleSearch}
           initialFilter={agentConsoleLinkedFilter}
           allSessions={allAgentSessions}
