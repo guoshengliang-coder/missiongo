@@ -235,6 +235,34 @@ it("does not arm a recovered native decision from another OAuth client",async()=
   expect(f.db.prepare('SELECT COUNT(*) AS n FROM implementation_plan_recovery_resumes').get()).toMatchObject({n:0});
 });
 
+it("deduplicates a backfilled mirror of the same native user input without granting another approval",async()=>{
+  const f=await fixture();await f.call('claim_item',f.claimArgs);
+  const revision=(f.db.prepare('SELECT settings_revision FROM agent_sessions WHERE id=?').get(f.sessionId) as {settings_revision:number}).settings_revision;
+  const result=await f.nodeReport({settingsRevision:revision,turnState:{turnActive:false},messages:[{
+    sourceId:'backfilled-native-user',role:'user',turnId:'user-turn',text:f.messages[1]!.text,occurredAt:new Date(Date.now()-30000).toISOString(),
+  }]});
+  expect(result.statusCode,result.body).toBe(204);
+  expect(f.db.prepare('SELECT state,user_digest_kind FROM implementation_plan_recovery_resumes').get()).toMatchObject({state:'queued',user_digest_kind:'turn'});
+  expect(f.db.prepare('SELECT COUNT(*) AS n FROM implementation_plan_approvals').get()).toMatchObject({n:1});
+  expect(f.store.getWorkItem(f.item.key).status).toBe('ready');
+});
+
+it.each(['new-text','new-turn'])("cancels when a native user input has %s, rather than treating it as a history mirror",async(change)=>{
+  const f=await fixture();await f.call('claim_item',f.claimArgs);f.applyMode();
+  await f.nodeReport({turnState:{turnActive:false},messages:[{sourceId:'new-native-user',role:'user',turnId:change==='new-turn'?'different-turn':'user-turn',text:change==='new-text'?'Stop this work.':f.messages[1]!.text,occurredAt:new Date().toISOString()}]});
+  expect(f.db.prepare('SELECT state FROM implementation_plan_recovery_resumes').get()).toMatchObject({state:'cancelled'});
+  expect(f.db.prepare('SELECT COUNT(*) AS n FROM agent_session_commands').get()).toMatchObject({n:0});
+});
+
+it("retains the original source fingerprint semantics of pre-upgrade waiting intents",async()=>{
+  const f=await fixture();await f.call('claim_item',f.claimArgs);f.applyMode();
+  const {nativeMessageDigest}=await import('./storage/legacy-plan-recovery.js');
+  const digest=nativeMessageDigest({source_id:'native-decision',role:'user',text:f.messages[1]!.text,turn_id:'user-turn',occurred_at:f.messages[1]!.occurredAt!});
+  f.db.prepare("UPDATE implementation_plan_recovery_resumes SET user_digest_kind='source',user_digest=?").run(digest);
+  await f.nodeReport({turnState:{turnActive:false}});
+  expect(f.db.prepare('SELECT state FROM implementation_plan_recovery_resumes').get()).toMatchObject({state:'queued'});
+});
+
 it("continues only after a real successful retry clears the current mode error, without another approval or revision",async()=>{
   const f=await fixture();await f.call('claim_item',f.claimArgs);
   const revision=(f.db.prepare('SELECT settings_revision FROM agent_sessions WHERE id=?').get(f.sessionId) as {settings_revision:number}).settings_revision;
