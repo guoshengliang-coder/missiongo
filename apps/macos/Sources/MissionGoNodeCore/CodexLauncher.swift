@@ -533,7 +533,7 @@ public struct CodexLauncher: AgentAdapter {
             itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode, reworkItemKeys: job.reworkItemKeys,
             client: .codex, worktreePath: worktreePath, freeSession: job.freeSession
         )
-        let sessionName = SessionLauncher.sessionName(nodeName: job.nodeName, itemKeys: job.itemKeys, round: job.round)
+        let sessionName = SessionLauncher.sessionName(for: job)
         let request = CodexThreadRequest(
             socketPath: location.controlSocketPath,
             cwd: job.repoPath,

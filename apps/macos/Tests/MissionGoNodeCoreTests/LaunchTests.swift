@@ -187,6 +187,17 @@ final class LaunchCommandTests: XCTestCase {
         XCTAssertTrue(source.contains(#"["bypassPermissions", "plan", "default", "acceptEdits", "auto"]"#))
     }
 
+    func testProjectTitleMetadataNamesNewSessionsAndKeepsLegacyJobsCompatible() throws {
+        let wire = Data(#"{"dispatchId":"new","itemKeys":[],"repoPath":"/p","agentKind":"codex","mode":"plan","freeSession":true,"sessionTitle":"修复登录 · 12345678"}"#.utf8)
+        let request = try JSONDecoder().decode(DispatchRequest.self, from: wire)
+        XCTAssertEqual(request.sessionTitle, "修复登录 · 12345678")
+        let job = DispatchJob(dispatchId: request.dispatchId, itemKeys: [], repoPath: "/p", mode: "plan", nodeName: " M4 ",
+                              freeSession: true, sessionTitle: request.sessionTitle)
+        XCTAssertEqual(SessionLauncher.sessionName(for: job), "M4-修复登录 · 12345678")
+        XCTAssertEqual(SessionLauncher.sessionName(for: DispatchJob(dispatchId: "old", itemKeys: [], repoPath: "/p", mode: "plan", nodeName: "M4", freeSession: true)), "M4-新会话")
+        XCTAssertEqual(SessionLauncher.sessionName(for: DispatchJob(dispatchId: "item", itemKeys: ["AND-1"], repoPath: "/p", mode: "plan", nodeName: "M4", sessionTitle: "ignored")), "M4-AND-1")
+    }
+
     func testWritesTheProductPrefixOnceAndThenOnlyTheNumbers() {
         // No "MissionGo" prefix and no spaces around the hyphen: the machine is
         // what tells sessions from several Macs apart.

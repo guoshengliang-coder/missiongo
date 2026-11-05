@@ -14,8 +14,6 @@ import {
   BellRing,
   Bot,
   CircleAlert,
-  CircleCheck,
-  CircleDot,
   Image as ImageIcon,
   LoaderCircle,
   MessageSquare,
@@ -30,7 +28,7 @@ import {
 
 import { api } from "./api";
 import { AgentSessionFailureNotice } from "./agent-session-failure-notice";
-import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, isHistoryLimited } from "./agent-session-feedback";
+import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, SessionStatusIcon, isHistoryLimited } from "./agent-session-feedback";
 import { AgentIcon } from "./agent-icons";
 import {
   activityLabelKey,
@@ -97,13 +95,6 @@ function statusLabel(status: AgentSessionStatus, t: ReturnType<typeof useI18n>["
   if (status === "stalled") return t("agentSessionStalled");
   if (status === "failed") return t("agentSessionFailed");
   return t("agentSessionUnavailable");
-}
-
-function SessionStatusIcon({ status }: { status: AgentSessionStatus }) {
-  if (status === "active") return <LoaderCircle className="spin" size={14} />;
-  if (status === "idle") return <CircleCheck size={14} />;
-  if (status === "failed" || status === "stalled") return <CircleAlert size={14} />;
-  return <CircleDot size={14} />;
 }
 
 function lastSeenAgo(value: string | undefined, locale: string): string | null {
@@ -606,7 +597,7 @@ export function AgentSessionConsole({
     && (!pending || selected.agentKind === "codex") && turnState?.waitingForInput === true;
   const claudeBackgroundOnly = selected?.agentKind === "claude_code"
     && sessionStatus === "active" && turnState?.turnActive === false && !agentWaiting && activities.length > 0;
-  const visualStatus = claudeBackgroundOnly || agentWaiting ? "idle" : sessionStatus;
+  const visualStatus = agentWaiting ? "idle" : sessionStatus;
   // Every activity line names the agent that is actually running this session
   // (AND-236): Codex and OpenCode report turns too, so the copy must not say
   // "Claude Code" for them.
@@ -977,11 +968,11 @@ export function AgentSessionConsole({
                 >
                   <span className="agent-console-session-indicators">
                     <span
-                      className={`agent-console-status-icon agent-console-status-${rowBackground || rowWaiting ? "idle" : rowStatus} agent-console-node-${session.nodeConnectionState}`}
+                      className={`agent-console-status-icon agent-console-status-${rowWaiting ? "idle" : rowStatus} agent-console-node-${session.nodeConnectionState}`}
                       role="img"
                       aria-label={`${nodeConnectionLabel(session, t)} · ${session.archivedAt ? t("archived") : rowLabel}`}
                     >
-                      {session.nodeConnectionState === "offline" ? <WifiOff size={14} /> : <SessionStatusIcon status={rowBackground || rowWaiting ? "idle" : rowStatus} />}
+                      {session.nodeConnectionState === "offline" ? <WifiOff size={14} /> : <SessionStatusIcon status={rowWaiting ? "idle" : rowStatus} />}
                     </span>
                     {session.unread && <i className="agent-console-unread-dot" role="img" aria-label={t("agentConsoleUnreadOne")} />}
                   </span>
@@ -1335,7 +1326,7 @@ export function AgentSessionConsole({
                       {turnRunning && command?.status === "queued" && <small>{t("agentSessionNextTurnQueued", { agent: agentName })}</small>}
                       {activities.length > 0 && (
                         <section className="agent-console-background" aria-label={t(selected.agentKind === "claude_code" ? "agentSessionBackgroundTitle" : "agentSessionCurrentActivities")}>
-                          <header><LoaderCircle className={sessionStatus === "active" ? "spin" : undefined} size={15} /><strong>{t(selected.agentKind === "claude_code" ? "agentSessionBackgroundCount" : "agentSessionToolCount", { count: activities.length })}</strong></header>
+                          <header><SessionStatusIcon status={visualStatus} /><strong>{t(selected.agentKind === "claude_code" ? "agentSessionBackgroundCount" : "agentSessionToolCount", { count: activities.length })}</strong></header>
                           <ul>{activities.map((activity) => (
                             <li key={activity.id}>
                               <span>{activity.title === "等待 CI" ? t("agentSessionWaitingCI") : activity.title}</span>

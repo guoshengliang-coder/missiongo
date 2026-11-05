@@ -1126,7 +1126,8 @@ public final class NodeLoop: @unchecked Sendable {
                 reworkItemKeys: request.reworkItemKeys ?? [],
                 model: request.model,
                 effort: request.effort,
-                freeSession: request.freeSession == true
+                freeSession: request.freeSession == true,
+                sessionTitle: request.sessionTitle
             ))
             log("会话「\(launched.sessionName)」已启动" + (launched.logPath.map { "，日志 \($0)" } ?? ""))
             if let url = launched.sessionUrl {

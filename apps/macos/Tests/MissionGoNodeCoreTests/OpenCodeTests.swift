@@ -4,6 +4,7 @@ import XCTest
 
 private actor StubOpenCodeControl: OpenCodeControlling {
     let mcpStatus: String?
+    var renamedTitle: String?
     var createdAgent: String?
     var createdModel: OpenCodeModelRef?
     var lastPrompt: String?
@@ -67,7 +68,7 @@ private actor StubOpenCodeControl: OpenCodeControlling {
         createdModel = model
         return "ses_test"
     }
-    func renameSession(id: String, title: String) async throws {}
+    func renameSession(id: String, title: String) async throws { renamedTitle = title }
     func prompt(id: String, text: String) async throws {
         if let promptError { throw promptError }
         promptCount += 1
@@ -770,6 +771,18 @@ final class OpenCodeTests: XCTestCase {
             AgentModelOption(id: "zai-coding-plan/glm-5.3", label: "GLM-5.3", provider: "zai-coding-plan",
                              efforts: ["low", "high"], isDefault: true),
         ])
+    }
+
+    func testProjectLaunchNamesTheNativeSessionWithTheSharedTitle() async throws {
+        let repo = try temporaryRepo()
+        defer { try? FileManager.default.removeItem(at: repo) }
+        let control = StubOpenCodeControl(mcpStatus: "connected")
+        let launcher = OpenCodeLauncher(control: control)
+        let result = try await launcher.launch(DispatchJob(dispatchId: "project", itemKeys: [], repoPath: repo.path,
+            mode: "default", nodeName: "M4", freeSession: true, sessionTitle: "修复登录 · 12345678"))
+        let title = await control.renamedTitle
+        XCTAssertEqual(title, "M4-修复登录 · 12345678")
+        XCTAssertEqual(result.sessionName, title)
     }
 
     func testLaunchPassesTheChosenModelAndEffortAsOneReference() async throws {

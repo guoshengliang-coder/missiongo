@@ -8,6 +8,7 @@ import { CodexAdapter, codexPolicy, codexMessages } from "./codex.js";
 import { ClaudeAdapter, claudeAnswer, claudeArguments } from "./claude.js";
 import { OpenCodeAdapter, OpenCodeAPI } from "./opencode.js";
 import { DISPATCH_MODES_BY_AGENT } from "@missiongo/domain";
+import { sessionName } from "./session-name.js";
 import { launchPrompt } from "./prompt.js";
 import { loadConfig, privateDir, readPrivate, saveConfig, savePrivate } from "./storage.js";
 import { serviceUnit } from "./service.js";
@@ -25,6 +26,33 @@ const job = (root: string, agentKind: Dispatch["agentKind"] = "codex"): Dispatch
 afterEach(async () => { for (const a of adapters.splice(0)) await a.close(); vi.unstubAllEnvs(); vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe("headless configuration and scope", () => {
+  it("AND-404 uses the saved project title in native names and keeps legacy jobs compatible", async () => {
+    const title = "修复登录 · 12345678";
+    const project = { ...job(temporary()), freeSession: true, itemKeys: [], sessionTitle: title, nodeName: " M4 " };
+    expect(sessionName(project)).toBe(`M4-${title}`);
+    expect(sessionName({ ...project, sessionTitle: undefined })).toBe("M4-新会话");
+    expect(sessionName({ ...project, freeSession: false, itemKeys: ["EX-1"] })).toBe("M4-EX-1");
+    const args = claudeArguments({ ...project, agentKind: "claude_code" }, "fixture-ref");
+    expect(args[args.indexOf("--name") + 1]).toBe(`M4-${title}`);
+    const codex = new CodexAdapter(project, fixture); adapters.push(codex);
+    const rpc = codex as unknown as { rpc: { call(method: string, params: Wire): Promise<Wire> } };
+    const calls = vi.spyOn(rpc.rpc, "call");
+    await codex.start("fixture only");
+    expect(calls).toHaveBeenCalledWith("thread/name/set", { threadId: expect.any(String), name: `M4-${title}` });
+    const changes: Wire[] = [];
+    const api = { call: async (method: string, path: string, body: Wire) => {
+      if (path === "/api/info") return { version: "2.1.0" };
+      if (path.startsWith("/api/mcp?")) return { data: [{ name: "missiongo", status: { status: "connected" } }] };
+      if (path === "/api/session" && method === "POST") return { data: { id: "project-native" } };
+      if (method === "PATCH") { changes.push(body); return {}; }
+      if (path.includes("/message?")) return { data: [] };
+      return { data: { agent: "plan" } };
+    } } as unknown as OpenCodeAPI;
+    const open = new OpenCodeAdapter({ ...project, agentKind: "opencode" }, api); adapters.push(open);
+    await open.start("fixture only");
+    expect(changes).toContainEqual({ title: `M4-${title}` });
+  });
+
   it("starts a project conversation without claiming items and still isolates writes", () => {
     const free = { ...job(temporary()), itemKeys: [], freeSession: true };
     const prompt = launchPrompt(free);

@@ -532,7 +532,7 @@ final class NodeLoopTests: XCTestCase {
     func testHeartbeatCarriesTheAdaptersModelsAndTheDispatchPassesItsChoice() async throws {
         let api = FakeAPI(claims: [.success(DispatchRequest(
             dispatchId: "d2", itemKeys: ["AND-1"], repoPath: "/p", agentKind: "codex", mode: "plan",
-            model: "gpt-5.1-codex", effort: "low"
+            model: "gpt-5.1-codex", effort: "low", sessionTitle: "Saved title · 12345678"
         ))])
         let adapter = ModelAdapter()
         let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "M", timing: fastTiming(), log: { _ in })
@@ -544,6 +544,7 @@ final class NodeLoopTests: XCTestCase {
         XCTAssertEqual(loop.currentState.agents.first?.models?.map(\.id), ["gpt-5.1-codex"])
         XCTAssertEqual(adapter.jobs.current.first?.model, "gpt-5.1-codex")
         XCTAssertEqual(adapter.jobs.current.first?.effort, "low")
+        XCTAssertEqual(adapter.jobs.current.first?.sessionTitle, "Saved title · 12345678")
     }
 
     func testHeartbeatPublishesTheSkillVersionToTheMenuState() async throws {

@@ -16,6 +16,33 @@ afterEach(async () => {
 });
 
 describe("database migrations", () => {
+  it("AND-404 adds nullable project titles without rewriting existing session names", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "missiongo-project-title-migration-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "missiongo.sqlite");
+    const seeded = new MissionGoDatabase(path);
+    seeded.connection.exec(`
+      INSERT INTO products(id,key_prefix,name,created_at,updated_at) VALUES ('p','OLD','Project','2026-11-01','2026-11-01');
+      INSERT INTO nodes(id,account_id,name,token_hash,created_at,updated_at) VALUES ('n','a','Mac','hash','2026-11-01','2026-11-01');
+      INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,session_name,created_at)
+        VALUES ('d','a','n','codex','plan','launched','fixture-repo','My native title','2026-11-01');
+      INSERT INTO free_session_starts(dispatch_id,account_id,request_key,product_id,initial_text,config_json)
+        VALUES ('d','a','request','p','Existing message','{}');
+      ALTER TABLE free_session_starts DROP COLUMN session_title;
+      DELETE FROM schema_migrations WHERE version=202611050724;
+    `);
+    seeded.close();
+    for (let pass = 0; pass < 2; pass++) {
+      const migrated = new MissionGoDatabase(path);
+      try {
+        expect(migrated.connection.prepare("SELECT initial_text,session_title FROM free_session_starts").get())
+          .toEqual({ initial_text: "Existing message", session_title: null });
+        expect(migrated.connection.prepare("SELECT session_name FROM dispatches").get()).toEqual({ session_name: "My native title" });
+        expect(migrated.connection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+      } finally { migrated.close(); }
+    }
+  });
+
   it("adds completion references without changing legacy handovers or project artifacts", async () => {
     const directory = await mkdtemp(join(tmpdir(), "missiongo-completion-migration-"));
     temporaryDirectories.push(directory);

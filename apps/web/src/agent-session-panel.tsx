@@ -2,7 +2,7 @@ import { AgentStopFeedback } from "./agent-stop-feedback.js";
 import { useState, useEffect, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, isHistoryLimited } from "./agent-session-feedback";
+import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, SessionStatusIcon, isHistoryLimited } from "./agent-session-feedback";
 import { MarkdownText } from "./markdown-text";
 import { AgentArtifactMarkdown } from "./agent-artifact-viewer";
 import { api } from "./api";
@@ -86,6 +86,11 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
   const agentName = session.data ? messageLabel("agent", session.data.agentKind, t) : "";
   const pending = command?.status === "queued" || command?.status === "delivering"
     || command?.status === "delivery_unknown";
+  const waiting = session.data !== undefined && ["active", "idle"].includes(session.data.status)
+    && (!pending || session.data.agentKind === "codex") && session.data.turnState?.waitingForInput === true;
+  const backgroundOnly = session.data?.agentKind === "claude_code" && session.data.status === "active"
+    && session.data.turnState?.turnActive === false && !waiting && session.data.activities.length > 0;
+  const visualStatus = waiting ? "idle" : session.data?.status ?? "idle";
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const text = reply.trim();
@@ -106,13 +111,8 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
               <header className="agent-session-head">
                 <strong>{t("agentSessionTitle")}</strong>
                 <span className={`status-pill agent-session-status-${session.data.status}`}>
-                  {["claude_code", "opencode"].includes(session.data.agentKind) && ["active", "idle"].includes(session.data.status)
-                    && !pending && session.data.turnState?.waitingForInput
-                    ? t("agentSessionWaitingStatus")
-                    : session.data.agentKind === "claude_code" && session.data.status === "active" && session.data.turnState?.turnActive === false
-                      && session.data.activities.length > 0
-                      ? t("agentSessionBackgroundStatus")
-                      : statusLabel(session.data.status, t)}
+                  {waiting ? t(session.data.agentKind === "codex" ? "agentSessionWaitingApprovalStatus" : "agentSessionWaitingStatus")
+                    : backgroundOnly ? t("agentSessionBackgroundStatus") : statusLabel(session.data.status, t)}
                 </span>
               </header>
               {session.data.messages.length === 0 && (
@@ -137,9 +137,9 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                   </article>
                 ))}
               </div>
-              <AgentRunDetails status={session.data.status} label={session.data.turnState?.waitingForInput
+              <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={visualStatus} />} label={waiting
                 ? t(session.data.agentKind === "codex" ? "agentRunApproval" : "agentRunWaiting", { agent: agentName })
-                : session.data.status === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(session.data.status, t)}>
+                : backgroundOnly ? t("agentRunBackground") : session.data.status === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(session.data.status, t)}>
                 <p>{t(activityLabelKey(session.data.status, command?.status === "queued"), { agent: agentName })}</p>
                 {session.data.activities.length > 0 && (
                   <section className="agent-session-background" aria-label={t("agentSessionBackgroundTitle")}>

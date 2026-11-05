@@ -87,6 +87,7 @@ public enum AgentDispatchAvailability: Equatable, Sendable {
 /// repository path — never a command line. What the session is actually told
 /// to do is decided on this machine (see `LaunchPrompt`).
 public struct DispatchJob: Equatable, Sendable {
+    public let sessionTitle: String?
     public let freeSession: Bool
     public let dispatchId: String
     public let itemKeys: [String]
@@ -112,8 +113,10 @@ public struct DispatchJob: Equatable, Sendable {
         reworkItemKeys: [String] = [],
         model: String? = nil,
         effort: String? = nil,
-        freeSession: Bool = false
+        freeSession: Bool = false,
+        sessionTitle: String? = nil
     ) {
+        self.sessionTitle = sessionTitle
         self.freeSession = freeSession
         self.dispatchId = dispatchId
         self.itemKeys = itemKeys
@@ -310,6 +313,16 @@ public struct SessionLauncher: AgentAdapter {
         return "\(machine)-\(itemKeys.isEmpty ? "新会话" : itemKeyList(itemKeys))\(suffix)"
     }
 
+    /// The server saves a project title once and sends it with its launch metadata.
+    /// Legacy jobs retain the previous name; ordinary item dispatches keep their key/round naming.
+    public static func sessionName(for job: DispatchJob) -> String {
+        if job.freeSession, let title = job.sessionTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+            let machine = job.nodeName.trimmingCharacters(in: .whitespacesAndNewlines)
+            return "\(machine.isEmpty ? fallbackNodeName : machine)-\(title)"
+        }
+        return sessionName(nodeName: job.nodeName, itemKeys: job.itemKeys, round: job.round)
+    }
+
     /// The log of one dispatch, named after the dispatch id. The id arrives over
     /// the wire, so anything that could climb out of the log directory is
     /// replaced instead of trusted.
@@ -491,7 +504,7 @@ public struct SessionLauncher: AgentAdapter {
         let prompt = try LaunchPrompt.build(
             itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode, reworkItemKeys: job.reworkItemKeys, freeSession: job.freeSession
         )
-        let sessionName = SessionLauncher.sessionName(nodeName: job.nodeName, itemKeys: job.itemKeys, round: job.round)
+        let sessionName = SessionLauncher.sessionName(for: job)
         guard ClaudeCodeModes.isAllowed(job.mode) else {
             throw LaunchError("不支持的 Claude Code 模式：\(JSONValues.quote(job.mode))")
         }
@@ -580,7 +593,7 @@ public struct SessionLauncher: AgentAdapter {
         let prompt = try LaunchPrompt.build(
             itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode, reworkItemKeys: job.reworkItemKeys, freeSession: job.freeSession
         )
-        let sessionName = SessionLauncher.sessionName(nodeName: job.nodeName, itemKeys: job.itemKeys, round: job.round)
+        let sessionName = SessionLauncher.sessionName(for: job)
         let command = try SessionLauncher.launchCommand(
             sessionName: sessionName, mode: "plan", prompt: prompt, model: job.model, effort: job.effort
         )

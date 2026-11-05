@@ -1,3 +1,4 @@
+import { sessionName } from "./session-name.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { JsonProcess } from "./process.js";
@@ -138,7 +139,7 @@ export class CodexAdapter implements Adapter {
       throw new Error("Authorize MissionGo read/write in Codex before dispatching");
     }
     if (this.localSkillVersion && account.skill?.expectedVersion !== this.localSkillVersion) throw new Error("Codex MissionGo Skill differs from the connected server; no task started");
-    await this.rpc.call("thread/name/set", { threadId: this.ref, name: `${this.job.nodeName ?? "Linux"}-${this.job.itemKeys.join(",")}` });
+    await this.rpc.call("thread/name/set", { threadId: this.ref, name: sessionName(this.job) });
     const first = await this.rpc.call("turn/start", this.turn(prompt, this.job.dispatchId));
     this.initialTurnId = first.turn?.id;
     return this.ref;

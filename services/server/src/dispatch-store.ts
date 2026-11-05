@@ -170,6 +170,7 @@ export interface DispatchHealthSnapshot {
 
 export interface DispatchJob {
   readonly freeSession?: boolean;
+  readonly sessionTitle?: string;
   readonly dispatchId: string;
   /** What this machine is called, for naming the session: nickname, else device name. */
   readonly nodeName: string;
@@ -1185,7 +1186,7 @@ export class DispatchStore {
             repo_path: string; node_name: string;
           } | undefined;
       if (!row) return undefined;
-      const free = this.database.connection.prepare("SELECT product_id FROM free_session_starts WHERE dispatch_id=?").get(row.id) as {product_id:string}|undefined;
+      const free = this.database.connection.prepare("SELECT product_id,session_title FROM free_session_starts WHERE dispatch_id=?").get(row.id) as {product_id:string;session_title:string|null}|undefined;
       if (free) authorizeProduct?.(free.product_id);
       if (authorizeProduct) for (const product of this.database.connection.prepare("SELECT DISTINCT w.product_id FROM dispatch_items i JOIN work_items w ON w.id=i.item_id WHERE i.dispatch_id=?").all(row.id) as Array<{product_id:string}>) authorizeProduct(product.product_id);
       const now = new Date().toISOString();
@@ -1194,7 +1195,7 @@ export class DispatchStore {
         .run(now, row.id);
       return {
         dispatchId: row.id,
-        ...(free ? { freeSession: true } : {}),
+        ...(free ? { freeSession: true, ...(free.session_title ? { sessionTitle: free.session_title } : {}) } : {}),
         itemKeys: this.listDispatchItemKeys(row.id),
         repoPath: row.repo_path,
         agentKind: row.agent_kind as AgentKind,
