@@ -39,6 +39,7 @@ MissionGo MCP 让经过鉴权的 AI 按用户给出的编号完整读取一个�
 
 - `get_current_account`：确认当前连接账号及其全部产品或指定产品读取范围，并返回服务端期望的
   Skill 版本 `skill.expectedVersion`；已配置公开地址时同时返回 `skill.updateUrl`。
+  `capabilities.supportsConversationAuthorization: true` 表示支持下文无凭据返回的会话身份模式；仍需另外检查写工具和权限。
   `account.username` 始终是登录邮箱，`account.displayName` 是该账号的昵称（未设置时为邮箱 `@` 前
   的部分）——昵称是自述标签，不构成身份，确认连的是哪个账号要看 `username`。
 - `list_products`：读取可见产品。每个产品带 `releaseArtifacts`，即任务交接与发布流程自动记录的产物标识，兼容历史配置。
@@ -61,11 +62,14 @@ MissionGo MCP 让经过鉴权的 AI 按用户给出的编号完整读取一个�
 
 - `claim_item`（`comments` 档位起，需 `missiongo:write`）：把「待处理」的条目领为「处理中」。
   不需要租约——状态本身就是锁，只有待处理的条目能被领取。
+  新客户端带 `authorizationMode: "conversation"`，文本与 `structuredContent` 都返回可用于交接的 `executionIdentity`，不返回内部执行凭据。
+  模式是领取幂等请求的一部分，重试须保持原值。省略模式或使用 `credential` 保留旧凭据返回，不改变历史回执。
 - `recover_execution_authorization`（同上）：长会话遗失领取凭据或幂等键时，按 `itemKey` 和且仅一种原
   `dispatchId`、外部 `sessionId` 或 `session` 身份取回当前轮次仍有效的原授权。核对当前产品操作与 AI
   权限、原账号与 OAuth 客户端、原领取回执关联和撤销状态；不能用后来登记的其他会话冒领凭据。
   历史回执可核验时兼容，歧义或缺失则拒绝。工具要求写权限但不写数据，不领取、不创建会话或轮次。
-  返回 `executionAuthorization` 和 `statusChanged: false`。Builder 交接、验收打回或重开后的旧授权不能恢复。
+  带 `authorizationMode: "conversation"` 时仅确认原授权仍有效，返回 `executionIdentity` 和 `statusChanged: false`，文本与结构化结果均不含凭据。
+  省略模式或使用 `credential` 时保留旧 `executionAuthorization` 返回。Builder 交接、验收打回或重开后的旧授权不能恢复。
 - `register_agent_session`（同上）：把当前用户明确要求继续处理的会话关联到一个已在处理中、开发完成或待验证的条目。`session` 含 `agentKind`、稳定 `sessionRef`、`refKind: native|tracking` 和可选自述 `name`。原生 ID 必须由可信客户端提供；不可取得时生成对话 UUID 并标为 tracking。唯一键由账号、OAuth 客户端、Agent 类型与会话引用共同组成；同一对话关联多条目不重复创建，不会领取或控制客户端。
 - `report_agent_session`（同上）：用返回的 `sessionId`、已关联 `itemKey`、`status: working|waiting_for_input|blocked|completed|failed`、可选事实 `text` 和稳定 `idempotencyKey` 上报进展。相同键重放不新增消息、不同内容复用键会拒绝。每次检查记录所属账号、OAuth 客户端及全部关联产品权限。completed 只结束会话处理，不更改条目状态。超过 30 分钟未上报的非终态记录显示状态无法确认。
 - 外部领取时 `claim_item.session` 可直接登记上述关联并返回 `sessionId`；旧调用不带此参数时只创建每次领取的跟踪记录。来自 Web 派单的调用应传可信启动提示词的 `dispatchId`，服务器核对派单所属账号和条目，不创建外部记录。领取、登记和初始进展在同一事务内完成；失败不留下半成品。
@@ -113,6 +117,16 @@ MissionGo MCP 让经过鉴权的 AI 按用户给出的编号完整读取一个�
 
 MCP 工具列表不得出现续租、进度、验收、退回、搁置、删除、条目字段更新或任意 SQL 工具。除了领取、
 标记开发完成和发布交接这三条，其余状态流转都由人走。
+
+### 会话身份交接（AND-413，Skill 5.44.0）
+
+`submit_development_complete` 和 `submit_for_verification` 必须且只能提供以下一种：原 `dispatchId`、外部 `sessionId`、原 `session`（`agentKind`、`refKind`、`sessionRef`），或旧 `executionAuthorization`。多个身份、身份与凭据混用、全部缺省均拒绝。`executionIdentity` 是返回对象，调用时把其字段放在参数顶层，不把它作为嵌套参数发送。
+
+会话路径复用授权恢复查询，在服务端取出内部领取凭据并执行既有校验。要求当前账号、OAuth 客户端、条目、原领取回执关联、执行轮次、权限及撤销状态全部有效；后来登记到同一条目的会话不能成为原领取者，缺失或歧义记录拒绝。兼容有可核实回执的历史领取，不新建凭据、会话或轮次，不改变状态交接和集成/发布证据要求。
+
+领取及恢复在 `conversation` 模式的文本末行提供 JSON，例如 `{"executionIdentity":{"dispatchId":"original-dispatch-id"}}`；外部调用返回 `sessionId`。只有文本输出的客户端也能使用，无需消费对象型 `structuredContent`。旧凭据仅保留在内部领取表和回执；省略模式的历史接口仍会返回凭据，这是向后兼容路径，新版 Skill 不主动使用。
+
+MCP 使用无状态 HTTP，OAuth 身份不能单独证明是哪一条对话。调用者仍须使用可信启动提示或本机客户端提供的原会话身份，本方案沿用既有恢复授权边界，不声称有额外的独立对话认证。能力标记缺失时不能假设旧服务会理解新参数；旧服务须升级后才能让文本客户端使用该路径。
 
 ## 评论
 
