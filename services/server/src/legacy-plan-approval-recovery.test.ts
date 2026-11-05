@@ -235,6 +235,20 @@ it("does not arm a recovered native decision from another OAuth client",async()=
   expect(f.db.prepare('SELECT COUNT(*) AS n FROM implementation_plan_recovery_resumes').get()).toMatchObject({n:0});
 });
 
+it("continues only after a real successful retry clears the current mode error, without another approval or revision",async()=>{
+  const f=await fixture();await f.call('claim_item',f.claimArgs);
+  const revision=(f.db.prepare('SELECT settings_revision FROM agent_sessions WHERE id=?').get(f.sessionId) as {settings_revision:number}).settings_revision;
+  expect((await f.nodeReport({settingsRevision:revision,settingsError:'Transient native mode update failed',turnState:{turnActive:false}})).statusCode).toBe(204);
+  expect(f.db.prepare('SELECT COUNT(*) AS n FROM agent_session_commands').get()).toMatchObject({n:0});
+  expect((await f.nodeReport({settingsRevision:revision,turnState:{turnActive:false}})).statusCode).toBe(204);
+  expect(f.db.prepare('SELECT settings_error,settings_revision FROM agent_sessions WHERE id=?').get(f.sessionId)).toMatchObject({settings_error:null,settings_revision:revision});
+  expect(f.db.prepare('SELECT COUNT(*) AS n FROM agent_session_commands').get()).toMatchObject({n:1});
+  const claim=await f.call('claim_item',f.claimArgs);
+  expect(claim.isError,JSON.stringify(claim)).not.toBe(true);
+  expect(claim.structuredContent.executionAuthorization).toEqual(expect.any(String));
+  expect(f.db.prepare('SELECT COUNT(*) AS n FROM implementation_plan_approvals').get()).toMatchObject({n:1});
+});
+
 it("keeps original dispatch scope validation for ordinary plan requests",async()=>{
   const f=await fixture('native',false);
   const result=await f.call('request_plan_approval',{itemKeys:[f.item.key],dispatchId:'missing-dispatch',plan:'Do not accept an unrelated dispatch.',validation:'Check original ownership.',approvalMethod:'web'});

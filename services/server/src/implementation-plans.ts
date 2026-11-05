@@ -82,10 +82,10 @@ export class ImplementationPlans {
       const keys = (JSON.parse(row.scope_json) as {key:string}[]).map(entry => entry.key);
       if (keys.includes(key) && row.scope_json === this.scope(keys)) {
         if(identity.startsWith("dispatch:")) {
-          const session=this.db.connection.prepare(`SELECT s.agent_kind,s.mode,s.implementation_mode,s.settings_revision,s.applied_settings_revision,s.settings_error_revision
-            FROM agent_sessions s JOIN dispatches d ON d.id=s.dispatch_id WHERE d.id=? AND d.account_id=?`).get(identity.slice(9),accountId) as {agent_kind:string;mode:string|null;implementation_mode:string|null;settings_revision:number;applied_settings_revision:number;settings_error_revision:number|null}|undefined;
+          const session=this.db.connection.prepare(`SELECT s.agent_kind,s.mode,s.implementation_mode,s.settings_revision,s.applied_settings_revision,s.settings_error_revision,s.settings_error
+            FROM agent_sessions s JOIN dispatches d ON d.id=s.dispatch_id WHERE d.id=? AND d.account_id=?`).get(identity.slice(9),accountId) as {agent_kind:string;mode:string|null;implementation_mode:string|null;settings_revision:number;applied_settings_revision:number;settings_error_revision:number|null;settings_error:string|null}|undefined;
           if(!session || session.applied_settings_revision<session.settings_revision
-            || (session.settings_error_revision ?? -1)>=session.settings_revision
+            || (session.settings_error!==null && (session.settings_error_revision ?? -1)>=session.settings_revision)
             || normalizeAgentMode(session.agent_kind,session.mode ?? "")!==normalizeAgentMode(session.agent_kind,session.implementation_mode ?? "")
             || session.agent_kind!=="codex" && session.mode==="plan") {
             throw conflict("implementation_mode_not_applied","The plan is approved, but the native implementation mode is not confirmed. Leave native Plan explicitly and wait for the node to apply the chosen mode; do not approve the plan again.");
