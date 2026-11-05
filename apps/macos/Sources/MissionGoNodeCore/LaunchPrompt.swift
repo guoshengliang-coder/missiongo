@@ -80,7 +80,7 @@ public enum LaunchPrompt {
                 "后续按用户消息讨论或执行；不得自动创建、领取条目，不套用条目处理 Skill 的领取前提。",
                 "本项目会话的派单身份为 \(JSONValues.quote(dispatchId))。仅当用户后来明确指定处理条目时，使用 missiongo skill 完整读取并遵守计划批准要求；领取时 claim_item 必须带 dispatchId: \(JSONValues.quote(dispatchId))，复用原项目会话，不要另行登记主动处理会话。",
                 "读取并遵守当前项目规则；修改代码前创建独立 worktree，不直接修改主工作区。",
-                "纯讨论查询直接答复；开发任务先诊断澄清、给出方案和验证目标，用户明确批准后才实施。仅 Web 批准按钮或原生计划批准可记录方案批准，文字同意须引导明确批准操作。原生计划模式、权限审批、push、merge 和发布授权仍须遵守。"
+                "纯讨论查询直接答复；需求登记与条目创建按用户明确授权及创建规则执行，不要求先批准代码实施方案。开发任务先诊断澄清、给出方案和验证目标，用户明确批准后才实施。用户明确指定处理工作条目时，按条目流程记录方案批准。所选原生权限模式、权限审批、push、merge 和发布授权仍须遵守。"
             ]
             lines += researchGuidance
             if let worktreePath { lines.append("本会话可写 worktree 路径（尚未创建）：\(JSONValues.quote(worktreePath))。遵守项目规则，不扩大到父目录。") }

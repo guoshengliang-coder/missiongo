@@ -34,7 +34,7 @@ export interface Session {
   id: string; dispatchId?: string; agentKind: Kind; sessionRef: string; lifecycle?: string;
   occupiesExecutionSlot?: boolean; command?: Command; approvalDecision?: { id: string; choice: string };
   approvalRetry?: { id: string; reviewId: string; status: string }; approvalReviewMode?: string;
-  desiredSettings?: { planApproved?: boolean; revision: number; mode?: string; model?: string; effort?: string };
+  desiredSettings?: { planning?: boolean; planApproved?: boolean; revision: number; mode?: string; model?: string; effort?: string };
   appliedSettingsRevision?: number; archiveInSource?: boolean; restoreInSource?: boolean;
 }
 export interface Snapshot {

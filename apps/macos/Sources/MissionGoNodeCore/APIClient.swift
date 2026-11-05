@@ -303,6 +303,8 @@ public struct AgentModelOption: Codable, Equatable, Sendable {
 /// The mode, model and effort a person wants a running session to use.
 /// Each field left out means "leave this one as it is".
 public struct AgentSessionSettings: Codable, Equatable, Sendable {
+    /// Native phase control, independent of an implementation approval record.
+    public let planning: Bool?
     public let planApproved: Bool?
     /// Grows with every change a person makes; the node reports back the one
     /// it has applied, so a change is applied once however often it is sent.
@@ -311,7 +313,8 @@ public struct AgentSessionSettings: Codable, Equatable, Sendable {
     public let model: String?
     public let effort: String?
 
-    public init(revision: Int, mode: String? = nil, model: String? = nil, effort: String? = nil, planApproved: Bool? = nil) {
+    public init(revision: Int, mode: String? = nil, model: String? = nil, effort: String? = nil, planApproved: Bool? = nil, planning: Bool? = nil) {
+        self.planning = planning
         self.planApproved = planApproved
         self.revision = revision
         self.mode = mode
@@ -320,17 +323,20 @@ public struct AgentSessionSettings: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case revision, mode, model, effort, planApproved
+        case revision, mode, model, effort, planApproved, planning
     }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        planning = try values.decodeIfPresent(Bool.self, forKey: .planning)
         planApproved = try values.decodeIfPresent(Bool.self, forKey: .planApproved)
         revision = try values.decodeIfPresent(Int.self, forKey: .revision) ?? 0
         mode = try values.decodeIfPresent(String.self, forKey: .mode)
         model = try values.decodeIfPresent(String.self, forKey: .model)
         effort = try values.decodeIfPresent(String.self, forKey: .effort)
     }
+
+    public var nativePlanning: Bool { planning ?? (planApproved == false) }
 }
 
 /// Model names and efforts arrive over the wire and end up in argv or an RPC

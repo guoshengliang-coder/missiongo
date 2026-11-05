@@ -59,7 +59,9 @@ describe("headless configuration and scope", () => {
     expect(prompt).toContain("等待用户首条消息");
     expect(prompt).toContain("不得自动创建或领取条目");
     expect(prompt).toContain("独立 worktree");
-    expect(prompt).toContain("原生计划模式");
+    expect(prompt).toContain("所选原生权限模式");
+    expect(prompt).toContain("需求登记与条目创建按用户明确授权");
+    expect(prompt).not.toContain("文字同意须引导明确批准操作");
     expect(prompt).toContain('claim_item 必须带 dispatchId: "test-dispatch"');
     expect(prompt).toContain("仅当用户后来明确指定处理条目时");
     expect(prompt).toContain("不要另行登记主动处理会话");
@@ -122,6 +124,24 @@ describe("headless configuration and scope", () => {
   });
 });
 describe("Codex native control", () => {
+  it.each(["auto", "default", "read-only"])("project session preserves %s through launch, settings and the next turn", async mode => {
+    const root=temporary(), log=join(root,"events"); vi.stubEnv("TEST_AGENT_EVENTS",log);
+    const adapter=new CodexAdapter({...job(root),itemKeys:[],freeSession:true,mode},fixture); adapters.push(adapter);
+    await adapter.start("ready");
+    expect((await adapter.snapshot()).mode).toBe(mode);
+    await adapter.settings({revision:1,mode:"read-only",planning:true,planApproved:false});
+    expect((await adapter.snapshot()).mode).toBe("read-only");
+    await adapter.settings({revision:2,mode,planning:false});
+    await adapter.deliver({id:"ordinary-reply",status:"queued",text:"continue"});
+    const requests=readFileSync(log,"utf8").trim().split("\n").map(line=>JSON.parse(line));
+    expect(requests.find(r=>r.method==="thread/start").params).toMatchObject(codexPolicy(mode));
+    const turns=requests.filter(r=>r.method==="turn/start");
+    for(const turn of turns) {
+      expect(turn.params.collaborationMode.mode).toBe("default");
+      expect(turn.params.sandboxPolicy.type).toBe(mode==="read-only" ? "readOnly" : "workspaceWrite");
+      expect(turn.params.approvalsReviewer).toBe(mode==="auto" ? "auto_review" : "user");
+    }
+  });
   it("mirrors completed generated images as explicit references without prompts or base64", () => {
     expect(codexMessages({ turns: [{ id: "turn", items: [
       { id: "image", type: "imageGeneration", status: "completed", savedPath: "/tmp/fixture-output/my image.png", result: "private-base64", revisedPrompt: "private prompt" },
@@ -159,6 +179,17 @@ describe("Codex native control", () => {
   });
 });
 describe("Claude native control", () => {
+  it.each(["auto", "bypassPermissions", "default", "plan"])("project session preserves Claude %s and can leave the old forced Plan", async mode=>{
+    const input={...job(temporary(),"claude_code"),itemKeys:[],freeSession:true,mode};
+    const args=claudeArguments(input,"session");
+    expect(args[args.indexOf("--permission-mode")+1]).toBe(mode);
+    const adapter=new ClaudeAdapter(input,fixture); adapters.push(adapter);
+    await adapter.start("ready"); expect((await adapter.snapshot()).mode).toBe(mode);
+    await adapter.settings({revision:1,mode:"plan",planning:true,planApproved:false});
+    expect((await adapter.snapshot()).mode).toBe("plan");
+    await adapter.settings({revision:2,mode,planning:false});
+    expect((await adapter.snapshot()).mode).toBe(mode);
+  });
   it("uses real stdio approval surface and keeps irreversible-operation denials", () => {
     const args = claudeArguments(job(temporary(), "claude_code"), "session");
     expect(args).toContain("--permission-prompt-tool"); expect(args).toContain("stdio");
@@ -178,6 +209,21 @@ describe("Claude native control", () => {
   });
 });
 describe("OpenCode shared-service control", () => {
+  it.each(["build", "plan"])("project session preserves OpenCode %s and can recover from forced Plan",async mode=>{
+    let actual="", initial="";
+    const api={call:async(method:string,path:string,body?:Wire):Promise<Wire>=>{
+      if(path==="/api/info") return {version:"2.1.0"};
+      if(path.startsWith("/api/mcp")) return {data:[{name:"missiongo",status:{status:"connected"}}]};
+      if(path==="/api/session" && method==="POST") {actual=initial=body!.agent;return {data:{id:"free"}};}
+      if(path==="/api/session/free") return {data:{agent:actual}};
+      if(path.endsWith("/agent")) actual=body!.agent;
+      return {data:[]};
+    }} as unknown as OpenCodeAPI;
+    const adapter=new OpenCodeAdapter({...job(temporary(),"opencode"),itemKeys:[],freeSession:true,mode},api);adapters.push(adapter);
+    await adapter.start("ready");expect(initial).toBe(mode);
+    await adapter.settings({revision:1,mode:"plan",planning:true,planApproved:false});expect(actual).toBe("plan");
+    await adapter.settings({revision:2,mode,planning:false});expect(actual).toBe(mode);
+  });
   it("uses the existing V2 service, displays real form options and preserves permission denial", async () => {
     let pending = true; const calls: { method: string; path: string; body?: unknown }[] = [];
     const api = { call: async (method: string, path: string, body?: unknown): Promise<Wire> => {

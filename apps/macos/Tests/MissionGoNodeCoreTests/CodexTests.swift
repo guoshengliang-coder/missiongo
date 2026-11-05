@@ -1980,6 +1980,36 @@ final class CodexLauncherTests: XCTestCase {
         ))
     }
 
+    func testProjectSessionsStartInTheirSelectedPermissionMode() async throws {
+        for mode in ["auto", "default", "read-only"] {
+            let machine = try machine()
+            defer { machine.listener.map { _ = close($0) } }
+            let control = RecordingControl()
+            let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: "https://missiongo.test",
+                run: fakeCodex(), location: machine.location, control: control)
+            _ = try await launcher.launch(DispatchJob(dispatchId: "free-\(mode)", itemKeys: [], repoPath: machine.repoPath,
+                mode: mode, nodeName: "Fixture", freeSession: true))
+            let sent = try XCTUnwrap(control.requests.current.first)
+            XCTAssertEqual(sent.settings, CodexModes.threadSettings(for: mode))
+            XCTAssertFalse(sent.settings.planning)
+        }
+    }
+
+    func testProjectPermissionRetryRestoresOrdinaryPhaseWithoutAnImplementationApproval() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        let settings = AgentSessionSettings(revision: 1, mode: "auto", planning: false)
+        XCTAssertNil(settings.planApproved)
+        _ = try await launcher.synchronize(NodeAgentSession(id: "free", sessionRef: "thread-1", status: "idle",
+            approvalRetry: CodexApprovalRetry(id: "retry", reviewId: "review", status: "delivered"), approvalReviewMode: "auto",
+            desiredSettings: settings, appliedSettingsRevision: 1))
+        let restored = try XCTUnwrap(control.appliedSettings.current.last?.1.settings)
+        XCTAssertFalse(restored.planning)
+        XCTAssertEqual(restored.approvalsReviewer, "auto_review")
+        XCTAssertEqual(restored.sandbox, "workspace-write")
+    }
+
     func testMcpTimeoutWithLoadedThreadsRequeuesWithoutRestartingTheDaemon() async throws {
         let machine = try machine()
         defer { machine.listener.map { _ = close($0) } }
