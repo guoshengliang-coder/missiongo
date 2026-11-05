@@ -59,9 +59,9 @@ export class PlanApprovalService {
       approved: proposal.approved, valid: proposal.valid } : undefined;
   }
 
-  /** A registered external plan is a domain decision, independent of its optional reply channel. */
+  /** An explicitly registered plan is a domain decision, independent of its reply channel. */
   private independent(session: Session): boolean {
-    return session.source === "external" && Boolean(this.registered(session));
+    return Boolean(this.registered(session));
   }
 
   approvalState(session: Session) {
@@ -81,10 +81,11 @@ export class PlanApprovalService {
     const visiblePlan=[...session.messages].reverse().find(message=>message.role!=="user")?.text;
     if(!prepared && !visiblePlan?.trim()) return {status:{code:"not_approval"}};
     if(prepared && !prepared.valid) return {status:{code:"not_approval"}};
+    if(session.canApprovePlan===false) return {status:{code:"reply_unavailable"}};
     if (!prepared && attention.dismissed) return { status: { code: "dismissed" } };
     if (!prepared && (attention.state !== "needed" || attention.kind !== "approval")) return { status: { code: "not_approval" } };
     if (this.independent(session)) {
-      if (session.archivedAt || session.managedExecution || session.canApprovePlan === false) return {status:{code:"reply_unavailable"}};
+      if (session.archivedAt || session.managedExecution) return {status:{code:"reply_unavailable"}};
       return {status:{code:"ready"},offer:{revision:prepared!.revision,reason:"请审阅当前方案与验证目标。",plan:prepared!.plan,validation:prepared!.validation,itemKeys:prepared!.keys}};
     }
     if (unavailableReason) return { status: { code: unavailableReason } };
@@ -106,13 +107,13 @@ export class PlanApprovalService {
   }
 
   /** Reload and enqueue together in the caller's transaction; the queue prevents double submission. */
-  approve<T>(session: Session, revision: string, enabled: boolean, enqueue: () => T): T | {approved:true;revision:string;continuationQueued:false} {
+  approve<T>(session: Session, revision: string, enabled: boolean, enqueue: () => T, deliveryAvailable=true): T | {approved:true;revision:string;continuationQueued:false} {
     const assessment = this.assess(session);
     if (!enabled || assessment.status.code !== "ready" || assessment.offer?.revision !== revision) {
       throw conflict("agent_plan_approval_changed", "The approval request changed or is unavailable. Refresh and review the conversation before approving.");
     }
     // An explicit external proposal can be approved offline. Only queue when the original channel is ready.
-    const canContinue = session.canReply && session.status === "idle" && session.turnState.turnActive !== true
+    const canContinue = deliveryAvailable && session.canReply && session.status === "idle" && session.turnState.turnActive !== true
       && !session.lastError && (!session.nativeConnection || session.nativeConnection.state === "connected")
       && (!session.command || !["queued","delivering","delivery_unknown"].includes(session.command.status))
       && (!session.approval || ["approved","resolved"].includes(session.approval.status));

@@ -393,3 +393,10 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 - 控制台与条目内会话复用 `AgentPlanContent`、`MarkdownText` 和现有消息卡令牌，方案正文、范围与验证目标直接可读，不放在审批 details 中；批准后保留正文。方案与工具权限审批并列，权限请求不遮住方案内容。相同原生方案去重，不同原生方案保留来源区别。
 - 服务端 `implementationPlan` 提供独立阅读内容，批准状态与可执行操作仍由原审批契约判断。范围过期明确标注，不以正文可见推断可以批准。
 - 回归见 `agent-plan-content.audit.spec.ts`、`plan-approval.audit.spec.ts` 与 `codex-history-pagination.audit.spec.ts`；覆盖两处入口、四种 Agent 方案阅读、320px/桌面、明暗、三档字号、正文去重、批准后保留以及草稿和滚动保护。
+
+### 处理中条目交给 Agent 接手（AND-409）
+
+- 条目详情执行记录新增明确交接入口，复用 `Modal`、`ExecutionStopNotice`、`DispatchDialog` 与 `Select`。逐条展示旧执行核实，先填写范围和原因，再选择新派单或已登记方案的原会话；不开放泛化的并行安排执行入口。
+- 授权已保存、方案已批准、继续消息已排队和真正领取各自说明；处理中及 Builder 保持。失败保留输入，嵌套停止核实关闭回到父交接草稿，请求期间禁止关闭与重复提交。
+- 控制台和条目内会话共用 `AgentSessionError`，说明原客户端加载与重试步骤，原始诊断用 details 展开。沿用既有令牌，不新增样式豁免。
+- 回归见 `agent-handoff.audit.spec.ts`、`plan-approval.audit.spec.ts` 与 `execution-stop.audit.spec.ts`；覆盖 320/375/1440px、明暗、触控、三档字号、草稿/焦点/请求保护。

@@ -435,6 +435,9 @@ export const api = {
   listBuilders: (productId: string) => request<{builders: Array<{id: string; name: string}>; canConfigure: boolean}>(`/api/v1/products/${encodeURIComponent(productId)}/builders`),
   setModuleBuilder: (productId: string, componentId: string, accountId: string | null) => request<Component>(`/api/v1/products/${encodeURIComponent(productId)}/components/${encodeURIComponent(componentId)}/builder`, {method:"PUT",body:JSON.stringify({accountId})}),
   getDelivery: (itemKey: string) => request<ItemDelivery>(`/api/v1/items/${encodeURIComponent(itemKey)}/delivery`),
+  createAgentHandoff: (itemKey:string,input:{expectedRevision:number;note:string;idempotencyKey:string;
+    target:{kind:"session";sessionId:string}|({kind:"dispatch"}&Omit<CreateDispatchInput,"itemKeys"|"force">)}) =>
+    request<{handoffId:string;statusChanged:false;targetSessionId?:string;dispatch?:Dispatch}>(`/api/v1/items/${encodeURIComponent(itemKey)}/agent-handoffs`,{method:"POST",body:JSON.stringify(input)}),
   confirmExecutionStopped: (itemKey:string,blockerId:string,revision:string,note:string) => request(
     `/api/v1/items/${encodeURIComponent(itemKey)}/execution-blockers/${encodeURIComponent(blockerId)}/confirm-stopped`,
     {method:"POST",body:JSON.stringify({revision,note,confirmedStopped:true})}),
@@ -729,6 +732,9 @@ export interface ItemExecution {
   sessionId?: string; recorded?: boolean; sessionStatus?: string; accountName?: string; status: string; result: string; createdAt: string; startedAt: string | null; endedAt: string | null;
 }
 export interface ItemDelivery {
+  canHandoffToAgent?:boolean;
+  pendingAgentHandoff?:{id:string;sessionId?:string;dispatchId?:string;createdAt:string};
+  agentHandoffTargets?:Array<{sessionId:string;dispatchId?:string;agentKind:string;name:string}>;
   builderHandover?: WorkItem["builderHandover"]; canTakeOver?: boolean;
   builderAccountId: string | null; builderName: string | null; builderNeedsReassignment: boolean;
   canManage: boolean; canManageBuilder: boolean; currentAccountId: string; candidates: Array<{id: string; name: string}>;

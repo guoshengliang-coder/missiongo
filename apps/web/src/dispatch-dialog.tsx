@@ -84,12 +84,14 @@ export function DispatchDialog({
   onDispatched,
   onClose,
   newSession,
+  handoff,
 }: {
   items: readonly WorkItem[];
   products: readonly Product[];
   onDispatched: (dispatch: Dispatch) => void;
   onClose: () => void;
   newSession?: { productId: string; initialConfig?: FreeSessionConfig; onConfigured: (config: FreeSessionConfig) => void };
+  handoff?: {itemKey:string;expectedRevision:number;note:string;idempotencyKey:string};
 }) {
   const { formatTime, t } = useI18n();
   const queryClient = useQueryClient();
@@ -146,12 +148,12 @@ export function DispatchDialog({
   const eligibility = useQuery({
     queryKey: [...ACTIVE_DISPATCHES_QUERY_KEY,"eligibility",...itemKeys],
     queryFn: () => api.checkRedispatch(itemKeys),
-    enabled: itemKeys.length > 0 && !created,
+    enabled: itemKeys.length > 0 && !created && !handoff,
     refetchInterval: ACTIVE_DISPATCHES_REFETCH_MS,
   });
   // Eligibility is required before submission; the write repeats the same guard
   // so a dispatch delivered after this check cannot be replaced accidentally.
-  const conflicts = eligibility.data?.conflicts ?? [];
+  const conflicts = handoff ? [] : eligibility.data?.conflicts ?? [];
   const conflictsKey = conflictSignature(conflicts);
   const redispatchConfirmed = eligibility.data?.requiresConfirmation === true && acknowledgedConflicts === conflictsKey;
   const ineligibility = useMemo(
@@ -194,7 +196,15 @@ export function DispatchDialog({
   const mutation = useMutation({
     // `force` only ever follows the tick: without conflicts it is left off, so
     // a dispatch that raced another one is refused instead of silently doubled.
-    mutationFn: () => api.createDispatch({
+    mutationFn: async () => {
+      const config={nodeId,agentKind,mode,...(model?{model}:{}),...(effort?{effort}:{})};
+      if(handoff) {
+        const result=await api.createAgentHandoff(handoff.itemKey,{expectedRevision:handoff.expectedRevision,note:handoff.note,
+          idempotencyKey:handoff.idempotencyKey,target:{kind:"dispatch",...config}});
+        if(!result.dispatch) throw new Error(t("agentHandoffChanged"));
+        return result.dispatch;
+      }
+      return api.createDispatch({
       nodeId,
       agentKind,
       mode,
@@ -202,7 +212,8 @@ export function DispatchDialog({
       ...(effort ? { effort } : {}),
       itemKeys,
       ...(redispatchConfirmed ? { force: true } : {}),
-    }),
+      });
+    },
     onSuccess: (dispatch) => {
       void queryClient.invalidateQueries({ queryKey: ["dispatch-defaults"] });
       setCreated(dispatch);
@@ -283,8 +294,8 @@ export function DispatchDialog({
   const selectedReason = nodeId ? ineligibility.get(nodeId) ?? null : null;
   const modes = modeChoices(agentKind,mode,selectedAgent?.modes,model || undefined);
 
-  const blocked = !nodeId || Boolean(selectedReason) || (newSession ? !products.some(product => product.id === projectId) || !nodes.some(node => node.id === nodeId) : itemKeys.length === 0 || !eligibility.isSuccess
-    || !eligibility.data.allowed || (eligibility.data.requiresConfirmation && !redispatchConfirmed));
+  const blocked = !nodeId || Boolean(selectedReason) || (newSession ? !products.some(product => product.id === projectId) || !nodes.some(node => node.id === nodeId)
+    : itemKeys.length === 0 || (!handoff && (!eligibility.isSuccess || !eligibility.data.allowed || (eligibility.data.requiresConfirmation && !redispatchConfirmed))));
 
   return (
     <form
@@ -459,10 +470,10 @@ export function DispatchDialog({
           onClick={() => saveDefaults.mutate(currentDefaults)}>
           {saveDefaults.isPending && <LoaderCircle className="spin" size={16} />}{t("dispatchSetDefaults")}
         </button>
-        <button type="button" className="secondary-button" disabled={mutation.isPending || saveDefaults.isPending} onClick={onClose}>{t("cancel")}</button>
+        <button type="button" className="secondary-button" disabled={mutation.isPending || saveDefaults.isPending} onClick={onClose}>{t(handoff ? "agentHandoffBack" : "cancel")}</button>
         <button type="submit" className="primary-button" disabled={Boolean(modeIssue) || modelUnavailable || blocked || !defaultsApplied || mutation.isPending || saveDefaults.isPending}>
           {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <Rocket size={16} />}
-          {t(newSession ? "newSessionEnter" : "dispatchSubmit")}
+          {t(newSession ? "newSessionEnter" : handoff ? "agentHandoffConfirm" : "dispatchSubmit")}
         </button>
       </div>
     </form>

@@ -1016,7 +1016,7 @@ describe("Commenting over MCP", () => {
       name: "claim_item",
       arguments: { itemKey: "HG-1", agentId: "other", idempotencyKey: "claim-2" },
     });
-    expect(JSON.stringify(again)).toMatch(/Only a ready work item can be claimed/);
+    expect(JSON.stringify(again)).toMatch(/人工明确交给本会话接手/);
   });
   async function projectClaimFixture(kind: "codex" | "claude_code" | "opencode" = "codex") {
     const f = await commentingApp();
@@ -1433,7 +1433,7 @@ describe("Commenting over MCP", () => {
     expect(app.missionGoStore.database.connection.prepare("SELECT ref_kind, agent_kind FROM external_agent_sessions WHERE id = ?").get(sessionId))
       .toMatchObject({ ref_kind: "tracking", agent_kind: "claude_code" });
     const lost = await call(writeToken, 5, "tools/call", { name: "claim_item", arguments: { ...args, idempotencyKey: "another-claim" } });
-    expect(JSON.stringify(lost)).toContain("Only a ready work item");
+    expect(JSON.stringify(lost)).toContain("人工明确交给本会话接手");
     expect(app.missionGoStore.database.connection.prepare("SELECT COUNT(*) AS n FROM external_agent_sessions").get()).toMatchObject({ n: 1 });
   });
 
@@ -1447,7 +1447,7 @@ describe("Commenting over MCP", () => {
       app.missionGoAccounts.credentialsStamp(account), "other-client", ["missiongo:read", "missiongo:write"]).token;
     const stolenClaim = await call(otherToken, 10, "tools/call", { name: "claim_item", arguments: {
       itemKey: "HG-1", agentId: "opencode", idempotencyKey: "claim" } });
-    expect(JSON.stringify(stolenClaim)).toContain("Only a ready work item");
+    expect(JSON.stringify(stolenClaim)).toContain("人工明确交给本会话接手");
     expect(app.missionGoStore.database.connection.prepare("SELECT COUNT(*) AS n FROM external_agent_sessions").get()).toMatchObject({ n: 1 });
     const report = await call(otherToken, 2, "tools/call", { name: "report_agent_session", arguments: {
       itemKey: "HG-1", sessionId, status: "failed", text: "Spoofed failure", idempotencyKey: "spoof" } });

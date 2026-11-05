@@ -1,4 +1,5 @@
 import { AgentSessionStore } from "./agent-session-store.js";
+import { AgentHandoffs } from "./agent-handoffs.js";
 import { ImplementationPlans, planDigest, requestNativePlanApproval } from "./implementation-plans.js";
 import { recoverLegacyPlanApproval } from "./legacy-plan-approval-recovery.js";
 import { armRecoveredPlanResume } from "./recovered-plan-resume.js";
@@ -47,7 +48,7 @@ const MCP_READ_ONLY_INSTRUCTIONS =
   " This connection is read-only: never modify repositories, write to MissionGo, or change work-item status.";
 
 const MCP_COMMENT_INSTRUCTIONS =
-  " You may add comments with append_comment. If continuation loses a claim credential, recover_execution_authorization uses only the original conversation identity; never claim again to recover it. You may claim a ready item, mark an in-progress item development complete "
+  " You may add comments with append_comment. If continuation loses a claim credential, recover_execution_authorization uses only the original conversation identity; never claim again to recover it. You may claim a ready item or consume an explicit human handoff bound to this original conversation, mark an in-progress item development complete "
   + "only after checking its PR is merged, and submit development-complete work for verification only after a "
   + "verified release contains every required artifact. Unverified work stays in its current status. "
   + "Giving up, pausing, accepting, and reopening are the user's decisions. "
@@ -433,6 +434,7 @@ export function createMissionGoMcpServer(
         collaboration: collaborations.context(accountAccess(ctx).accountId,item.key),
         executionPolicy: {
           requiresExecutionAuthorization:true,
+          pendingAgentHandoff:new AgentHandoffs(store).pending(accountAccess(ctx).accountId,item.key),
           transitions:([{to:"in_progress",reason:"claim"},{to:"development_complete",reason:"resolution_submitted"},{to:"pending_verification",reason:"release_verified"}] as const)
             .map(action=>({...action,...transitionPolicy(store.database,item,accountAccess(ctx).accountId,action.to,action.reason,"agent",itemRoles(store.database,item,accountAccess(ctx).accountId),Boolean(product.archivedAt))})),
         },
@@ -965,8 +967,8 @@ export function createMissionGoMcpServer(
   server.registerTool(
     "claim_item",
     {
-      title: "Claim a ready work item",
-      description: "Claim the user-named ready item before editing code. A persisted human-approved current plan is required, via the Web approval button or request_plan_approval. Mode or chat changes cannot satisfy this gate. For pre-upgrade Codex dispatches only, the server can restore a migration-frozen native plan decision from the node-synchronized exact plan and its complete PLEASE IMPLEMENT THIS PLAN user instruction. No caller-supplied approval is accepted; restored native evidence is audited separately from today's claim. If implementation mode is still applying, retain the same claim key and wait for the node; never ask for the same approval again. Tell the user before claiming. "
+      title: "Claim work or an explicitly authorized handoff",
+      description: "Claim the user-named ready item before editing code. In-progress work additionally requires a current human handoff bound to this original conversation, or the existing new-Builder takeover dispatch. A registered session alone grants no execution authority. Keep the business status unchanged on takeover. A persisted human-approved current plan is required, via the Web approval button or request_plan_approval. Mode or chat changes cannot satisfy this gate. For pre-upgrade Codex dispatches only, the server can restore a migration-frozen native plan decision from the node-synchronized exact plan and its complete PLEASE IMPLEMENT THIS PLAN user instruction. No caller-supplied approval is accepted; restored native evidence is audited separately from today's claim. If implementation mode is still applying, retain the same claim key and wait for the node; never ask for the same approval again. Tell the user before claiming. "
         + "For an externally started conversation, pass session with a verified native ID or a stable conversation UUID marked tracking; "
         + "the returned sessionId records progress in the Web console. For a MissionGo-dispatched conversation, pass the dispatchId from its trusted launch prompt. "
         + "A project conversation may claim items in its own product using its original dispatchId; a verified native session identity also reuses that project conversation. "
@@ -1034,11 +1036,10 @@ export function createMissionGoMcpServer(
         }
         // A legacy global idempotency key must not let another OAuth client
         // replay somebody else's claim and manufacture a second handling record.
-        if (store.getWorkItem(key).status !== "ready" && !executionDispatchId) throw new Error("Only a ready work item can be claimed without a takeover dispatch.");
         const identity = planIdentity(access.clientId,session,executionDispatchId);
         plans.assertClaim(access.accountId,identity,key);
         const statusChanged = store.getWorkItem(key).status === "ready";
-        const item = store.claimWorkItem({ itemKey: key, agentId, ...(executionDispatchId ? {dispatchId: executionDispatchId} : {}),
+        const item = store.claimWorkItem({ itemKey: key, agentId, executionIdentity:identity, ...(executionDispatchId ? {dispatchId: executionDispatchId} : {}),
           attribution: { accountId: access.accountId, ...(access.clientId ? { clientId: access.clientId } : {}) },
           idempotencyKey: `mcp-claim:${createHash("sha256").update(JSON.stringify([access.accountId,access.clientId ?? "",idempotencyKey])).digest("hex")}` });
         const sessionId = executionDispatchId ? undefined : sessions.register(access, session ?? sessions.claimIdentity(agentId, idempotencyKey), key);

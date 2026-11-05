@@ -3,6 +3,9 @@ import { BuilderHandovers } from "./builder-handovers.js";
 import { assertBuilderExecution, requiresExecutionStopCheck } from "./builder-authority.js";
 import { confirmItemExecutionStopped, itemExecutionBlockers } from "./item-execution-blockers.js";
 import { randomUUID } from "node:crypto";
+import { AgentHandoffs, handoffRequestDigest } from "./agent-handoffs.js";
+import { DispatchStore } from "./dispatch-store.js";
+import type { AgentKind } from "@missiongo/domain";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { AccountSnapshot, AccountStore } from "./accounts-store.js";
 import type { MissionGoStore } from "./store.js";
@@ -27,6 +30,7 @@ function text(value: unknown, label: string, max = 2000): string {
 export function registerItemDeliveryRoutes(app: FastifyInstance, {store, accounts, requireAccount}: Options) {
   const db = store.database.connection;
   const handovers = new BuilderHandovers(store);
+  const agentHandoffs = new AgentHandoffs(store);
   const visible = (request: FastifyRequest, productId: string) => {
     const account = requireAccount(request);
     if (!accounts.allows(account, productId, "view")) throw notFound("Product");
@@ -88,6 +92,8 @@ export function registerItemDeliveryRoutes(app: FastifyInstance, {store, account
     const {itemKey} = request.params as {itemKey:string}; let item = store.getWorkItem(itemKey);
     const account = visible(request, item.productId);
     if (item.builderHandover) { handovers.reconcile(item.builderHandover.id); item = store.getWorkItem(itemKey); }
+    let canHandoffToAgent=manages(account,item) && accounts.allows(account,item.productId,"ai") && item.status==="in_progress";
+    try {assertBuilderExecution(store.database,item.id,account.id);} catch {canHandoffToAgent=false;}
     return { builderHandover: item.builderHandover,
       canTakeOver: Boolean(item.builderHandover?.canTakeOver && item.builderAccountId === account.id && accounts.allows(account,item.productId,"operate") && accounts.allows(account,item.productId,"ai")), builderAccountId: item.builderAccountId ?? null, builderName: item.builderName ?? null,
       builderNeedsReassignment: item.builderNeedsReassignment ?? false, canManage: manages(account,item), canManageBuilder: managesBuilder(account,item), currentAccountId: account.id,
@@ -95,7 +101,10 @@ export function registerItemDeliveryRoutes(app: FastifyInstance, {store, account
       performers: accounts.listAccounts().filter(row => !row.disabledAt && accounts.allows(row,item.productId,"operate"))
         .map(row => ({id:row.id,name:name(row.id)})), executions: list(itemKey),
       executionBlockers: (requiresExecutionStopCheck(store.database,item.id) ? itemExecutionBlockers(store.database,item.id) : []).map(blocker => ({...blocker,
-        canConfirmStopped: blocker.canConfirmStopped && manages(account,item) && !store.getProduct(item.productId).archivedAt && ["ready","inbox"].includes(item.status)})) };
+        canConfirmStopped: blocker.canConfirmStopped && manages(account,item) && !store.getProduct(item.productId).archivedAt && ["ready","inbox","in_progress"].includes(item.status)})),
+      canHandoffToAgent,
+      pendingAgentHandoff: agentHandoffs.pending(account.id,itemKey),
+      agentHandoffTargets: canHandoffToAgent ? agentHandoffs.targets(account.id,itemKey).map(({identity:_,...target})=>target) : [] };
   });
   // Deliberately cookie-only: an Agent report or MCP call cannot attest a human's physical stop check.
   app.post("/api/v1/items/:itemKey/execution-blockers/:blockerId/confirm-stopped", async request => store.database.transaction(() => {
@@ -105,7 +114,7 @@ export function registerItemDeliveryRoutes(app: FastifyInstance, {store, account
     const note = text(input.note,"Stop verification note");
     if (input.confirmedStopped !== true) throw invalidInput("Explicit stop confirmation is required.","execution_confirmation_required");
     const blocker = itemExecutionBlockers(store.database,item.id).find(row => row.id === blockerId);
-    if (!blocker || !blocker.canConfirmStopped || !["ready","inbox"].includes(item.status) || input.revision !== blocker.revision) {
+    if (!blocker || !blocker.canConfirmStopped || !["ready","inbox","in_progress"].includes(item.status) || input.revision !== blocker.revision) {
       throw conflict("execution_observation_changed","Execution evidence changed. Refresh and check the original session again.");
     }
     const now = new Date().toISOString();
@@ -120,6 +129,39 @@ export function registerItemDeliveryRoutes(app: FastifyInstance, {store, account
       observationRevision:blocker.revision,observedStatus:blocker.status,progressStatus:blocker.progressStatus,
     });
     return {executionBlockers:remaining};
+  }));
+  // Human domain decision only. Neither MCP nor node/Bearer requests can grant a takeover.
+  app.post("/api/v1/items/:itemKey/agent-handoffs", async (request,reply) => store.database.transaction(() => {
+    const {itemKey}=request.params as {itemKey:string};
+    const {item,account}=writable(request,itemKey);
+    if(!accounts.allows(account,item.productId,"ai")) throw new MissionGoError("ai_not_permitted","当前账号不能将任务交给 Agent。",403);
+    assertBuilderExecution(store.database,item.id,account.id);
+    const input=body(request),note=text(input.note,"Handoff note"),idempotencyKey=text(input.idempotencyKey,"Idempotency key",200);
+    const target=input.target;
+    if(!target || typeof target!=="object" || Array.isArray(target)) throw invalidInput("Choose a handoff target.");
+    const selected=target as Record<string,unknown>;
+    const digest=handoffRequestDigest({expectedRevision:input.expectedRevision,note,target:selected});
+    const replay=agentHandoffs.replay(account.id,itemKey,idempotencyKey,digest);
+    if(replay) return reply.status(201).send(replay);
+    if(input.expectedRevision!==item.revision) throw conflict("agent_handoff_changed","条目已变化，请刷新并重新核对交接。");
+    agentHandoffs.assertClear(itemKey);
+    if(selected.kind==="session") {
+      const sessionId=text(selected.sessionId,"Session ID",200);
+      const candidate=agentHandoffs.targets(account.id,itemKey).find(row=>row.sessionId===sessionId);
+      if(!candidate) throw conflict("agent_handoff_changed","请选择本账号、同项目中已登记当前方案的原会话。");
+      const result=agentHandoffs.create({key:itemKey,accountId:account.id,createdBy:account.id,identity:candidate.identity,sessionId,
+        ...(candidate.dispatchId?{dispatchId:candidate.dispatchId}:{}),note,idempotencyKey,digest,result:{targetSessionId:sessionId}});
+      return reply.status(201).send(result);
+    }
+    if(selected.kind!=="dispatch") throw invalidInput("Unsupported handoff target.");
+    const dispatches=new DispatchStore(store.database);
+    const dispatch=dispatches.createDispatch({accountId:account.id,nodeId:text(selected.nodeId,"Node ID",200),
+      agentKind:text(selected.agentKind,"Agent kind",50) as AgentKind,mode:text(selected.mode,"Agent mode",100),itemKeys:[itemKey],handoffItemId:item.id,
+      ...(selected.model?{model:text(selected.model,"Model",200)}:{}),...(selected.effort?{effort:text(selected.effort,"Effort",100)}:{})},true);
+    const result=agentHandoffs.create({key:itemKey,accountId:account.id,createdBy:account.id,identity:`dispatch:${dispatch.id}`,dispatchId:dispatch.id,
+      note,idempotencyKey,digest,result:{dispatch}});
+    store.appendSystemEvent(item.id,"dispatched",{dispatchId:dispatch.id,nodeName:dispatch.nodeName,agentKind:dispatch.agentKind,mode:dispatch.mode,itemKeys:[itemKey]});
+    return reply.status(201).send(result);
   }));
   app.post("/api/v1/items/:itemKey/builder", async request => store.database.transaction(() => {
     const {itemKey} = request.params as {itemKey:string}; const {item,account} = writable(request,itemKey,true);

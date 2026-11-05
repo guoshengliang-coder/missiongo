@@ -30,7 +30,7 @@ import {
 
 import { api } from "./api";
 import { AgentSessionFailureNotice } from "./agent-session-failure-notice";
-import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, SessionStatusIcon, isHistoryLimited } from "./agent-session-feedback";
+import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, SessionStatusIcon, isHistoryLimited, AgentSessionError } from "./agent-session-feedback";
 import { AgentIcon } from "./agent-icons";
 import {
   activityLabelKey,
@@ -1232,7 +1232,7 @@ export function AgentSessionConsole({
                 ) : (selected.agentKind !== "codex" || (sessionStatus !== "idle" && sessionStatus !== "active"))
                   && (sessionQuery.data ? sessionQuery.data.lastError : selected.lastError)
                   && !isHistoryLimited(sessionQuery.data ? sessionQuery.data.lastError : selected.lastError) ? (
-                  <p className="inline-error">{sessionQuery.data ? sessionQuery.data.lastError : selected.lastError}</p>
+                  <AgentSessionError error={(sessionQuery.data ? sessionQuery.data.lastError : selected.lastError)!} onRetry={()=>void sessionQuery.refetch()} />
                 ) : null}
                 {showRecovery && (
                   <section className="agent-console-recovery" aria-label={t("agentRecoveryTitle")}>

@@ -1,4 +1,5 @@
 import type { AgentModeCapability } from "@missiongo/domain";
+import { handoffDispatchIsCurrent } from "./agent-handoffs.js";
 import { assertBuilderExecution, assertDispatchExecution, latestBuilderHandover, hasOngoingItemExecution, requiresExecutionStopCheck } from "./builder-authority.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
@@ -710,6 +711,8 @@ export class DispatchStore {
     productId?: string;
     /** Dispatch again even though an earlier dispatch of these items was never claimed. */
     force?: boolean;
+    /** Internal human handoff route only; never read from the ordinary dispatch request. */
+    handoffItemId?: string;
   }, alreadyInTransaction = false): DispatchSnapshot {
     if (!AGENT_KINDS.includes(input.agentKind)) throw invalidInput("Unsupported agent kind.");
     if (!isSupportedDispatchMode(input.agentKind, input.mode)) {
@@ -752,7 +755,7 @@ export class DispatchStore {
         assertBuilderExecution(this.database,row.id,input.accountId);
         if (requiresExecutionStopCheck(this.database,row.id) && hasOngoingItemExecution(this.database,row.id)) throw conflict("execution_stop_unconfirmed","原执行仍在运行或停止待确认，请先核实原执行。");
         const handover = latestBuilderHandover(this.database,row.id);
-        if (row.status !== "ready" && !(row.status === "in_progress" && handover?.status === "completed"
+        if (row.status !== "ready" && !(row.status === "in_progress" && input.handoffItemId===row.id && keys.length===1) && !(row.status === "in_progress" && handover?.status === "completed"
           && handover.to_account_id === input.accountId && !handover.claimed_at)) {
           throw conflict("item_not_dispatchable", `${row.item_key} is not ready, so it cannot be dispatched.`);
         }
@@ -766,7 +769,8 @@ export class DispatchStore {
       // told to carry on anyway. Only a complete, owned queued batch can be
       // explicitly cancelled and replaced.
       const active = this.dispatchesFor(items.map((item) => item.id));
-      if (active.length > 0 && (!input.force || this.redispatchBlockReason(input.accountId,keys,active))) {
+      const handoff = items.length===1 && input.handoffItemId===items[0]!.id && items[0]!.status==="in_progress";
+      if (!handoff && active.length > 0 && (!input.force || this.redispatchBlockReason(input.accountId,keys,active))) {
         const described = active
           .map((entry) => `${entry.itemKey} → ${entry.nodeName}（${entry.status}）`)
           .join("、");
@@ -1068,7 +1072,7 @@ export class DispatchStore {
             WHERE h.item_id=w.id AND h.status='completed' AND h.claimed_at IS NULL
               AND h.resume_dispatch_id=d.id AND h.to_account_id=d.account_id
               AND h.rowid=(SELECT latest.rowid FROM builder_handovers latest WHERE latest.item_id=w.id ORDER BY latest.created_at DESC,latest.rowid DESC LIMIT 1)
-          )))
+          ) OR EXISTS (SELECT 1 FROM agent_handoffs h WHERE h.item_id=w.id AND h.target_dispatch_id=d.id AND h.consumed_at IS NULL AND h.superseded_at IS NULL)))
         )
     `).all(accountId, itemKey ?? null, itemKey ?? null) as unknown as Array<{
       item_key: string; item_status: "ready" | "in_progress"; dispatch_id: string; node_name: string; agent_kind: string;
@@ -1127,7 +1131,7 @@ export class DispatchStore {
          JOIN dispatch_items di ON di.item_id = w.id
          JOIN dispatches d ON d.id = di.dispatch_id
            AND d.status = 'launched' AND d.created_at <= claim.created_at
-           AND (json_extract(claim.payload_json,'$.dispatchId') IS NULL OR json_extract(claim.payload_json,'$.dispatchId')=d.id)
+           AND ((json_extract(claim.payload_json,'$.dispatchId') IS NULL AND json_extract(claim.payload_json,'$.handoffId') IS NULL) OR json_extract(claim.payload_json,'$.dispatchId')=d.id)
          JOIN nodes n ON n.id = d.node_id
          WHERE d.account_id = ? AND w.status = 'in_progress'
            AND NOT EXISTS (SELECT 1 FROM builder_revoked_dispatches r WHERE r.dispatch_id=d.id)
@@ -1166,7 +1170,7 @@ export class DispatchStore {
       const agentFilter = availableAgentKinds
         ? ` AND d.agent_kind IN (${availableAgentKinds.map(() => "?").join(", ")})`
         : "";
-      const row = this.database.connection
+      const candidates = this.database.connection
         .prepare(
           `SELECT d.id, d.agent_kind, d.mode, d.model, d.effort, d.repo_path, COALESCE(n.nickname, n.name) AS node_name
            FROM dispatches d JOIN nodes n ON n.id = d.node_id
@@ -1176,15 +1180,16 @@ export class DispatchStore {
              AND NOT EXISTS (SELECT 1 FROM builder_revoked_dispatches r WHERE r.dispatch_id=d.id)
              AND NOT EXISTS (SELECT 1 FROM dispatch_items i JOIN work_items w ON w.id=i.item_id JOIN products p ON p.id=w.product_id
                WHERE i.dispatch_id=d.id AND (p.archived_at IS NOT NULL OR EXISTS(SELECT 1 FROM item_transfers t WHERE t.source_item_id=w.id)
-                 OR w.status!='ready' AND NOT EXISTS(SELECT 1 FROM builder_handovers h WHERE h.item_id=w.id AND h.status='completed' AND h.resume_dispatch_id=d.id AND w.status='in_progress')))
+                 OR w.status!='ready' AND NOT EXISTS(SELECT 1 FROM builder_handovers h WHERE h.item_id=w.id AND h.status='completed' AND h.resume_dispatch_id=d.id AND w.status='in_progress')
+                   AND NOT EXISTS(SELECT 1 FROM agent_handoffs h WHERE h.item_id=w.id AND h.target_dispatch_id=d.id AND h.account_id=d.account_id AND h.consumed_at IS NULL AND h.superseded_at IS NULL AND w.status='in_progress')))
              AND (d.retry_not_before IS NULL OR d.retry_not_before <= ?)${agentFilter}
-           ORDER BY d.created_at LIMIT 1`,
+           ORDER BY d.created_at LIMIT 20`,
         )
-        .get(nodeId, new Date().toISOString(), ...(availableAgentKinds ?? [])) as unknown as
-          {
+        .all(nodeId, new Date().toISOString(), ...(availableAgentKinds ?? [])) as unknown as Array<{
             id: string; agent_kind: string; mode: string; model: string | null; effort: string | null;
             repo_path: string; node_name: string;
-          } | undefined;
+          }>;
+      const row=candidates.find(candidate=>handoffDispatchIsCurrent(this.database,candidate.id));
       if (!row) return undefined;
       const free = this.database.connection.prepare("SELECT product_id,session_title FROM free_session_starts WHERE dispatch_id=?").get(row.id) as {product_id:string;session_title:string|null}|undefined;
       if (free) authorizeProduct?.(free.product_id);

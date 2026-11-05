@@ -1,4 +1,5 @@
 import { collaborationBlockers } from "./collaboration-policy.js";
+import { AgentHandoffs } from "./agent-handoffs.js";
 import { Collaborations } from "./collaboration.js";
 import { collaborationTransitionDenial } from "./collaboration-policy.js";
 import { assertTransitionPolicy, itemRoles } from "./item-policy.js";
@@ -1643,7 +1644,12 @@ export class MissionGoStore {
         if (!handover || handover.status !== "completed" || !input.dispatchId
           || handover.resume_dispatch_id !== input.dispatchId || handover.claimed_at
           || handover.to_account_id !== input.attribution?.accountId) {
-          throw conflict("item_not_claimable", "Only a ready work item can be claimed, unless this is the new Builder's authorized takeover.");
+          const handoffId=new AgentHandoffs(this).consume(item.item_key,input.attribution?.accountId ?? "",
+            input.executionIdentity ?? (input.dispatchId ? `dispatch:${input.dispatchId}` : ""));
+          this.insertEvent(item.id,"execution_taken_over","agent",null,null,{handoffId,...(input.dispatchId?{dispatchId:input.dispatchId}:{})},now,input.attribution ?? {});
+          const result=this.getWorkItem(item.item_key);
+          this.saveIdempotentResult(idempotencyKey,operation,result,now);
+          return result;
         }
         this.database.connection.prepare("UPDATE builder_handovers SET claimed_at=? WHERE id=?").run(now,handover.id);
         this.insertEvent(item.id,"execution_taken_over","agent",null,null,{handoverId:handover.id,dispatchId:input.dispatchId},now,input.attribution ?? {});

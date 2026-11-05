@@ -8,6 +8,19 @@ export function isHistoryLimited(error: string | undefined): boolean {
   return error?.startsWith("codex_history_limited:") === true || error?.startsWith("agent_history_limited:") === true;
 }
 
+export function isThreadNotLoaded(error:string|undefined):boolean {
+  return Boolean(error && (/thread not loaded/i.test(error) || error.includes("会话未在当前 Codex 运行时加载")));
+}
+
+/** Keep the actionable recovery instruction separate from the source diagnostic. */
+export function AgentSessionError({error,onRetry}:{error:string;onRetry:()=>void}) {
+  const {t}=useI18n();
+  if(!isThreadNotLoaded(error)) return <p className="inline-error">{error}</p>;
+  return <div className="inline-error"><p role="status">{t("agentThreadNotLoaded")}</p>
+    <details><summary>{t("executionStopDiagnostic")}</summary><p>{error}</p></details>
+    <button type="button" className="secondary-button" onClick={onRetry}>{t("retry")}</button></div>;
+}
+
 /** History availability is independent of runtime and message delivery. */
 export function AgentHistoryNotice({ error }: { error: string | undefined }) {
   const { t } = useI18n();

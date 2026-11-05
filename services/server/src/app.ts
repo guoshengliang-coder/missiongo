@@ -2719,8 +2719,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
     const loaded = loadAuthorizedAgentSession(request, sessionId, operate);
     const node = dispatchStore.getNode(loaded.account.id, loaded.dispatch.nodeId);
+    let canApprovePlan=loaded.productIds.every(id=>accountStore.allows(loaded.account,id,"operate") && accountStore.allows(loaded.account,id,"ai")) && !node.revokedAt;
+    try {
+      assertDispatchExecution(store.database,loaded.dispatch.id);
+      for(const row of members) for(const item of row.items) assertBuilderExecution(store.database,store.getWorkItem(item.key).id,loaded.account.id);
+    } catch {canApprovePlan=false;}
     if (!unavailableReason && (node.revokedAt || nodeConnectionState(node.lastSeenAt) !== "online")) unavailableReason = "connection_unavailable";
-    return { session: { ...agentSessionResponse(loaded), attention }, unavailableReason };
+    return { session: { ...agentSessionResponse(loaded), attention, canApprovePlan }, unavailableReason };
   };
 
   app.get("/api/v1/agent-sessions/:sessionId", async (request) => {
@@ -2731,7 +2736,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ? agentHistory.window(requireAccountId(request), sessionId, session.messages) : undefined;
     const planApprovalState = planApprovals.approvalState(session);
     const implementationPlan = planApprovals.content(session);
-    return { ...session, ...(window ? window : {}), canApprovePlan: assessment.status.code === "ready" && ("canApprovePlan" in session ? session.canApprovePlan : session.canReply),
+    return { ...session, ...(window ? window : {}), canApprovePlan: assessment.status.code === "ready" && session.canApprovePlan,
       planApprovalStatus: assessment.status, ...(assessment.offer ? { planApproval: assessment.offer } : {}), ...(planApprovalState ? {planApprovalState} : {}),
       ...(implementationPlan ? { implementationPlan } : {}) };
   });
@@ -2743,9 +2748,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const command = store.database.transaction(() => {
       const external = externalSessionStore.has(sessionId);
       const { session, unavailableReason } = planApprovalContext(request, sessionId, true);
-      return planApprovals.approve(session, revision, unavailableReason === undefined || external && Boolean(planApprovals.registered(session)), () => external
+      return planApprovals.approve(session, revision, unavailableReason === undefined || Boolean(planApprovals.registered(session)), () => external
         ? externalNativeStore.enqueue(requireAccountId(request), sessionId, "批准")
-        : agentSessionStore.enqueue(requireAccountId(request), sessionId, "批准"));
+        : agentSessionStore.enqueue(requireAccountId(request), sessionId, "批准"), unavailableReason===undefined);
     });
     return reply.status(201).send(command);
   });
