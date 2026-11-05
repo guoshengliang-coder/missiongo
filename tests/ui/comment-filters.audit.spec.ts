@@ -1,6 +1,7 @@
 import {readFileSync} from "node:fs";
 import {expect,test,type Page} from "@playwright/test";
 import {expectUsableControl} from "./visible-control";
+import {advanceTimelinePoll} from "./polling";
 const fixture=JSON.parse(readFileSync(new URL("./.auth/fixture.json",import.meta.url),"utf8")) as {productId:string};
 const viewports=[{width:320,height:812,touch:true},{width:375,height:812,touch:true},{width:812,height:375,touch:true},{width:768,height:1024,touch:true},{width:1180,height:820,touch:true},{width:1280,height:800,touch:false},{width:1440,height:900,touch:false}];
 const url=(key:string)=>`/?product=${fixture.productId}&status=all&item=${key}`;
@@ -70,9 +71,11 @@ test("keeps preferences across items, isolates other accounts and reports failed
 });
 
 test("refreshes an open context when the source comment is withdrawn",async({page})=>{
+ await page.clock.install();
  const {item,root}=await seed(page);await page.goto(url(item.key));
  await page.getByRole("button",{name:"筛选 3/3",exact:true}).click();await page.getByRole("checkbox",{name:"Agent 评论",exact:true}).uncheck();await page.getByRole("dialog",{name:"筛选评论与动态"}).getByRole("button",{name:"关闭",exact:true}).click();
  await page.getByRole("button",{name:/查看上下文/}).first().click();const context=page.getByRole("dialog",{name:"原评论",exact:true});await expect(context).toContainText("原评论：自动检查的完整结论。");
  const response=await page.request.post(`/api/v1/items/${item.key}/comments/${root.id}/withdraw`,{data:{}});expect(response.ok()).toBe(true);
+ await advanceTimelinePoll(page,item.key);
  await expect(context.locator(".comment-withdrawn")).toBeVisible({timeout:12000});await expect(context.locator(".comment-withdrawn")).not.toHaveAttribute("open","");await expect(context.locator(".comment-text")).toBeHidden();
 });

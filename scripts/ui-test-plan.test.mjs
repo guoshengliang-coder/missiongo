@@ -206,7 +206,7 @@ test("CLI plans from real commits and validates the skip gate without installed 
     for (const file of catalog) put(file, "// fixture");
     for (const feature of Object.values(map.features)) put(`apps/web/src/${feature.entry}`, "// fixture");
     put("scripts/.keep", "");
-    for (const file of ["ui-test-plan.mjs", "run-ui-tests.mjs", "check-release-metadata.mjs", "release-notes.mjs", "ui-shards.mjs"]) copyFileSync(new URL(`./${file}`, import.meta.url), join(directory, "scripts", file));
+    for (const file of ["ui-test-plan.mjs", "run-ui-tests.mjs", "check-release-metadata.mjs", "release-notes.mjs", "ui-shards.mjs", "ci-platform-plan.mjs"]) copyFileSync(new URL(`./${file}`, import.meta.url), join(directory, "scripts", file));
     copyFileSync(new URL("../tests/ui/audit-durations.json", import.meta.url), join(directory, "tests/ui/audit-durations.json"));
     put("README.md", "before");
     git("init"); git("add", "."); git("-c", "user.name=UI Fixture", "-c", "user.email=ui@example.test", "commit", "-m", "base");
@@ -217,6 +217,17 @@ test("CLI plans from real commits and validates the skip gate without installed 
     const value = JSON.parse(execFileSync(process.execPath, ["scripts/ui-test-plan.mjs"], { cwd: directory, env: environment, encoding: "utf8" }));
     assert.equal(value.mode, "skip"); assert.equal(value.head, git("rev-parse", "HEAD"));
     assert.match(readFileSync(output, "utf8"), /audit=false\nvisual=false/);
+    const outputs = readFileSync(output, "utf8");
+    assert.match(outputs, /android_required=false\nmacos_required=false\nlinux_required=false/);
+    const platformPlan = outputs.split("\n").find(line => line.startsWith("platform_plan=")).slice("platform_plan=".length);
+    const platformGate = (platform, overrides = {}) => spawnSync(process.execPath, ["scripts/ci-platform-plan.mjs", platform], {
+      cwd: directory, env: { ...environment, CI_PLATFORM_PLAN: platformPlan, CI_PLAN_RESULT: "success", CI_BUILD_RESULT: "skipped", ...overrides }, encoding: "utf8",
+    });
+    for (const platform of ["android", "macos", "linuxNode"]) {
+      assert.equal(platformGate(platform).status, 0);
+      assert.notEqual(platformGate(platform, { GITHUB_EVENT_NAME: "push" }).status, 0);
+      assert.notEqual(platformGate(platform, { CI_BUILD_RESULT: "failure" }).status, 0);
+    }
     const gateEnv = { ...environment, UI_TEST_PLAN: JSON.stringify(value), UI_PLAN_RESULT: "success", UI_AUDIT_RESULT: "skipped", UI_VISUAL_RESULT: "skipped" };
     const gate = env => spawnSync(process.execPath, ["scripts/run-ui-tests.mjs", "--kind=check"], { cwd: directory, env, encoding: "utf8" });
     assert.equal(gate(gateEnv).status, 0);

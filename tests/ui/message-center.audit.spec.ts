@@ -2,6 +2,7 @@ import { postItemCommand } from "./item-command";
 import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import { expectUsableControl } from "./visible-control";
+import { advanceAttentionPoll } from "./polling";
 const badgeText=(count:number)=>count>99?"99+":String(count);
 const fixture=JSON.parse(readFileSync(new URL("./.auth/fixture.json",import.meta.url),"utf8")) as {productId:string};
 async function seed(page:Page) {
@@ -143,11 +144,12 @@ test("reveals a filtered notification target without clearing the underlying com
 
 test("all-read updates another tab, preserves tasks, and search shortcuts retain the filter",async({page,context})=>{
   await seed(page);await page.goto(`/?product=${fixture.productId}&status=all`);
-  const other=await context.newPage();await other.goto(`/?product=${fixture.productId}&status=all`);
+  const other=await context.newPage();await other.clock.install();await other.goto(`/?product=${fixture.productId}&status=all`);
   await page.getByRole("button",{name:"待处理",exact:true}).click();
   await page.getByRole("button",{name:/^通知/}).click();
   await page.getByRole("button",{name:"将当前筛选内的消息全部标为已读",exact:true}).click();
   const pending=(await(await page.request.get("/api/v1/attention/count")).json()).todoCount;
+  await advanceAttentionPoll(other);
   if(pending)await expect(other.locator(".message-unread-badge")).toHaveText(badgeText(pending),{timeout:10000});
   else await expect(other.locator(".message-unread-badge")).toHaveCount(0,{timeout:10000});
   await expect(other.getByRole("button",{name:"待处理",exact:true})).toBeVisible();
@@ -169,7 +171,7 @@ for(const width of [390,1440])test.describe(`attention lifecycle ${width}`,()=>{
     const baseline=(await(await page.request.get("/api/v1/attention/count")).json()).count;
     expect((await postItemCommand(page.request,`/api/v1/items/${item.key}/transitions`,{data:{to:"pending_verification",reason:"manual_override"}})).ok()).toBe(true);
     await page.goto(`/?product=${fixture.productId}&status=all`);
-    const other=await context.newPage();await other.goto(`/?product=${fixture.productId}&status=all`);
+    const other=await context.newPage();await other.clock.install();await other.goto(`/?product=${fixture.productId}&status=all`);
     const badge=other.locator(".message-unread-badge");await expect(badge).toHaveText(badgeText(baseline+1));
     await page.getByRole("button",{name:"待处理",exact:true}).click();
     await expect(page.getByRole("button",{name:/^待办/})).toHaveAttribute("aria-pressed","true");
@@ -179,6 +181,7 @@ for(const width of [390,1440])test.describe(`attention lifecycle ${width}`,()=>{
     await expect(badge).toHaveText(badgeText(baseline+1));
     const user=(await(await page.request.get("/api/v1/bootstrap")).json()).user;
     await page.request.post(`/api/v1/items/${item.key}/comments`,{data:{text:"独立的新评论，请勿清除",mentionAccountIds:[user.id]}});
+    await advanceAttentionPoll(other);
     await expect(badge).toHaveText(badgeText(baseline+2),{timeout:10000});
     await page.getByRole("button",{name:/^待办/}).click();
     await page.locator(".message-list-row").filter({hasText:item.key}).click();
@@ -187,6 +190,7 @@ for(const width of [390,1440])test.describe(`attention lifecycle ${width}`,()=>{
     await business.getByRole("button",{name:"验证通过",exact:true}).click();
     await expect.poll(async()=>(await(await page.request.get(`/api/v1/items/${item.key}`)).json()).status).toBe("done");
     await page.evaluate(()=>history.back());await expect(business).toHaveCount(0);
+    await advanceAttentionPoll(other);
     await expect(badge).toHaveText(badgeText(baseline+1),{timeout:10000});
     await expect(page.getByText("这项待办已不在待处理范围",{exact:true})).toBeVisible();
     if(width<1024)await page.getByRole("button",{name:"返回列表",exact:true}).click();
@@ -194,6 +198,7 @@ for(const width of [390,1440])test.describe(`attention lifecycle ${width}`,()=>{
     await expect(page.locator(".message-list-row").filter({hasText:item.key}).filter({hasText:"交付待验收"})).toContainText("已结束");
     const comment=page.locator(".message-list-row").filter({hasText:item.key}).filter({hasText:"独立的新评论，请勿清除"});await expect(comment).toContainText("未读");
     await comment.click();
+    await advanceAttentionPoll(other);
     if(baseline)await expect(badge).toHaveText(badgeText(baseline),{timeout:10000});
     else await expect(badge).toHaveCount(0,{timeout:10000});
     await expect(other.getByRole("button",{name:"待处理",exact:true})).toBeVisible();

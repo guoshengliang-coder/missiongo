@@ -6,6 +6,7 @@ import { dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isReleaseMetadata, validateReleaseMetadata } from "./check-release-metadata.mjs";
 import { auditDurations, balancedAuditShards } from "./ui-shards.mjs";
+import { selectPlatforms } from "./ci-platform-plan.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -229,8 +230,9 @@ function main() {
   const value = validatePlan(selectUITests({ eventName, snapshotUpdate: process.env.UI_UPDATE_SNAPSHOTS === "true", head, changes,
     map: impactMap(), catalog: auditCatalog(), graph, releaseMetadataValidated }));
   const json = JSON.stringify(value);
+  const platforms = selectPlatforms({ head, eventName, changes, releaseMetadataValidated });
   console.log(json);
-  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `plan=${json}\naudit=${["full", "targeted"].includes(value.mode)}\nvisual=${value.visual}\nshards=${JSON.stringify(value.shards)}\n`);
-  if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## UI test selection\n\nMode: **${value.mode}**\n\n\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\`\n`);
+  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `plan=${json}\naudit=${["full", "targeted"].includes(value.mode)}\nvisual=${value.visual}\nshards=${JSON.stringify(value.shards)}\nplatform_plan=${JSON.stringify(platforms)}\nandroid_required=${platforms.required.android}\nmacos_required=${platforms.required.macos}\nlinux_required=${platforms.required.linuxNode}\n`);
+  if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## UI test selection\n\nMode: **${value.mode}**\n\n\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\`\n\n## Platform selection\n\n\`\`\`json\n${JSON.stringify(platforms, null, 2)}\n\`\`\`\n`);
 }
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) main();
