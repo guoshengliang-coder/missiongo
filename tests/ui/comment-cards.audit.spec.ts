@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
-import { expectUsableControl } from "./visible-control";
+import { expectUsableControls } from "./visible-control";
 
 const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as { productId: string };
 const viewports = [
@@ -43,7 +43,9 @@ for (const viewport of viewports) for (const theme of ["light", "dark"] as const
         }
         await route.fulfill({ response, json: data });
       });
-      await page.goto(`/?product=${fixture.productId}&status=all&item=${item.key}`);
+      // Keep unrelated items created by earlier files out of this layout matrix.
+      await page.goto(`/?product=${fixture.productId}&status=all&q=${item.key}&item=${item.key}`);
+      await expect(page.locator(".item-row")).toHaveCount(1);
       await expect(page.locator(".comment-message")).toHaveCount(3);
       const cards = [root, reply, analysis].map(comment => page.locator(`#comment-${comment.id}`));
       await expect(cards[1]!.locator(".comment-collapsible")).toHaveCount(0);
@@ -52,9 +54,9 @@ for (const viewport of viewports) for (const theme of ["light", "dark"] as const
         for (const card of cards) {
           const button = card.getByRole("button", { name: "回复", exact: true });
           await button.scrollIntoViewIfNeeded();
-          await expectUsableControl(button, viewport.touch);
-          await expectUsableControl(card.locator(".comment-author-name"), viewport.touch);
-          await expectUsableControl(card.locator(".comment-more-actions > summary"), viewport.touch);
+          // Select mandatory targets without :visible so hidden/missing controls
+          // cannot silently disappear from the batch. Keep all three checks.
+          await expectUsableControls(card.locator(".comment-reply-button, .comment-author-name, .comment-more-actions > summary"), viewport.touch, { count: 3 });
           await expect(button.locator("svg")).toHaveCount(1);
           const geometry = await card.evaluate(node => {
             const message = node.querySelector(".comment-message")!;

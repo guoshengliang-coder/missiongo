@@ -4,7 +4,7 @@ import {expectUsableControl} from "./visible-control";
 import {advanceTimelinePoll} from "./polling";
 const fixture=JSON.parse(readFileSync(new URL("./.auth/fixture.json",import.meta.url),"utf8")) as {productId:string};
 const viewports=[{width:320,height:812,touch:true},{width:375,height:812,touch:true},{width:812,height:375,touch:true},{width:768,height:1024,touch:true},{width:1180,height:820,touch:true},{width:1280,height:800,touch:false},{width:1440,height:900,touch:false}];
-const url=(key:string)=>`/?product=${fixture.productId}&status=all&item=${key}`;
+const url=(key:string)=>`/?product=${fixture.productId}&status=all&q=${key}&item=${key}`;
 async function seed(page:Page){
   const item=await(await page.request.post("/api/v1/items",{data:{productId:fixture.productId,type:"note",priority:"normal",title:"分类筛选与上下文",description:"",environment:{platform:"web"}}})).json();
   const post=async(text:string,replyToCommentId?:string)=>(await(await page.request.post(`/api/v1/items/${item.key}/comments`,{data:{text,...(replyToCommentId?{replyToCommentId}:{})}})).json());
@@ -21,6 +21,7 @@ for(const viewport of viewports)for(const theme of ["light","dark"] as const){
   test.use({viewport,hasTouch:viewport.touch,colorScheme:theme});
   test("filters mixed discussions, preserves context and keeps metadata compact",async({page},info)=>{
     const {item,root,human,agent}=await seed(page);await page.goto(url(item.key));
+    await expect(page.locator(".item-row")).toHaveCount(1);
     const input=page.locator(".comment-form").getByRole("textbox");await input.fill("切换筛选后保留的草稿");
     await expect(page.getByRole("heading",{name:"处理记录",exact:true})).toHaveCount(0);
     const filter=page.getByRole("button",{name:"筛选 3/3",exact:true});await filter.scrollIntoViewIfNeeded();await expectUsableControl(filter,viewport.touch);
