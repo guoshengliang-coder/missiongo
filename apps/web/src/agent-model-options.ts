@@ -1,6 +1,6 @@
 import type { AgentKind } from "@missiongo/domain";
 
-import type { DispatchNode, NodeAgentModel } from "./types";
+import type { DispatchDefaults, DispatchNode, NodeAgentModel } from "./types";
 
 /** What was chosen; absent model or effort means "as configured on the Mac". */
 export interface ModelChoice {
@@ -49,6 +49,33 @@ export function reconcileChoice(models: readonly NodeAgentModel[] | undefined, c
   const model = choice.model && models.some((entry) => entry.id === choice.model) ? choice.model : undefined;
   const effort = choice.effort && effortOptions(models, model).includes(choice.effort) ? choice.effort : undefined;
   return { ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
+}
+
+/**
+ * Reconcile a draft's effort without silently replacing its chosen model.
+ * Missing catalogs and retired models remain explicit choices for the caller
+ * to explain/block; only a known model's incompatible effort is discarded.
+ */
+export function reconcileEffort(models: readonly NodeAgentModel[] | undefined, choice: ModelChoice): ModelChoice {
+  const known = models && (!choice.model || models.some(model => model.id === choice.model));
+  const effort = choice.effort && (!known || effortOptions(models, choice.model).includes(choice.effort))
+    ? choice.effort : undefined;
+  return { ...(choice.model ? { model: choice.model } : {}), ...(effort ? { effort } : {}) };
+}
+
+/** A selected machine's catalog takes precedence over the cross-machine union. */
+export function defaultModels(nodes: readonly DispatchNode[], defaults: DispatchDefaults, kind: AgentKind): readonly NodeAgentModel[] | undefined {
+  return defaults.nodeId ? agentModels(nodes.find(node => node.id === defaults.nodeId), kind) : modelsAcrossNodes(nodes, kind);
+}
+
+export function reconcileDefaultEfforts(nodes: readonly DispatchNode[], defaults: DispatchDefaults): DispatchDefaults {
+  const kind = defaults.agentKind ?? "claude_code";
+  const settings = defaults.agents[kind];
+  if (!settings) return defaults;
+  const { model: _model, effort: _effort, ...rest } = settings;
+  return { ...defaults, agents: { ...defaults.agents,
+    [kind]: { ...rest, ...reconcileEffort(defaultModels(nodes, defaults, kind), settings) },
+  } };
 }
 
 /** Every model some machine reports for this agent, for defaults that are not tied to one machine. */

@@ -104,12 +104,12 @@ export function requireOfferedModel(
   }
   const model = settings.model === undefined ? undefined : models.find((entry) => entry.id === settings.model);
   if (settings.model !== undefined && !model) {
-    throw invalidInput(`This Mac's agent does not offer the model ${settings.model}.`);
+    throw invalidInput(`This Mac's agent does not offer the model ${settings.model}.`, "agent_model_unavailable");
   }
   if (settings.effort === undefined) return;
   const efforts = model ? model.efforts : [...new Set(models.flatMap((entry) => entry.efforts))];
   if (!efforts.includes(settings.effort)) {
-    throw invalidInput(`Effort ${settings.effort} is not offered${model ? ` by ${model.id}` : ""}.`);
+    throw invalidInput(`Effort ${settings.effort} is not offered${model ? ` by ${model.id}` : ""}.`, "agent_effort_unavailable");
   }
 }
 

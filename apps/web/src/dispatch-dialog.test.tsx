@@ -55,6 +55,23 @@ function renderWithNodes(nodes: DispatchNode[], eligibility?:RedispatchEligibili
 }
 
 describe("DispatchDialog machine list (AND-224)", () => {
+  it("keeps retired model and unavailable permission preferences explicit instead of showing a local fallback", () => {
+    const queryClient = new QueryClient();
+    const node = { id: "device", name: "Device", deviceName: "Device", online: true, supportsFreeSessions: true,
+      agents: [{ kind: "codex", planApprovalProtocol: 1, ready: true, models: [{ id: "offered", label: "Offered", efforts: ["low"] }] }],
+      repos: [{ productId: product.id, productKey: product.keyPrefix, repoPath: "fixture-repository" }], repoCandidates: [], createdAt: "" } satisfies DispatchNode;
+    queryClient.setQueryData(["nodes"], { nodes: [node] });
+    const html = renderToStaticMarkup(<QueryClientProvider client={queryClient}><I18nProvider>
+      <DispatchDialog items={[]} products={[product]} onDispatched={() => undefined} onClose={() => undefined}
+        newSession={{ productId: product.id, onConfigured: () => undefined, initialConfig: {
+          productId: product.id, nodeId: node.id, agentKind: "codex", mode: "full-access", model: "retired", effort: "high",
+        } }} />
+    </I18nProvider></QueryClientProvider>);
+    expect(html).toContain('data-value="retired"');
+    expect(html).toContain('data-value="full-access"');
+    expect(html).toContain("所选模型 retired 在这台设备上不可用");
+    expect(html).toMatch(/<button[^>]*type="submit"[^>]*disabled/);
+  });
   const node:DispatchNode={id:"node-1",name:"M4",deviceName:"M4",agents:[],repos:[],repoCandidates:[],online:true,createdAt:"2026-10-31T01:00:00Z"};
   const conflict={dispatchId:"existing",itemKey:item.key,nodeName:"M4",agentKind:"codex" as const,status:"launched" as const,createdAt:node.createdAt};
   it("does not offer a misleading force checkbox for a launched conversation",()=>{

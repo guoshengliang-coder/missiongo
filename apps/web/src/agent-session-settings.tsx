@@ -7,8 +7,9 @@ import { LoaderCircle, MoreHorizontal } from "lucide-react";
 import { normalizeAgentMode, type AgentKind, type AgentModeCapability } from "@missiongo/domain";
 
 import { api, ApiError } from "./api";
+import { errorMessageKey, localizedErrorText } from "./error-text";
 import { useOverlay } from "./overlay";
-import { agentModels, effortLabelKey, effortOptions, groupModelsByProvider, modelDisplayLabel, reconcileChoice } from "./agent-model-options";
+import { agentModels, effortLabelKey, effortOptions, groupModelsByProvider, modelDisplayLabel, reconcileEffort } from "./agent-model-options";
 import { dispatchModeLabelKey } from "./dispatch-eligibility";
 import { useI18n } from "./i18n";
 import type { AgentSessionSummary, FreeSessionConfig, NodeAgentModel } from "./types";
@@ -114,7 +115,10 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
         <p className="agent-session-settings-note error">
           {apply.error instanceof ApiError && apply.error.code === "node_upgrade_required"
             ? t("agentSettingsUpgrade")
-            : external ? t("agentSettingsExternalFailed") : apply.error instanceof Error ? apply.error.message : t("somethingWentWrong")}
+            : apply.error instanceof ApiError && apply.error.code === "agent_effort_unavailable"
+            ? t("agentSettingsEffortConflict", { model: modelLabel(apply.variables?.model ?? modelValue) })
+            : errorMessageKey(apply.error) ? localizedErrorText(apply.error, t)
+            : external ? t("agentSettingsExternalFailed") : localizedErrorText(apply.error, t)}
         </p>
       )}
     </div>
@@ -261,7 +265,7 @@ export function DraftSessionQuickSettings({ config, disabled, onChange }: {
         if (change.mode !== undefined) { onChange({ ...config, mode: change.mode }); return; }
         const { model: _model, effort: _effort, ...base } = config;
         onChange({ ...base, ...("mode" in change ? { mode: change.mode! } : {}),
-          ...reconcileChoice(models, { ...(config.model ? { model: config.model } : {}), ...(config.effort ? { effort: config.effort } : {}), ...change }) });
+          ...reconcileEffort(models, { ...(config.model ? { model: config.model } : {}), ...(config.effort ? { effort: config.effort } : {}), ...change }) });
       }} />
   </div>;
 }

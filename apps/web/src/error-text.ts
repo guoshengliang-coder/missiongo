@@ -60,6 +60,8 @@ export function errorMessageKey(error: unknown): MessageKey | null {
       free_session_changed: "errorFreeSessionChanged",
       agent_session_starting: "errorFreeSessionStarting",
       dispatch_not_retryable: "errorDispatchNotRetryable",
+      agent_model_unavailable: "errorAgentModelUnavailable",
+      agent_effort_unavailable: "errorAgentEffortUnavailable",
     };
     if (Object.hasOwn(conflictKeys, error.code)) return conflictKeys[error.code]!;
     return null;

@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { ArrowLeft, LoaderCircle, MessageSquare, Plus, Send } from "lucide-react";
 import { api, ApiError } from "./api";
 import { useI18n } from "./i18n";
 import { agentLabelKey, dispatchProblemKey } from "./dispatch-eligibility";
 import { localizedErrorText } from "./error-text";
+import { agentModels, reconcileEffort } from "./agent-model-options";
+import { modeProblem } from "./agent-mode-options";
+import { NODE_LIST_REFETCH_MS } from "./node-install";
 import { AutoGrowTextarea } from "./auto-grow-textarea";
 import { DraftSessionQuickSettings } from "./agent-session-settings";
 import { DraftChatFile } from "./agent-chat-draft-file";
@@ -29,8 +32,20 @@ export function NewSessionDraft({ draft, projectName, onChange, onBack, onConfig
   const agentName = agentKey ? t(agentKey) : draft.config.agentKind;
   const picker = useRef<HTMLInputElement>(null);
   const [fileError, setFileError] = useState<string | null>(null);
+  const [effortAdjusted, setEffortAdjusted] = useState(false);
+  const nodes = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes, refetchInterval: NODE_LIST_REFETCH_MS });
+  const node = nodes.data?.nodes.find(entry => entry.id === draft.config.nodeId);
+  const models = agentModels(node, draft.config.agentKind);
+  const { model: _model, effort: _effort, ...baseConfig } = draft.config;
+  // An uncertain first response must retry the original reservation verbatim.
+  // Catalog refreshes reconcile editable drafts, never a frozen request key.
+  const config = draft.requestKey ? draft.config : { ...baseConfig, ...reconcileEffort(models, draft.config) };
+  const modelUnavailable = Boolean(!draft.requestKey && config.model && models && !models.some(entry => entry.id === config.model));
+  const catalogUnavailable = Boolean(!draft.requestKey && !models && (config.model || config.effort));
+  const modeIssue = draft.requestKey ? undefined : modeProblem(config.agentKind, config.mode, node?.agents.find(agent => agent.kind === config.agentKind)?.modes, config.model);
+  const configBlocked = modelUnavailable || catalogUnavailable || Boolean(modeIssue);
   const send = useMutation({ mutationFn: async () => {
-    let sending = { ...draft, requestKey: draft.requestKey ?? crypto.randomUUID(), uploaded: [...(draft.uploaded ?? [])] };
+    let sending = { ...draft, config, requestKey: draft.requestKey ?? crypto.randomUUID(), uploaded: [...(draft.uploaded ?? [])] };
     onChange(sending);
     let dispatch = sending.dispatch;
     if (!dispatch) {
@@ -62,6 +77,11 @@ export function NewSessionDraft({ draft, projectName, onChange, onBack, onConfig
   const errorText = problemKey ? t(problemKey, { agent: agentName, reason: send.error?.message ?? "" }) : localizedErrorText(send.error, t);
   useEffect(() => { onPending(send.isPending); return () => onPending(false); }, [send.isPending, onPending]);
   const locked = send.isPending || Boolean(draft.requestKey);
+  useEffect(() => {
+    if (locked || draft.config.effort === config.effort) return;
+    onChange({ ...draft, config });
+    setEffortAdjusted(true);
+  }, [locked, draft, config, onChange]);
   const addFiles = (incoming: readonly File[]) => {
     if (locked || !draft.config.canAttach) return;
     const result = mergeChatFiles(draft.files, incoming);
@@ -80,7 +100,7 @@ export function NewSessionDraft({ draft, projectName, onChange, onBack, onConfig
     </header>
     <div className="agent-console-empty agent-console-empty-conversation"><MessageSquare size={24} /><p>{t("newSessionEmpty")}</p></div>
     <footer className="agent-console-reply">
-      <form onSubmit={event => { event.preventDefault(); if (!send.isPending && (!draft.files.length || draft.config.canAttach) && (draft.text.trim() || draft.files.length)) send.mutate(); }} {...dropHandlers}>
+      <form onSubmit={event => { event.preventDefault(); if (!send.isPending && !configBlocked && (!draft.files.length || draft.config.canAttach) && (draft.text.trim() || draft.files.length)) send.mutate(); }} {...dropHandlers}>
         {isDraggingFiles && <FileDropOverlay remaining={10 - draft.files.length} />}
         <AutoGrowTextarea autoFocus submitOnEnter rows={2} value={draft.text} maxLength={20000} disabled={locked}
           aria-label={t("agentSessionReplyPlaceholder", { agent: agentName })}
@@ -92,14 +112,18 @@ export function NewSessionDraft({ draft, projectName, onChange, onBack, onConfig
         {draft.files.length > 0 && !draft.config.canAttach && <p className="inline-error" role="alert">{t("agentChatNodeUpdate")}</p>}
         {fileError && <p className="inline-error" role="alert">{fileError}</p>}
         {send.isError && <p className="inline-error" role="alert">{errorText}</p>}
+        {modelUnavailable && <p className="inline-error" role="alert">{t("dispatchModelUnavailable", { model: config.model! })}</p>}
+        {catalogUnavailable && <p className="inline-error" role="alert">{t("dispatchModelUnsupported")}</p>}
+        {modeIssue && <p className="inline-error" role="alert">{t(modeIssue)}</p>}
+        {effortAdjusted && <p className="dispatch-note" role="status">{t("dispatchEffortReset", { model: models?.find(entry => entry.id === config.model)?.label ?? (config.model || t("dispatchModelLocal")) })}</p>}
         <div className="agent-console-reply-actions">
-          <DraftSessionQuickSettings config={draft.config} disabled={locked} onChange={config => onChange({ ...draft, config })} />
+          <DraftSessionQuickSettings config={config} disabled={locked} onChange={next => { setEffortAdjusted(false); onChange({ ...draft, config: next }); }} />
           <div className="agent-chat-send-actions">
             <input ref={picker} type="file" multiple hidden accept=".png,.jpg,.jpeg,.webp,.gif,.heic,.mp4,.mov,.webm,.log,.txt,.json,.md,.csv,.pdf"
               onChange={event => { addFiles(Array.from(event.target.files ?? [])); event.target.value = ""; }} />
             <button type="button" className="secondary-button agent-chat-icon-button" disabled={locked || !draft.config.canAttach}
               aria-label={t("agentChatAddFile")} title={t(draft.config.canAttach ? "agentChatAddFile" : "agentChatNodeUpdate")} onClick={() => picker.current?.click()}><Plus size={18} /></button>
-            <button type="submit" className="primary-button agent-chat-icon-button" disabled={send.isPending || (draft.files.length > 0 && !draft.config.canAttach) || (!draft.text.trim() && !draft.files.length)}
+            <button type="submit" className="primary-button agent-chat-icon-button" disabled={send.isPending || configBlocked || (draft.files.length > 0 && !draft.config.canAttach) || (!draft.text.trim() && !draft.files.length)}
               aria-label={t(send.isError ? "retry" : "agentSessionSend")}>
               {send.isPending ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />}
             </button>
