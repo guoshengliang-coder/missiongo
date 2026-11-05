@@ -14,6 +14,20 @@ import { OverlayMenu } from "./overlay";
 import { RecordDisclosure } from "./record-disclosure";
 import { useI18n } from "./i18n";
 import { localizedErrorText } from "./error-text";
+import { clearDraftFiles, loadDraftFiles, saveDraftFiles } from "./draft-files";
+import {
+  EMPTY_CAPTURE_DRAFT,
+  hasCaptureDraftContent,
+  parseCaptureDraft,
+  workItemReportPayload,
+  type CaptureDraft,
+} from "./capture-draft";
+import { WorkItemFields, environmentDraft, environmentPayload, filesWithDiagnosticLog } from "./work-item-form";
+import { platformName } from "./environment-summary";
+import { validateIncomingFiles } from "./incoming-files";
+import { useFileDropZone } from "./file-drop";
+import { FileDropOverlay } from "./file-drop-overlay";
+import { MAX_DIAGNOSTIC_LOG_BYTES, diagnosticLogBytes } from "./diagnostics";
 import type { Product, WorkItem } from "./types";
 import "./collaboration.css";
 
@@ -63,10 +77,12 @@ export function CollaborationPanel({
   item,
   requestedAction,
   onActionHandled,
+  onOpenItem,
 }: {
   item: WorkItem;
   requestedAction?: "request" | "associate" | undefined;
   onActionHandled?: () => void;
+  onOpenItem?: (itemKey: string) => void;
 }) {
   const { t, statusLabel } = useI18n(),
     client = useQueryClient();
@@ -108,7 +124,42 @@ export function CollaborationPanel({
   const data = q.data;
   const count = data?.requests.length ?? 0;
   const draftCount = data?.drafts.length ?? 0;
-  const hasContent = count + draftCount > 0;
+  // AND-406: the target item may exist while its new files failed to upload.
+  // Retrying only uploads; the request is never submitted twice.
+  const [pendingUpload, setPendingUpload] = useState<PendingUpload | null>(() => readPendingUpload(item.key));
+  const [pendingBusy, setPendingBusy] = useState(false);
+  const [pendingError, setPendingError] = useState("");
+  useEffect(() => {
+    setPendingUpload(readPendingUpload(item.key));
+  }, [item.key, data]);
+  const discardPending = async () => {
+    if (!pendingUpload) return;
+    writePendingUpload(item.key, null);
+    localStorage.removeItem(`missiongo.collaboration-draft.v1.${item.key}`);
+    await clearDraftFiles(collaborationDraftKey(item.key));
+    setPendingUpload(null);
+    setPendingError("");
+  };
+  const retryPending = async () => {
+    if (!pendingUpload) return;
+    setPendingBusy(true);
+    setPendingError("");
+    try {
+      const failed = await retryCollaborationUploads(item.key, pendingUpload);
+      if (failed > 0) {
+        setPendingError(t("collaborationUploadFailed", { key: pendingUpload.targetKey, count: failed }));
+      } else {
+        setPendingUpload(null);
+        await refresh();
+      }
+    } finally {
+      setPendingBusy(false);
+    }
+  };
+  const hasContent = count + draftCount > 0 || Boolean(pendingUpload);
+  const selectedDirection = selected
+    ? data?.requests.find((r) => r.id === selected)?.direction
+    : undefined;
   return (
     <section
       className="collaboration-panel"
@@ -238,6 +289,33 @@ export function CollaborationPanel({
               )
             );
           })}
+          {pendingUpload && (
+            <div className="collaboration-group">
+              <h4>{t("collaborationPendingUploads", { key: pendingUpload.targetKey })}</h4>
+              <div className="collaboration-card">
+                <p>{t("collaborationPendingUploadsHelp")}</p>
+                <div className="collaboration-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={pendingBusy}
+                    onClick={() => void retryPending()}
+                  >
+                    {t("collaborationRetryUploads")}
+                  </button>
+                  <button
+                    className="text-button"
+                    type="button"
+                    disabled={pendingBusy}
+                    onClick={() => void discardPending()}
+                  >
+                    {t("collaborationDiscardUploads")}
+                  </button>
+                </div>
+                {pendingError && <Failure error={pendingError} />}
+              </div>
+            </div>
+          )}
           {data.drafts.length > 0 && (
             <div className="collaboration-group">
               <h4>{t("collaborationDrafts")}</h4>
@@ -283,8 +361,10 @@ export function CollaborationPanel({
       {selected && (
         <SharedCollaboration
           id={selected}
+          {...(selectedDirection ? { direction: selectedDirection } : {})}
           onClose={() => setSelected(null)}
           onChanged={refresh}
+          {...(onOpenItem ? { onOpenItem } : {})}
         />
       )}
     </section>
@@ -361,6 +441,91 @@ function RestoreAccess({
     </>
   );
 }
+const COLLABORATION_FILE_LIMIT = 10;
+
+/** Files the request created but could not upload yet. */
+interface PendingUpload {
+  requestId: string;
+  targetKey: string;
+  diagnosticLog: string;
+  /** How many files the request was submitted with; guards a lost device copy. */
+  fileCount: number;
+}
+function collaborationDraftKey(itemKey: string) {
+  return `collaboration:${itemKey}`;
+}
+function pendingStorageKey(itemKey: string) {
+  return `missiongo.collaboration-pending.v1.${itemKey}`;
+}
+function readPendingUpload(itemKey: string): PendingUpload | null {
+  try {
+    const raw = localStorage.getItem(pendingStorageKey(itemKey));
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<PendingUpload>;
+    return typeof value.requestId === "string" && typeof value.targetKey === "string"
+      && typeof value.diagnosticLog === "string"
+      ? {
+          requestId: value.requestId,
+          targetKey: value.targetKey,
+          diagnosticLog: value.diagnosticLog,
+          fileCount: typeof value.fileCount === "number" ? value.fileCount : 0,
+        }
+      : null;
+  } catch {
+    return null;
+  }
+}
+function writePendingUpload(itemKey: string, value: PendingUpload | null) {
+  if (value) localStorage.setItem(pendingStorageKey(itemKey), JSON.stringify(value));
+  else localStorage.removeItem(pendingStorageKey(itemKey));
+}
+async function uploadRequestFiles(pending: PendingUpload, files: readonly File[]) {
+  const all = filesWithDiagnosticLog(files, pending.diagnosticLog);
+  // A retry on another device can find the draft text but not the files.
+  let failed = Math.max(0, pending.fileCount - all.length);
+  for (const [index, file] of all.entries()) {
+    try {
+      // Stable per target item and position: a retry after a reload resolves to
+      // the same attachment instead of creating a duplicate.
+      await api.uploadAttachment(
+        pending.targetKey,
+        file,
+        `request-${pending.targetKey}-${index}-${file.lastModified}`,
+      );
+    } catch {
+      failed += 1;
+    }
+  }
+  return failed;
+}
+export async function retryCollaborationUploads(itemKey: string, pending: PendingUpload) {
+  const files = await loadDraftFiles(collaborationDraftKey(itemKey));
+  const failed = await uploadRequestFiles(pending, files);
+  if (failed === 0) {
+    writePendingUpload(itemKey, null);
+    localStorage.removeItem(`missiongo.collaboration-draft.v1.${itemKey}`);
+    await clearDraftFiles(collaborationDraftKey(itemKey));
+  }
+  return failed;
+}
+export { readPendingUpload };
+
+/** A prepared draft reopens with the same report, environment and type. */
+function draftFromServer(initial: Draft): CaptureDraft {
+  return {
+    ...EMPTY_CAPTURE_DRAFT,
+    title: initial.title,
+    description: initial.description,
+    reproductionSteps: initial.report?.reproductionSteps ?? "",
+    expectedOutcome: initial.report?.expectedOutcome ?? "",
+    impact: initial.report?.impact ?? "",
+    occurrenceFrequency: initial.report?.occurrenceFrequency ?? "unknown",
+    type: initial.type,
+    priority: initial.priority,
+    environment: environmentDraft(initial.environment),
+  };
+}
+
 function CollaborationRequest({
   item,
   initial,
@@ -379,37 +544,92 @@ function CollaborationRequest({
     queryKey: ["collaboration-targets", item.key],
     queryFn: () => collab.targets(item.key),
   });
-  const [form, setForm] = useState({
-    grantId: initial?.grantId ?? "",
-    title: initial?.title ?? "",
-    description: initial?.description ?? "",
-    acceptance: initial?.acceptance ?? "",
-    attachmentIds: initial?.attachmentIds ?? [],
-    type: initial?.type ?? "requirement",
-    priority: initial?.priority ?? "normal",
-  });
-  const [saved, setSaved] = useState(initial),
-    [preview, setPreview] = useState(Boolean(initial)),
-    [approved, setApproved] = useState(false);
-  const dirty =
-    JSON.stringify(form) !==
-    JSON.stringify({
-      grantId: initial?.grantId ?? "",
-      title: initial?.title ?? "",
-      description: initial?.description ?? "",
-      acceptance: initial?.acceptance ?? "",
-      attachmentIds: initial?.attachmentIds ?? [],
-      type: initial?.type ?? "requirement",
-      priority: initial?.priority ?? "normal",
-    });
-  const update = (
-    field: "grantId" | "title" | "description" | "acceptance",
-    value: string,
-  ) => {
-    setForm((f) => ({ ...f, [field]: value }));
-    setApproved(false);
+  const storageKey = `missiongo.collaboration-draft.v1.${item.key}`,
+    filesKey = collaborationDraftKey(item.key);
+  const restored = (() => {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (!raw) return { grantId: "", acceptance: "", draft: undefined };
+      const value = JSON.parse(raw) as { grantId?: unknown; acceptance?: unknown; draft?: unknown };
+      return {
+        grantId: typeof value.grantId === "string" ? value.grantId : "",
+        acceptance: typeof value.acceptance === "string" ? value.acceptance : "",
+        draft: value.draft && typeof value.draft === "object" ? JSON.stringify(value.draft) : undefined,
+      };
+    } catch {
+      return { grantId: "", acceptance: "", draft: undefined };
+    }
+  })();
+  const [draft, setDraft] = useState<CaptureDraft>(() =>
+    initial ? draftFromServer(initial) : parseCaptureDraft(restored.draft ?? null));
+  const [grantId, setGrantId] = useState(initial?.grantId ?? restored.grantId);
+  const [acceptance, setAcceptance] = useState(initial?.acceptance ?? restored.acceptance);
+  const [files, setFiles] = useState<readonly File[]>([]);
+  const [filesReady, setFilesReady] = useState(false);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const [savedDraft, setSavedDraft] = useState<Draft | null>(initial);
+  const [preview, setPreview] = useState(Boolean(initial));
+  const [approved, setApproved] = useState(false);
+  const [pendingUpload, setPendingUpload] = useState<PendingUpload | null>(() => readPendingUpload(item.key));
+  const [uploadError, setUploadError] = useState("");
+
+  // Restore the draft and its files once per item; a grant change does not
+  // throw away what the person already wrote or selected.
+  useEffect(() => {
+    let active = true;
+    void loadDraftFiles(filesKey)
+      .catch(() => [])
+      .then((restoredFiles) => {
+        if (active) setFiles((current) => current.length > 0 ? current : restoredFiles);
+      })
+      .finally(() => {
+        if (active) setFilesReady(true);
+      });
+    return () => { active = false; };
+  }, [filesKey]);
+  useEffect(() => {
+    if (!filesReady) return undefined;
+    void saveDraftFiles(filesKey, files);
+    return undefined;
+  }, [files, filesReady, filesKey]);
+  useEffect(() => {
+    const hasContent = hasCaptureDraftContent(draft) || Boolean(grantId) || Boolean(acceptance.trim());
+    if (hasContent) localStorage.setItem(storageKey, JSON.stringify({ grantId, acceptance, draft }));
+    else localStorage.removeItem(storageKey);
+  }, [acceptance, draft, grantId, storageKey]);
+
+  const logBytes = diagnosticLogBytes(draft.diagnosticLog);
+  const totalFiles = files.length + (draft.diagnosticLog.trim() ? 1 : 0);
+  const addIncomingFiles = (incoming: readonly File[]) => {
+    const diagnosticSlots = draft.diagnosticLog.trim() ? 1 : 0;
+    const result = validateIncomingFiles(files, incoming, t, COLLABORATION_FILE_LIMIT - diagnosticSlots);
+    setFiles(result.files);
+    setFileError(result.error ?? null);
   };
-  const target = targets.data?.targets.find((g) => g.id === form.grantId);
+  const remainingSlots = Math.max(0, COLLABORATION_FILE_LIMIT - (draft.diagnosticLog.trim() ? 1 : 0) - files.length);
+  const { isDraggingFiles, dropHandlers } = useFileDropZone(addIncomingFiles, { canAccept: remainingSlots > 0 });
+  const target = targets.data?.targets.find((g) => g.id === grantId);
+  const dirty = !pendingUpload && Boolean(
+    hasCaptureDraftContent(draft) || grantId || acceptance.trim() || files.length > 0 || preview,
+  );
+
+  const clearLocalDraft = async () => {
+    localStorage.removeItem(storageKey);
+    await clearDraftFiles(filesKey);
+  };
+  const finishUploads = async (pending: PendingUpload) => {
+    setUploadError("");
+    const failed = await uploadRequestFiles(pending, files);
+    if (failed > 0) {
+      setUploadError(t("collaborationUploadFailed", { key: pending.targetKey, count: failed }));
+      return;
+    }
+    writePendingUpload(item.key, null);
+    setPendingUpload(null);
+    await clearLocalDraft();
+    await onSaved();
+  };
+
   return (
     <Modal
       title={t(preview ? "collaborationApproval" : "collaborationRequest")}
@@ -426,55 +646,89 @@ function CollaborationRequest({
           onSubmit={(e) => {
             e.preventDefault();
             void op.run(async () => {
+              if (pendingUpload) {
+                await finishUploads(pendingUpload);
+                return;
+              }
               if (preview) {
-                if (!approved || !saved) return;
-                await collab.submit(
-                  saved,
-                  key({ id: saved.id, version: saved.version }),
-                );
-                await onSaved();
+                if (!approved || !savedDraft) return;
+                const result = await collab.submit(savedDraft, key({ id: savedDraft.id, version: savedDraft.version }));
+                const pending = {
+                  requestId: result.id,
+                  targetKey: result.targetKey,
+                  diagnosticLog: draft.diagnosticLog,
+                  fileCount: filesWithDiagnosticLog(files, draft.diagnosticLog).length,
+                };
+                setPendingUpload(pending);
+                writePendingUpload(item.key, pending);
+                await finishUploads(pending);
               } else {
+                const body = {
+                  grantId,
+                  title: draft.title,
+                  description: draft.description,
+                  acceptance,
+                  type: draft.type,
+                  priority: draft.priority,
+                  report: workItemReportPayload(draft),
+                  environment: environmentPayload(draft.environment, undefined, true),
+                  attachmentIds: [],
+                };
                 const d = await collab.prepare(item.key, {
-                  ...form,
-                  idempotencyKey: key({
-                    form,
-                    id: saved?.id,
-                    version: saved?.version,
-                  }),
-                  ...(saved
-                    ? { draftId: saved.id, expectedVersion: saved.version }
-                    : {}),
+                  ...body,
+                  idempotencyKey: key({ form: body, id: savedDraft?.id, version: savedDraft?.version }),
+                  ...(savedDraft ? { draftId: savedDraft.id, expectedVersion: savedDraft.version } : {}),
                 });
-                setSaved(d);
+                setSavedDraft(d);
                 setPreview(true);
                 setApproved(false);
               }
             });
           }}
+          onPaste={(event) => {
+            const pasted = Array.from(event.clipboardData.files);
+            if (pasted.length > 0 && !preview) {
+              event.preventDefault();
+              addIncomingFiles(pasted);
+            }
+          }}
+          {...(preview ? {} : dropHandlers)}
         >
           <fieldset disabled={op.pending}>
-            {preview ? (
+            {pendingUpload ? (
+              <div className="collaboration-pending">
+                <h3>{t("collaborationPendingTitle", { key: pendingUpload.targetKey })}</h3>
+                <p>{t("collaborationPendingUploadsHelp")}</p>
+                {uploadError && <Failure error={uploadError} />}
+              </div>
+            ) : preview ? (
               <>
                 <p>
                   {target
                     ? `${target.targetName} · ${target.moduleName ?? t("collaborationAllModules")}`
                     : t("collaborationTarget")}
                 </p>
-                <h3>{form.title}</h3>
+                <h3>{draft.title}</h3>
                 <p>
-                  {typeLabel(form.type)} · {priorityLabel(form.priority)}
+                  {typeLabel(draft.type)} · {priorityLabel(draft.priority)}
+                  {draft.environment.platform && ` · ${platformName(draft.environment.platform, t)}`}
                 </p>
-                <p className="collaboration-prose">{form.description}</p>
+                <p className="collaboration-prose">{draft.description}</p>
+                {draft.type === "bug" && (draft.reproductionSteps.trim() || draft.expectedOutcome.trim() || draft.impact.trim()) && (
+                  <>
+                    <h4>{t("bugOptionalDetails")}</h4>
+                    {draft.reproductionSteps.trim() && <p className="collaboration-prose">{draft.reproductionSteps}</p>}
+                    {draft.expectedOutcome.trim() && <p className="collaboration-prose">{draft.expectedOutcome}</p>}
+                    {draft.impact.trim() && <p className="collaboration-prose">{draft.impact}</p>}
+                  </>
+                )}
                 <h4>{t("collaborationAcceptance")}</h4>
-                <p className="collaboration-prose">{form.acceptance}</p>
-                <h4>{t("collaborationScope")}</h4>
-                <p>{t("collaborationDraftHelp")}</p>
+                <p className="collaboration-prose">{acceptance}</p>
+                <h4>{t("collaborationNewFiles")}</h4>
                 <ul>
-                  {item.attachments
-                    .filter((f) => form.attachmentIds.includes(f.id))
-                    .map((f) => (
-                      <li key={f.id}>{f.filename}</li>
-                    ))}
+                  {filesWithDiagnosticLog(files, draft.diagnosticLog).map((file) => (
+                    <li key={`${file.name}-${file.size}-${file.lastModified}`}>{file.name}</li>
+                  ))}
                 </ul>
                 <p className="collaboration-warning">
                   {t("collaborationApprovalHelp")}
@@ -493,8 +747,8 @@ function CollaborationRequest({
                 <label>
                   {t("collaborationTarget")}
                   <Select
-                    value={form.grantId}
-                    onChange={(e) => update("grantId", e.target.value)}
+                    value={grantId}
+                    onChange={(e) => setGrantId(e.target.value)}
                     required
                   >
                     <option value="">{t("collaborationChoose")}</option>
@@ -509,89 +763,32 @@ function CollaborationRequest({
                 {targets.isError && (
                   <Failure error={t("collaborationReadError")} />
                 )}
-                <label>
-                  {t("collaborationType")}
-                  <Select
-                    value={form.type}
-                    onChange={(e) =>
-                      setForm((f) => ({
-                        ...f,
-                        type: e.target.value as Draft["type"],
-                      }))
-                    }
-                  >
-                    {(["bug", "requirement"] as const).map((v) => (
-                      <option key={v} value={v}>
-                        {typeLabel(v)}
-                      </option>
-                    ))}
-                  </Select>
-                </label>
-                <label>
-                  {t("collaborationPriority")}
-                  <Select
-                    value={form.priority}
-                    onChange={(e) =>
-                      setForm((f) => ({
-                        ...f,
-                        priority: e.target.value as Draft["priority"],
-                      }))
-                    }
-                  >
-                    {(["urgent", "high", "normal", "low"] as const).map((v) => (
-                      <option key={v} value={v}>
-                        {priorityLabel(v)}
-                      </option>
-                    ))}
-                  </Select>
-                </label>
-                <label>
-                  {t("collaborationTitleField")}
-                  <input
-                    required
-                    maxLength={300}
-                    value={form.title}
-                    onChange={(e) => update("title", e.target.value)}
-                  />
-                </label>
-                <label>
-                  {t("collaborationEvidence")}
-                  <textarea
-                    required
-                    rows={4}
-                    maxLength={20000}
-                    value={form.description}
-                    onChange={(e) => update("description", e.target.value)}
-                  />
-                </label>
+                {isDraggingFiles && <FileDropOverlay remaining={remainingSlots} />}
+                <WorkItemFields
+                  productId={item.productId}
+                  titleProductId={item.productId}
+                  showComponentField={false}
+                  types={["bug", "requirement"]}
+                  draft={draft}
+                  onDraft={setDraft}
+                  files={files}
+                  onFiles={setFiles}
+                  fileError={fileError}
+                  attachmentLimit={COLLABORATION_FILE_LIMIT}
+                />
                 <label>
                   {t("collaborationAcceptance")}
                   <textarea
                     required
                     rows={3}
                     maxLength={10000}
-                    value={form.acceptance}
-                    onChange={(e) => update("acceptance", e.target.value)}
+                    value={acceptance}
+                    onChange={(e) => {
+                      setAcceptance(e.target.value);
+                      setApproved(false);
+                    }}
                   />
                 </label>
-                <p>{t("collaborationShare")}</p>
-                {item.attachments.map((f) => (
-                  <label className="collaboration-check" key={f.id}>
-                    <input
-                      type="checkbox"
-                      checked={form.attachmentIds.includes(f.id)}
-                      onChange={(e) =>
-                        setForm((x) => ({
-                          ...x,
-                          attachmentIds: e.target.checked
-                            ? [...x.attachmentIds, f.id]
-                            : x.attachmentIds.filter((id) => id !== f.id),
-                        }))
-                      }
-                    />
-                    {f.filename}
-                  </label>
-                ))}
                 <p className="dispatch-note">{t("collaborationDraftHelp")}</p>
               </>
             )}
@@ -606,7 +803,7 @@ function CollaborationRequest({
             >
               {t("cancel")}
             </button>
-            {preview && (
+            {preview && !pendingUpload && (
               <button
                 type="button"
                 className="secondary-button"
@@ -624,20 +821,26 @@ function CollaborationRequest({
               type="submit"
               disabled={
                 op.pending ||
-                (preview && (!approved || !target)) ||
-                (!preview &&
-                  (!form.grantId ||
-                    !form.title.trim() ||
-                    !form.description.trim() ||
-                    !form.acceptance.trim()))
+                (pendingUpload
+                  ? false
+                  : preview
+                    ? (!approved || !target)
+                    : (!grantId ||
+                      !draft.title.trim() ||
+                      !draft.description.trim() ||
+                      !acceptance.trim() ||
+                      logBytes > MAX_DIAGNOSTIC_LOG_BYTES ||
+                      totalFiles > COLLABORATION_FILE_LIMIT))
               }
             >
               {t(
                 op.pending
                   ? "collaborationProgress"
-                  : preview
-                    ? "collaborationApprove"
-                    : "collaborationPreview",
+                  : pendingUpload
+                    ? "collaborationRetryUploads"
+                    : preview
+                      ? "collaborationApprove"
+                      : "collaborationPreview",
               )}
             </button>
           </div>
@@ -750,12 +953,16 @@ function AssociateDialog({
 
 export function SharedCollaboration({
   id,
+  direction,
   onClose,
   onChanged,
+  onOpenItem,
 }: {
   id: string;
+  direction?: "outgoing" | "incoming";
   onClose: () => void;
   onChanged: () => Promise<void>;
+  onOpenItem?: (itemKey: string) => void;
 }) {
   const { t, statusLabel } = useI18n(),
     q = useQuery({
@@ -855,6 +1062,19 @@ export function SharedCollaboration({
                 </div>
               ))}
             <div className="form-footer collaboration-actions">
+              {direction === "incoming" && onOpenItem && (
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => {
+                    const key = d.sourceKey;
+                    onClose();
+                    requestAnimationFrame(() => onOpenItem(key));
+                  }}
+                >
+                  {t("collaborationOpenSource")}
+                </button>
+              )}
               {d.canDiscuss && (
                 <button
                   className="secondary-button"

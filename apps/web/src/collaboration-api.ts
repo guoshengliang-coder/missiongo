@@ -22,6 +22,9 @@ export interface Draft {
   attachmentIds: string[];
   type: "bug" | "requirement";
   priority: "urgent" | "high" | "normal" | "low";
+  report?: import("./types").WorkItemReport;
+  environment?: import("./types").WorkItemEnvironment;
+  attachments?: Array<{ id: string; filename: string }>;
   agentName?: string;
 }
 export interface Relation {
@@ -98,7 +101,7 @@ export const collaborationApi = {
   prepare: (key: string, body: unknown) =>
     write<Draft>(`/api/v1/items/${path(key)}/collaboration/drafts`, body),
   submit: (draft: Draft, idempotencyKey: string) =>
-    write<{ id: string }>(
+    write<{ id: string; targetKey: string }>(
       `/api/v1/collaboration/drafts/${path(draft.id)}/submit`,
       { version: draft.version, approved: true, idempotencyKey },
     ),

@@ -1,6 +1,6 @@
 import { FreeSessionStore } from "./free-session-store.js";
 import { registerCollaborationRoutes } from "./collaboration-routes.js";
-import { collaborationVerifier } from "./collaboration-policy.js";
+import { collaborationLinkedRead, collaborationUploadAllowed, collaborationVerifier } from "./collaboration-policy.js";
 import { z } from "zod";
 import { registerPersonalNotificationRoutes } from "./personal-notifications.js";
 import { evaluateWorkItemTransition } from "@missiongo/domain";
@@ -1816,7 +1816,20 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
     // getWorkItem throws notFound for an unknown key, which is the same answer
     // an unauthorized one gets -- so the two stay indistinguishable.
-    requireProductPermission(request, store.getWorkItem(normalizedKey).productId, capability);
+    const item = store.getWorkItem(normalizedKey);
+    // AND-406: the receiving side of an active collaboration request may read
+    // the one source item it is delivering, without gaining the source
+    // project's view permission. Writes never take this branch.
+    if (capability === "view" && !unauthenticatedDeployment) {
+      const account = sessionAccount(request);
+      if (
+        account &&
+        !accountStore.allows(account, item.productId, "view") &&
+        collaborationLinkedRead(store.database, item, account.id)
+      )
+        return normalizedKey;
+    }
+    requireProductPermission(request, item.productId, capability);
     if (capability !== "view") store.assertWorkItemWritable(normalizedKey);
     return normalizedKey;
   };
@@ -1955,6 +1968,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
     const members = (body.itemKeys as string[]).map(key => {
       const authorized = requireItemPermission(request, key, "view");
+      // Linked collaboration reads are item-scoped: they do not enter a
+      // project-wide insight batch.
+      requireProductPermission(request, store.getWorkItem(authorized).productId, "view");
       const item = store.getWorkItem(authorized);
       return {itemId: item.id, itemKey: item.key};
     });
@@ -4237,6 +4253,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const accountId=sessionAccount(request)?.id;
     const roles=itemRoles(store.database,item,accountId);
     const archived=Boolean(store.getProduct(item.productId).archivedAt);
+    // AND-406: say plainly why this item is readable without its project, so
+    // the console can render it read-only and keep the source project closed.
+    const linkedRead = !roles.view && !unauthenticatedDeployment
+      && collaborationLinkedRead(store.database, item, accountId);
     return { ...item,
       transitionDecisions: WORK_ITEM_STATUSES.flatMap(to => TRANSITION_REASONS.filter(reason => reason === "manual_override" && to !== item.status || evaluateWorkItemTransition({from:item.status,to,actor:"human",reason,note:"policy check"}).allowed).map(reason => ({to,reason,
         ...(unauthenticatedDeployment ? {allowed:true,code:"allowed"} : transitionPolicy(store.database,item,accountId,to,reason,"human",roles,archived))}))),
@@ -4244,6 +4264,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         canOperate: !archived && (unauthenticatedDeployment || roles.operate),
         canRequestCollaboration: !archived && !item.transferred && roles.operate && (roles.builder || roles.manager) && ["ready","in_progress","on_hold"].includes(item.status),
         canVerify: !item.transferred && canVerifyItem(request, item),
+        ...(linkedRead ? { readOnlySource: { productName: store.getProduct(item.productId).name } } : {}),
       },
       ...store.transferReferences(item.key, (id) => bearerAuthorized(request)
       || accountStore.allows(requireAccount(request), id, "view")) };
@@ -4450,7 +4471,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.get("/api/v1/items/:itemKey/comment-candidates", async request => {
     const { itemKey } = request.params as { itemKey: string };
-    return { candidates: commentCandidates(store, requireItemPermission(request, itemKey)) };
+    // The candidate list is the source project's roster; a linked read of the
+    // item does not include it.
+    const key = requireItemPermission(request, itemKey);
+    requireProductPermission(request, store.getWorkItem(key).productId, "view");
+    return { candidates: commentCandidates(store, key) };
   });
 
   app.post("/api/v1/items/:itemKey/comments", async (request, reply) => {
@@ -4492,7 +4517,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.post("/api/v1/items/:itemKey/attachments", async (request, reply) => {
     const { itemKey } = request.params as { itemKey: string };
     const transitionUpload = request.headers["x-missiongo-transition-upload"] === "true";
-    const key = requireItemPermission(request,itemKey,transitionUpload ? "view" : "operate");
+    // AND-406: the requester may add the material that belongs to their own
+    // collaboration request, without gaining ordinary target-project write.
+    const requestedItem = store.getWorkItem(itemKey.toUpperCase());
+    const requester = sessionAccount(request);
+    const collaborationUpload = !transitionUpload && !bearerAuthorized(request) && requester
+      && !accountStore.allows(requester, requestedItem.productId, "operate")
+      && collaborationUploadAllowed(store.database, requestedItem.id, requester.id);
+    const key = transitionUpload
+      ? requireItemPermission(request, itemKey, "view")
+      : collaborationUpload
+        ? requestedItem.key
+        : requireItemPermission(request, itemKey, "operate");
     if (transitionUpload && !unauthenticatedDeployment) {
       const roles=itemRoles(store.database,store.getWorkItem(key),requireAccount(request).id);
       if (!roles.manager && !roles.proposer && !roles.builder) throw new MissionGoError("decision_not_permitted","没有此条目的业务决定权限。",403);

@@ -32,7 +32,7 @@ import { statisticsIsOpen, statisticsUrl, statisticsExitUrl } from "./statistics
 import { useOverlay, OverlayMenu } from "./overlay";
 import { Modal } from "./modal";
 import { localizedErrorText } from "./error-text";
-import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type Dispatch as ReactDispatch, type FormEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, type SetStateAction } from "react";
+import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 import { useInfiniteQuery, useIsFetching, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LoginForm } from "./login-form";
 import {
@@ -40,8 +40,6 @@ import {
   Archive,
   ArrowRight,
   Bot,
-  Bug,
-  Camera,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -66,7 +64,6 @@ import {
   MessageSquarePlus,
   MoreHorizontal,
   MoreVertical,
-  Paperclip,
   Pencil,
   Plus,
   RefreshCw,
@@ -87,29 +84,19 @@ import {
 import { api, ApiError, type AuthenticatedUser, type BulkTransitionResult } from "./api";
 import { BootSkeleton } from "./BootSkeleton";
 import { clearPersistedQueryCache } from "./query-persistence";
-// Type-only: erased at compile time, so it does not pull the chunk into the boot.
-import type { ImageAnnotator as ImageAnnotatorImpl } from "./ImageAnnotator";
 import {
   captureDraftStorageKey,
   hasCaptureDraftContent,
   parseCaptureDraft,
   workItemReportPayload,
   type CaptureDraft,
-  type EnvironmentDraft,
 } from "./capture-draft";
 import { clearDraftFiles, loadDraftFiles, saveDraftFiles } from "./draft-files";
 import { useFileDropZone } from "./file-drop";
 import { FileDropOverlay } from "./file-drop-overlay";
-import {
-  MAX_DIAGNOSTIC_LOG_BYTES,
-  collectWebContext,
-  diagnosticLogBytes,
-  diagnosticLogFile,
-} from "./diagnostics";
+import { MAX_DIAGNOSTIC_LOG_BYTES, diagnosticLogBytes } from "./diagnostics";
 import {
   COMPONENT_KINDS,
-  ITEM_PRIORITIES,
-  ITEM_TYPES,
   type Product,
   type Component,
   type ComponentKind,
@@ -120,17 +107,14 @@ import {
   type TransitionAction,
   type WorkItem,
   type WorkItemAttachment,
-  type WorkItemEnvironment,
   type WorkItemReference,
   type WorkItemEvent,
   type WorkItemOccurrenceFrequency,
-  type WorkItemPriority,
   type WorkItemReport,
   type WorkItemStatus,
   type WorkItemType,
 } from "./types";
 import { androidFeedbackBridge, androidMediaDeletion, reportAndroidBackDepth } from "./android-bridge";
-import { validateAttachment } from "./attachment-validation";
 import {
   ACTIVE_DISPATCHES_QUERY_KEY,
   ACTIVE_DISPATCHES_REFETCH_MS,
@@ -149,8 +133,22 @@ import {
   toggleItemSelection,
 } from "./dispatch-eligibility";
 import { environmentFields, environmentSummary, platformName, type EnvironmentField } from "./environment-summary";
-import { ErrorBoundary, LoadFailureNotice } from "./ErrorBoundary";
 import { useI18n } from "./i18n";
+import {
+  InlineError,
+  REPORT_COPY,
+  TYPE_ICONS,
+  WorkItemFields,
+  environmentDraft,
+  environmentPayload,
+  filesWithDiagnosticLog,
+  formatBytes,
+  ImageAnnotator,
+  isDocumentFile,
+  isDiagnosticFile,
+  isMediaAttachment,
+  mediaNumberLabel,
+} from "./work-item-form";
 import { DownloadsPanel } from "./downloads-panel";
 import { afterOverlaysClose, afterTopOverlayCloses, afterHistoryBack } from "./overlay";
 import { SettingsPage } from "./settings-page";
@@ -232,14 +230,6 @@ const STATUS_ICONS: Record<WorkItemStatus, typeof Inbox> = {
   cancelled: X,
 };
 
-const TYPE_ICONS: Record<WorkItemType, typeof Inbox> = {
-  idea: Lightbulb,
-  requirement: Sparkles,
-  bug: Bug,
-  task: ListTodo,
-  note: FileText,
-};
-
 /**
  * Items per list page. Shared with the bootstrap request so the page it returns
  * lands under the exact query key the list then reads, and the list does not
@@ -265,126 +255,6 @@ const ITEM_PAGE_SIZE = 30;
  * left to the root boundary so the failure costs the annotator and not the
  * screen behind it.
  */
-const LazyImageAnnotator = lazy(
-  () => import("./ImageAnnotator").then(({ ImageAnnotator }) => ({ default: ImageAnnotator })),
-);
-
-function ImageAnnotator(props: ComponentProps<typeof ImageAnnotatorImpl>) {
-  return (
-    <ErrorBoundary fallback={(error) => <LoadFailureNotice error={error} onDismiss={props.onCancel} />}>
-      <Suspense fallback={null}>
-        <LazyImageAnnotator {...props} />
-      </Suspense>
-    </ErrorBoundary>
-  );
-}
-
-const REPORT_COPY = {
-  idea: { title: "ideaDetails", help: "ideaDetailsHelp", overview: "ideaOverview", placeholder: "ideaOverviewPlaceholder" },
-  requirement: { title: "requirementDetails", help: "requirementDetailsHelp", overview: "requirementOverview", placeholder: "requirementOverviewPlaceholder" },
-  bug: { title: "bugDetails", help: "bugDetailsHelp", overview: "bugOverview", placeholder: "bugOverviewPlaceholder" },
-  task: { title: "taskDetails", help: "taskDetailsHelp", overview: "taskOverview", placeholder: "taskOverviewPlaceholder" },
-  note: { title: "noteDetails", help: "noteDetailsHelp", overview: "noteOverview", placeholder: "noteOverviewPlaceholder" },
-} as const satisfies Record<WorkItemType, {
-  readonly title: "ideaDetails" | "requirementDetails" | "bugDetails" | "taskDetails" | "noteDetails";
-  readonly help: "ideaDetailsHelp" | "requirementDetailsHelp" | "bugDetailsHelp" | "taskDetailsHelp" | "noteDetailsHelp";
-  readonly overview: "ideaOverview" | "requirementOverview" | "bugOverview" | "taskOverview" | "noteOverview";
-  readonly placeholder: "ideaOverviewPlaceholder" | "requirementOverviewPlaceholder" | "bugOverviewPlaceholder" | "taskOverviewPlaceholder" | "noteOverviewPlaceholder";
-}>;
-
-// Only a .log is machine output. Everything else readable is material a
-// person wrote or exported, and belongs beside the report rather than in
-// the diagnostics panel.
-const LOG_FILE_EXTENSIONS = new Set(["log"]);
-const DOCUMENT_FILE_EXTENSIONS = new Set(["md", "txt", "csv", "json", "pdf", "html"]);
-const VIDEO_FILE_EXTENSIONS = new Set(["mp4", "mov", "webm"]);
-
-function fileExtension(file: File): string {
-  return file.name.split(".").pop()?.toLowerCase() ?? "";
-}
-
-function isDiagnosticFile(file: File): boolean {
-  return LOG_FILE_EXTENSIONS.has(fileExtension(file));
-}
-
-function isDocumentFile(file: File): boolean {
-  return DOCUMENT_FILE_EXTENSIONS.has(fileExtension(file));
-}
-
-function isArchiveFile(file: File): boolean {
-  return fileExtension(file) === "zip";
-}
-
-/** Images and videos: the attachments that are shown rather than read. */
-function isMediaAttachment(attachment: WorkItemAttachment): boolean {
-  return attachment.kind === "image" || attachment.kind === "video";
-}
-
-function mediaKindForFile(file: File): "image" | "video" {
-  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
-  return file.type.startsWith("video/") || VIDEO_FILE_EXTENSIONS.has(extension) ? "video" : "image";
-}
-
-function environmentDraft(environment?: WorkItemEnvironment): EnvironmentDraft {
-  return {
-    platform: environment?.platform ?? "",
-    appVersion: environment?.appVersion ?? "",
-    buildNumber: environment?.buildNumber ?? "",
-    sourceRevision: environment?.sourceRevision ?? "",
-    osVersion: environment?.osVersion ?? "",
-    deviceModel: environment?.deviceModel ?? "",
-  };
-}
-
-function environmentPayload(
-  draft: EnvironmentDraft,
-  existingMetadata?: Readonly<Record<string, string>>,
-  collectCurrentWeb = false,
-): WorkItemEnvironment | undefined {
-  const appVersion = draft.appVersion.trim();
-  const buildNumber = draft.buildNumber.trim();
-  const sourceRevision = draft.sourceRevision.trim();
-  const osVersion = draft.osVersion.trim();
-  const deviceModel = draft.deviceModel.trim();
-  const metadata = draft.platform === "web" && collectCurrentWeb ? collectWebContext() : existingMetadata;
-  if (!draft.platform) return undefined;
-  return {
-    platform: draft.platform,
-    ...(appVersion ? { appVersion } : {}),
-    ...(buildNumber ? { buildNumber } : {}),
-    ...(sourceRevision ? { sourceRevision } : {}),
-    ...(osVersion ? { osVersion } : {}),
-    ...(deviceModel ? { deviceModel } : {}),
-    ...(metadata && Object.keys(metadata).length > 0 ? { metadata } : {}),
-  };
-}
-
-function FieldLabel({ children, required = false }: { children: ReactNode; required?: boolean }) {
-  const { t } = useI18n();
-  return (
-    <span className="field-label">
-      {children}
-      {required && <small className="field-requirement required">{t("requiredField")}</small>}
-    </span>
-  );
-}
-
-function hasOptionalEnvironmentDetails(draft: EnvironmentDraft): boolean {
-  return Boolean(
-    draft.appVersion.trim() ||
-    draft.buildNumber.trim() ||
-    draft.sourceRevision.trim() ||
-    draft.osVersion.trim() ||
-    draft.deviceModel.trim()
-  );
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
-}
-
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
@@ -399,11 +269,6 @@ async function uploadAttachmentsSequentially(itemKey: string, files: readonly Fi
     }
   }
   return failed;
-}
-
-function filesWithDiagnosticLog(files: readonly File[], log: string): readonly File[] {
-  const generatedLog = diagnosticLogFile(log);
-  return generatedLog ? [...files, generatedLog] : files;
 }
 
 function useNearViewport<ElementType extends HTMLElement>(rootMargin = "160px"): [RefObject<ElementType | null>, boolean] {
@@ -1254,6 +1119,10 @@ export function App() {
   useEffect(() => setSelectedItemKeys((current) => current.size === 0 ? current : new Set()), [listScope]);
 
   const selectItemProduct = useCallback((item: WorkItem) => {
+    // A collaboration-linked source item is not part of the visible product
+    // list. Switching to it would open an empty project, so the list keeps
+    // showing the receiver's own project behind the read-only detail.
+    if (item.access?.readOnlySource) return;
     if (item.productId !== selectedProductId) setSelectedProductId(item.productId);
   }, [selectedProductId]);
   // The unfiltered list leaves cancelled items out, so the "all items" badge has
@@ -2644,10 +2513,6 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
     </>
   );
 }
-function mediaNumberLabel(kind: "image" | "video", displayNumber: number, t: ReturnType<typeof useI18n>["t"]): string {
-  return t(kind === "image" ? "imageNumber" : "videoNumber", { number: displayNumber });
-}
-
 /** The pickup of waiting work, which asks how before it happens (AND-68). */
 function isStartWork(status: WorkItemStatus, action: TransitionAction): boolean {
   return status === "ready" && action.to === "in_progress" && action.reason === "claim";
@@ -2697,9 +2562,14 @@ function DetailPane({
   const { actorLabel, eventLabel, formatTime, priorityLabel, statusLabel, t, transitionLabel, typeLabel } = useI18n();
   const itemQuery = useQuery({ queryKey: ["item", itemKey], queryFn: () => api.getItem(itemKey!), enabled: Boolean(itemKey),
     refetchInterval: query => document.visibilityState === "visible" && query.state.fetchFailureCount < 3
-      && (query.state.data?.deliveryProgress || query.state.data?.status === "in_progress") ? 15_000 : false });
+      && (query.state.data?.deliveryProgress || query.state.data?.status === "in_progress" || query.state.data?.access?.readOnlySource) ? 15_000 : false });
+  // AND-406: the server marks an item that is readable only through an active
+  // collaboration request. That mode hides every action and keeps the source
+  // project closed; it never turns into ordinary project access.
+  const linkedSource = itemQuery.data?.access?.readOnlySource;
+  const readOnlySource = Boolean(linkedSource);
   const timelineQuery = useQuery({ queryKey: ["timeline", itemKey], queryFn: () => api.getTimeline(itemKey!), enabled: Boolean(itemKey), refetchInterval: 5_000 });
-  const notificationsQuery=useItemDingTalkNotifications(itemKey);
+  const notificationsQuery=useItemDingTalkNotifications(linkedSource ? null : itemKey);
   const {draft:commentDraft,update:updateCommentDraft,storageFailed}=useCommentDraft(accountId,itemKey,initialCommentId===undefined?undefined:"messages");
   const commentIdPrefix=initialCommentId===undefined?"":"message-";
   const replyTo=timelineQuery.data?.events.find(event=>event.eventType==="comment_added" && event.id===commentDraft.replyToCommentId && !event.payload.withdrawnAt) ?? null;
@@ -2756,13 +2626,14 @@ function DetailPane({
   const activeDispatches = useQuery({queryKey:ACTIVE_DISPATCHES_QUERY_KEY,queryFn:api.listActiveDispatches,
     enabled:Boolean(itemKey),refetchInterval:ACTIVE_DISPATCHES_REFETCH_MS});
   // Same cache entry the delivery panel reads, so the Builder can sit in the
-  // title line without a second request.
+  // title line without a second request. A collaboration-linked read gets a
+  // execution-only view from the server (no roster or management).
   const deliveryQuery = useItemDelivery(itemKey);
   const item = itemQuery.data;
   const componentsQuery = useQuery({
     queryKey: ["components", item?.productId, "with-archived"],
     queryFn: () => api.listComponents(item!.productId, { includeArchived: true }),
-    enabled: Boolean(item?.productId),
+    enabled: Boolean(item?.productId) && !readOnlySource,
   });
   const [editing, setEditing] = useState(false);
   const [transferring, setTransferring] = useState(false);
@@ -2930,7 +2801,7 @@ function DetailPane({
         <span className={`status-pill status-${item.status}`}>{statusLabel(item.status)}</span>
         <span className="toolbar-spacer" />
         <div className="detail-toolbar-actions" data-toolbar-actions>
-          {primaryAction && (
+          {!readOnlySource && primaryAction && (
             <button
               className={`primary-button toolbar-primary-action ${primaryAction.tone === "positive" ? "positive" : ""}`}
               disabled={transitionMutation.isPending}
@@ -2943,9 +2814,9 @@ function DetailPane({
           )}
           <div className="adaptive-toolbar-secondary" data-toolbar-secondary aria-hidden={toolbarOverflow} inert={toolbarOverflow}>
             <RefreshButton refreshing={itemQuery.isFetching || timelineQuery.isFetching} onRefresh={refreshItem} />
-            <button className="secondary-button" disabled={item.transferred || item.access?.canOperate === false} onClick={() => setEditing(true)}>{t("edit")}</button>
+            {!readOnlySource && <button className="secondary-button" disabled={item.transferred || item.access?.canOperate === false} onClick={() => setEditing(true)}>{t("edit")}</button>}
           </div>
-          <OverlayMenu className="detail-more-menu" ref={moreActionsRef} onToggle={(event) => { if (!event.currentTarget.open) event.currentTarget.querySelector(".detail-move-menu")?.removeAttribute("open"); }}>
+          {!readOnlySource && <OverlayMenu className="detail-more-menu" ref={moreActionsRef} onToggle={(event) => { if (!event.currentTarget.open) event.currentTarget.querySelector(".detail-move-menu")?.removeAttribute("open"); }}>
             <summary className="secondary-button" aria-label={t("moreActions")} title={t("moreActions")}><MoreHorizontal size={19} /></summary>
             <div className="detail-more-menu-popover detail-actions-popover">
               {(deliveryQuery.data?.canManageBuilder || (!item.transferred && item.access?.canOperate !== false)) && <div className="detail-action-group">
@@ -2979,12 +2850,17 @@ function DetailPane({
                 <div className="detail-action-group" key={`${action.to}-${action.reason}`}><button type="button" className="danger" disabled={transitionMutation.isPending} onClick={() => { moreActionsRef.current?.removeAttribute("open"); startTransition(action); }}><X size={17} aria-hidden="true" />{transitionLabel(action.label)}</button></div>
               ))}
             </div>
-          </OverlayMenu>
+          </OverlayMenu>}
         </div>
       </div>
       <div className="detail-scroll">
         <DetailStatusList items={statusItems} />
-        {deliveryQuery.data && <BuilderHandoverNotice itemKey={item.key} delivery={deliveryQuery.data} onTakeOver={() => onTakeOver(item)} />}
+        {readOnlySource && linkedSource && (
+          <p className="collaboration-readonly-banner" role="status">
+            {t("collaborationReadOnlySource", { project: linkedSource.productName })}
+          </p>
+        )}
+        {!readOnlySource && deliveryQuery.data && <BuilderHandoverNotice itemKey={item.key} delivery={deliveryQuery.data} onTakeOver={() => onTakeOver(item)} />}
         {(item.transferred || item.transferredFrom) && <div className="transfer-banner" role="status">
           {item.transferred && <p>{t("transferReadOnly")}</p>}
           {item.transferredTo && <button type="button" className="text-button" onClick={() => onOpenItem(item.transferredTo!.key)}>{t("transferDestination", { key: item.transferredTo.key })}</button>}
@@ -3000,7 +2876,7 @@ function DetailPane({
                     {detailCreator && <> · {t("createdBy", { name: detailCreator })}</>}
                     {item.createdBy?.kind === "agent" && item.createdBy.name && <> · {t("aiAssistedSubmission")}{item.createdBy.clientName ? ` · ${item.createdBy.clientName}` : ""}</>}
                   </span>
-                  {deliveryQuery.data && <BuilderBadge name={deliveryQuery.data.builderName} needsReassignment={deliveryQuery.data.builderNeedsReassignment} />}
+                  {!readOnlySource && deliveryQuery.data && <BuilderBadge name={deliveryQuery.data.builderName} needsReassignment={deliveryQuery.data.builderNeedsReassignment} />}
                 </p>
                 <h2>{item.title}</h2>
               </div>
@@ -3040,8 +2916,8 @@ function DetailPane({
               </div>
             )}
             <ItemDeliveryPanel key={item.key} item={item} summarizedSessionId={jumpSessionId} dispatches={dispatchesQuery.data?.dispatches ?? []} dispatchesFailed={dispatchesQuery.isError} notificationsQuery={notificationsQuery} renderDispatch={dispatch => <DispatchRow dispatch={dispatch} itemKey={item.key} />} />
-            <CollaborationPanel key={`collaboration-${item.key}`} item={item} requestedAction={collaborationAction} onActionHandled={()=>setCollaborationAction(undefined)} />
-            <ItemRelations item={item} onOpenItem={onOpenItem} />
+            {!readOnlySource && <CollaborationPanel key={`collaboration-${item.key}`} item={item} requestedAction={collaborationAction} onActionHandled={()=>setCollaborationAction(undefined)} onOpenItem={onOpenItem} />}
+            {!readOnlySource && <ItemRelations item={item} onOpenItem={onOpenItem} />}
             {item.verificationReturn && <VerificationReturnCallout info={item.verificationReturn} />}
             {/* Read the item, then the evidence a person went and looked at --
                 screenshots, documents, logs. The captured environment is the
@@ -3195,7 +3071,7 @@ function DetailPane({
                       </p>}
                       {filenames.length > 0 && <p className="timeline-files">{filenames.join("、")}</p>}
                       {event.eventType === "comment_added" && (
-                        <CommentGroup idPrefix={commentIdPrefix} root={event} replies={replies} visibleCommentIds={visibleCommentIds} item={item} onReply={setReplyTo} onNotice={onNotice} notificationsQuery={notificationsQuery}
+                        <CommentGroup idPrefix={commentIdPrefix} root={event} replies={replies} visibleCommentIds={visibleCommentIds} item={item} onReply={setReplyTo} onNotice={onNotice} notificationsQuery={notificationsQuery} readOnly={readOnlySource}
                           focusedCommentId={focusedCommentId} onClearFocus={()=>setFocusedCommentId(null)}
                           onWithdraw={async commentId=>{if(await confirm(t("withdrawCommentConfirm")))withdrawMutation.mutate(commentId);}} />
                       )}
@@ -3206,7 +3082,7 @@ function DetailPane({
             </section>
         </>
       </div>
-      {!item.transferred && accountId && <CommentComposer idPrefix={commentIdPrefix} key={`${accountId}:${item.key}`} item={item} draft={commentDraft} onDraftChange={updateCommentDraft} storageFailed={storageFailed} replyUnavailable={replyUnavailable}
+      {!item.transferred && !readOnlySource && accountId && <CommentComposer idPrefix={commentIdPrefix} key={`${accountId}:${item.key}`} item={item} draft={commentDraft} onDraftChange={updateCommentDraft} storageFailed={storageFailed} replyUnavailable={replyUnavailable}
         replyTo={replyTo} onLocateReply={()=>replyTo && locateComment(replyTo.id)} onCancelReply={()=>setReplyTo(null)} onPosted={refreshItem} onNotice={onNotice} />}
       {transferring && <TransferItemDialog item={item} onClose={() => setTransferring(false)} />}
       {transferBuilderOpen && deliveryQuery.data && (
@@ -3331,9 +3207,9 @@ function commentHeading(event: WorkItemEvent, analysisLabel: string, commentLabe
   return event.actorKind === "agent" && event.payload.bodyKind === "structured" ? analysisLabel : commentLabel;
 }
 
-function CommentGroup({idPrefix="",root,replies,visibleCommentIds,item,onReply,onWithdraw,onNotice,notificationsQuery,focusedCommentId,onClearFocus}:{
+function CommentGroup({idPrefix="",root,replies,visibleCommentIds,item,onReply,onWithdraw,onNotice,notificationsQuery,readOnly=false,focusedCommentId,onClearFocus}:{
   idPrefix?:string;root:WorkItemEvent;replies:readonly WorkItemEvent[];visibleCommentIds:readonly string[];item:WorkItem;onReply:(event:WorkItemEvent)=>void;onWithdraw:(id:string)=>void;
-  onNotice:(message:string)=>void;notificationsQuery:ReturnType<typeof useItemDingTalkNotifications>;
+  onNotice:(message:string)=>void;notificationsQuery:ReturnType<typeof useItemDingTalkNotifications>;readOnly?:boolean;
   focusedCommentId:string|null;onClearFocus:()=>void;
 }) {
   const {t,actorLabel,formatTime}=useI18n();
@@ -3352,7 +3228,7 @@ function CommentGroup({idPrefix="",root,replies,visibleCommentIds,item,onReply,o
         <div className="comment-heading">
         <header className="comment-byline"><strong><button type="button" className="comment-author-name" title={names.get(event.id)} onClick={()=>setAuthorName(names.get(event.id) ?? "")}>{names.get(event.id)}</button></strong>
         </header>
-        {!item.transferred && !event.payload.withdrawnAt && <div className="comment-header-actions">
+        {!item.transferred && !readOnly && !event.payload.withdrawnAt && <div className="comment-header-actions">
           <button type="button" className="text-button comment-reply-button" onClick={()=>onReply(event)}><MessageCircleReply size={16} aria-hidden="true" />{t("replyComment")}</button>
           <CommentMoreActions itemKey={item.key} commentId={event.id} onWithdraw={()=>onWithdraw(event.id)} onNotice={onNotice} />
         </div>}
@@ -3364,9 +3240,9 @@ function CommentGroup({idPrefix="",root,replies,visibleCommentIds,item,onReply,o
         {isReply && event.payload.replyToCommentId!==root.id && !visibleCommentIds.includes(String(event.payload.replyToCommentId)) && renderContext(events.find(parent=>parent.id===event.payload.replyToCommentId))}
         <CommentBody payload={event.payload} item={item} />
         <div className="comment-actions">
-          <CommentDingTalkNotifications itemKey={item.key} commentId={event.id} query={notificationsQuery}
+          {!readOnly && <CommentDingTalkNotifications itemKey={item.key} commentId={event.id} query={notificationsQuery}
             hasAudience={Array.isArray(event.payload.mentions) && event.payload.mentions.length>0 || events.some(parent=>parent.id===event.payload.replyToCommentId && parent.accountId && parent.accountId!==event.accountId)}
-            readOnly={Boolean(item.transferred || event.payload.withdrawnAt)} />
+            readOnly={Boolean(item.transferred || event.payload.withdrawnAt)} />}
         </div>
       </div>
     </div>;
@@ -3850,9 +3726,16 @@ function EditItemForm({ item, onSaved, onCancel }: { item: WorkItem; onCancel: (
         attachmentLimit={Math.max(0, MAX_ITEM_ATTACHMENTS - remainingAttachments.length)}
         existingItemKey={item.key}
         existingAttachments={remainingAttachments}
-        onDeleteExistingAttachment={attachmentId => setRemovedAttachments(previous => [...previous, attachmentId])}
-        replacementFiles={replacementFiles}
-        onStageReplacement={(id, file) => setReplacementFiles(previous => ({ ...previous, [id]: file }))}
+        renderExistingAttachment={(attachment) => (
+          <AttachmentCard
+            key={attachment.id}
+            itemKey={item.key}
+            attachment={attachment}
+            onDelete={attachmentId => setRemovedAttachments(previous => [...previous, attachmentId])}
+            replacementFile={replacementFiles[attachment.id]}
+            onStageReplacement={(id, file) => setReplacementFiles(previous => ({ ...previous, [id]: file }))}
+          />
+        )}
       />
       {mutation.isError && <InlineError message={partiallySaved ? `${t("partialItemSave")} ${errorMessage(mutation.error, t("somethingWentWrong"))}` : errorMessage(mutation.error, t("somethingWentWrong"))} />}
       {removedAttachments.length > 0 && <p role="status" className="account-note">{t("stagedAttachmentRemoval", { count: removedAttachments.length })}<button type="button" className="text-button" disabled={mutation.isPending} onClick={() => setRemovedAttachments([])}>{t("undoAttachmentRemoval")}</button></p>}
@@ -3863,328 +3746,6 @@ function EditItemForm({ item, onSaved, onCancel }: { item: WorkItem; onCancel: (
         </button>
       </div>
     </form>
-  );
-}
-
-function WorkItemFields({
-  productId,
-  draft,
-  onDraft,
-  files,
-  onFiles,
-  fileError,
-  attachmentLimit = MAX_ITEM_ATTACHMENTS,
-  existingItemKey,
-  existingAttachments = [],
-  onDeleteExistingAttachment,
-  onExistingAttachmentReplaced,
-  deletingExistingAttachmentId,
-  replacementFiles,
-  onStageReplacement,
-}: {
-  productId: string;
-  draft: CaptureDraft;
-  onDraft: ReactDispatch<SetStateAction<CaptureDraft>>;
-  files: readonly File[];
-  onFiles: (files: readonly File[]) => void;
-  fileError: string | null;
-  attachmentLimit?: number;
-  existingItemKey?: string;
-  existingAttachments?: readonly WorkItemAttachment[];
-  onDeleteExistingAttachment?: ((attachmentId: string) => void) | undefined;
-  onExistingAttachmentReplaced?: (() => void | Promise<void>) | undefined;
-  deletingExistingAttachmentId?: string | undefined;
-  replacementFiles?: Readonly<Record<string, File>>;
-  onStageReplacement?: (id: string, file: File) => void;
-}) {
-  const { priorityLabel, t, typeLabel } = useI18n();
-  const productsQuery = useQuery({ queryKey: ["products"], queryFn: () => api.listProducts() });
-  const canOperate = productsQuery.data?.find(product => product.id === productId)?.access?.canOperate === true;
-  const componentsQuery = useQuery({ queryKey: ["components", productId], queryFn: () => api.listComponents(productId) });
-  const logBytes = diagnosticLogBytes(draft.diagnosticLog);
-  const diagnosticSlots = draft.diagnosticLog.trim() ? 1 : 0;
-  const remainingAttachments = Math.max(0, attachmentLimit - files.length - diagnosticSlots);
-  const attachmentOverflow = files.length + diagnosticSlots > attachmentLimit;
-  const existingLogAttachments = existingAttachments.filter((attachment) => !attachment.commentId && !attachment.transitionEventId && attachment.kind === "log");
-  const existingDocumentAttachments = existingAttachments.filter((attachment) => !attachment.commentId && !attachment.transitionEventId && attachment.kind === "document");
-  const existingArchiveAttachments = existingAttachments.filter((attachment) => !attachment.commentId && !attachment.transitionEventId && attachment.kind === "archive");
-  const existingMediaAttachments = existingAttachments.filter(attachment => !attachment.commentId && !attachment.transitionEventId && isMediaAttachment(attachment));
-  const selectedLogFiles = files.filter(isDiagnosticFile);
-  const selectedDocumentFiles = files.filter(isDocumentFile);
-  const selectedArchiveFiles = files.filter(isArchiveFile);
-  const selectedMediaFiles = files.filter((file) => !isDiagnosticFile(file) && !isDocumentFile(file) && !isArchiveFile(file));
-  const withMediaFiles = (next: readonly File[]) => [...selectedLogFiles, ...selectedDocumentFiles, ...selectedArchiveFiles, ...next];
-  const withDocumentFiles = (next: readonly File[]) => [...selectedLogFiles, ...next, ...selectedArchiveFiles, ...selectedMediaFiles];
-  const withArchiveFiles = (next: readonly File[]) => [...selectedLogFiles, ...selectedDocumentFiles, ...next, ...selectedMediaFiles];
-  const withLogFiles = (next: readonly File[]) => [...next, ...selectedDocumentFiles, ...selectedArchiveFiles, ...selectedMediaFiles];
-  const reportCopy = REPORT_COPY[draft.type];
-  const showsBugFields = draft.type === "bug";
-  const platformRequired = draft.type === "bug" || draft.type === "task";
-  // Pasting a log or stack trace is the exception, not the rule (AND-364): the
-  // block starts folded and opens only when it already holds something, so a
-  // first-time reporter gets a short form and editing never hides a log behind
-  // a closed summary.
-  const diagnosticsOpen = Boolean(draft.diagnosticLog.trim())
-    || selectedLogFiles.length > 0
-    || existingLogAttachments.length > 0;
-
-  const updateDraft = <Key extends keyof CaptureDraft>(key: Key, value: CaptureDraft[Key]) => {
-    onDraft({ ...draft, [key]: value });
-  };
-  const titleMutation = useMutation({
-    mutationFn: () => {
-      if (!canOperate) throw new Error(t("captureReadOnly"));
-      return api.generateTitle(productId, draft.description);
-    },
-    onSuccess: ({ title }) => onDraft((current) => ({ ...current, title })),
-  });
-
-  useEffect(() => {
-    if (!draft.sourceComponentId || !componentsQuery.data) return;
-    const selectedModule = componentsQuery.data.find((component) => component.id === draft.sourceComponentId);
-    if (!selectedModule || (draft.environment.platform && selectedModule.kind !== draft.environment.platform)) {
-      updateDraft("sourceComponentId", "");
-    }
-  }, [componentsQuery.data, draft.environment.platform, draft.sourceComponentId]);
-
-  return (
-    <>
-      <div className="capture-type-grid" aria-label={t("type")}>
-        {ITEM_TYPES.map((value) => {
-          const Icon = TYPE_ICONS[value];
-          return (
-            <button key={value} type="button" className={`capture-type ${draft.type === value ? "active" : ""} type-${value}`} onClick={() => updateDraft("type", value)}>
-              <Icon size={16} /> {typeLabel(value)}
-            </button>
-          );
-        })}
-      </div>
-      <div className="classification-row">
-        <label><FieldLabel required={platformRequired}>{t("platform")}</FieldLabel>
-          <Select
-            value={draft.environment.platform}
-            onChange={(event) => {
-              const platform = event.target.value as EnvironmentDraft["platform"];
-              const selectedModule = componentsQuery.data?.find((component) => component.id === draft.sourceComponentId);
-              onDraft({
-                ...draft,
-                sourceComponentId: selectedModule && selectedModule.kind !== platform ? "" : draft.sourceComponentId,
-                environment: { ...draft.environment, platform },
-              });
-            }}
-            required={platformRequired}
-          >
-            <option value="">{t("selectPlatform")}</option>
-            {COMPONENT_KINDS.map((kind) => <option key={kind} value={kind}>{t(kind)}</option>)}
-          </Select>
-        </label>
-        <label><FieldLabel>{t("sourceComponent")}</FieldLabel>
-          <Select
-            value={draft.sourceComponentId}
-            onChange={(event) => {
-              const sourceComponentId = event.target.value;
-              const kind = componentsQuery.data?.find((component) => component.id === sourceComponentId)?.kind;
-              onDraft({
-                ...draft,
-                sourceComponentId,
-                environment: kind
-                  ? { ...draft.environment, platform: kind }
-                  : draft.environment,
-              });
-            }}
-            disabled={componentsQuery.isLoading || !draft.environment.platform}
-          >
-            <option value="">{t("allModules")}</option>
-            {(componentsQuery.data ?? []).filter((component) => component.kind === draft.environment.platform).map((component) => <option key={component.id} value={component.id}>{component.name}</option>)}
-          </Select>
-        </label>
-        <label><FieldLabel>{t("priority")}</FieldLabel><Select value={draft.priority} onChange={(event) => updateDraft("priority", event.target.value as WorkItemPriority)}>{ITEM_PRIORITIES.map((value) => <option key={value} value={value}>{priorityLabel(value)}</option>)}</Select></label>
-      </div>
-      <div className="ai-title-field">
-        <label><FieldLabel required>{t("whatNeedsAttention")}</FieldLabel><input value={draft.title} onChange={(event) => updateDraft("title", event.target.value)} placeholder={t("clearSpecificTitle")} required autoFocus data-initial-focus /></label>
-        <button type="button" className="secondary-button" disabled={!canOperate || titleMutation.isPending || !draft.description.trim()}
-          title={!canOperate ? t("captureReadOnly") : !draft.description.trim() ? t("aiTitleNeedsContent") : undefined}
-          onClick={() => titleMutation.mutate()}>
-          {titleMutation.isPending ? t("aiTitleGenerating") : t("aiTitleButton")}
-        </button>
-      </div>
-      <small className="ai-title-privacy">{t("aiTitlePrivacy")}</small>
-      {titleMutation.isError && <InlineError message={localizedErrorText(titleMutation.error, t)} />}
-      <section className="attachment-picker-block capture-attachment-block">
-        <div className="capture-attachment-heading">
-          <div className="capture-attachment-copy"><strong><FieldLabel>{t("mediaAttachments")}</FieldLabel></strong><p>{t("mediaAttachmentsHelp")}</p></div>
-          <FilePicker
-            files={selectedMediaFiles}
-            onFiles={(nextMediaFiles) => onFiles(withMediaFiles(nextMediaFiles))}
-            remaining={remainingAttachments}
-            showSelectedFiles={false}
-            accept="image/png,image/jpeg,image/webp,image/gif,image/heic,video/mp4,video/quicktime,video/webm"
-            allowedExtensions={["png", "jpg", "jpeg", "webp", "gif", "heic", "mp4", "mov", "webm"]}
-            buttonLabel={t("add")}
-            addIcon
-          />
-        </div>
-        {existingItemKey && existingMediaAttachments.length > 0 && (
-          <div className="attachment-grid compact-attachment-grid">{existingMediaAttachments.map((attachment) => (
-            <AttachmentCard
-              key={attachment.id}
-              itemKey={existingItemKey}
-              attachment={attachment}
-              onDelete={onDeleteExistingAttachment}
-              onReplaced={onExistingAttachmentReplaced}
-              replacementFile={replacementFiles?.[attachment.id]}
-              onStageReplacement={onStageReplacement}
-              deleting={deletingExistingAttachmentId === attachment.id}
-            />
-          ))}</div>
-        )}
-        {selectedMediaFiles.length > 0 && (
-          <SelectedFilePreviews
-            files={selectedMediaFiles}
-            onFiles={(nextMediaFiles) => onFiles(withMediaFiles(nextMediaFiles))}
-            startingNumbers={{
-              image: Math.max(0, ...existingAttachments.filter((attachment) => attachment.kind === "image").map((attachment) => attachment.displayNumber)),
-              video: Math.max(0, ...existingAttachments.filter((attachment) => attachment.kind === "video").map((attachment) => attachment.displayNumber)),
-            }}
-          />
-        )}
-      </section>
-      <section className="attachment-picker-block capture-attachment-block">
-        <div className="capture-attachment-heading">
-          <div className="capture-attachment-copy"><strong><FieldLabel>{t("documentAttachments")}</FieldLabel></strong><p>{t("documentAttachmentsHelp")}</p></div>
-          <FilePicker
-            files={selectedDocumentFiles}
-            onFiles={(nextDocumentFiles) => onFiles(withDocumentFiles(nextDocumentFiles))}
-            remaining={remainingAttachments}
-            showCamera={false}
-            showSelectedFiles
-            accept=".md,.txt,.csv,.json,.pdf,.html,text/markdown,text/plain,text/csv,application/json,application/pdf,text/html"
-            allowedExtensions={["md", "txt", "csv", "json", "pdf", "html"]}
-            buttonLabel={t("add")}
-            addIcon
-          />
-        </div>
-        {existingItemKey && existingDocumentAttachments.length > 0 && (
-          <div className="attachment-grid compact-attachment-grid">{existingDocumentAttachments.map((attachment) => (
-            <AttachmentCard
-              key={attachment.id}
-              itemKey={existingItemKey}
-              attachment={attachment}
-              onDelete={onDeleteExistingAttachment}
-              onReplaced={onExistingAttachmentReplaced}
-              deleting={deletingExistingAttachmentId === attachment.id}
-            />
-          ))}</div>
-        )}
-      </section>
-      <section className="attachment-picker-block capture-attachment-block">
-        <div className="capture-attachment-heading">
-          <div className="capture-attachment-copy"><strong><FieldLabel>{t("archiveAttachments")}</FieldLabel></strong><p>{t("archiveAttachmentsHelp")}</p></div>
-          <FilePicker
-            files={selectedArchiveFiles}
-            onFiles={(nextArchiveFiles) => onFiles(withArchiveFiles(nextArchiveFiles))}
-            remaining={remainingAttachments}
-            showCamera={false}
-            showSelectedFiles
-            accept=".zip,application/zip,application/x-zip-compressed"
-            allowedExtensions={["zip"]}
-            buttonLabel={t("add")}
-            addIcon
-          />
-        </div>
-        {existingItemKey && existingArchiveAttachments.length > 0 && (
-          <div className="attachment-grid compact-attachment-grid">{existingArchiveAttachments.map((attachment) => (
-            <AttachmentCard
-              key={attachment.id}
-              itemKey={existingItemKey}
-              attachment={attachment}
-              onDelete={onDeleteExistingAttachment}
-              onReplaced={onExistingAttachmentReplaced}
-              deleting={deletingExistingAttachmentId === attachment.id}
-            />
-          ))}</div>
-        )}
-      </section>
-      {attachmentOverflow && <InlineError message={t("tooManyFiles", { count: attachmentLimit })} />}
-      {fileError && <InlineError message={fileError} />}
-      <section className="report-input-block">
-        <header><strong>{t(reportCopy.title)}</strong><small>{t(reportCopy.help)}</small></header>
-        <label><FieldLabel required>{t(reportCopy.overview)}</FieldLabel><AutoGrowTextarea value={draft.description} onChange={(event) => updateDraft("description", event.target.value)} placeholder={t(reportCopy.placeholder)} rows={4} maxLength={20_000} required /></label>
-        {showsBugFields && (
-          <details className="bug-optional-details">
-            <summary><ChevronRight size={16} /><span>{t("bugOptionalDetails")}</span></summary>
-            <div className="report-field-grid">
-            <label><FieldLabel>{t("reproductionSteps")}</FieldLabel><AutoGrowTextarea value={draft.reproductionSteps} onChange={(event) => updateDraft("reproductionSteps", event.target.value)} placeholder={t("reproductionStepsPlaceholder")} rows={5} maxLength={20_000} /></label>
-            <label><FieldLabel>{t("expectedOutcome")}</FieldLabel><AutoGrowTextarea value={draft.expectedOutcome} onChange={(event) => updateDraft("expectedOutcome", event.target.value)} placeholder={t("expectedOutcomePlaceholder")} rows={5} maxLength={20_000} /></label>
-            <label><FieldLabel>{t("impact")}</FieldLabel><AutoGrowTextarea value={draft.impact} onChange={(event) => updateDraft("impact", event.target.value)} placeholder={t("impactPlaceholder")} rows={3} maxLength={10_000} /></label>
-            <label><FieldLabel>{t("occurrenceFrequency")}</FieldLabel>
-              <Select value={draft.occurrenceFrequency} onChange={(event) => updateDraft("occurrenceFrequency", event.target.value as WorkItemOccurrenceFrequency)}>
-                <option value="unknown">{t("frequencyUnknown")}</option>
-                <option value="once">{t("frequencyOnce")}</option>
-                <option value="intermittent">{t("frequencyIntermittent")}</option>
-                <option value="frequent">{t("frequencyFrequent")}</option>
-                <option value="always">{t("frequencyAlways")}</option>
-              </Select>
-            </label>
-            </div>
-          </details>
-        )}
-      </section>
-      <details className="diagnostic-input-block" open={diagnosticsOpen}>
-        <summary className="diagnostic-input-heading">
-          <span className="diagnostic-input-title">
-            <ChevronRight size={16} />
-            <span><strong>{t("diagnostics")}</strong><small>{t("diagnosticsHelp")}</small></span>
-          </span>
-          <FilePicker
-            files={selectedLogFiles}
-            onFiles={(nextLogFiles) => onFiles(withLogFiles(nextLogFiles))}
-            remaining={remainingAttachments}
-            showCamera={false}
-            accept=".log,text/plain"
-            allowedExtensions={["log"]}
-            buttonLabel={t("uploadLog")}
-            addIcon
-          />
-        </summary>
-        <label><FieldLabel>{t("diagnosticLog")}</FieldLabel>
-          <textarea
-            className="diagnostic-log-input"
-            value={draft.diagnosticLog}
-            onChange={(event) => updateDraft("diagnosticLog", event.target.value)}
-            placeholder={t("diagnosticLogPlaceholder")}
-            rows={5}
-            spellCheck={false}
-          />
-        </label>
-        <footer>
-          <small className={logBytes > MAX_DIAGNOSTIC_LOG_BYTES ? "over-limit" : ""}>{t("pastedLogSize", { size: formatBytes(logBytes), limit: formatBytes(MAX_DIAGNOSTIC_LOG_BYTES) })}</small>
-          {draft.diagnosticLog && <button type="button" className="text-button" onClick={() => updateDraft("diagnosticLog", "")}><X size={13} /> {t("clearLog")}</button>}
-        </footer>
-        {logBytes > MAX_DIAGNOSTIC_LOG_BYTES && <InlineError message={t("diagnosticTooLarge")} />}
-        {existingItemKey && existingLogAttachments.length > 0 && (
-          <div className="attachment-grid compact-attachment-grid">{existingLogAttachments.map((attachment) => (
-            <AttachmentCard
-              key={attachment.id}
-              itemKey={existingItemKey}
-              attachment={attachment}
-              onDelete={onDeleteExistingAttachment}
-              deleting={deletingExistingAttachmentId === attachment.id}
-            />
-          ))}</div>
-        )}
-      </details>
-      {/* Folded by default (AND-364): the web context is attached on its own,
-          so an opened block of empty version fields only took up space. It
-          still opens when it holds manually filled details. */}
-      <details className="capture-optional" open={hasOptionalEnvironmentDetails(draft.environment)}>
-        <summary><ChevronRight size={16} /> <span><strong>{t("optionalDetails")}</strong><small>{t("optionalDetailsHelp")}</small></span></summary>
-        <div className="capture-optional-body">
-          <EnvironmentFields value={draft.environment} onChange={(value) => updateDraft("environment", value)} />
-          {draft.environment.platform === "web" && <p className="auto-context-note">{t("autoWebContext")}</p>}
-        </div>
-      </details>
-    </>
   );
 }
 
@@ -4349,203 +3910,8 @@ function CaptureForm({ product, onCreated }: { product: Product; onCreated: (ite
   );
 }
 
-function EnvironmentFields({ value, onChange }: { value: EnvironmentDraft; onChange: (value: EnvironmentDraft) => void }) {
-  const { t } = useI18n();
-  const update = (field: keyof EnvironmentDraft, nextValue: string) => onChange({ ...value, [field]: nextValue });
-  return (
-    <fieldset className="environment-fields">
-      <legend>{t("environmentDetails")}</legend>
-      <p>{t("environmentHelp")}</p>
-      <div className="field-row">
-        <label>{t("appVersion")}<input value={value.appVersion} onChange={(event) => update("appVersion", event.target.value)} placeholder={t("notAvailableYet")} maxLength={500} /></label>
-        <label>{t("buildNumber")}<input value={value.buildNumber} onChange={(event) => update("buildNumber", event.target.value)} placeholder={t("notAvailableYet")} maxLength={500} /></label>
-        <label>{t("osVersion")}<input value={value.osVersion} onChange={(event) => update("osVersion", event.target.value)} placeholder={t("notAvailableYet")} maxLength={500} /></label>
-        <label>{t("deviceModel")}<input value={value.deviceModel} onChange={(event) => update("deviceModel", event.target.value)} placeholder={t("notAvailableYet")} maxLength={500} /></label>
-        <label>{t("sourceRevision")}<input value={value.sourceRevision} onChange={(event) => update("sourceRevision", event.target.value)} placeholder={t("notAvailableYet")} maxLength={500} /></label>
-      </div>
-    </fieldset>
-  );
-}
-
 // The drag overlay itself lives in file-drop-overlay.tsx, shared with the
 // agent console reply box (AND-234); the + picker below stays local.
-
-function FilePicker({
-  files = [],
-  onFiles,
-  remaining,
-  disabled = false,
-  showSelectedFiles = true,
-  showCamera = true,
-  accept = "image/png,image/jpeg,image/webp,image/gif,image/heic,video/mp4,video/quicktime,video/webm,.log,.md,.txt,.csv,.json,.pdf,.html,.zip",
-  allowedExtensions,
-  buttonLabel,
-  addIcon = false,
-}: {
-  files?: readonly File[];
-  onFiles: (files: readonly File[]) => void;
-  remaining: number;
-  disabled?: boolean;
-  showSelectedFiles?: boolean;
-  showCamera?: boolean;
-  accept?: string;
-  allowedExtensions?: readonly string[];
-  buttonLabel?: string;
-  addIcon?: boolean;
-}) {
-  const { t } = useI18n();
-  const [error, setError] = useState<string | null>(null);
-
-  const addFiles = (selected: FileList | null) => {
-    if (!selected) return;
-    const incoming = Array.from(selected);
-    if (incoming.length > remaining) {
-      setError(t("tooManyFiles", { count: remaining }));
-      return;
-    }
-    const accepted: File[] = [];
-    let nextError: string | null = null;
-    for (const file of incoming) {
-      const validation = validateAttachment(file, allowedExtensions);
-      if (!validation.valid && validation.reason === "unsupported") {
-        nextError ??= t("unsupportedFile", { filename: file.name });
-        continue;
-      }
-      if (!validation.valid && validation.reason === "too-large") {
-        nextError ??= t("fileTooLarge", { filename: file.name, size: validation.limitMiB });
-        continue;
-      }
-      accepted.push(file);
-    }
-    setError(nextError);
-    if (accepted.length > 0) onFiles(files.length > 0 ? [...files, ...accepted] : accepted);
-  };
-
-  return (
-    <div className="file-picker">
-      <div className="file-picker-actions">
-        <label className={`secondary-button file-picker-button ${disabled || remaining < 1 ? "disabled" : ""}`}>
-          {disabled ? <LoaderCircle className="spin" size={16} /> : addIcon ? <Plus size={16} /> : <Paperclip size={16} />}
-          {buttonLabel ?? t("addAttachments")}
-          <input
-            type="file"
-            multiple
-            accept={accept}
-            disabled={disabled || remaining < 1}
-            onChange={(event) => {
-              addFiles(event.currentTarget.files);
-              event.currentTarget.value = "";
-            }}
-          />
-        </label>
-        {showCamera && <label className={`secondary-button file-picker-button mobile-only ${disabled || remaining < 1 ? "disabled" : ""}`}>
-          <Camera size={16} /> {t("takePhoto")}
-          <input
-            type="file"
-            accept="image/*"
-            capture="environment"
-            disabled={disabled || remaining < 1}
-            onChange={(event) => {
-              addFiles(event.currentTarget.files);
-              event.currentTarget.value = "";
-            }}
-          />
-        </label>}
-      </div>
-      {showSelectedFiles && files.length > 0 && (
-        <div className="selected-files">
-          {files.map((file, index) => (
-            <span key={`${file.name}-${file.lastModified}-${index}`}>
-              <Paperclip size={12} /> {file.name} <small>{formatBytes(file.size)}</small>
-              <button type="button" onClick={() => onFiles(files.filter((_, fileIndex) => fileIndex !== index))} aria-label={t("removeFile", { filename: file.name })}><X size={12} /></button>
-            </span>
-          ))}
-        </div>
-      )}
-      {error && <InlineError message={error} />}
-    </div>
-  );
-}
-
-function SelectedFilePreviews({
-  files,
-  onFiles,
-  startingNumbers = { image: 0, video: 0 },
-}: {
-  files: readonly File[];
-  onFiles: (files: readonly File[]) => void;
-  startingNumbers?: Readonly<Record<"image" | "video", number>>;
-}) {
-  const { t } = useI18n();
-  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
-  const [annotatingIndex, setAnnotatingIndex] = useState<number | null>(null);
-  const previews = useMemo(() => {
-    const nextNumber = { image: startingNumbers.image, video: startingNumbers.video };
-    return files.map((file) => {
-      const kind = mediaKindForFile(file);
-      nextNumber[kind] += 1;
-      return { file, kind, displayNumber: nextNumber[kind], url: URL.createObjectURL(file) };
-    });
-  }, [files, startingNumbers.image, startingNumbers.video]);
-
-  useEffect(() => () => {
-    for (const preview of previews) URL.revokeObjectURL(preview.url);
-  }, [previews]);
-
-  useEffect(() => {
-    if (previewIndex !== null && previewIndex >= previews.length) setPreviewIndex(null);
-  }, [previewIndex, previews.length]);
-
-  const activePreview = previewIndex === null ? undefined : previews[previewIndex];
-  return (
-    <div className="selected-preview-section">
-      <p>{t("selectedAttachments", { count: files.length })}</p>
-      <div className="selected-preview-grid">
-        {previews.map(({ file, url, kind, displayNumber }, index) => {
-          const isImage = kind === "image";
-          const isVideo = kind === "video";
-          const referenceLabel = mediaNumberLabel(kind, displayNumber, t);
-          return (
-            <article className="selected-preview-card" key={`${file.name}-${file.size}-${file.lastModified}`}>
-              <button type="button" className="selected-preview-media" onClick={() => setPreviewIndex(index)} aria-label={t("previewAttachment", { filename: file.name })}>
-                <small className="media-number-badge">{referenceLabel}</small>
-                {isImage && <img src={url} alt="" />}
-                {isVideo && <video src={url} muted playsInline preload="metadata" />}
-                <em>{t("preview")}</em>
-              </button>
-              <footer>
-                <span><strong>{referenceLabel} · {file.name}</strong><small>{formatBytes(file.size)}</small></span>
-                {isImage && isAnnotatableImage(file) && (
-                  <button type="button" onClick={() => setAnnotatingIndex(index)} aria-label={t("annotateTitle")} title={t("annotate")}><Highlighter size={14} /></button>
-                )}
-                <button type="button" onClick={() => onFiles(files.filter((_, fileIndex) => fileIndex !== index))} aria-label={t("removeFile", { filename: file.name })}><X size={14} /></button>
-              </footer>
-            </article>
-          );
-        })}
-      </div>
-      {activePreview && (
-        <MediaLightbox
-          title={mediaNumberLabel(activePreview.kind, activePreview.displayNumber, t)}
-          onClose={() => setPreviewIndex(null)}
-        >
-          {activePreview.kind === "image" && <ZoomableImage src={activePreview.url} alt={activePreview.file.name} />}
-          {activePreview.kind === "video" && <video src={activePreview.url} controls playsInline preload="metadata" />}
-        </MediaLightbox>
-      )}
-      {annotatingIndex !== null && files[annotatingIndex] && (
-        <ImageAnnotator
-          file={files[annotatingIndex]}
-          onCancel={() => setAnnotatingIndex(null)}
-          onSave={(annotated) => {
-            onFiles(files.map((current, fileIndex) => fileIndex === annotatingIndex ? annotated : current));
-            setAnnotatingIndex(null);
-          }}
-        />
-      )}
-    </div>
-  );
-}
 
 function EnvironmentCell({ field }: { field: EnvironmentField }) {
   const { t } = useI18n();
@@ -5477,10 +4843,6 @@ function PlayableVideo({
   );
 }
 
-
-function InlineError({ message, role }: { message: string; role?: "alert" }) {
-  return <div className="inline-error" role={role}><CirclePause size={16} /><span>{message}</span></div>;
-}
 
 function ListSkeleton() {
   const { t } = useI18n();

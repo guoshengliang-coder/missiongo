@@ -215,7 +215,7 @@ describe("cross-project collaboration", () => {
     expect(() => c.submit(a, d.id, 2, randomUUID())).toThrow();
     expect(app.missionGoStore.listWorkItems({ productId: pb })).toHaveLength(0);
   });
-  it("keeps target internals private while sharing approved context", async () => {
+  it("opens only the linked source item to the receiving side, read-only and scoped", async () => {
     const d = send();
     app.missionGoStore.createComment({
       itemKey: d.targetKey,
@@ -224,13 +224,26 @@ describe("cross-project collaboration", () => {
       body: { text: "Private target investigation" },
       attribution: { accountId: b },
     });
+    const other = app.missionGoStore.createWorkItem({
+      productId: pa,
+      title: "Other source item",
+      description: "Not part of the request",
+      type: "task",
+      priority: "normal",
+      status: "ready",
+      environment: { platform: "web" },
+      attribution: { accountId: a },
+    });
     const shared = await app.inject({
       url: `/api/v1/collaboration/${d.id}`,
       headers: { cookie: cookies[a]! },
     });
     expect(shared.statusCode).toBe(200);
+    // The collaboration payload still carries only the approved request; the
+    // source item is read through its own, item-scoped route.
     expect(shared.body).not.toContain("Private target investigation");
     expect(shared.body).not.toContain("Private source context");
+    // The source side still cannot read the target project's internals.
     for (const suffix of ["", "/timeline", "/attachments"]) {
       expect(
         (
@@ -241,14 +254,162 @@ describe("cross-project collaboration", () => {
         ).statusCode,
       ).toBe(404);
     }
+    // The receiving side reads the linked source item, without the project.
+    const detail = await app.inject({
+      url: `/api/v1/items/${source.key}`,
+      headers: { cookie: cookies[b]! },
+    });
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json()).toMatchObject({
+      key: source.key,
+      description: "Private source context",
+      access: { canOperate: false, readOnlySource: { productName: "Application" } },
+    });
+    for (const suffix of ["/timeline", "/attachments"]) {
+      expect(
+        (
+          await app.inject({
+            url: `/api/v1/items/${source.key}${suffix}`,
+            headers: { cookie: cookies[b]! },
+          })
+        ).statusCode,
+      ).toBe(200);
+    }
+    // Execution history is part of the content; the source roster and
+    // management stay closed.
+    const delivery = await app.inject({
+      url: `/api/v1/items/${source.key}/delivery`,
+      headers: { cookie: cookies[b]! },
+    });
+    expect(delivery.statusCode).toBe(200);
+    expect(delivery.json()).toMatchObject({
+      canManage: false,
+      canManageBuilder: false,
+      candidates: [],
+      performers: [],
+      readOnlySource: true,
+    });
     expect(
       (
         await app.inject({
-          url: `/api/v1/items/${source.key}`,
+          url: `/api/v1/items/${d.targetKey}/delivery`,
+          headers: { cookie: cookies[a]! },
+        })
+      ).statusCode,
+    ).toBe(404);
+    // Only the linked item: the project list, its other items and every write
+    // remain closed.
+    expect(
+      (
+        await app.inject({
+          url: `/api/v1/items?productId=${pa}`,
           headers: { cookie: cookies[b]! },
         })
       ).statusCode,
     ).toBe(404);
+    expect(
+      (
+        await app.inject({
+          url: `/api/v1/items/${other.key}`,
+          headers: { cookie: cookies[b]! },
+        })
+      ).statusCode,
+    ).toBe(404);
+    expect(
+      (
+        await post(`/api/v1/items/${source.key}/comments`, b, {
+          bodyKind: "free",
+          text: "should not be written",
+        })
+      ).statusCode,
+    ).toBe(404);
+  });
+  it("carries the sender's report and environment and accepts the request's own files", async () => {
+    const d = c.prepare(
+      a,
+      source.key,
+      {
+        grantId,
+        title: "With evidence",
+        description: "Reproduced on device",
+        acceptance: "No crash",
+        attachmentIds: [],
+        type: "bug",
+        priority: "high",
+        report: {
+          overview: "Reproduced on device",
+          reproductionSteps: "1. Open the screen",
+          expectedOutcome: "No crash",
+          occurrenceFrequency: "always",
+        },
+        environment: {
+          platform: "android",
+          appVersion: "1.2.3",
+          deviceModel: "Pixel",
+        },
+      },
+      "human",
+    );
+    const result = c.submit(a, d.id, d.version, randomUUID());
+    const target = app.missionGoStore.getWorkItem(result.targetKey);
+    expect(target.report).toMatchObject({
+      reproductionSteps: "1. Open the screen",
+      occurrenceFrequency: "always",
+    });
+    expect(target.environment).toMatchObject({
+      platform: "android",
+      appVersion: "1.2.3",
+      deviceModel: "Pixel",
+    });
+    const upload = (uploadId: string) =>
+      app.inject({
+        method: "POST",
+        url: `/api/v1/items/${result.targetKey}/attachments`,
+        headers: {
+          cookie: cookies[a]!,
+          "content-type": "application/octet-stream",
+          "x-missiongo-filename": "evidence.txt",
+          "x-missiongo-content-type": "text/plain",
+          "x-missiongo-upload-id": uploadId,
+        },
+        payload: Buffer.from("request evidence"),
+      });
+    // The requester may add the request's own material without target operate.
+    expect((await upload("request-file")).statusCode).toBe(201);
+    expect((await upload("request-file")).statusCode).toBe(201);
+    expect(app.missionGoStore.listAttachments(result.targetKey)).toHaveLength(1);
+    // The narrow upload never becomes target-project read.
+    expect(
+      (
+        await app.inject({
+          url: `/api/v1/items/${result.targetKey}`,
+          headers: { cookie: cookies[a]! },
+        })
+      ).statusCode,
+    ).toBe(404);
+    c.withdraw(
+      a,
+      result.id,
+      c.detail(a, result.id).revision,
+      "withdrawn after delivery",
+      "withdraw-upload",
+    );
+    expect((await upload("after-withdraw")).statusCode).toBe(404);
+  });
+  it("ends the linked read when access is revoked, restored or the request withdrawn", async () => {
+    const d = send();
+    const read = () =>
+      app.inject({
+        url: `/api/v1/items/${source.key}`,
+        headers: { cookie: cookies[b]! },
+      });
+    expect((await read()).statusCode).toBe(200);
+    c.revoke(admin.id, d.id, "revoked for test", "revoke-read");
+    expect((await read()).statusCode).toBe(404);
+    c.restoreAccess(admin.id, d.id, "restored for test", "restore-read");
+    expect((await read()).statusCode).toBe(200);
+    c.withdraw(a, d.id, c.detail(a, d.id).revision, "withdrawn for test", "withdraw-read");
+    expect((await read()).statusCode).toBe(404);
   });
   it("notifies at pending verification but only the source human accepts and releases", async () => {
     const d = send();
@@ -821,9 +982,15 @@ it("MCP only prepares drafts and reads narrow shared context under the current A
     (await call(b, "get_collaboration", { requestId: relation.id })).result
       .structuredContent.request.description,
   ).toBe("Approved evidence");
-  expect(
-    (await call(b, "get_item_context", { itemKey: source.key })).result.isError,
-  ).toBe(true);
+  const linked = await call(b, "get_item_context", { itemKey: source.key });
+  expect(linked.result?.isError).toBeUndefined();
+  expect(linked.result?.structuredContent?.item?.description).toBe(
+    "Private source context",
+  );
+  expect(linked.result?.structuredContent?.scopeNotice).toBeTruthy();
+  // The linked read is item-scoped: the source project's module list is not
+  // handed over with it.
+  expect(linked.result?.structuredContent?.components ?? []).toEqual([]);
   app.missionGoAccounts.replacePermissions(b, [
     { productId: pb, canView: true, canOperate: true, canUseAi: false },
   ]);

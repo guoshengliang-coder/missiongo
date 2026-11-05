@@ -63,8 +63,12 @@ describe("reply composers", () => {
   });
 
   it("leaves the long-form textareas on Enter-as-newline", () => {
+    // The item form moved to its own module (AND-406); both files make up the
+    // report/comment textareas this test covers.
     const appSource = readFileSync(fileURLToPath(new URL("./App.tsx", import.meta.url)), "utf8");
-    const fields = appSource.match(/<AutoGrowTextarea\b[\s\S]*?\/>/g) ?? [];
+    const formSource = readFileSync(fileURLToPath(new URL("./work-item-form.tsx", import.meta.url)), "utf8");
+    const fields = [appSource, formSource]
+      .flatMap(source => source.match(/<AutoGrowTextarea\b[\s\S]*?\/>/g) ?? []);
     const commentField = fields.find(field => field.includes('id={`${idPrefix}comment-draft`}'));
     expect(commentField).toContain("submitOnEnter");
     const reportFields = fields.filter(field => field !== commentField);
