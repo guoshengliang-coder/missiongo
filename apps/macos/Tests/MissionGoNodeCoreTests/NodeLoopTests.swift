@@ -18,6 +18,13 @@ private final class FakeAPI: NodeAPI, @unchecked Sendable {
     let stopResultFailures = Locked(0)
     let rejectedSessionId = Locked<String?>(nil)
     let attachmentData = Locked<[String: Data]>([:])
+    let historyList = Locked<[AgentHistoryJob]>([])
+    let historyReports = Locked<[AgentHistoryResult]>([])
+    func historyJobs() async throws -> [AgentHistoryJob] { historyList.current }
+    func reportHistory(id: String, result: AgentHistoryResult) async throws {
+        historyReports.withLock { $0.append(result) }
+        historyList.withLock { $0.removeAll { $0.id == id } }
+    }
     let queue: Locked<[Result<DispatchRequest?, Error>]>
     let heartbeatResult: Locked<Result<HeartbeatReply, Error>>
     let resultReportError = Locked<APIError?>(nil)
@@ -177,6 +184,13 @@ private final class SlowCodexAdapter: AgentAdapter {
 
 private final class BlockedMirrorAdapter: AgentAdapter {
     let kind = "codex"
+    let historyStarted = Locked(false)
+    let historyRelease = Locked(true)
+    func historyPage(sessionRef: String, cursor: String) async throws -> AgentHistoryResult {
+        historyStarted.withLock { $0 = true }
+        while !historyRelease.current { try? await Task.sleep(nanoseconds: 10_000_000) }
+        return AgentHistoryResult(messages: [])
+    }
     let blockedId: String
     let started = Locked(false)
     let release = Locked(false)
@@ -189,6 +203,9 @@ private final class BlockedMirrorAdapter: AgentAdapter {
             interruptions.withLock { $0.append(command.id) }
             return AgentSessionReport(status: "idle", stopConfirmed: true, messages: [],
                 commandId: command.id, commandStatus: "delivered", turnActive: false)
+        }
+        if let command = session.command {
+            return AgentSessionReport(status: "active", messages: [], commandId: command.id, commandStatus: "delivered")
         }
         if session.id == blockedId {
             started.withLock { $0 = true }
@@ -317,6 +334,31 @@ final class NodeLoopTests: XCTestCase {
         XCTAssertNil(report.turnActive)
         XCTAssertNil(report.observedAt)
         XCTAssertTrue(report.commandError?.contains("终止尚未确认") == true)
+    }
+
+    func testHistoricalBackfillCannotBlockAReplyOrAnExactTurnStop() async throws {
+        let api = FakeAPI(claims: [])
+        api.historyList.withLock { $0 = [AgentHistoryJob(id: "history-page", sessionRef: "thread", agentKind: "codex", cursor: "older")] }
+        api.sessionList.withLock { $0 = [NodeAgentSession(id: "target", sessionRef: "thread", status: "active",
+            command: AgentSessionCommand(id: "reply", text: "Continue"))] }
+        let adapter = BlockedMirrorAdapter(blockedId: "unused")
+        adapter.historyRelease.withLock { $0 = false }
+        let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "Fixture", timing: snapshotTiming(), log: { _ in })
+        let task = Task { try await loop.run() }
+        await waitUntil { adapter.historyStarted.current }
+        await waitUntil { api.sessionReports.current.contains { $0.1.commandId == "reply" && $0.1.commandStatus == "delivered" } }
+        let repliedWhileHistoryBlocked = api.sessionReports.current.contains { $0.1.commandId == "reply" && $0.1.commandStatus == "delivered" }
+        api.sessionList.withLock { $0 = [NodeAgentSession(id: "target", sessionRef: "thread", status: "active",
+            command: AgentSessionCommand(id: "stop", kind: "interrupt", text: "Stop", turnId: "exact-turn"))] }
+        await waitUntil { api.sessionReports.current.contains { $0.1.stopConfirmed == true } }
+        let stoppedWhileHistoryBlocked = api.sessionReports.current.contains { $0.1.stopConfirmed == true }
+        XCTAssertTrue(api.historyReports.current.isEmpty)
+        adapter.historyRelease.withLock { $0 = true }
+        await waitUntil { !api.historyReports.current.isEmpty }
+        task.cancel(); try await task.value
+        XCTAssertTrue(repliedWhileHistoryBlocked)
+        XCTAssertTrue(stoppedWhileHistoryBlocked)
+        XCTAssertEqual(adapter.interruptions.current, ["stop"])
     }
 
     func testStopsBypassBlockedCodexReadsAndDiscardPreStopMirrors() async throws {

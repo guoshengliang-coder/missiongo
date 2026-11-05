@@ -25,6 +25,8 @@ public protocol AgentAdapter: Sendable {
     /// one reply the server has queued for it.
     func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport
     /// Read the exact transcript without delivering input, restoring or launching a session.
+    func historyPage(sessionRef: String, cursor: String) async throws -> AgentHistoryResult
+    func artifactMessages(sessionRef: String, sourceId: String) async throws -> [AgentSessionMessage]
     func artifactMessages(sessionRef: String) async throws -> [AgentSessionMessage]
     /// The models a dispatch may choose for this agent, for the heartbeat.
     /// nil for an adapter that cannot take a model at all. Any CLI probe must
@@ -34,6 +36,12 @@ public protocol AgentAdapter: Sendable {
 }
 
 public extension AgentAdapter {
+    func historyPage(sessionRef: String, cursor: String) async throws -> AgentHistoryResult {
+        throw AgentArtifactError.unsupported
+    }
+    func artifactMessages(sessionRef: String, sourceId: String) async throws -> [AgentSessionMessage] {
+        try await artifactMessages(sessionRef: sessionRef)
+    }
     func artifactMessages(sessionRef: String) async throws -> [AgentSessionMessage] {
         throw AgentArtifactError.nodeUnavailable
     }

@@ -322,6 +322,11 @@ export class McpAgentSessionReads {
     const best = records.reduce((a, b) => (AVAILABILITY_RANK[b.contentAvailability] > AVAILABILITY_RANK[a.contentAvailability] ? b : a));
     const lastSyncedAt = records.flatMap((record) => record.lastSyncedAt ? [record.lastSyncedAt] : []).sort().at(-1);
     const knownGaps = [...new Set(records.flatMap((record) => record.knownGaps))];
+    if (members.some(member => this.store.database.connection.prepare(
+      "SELECT 1 FROM agent_history_sources WHERE account_id=? AND session_id=? AND (next_id IS NOT NULL OR error IS NOT NULL)",
+    ).get(accountId, member.agentSessionId ?? member.id))) {
+      knownGaps.push("This native conversation uses recent-summary synchronization. Earlier history may require interactive pagination in MissionGo or reading the original Codex conversation; this response does not prove the full native history was read.");
+    }
     if (truncated) knownGaps.push(`Only the newest ${MAX_CONVERSATION_MESSAGES} messages were read; the full native history is longer.`);
     const primary = orderedMembers[0]!;
     const snapshot = primary.source === "external"

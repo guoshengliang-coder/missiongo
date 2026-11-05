@@ -489,8 +489,8 @@ final class WebSocketFrameTests: XCTestCase {
 }
 
 final class CodexAppServerControlTests: XCTestCase {
-    func testOversizedHistoryUsesRecentPagesAndBacksOffFullReads() async throws {
-        let server = try FakeAppServer(connections: 3, rawRespond: { message in
+    func testOrdinaryHistoryAlwaysUsesSummaryPagesWithoutAFullRead() async throws {
+        let server = try FakeAppServer(connections: 2, rawRespond: { message in
             let params = message["params"] as? [String: Any]
             guard message["method"] as? String == "thread/read", params?["includeTurns"] as? Bool == true else { return nil }
             // Advertise an oversized frame without allocating its payload.
@@ -523,13 +523,13 @@ final class CodexAppServerControlTests: XCTestCase {
         server.waitUntilDone()
         let reads = server.received.current.compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
             .filter { $0["method"] as? String == "thread/read" }
-        XCTAssertEqual(reads.filter { ($0["params"] as? [String: Any])?["includeTurns"] as? Bool == true }.count, 1)
+        XCTAssertEqual(reads.filter { ($0["params"] as? [String: Any])?["includeTurns"] as? Bool == true }.count, 0)
         XCTAssertEqual(server.params(of: "thread/turns/list")?["itemsView"] as? String, "summary")
         XCTAssertFalse(server.methods.contains("thread/resume"))
     }
 
     func testOversizedHistoryOnOldServerRetainsLiveMetadata() async throws {
-        let server = try FakeAppServer(connections: 2, rawRespond: { message in
+        let server = try FakeAppServer(connections: 1, rawRespond: { message in
             if (message["params"] as? [String: Any])?["includeTurns"] as? Bool == true {
                 return [0x81, 127, 0, 0, 0, 0, 1, 0, 0, 1]
             }
@@ -550,7 +550,7 @@ final class CodexAppServerControlTests: XCTestCase {
     }
 
     func testOversizedSingleSummaryKeepsRuntimeActiveWithoutInventingATurn() async throws {
-        let server = try FakeAppServer(connections: 2, rawRespond: { message in
+        let server = try FakeAppServer(connections: 1, rawRespond: { message in
             if (message["params"] as? [String: Any])?["includeTurns"] as? Bool == true
                 || message["method"] as? String == "thread/turns/list" {
                 return [0x81, 127, 0, 0, 0, 0, 1, 0, 0, 1]
@@ -587,6 +587,80 @@ final class CodexAppServerControlTests: XCTestCase {
         XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/resume", "thread/turns/list", "turn/start"])
         XCTAssertEqual(server.params(of: "thread/resume")?["excludeTurns"] as? Bool, true)
         XCTAssertEqual(server.params(of: "thread/turns/list")?["limit"] as? Int, 1)
+    }
+
+    func testRecentAndHistoricalSummaryPagesKeepTheirSourceCursorAndLiveTurn() async throws {
+        let server = try FakeAppServer(connections: 2) { message in
+            guard let id = message["id"] else { return [] }
+            let method = message["method"] as? String
+            var result: [String: Any] = ["data": []]
+            if method == "thread/read" {
+                result = ["thread": ["id": "paged-thread", "status": ["type": "active"]]]
+            } else if method == "thread/turns/list" {
+                let n = Int((message["params"] as? [String: Any])?["cursor"] as? String ?? "0")!
+                let count = (message["params"] as? [String: Any])?["limit"] as? Int ?? 1
+                let turns: [[String: Any]] = (n..<n + count).map { index in
+                    ["id": "turn-\(index)", "status": index == 0 ? "inProgress" : "completed", "startedAt": 1_793_851_200,
+                        "items": [["id": "message-\(index)", "type": "agentMessage", "text": "Answer \(index)"]]]
+                }
+                result = ["data": turns, "nextCursor": String(n + count)]
+            }
+            return [["id": id, "result": result]]
+        }
+        let control = CodexAppServerControl()
+        let recent = try await control.readThread(socketPath: server.path, threadId: "paged-thread")
+        XCTAssertEqual(recent.messages.map(\.sourceId), (0..<8).reversed().map { "message-\($0)" })
+        XCTAssertEqual(recent.history?.cursor, "8")
+        XCTAssertEqual(recent.history?.complete, false)
+        XCTAssertNil(recent.history?.error)
+        XCTAssertEqual(recent.activeTurnId, "turn-0")
+        XCTAssertNotNil(recent.messages.first?.occurredAt)
+        let older = try await control.readHistoryPage(socketPath: server.path, threadId: "paged-thread", cursor: "8")
+        XCTAssertEqual(older.messages.map(\.sourceId), (8..<16).reversed().map { "message-\($0)" })
+        XCTAssertEqual(older.nextCursor, "16")
+        server.waitUntilDone()
+        XCTAssertFalse(server.methods.contains("thread/resume"))
+        let requests = server.received.current.compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+        let pageLimits = requests.filter { $0["method"] as? String == "thread/turns/list" }
+            .compactMap { ($0["params"] as? [String: Any])?["limit"] as? Int }
+        XCTAssertEqual(pageLimits, [1, 7, 1, 7])
+        XCTAssertFalse(requests.contains { ($0["params"] as? [String: Any])?["includeTurns"] as? Bool == true })
+    }
+
+    func testOlderPageFailureKeepsTheConfirmedLiveTurnAndItsRetryCursor() async throws {
+        let server = try FakeAppServer { message in
+            guard let id = message["id"] else { return [] }
+            if message["method"] as? String == "thread/turns/list" {
+                if (message["params"] as? [String: Any])?["cursor"] != nil {
+                    return [["id": id, "error": ["code": -32603, "message": "Older page unavailable"]]]
+                }
+                return [["id": id, "result": ["data": [["id": "live-turn", "status": "inProgress", "items": []]], "nextCursor": "older"]]]
+            }
+            let result: [String: Any] = message["method"] as? String == "thread/read"
+                ? ["thread": ["id": "paged-thread", "status": ["type": "active"]]] : ["data": []]
+            return [["id": id, "result": result]]
+        }
+        let snapshot = try await CodexAppServerControl().readThread(socketPath: server.path, threadId: "paged-thread")
+        server.waitUntilDone()
+        XCTAssertEqual(snapshot.activeTurnId, "live-turn")
+        XCTAssertEqual(snapshot.status, "active")
+        XCTAssertEqual(snapshot.history?.cursor, "older")
+        XCTAssertEqual(snapshot.history?.error, "unavailable")
+    }
+
+    func testHistoricalCursorCyclesFailInsteadOfRepeatingTheSamePage() async throws {
+        let server = try FakeAppServer { message in
+            guard let id = message["id"] else { return [] }
+            let result: [String: Any] = message["method"] as? String == "thread/read"
+                ? ["thread": ["id": "paged-thread", "status": ["type": "idle"]]]
+                : ["data": [], "nextCursor": "same"]
+            return [["id": id, "result": result]]
+        }
+        do {
+            _ = try await CodexAppServerControl().readHistoryPage(socketPath: server.path, threadId: "paged-thread", cursor: "same")
+            XCTFail("Expected a repeated cursor to be rejected")
+        } catch { XCTAssertTrue(error is CodexControlError) }
+        server.waitUntilDone()
     }
 
     func testFragmentedMessageCannotBypassThePayloadBudget() throws {
@@ -808,7 +882,7 @@ final class CodexAppServerControlTests: XCTestCase {
         let snapshot = try await CodexAppServerControl(timeout: 5).readExternalThread(socketPath: server.path, threadId: "external-exact")
         server.waitUntilDone()
         XCTAssertEqual(snapshot.status, "idle")
-        XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/read"])
+        XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/read", "thread/turns/list"])
         XCTAssertEqual(server.params(of: "thread/read")?["threadId"] as? String, "external-exact")
     }
 
@@ -821,7 +895,7 @@ final class CodexAppServerControlTests: XCTestCase {
         }
         _ = try await CodexAppServerControl(timeout: 5).readArtifactThread(socketPath: server.path, threadId: "artifact-exact")
         server.waitUntilDone()
-        XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/read"])
+        XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/read", "thread/turns/list"])
         XCTAssertEqual(server.params(of: "thread/read")?["threadId"] as? String, "artifact-exact")
     }
 
@@ -2077,7 +2151,7 @@ final class CodexLauncherTests: XCTestCase {
         }
         let queued = try await launcher.synchronize(session("queued"))
         XCTAssertEqual(queued.commandStatus, "delivering")
-        XCTAssertEqual(queued.error, "codex_history_limited: recent history or runtime metadata only")
+        XCTAssertNil(queued.error) // An intentional recent window is not a synchronization failure.
         let delivered = try await launcher.synchronize(session("delivering"))
         XCTAssertEqual(delivered.commandStatus, "delivered")
         // Simulate a lost report; no mirrored user message can prove delivery.

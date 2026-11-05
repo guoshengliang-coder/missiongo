@@ -24,6 +24,7 @@ public protocol CodexControl: Sendable {
     func readThreadStatus(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
     func readExternalThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
     func readArtifactThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
+    func readHistoryPage(socketPath: String, threadId: String, cursor: String) async throws -> AgentHistoryResult
     func readManagedThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
     /// `overrides` carry the settings a person chose for this conversation;
     /// Codex keeps turn-level overrides for the turns after it too.
@@ -62,6 +63,9 @@ public extension CodexControl {
         throw CodexControlError.rpc(method: "approval", message: "这个 Codex 控制器不支持控制台授权。")
     }
     func cancelApprovals(threadId: String, turnId: String) {}
+    func readHistoryPage(socketPath: String, threadId: String, cursor: String) async throws -> AgentHistoryResult {
+        throw CodexControlError.invalidResponse(method: "thread/turns/list unsupported")
+    }
     func readManagedThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
         try await readThread(socketPath: socketPath, threadId: threadId)
     }
@@ -208,6 +212,7 @@ public struct CodexThreadSnapshot: Equatable, Sendable {
     /// A bounded history window or metadata-only read must never prove that a
     /// previously delivering message was absent from the source transcript.
     public var historyLimited = false
+    public var history: AgentHistoryMetadata?
     public let execution: NativeExecutionProgress
     public let failure: CodexSessionFailure?
     public let status: String
@@ -597,7 +602,7 @@ public enum CodexProtocol {
                 guard let sourceId = item["id"] as? String,
                       let itemType = item["type"] as? String else { continue }
                 let occurredAt = sourceActivityTimestamp(
-                    item["createdAt"] ?? item["created_at"] ?? item["timestamp"]
+                    item["createdAt"] ?? item["created_at"] ?? item["timestamp"] ?? turn["startedAt"]
                 )
                 switch itemType {
                 case "userMessage":
@@ -778,7 +783,6 @@ public struct CodexAppServerControl: CodexControl {
     private let archiveCache: CodexArchiveCache
     private let approvalMonitor: CodexApprovalMonitor
     private let successfulReads = Locked<[String: Date]>([:])
-    private let oversizedHistories = Locked<[String: Date]>([:])
 
     public init(timeout: TimeInterval = 30, readTimeout: TimeInterval = 10) {
         self.timeout = timeout
@@ -837,8 +841,6 @@ public struct CodexAppServerControl: CodexControl {
         let timeout = timeoutOverride ?? self.readTimeout
         let archiveCache = self.archiveCache
         let successfulReads = self.successfulReads
-        let oversizedHistories = self.oversizedHistories
-        let historyKey = socketPath + "\n" + threadId
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async {
                 continuation.resume(with: Result {
@@ -847,8 +849,7 @@ public struct CodexAppServerControl: CodexControl {
                     var connection: JSONRPCWebSocket?
                     defer { connection?.close() }
                     do {
-                        if includeTurns, !includeExecutionItems,
-                           oversizedHistories.current[historyKey].map({ $0 > Date() }) == true {
+                        if includeTurns, !includeExecutionItems {
                             return try Self.readBoundedHistory(socketPath: socketPath, threadId: threadId,
                                 timeout: timeout, checkArchiveList: checkArchiveList, requireLoaded: requireLoaded,
                                 archiveCache: archiveCache)
@@ -880,20 +881,6 @@ public struct CodexAppServerControl: CodexControl {
                             }
                         }
                         return snapshot
-                    } catch is WebSocketFrame.FrameTooLarge where includeTurns && !includeExecutionItems {
-                        // The unread oversized frame cannot be reused for another RPC.
-                        connection?.close()
-                        connection = nil
-                        oversizedHistories.withLock { values in
-                            values = values.filter { $0.value > Date() }
-                            if values.count >= 128, let oldest = values.min(by: { $0.value < $1.value })?.key {
-                                values.removeValue(forKey: oldest)
-                            }
-                            values[historyKey] = Date().addingTimeInterval(300)
-                        }
-                        return try Self.readBoundedHistory(socketPath: socketPath, threadId: threadId,
-                            timeout: timeout, checkArchiveList: checkArchiveList, requireLoaded: requireLoaded,
-                            archiveCache: archiveCache)
                     } catch let error as CodexControlError {
                         let reason: String
                         switch error {
@@ -932,35 +919,86 @@ public struct CodexAppServerControl: CodexControl {
             throw CodexControlError.invalidResponse(method: "thread/read identity")
         }
         if requireLoaded { try requireExternalRuntime(result, threadId: threadId) }
-        var turns: [[String: Any]] = []
-        var cursor: String?
-        var seen = Set<String>()
-        let started = Date()
-        let initialBytes = connection.receivedBytes
-        // Read newest first so state and new output survive even if an older
-        // page is too large. Bound both work and accumulated transport bytes.
-        for _ in 0..<8 {
-            var params: [String: Any] = ["threadId": threadId, "limit": 1,
-                "sortDirection": "desc", "itemsView": "summary"]
-            if let cursor { params["cursor"] = cursor }
-            do {
-                let page = try connection.call("thread/turns/list", params)
-                guard let data = page["data"] as? [[String: Any]] else { break }
-                guard connection.receivedBytes - initialBytes <= WebSocketFrame.maxPayload else { break }
-                turns += data
-                cursor = page["nextCursor"] as? String
-                guard let cursor, seen.insert(cursor).inserted,
-                      Date().timeIntervalSince(started) < timeout else { break }
-            } catch {
-                // No input was sent on this read connection. Keep confirmed
-                // metadata and any pages already received, never infer stopped.
-                break
-            }
+        let page: SummaryPage
+        do { page = try Self.summaryPage(connection: connection, threadId: threadId, cursor: nil, timeout: timeout) }
+        catch {
+            var snapshot = try CodexProtocol.threadSnapshot(fromRead: result)
+            snapshot.historyLimited = true
+            snapshot.history = AgentHistoryMetadata(complete: false, error: "unavailable")
+            return snapshot
         }
-        thread["turns"] = Array(turns.reversed())
+        // The same summary page carries the most recent turn's error and id.
+        // summaryPage snapshots the thread metadata with those turns below.
+        thread["turns"] = page.turns
         var snapshot = try CodexProtocol.threadSnapshot(fromRead: ["thread": thread])
         snapshot.historyLimited = true
+        snapshot.history = AgentHistoryMetadata(cursor: page.nextCursor, complete: page.nextCursor == nil && page.error == nil, error: page.error)
         return snapshot
+    }
+
+    private struct SummaryPage {
+        let turns: [[String: Any]]
+        let nextCursor: String?
+        var error: String? = nil
+    }
+
+    private static func summaryPage(connection: JSONRPCWebSocket, threadId: String,
+        cursor: String?, timeout: TimeInterval) throws -> SummaryPage {
+        var turns: [[String: Any]] = []
+        var cursor = cursor
+        var seen = Set<String>()
+        if let cursor { seen.insert(cursor) }
+        let started = Date()
+        let initialBytes = connection.receivedBytes
+        for _ in 0..<8 {
+            var params: [String: Any] = ["threadId": threadId, "limit": turns.isEmpty ? 1 : 8 - turns.count,
+                "sortDirection": "desc", "itemsView": "summary"]
+            if let cursor { params["cursor"] = cursor }
+            let previous = cursor
+            do {
+                let page = try connection.call("thread/turns/list", params)
+                guard let data = page["data"] as? [[String: Any]], data.count <= 8 - turns.count,
+                      connection.receivedBytes - initialBytes <= WebSocketFrame.maxPayload else {
+                    throw CodexControlError.invalidResponse(method: "thread/turns/list")
+                }
+                let next = page["nextCursor"] as? String
+                if let next, !seen.insert(next).inserted {
+                    throw CodexControlError.invalidResponse(method: "thread/turns/list cursor")
+                }
+                turns += data
+                cursor = next
+                if next == nil || turns.count >= 8 { break }
+            } catch {
+                guard !turns.isEmpty, let previous else { throw error }
+                // A failing older page must not discard the live turn already
+                // confirmed on this read. Leave its cursor available for retry.
+                return SummaryPage(turns: Array(turns.reversed()), nextCursor: previous, error: "unavailable")
+            }
+            if Date().timeIntervalSince(started) >= timeout { break }
+        }
+        return SummaryPage(turns: Array(turns.reversed()), nextCursor: cursor)
+    }
+
+    public func readHistoryPage(socketPath: String, threadId: String, cursor: String) async throws -> AgentHistoryResult {
+        let timeout = self.readTimeout
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(with: Result {
+                    let connection = try JSONRPCWebSocket(socketPath: socketPath, timeout: timeout)
+                    defer { connection.close() }
+                    _ = try connection.call("initialize", CodexProtocol.initializeParams())
+                    try connection.notify("initialized")
+                    let metadata = try connection.call("thread/read", CodexProtocol.threadReadParams(threadId: threadId, includeTurns: false))
+                    guard var thread = metadata["thread"] as? [String: Any], thread["id"] as? String == threadId else {
+                        throw CodexControlError.invalidResponse(method: "thread/read identity")
+                    }
+                    let page = try Self.summaryPage(connection: connection, threadId: threadId, cursor: cursor, timeout: timeout)
+                    thread["turns"] = page.turns
+                    return AgentHistoryResult(messages: try CodexProtocol.threadSnapshot(fromRead: ["thread": thread]).messages,
+                        nextCursor: page.nextCursor)
+                })
+            }
+        }
     }
 
     public func archiveThread(socketPath: String, threadId: String) async throws {
