@@ -55,6 +55,20 @@ export class AgentConsoleSessions {
       .sort((a, b) => b.activityAt.localeCompare(a.activityAt) || b.id.localeCompare(a.id)).slice(0, 100);
   }
 
+  /**
+   * Conversations whose linked items include one key, with the member records
+   * behind each merged view. Unlike list() nothing is sliced: an item's own
+   * history is bounded by its dispatches, not by the console's screen size.
+   */
+  listForItem(accountId: string, itemKey: string): Array<{ summary: AgentSessionListItem; members: AgentSessionListItem[] }> {
+    const key = itemKey.toUpperCase();
+    return this.groups(accountId)
+      .map((group) => ({ group, summary: this.summary(group) }))
+      .filter(({ summary }) => summary.items.some((item) => item.key === key))
+      .sort((a, b) => b.summary.activityAt.localeCompare(a.summary.activityAt) || b.summary.id.localeCompare(a.summary.id))
+      .map(({ group, summary }) => ({ summary, members: group }));
+  }
+
   private summary(group: AgentSessionListItem[]): AgentSessionListItem {
     const primary = group[0]!;
     if (group.length === 1) return primary;

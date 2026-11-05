@@ -703,6 +703,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     // the loopback fallback above is not an address a client can reinstall from.
     ? createMissionGoMcpHandler(store, attachmentStorage, {
       canOperate: canCheck,
+      planApprovals,
       ...(options.publicOrigin ? { publicOrigin } : {}),
       ...(options.writeTools ? { writeTools: options.writeTools } : {}),
     })
