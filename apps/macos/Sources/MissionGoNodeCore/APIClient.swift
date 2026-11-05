@@ -787,6 +787,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     /// Opaque digest of visible source execution metadata; never raw tool arguments or output.
     public private(set) var progressRevision: String?
     public let stopConfirmed: Bool?
+    public private(set) var history: AgentHistoryMetadata?
     public let status: String
     public let messages: [AgentSessionMessage]
     public private(set) var activities: [AgentSessionActivity]
@@ -910,6 +911,10 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
         return report
     }
 
+    public func reportingHistory(_ history: AgentHistoryMetadata?) -> AgentSessionReport {
+        var report = self; report.history = history; return report
+    }
+
     public func reportingHistoryLimit() -> AgentSessionReport {
         var report = self
         // Reuse the existing diagnostic transport; this code is recognized as
@@ -964,7 +969,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
             lastOutputAt: lastOutputAt, thinkingStartedAt: thinkingStartedAt, thinkingTokens: thinkingTokens,
             thinkingDurationSeconds: thinkingDurationSeconds,
             approval: approval, approvalRetryId: approvalRetryId, approvalRetryStatus: approvalRetryStatus, approvalRetryError: approvalRetryError
-        )
+        ).reportingHistory(history)
     }
 
     public func reportingTurn(_ state: ClaudeHostState) -> AgentSessionReport {
@@ -1608,6 +1613,22 @@ public struct APIClient: Sendable {
         try requireSuccess(response, operation: "回报结果")
     }
 
+    public func historyJobs() async throws -> [AgentHistoryJob] {
+        struct Reply: Decodable { let jobs: [AgentHistoryJob] }
+        let response = try await send("GET", "/api/v1/node/agent-history", body: Optional<String>.none, bearer: try nodeToken())
+        if response.status == 404 { return [] }
+        try requireSuccess(response, operation: "读取会话历史请求")
+        let reply: Reply = try decode(response, operation: "读取会话历史请求")
+        return reply.jobs
+    }
+
+    public func reportHistory(id: String, result: AgentHistoryResult) async throws {
+        let bounded = try APIClient.encoder.encode(result).count <= 900_000 ? result : AgentHistoryResult(error: "too_large")
+        let response = try await send("POST", "/api/v1/node/agent-history/\(APIClient.encodePathComponent(id))",
+            body: bounded, bearer: try nodeToken(), gzipBody: true)
+        try requireSuccess(response, operation: "保存会话历史")
+    }
+
     public func artifactJobs() async throws -> [AgentArtifactJob] {
         struct Reply: Decodable { let jobs: [AgentArtifactJob] }
         let response = try await send("GET", "/api/v1/node/agent-artifacts", body: Optional<String>.none, bearer: try nodeToken())
@@ -1724,6 +1745,12 @@ public struct APIClient: Sendable {
             // from re-encoding the full body hundreds of times on the way down.
             messages.removeFirst(max(1, messages.count / 4))
             uploadable = report.replacingMessages(messages)
+        }
+        if let history = report.history, uploadable.messages != report.messages {
+            // Count/text/body caps must not turn a shortened upload into a
+            // false claim that the native conversation is complete.
+            uploadable = uploadable.reportingHistory(AgentHistoryMetadata(cursor: history.cursor,
+                complete: false, error: "unavailable")).reportingHistoryLimit()
         }
         return uploadable
     }

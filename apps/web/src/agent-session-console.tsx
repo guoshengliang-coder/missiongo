@@ -1,3 +1,4 @@
+import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
 import { AgentStopFeedback } from "./agent-stop-feedback.js";
 import { ChatAttachments } from "./chat-attachments";
 import type { ReactNode } from "react";
@@ -556,7 +557,9 @@ export function AgentSessionConsole({
   const sendingRequest = sendingSelected
     ? { text: send.variables.text, occurredAt: send.variables.occurredAt, status: "sending" as const }
     : failedRequest;
-  const mirrorMessages = sessionQuery.data?.messages ?? [];
+  const history = useAgentHistory(selected?.agentSessionId ?? null, sessionQuery.data, messagesRef);
+  const previousHistoryRevision = useRef(0);
+  const mirrorMessages = history.messages;
   const mirrorAttachments = sessionQuery.data?.attachmentMessages ?? [];
   const outgoingCandidate = outgoingReply(command, sendingRequest,
     replyMirrorArrived(command, mirrorMessages, mirrorAttachments));
@@ -568,7 +571,7 @@ export function AgentSessionConsole({
     sendingSelected,
     Boolean(sessionQuery.data?.turnState?.observedAt),
   );
-  const messages = projectConversationMessages(sessionQuery.data?.messages ?? [], Boolean(selected?.productId));
+  const messages = projectConversationMessages(history.messages, Boolean(selected?.productId));
   const attachmentMessages = sessionQuery.data?.attachmentMessages ?? [];
   const visibleMessages = agentChatMessages(messages, attachmentMessages, outgoing?.commandId);
   const activities = sessionQuery.data?.activities ?? [];
@@ -671,6 +674,7 @@ export function AgentSessionConsole({
     previousOutgoingRef.current = outgoingSignature;
 
     if (resetView) {
+      previousHistoryRevision.current = history.revision;
       unseenMessageIdsRef.current.clear();
       setFollowLatest(true);
       setNewMessageCount(0);
@@ -678,6 +682,10 @@ export function AgentSessionConsole({
       return;
     }
 
+    if (previousHistoryRevision.current !== history.revision) {
+      previousHistoryRevision.current = history.revision;
+      return; // Prepending history is neither new output nor an unread event.
+    }
     const changedIds = changedMessageIds(previousMessages, messages);
     if (changedIds.length === 0 && !outgoingChanged) return;
     if (shouldScrollMessagesAfterChange(outgoingChanged, followLatest)) scrollToLatest();
@@ -685,7 +693,7 @@ export function AgentSessionConsole({
       changedIds.forEach((id) => unseenMessageIdsRef.current.add(id));
       setNewMessageCount(unseenMessageIdsRef.current.size);
     }
-  }, [conversationOpen, followLatest, messages, outgoingSignature, scrollToLatest, selectedId]);
+  }, [conversationOpen, followLatest, messages, outgoingSignature, scrollToLatest, selectedId, history.revision]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -1036,6 +1044,7 @@ export function AgentSessionConsole({
                 onScroll={(event) => {
                   const nearBottom = isNearMessageBottom(event.currentTarget);
                   setFollowLatest(nearBottom);
+                  if (!nearBottom && !history.error && event.currentTarget.scrollTop <= 48) void history.loadMore();
                   if (nearBottom) {
                     unseenMessageIdsRef.current.clear();
                     setNewMessageCount(0);
@@ -1049,6 +1058,7 @@ export function AgentSessionConsole({
                     onClick={() => void sessionQuery.refetch()}>{t("retry")}</button>}
                 </div>}
                 {conversationReady && <>
+                <AgentHistoryLoader history={history} />
                 {selected.source === "external" && (
                   <div className="agent-console-connection-banner" role="status">
                     <CircleAlert size={17} />
@@ -1106,7 +1116,7 @@ export function AgentSessionConsole({
                 {visibleMessages.map((message) => {
                   const labelKey = messageLabelKey(message.role, selected.agentKind);
                   return (
-                    <article key={message.id} className={`agent-console-message agent-console-message-${message.role}`}>
+                    <article key={message.id} data-agent-message-id={`${message.role}:${message.sourceId || message.id}`} className={`agent-console-message agent-console-message-${message.role}`}>
                       <header className="agent-console-message-meta">
                         {labelKey && <small>{t(labelKey)}</small>}
                         <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
@@ -1119,7 +1129,7 @@ export function AgentSessionConsole({
                         <AgentSessionQuestions
                           questions={message.questions}
                           reply={reply}
-                          canReply={selected.canReply && !pending && !sendingSelected && !cancellingSelected}
+                          canReply={selected.canReply && !message.id.startsWith("history:") && !pending && !sendingSelected && !cancellingSelected}
                           onChange={setReply}
                         />
                       )}

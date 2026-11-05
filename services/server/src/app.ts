@@ -11,6 +11,7 @@ import { ReleaseObservations } from "./release-observations.js";
 import { BuilderHandovers } from "./builder-handovers.js";
 import { assertDispatchExecution, assertExternalExecution, dispatchExecutionRevoked } from "./builder-authority.js";
 import { parseItemFilters } from "./item-filters.js";
+import { AgentHistory } from "./agent-history.js";
 import { AgentArtifacts, ARTIFACT_PREVIEW_POLICY, ARTIFACT_PREVIEW_SHELL } from "./agent-artifacts.js";
 import { localArtifactLinks } from "@missiongo/domain";
 import { join } from "node:path";
@@ -588,6 +589,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const store = new MissionGoStore(options.databasePath ?? ":memory:");
   const dispatchStore = new DispatchStore(store.database);
   const agentArtifacts = new AgentArtifacts(store.database, join(options.attachmentsPath ?? "./data/attachments", "agent-artifacts"));
+  const agentHistory = new AgentHistory(store.database, agentArtifacts);
   const agentSessionAttachments = new AgentSessionAttachments(store.database, options.attachmentsPath ?? "./data/attachments");
   const agentSessionStore = new AgentSessionStore(store.database, agentSessionAttachments);
   const freeSessionStore = new FreeSessionStore(store.database, dispatchStore, agentSessionStore);
@@ -2584,8 +2586,32 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...(reason ? { replyBlockedReason: reason } : {}) };
   };
 
-  const artifactSession = (request: FastifyRequest, sessionId: string, operate = false) =>
-    externalSessionStore.has(sessionId) ? loadExternalSession(request, sessionId, operate) : loadAuthorizedAgentSession(request, sessionId, operate, false).session;
+  const artifactSession = (request: FastifyRequest, sessionId: string, operate = false) => {
+    const session = externalSessionStore.has(sessionId) ? loadExternalSession(request, sessionId, operate)
+      : loadAuthorizedAgentSession(request, sessionId, operate, false).session;
+    const cached = agentHistory.cachedMessages(requireAccountId(request), sessionId);
+    return { ...session, messages: [...cached, ...session.messages] };
+  };
+  const historyPage = (request: FastifyRequest, sessionId: string, cursor: string, requestSource: boolean) => {
+    const snapshot = externalSessionStore.has(sessionId) ? loadExternalSession(request, sessionId)
+      : loadAuthorizedAgentSession(request, sessionId, false, false).session;
+    const accountId = requireAccountId(request);
+    if (cursor.startsWith("stored:")) {
+      const page = agentHistory.window(accountId, sessionId, snapshot.messages, cursor);
+      return { status: "ready" as const, messages: page.messages, ...page.history };
+    }
+    return requestSource ? agentHistory.request(accountId, sessionId, cursor) : agentHistory.get(accountId, sessionId, cursor);
+  };
+  app.post("/api/v1/agent-sessions/:sessionId/history", async request => {
+    const { sessionId } = request.params as { sessionId: string };
+    return historyPage(request, sessionId, stringField(objectBody(request.body), "cursor")!, true);
+  });
+  app.get("/api/v1/agent-sessions/:sessionId/history", async (request, reply) => {
+    const { sessionId } = request.params as { sessionId: string };
+    const cursor = stringField(request.query as Record<string, unknown>, "cursor")!;
+    reply.header("cache-control", "private, no-store");
+    return historyPage(request, sessionId, cursor, false);
+  });
   app.post("/api/v1/agent-sessions/:sessionId/artifacts", async (request) => {
     const { sessionId } = request.params as { sessionId: string };
     const snapshot = artifactSession(request, sessionId);
@@ -2630,6 +2656,21 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       requireNodeAccountPermission(accountId, store.getWorkItem(key).productId, false);
     }
   };
+  app.get("/api/v1/node/agent-history", async request => {
+    const node = requireNode(request);
+    return { jobs: agentHistory.jobs(node.accountId, node.nodeId).filter(job => {
+      try { authorizeArtifactNode(node.accountId, job.sessionId); return true; }
+      catch { agentHistory.reject(job.id); return false; }
+    }) };
+  });
+  app.post("/api/v1/node/agent-history/:pageId", { bodyLimit: 2 * 1024 * 1024 }, async (request, reply) => {
+    const node = requireNode(request);
+    const { pageId } = request.params as { pageId: string };
+    const job = agentHistory.authorizeJob(node.accountId, node.nodeId, pageId);
+    authorizeArtifactNode(node.accountId, job.session_id);
+    agentHistory.complete(node.accountId, node.nodeId, pageId, request.body);
+    return reply.status(204).send();
+  });
   app.get("/api/v1/node/agent-artifacts", async (request) => {
     const node = requireNode(request);
     return { jobs: agentArtifacts.jobs(node.accountId, node.nodeId).filter((job) => {
@@ -2677,7 +2718,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const { sessionId } = request.params as { sessionId: string };
     const { session, unavailableReason } = planApprovalContext(request, sessionId);
     const assessment = planApprovals.assess(session, unavailableReason);
-    return { ...session, planApprovalStatus: assessment.status, ...(assessment.offer ? { planApproval: assessment.offer } : {}) };
+    const window = (request.query as { history?: string }).history === "recent"
+      ? agentHistory.window(requireAccountId(request), sessionId, session.messages) : undefined;
+    return { ...session, ...(window ? window : {}), planApprovalStatus: assessment.status, ...(assessment.offer ? { planApproval: assessment.offer } : {}) };
   });
 
   // One scoped action: an explicitly clicked, content-bound chat approval. Never a tool permission decision.
@@ -3460,6 +3503,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           ...(commandStatus ? { commandStatus } : {}),
           ...(stringField(body, "commandError", false) ? { commandError: body.commandError as string } : {}),
         }, (productId, execute) => requireNodeAccountPermission(node.accountId, productId, execute));
+        agentHistory.observe(node.accountId, node.nodeId, sessionId, body.history);
         return reply.status(204).send();
       }
       const projectSession = store.database.connection.prepare(`SELECT f.product_id FROM free_session_starts f
@@ -3498,6 +3542,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         ...(body.clearSessionUrl === true ? { clearSessionUrl: true } : {}),
         ...(stringField(body, "activityAt", false) ? { activityAt: body.activityAt as string } : {}),
       });
+      agentHistory.observe(node.accountId, node.nodeId, sessionId, body.history);
       if (body.approval !== undefined) {
         const approval = objectBody(body.approval);
         const kind = stringField(approval, "kind");

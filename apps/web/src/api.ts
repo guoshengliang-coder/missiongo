@@ -1,3 +1,4 @@
+import type { AgentHistoryPage } from "./types";
 import type { PersonalAttentionCount, PersonalTodoPage, PersonalNotificationDetail, PersonalNotificationFilter, PersonalNotificationPage } from "@missiongo/domain";
 import type { CommentAudienceInput, CommentCandidate } from "@missiongo/domain";
 import type { ItemFilters } from "@missiongo/domain";
@@ -624,8 +625,14 @@ export const api = {
   getDispatchHealth: (days = 7) => request<DispatchHealthSnapshot>(`/api/v1/dispatches/health?days=${days}`),
   listItemDispatches: (itemKey: string) =>
     request<{ dispatches: Dispatch[]; current?: ItemDispatchSummary }>(`/api/v1/items/${encodeURIComponent(itemKey)}/dispatches`),
+  loadAgentHistory: (sessionId: string, cursor: string) =>
+    request<AgentHistoryPage>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/history`, {
+      method: "POST", body: JSON.stringify({ cursor }),
+    }),
+  getAgentHistory: (sessionId: string, cursor: string) =>
+    request<AgentHistoryPage>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/history?cursor=${encodeURIComponent(cursor)}`),
   getAgentSession: (sessionId: string) =>
-    request<AgentSession>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}`),
+    request<AgentSession>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}?history=recent`),
   decideAgentApproval: (sessionId: string, approvalId: string, decision: string) =>
     request(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/approvals/${encodeURIComponent(approvalId)}/decision`, {
       method: "POST", body: JSON.stringify({ decision }),

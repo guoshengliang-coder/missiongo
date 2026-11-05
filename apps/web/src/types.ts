@@ -540,6 +540,7 @@ export interface AgentSessionAttachment {
 }
 
 export interface AgentSession {
+  readonly history?: { readonly nextCursor?: string; readonly error?: string };
   readonly planApproval?: { readonly revision: string; readonly reason: string; readonly plan?: string; readonly validation?: string; readonly itemKeys?: readonly string[] } | undefined;
   readonly planApprovalStatus?: { readonly code: string; readonly detail?: string };
   readonly nativeConnection?: ExternalNativeConnection;
@@ -574,6 +575,13 @@ export interface AgentSession {
   readonly canResolveDelivery: boolean;
   readonly canAttach?: boolean;
   readonly replyBlockedReason?: AgentSessionReplyBlockedReason;
+}
+
+export interface AgentHistoryPage {
+  readonly status: "pending" | "ready" | "failed";
+  readonly messages: readonly AgentSessionMessage[];
+  readonly nextCursor?: string;
+  readonly error?: string;
 }
 
 export interface AgentSessionSummary {

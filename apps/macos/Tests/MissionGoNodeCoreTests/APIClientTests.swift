@@ -739,6 +739,27 @@ final class APIClientTests: XCTestCase {
     // messages, body over the route's limit) used to be uploaded as-is and fail
     // with a 413/400 the sync loop treated as a generic offline blip.
 
+    func testBoundedSnapshotRetainsTheHistoricalContinuation() throws {
+        let history = AgentHistoryMetadata(cursor: "opaque-anchor", complete: false)
+        let report = AgentSessionReport(status: "idle", messages: [
+            AgentSessionMessage(sourceId: "answer", role: "agent", text: "Recent answer")
+        ]).reportingHistory(history)
+        let uploadable = try APIClient.uploadableSnapshot(report)
+        XCTAssertEqual(uploadable.history, history)
+        let wire = try JSONSerialization.jsonObject(with: APIClient.encoder.encode(uploadable)) as! [String: Any]
+        XCTAssertEqual((wire["history"] as? [String: Any])?["cursor"] as? String, "opaque-anchor")
+    }
+
+    func testShortenedRecentUploadCannotClaimCompleteHistory() throws {
+        let report = AgentSessionReport(status: "idle", messages: [
+            AgentSessionMessage(sourceId: "large", role: "agent", text: String(repeating: "字", count: 100_050))
+        ]).reportingHistory(AgentHistoryMetadata(complete: true))
+        let uploadable = try APIClient.uploadableSnapshot(report)
+        XCTAssertEqual(uploadable.history?.complete, false)
+        XCTAssertEqual(uploadable.history?.error, "unavailable")
+        XCTAssertTrue(uploadable.error?.hasPrefix("codex_history_limited:") == true)
+    }
+
     func testSnapshotUploadCapsMessageTextToTheServerContract() throws {
         let uploadable = try APIClient.uploadableSnapshot(AgentSessionReport(status: "idle", messages: [
             AgentSessionMessage(sourceId: "m1", role: "user", text: String(repeating: "字", count: 100_050)),
