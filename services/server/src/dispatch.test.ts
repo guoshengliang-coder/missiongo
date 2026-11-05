@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
 import { createAiAccessToken, type AdminAccountConfig } from "./admin-auth.js";
+import { projectSessionTitle } from "./free-session-store.js";
 import { AgentSessionStore } from "./agent-session-store.js";
 import { MISSIONGO_SKILL_VERSION } from "@missiongo/contracts";
 
@@ -4494,7 +4495,7 @@ describe("Widget summary (AND-149)", () => {
     });
     expect(preview.json()).toMatchObject({
       totalUnread: 1,
-      sessions: [expect.objectContaining({ sessionId: session.id, productId, title: "这是什么问题？", items: [] })],
+      sessions: [expect.objectContaining({ sessionId: session.id, productId, title: expect.stringMatching(/^这是什么问题？ · [a-f0-9]{8}$/), items: [] })],
     });
   });
 
@@ -4883,6 +4884,40 @@ describe("AND-369 project conversations", () => {
     return { app, cookie, product, node, headers, input, prepare, start, claim };
   }
 
+  it("AND-404 shares a saved, distinct title with the node without renaming legacy conversations", async () => {
+    const f = await fixture();
+    const db = f.app.missionGoStore.database.connection;
+    const list = async () => (await f.app.inject({ method: "GET", url: "/api/v1/agent-sessions", headers: { cookie: f.cookie } })).json().sessions;
+    const a = (await f.prepare({ ...f.input, text: "  修复登录\n  问题  " })).json();
+    const b = (await f.prepare({ ...f.input, text: "  修复登录\n  问题  ", requestKey: randomUUID() })).json();
+    const titles = await list();
+    const title = titles.find((s: {id:string}) => s.id === a.agentSessionId).sessionName;
+    expect(title).toMatch(/^修复登录 问题 · [a-f0-9]{8}$/);
+    expect(titles.find((s: {id:string}) => s.id === b.agentSessionId).sessionName).not.toBe(title);
+    await f.start(a.id);
+    const job = (await f.claim()).json();
+    expect(job).toMatchObject({ dispatchId: a.id, sessionTitle: title, freeSession: true });
+    // Native launch reports must not replace the saved console title.
+    await f.app.inject({ method: "POST", url: `/api/v1/node/dispatches/${a.id}/result`, headers: f.headers,
+      payload: { status: "launched", sessionName: `Mac mini-${title}`, sessionRef: randomUUID() } });
+    expect((await list()).find((s: {id:string}) => s.id === a.agentSessionId).sessionName).toBe(title);
+    // A pre-migration row has NULL metadata and retains its prior console/native names.
+    db.prepare("UPDATE free_session_starts SET session_title=NULL WHERE dispatch_id=?").run(b.id);
+    db.prepare("UPDATE dispatches SET session_name='User custom name' WHERE id=?").run(b.id);
+    await f.start(b.id);
+    const legacy = (await f.claim()).json();
+    expect(legacy.dispatchId).toBe(b.id);
+    expect(legacy.sessionTitle).toBeUndefined();
+    expect((await list()).find((s: {id:string}) => s.id === b.agentSessionId).sessionName).toBe("修复登录\n  问题");
+    expect(db.prepare("SELECT session_name FROM dispatches WHERE id=?").get(b.id)).toMatchObject({ session_name: "User custom name" });
+  });
+
+  it("AND-404 bounds Unicode excerpts and gives attachment-only sessions a usable title", () => {
+    expect(projectSessionTitle("\n\t", "12345678-abcd")).toBe("附件会话 · 12345678");
+    expect(projectSessionTitle("😀".repeat(49), "12345678-abcd")).toBe(`${"😀".repeat(48)}… · 12345678`);
+    expect(projectSessionTitle("hello\u0000world\tthere", "12345678-abcd")).toBe("hello world there · 12345678");
+  });
+
   it("reserves only on send, atomically starts once, and keeps itemless history alive after launch", async () => {
     const f = await fixture();
     const db = f.app.missionGoStore.database.connection;
@@ -4968,8 +5003,10 @@ describe("AND-369 project conversations", () => {
     const afterRetry = (await f.app.inject({ method: "GET", url: "/api/v1/agent-sessions", headers: { cookie: f.cookie } })).json().sessions;
     expect(afterRetry).toHaveLength(1);
     expect(afterRetry[0].id).toBe(d.agentSessionId);
+    expect(afterRetry[0].sessionName).toBe(list[0].sessionName);
+    expect(afterRetry[0].sessionName).toMatch(/^附件会话 · [a-f0-9]{8}$/);
     expect((await f.prepare({ ...f.input, text: "", attachmentCount: 1 })).json().id).toBe(retried.json().id);
-    expect((await f.claim()).json().dispatchId).toBe(retried.json().id);
+    expect((await f.claim()).json()).toMatchObject({ dispatchId: retried.json().id, sessionTitle: list[0].sessionName });
     expect(f.app.missionGoStore.database.connection.prepare("SELECT COUNT(*) AS n FROM agent_session_commands").get()).toMatchObject({ n: 1 });
     expect(f.app.missionGoStore.database.connection.prepare("SELECT command_id FROM agent_session_attachments").get()).toMatchObject({ command_id: expect.any(String) });
   });

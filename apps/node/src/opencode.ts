@@ -1,3 +1,4 @@
+import { sessionName } from "./session-name.js";
 import { readFileSync, lstatSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -54,7 +55,7 @@ export class OpenCodeAdapter implements Adapter {
     this.ref = id(result.data?.id); this.path = `/api/session/${encodeURIComponent(this.ref)}`;
     const effective=await this.api.call("GET",this.path);
     if(effective.data?.agent!=="plan") throw new Error("OpenCode did not confirm native Plan; no task started");
-    const title = `${this.job.nodeName ?? "Linux"}-${this.job.itemKeys.join(",")}`;
+    const title = sessionName(this.job);
     try { await this.api.call("PATCH", this.path, { title }); }
     catch (error) { if (!(error instanceof OpenCodeHTTPError) || error.status !== 404) throw error; await this.api.call("POST", `${this.path}/rename`, { title }); }
     await this.prompt(prompt);

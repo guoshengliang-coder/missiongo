@@ -389,6 +389,7 @@ public struct RegisteredNode: Codable, Equatable, Sendable {
 }
 
 public struct DispatchRequest: Codable, Equatable, Sendable {
+    public let sessionTitle: String?
     public let freeSession: Bool?
     public let dispatchId: String
     public let itemKeys: [String]
@@ -421,8 +422,10 @@ public struct DispatchRequest: Codable, Equatable, Sendable {
         reworkItemKeys: [String]? = nil,
         model: String? = nil,
         effort: String? = nil,
-        freeSession: Bool? = nil
+        freeSession: Bool? = nil,
+        sessionTitle: String? = nil
     ) {
+        self.sessionTitle = sessionTitle
         self.freeSession = freeSession
         self.dispatchId = dispatchId
         self.itemKeys = itemKeys

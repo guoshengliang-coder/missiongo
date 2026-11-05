@@ -294,6 +294,12 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 - 手动状态流转的确认按钮使用“移至＋目标状态中文名”，语义流转继续保留“验收打回”等动作文案；共用 `translateTransition`，列表、详情及确认弹窗不直接展示状态枚举值。
 - 回归来源：`and-377-380-console.audit.spec.ts`、`external-attachments.audit.spec.ts`、`and-371-session-feedback.audit.spec.ts`、`i18n.test.ts`；共用灯箱同时由既有媒体与缩放回归约束。
 
+### 会话标题与后台运行指示（AND-403/404）
+
+- 新建项目会话以首条消息的确定性摘要加稳定短编号命名，纯附件使用“附件会话”。服务端保存一次，启动重试沿用；macOS 与 Linux 节点经派单元数据向 Codex、Claude Code、OpenCode 传递同一标题，原生端保留机器名前缀。已有会话不补写标题，不覆盖原生自定义名。
+- 后台任务仍在运行时，列表与运行详情使用共享 `SessionStatusIcon` 转圈；等待输入、空闲和失败保持各自图标及文字。条目内 `AgentSessionPanel` 与控制台复用图标，并使用“后台任务运行中”标签；减少动态效果时图标停止动画，状态文字保留。
+- 回归来源：`and-403-background-status.audit.spec.ts` 覆盖列表、控制台、条目内入口、状态切换、320px/桌面、明暗、三档字号与减少动态效果；服务端项目会话用例及 macOS/Linux 启动测试覆盖标题传递、Unicode、纯附件、重试和旧会话兼容。真实 Agent 侧列表显示仍需在更新节点后人工核对。
+
 ### 项目会话与控制台筛选（AND-369）
 
 - 草稿和已保存会话的底部配置共用 `AgentSettingsControls`，使用 `Select` 及现有紧凑“更多”布局。草稿只改本地配置，文字和附件保持；首次发送请求开始后不能修改或重复启动。

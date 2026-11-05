@@ -2291,6 +2291,15 @@ export class MissionGoDatabase {
           .run(202611050518, new Date().toISOString());
       });
     }
+    // AND-404: only newly created project sessions get a shared title. No historical rename.
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611050724").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611050724").get()) return;
+        this.connection.exec("ALTER TABLE free_session_starts ADD COLUMN session_title TEXT;");
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611050724, new Date().toISOString());
+      });
+    }
 
   }
 }

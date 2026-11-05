@@ -1900,6 +1900,19 @@ final class CodexLauncherTests: XCTestCase {
         )
     }
 
+    func testNamesProjectThreadWithTheSharedTitleBeforeSendingInput() async throws {
+        let machine = try machine()
+        defer { machine.listener.map { _ = close($0) } }
+        let control = RecordingControl()
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: "https://missiongo.test",
+                                     run: fakeCodex(), location: machine.location, control: control)
+        let result = try await launcher.launch(DispatchJob(dispatchId: "project", itemKeys: [], repoPath: machine.repoPath,
+            mode: "plan", nodeName: "M4", freeSession: true, sessionTitle: "修复登录 · 12345678"))
+        XCTAssertEqual(result.sessionName, "M4-修复登录 · 12345678")
+        XCTAssertEqual(control.requests.current.first?.name, result.sessionName)
+        XCTAssertFalse(control.requests.current.first?.prompt.contains("修复登录") ?? true)
+    }
+
     func testNamesASecondThreadByRoundAndTellsItAboutTheRework() async throws {
         let machine = try machine()
         defer { machine.listener.map { _ = close($0) } }

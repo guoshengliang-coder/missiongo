@@ -1021,7 +1021,7 @@ public struct OpenCodeLauncher: AgentAdapter {
             itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode,
             reworkItemKeys: job.reworkItemKeys, client: .openCode, freeSession: job.freeSession
         )
-        let name = SessionLauncher.sessionName(nodeName: job.nodeName, itemKeys: job.itemKeys, round: job.round)
+        let name = SessionLauncher.sessionName(for: job)
         let catalog = await lastCatalog()
         let modelRef = resolveModelRef(model: job.model, effort: job.effort, catalog: catalog)
         let id = try await control.createSession(

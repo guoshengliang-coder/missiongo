@@ -11,7 +11,15 @@ export interface FreeSessionConfig {
 }
 interface StartRow {
   dispatch_id: string; account_id: string; request_key: string; product_id: string;
-  initial_text: string; config_json: string; attachment_count: number; ready: number;
+  initial_text: string; session_title: string | null; config_json: string; attachment_count: number; ready: number;
+}
+
+/** A deterministic excerpt, not an LLM request. Saved once so retries keep the same name. */
+export function projectSessionTitle(text: string, identity: string): string {
+  const clean = text.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
+  const characters = Array.from(clean);
+  const excerpt = characters.length > 48 ? `${characters.slice(0, 48).join("")}…` : clean;
+  return `${excerpt || "附件会话"} · ${identity.replace(/-/g, "").slice(0, 8)}`;
 }
 
 /** First send reserves one durable conversation. Uploads finish before the node may claim it. */
@@ -38,8 +46,8 @@ export class FreeSessionStore {
       }
       const dispatch = this.dispatches.createDispatch({ ...config, accountId, itemKeys: [] }, true);
       this.db.connection.prepare(`INSERT INTO free_session_starts
-        (dispatch_id,account_id,request_key,product_id,initial_text,config_json,attachment_count) VALUES (?,?,?,?,?,?,?)`)
-        .run(dispatch.id, accountId, requestKey, config.productId, text, configJson, attachmentCount);
+        (dispatch_id,account_id,request_key,product_id,initial_text,config_json,attachment_count,session_title) VALUES (?,?,?,?,?,?,?,?)`)
+        .run(dispatch.id, accountId, requestKey, config.productId, text, configJson, attachmentCount, projectSessionTitle(text, dispatch.id));
       // This reference is never sent to a node. Launch replaces it with the verified native ID.
       this.sessions.createForDispatch({ dispatchId: dispatch.id, nodeId: config.nodeId, sessionRef: `pending:${dispatch.id}` });
       this.db.connection.prepare("UPDATE agent_sessions SET status='idle' WHERE dispatch_id=?").run(dispatch.id);
@@ -89,8 +97,8 @@ export class FreeSessionStore {
       const now = new Date().toISOString();
       this.db.connection.prepare("UPDATE free_session_starts SET request_key=? WHERE dispatch_id=?").run(randomUUID(),dispatchId);
       this.db.connection.prepare(`INSERT INTO free_session_starts
-        (dispatch_id,account_id,request_key,product_id,initial_text,config_json,attachment_count,ready) VALUES (?,?,?,?,?,?,?,1)`)
-        .run(next.id,accountId,row.request_key,row.product_id,row.initial_text,row.config_json,row.attachment_count);
+        (dispatch_id,account_id,request_key,product_id,initial_text,config_json,attachment_count,ready,session_title) VALUES (?,?,?,?,?,?,?,1,?)`)
+        .run(next.id,accountId,row.request_key,row.product_id,row.initial_text,row.config_json,row.attachment_count,row.session_title);
       this.db.connection.prepare("UPDATE agent_sessions SET dispatch_id=?,agent_session_ref=?,status='idle',last_error=NULL WHERE id=?")
         .run(next.id,`pending:${next.id}`,session.id);
       this.db.connection.prepare("UPDATE agent_session_commands SET status='queued',cancelled_at=NULL WHERE session_id=? AND status='cancelled'")

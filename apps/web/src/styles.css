@@ -3355,7 +3355,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .agent-reply-queued { animation: pulse 1.4s ease-in-out infinite; }
 .agent-reply-sending { animation: spin 0.8s linear infinite; }
 @media (prefers-reduced-motion: reduce) {
-  .agent-reply-queued, .agent-reply-sending { animation: none; }
+  .agent-reply-queued, .agent-reply-sending, .agent-session-running { animation: none; }
 }
 
 /* Console search uses the existing topbar and leaves both list filters in place. */

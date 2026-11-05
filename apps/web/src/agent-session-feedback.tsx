@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
-import { ChevronDown, CircleCheck, Clock3, LoaderCircle, Pencil } from "lucide-react";
+import { ChevronDown, CircleAlert, CircleCheck, CircleDot, Clock3, LoaderCircle, Pencil } from "lucide-react";
 import { useI18n } from "./i18n";
+import type { AgentSessionStatus } from "./types";
 import type { OutgoingReply } from "./agent-session-view";
 
 export function isHistoryLimited(error: string | undefined): boolean {
@@ -29,6 +30,14 @@ export function AgentReplyFeedback({ status, cancelling = false, onEdit }: {
       <Pencil size={12} aria-hidden="true" />{t(cancelling ? "agentSessionCancelling" : "agentReplyEditShort")}
     </button>}
   </footer>;
+}
+
+/** Foreground and background activity both run; waiting for input is passed as idle. */
+export function SessionStatusIcon({ status }: { status: AgentSessionStatus }) {
+  if (status === "active") return <LoaderCircle className="spin agent-session-running" size={14} />;
+  if (status === "idle") return <CircleCheck size={14} />;
+  if (status === "failed" || status === "stalled") return <CircleAlert size={14} />;
+  return <CircleDot size={14} />;
 }
 
 /** One disclosure owns timing and waiting diagnostics; actions stay outside it. */

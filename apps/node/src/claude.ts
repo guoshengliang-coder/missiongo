@@ -1,3 +1,4 @@
+import { sessionName } from "./session-name.js";
 import { randomUUID } from "node:crypto";
 import { CLAUDE_CODE_MODES } from "@missiongo/domain";
 import { JsonProcess } from "./process.js";
@@ -9,7 +10,7 @@ export function claudeArguments(job: Dispatch, ref: string): string[] {
   return ["--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--replay-user-messages",
     "--permission-prompt-tool", "stdio", "--permission-prompts", "host", "--no-chrome",
     "--disallowedTools", CLAUDE_DENIALS.join(","), "--permission-mode", "plan",
-    "--session-id", ref, "--name", `${job.nodeName ?? "Linux"}-${job.itemKeys.join(",")}`,
+    "--session-id", ref, "--name", sessionName(job),
     ...(job.model ? ["--model", job.model] : []), ...(job.effort ? ["--effort", job.effort] : [])];
 }
 export function labelledAnswers(text: string): Record<string, string> {

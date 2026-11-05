@@ -878,11 +878,11 @@ export class AgentSessionStore {
         .all(...sessionIds) as unknown as Array<{ session_id: string } & AttentionRow>;
       for (const attention of batch) attentionBySession.set(attention.session_id, attention);
     }
-    const freeByDispatch = new Map<string, { product_id: string; initial_text: string; ready: number; dispatch_status: string; error: string | null }>();
+    const freeByDispatch = new Map<string, { product_id: string; initial_text: string; session_title: string | null; ready: number; dispatch_status: string; error: string | null }>();
     if (dispatchIds.length) {
-      const batch = db.prepare(`SELECT f.dispatch_id, f.product_id, f.initial_text, f.ready, d.status AS dispatch_status, d.error
+      const batch = db.prepare(`SELECT f.dispatch_id, f.product_id, f.initial_text, f.session_title, f.ready, d.status AS dispatch_status, d.error
         FROM free_session_starts f JOIN dispatches d ON d.id = f.dispatch_id WHERE f.dispatch_id IN ${holes(dispatchIds)}`)
-        .all(...dispatchIds) as unknown as Array<{ dispatch_id: string; product_id: string; initial_text: string; ready: number; dispatch_status: string; error: string | null }>;
+        .all(...dispatchIds) as unknown as Array<{ dispatch_id: string; product_id: string; initial_text: string; session_title: string | null; ready: number; dispatch_status: string; error: string | null }>;
       for (const free of batch) freeByDispatch.set(free.dispatch_id, free);
     }
     const pendingNatives = new Set<string>(dispatchIds.length
@@ -1040,7 +1040,7 @@ export class AgentSessionStore {
         mode: row.mode,
         dispatchStatus: row.dispatch_status,
         ...(resultRejected ? { dispatchResultRejected: true } : {}),
-        ...(free ? { sessionName: free.initial_text.slice(0, 80) || "新会话" } : row.session_name ? { sessionName: row.session_name } : {}),
+        ...(free ? { sessionName: free.session_title ?? (free.initial_text.slice(0, 80) || "新会话") } : row.session_name ? { sessionName: row.session_name } : {}),
         ...(row.session_url ? { sessionUrl: row.session_url } : {}),
         createdAt: row.created_at,
         items: itemRows.map((item) => ({ key: item.item_key, title: item.title, productId: item.product_id })),
