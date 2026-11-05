@@ -59,7 +59,8 @@ export interface Adapter {
   stop(command: Command): Promise<Snapshot>;
   snapshot(): Promise<Snapshot>;
   historyPage?(cursor: string): Promise<{ messages: Message[]; nextCursor?: string; error?: string }>;
-  deliver(command: Command): Promise<void>;
+  /** controlOnly permits answers to existing native requests, never a new prompt. */
+  deliver(command: Command, options?: { controlOnly: boolean }): Promise<void>;
   decide(decision: { id: string; choice: string }): Promise<void>;
   settings?(settings: NonNullable<Session["desiredSettings"]>): Promise<void>;
   archive?(restore: boolean): Promise<void>;

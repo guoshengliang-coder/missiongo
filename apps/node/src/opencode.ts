@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { labelledAnswers } from "./claude.js";
 import type { Adapter, Command, Dispatch, Message, Question, Session, Snapshot, Wire } from "./types.js";
-import { id, object } from "./types.js";
+import { id, object, InputRejected } from "./types.js";
 
 class OpenCodeHTTPError extends Error {
   constructor(readonly status: number, readonly validation: boolean) { super(`OpenCode HTTP ${status}`); }
@@ -129,7 +129,7 @@ export class OpenCodeAdapter implements Adapter {
     if (!after.active) return { status: "idle", messages: [], turnActive: false };
     throw new Error(`停止尚未确认：${failure instanceof Error ? failure.message : "来源仍在运行"}`);
   }
-  async deliver(command: Command): Promise<void> {
+  async deliver(command: Command, options?: { controlOnly: boolean }): Promise<void> {
     if (command.kind === "interrupt") { await this.stop(command); return; }
     const choices = await this.choices();
     const permission = choices.permissions[0];
@@ -159,6 +159,7 @@ export class OpenCodeAdapter implements Adapter {
       }
       await this.api.call("POST", `${this.path}/form/${encodeURIComponent(form.id)}/reply`, { answer }); return;
     }
+    if (options?.controlOnly) throw new InputRejected("回复未发送：会话设置未确认，请重新应用设置后重试。");
     const previous = new Set((await this.snapshot()).messages.map((message) => message.sourceId));
     await this.prompt(command.text);
     for (let attempt = 0; attempt < 10; attempt++) {
@@ -170,14 +171,25 @@ export class OpenCodeAdapter implements Adapter {
   async decide(): Promise<void> { throw new Error("Answer the displayed OpenCode permission question"); }
   async settings(settings: NonNullable<Session["desiredSettings"]>): Promise<void> {
     if (settings.mode && !["plan", "build", "default"].includes(settings.mode)) throw new Error("Unsupported OpenCode mode");
-    this.planning = settings.planning ?? (settings.planApproved===undefined ? this.planning : !settings.planApproved);
+    const planning = settings.planning ?? (settings.planApproved===undefined ? this.planning : !settings.planApproved);
     if (settings.mode) {
-      const wanted=this.planning || settings.mode === "plan" ? "plan" : "build";
+      const wanted=planning || settings.mode === "plan" ? "plan" : "build";
       await this.api.call("POST", `${this.path}/agent`, {agent:wanted});
       const actual=await this.api.call("GET",this.path);
       if(actual.data?.agent!==wanted) throw new Error("OpenCode did not confirm the selected native agent");
     }
-    if (settings.model) await this.api.call("POST", `${this.path}/model`, { model: modelRef(settings.model, settings.effort) });
+    if (settings.model || settings.effort) {
+      const current = (await this.api.call("GET", this.path)).data?.model;
+      const model = settings.model ? modelRef(settings.model, settings.effort)
+        : current?.providerID && current?.id ? { ...current, variant: settings.effort } : undefined;
+      if (!model) throw new Error("OpenCode did not confirm the current model; effort was not changed");
+      await this.api.call("POST", `${this.path}/model`, { model });
+      const actual = (await this.api.call("GET", this.path)).data?.model;
+      if (actual?.providerID !== model.providerID || actual?.id !== model.id || model.variant !== undefined && actual?.variant !== model.variant) {
+        throw new Error("OpenCode did not confirm the selected model and effort");
+      }
+    }
+    this.planning = planning;
   }
   async close(): Promise<void> { /* The shared service and source conversation belong to the user. */ }
 }

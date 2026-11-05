@@ -201,8 +201,9 @@ export class CodexAdapter implements Adapter {
     if (await observe().catch(() => "unknown") === "idle") return { status: "idle", turnActive: false, messages: [] };
     throw new Error(`停止尚未确认：${failure instanceof Error ? failure.message : "来源未报告原回合结束"}`);
   }
-  async deliver(command: Command): Promise<void> {
+  async deliver(command: Command, options?: { controlOnly: boolean }): Promise<void> {
     if (command.kind === "interrupt") { await this.stop(command); return; }
+    if (options?.controlOnly) throw new InputRejected("回复未发送：会话设置未确认，请重新应用设置后重试。");
     if (this.pending.size) throw new Error("Answer the pending request explicitly before sending another message");
     const { lastTurn } = await this.runtime();
     const turn = lastTurn?.status === "inProgress" ? lastTurn : undefined;
@@ -221,7 +222,24 @@ export class CodexAdapter implements Adapter {
     if (settings.mode) codexPolicy(settings.mode);
     const updated = { ...this.job, ...settings };
     const planning=settings.planning ?? (settings.planApproved===undefined ? this.planning : !settings.planApproved);
-    const result=await this.rpc.call("thread/resume", { threadId: this.ref, excludeTurns: true, ...codexPolicy(planning ? "read-only" : updated.mode), ...(updated.model ? { model: updated.model } : {}) });
+    const policy = codexPolicy(planning ? "read-only" : updated.mode);
+    let result=await this.rpc.call("thread/resume", { threadId: this.ref, excludeTurns: true, ...policy, ...(updated.model ? { model: updated.model } : {}) });
+    if (result.thread?.id !== this.ref) throw new InputRejected("Codex resumed a different native thread; settings were not applied");
+    try { validatePolicy(result, updated, planning); }
+    catch {
+      // Loaded threads may ignore resume overrides. Do not unload or send a
+      // turn to apply permissions: update explicitly, then verify live state.
+      if (result.thread?.status?.type === "active" || result.thread?.turns?.some((turn: Wire) => turn.status === "inProgress")) {
+        throw new InputRejected("Wait for the current Codex turn before changing permissions");
+      }
+      await this.rpc.call("thread/settings/update", { threadId: this.ref, approvalPolicy: policy.approvalPolicy,
+        approvalsReviewer: policy.approvalsReviewer,
+        sandboxPolicy: policy.sandbox === "read-only" ? { type: "readOnly", networkAccess: false }
+          : { type: "workspaceWrite", writableRoots: [updated.repoPath, worktreePath(updated)], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+        ...(updated.model ? { model: updated.model } : {}), ...(updated.effort ? { effort: updated.effort } : {}) });
+      result = await this.rpc.call("thread/resume", { threadId: this.ref, excludeTurns: true });
+      if (result.thread?.id !== this.ref) throw new InputRejected("Codex resumed a different native thread; settings were not confirmed");
+    }
     validatePolicy(result,updated,planning);
     this.model=result.model ?? updated.model ?? this.model;
     this.planning=planning; this.job = updated;

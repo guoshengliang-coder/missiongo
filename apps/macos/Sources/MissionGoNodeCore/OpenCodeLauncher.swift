@@ -1068,7 +1068,7 @@ public struct OpenCodeLauncher: AgentAdapter {
         // now, and any change waiting for an idle moment. Failing to read the
         // info must not fail the sync — the report then just says nothing
         // about the model, as it did before settings existed.
-        let info = try? await control.sessionInfo(id: session.sessionRef)
+        var info = try? await control.sessionInfo(id: session.sessionRef)
         var mode = info?.agent == "plan" ? "plan" : info?.agent == "build" ? "build" : info?.agent
         var model = info?.model?.compoundId
         var effort = info?.model?.variant
@@ -1085,6 +1085,7 @@ public struct OpenCodeLauncher: AgentAdapter {
                     try await control.setAgent(id: session.sessionRef, agent: target)
                     let effective = try await control.sessionInfo(id: session.sessionRef)
                     guard effective.agent == target else { throw LaunchError("OpenCode 未确认所选原生 Agent，未标记生效。") }
+                    info = effective
                     mode = target
                 }
                 if desired.model != nil || desired.effort != nil {
@@ -1109,14 +1110,45 @@ public struct OpenCodeLauncher: AgentAdapter {
                         }
                         let ref = base.withVariant(desired.effort, efforts: catalog?.efforts(forCompoundId: base.compoundId))
                         try await control.setModel(id: session.sessionRef, model: ref)
-                        model = ref.compoundId
-                        effort = ref.variant
+                        let effective = try await control.sessionInfo(id: session.sessionRef)
+                        info = effective
+                        model = effective.model?.compoundId
+                        effort = effective.model?.variant
+                        guard effective.model?.compoundId == ref.compoundId,
+                              ref.variant == nil || effective.model?.variant == ref.variant else {
+                            throw LaunchError("OpenCode 未确认所选模型与推理强度，未标记生效。")
+                        }
                     } else if session.externalBindingGeneration != nil {
                         throw LaunchError("无法确认原会话的模型，未应用设置。")
                     }
                 }
             } catch {
                 settingsError = "OpenCode 未应用该设置：\(error.localizedDescription)"
+            }
+        }
+        // Recheck desired settings even after a failed revision was settled by
+        // the server. A later poll must not bypass the failed-settings gate.
+        // Native approval/form responses and interrupts do not start a turn.
+        if let command = session.command, command.kind != "interrupt",
+           !(command.attachments?.isEmpty != false && choices.first?.answer(from: command.text) != nil),
+           let desired = session.desiredSettings {
+            var problem = settingsError
+            if problem == nil {
+                if let wanted = desired.mode, info?.agent != (wanted == "plan" ? "plan" : "build") {
+                    problem = "OpenCode 未确认所选原生 Agent。"
+                } else if let wanted = desired.model, info?.model?.compoundId != wanted {
+                    problem = "OpenCode 未确认所选模型。"
+                } else if let wanted = desired.effort, info?.model?.variant != wanted {
+                    problem = "OpenCode 未确认所选推理强度。"
+                }
+            }
+            if let problem {
+                return AgentSessionReport(status: snapshot.status, messages: messages, error: snapshot.failure,
+                    commandId: command.id, commandStatus: "failed", commandError: "回复未发送：\(problem) 请重新应用设置后重试。",
+                    turnActive: snapshot.status == "active" && choices.isEmpty, waitingForInput: !choices.isEmpty)
+                    .reportingExecution(activities: execution.activities, revision: execution.revision,
+                        turnStartedAt: execution.turnStartedAt, lastOutputAt: execution.lastOutputAt)
+                    .reportingSettings(mode: mode, model: model, effort: effort, settingsRevision: desired.revision, settingsError: problem)
             }
         }
         let report: AgentSessionReport
