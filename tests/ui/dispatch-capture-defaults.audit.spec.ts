@@ -60,7 +60,7 @@ for (const width of [375, 1440]) {
     await page.route("**/api/v1/dispatches", async route => {
       dispatchCount++;
       const input = route.request().postDataJSON();
-      await route.fulfill({ status: 201, json: { ...input, id: "fixture-dispatch", status: "queued", nodeName: node.name, createdAt: new Date().toISOString() } });
+      await route.fulfill({ status: 201, json: { ...input, id: "fixture-dispatch", status: "queued", nodeName: node.name, sessionUrl: "codex://threads/dispatch-result", createdAt: new Date().toISOString() } });
     });
     const openDispatch = async () => {
       await page.locator(".item-row").filter({ hasText: item.key }).getByRole("checkbox").check();
@@ -90,6 +90,7 @@ for (const width of [375, 1440]) {
     await expect(form.getByRole("combobox", { name: "强度", exact: true })).toHaveAttribute("data-value", "high");
     await form.getByRole("button", { name: "派单", exact: true }).click();
     await expect(page.locator(".dispatch-result")).toBeVisible();
+    await expect(page.locator(".dispatch-result a[href^='codex:'], .dispatch-result .dispatch-session-link")).toHaveCount(0);
     expect(dispatchCount).toBe(1);
   });
 }

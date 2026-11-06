@@ -83,16 +83,19 @@ export function SessionStatusIcon({ status }: { status: AgentSessionStatus }) {
 }
 
 /** One disclosure owns timing and waiting diagnostics; actions stay outside it. */
-export function AgentRunDetails({ label, icon, status, children }: {
-  label: string; icon?: ReactNode; status: string; children: ReactNode;
+export function AgentRunDetails({ label, icon, status, children, actions }: {
+  label: string; icon?: ReactNode; status: string; children: ReactNode; actions?: ReactNode;
 }) {
   const { t } = useI18n();
-  return <details className="agent-run-details">
-    <summary className={`agent-console-activity agent-console-activity-${status}`}>
-      {icon && <span className="agent-run-icon" aria-hidden="true">{icon}</span>}
-      <span role="status">{label}</span>
-      <span className="agent-run-disclosure">{t("agentRunDetails")}<ChevronDown size={12} aria-hidden="true" /></span>
-    </summary>
-    <div className="agent-run-diagnostics">{children}</div>
-  </details>;
+  return <div className="agent-run-controls">
+    <details className="agent-run-details">
+      <summary className={`agent-console-activity agent-console-activity-${status}`}>
+        {icon && <span className="agent-run-icon" aria-hidden="true">{icon}</span>}
+        <span role="status">{label}</span>
+        <span className="agent-run-disclosure">{t("agentRunDetails")}<ChevronDown size={12} aria-hidden="true" /></span>
+      </summary>
+      <div className="agent-run-diagnostics">{children}</div>
+    </details>
+    {actions}
+  </div>;
 }

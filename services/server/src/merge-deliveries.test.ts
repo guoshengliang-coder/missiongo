@@ -192,4 +192,30 @@ describe("AND-423 explicit merge deliveries",()=>{
       expect(result.error || result.isError).toBeTruthy();
     }
   });
+  it("confirms immediately on a quoted same-turn instruction and stays idempotent",async()=>{
+    const f=await prepared();
+    const d=f.merges.propose(f.owner.id,"original-client",f.identity,"instruction",{...f.input},{quote:"  添加到待合并  "});
+    expect(d.state).toBe("confirmed");expect(d.confirmedBy).toBe("session-instruction");expect(d.instructionQuote).toBe("添加到待合并");
+    const again=f.merges.propose(f.owner.id,"original-client",f.identity,"instruction",{...f.input},{quote:"添加到待合并"});
+    expect(again.state).toBe("confirmed");expect(again.confirmedBy).toBe("session-instruction");
+    const b=f.merges.start(f.owner.id,randomUUID(),[{id:d.id,revision:d.revision}],f.config,false);
+    expect(b.state).toBe("active");
+  });
+  it("keeps the confirmation origin explicit and never overwrites it",async()=>{
+    const f=await prepared();
+    expect(f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm").confirmedBy).toBe("console");
+    const g=await prepared();
+    const d=g.merges.propose(g.owner.id,"original-client",g.identity,"instruction",{...g.input},{quote:"加入待合并"});
+    expect(g.merges.decide(g.owner.id,d.id,d.revision,"confirm").confirmedBy).toBe("session-instruction");
+    expect(()=>g.merges.propose(g.owner.id,"original-client",g.identity,"instruction",{...g.input,pullRequest:14},{quote:"加入待合并"})).toThrow();
+  });
+  it("confirms through the MCP tool only when instructionConfirmation is carried",async()=>{
+    const f=await prepared();
+    const ordered=await f.call("propose_merge_delivery",{identity:f.identity,idempotencyKey:"mcp-instruction",delivery:f.input,instructionConfirmation:{quote:"添加到待合并"}});
+    f.safe(ordered);
+    expect(ordered.structuredContent!.delivery).toMatchObject({state:"confirmed",confirmedBy:"session-instruction"});
+    const plain=await f.call("propose_merge_delivery",{identity:f.identity,idempotencyKey:"mcp-plain",delivery:f.input});
+    f.safe(plain);
+    expect(plain.structuredContent!.delivery).toMatchObject({state:"proposed"});
+  });
 });

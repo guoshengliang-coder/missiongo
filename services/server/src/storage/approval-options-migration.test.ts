@@ -27,7 +27,7 @@ it("upgrades an existing yes/no approval without losing its queued decision or r
       ) STRICT;
       INSERT INTO agent_session_approvals VALUES
         ('session','old','manual','pending','turn','git status',NULL,1,'accept','retry','review','delivered',NULL,'now');
-      DELETE FROM schema_migrations WHERE version = 202610282337;
+      DELETE FROM schema_migrations WHERE version IN (202610282337, 202611060654);
     `);
     database.close();
     database = new MissionGoDatabase(path);

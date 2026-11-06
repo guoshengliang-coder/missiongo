@@ -137,3 +137,54 @@ it("persists only advertised scopes and discards decisions after a transport los
     expect(approvals.get("session")?.status).toBe("approved");
   } finally { database.close(); }
 });
+
+it("distinguishes Codex questions from permission prompts and keeps legacy rows neutral (AND-408)", () => {
+  const database = new MissionGoDatabase(":memory:");
+  try {
+    database.connection.exec(`
+      INSERT INTO nodes (id, account_id, name, token_hash, created_at, updated_at)
+      VALUES ('node', 'owner', 'Fixture', 'hash', 'now', 'now');
+      INSERT INTO dispatches (id, account_id, node_id, agent_kind, mode, status, repo_path, created_at)
+      VALUES ('dispatch', 'owner', 'node', 'codex', 'auto', 'launched', '/synthetic/repo', 'now');
+      INSERT INTO agent_sessions (id, dispatch_id, node_id, agent_kind, agent_session_ref, status, created_at, updated_at)
+      VALUES ('session', 'dispatch', 'node', 'codex', 'thread', 'active', 'now', 'now');
+    `);
+    const approvals = new AgentApprovalStore(database);
+    const session = { id: "session", agentKind: "codex" as const };
+
+    approvals.record("node", "session", { id: "q-1", kind: "manual", status: "pending",
+      turnId: "turn", action: "选择产品偏好", startedAtMs: 1, requestKind: "question",
+      options: [{ id: "choice-0", kind: "choice", label: "方案 A" }] });
+    expect(approvals.get("session")?.requestKind).toBe("question");
+    expect(approvals.withAttention(session)).toMatchObject({ needsAttention: true,
+      attention: { state: "needed", kind: "answer", reason: "Codex 正在等待回答。" } });
+
+    approvals.record("node", "session", { id: "p-1", kind: "manual", status: "pending",
+      turnId: "turn", action: "git status", startedAtMs: 2, requestKind: "permission" });
+    expect(approvals.withAttention(session)).toMatchObject({
+      attention: { kind: "approval", reason: "Codex 正在等待授权。" } });
+
+    approvals.record("node", "session", { id: "c-1", kind: "manual", status: "pending",
+      turnId: "turn", action: "MCP：请求确认", startedAtMs: 3, requestKind: "confirmation" });
+    expect(approvals.withAttention(session)).toMatchObject({
+      attention: { kind: "approval", reason: "Codex 正在等待确认。" } });
+
+    approvals.record("node", "session", { id: "legacy-1", kind: "manual", status: "pending",
+      turnId: "turn", action: "legacy prompt", startedAtMs: 4 });
+    expect(approvals.get("session")?.requestKind).toBeUndefined();
+    expect(approvals.withAttention(session)).toMatchObject({
+      attention: { kind: "approval", reason: "Codex 正在等待处理。" } });
+
+    // An older node re-reporting the same live prompt must not erase the kind.
+    approvals.record("node", "session", { id: "q-2", kind: "manual", status: "pending",
+      turnId: "turn", action: "再次提问", startedAtMs: 5, requestKind: "question" });
+    approvals.record("node", "session", { id: "q-2", kind: "manual", status: "pending",
+      turnId: "turn", action: "再次提问", startedAtMs: 5 });
+    expect(approvals.get("session")?.requestKind).toBe("question");
+
+    expect(() => approvals.record("node", "session", { id: "auto-1", kind: "auto", status: "inProgress",
+      turnId: "turn", action: "review", startedAtMs: 6, requestKind: "question" })).toThrow();
+    expect(() => approvals.record("node", "session", { id: "bad-1", kind: "manual", status: "pending",
+      turnId: "turn", action: "bad", startedAtMs: 7, requestKind: "other" })).toThrow();
+  } finally { database.close(); }
+});

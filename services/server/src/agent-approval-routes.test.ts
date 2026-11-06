@@ -155,3 +155,23 @@ it("keeps an explicitly empty source list empty instead of granting fallback cho
   expect((await f.decide(prompt.id, "accept")).statusCode).toBe(400);
   expect((await f.decide(prompt.id, "acceptAlways")).statusCode).toBe(400);
 });
+
+it("carries requestKind through the snapshot route and rejects unknown values (AND-408)", async () => {
+  const f = await fixture();
+  const question: AgentApproval = { ...prompt, id: "question-1", requestKind: "question",
+    action: "选择产品偏好", options: [{ id: "choice-0", kind: "choice", label: "方案 A" }] };
+  expect((await f.post(question)).statusCode).toBe(204);
+  const detail = (await f.get()).json();
+  expect(detail.approval).toMatchObject({ id: "question-1", requestKind: "question" });
+  expect(detail.attention).toMatchObject({ kind: "answer", reason: "Codex 正在等待回答。" });
+  const chosen = await f.decide("question-1", "choice-0");
+  expect(chosen.statusCode, chosen.body).toBe(200);
+  expect((await f.poll()).json().sessions.find((session: { id: string }) => session.id === f.id).approvalDecision)
+    .toEqual({ id: "question-1", choice: "choice-0" });
+
+  expect((await f.post({ ...prompt, id: "bad-kind", requestKind: "other" })).statusCode).toBe(400);
+  expect((await f.post({ ...prompt, id: "auto-kind", kind: "auto", status: "inProgress", requestKind: "question" } as AgentApproval)).statusCode).toBe(400);
+  const legacy = await f.post({ ...prompt, id: "legacy-1" });
+  expect(legacy.statusCode, legacy.body).toBe(204);
+  expect((await f.get()).json().attention).toMatchObject({ kind: "approval", reason: "Codex 正在等待处理。" });
+});
