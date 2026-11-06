@@ -9,6 +9,7 @@ import { agentModels, reconcileEffort } from "./agent-model-options";
 import { useI18n } from "./i18n";
 import type { FreeSessionConfig } from "./types";
 import "./merge-console.css";
+import { deriveMergeProgress, type MergeProgress } from "./merge-progress";
 
 interface Delivery {
   id:string;productId:string;sessionId:string;revision:string;state:string;summary:string;validation:string;
@@ -22,6 +23,16 @@ const useDeliveries=(productId:string)=>useQuery({
   queryFn:()=>request<{deliveries:Delivery[];batches:Batch[]}>(`/api/v1/products/${encodeURIComponent(productId)}/merge-deliveries`),
   enabled:Boolean(productId),refetchInterval:15_000,
 });
+
+export function useMergeProgress(productId:string) {
+  const query=useDeliveries(productId);
+  return deriveMergeProgress(productId,query.data?.deliveries??[],query.data?.batches??[]);
+}
+export function MergeProgressBadge({state}:{state:MergeProgress | undefined}) {
+  const {t}=useI18n();
+  return state?<span className="item-handler-badge" data-merge-progress={state}>{t(state==="pending"?"mergePending":"mergeRunning")}</span>:null;
+}
+const checkLabel=(blocker?:string)=>blocker==="changed"?"mergeChanged":blocker==="pending"?"mergeCheckPending":blocker==="failed"?"mergeCheckFailed":blocker==="conflicting"?"mergeCheckConflict":blocker==="dependency"?"mergeCheckDependency":blocker?"mergeNeedsCheck":"mergeChecksPassed";
 
 export function DeliveryCards({productId,sessionId}:{productId:string;sessionId:string}) {
   const {t,formatTime}=useI18n(),client=useQueryClient(),query=useDeliveries(productId);
@@ -55,7 +66,7 @@ export function PendingMergeButton({productId,onSession}:{productId:string;onSes
   const {t}=useI18n(),query=useDeliveries(productId);
   const [open,setOpen]=useState(false);
   useEffect(()=>setOpen(false),[productId]);
-  const count=query.data?.deliveries.filter(d=>d.state==="confirmed").length??0;
+  const count=query.data?.deliveries.filter(d=>d.state==="confirmed"&&d.blocker!=="changed").length??0;
   return <>
     <button type="button" className="secondary-button merge-entry" onClick={()=>setOpen(true)}>
       {t("mergePending")} {query.isSuccess&&<span className="agent-unread-badge">{count}</span>}
@@ -99,7 +110,7 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
   const locked=start.isPending||Boolean(frozen.current);
   const active=query.data?.batches.find(b=>b.state==="active");
   const candidates=query.data?.deliveries.filter(d=>d.state==="confirmed")??[];
-  const selectedValid=Object.entries(selected).every(([id,revision])=>candidates.some(d=>d.id===id&&d.revision===revision&&!d.blocker));
+  const selectedValid=Object.entries(selected).every(([id,revision])=>candidates.some(d=>d.id===id&&d.revision===revision&&d.blocker!=="changed"));
   return <Modal title={t("mergePending")} subtitle={t("mergeSelectHelp")} onClose={onClose} wide scrolls
     dirty={Boolean(Object.keys(selected).length)||publish} pending={start.isPending}>
     {close=><div className="merge-dialog">
@@ -109,9 +120,9 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
         <p>{t("mergeActiveHelp")}</p><button type="button" className="secondary-button" onClick={()=>onSession(active.sessionId)}>{t("mergeOpenSession")}</button></section>}
       {query.isSuccess&&!candidates.length&&!active&&<p>{t("mergeEmpty")}</p>}
       <div className="merge-list">{candidates.map(d=><div className="merge-row" key={d.id}>
-        <label><input type="checkbox" checked={Boolean(selected[d.id])} disabled={locked||Boolean(active)||(Boolean(d.blocker)&&!selected[d.id])}
+        <label><input type="checkbox" checked={Boolean(selected[d.id])} disabled={locked||Boolean(active)||(d.blocker==="changed"&&!selected[d.id])}
           onChange={e=>setSelected(prev=>{const next={...prev};if(e.target.checked)next[d.id]=d.revision;else delete next[d.id];return next;})}/>
-          <span><strong>{d.itemKeys.join(" · ")} · {d.summary}</strong><small>{d.requiredArtifacts.join(" / ") || d.noReleaseReason} · {t(d.blocker?"mergeNeedsCheck":"mergeChecksPassed")}</small></span></label>
+          <span><strong>{d.itemKeys.join(" · ")} · {d.summary}</strong><small>{d.requiredArtifacts.join(" / ") || d.noReleaseReason} · {t(checkLabel(d.blocker))}</small></span></label>
         <details><summary>{t("mergeDetails")}</summary><p>{d.validation}</p><p><code>{d.head}</code></p>
           <p>{formatTime(d.evidence.checkedAt)} · {d.evidence.source}</p>
           <a href={d.pullRequestUrl} target="_blank" rel="noreferrer">{t("mergeViewPR")}</a>{" · "}
