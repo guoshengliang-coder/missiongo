@@ -1,3 +1,4 @@
+import { MergeDeliveries } from "./merge-deliveries.js";
 import { FreeSessionStore } from "./free-session-store.js";
 import { registerCollaborationRoutes } from "./collaboration-routes.js";
 import { collaborationLinkedRead, collaborationUploadAllowed, collaborationVerifier } from "./collaboration-policy.js";
@@ -2482,6 +2483,32 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       return dispatch;
     });
     return reply.status(201).send(dispatch);
+  });
+
+  const merges = new MergeDeliveries(store);
+  app.get("/api/v1/products/:productId/merge-deliveries",async request=>{
+    const {productId}=request.params as {productId:string};
+    requireProductPermission(request,productId,"view");
+    const accountId=requireAccountId(request);
+    return {deliveries:merges.list(productId,accountId),batches:merges.batches(productId,accountId)};
+  });
+  app.post("/api/v1/merge-deliveries/:id/decision",async request=>{
+    const {id}=request.params as {id:string},body=objectBody(request.body);
+    requireProductPermission(request,merges.product(id),"operate");
+    requireProductPermission(request,merges.product(id),"ai");
+    const decision=stringField(body,"decision")!;
+    if(decision!=="confirm" && decision!=="withdraw") throw invalidInput("Invalid delivery decision.");
+    return merges.decide(requireAccountId(request),id,stringField(body,"revision")!,decision);
+  });
+  app.post("/api/v1/products/:productId/merge-batches",async request=>{
+    const {productId}=request.params as {productId:string},body=objectBody(request.body);
+    requireProductPermission(request,productId,"operate");requireProductPermission(request,productId,"ai");
+    if(!Array.isArray(body.selection) || typeof body.publish!=="boolean") throw invalidInput("Select a batch and its publication scope.");
+    const selection=body.selection.map(value=>{const row=objectBody(value);return {id:stringField(row,"id")!,revision:stringField(row,"revision")!};});
+    return merges.start(requireAccountId(request),stringField(body,"requestKey")!,selection,{
+      productId,nodeId:stringField(body,"nodeId")!,agentKind:stringField(body,"agentKind")! as AgentKind,mode:stringField(body,"mode")!,
+      ...(optionalName(body,"model")?{model:optionalName(body,"model")!}:{}),...(optionalName(body,"effort")?{effort:optionalName(body,"effort")!}:{})
+    },body.publish);
   });
 
   app.post("/api/v1/project-conversations", async (request, reply) => {

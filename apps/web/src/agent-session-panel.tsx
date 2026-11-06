@@ -1,3 +1,4 @@
+import { DeliveryCards } from "./merge-console";
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
 import { AgentPlanContent, planTranscript, repeatsSubmittedPlan } from "./agent-plan-content";
@@ -37,7 +38,7 @@ function statusLabel(status: AgentSessionStatus, t: ReturnType<typeof useI18n>["
   return t("agentSessionUnavailable");
 }
 
-export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
+export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: string; productId?: string }) {
   const { locale, t } = useI18n();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -149,6 +150,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                     : backgroundOnly ? t("agentSessionBackgroundStatus") : statusLabel(session.data.status, t)}
                 </span>
               </header>
+              <DeliveryCards productId={productId} sessionId={sessionId} />
               {history.messages.length === 0 && (
                 <p className="agent-session-muted">{t("agentSessionNoMessages")}</p>
               )}

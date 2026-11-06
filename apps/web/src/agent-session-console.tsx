@@ -1,3 +1,4 @@
+import { DeliveryCards } from "./merge-console";
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
 import { AgentPlanContent, planContinuationObserved, planTranscript, repeatsSubmittedPlan } from "./agent-plan-content";
@@ -1355,6 +1356,7 @@ export function AgentSessionConsole({
                     )}
                   </section>
                 )}
+                {conversationReady && selected && <DeliveryCards productId={selected.productId ?? selected.items[0]?.productId ?? productId} sessionId={selected.agentSessionId ?? selected.id} />}
                 <div className="agent-run-status" aria-label={t("agentRunFeedback")}>
                   <AgentOperationFeedback failures={feedback.failures} sessionId={operationSessionId} command={command} />
                   <AgentStopFeedback stop={stopCommand}
