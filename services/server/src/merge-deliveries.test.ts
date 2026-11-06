@@ -1,3 +1,4 @@
+import { legacyIntegratorPrompt } from "./legacy-merge-authorization.js";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "./app.js";
@@ -217,5 +218,127 @@ describe("AND-423 explicit merge deliveries",()=>{
     const plain=await f.call("propose_merge_delivery",{identity:f.identity,idempotencyKey:"mcp-plain",delivery:f.input});
     f.safe(plain);
     expect(plain.structuredContent!.delivery).toMatchObject({state:"proposed"});
+  });
+});
+
+describe("planned integration batches",()=>{
+  async function batchFixture(count=1) {
+    const f=await prepared(),deliveries=[f.d];
+    for(let i=1;i<count;i++) {
+      const item=f.store.createWorkItem({productId:f.item.productId,title:`Related ${i}`,description:"Synthetic integration",type:"task",priority:"normal",status:"ready",environment:{platform:"shared"}});
+      const claim=await f.call("claim_item",{...f.claimInput,itemKey:item.key,session:{...f.session,sessionRef:randomUUID()},idempotencyKey:`claim-${i}`});f.safe(claim);
+      deliveries.push(f.merges.propose(f.owner.id,"original-client",{sessionId:claim.structuredContent!.sessionId!},`offer-${i}`,{...proposal(item.key),pullRequest:12+i}));
+    }
+    for(const d of deliveries)f.merges.decide(f.owner.id,d.id,d.revision,"confirm");
+    const b=f.merges.start(f.owner.id,randomUUID(),deliveries.map(d=>({id:d.id,revision:d.revision})),f.config,false,1);
+    const dispatches=new DispatchStore(f.store.database);dispatches.claimNextDispatch(f.node.nodeId);dispatches.recordDispatchResult({nodeId:f.node.nodeId,dispatchId:b.dispatchId,status:"launched"});
+    const current=()=>new MergeDeliveries(f.store).batch(f.owner.id,b.dispatchId,b.id);
+    const act=(action:Parameters<MergeDeliveries["integrate"]>[5],key=randomUUID(),revision=current().integration!.revision)=>
+      f.merges.integrate(f.owner.id,b.dispatchId,b.id,revision,key,action);
+    const plan={kind:"plan" as const,base:"b".repeat(40),summary:"Foundation, dependent feature, independent fix",validation:"Verify the final combined target",entries:deliveries.map((d,i)=>({deliveryId:d.id,head:d.head,dependsOn:i===1?[deliveries[0]!.id]:[],group:i<2?"shared interface":"independent",reason:"Read overlapping changes",validation:"Behavior and compatibility tests"}))};
+    const check=(id:string,head="a".repeat(40))=>act({kind:"check",deliveryId:id,expectedHead:head,base:"b".repeat(40),checkedAt:new Date().toISOString(),checks:"passed",mergeable:"clean",local:"passed",source:"Synthetic CI",validation:"Local and remote checks passed"});
+    const merged=(id:string,head="a".repeat(40))=>f.merges.report(f.owner.id,b.dispatchId,b.id,id,{status:"merged",head,commit:"c".repeat(40),detail:"Verified real merge in synthetic fixture"});
+    return {...f,b,deliveries,current,act,plan,check,merged};
+  }
+  it("plans dependencies, repairs a regression, waits for CI and reconciles the complete combination",async()=>{
+    const f=await batchFixture(3),[a,b,c]=f.deliveries;
+    expect(()=>f.check(a!.id)).toThrow();
+    expect(()=>f.act({...f.plan,entries:f.plan.entries.slice(1)})).toThrow();
+    expect(()=>f.act({...f.plan,entries:[f.plan.entries[1]!,f.plan.entries[0]!,f.plan.entries[2]!]})).toThrow();
+    f.act(f.plan);f.check(b!.id);expect(()=>f.merged(b!.id)).toThrow();
+    f.check(a!.id);f.merged(a!.id);
+    expect(f.current().integration!.entries[b!.id]!.check).toBeUndefined();
+    const reservation=f.act({kind:"prepare_repair",deliveryId:b!.id,expectedHead:b!.head,base:"c".repeat(40),reason:"Fix shared interface regression"},"repair-reservation");
+    expect(reservation.integration!.entries[b!.id]!.repair!.id).toBe("repair-reservation");
+    const repair={kind:"repair" as const,deliveryId:b!.id,expectedHead:b!.head,repairId:"repair-reservation",head:"d".repeat(40),commits:["d".repeat(40)],validation:"Regression reproduced then fixed",source:"Synthetic verified commit chain"};
+    expect(()=>f.act({...repair,expectedHead:"e".repeat(40)})).toThrow();
+    expect(()=>f.act({...repair,repairId:"unrelated"})).toThrow();
+    const rev=f.current().integration!.revision;f.act(repair,"repair-result",rev);f.act(repair,"repair-result",rev);
+    expect(f.current().integration!.entries[b!.id]!.repairs).toHaveLength(1);
+    expect(f.current().entries.find(d=>d.id===b!.id)).toMatchObject({head:b!.head,executionHead:repair.head});
+    f.act({kind:"check",deliveryId:b!.id,expectedHead:repair.head,base:"c".repeat(40),checkedAt:new Date().toISOString(),checks:"pending",mergeable:"clean",local:"passed",source:"CI still running",validation:"Wait for CI"});
+    expect(()=>f.merged(b!.id,repair.head)).toThrow();
+    // Independent work can proceed while a dependent repair is waiting.
+    f.check(c!.id);f.merged(c!.id);
+    f.check(b!.id,repair.head);f.merged(b!.id,repair.head);
+    expect(()=>f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id)).toThrow();
+    f.act({kind:"final_validation",head:"f".repeat(40),checkedAt:new Date().toISOString(),validation:"Combined behavior and repository checks passed",source:"Target main at verified head"});
+    expect(f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id).state).toBe("finished");
+    expect(f.current().integration!.plans).toHaveLength(1);
+    expect(f.current().integration!.finalValidation).toBeDefined();
+  });
+  it("rejects stale writes, changed source scope, cross-session calls and altered retries",async()=>{
+    const f=await batchFixture();f.act(f.plan,"plan");
+    expect(()=>f.act({...f.plan,summary:"Different"},"plan",0)).toThrow();
+    expect(()=>f.act(f.plan,"stale",0)).toThrow();
+    expect(()=>f.merges.integrate(f.other.id,f.b.dispatchId,f.b.id,1,"other",f.plan)).toThrow();
+    expect(()=>f.merges.integrate(f.owner.id,f.dispatch.id,f.b.id,1,"source-session",f.plan)).toThrow();
+    for(const options of [{scopes:["missiongo:read"]},{accountId:f.other.id}]) {
+      const result=await f.call("record_merge_integration",{batchId:f.b.id,dispatchId:f.b.dispatchId,expectedRevision:1,idempotencyKey:randomUUID(),action:f.plan},options);
+      expect(result.error||result.isError).toBeTruthy();
+    }
+    new AgentSessionStore(f.store.database).enqueue(f.owner.id,f.projectSessionId,"Change the delivery",[]);
+    expect(()=>f.act({kind:"prepare_repair",deliveryId:f.d.id,expectedHead:f.d.head,base:"b".repeat(40),reason:"Repair"})).toThrow();
+  });
+  it("persists unknown repairs and rejects stale checks without unlocking the batch",async()=>{
+    const f=await batchFixture();f.act(f.plan);
+    f.act({kind:"prepare_repair",deliveryId:f.d.id,expectedHead:f.d.head,base:"b".repeat(40),reason:"Investigate and repair"},"reserved");
+    expect(f.current().integration!.entries[f.d.id]!.repair?.id).toBe("reserved");
+    expect(()=>f.check(f.d.id)).toThrow();expect(()=>f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id)).toThrow();
+    expect(()=>f.merges.report(f.owner.id,f.b.dispatchId,f.b.id,f.d.id,{status:"blocked",head:f.d.head,detail:"Unknown push outcome"})).toThrow();
+  });
+  it("records a plan through MCP and safely cancels only a proven unpushed repair",async()=>{
+    const f=await batchFixture();
+    const input={batchId:f.b.id,dispatchId:f.b.dispatchId,expectedRevision:0,idempotencyKey:"mcp-plan",action:f.plan};
+    f.safe(await f.call("record_merge_integration",input));f.safe(await f.call("record_merge_integration",input));
+    expect(f.current().integration!.plans).toHaveLength(1);
+    f.act({kind:"prepare_repair",deliveryId:f.d.id,expectedHead:f.d.head,base:"b".repeat(40),reason:"Bound investigation"},"reservation");
+    const cancel={kind:"cancel_repair" as const,deliveryId:f.d.id,expectedHead:f.d.head,repairId:"reservation",observedHead:f.d.head,noExecutionRemaining:true as const,reason:"No change was pushed",source:"Remote head checked and no process remains"};
+    expect(()=>f.act({...cancel,observedHead:"e".repeat(40)})).toThrow();
+    f.act(cancel);expect(f.current().integration!.entries[f.d.id]!.repair).toBeUndefined();
+    const check={kind:"check" as const,deliveryId:f.d.id,expectedHead:f.d.head,base:"b".repeat(40),checkedAt:new Date().toISOString(),checks:"failed" as const,mergeable:"clean" as const,local:"passed" as const,source:"Synthetic CI",validation:"Actual failure"};
+    f.act(check);expect(()=>f.merged(f.d.id)).toThrow();
+    expect(()=>f.act({...check,checkedAt:new Date(Date.now()-360_000).toISOString()})).toThrow();
+    f.grant(true,false);
+    const denied=await f.call("record_merge_integration",{...input,idempotencyKey:"revoked",expectedRevision:f.current().integration!.revision});
+    expect(denied.error||denied.isError).toBeTruthy();
+  });
+  it("recovers exact historical authorization without replacing the batch or changing retry parameters",async()=>{
+    const f=await prepared();f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
+    const key=randomUUID(),selection=[{id:f.d.id,revision:f.d.revision}];
+    const b=f.merges.start(f.owner.id,key,selection,f.config,false);
+    const dispatches=new DispatchStore(f.store.database);dispatches.claimNextDispatch(f.node.nodeId);dispatches.recordDispatchResult({nodeId:f.node.nodeId,dispatchId:b.dispatchId,status:"launched"});
+    const setPrompt=(text:string)=>f.store.database.connection.prepare("UPDATE free_session_starts SET initial_text=? WHERE dispatch_id=?").run(text,b.dispatchId);
+    for(const prompt of [legacyIntegratorPrompt("different-batch",false),legacyIntegratorPrompt(b.id,true),legacyIntegratorPrompt(b.id,false)+" extra instructions"]) {
+      setPrompt(prompt);expect(f.merges.batch(f.owner.id,b.dispatchId,b.id).integration).toBeUndefined();
+    }
+    setPrompt(legacyIntegratorPrompt(b.id,false));
+    f.store.database.connection.prepare("UPDATE free_session_starts SET ready=0 WHERE dispatch_id=?").run(b.dispatchId);
+    expect(f.merges.batch(f.owner.id,b.dispatchId,b.id).integration).toBeUndefined();
+    f.store.database.connection.prepare("UPDATE free_session_starts SET ready=1 WHERE dispatch_id=?").run(b.dispatchId);
+    f.store.database.connection.prepare("UPDATE merge_batches SET data_json=? WHERE id=?").run(JSON.stringify({...b,state:"finished"}),b.id);
+    expect(f.merges.batch(f.owner.id,b.dispatchId,b.id).integration).toBeUndefined();
+    f.store.database.connection.prepare("UPDATE merge_batches SET data_json=? WHERE id=?").run(JSON.stringify(b),b.id);
+    const restored=f.merges.batch(f.owner.id,b.dispatchId,b.id);
+    expect(restored.integration?.recoveredAuthorization?.dispatchId).toBe(b.dispatchId);
+    expect(restored.entries[0]!.mergeReady).toBe(false);
+    const action={kind:"plan" as const,base:"b".repeat(40),summary:"Recover existing authorization",validation:"Combined verification",entries:[{deliveryId:f.d.id,head:f.d.head,dependsOn:[],group:"one",reason:"Original scope",validation:"Check repaired head"}]};
+    f.merges.integrate(f.owner.id,b.dispatchId,b.id,0,"recover-plan",action);
+    f.merges.integrate(f.owner.id,b.dispatchId,b.id,0,"recover-plan",action);
+    const loaded=new MergeDeliveries(f.store).batch(f.owner.id,b.dispatchId,b.id);
+    expect(loaded.integration!.plans).toHaveLength(1);expect(loaded.integration!.recoveredAuthorization).toEqual(restored.integration!.recoveredAuthorization);
+    expect(f.merges.start(f.owner.id,key,selection,f.config,false).id).toBe(b.id);
+    expect(()=>f.merges.start(f.owner.id,key,selection,f.config,false,1)).toThrow();
+    f.merges.integrate(f.owner.id,b.dispatchId,b.id,1,"recover-repair",{kind:"prepare_repair",deliveryId:f.d.id,expectedHead:f.d.head,base:"b".repeat(40),reason:"Recover verified original-session repair"});
+    f.merges.integrate(f.owner.id,b.dispatchId,b.id,2,"recover-head",{kind:"repair",deliveryId:f.d.id,expectedHead:f.d.head,repairId:"recover-repair",head:"e".repeat(40),commits:["e".repeat(40)],validation:"Git chain checked",source:"Synthetic historical recovery"});
+    expect(f.merges.batch(f.owner.id,b.dispatchId,b.id).entries[0]!.executionHead).toBe("e".repeat(40));
+  });
+  it("does not silently grant repair authority to legacy batches or retries",async()=>{
+    const f=await prepared();f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
+    const key=randomUUID(),selection=[{id:f.d.id,revision:f.d.revision}];
+    const b=f.merges.start(f.owner.id,key,selection,f.config,false);
+    expect(()=>f.merges.start(f.owner.id,key,selection,f.config,false,1)).toThrow();
+    const dispatches=new DispatchStore(f.store.database);dispatches.claimNextDispatch(f.node.nodeId);dispatches.recordDispatchResult({nodeId:f.node.nodeId,dispatchId:b.dispatchId,status:"launched"});
+    expect(()=>f.merges.integrate(f.owner.id,b.dispatchId,b.id,0,"legacy",{kind:"progress",deliveryId:f.d.id,expectedHead:f.d.head,phase:"investigating",detail:"Read"})).toThrow();
   });
 });
