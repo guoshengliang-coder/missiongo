@@ -52,9 +52,11 @@ function sessionReason(row: SessionObservation): ItemExecutionBlocker["reason"] 
   if (turn.turnActive || ["active", "stalled"].includes(row.status ?? "")) return "active";
   if (!row.native) return terminal ? undefined : "execution_open";
   if (!row.session_id || row.source === "dispatch" && (row.dispatch_status !== "launched" || row.session_ref?.startsWith("pending:"))) return "execution_open";
+  // Connection health follows the node heartbeat; a session's last report time only
+  // reflects report cadence, and idle sessions report slower than the window.
   const oldest = new Date(Date.now() - NODE_ONLINE_WINDOW_MS).toISOString();
   if (!["idle", "suspended"].includes(row.status ?? "") || row.revoked_at || !row.last_seen_at
-    || row.last_seen_at < oldest || !row.observed_at || row.observed_at < oldest) return "connection_unknown";
+    || row.last_seen_at < oldest) return "connection_unknown";
   return undefined;
 }
 function canCheckSession(row: SessionObservation, reason: ItemExecutionBlocker["reason"] | undefined): boolean {
@@ -109,7 +111,7 @@ export function itemExecutionBlockers(database: MissionGoDatabase, itemId: strin
       ...(row.progress_status ? {progressStatus: row.progress_status} : {}), ...(row.node_name ? {nodeName: row.node_name} : {}),
       ...(row.observed_at ? {lastObservedAt: row.observed_at} : {}), ...(row.error ? {error: row.error} : {}), reason,
       canConfirmStopped: canCheckSession(row,reason),
-      revision: digest([item.revision, key, row.status, row.turn_json, row.observed_at, reason, row.closed_at]),
+      revision: digest([item.revision, key, row.status, row.turn_json, reason, row.closed_at]),
     });
   }
   const other = db.prepare(`SELECT 'performer' AS source,id,status FROM item_executions
