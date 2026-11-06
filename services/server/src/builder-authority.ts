@@ -1,4 +1,4 @@
-import { itemExecutionBlockers } from "./item-execution-blockers.js";
+import { itemExecutionBlockers, executionBlocksTakeover } from "./item-execution-blockers.js";
 import { deliveryRound } from "./delivery-round.js";
 import { conflict } from "./errors.js";
 import type { MissionGoDatabase } from "./storage/database.js";
@@ -55,7 +55,10 @@ export function assertExecutionAuthorization(database: MissionGoDatabase, itemId
   }
 }
 
-/** Actual execution observations remain separate from the business card's status. Unknown source states fence new work. */
+/** Actual execution observations remain separate from the business card's status. Unknown source states warn without fencing new work. */
+export function hasBlockingItemExecution(database:MissionGoDatabase,itemId:string,excludeDispatchId=""):boolean {
+  return itemExecutionBlockers(database,itemId,excludeDispatchId).some(executionBlocksTakeover);
+}
 export function hasOngoingItemExecution(database:MissionGoDatabase,itemId:string,excludeDispatchId=""):boolean {
   return itemExecutionBlockers(database,itemId,excludeDispatchId).length > 0;
 }

@@ -2406,5 +2406,20 @@ export class MissionGoDatabase {
       });
     }
 
+    // Item-scoped takeover history never claims that an old process stopped.
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611060020").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611060020").get()) return;
+        this.connection.exec(`CREATE TABLE item_execution_takeovers (
+          item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+          source TEXT NOT NULL, execution_id TEXT NOT NULL, identity_key TEXT,
+          taken_over_by TEXT NOT NULL, created_at TEXT NOT NULL,
+          PRIMARY KEY(item_id,source,execution_id)
+        ) STRICT;`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611060020,new Date().toISOString());
+      });
+    }
+
   }
 }

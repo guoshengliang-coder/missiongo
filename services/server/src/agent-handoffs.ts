@@ -3,7 +3,7 @@ import { assertBuilderExecution, assertDispatchExecution, assertExternalExecutio
 import { deliveryRound } from "./delivery-round.js";
 import { conflict } from "./errors.js";
 import { ImplementationPlans, planDigest } from "./implementation-plans.js";
-import { itemExecutionBlockers, itemExecutionCheckpoint } from "./item-execution-blockers.js";
+import { itemExecutionBlockers, itemExecutionCheckpoint, executionBlocksTakeover, takeOverItemExecutions } from "./item-execution-blockers.js";
 import type { MissionGoStore } from "./store.js";
 import type { MissionGoDatabase } from "./storage/database.js";
 
@@ -71,8 +71,8 @@ export class AgentHandoffs {
   assertClear(key:string,dispatchId?:string,sessionId?:string):void {
     const item=this.store.getWorkItem(key);
     if(item.status!=="in_progress") throw conflict("agent_handoff_changed","条目已不处于处理中，请刷新后重新核对。");
-    if(itemExecutionBlockers(this.store.database,item.id,dispatchId,sessionId).length) {
-      throw conflict("execution_stop_unconfirmed","请先逐条核实旧执行已停止；运行中的回合和未处理命令仍会阻止接手。");
+    if(itemExecutionBlockers(this.store.database,item.id,dispatchId,sessionId).some(executionBlocksTakeover)) {
+      throw conflict("execution_stop_unconfirmed","原执行仍有实际活动或待执行命令，请先在原会话处理。");
     }
   }
 
@@ -100,10 +100,9 @@ export class AgentHandoffs {
       throw conflict("agent_handoff_changed","交接后的条目或旧执行已有变化，请重新核实并明确交接。");
     }
     const now=new Date().toISOString();
+    takeOverItemExecutions(this.store.database,item.id,accountId,row.target_dispatch_id??"",row.target_dispatch_id?"":row.target_session_id??"");
     this.db.prepare("UPDATE agent_handoffs SET consumed_at=? WHERE id=?").run(now,row.id);
-    this.db.prepare("UPDATE builder_execution_authorizations SET revoked=1 WHERE item_id=?").run(item.id);
-    this.db.prepare(`UPDATE item_executions SET status='handed_over',result=?,ended_at=?,updated_at=?,authorization_revoked=1
-      WHERE item_id=? AND kind='human' AND status IN ('assigned','working','blocked')`).run(row.note,now,now,item.id);
+
     return row.id;
   }
 }
@@ -120,6 +119,6 @@ export function handoffDispatchIsCurrent(database:MissionGoDatabase,dispatchId:s
     try {assertBuilderExecution(database,row.item_id,row.account_id);} catch {return false;}
     return row.scope_json===new ImplementationPlans(database).scope([row.item_key]) && row.round_key===deliveryRound(database,row.item_id,true)
       && row.checkpoint===itemExecutionCheckpoint(database,row.item_id,dispatchId)
-      && !itemExecutionBlockers(database,row.item_id,dispatchId).length;
+      && !itemExecutionBlockers(database,row.item_id,dispatchId).some(executionBlocksTakeover);
   });
 }

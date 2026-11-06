@@ -64,8 +64,7 @@ async function fixture() {
 
 it("reproduces the completed/unavailable case, settles only the human-verified execution and preserves old history/credential revocation",async()=>{
   const f=await fixture(),{item,sessionId,authorization}=f.create();
-  expect(f.dispatches.checkRedispatch(f.accountId,[item.key])).toMatchObject({allowed:false,reason:"execution_unconfirmed"});
-  expect(()=>f.dispatch(item.key)).toThrow(/原执行/);
+  expect(f.dispatches.checkRedispatch(f.accountId,[item.key])).toMatchObject({allowed:true,reason:null});
   const original=f.db.prepare("SELECT progress_status,native_snapshot_json FROM external_agent_sessions WHERE id=?").get(sessionId);
   const delivery=await f.read(item.key);
   expect(delivery.executions[0]).toMatchObject({status:"completed",sessionId});
@@ -120,7 +119,7 @@ it.each(["active","command","progress","message"])("invalidates a human stop che
     .run(randomUUID(),sessionId,randomUUID(),JSON.stringify({role:"user",text:"More work"}));
   f.snapshot(sessionId,"unavailable");
   expect((await f.read(item.key)).executionBlockers).toHaveLength(1);
-  expect(()=>f.dispatch(item.key)).toThrow();
+  expect(f.dispatches.checkRedispatch(f.accountId,[item.key]).allowed).toBe(true);
   expect(f.db.prepare("SELECT invalidated_at FROM item_execution_stop_confirmations WHERE item_id=?").get(item.id)).toMatchObject({invalidated_at:expect.any(String)});
 });
 
@@ -158,7 +157,7 @@ it("keeps other executions blocked and confirmations scoped to a single item, in
   const another=f.create();
   f.db.prepare("INSERT INTO external_agent_session_items(session_id,item_id) VALUES (?,?)").run(another.sessionId,first.item.id);
   expect((await f.read(first.item.key)).executionBlockers).toHaveLength(1);
-  expect(()=>f.dispatch(first.item.key)).toThrow();
+  expect(f.dispatch(first.item.key).status).toBe("queued");
 });
 
 it.each(["offline","revoked"])("keeps unknown %s nodes blocked until a human verifies the exact completed old execution",async state=>{
@@ -246,8 +245,8 @@ it("leaves a scoped human performer blocked after settling the old native execut
   expect(response.statusCode).toBe(201);
   const b=(await f.read(item.key)).executionBlockers.find((row:{source:string})=>row.source==="external");
   expect((await f.confirm(item.key,b)).statusCode).toBe(200);
-  expect((await f.read(item.key)).executionBlockers).toMatchObject([{source:"performer",reason:"execution_open",canConfirmStopped:true}]);
-  expect(()=>f.dispatch(item.key)).toThrow();
+  expect((await f.read(item.key)).executionBlockers).toMatchObject([{source:"performer",reason:"execution_open",canConfirmStopped:true,blocking:false}]);
+  expect(f.dispatch(item.key).status).toBe("queued");
 });
 
 it("reuses only a still-valid item-scoped human stop check during Builder handover",async()=>{
@@ -264,36 +263,25 @@ it("reuses only a still-valid item-scoped human stop check during Builder handov
 });
 
 
-it("recovers interrupted working history one execution at a time through redispatch and a new claim",async()=>{
+it("takes over interrupted working history in one claim without stop attestations or fabricated progress",async()=>{
   const f=await fixture(),{item,sessionId}=f.interrupted();
   const original=f.db.prepare("SELECT progress_status,native_snapshot_json FROM external_agent_sessions WHERE id=?").get(sessionId);
-  const oldPerformer=f.db.prepare("SELECT * FROM item_executions WHERE item_id=?").get(item.id);
-  const before=await f.read(item.key);
-  expect(before.executionBlockers).toHaveLength(2);
-  expect(before.executionBlockers).toEqual(expect.arrayContaining([
-    expect.objectContaining({source:"external",progressStatus:"working",canConfirmStopped:true}),
-    expect.objectContaining({source:"performer",status:"working",scope:"人工领取处理",canConfirmStopped:true}),
-  ]));
-  const claim=()=>f.store.claimWorkItem({itemKey:item.key,agentId:"Codex",idempotencyKey:randomUUID(),attribution:f.owner});
-  expect(claim).toThrow();
-  expect(f.dispatches.checkRedispatch(f.accountId,[item.key]).allowed).toBe(false);
-  const external=before.executionBlockers.find((b:{source:string})=>b.source==="external");
-  expect((await f.confirm(item.key,external)).statusCode).toBe(200);
-  // A harmless native poll must not undo a check merely because the last progress report is still working.
-  vi.advanceTimersByTime(1000);f.snapshot(sessionId,"unavailable");
-  expect((await f.read(item.key)).executionBlockers).toMatchObject([{source:"performer"}]);
-  expect(claim).toThrow();
-  expect((await f.confirm(item.key)).statusCode).toBe(200);
-  expect((await f.read(item.key)).executionBlockers).toEqual([]);
-  expect(f.db.prepare("SELECT progress_status,native_snapshot_json FROM external_agent_sessions WHERE id=?").get(sessionId)).toEqual(original);
-  expect(f.db.prepare("SELECT * FROM item_executions WHERE item_id=?").get(item.id)).toEqual(oldPerformer);
-  expect(f.store.getWorkItem(item.key).status).toBe("ready");
+  expect((await f.read(item.key)).executionBlockers).toMatchObject([{blocking:false},{blocking:false}]);
   expect(f.dispatches.checkRedispatch(f.accountId,[item.key]).allowed).toBe(true);
   const dispatch=f.dispatch(item.key);f.dispatches.claimNextDispatch(f.node.nodeId);
   f.dispatches.recordDispatchResult({nodeId:f.node.nodeId,dispatchId:dispatch.id,status:"launched"});
   new AgentSessionStore(f.store.database).createForDispatch({dispatchId:dispatch.id,nodeId:f.node.nodeId,sessionRef:randomUUID()});
   expect(f.store.claimWorkItem({itemKey:item.key,agentId:"Codex",idempotencyKey:randomUUID(),attribution:f.owner,dispatchId:dispatch.id}).status).toBe("in_progress");
-  expect(f.store.getTimeline(item.key).filter(e=>e.eventType==="execution_stop_confirmed")).toHaveLength(2);
+  expect(f.db.prepare("SELECT progress_status,native_snapshot_json FROM external_agent_sessions WHERE id=?").get(sessionId)).toEqual(original);
+  expect(f.db.prepare("SELECT status,authorization_revoked FROM item_executions WHERE item_id=?").get(item.id)).toMatchObject({status:"handed_over",authorization_revoked:1});
+  expect(f.db.prepare("SELECT COUNT(*) AS n FROM item_execution_takeovers WHERE item_id=?").get(item.id)).toMatchObject({n:2});
+  expect(f.store.getTimeline(item.key).filter(e=>e.eventType==="execution_stop_confirmed")).toHaveLength(0);
+  // A restored old source may report history, but it cannot re-register or claim this item again.
+  f.external.report(f.owner,sessionId,item.key,"working","Old process resumed",randomUUID());
+  const identity=f.db.prepare("SELECT session_ref FROM external_agent_sessions WHERE id=?").get(sessionId) as {session_ref:string};
+  expect(()=>f.external.register(f.owner,{agentKind:"codex",refKind:"native",sessionRef:identity.session_ref},item.key)).toThrow(/接替/);
+  f.store.transitionWorkItem({itemKey:item.key,to:"ready",reason:"released",actor:"human",note:"New round",attribution:{accountId:f.accountId}});
+  expect(()=>f.store.claimWorkItem({itemKey:item.key,agentId:"old",executionIdentity:`native:${f.owner.clientId}:codex:native:${identity.session_ref}`,idempotencyKey:randomUUID(),attribution:f.owner})).toThrow(/接替/);
 });
 
 it.each(["active","queued","delivering","delivery_unknown"])("never lets a linked performer check conceal %s source work",async state=>{
@@ -323,7 +311,7 @@ it.each(["progress","performer","sourceActivity"])("invalidates interrupted-work
   if(change==="performer") f.db.prepare("UPDATE item_executions SET status='working' WHERE id=?").run(performer.executionId);
   if(change==="sourceActivity") {f.snapshot(sessionId,"active",true);f.snapshot(sessionId,"unavailable");}
   expect((await f.read(item.key)).executionBlockers.length).toBeGreaterThan(0);
-  expect(f.dispatches.checkRedispatch(f.accountId,[item.key]).allowed).toBe(false);
+  expect(f.dispatches.checkRedispatch(f.accountId,[item.key]).allowed).toBe(true);
 });
 
 it("rejects a stale performer check, preserves separate performer scopes and accepts only fresh human checks",async()=>{
@@ -374,4 +362,21 @@ it("keeps startup placeholders fenced even when their status becomes unavailable
   expect(blocker).toMatchObject({source:"dispatch",reason:"execution_open",canConfirmStopped:false});
   expect((await f.confirm(item.key,blocker)).statusCode).toBe(409);
   expect(()=>f.dispatch(item.key)).toThrow();
+});
+
+
+it.each(["offline","stale"])("warns rather than blocks on an old active snapshot when %s",async state=>{
+  const f=await fixture(),{item,sessionId}=f.interrupted();f.snapshot(sessionId,"active",true);
+  if(state==="offline") f.db.prepare("UPDATE nodes SET last_seen_at=NULL WHERE id=?").run(f.node.nodeId);
+  else f.db.prepare("UPDATE external_agent_sessions SET native_synced_at='2000-01-01' WHERE id=?").run(sessionId);
+  expect((await f.read(item.key)).executionBlockers[0]).toMatchObject({reason:"connection_unknown",blocking:false});
+});
+
+it("keeps a shared conversation's authority on other items when one item is taken over",async()=>{
+  const f=await fixture(),first=f.interrupted(),second=f.interrupted();
+  f.db.prepare("INSERT INTO external_agent_session_items(session_id,item_id) VALUES (?,?)").run(first.sessionId,second.item.id);
+  f.store.claimWorkItem({itemKey:first.item.key,agentId:"new",idempotencyKey:randomUUID(),attribution:f.owner});
+  expect(f.db.prepare("SELECT COUNT(*) AS n FROM item_execution_takeovers WHERE item_id=?").get(second.item.id)).toMatchObject({n:0});
+  f.external.report(f.owner,first.sessionId,second.item.key,"working","Still handles second item",randomUUID());
+  expect(f.store.getWorkItem(first.item.key).status).toBe("in_progress");
 });

@@ -3,7 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { api, type ItemDelivery } from "./api";
 import type { WorkItem } from "./types";
 import { DispatchDialog } from "./dispatch-dialog";
-import { ExecutionStopNotice } from "./execution-stop-notice";
+import { ExecutionStopNotice, blocksExecution } from "./execution-stop-notice";
 import { localizedErrorText } from "./error-text";
 import { useI18n } from "./i18n";
 import { Modal } from "./modal";
@@ -28,7 +28,7 @@ export function AgentHandoffDialog({item,delivery,onRefresh,onClose}: {
       : <>
         <p>{t("agentHandoffHelp")}</p>
         <ExecutionStopNotice itemKey={item.key} blockers={blockers} onRefresh={onRefresh} />
-        <form className="delivery-form" onSubmit={event=>{event.preventDefault();if(blockers.length || !note.trim() || !delivery.canHandoffToAgent || item.revision===undefined) return;
+        <form className="delivery-form" onSubmit={event=>{event.preventDefault();if(blockers.some(blocksExecution) || !note.trim() || !delivery.canHandoffToAgent || item.revision===undefined) return;
           if(target==="dispatch") setDispatchRevision(item.revision);else save.mutate();}}>
           <fieldset className="execution-stop-fields" disabled={save.isPending}>
             <label>{t("agentHandoffNote")}<textarea data-initial-focus required maxLength={2000} value={note} onChange={event=>setNote(event.target.value)} /></label>
@@ -40,7 +40,7 @@ export function AgentHandoffDialog({item,delivery,onRefresh,onClose}: {
           </fieldset>
           {save.isError && <p role="alert">{localizedErrorText(save.error,t)}</p>}
           <div className="form-footer"><button type="button" className="secondary-button" disabled={save.isPending} onClick={onClose}>{t("cancel")}</button>
-            <button type="submit" className="primary-button" disabled={save.isPending || blockers.length>0 || !note.trim() || !delivery.canHandoffToAgent || item.revision===undefined}>{t(target==="dispatch"?"agentHandoffChooseNode":"agentHandoffConfirm")}</button></div>
+            <button type="submit" className="primary-button" disabled={save.isPending || blockers.some(blocksExecution) || !note.trim() || !delivery.canHandoffToAgent || item.revision===undefined}>{t(target==="dispatch"?"agentHandoffChooseNode":"agentHandoffConfirm")}</button></div>
         </form>
       </>}
   </Modal>;

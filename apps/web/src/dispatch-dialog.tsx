@@ -335,6 +335,7 @@ export function DispatchDialog({
         </ul>
       </div>}
 
+      {Boolean(eligibility.data?.takeoverWarnings?.length) && <p className="dispatch-conflict" role="status">{t("executionTakeoverHelp")}</p>}
       {!conflicts.length && eligibility.data?.reason === "execution_unconfirmed" && <p className="dispatch-conflict" role="alert">{t("executionStopBlocked")}</p>}
       {conflicts.length > 0 && (
         <div className="dispatch-conflict" role="alert">
@@ -488,7 +489,7 @@ export function DispatchDialog({
         <button type="button" className="secondary-button" disabled={mutation.isPending || saveDefaults.isPending} onClick={onClose}>{t(handoff ? "agentHandoffBack" : "cancel")}</button>
         <button type="submit" className="primary-button" disabled={Boolean(modeIssue) || modelUnavailable || catalogUnavailable || blocked || !defaultsApplied || mutation.isPending || saveDefaults.isPending}>
           {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <Rocket size={16} />}
-          {t(newSession ? "newSessionEnter" : handoff ? "agentHandoffConfirm" : "dispatchSubmit")}
+          {t(newSession ? "newSessionEnter" : handoff ? "agentHandoffConfirm" : eligibility.data?.takeoverWarnings?.length ? "executionStartTakeover" : "dispatchSubmit")}
         </button>
       </div>
     </form>

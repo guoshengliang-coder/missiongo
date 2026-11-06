@@ -34,7 +34,8 @@ function setup(interrupted=false) {
     const dispatches=new DispatchStore(store.database);
     const node=dispatches.registerNode({accountId,installationId:randomUUID(),name:"Fixture node"});
     fixtureNodes.push(node.nodeId);
-    dispatches.recordHeartbeat(node.nodeId,[{kind:"codex",ready:true}]);
+    dispatches.recordHeartbeat(node.nodeId,[{kind:"codex",ready:true,planApprovalProtocol:1}]);
+    dispatches.replaceOwnRepos(node.nodeId,[{productId:product.id,repoPath:"/synthetic/takeover-ui"}]);
     if (!interrupted) {
       external.report(owner,sessionId,item.key,"completed","Handling ended",randomUUID());
       store.transitionWorkItem({itemKey:item.key,to:"pending_verification",reason:"manual_override",actor:"human",note:"Fixture delivery",attribution:{accountId}});
@@ -42,7 +43,7 @@ function setup(interrupted=false) {
     store.database.connection.prepare("UPDATE external_agent_sessions SET native_node_id=?,native_snapshot_json=?,native_synced_at=? WHERE id=?")
       .run(node.nodeId,JSON.stringify({status:"unavailable",turnState:{},error:"Original conversation not loaded "+"long-diagnostic-".repeat(35)}),new Date().toISOString(),sessionId);
     store.transitionWorkItem({itemKey:item.key,to:"ready",reason:interrupted?"released":"verification_failed",actor:"human",note:"Rework",attribution:{accountId}});
-    return {item,product,sessionId};
+    return {item,product,sessionId,nodeId:node.nodeId};
   } finally {store.close();}
 }
 function activity(sessionId:string,active:boolean) {
@@ -53,126 +54,47 @@ function activity(sessionId:string,active:boolean) {
 }
 
 for (const width of [320,1440]) for (const theme of ["light","dark"] as const) {
-  test.describe(`execution stop ${width}px ${theme}`,()=>{
+  test.describe(`execution takeover ${width}px ${theme}`,()=>{
     test.use({viewport:{width,height:812},hasTouch:width===320,isMobile:width===320,colorScheme:theme});
-    test("verifies one exact old execution with draft protection and clear pending/failure feedback",async({page,request},info)=>{
-      const {item,product,sessionId}=setup();
-      await page.goto(`/?product=${product.id}&status=ready&item=${item.key}`);
-      const notice=page.getByRole("region",{name:"启动新执行前，请核实原执行"});
-      await expect(notice).toContainText(sessionId);
-      await expect(notice).toContainText("来源状态：unavailable · 进展上报：completed");
-      await notice.getByText("同步诊断",{exact:true}).click();
-      await expect(notice).toContainText("Original conversation not loaded");
-      expect(await notice.evaluate(el=>el.scrollWidth-el.clientWidth)).toBeLessThanOrEqual(1);
-      await notice.getByRole("button",{name:"核实停止",exact:true}).click();
-      const dialog=page.getByRole("dialog");
-      const note=dialog.getByRole("textbox",{name:"停止核实依据",exact:true});
-      await expect(note).toBeFocused();
-      const submit=dialog.getByRole("button",{name:"记录停止确认",exact:true});
-      await expect(submit).toBeDisabled();
-      await note.fill("已在原设备核实旧执行停止，当前无进行中的任务。");
-      await expect(submit).toBeDisabled();
-      const attestation=dialog.getByRole("checkbox");
-      await attestation.check();
-      await expect(submit).toBeEnabled();
-      await page.keyboard.press("Escape");
-      await expect(dialog.getByText("继续编辑",{exact:true})).toBeVisible();
-      await dialog.getByRole("button",{name:"继续编辑",exact:true}).click();
-      await expect(note).toHaveValue("已在原设备核实旧执行停止，当前无进行中的任务。");
-      await page.route("**/execution-blockers/*/confirm-stopped",route=>route.fulfill({status:503,json:{code:"unavailable",title:"Service unavailable"}}),{times:1});
-      await submit.click();
-      await expect(dialog.getByRole("alert")).toBeVisible();
-      await expect(note).toHaveValue("已在原设备核实旧执行停止，当前无进行中的任务。");
-      for (const scale of ["small","medium","large"]) {
-        await page.evaluate(value=>{document.documentElement.dataset.fontScale=value;},scale);
-        expect(await dialog.evaluate(el=>el.scrollWidth-el.clientWidth)).toBeLessThanOrEqual(1);
-        expect(await note.evaluate(el=>parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(width===320?16:11);
-      }
-      await page.evaluate(()=>{document.documentElement.dataset.fontScale="medium";});
-      if (width===320) {
-        await page.setViewportSize({width:812,height:375});
-        await submit.scrollIntoViewIfNeeded();
-        const footerBox=await submit.boundingBox();
-        expect(footerBox!.y+footerBox!.height).toBeLessThanOrEqual(375);
-        expect(await dialog.evaluate(el=>el.scrollWidth-el.clientWidth)).toBeLessThanOrEqual(1);
-        await page.setViewportSize({width,height:812});
-      }
-      expect(await dialog.evaluate(el=>el.scrollWidth-el.clientWidth)).toBeLessThanOrEqual(1);
-      const box=await attestation.locator("..").boundingBox();expect(box!.height).toBeGreaterThanOrEqual(44);
-      const checkBox=await attestation.boundingBox(), labelText=await attestation.locator("..").locator("span").boundingBox();
-      expect(checkBox!.x+checkBox!.width).toBeLessThanOrEqual(labelText!.x);
-      await page.screenshot({path:info.outputPath("verify-stop.png")});
-      let release!:()=>void;
-      const wait=new Promise<void>(resolve=>{release=resolve;});
-      await page.route("**/execution-blockers/*/confirm-stopped",async route=>{await wait;await route.continue();},{times:1});
-      await submit.click();
-      await expect(submit).toBeDisabled();
-      await expect(note).toBeDisabled();
-      await expect(dialog.getByRole("button",{name:"取消",exact:true})).toBeDisabled();
-      release();
-      await expect(dialog).toHaveCount(0);
-      await expect(notice).toHaveCount(0);
-      const delivery=await (await request.get(`/api/v1/items/${item.key}/delivery`)).json();
-      expect(delivery.executionBlockers).toEqual([]);
-      expect(delivery.executions[0]).toMatchObject({sessionId,status:"completed"});
-      const stored=await (await request.get(`/api/v1/items/${item.key}`)).json();expect(stored.status).toBe("ready");
-      activity(sessionId,true);
-      await page.reload();
-      await expect(notice).toContainText("来源仍上报活动");
-      await expect(notice.getByRole("button",{name:"核实停止",exact:true})).toHaveCount(0);
-      activity(sessionId,false);
-      await page.reload();
-      await expect(notice.getByRole("button",{name:"核实停止",exact:true})).toBeVisible();
-    });
-  });
-}
-
-test("rejects stale source observations without replacing the user's check or silently rebinding a polling update",async({page})=>{
-  const {item,product,sessionId}=setup();
-  await page.goto(`/?product=${product.id}&status=ready&item=${item.key}`);
-  await page.getByRole("button",{name:"核实停止",exact:true}).click();
-  const dialog=page.getByRole("dialog");
-  await dialog.getByRole("textbox",{name:"停止核实依据",exact:true}).fill("Original observation was checked");
-  await dialog.getByRole("checkbox").check();
-  activity(sessionId,true);activity(sessionId,false);
-  await dialog.getByRole("button",{name:"记录停止确认",exact:true}).click();
-  await expect(dialog.getByRole("alert")).toHaveText("条目或执行状态已变更，请刷新条目并重新核实原会话后再确认。");
-  await expect(dialog.getByRole("textbox",{name:"停止核实依据",exact:true})).toHaveValue("Original observation was checked");
-});
-
-
-for (const width of [320,1440]) for (const theme of ["light","dark"] as const) {
-  test.describe(`interrupted execution ${width}px ${theme}`,()=>{
-    test.use({viewport:{width,height:812},hasTouch:width===320,isMobile:width===320,colorScheme:theme});
-    test("checks each interrupted working execution separately without fabricating completed history",async({page,request},info)=>{
+    test("shows historical records without a stop form and preserves actual activity blocking",async({page,request},info)=>{
       const {item,product,sessionId}=setup(true);
       await page.goto(`/?product=${product.id}&status=ready&item=${item.key}`);
-      const notice=page.getByRole("region",{name:"启动新执行前，请核实原执行"});
-      await expect(notice.getByRole("button",{name:"核实停止",exact:true})).toHaveCount(2);
+      const notice=page.getByRole("region",{name:"原执行情况"});
+      await expect(notice).toContainText("旧执行状态未知，可以接手");
+      await expect(notice).toContainText("接手不会自动停止旧设备上的进程或外部操作");
+      await expect(notice).toContainText(sessionId);
       await expect(notice).toContainText("人工领取处理");
-      await expect(notice).toContainText("进展上报：working");
-      const original=notice.locator(".execution-stop-observation").filter({hasText:sessionId});
-      await original.getByRole("button",{name:"核实停止",exact:true}).click();
-      const dialog=page.getByRole("dialog");
-      await dialog.getByRole("textbox",{name:"停止核实依据",exact:true}).fill("已在原设备核实该会话停止，当前无活动或待执行命令。");
-      await dialog.getByRole("checkbox").check();
-      await dialog.getByRole("button",{name:"记录停止确认",exact:true}).click();
-      await expect(dialog).toHaveCount(0);
-      await expect(notice.getByRole("button",{name:"核实停止",exact:true})).toHaveCount(1);
+      await expect(notice.getByRole("button",{name:"核实停止",exact:true})).toHaveCount(0);
+      await notice.getByText("同步诊断",{exact:true}).click();
+      for(const scale of ["small","medium","large"]) {
+        await page.evaluate(value=>{document.documentElement.dataset.fontScale=value;},scale);
+        expect(await notice.evaluate(el=>el.scrollWidth-el.clientWidth)).toBeLessThanOrEqual(1);
+      }
+      await page.screenshot({path:info.outputPath("takeover-warning.png")});
+      const data=await (await request.get(`/api/v1/items/${item.key}/delivery`)).json();
+      expect(data.executionBlockers.every((row:{blocking:boolean})=>!row.blocking)).toBe(true);
+      activity(sessionId,true);await page.reload();
+      await expect(notice).toContainText("原执行仍有活动或待执行命令");
+      await expect(notice).toContainText("来源仍上报活动");
       activity(sessionId,false);await page.reload();
-      await expect(notice.getByRole("button",{name:"核实停止",exact:true})).toHaveCount(1);
-      await expect(notice).toContainText("人工领取处理");
-      await notice.getByRole("button",{name:"核实停止",exact:true}).click();
-      await dialog.getByRole("textbox",{name:"停止核实依据",exact:true}).fill("已核实这条旧执行的工作停止，确认结束其在途阻塞。");
-      await dialog.getByRole("checkbox").check();
-      await page.screenshot({path:info.outputPath("interrupted-stop-check.png")});
-      await dialog.getByRole("button",{name:"记录停止确认",exact:true}).click();
-      await expect(dialog).toHaveCount(0);await expect(notice).toHaveCount(0);
-      const delivery=await (await request.get(`/api/v1/items/${item.key}/delivery`)).json();
-      expect(delivery.executionBlockers).toEqual([]);
-      expect(delivery.executions).toHaveLength(2);
-      expect(delivery.executions.every((row:{status:string})=>row.status==="working")).toBe(true);
-      expect((await (await request.get(`/api/v1/items/${item.key}`)).json()).status).toBe("ready");
+      await expect(notice).toContainText("旧执行状态未知，可以接手");
     });
   });
 }
+
+
+test("ordinary dispatch warns and submits takeover without a separate attestation",async({page,request})=>{
+  const {item,product,nodeId}=setup(true);
+  await request.put("/api/v1/dispatch-defaults",{data:{nodeId,agentKind:"codex",agents:{codex:{mode:"auto"}}}});
+  await page.goto(`/?product=${product.id}&status=ready`);
+  await page.locator(".item-row").filter({hasText:item.key}).getByRole("checkbox").check();
+  await page.getByRole("button",{name:"派单",exact:true}).click();
+  const form=page.locator(".dispatch-form");
+  await expect(form).toContainText("接手不会自动停止旧设备上的进程或外部操作");
+  const submit=form.getByRole("button",{name:"启动新执行并接手",exact:true});
+  await expect(submit).toBeEnabled();
+  await submit.click();
+  await expect(page.locator(".dispatch-result")).toBeVisible();
+  const delivery=await (await request.get(`/api/v1/items/${item.key}/delivery`)).json();
+  expect(delivery.executions.find((row:{kind:string})=>row.kind==="human").status).toBe("working");
+});

@@ -3399,3 +3399,5 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .agent-console-reply { flex-shrink: 1; max-height: 40%; overflow-y: auto; }
   .agent-console-message-stage { min-height: 80px; }
 }
+
+.execution-stop-observation a.secondary-button { display: inline-flex; align-items: center; color: var(--ink); text-decoration: none; }

@@ -744,5 +744,5 @@ export interface ItemDelivery {
 export interface ItemExecutionBlocker {
   id:string; source:"external"|"dispatch"|"performer"|"ai"|"managed"; executionId:string; sessionId?:string;
   status:string; progressStatus?:string; nodeName?:string; lastObservedAt?:string; error?:string; scope?:string;
-  reason:"active"|"commands_pending"|"connection_unknown"|"execution_open"; canConfirmStopped:boolean; revision:string;
+  reason:"active"|"commands_pending"|"connection_unknown"|"execution_open"; canConfirmStopped:boolean; revision:string; blocking?:boolean; superseded?:boolean;
 }

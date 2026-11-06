@@ -1,3 +1,4 @@
+import { conflict } from "./errors.js";
 import { createHash } from "node:crypto";
 import { NODE_ONLINE_WINDOW_MS } from "@missiongo/domain";
 import type { MissionGoDatabase } from "./storage/database.js";
@@ -16,6 +17,8 @@ export interface ItemExecutionBlocker {
   reason: "active" | "commands_pending" | "connection_unknown" | "execution_open";
   canConfirmStopped: boolean;
   revision: string;
+  blocking?: boolean;
+  superseded?: boolean;
 }
 
 interface SessionObservation {
@@ -49,12 +52,14 @@ function sessionReason(row: SessionObservation): ItemExecutionBlocker["reason"] 
   const terminal = row.source === "external" && ["completed", "failed"].includes(row.progress_status ?? "");
   const turn = JSON.parse(row.turn_json ?? "{}") as {turnActive?: boolean};
   if (row.pending) return "commands_pending";
-  if (turn.turnActive || ["active", "stalled"].includes(row.status ?? "")) return "active";
+  const oldest = new Date(Date.now() - NODE_ONLINE_WINDOW_MS).toISOString();
+  const fresh = !row.revoked_at && row.last_seen_at && row.last_seen_at >= oldest && row.observed_at && row.observed_at >= oldest;
+  if (fresh && (turn.turnActive || ["active", "stalled"].includes(row.status ?? ""))) return "active";
   if (!row.native) return terminal ? undefined : "execution_open";
   if (!row.session_id || row.source === "dispatch" && (row.dispatch_status !== "launched" || row.session_ref?.startsWith("pending:"))) return "execution_open";
-  // Connection health follows the node heartbeat; a session's last report time only
-  // reflects report cadence, and idle sessions report slower than the window.
-  const oldest = new Date(Date.now() - NODE_ONLINE_WINDOW_MS).toISOString();
+  // Idle connection health follows the node heartbeat, not report cadence.
+  // A stale active-turn snapshot remains unknown rather than becoming idle.
+  if (turn.turnActive) return "connection_unknown";
   if (!["idle", "suspended"].includes(row.status ?? "") || row.revoked_at || !row.last_seen_at
     || row.last_seen_at < oldest) return "connection_unknown";
   return undefined;
@@ -140,6 +145,11 @@ export function itemExecutionBlockers(database: MissionGoDatabase, itemId: strin
       reason:reason === "active" || reason === "commands_pending" ? reason : "execution_open",canConfirmStopped,
       revision:digest([item.revision,key,linked])});
   }
+  for (const blocker of blockers) {
+    blocker.blocking = executionBlocksTakeover(blocker);
+    blocker.superseded = Boolean(db.prepare("SELECT 1 FROM item_execution_takeovers WHERE item_id=? AND source=? AND execution_id=?")
+      .get(itemId,blocker.source,blocker.executionId));
+  }
   return blockers;
 }
 
@@ -181,4 +191,39 @@ export function confirmItemExecutionStopped(database: MissionGoDatabase, itemId:
       WHERE d.id=? AND i.item_id=?`).get(blocker.executionId,itemId) as unknown as SessionObservation;
   db.prepare(`INSERT INTO item_execution_stop_confirmations(item_id,source,execution_id,evidence_key,confirmed_by,note,confirmed_at)
     VALUES (?,?,?,?,?,?,?)`).run(itemId,blocker.source,blocker.executionId,executionObservationKey(row),accountId,note,now);
+}
+
+/** Unknown historical records warn; actual activity, pending launches and managed ownership still fence work. */
+export function executionBlocksTakeover(row: ItemExecutionBlocker): boolean {
+  return row.reason === "active" || row.reason === "commands_pending"
+    || row.source === "ai" || row.source === "managed"
+    || row.source === "dispatch" && row.reason === "execution_open" && !row.canConfirmStopped;
+}
+
+export function assertItemExecutionIdentity(database: MissionGoDatabase,itemId:string,identity:string):void {
+  if (identity && database.connection.prepare("SELECT 1 FROM item_execution_takeovers WHERE item_id=? AND identity_key=?").get(itemId,identity)) {
+    throw conflict("builder_execution_revoked","此会话已被本条目的新执行接替，不能沿用旧授权重新领取。");
+  }
+}
+
+/** Called only inside the accepted claim transaction. Retire relationships, never fabricate stop receipts. */
+export function takeOverItemExecutions(database:MissionGoDatabase,itemId:string,accountId:string,dispatchId="",sessionId=""):void {
+  const db=database.connection;
+  if(itemExecutionBlockers(database,itemId,dispatchId,sessionId).some(executionBlocksTakeover)) {
+    throw conflict("execution_stop_unconfirmed","原执行仍有实际活动或待执行命令，请先在原会话处理。");
+  }
+  const now=new Date().toISOString();
+  const insert=db.prepare(`INSERT OR IGNORE INTO item_execution_takeovers(item_id,source,execution_id,identity_key,taken_over_by,created_at)
+    VALUES (?,?,?,?,?,?)`);
+  for(const row of sessionObservations(database,itemId,dispatchId).filter(r=>r.source!=="external" || r.id!==sessionId)) {
+    const identity=row.source==="dispatch" ? `dispatch:${row.id}` : (db.prepare(`SELECT 'native:'||client_id||':'||agent_kind||':'||ref_kind||':'||session_ref AS identity
+      FROM external_agent_sessions WHERE id=?`).get(row.id) as {identity:string}).identity;
+    insert.run(itemId,row.source,row.id,identity,accountId,now);
+  }
+  for(const row of db.prepare("SELECT id FROM item_executions WHERE item_id=? AND status IN ('assigned','working','blocked')").all(itemId) as {id:string}[]) {
+    insert.run(itemId,"performer",row.id,null,accountId,now);
+  }
+  db.prepare("UPDATE builder_execution_authorizations SET revoked=1 WHERE item_id=?").run(itemId);
+  db.prepare(`UPDATE item_executions SET authorization_revoked=1,status='handed_over',result='已由新执行接手；不表示原进程已停止',ended_at=?,updated_at=?
+    WHERE item_id=? AND status IN ('assigned','working','blocked')`).run(now,now,itemId);
 }
