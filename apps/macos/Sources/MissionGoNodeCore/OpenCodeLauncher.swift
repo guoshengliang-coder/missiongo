@@ -409,8 +409,8 @@ public enum OpenCodeProtocol {
             let text = content.compactMap { part -> String? in
                 guard part["type"] as? String == "text" else { return nil }
                 return part["text"] as? String
-            }.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { return nil }
+            }.joined(separator: "\n\n")
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
             let role = entry["agent"] as? String == "plan" ? "plan" : "agent"
             return AgentSessionMessage(sourceId: id, role: role, text: text, occurredAt: occurredAt)
         }

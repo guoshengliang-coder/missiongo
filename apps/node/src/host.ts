@@ -20,14 +20,13 @@ export function boundedSnapshot(snapshot: Snapshot): Snapshot {
   let bytes = 0;
   let truncated = false;
   for (const message of [...snapshot.messages].reverse()) {
-    const clipped = message.text.length > 100_000 ? { ...message, text: `[早期内容已省略]\n${message.text.slice(-99_980)}` } : message;
-    const size = Buffer.byteLength(JSON.stringify(clipped));
-    if (messages.length >= 2000 || bytes + size > 8 * 1024 * 1024) { truncated = true; break; }
-    if (clipped !== message) truncated = true;
-    messages.unshift(clipped); bytes += size;
+    if (message.text.length > 4_000_000) { truncated = true; continue; }
+    const size = Buffer.byteLength(JSON.stringify(message));
+    if (messages.length >= 2000 || bytes + size > 30 * 1024 * 1024) { truncated = true; break; }
+    messages.unshift(message); bytes += size;
   }
   return { ...snapshot, messages, ...(truncated ? { error: snapshot.error ?? "agent_history_limited: 镜像历史超出限制，仅同步最近内容；完整记录请在原会话核对。",
-    ...(snapshot.history ? { history: { ...snapshot.history, complete: false, error: "unavailable" } } : {}) } : {}) };
+    ...(snapshot.history ? { history: { ...snapshot.history, complete: false, error: "too_large" } } : {}) } : {}) };
 }
 export function socketPath(root: string, dispatchId: string): string {
   // Linux sockaddr_un is bounded. Keep names short even for long dispatch IDs.
@@ -46,8 +45,8 @@ export async function readHostHistory(adapter: Adapter | undefined, sessionRef: 
   if (!adapter?.historyPage || !sessionRef || !request || request.sessionRef !== sessionRef
     || typeof request.cursor !== "string" || !request.cursor || request.cursor.length > 4096) throw new Error("History source unavailable");
   const page = await adapter.historyPage(request.cursor);
-  const validMessages = page.messages.length <= 2000 && page.messages.every(message => message.text.length > 0 && message.text.length <= 100_000);
-  return validMessages && Buffer.byteLength(JSON.stringify(page)) <= 900_000 ? page : { messages: [], error: "too_large" };
+  const validMessages = page.messages.length <= 2000 && page.messages.every(message => message.text.length > 0 && message.text.length <= 4_000_000);
+  return validMessages && Buffer.byteLength(JSON.stringify(page)) <= 30 * 1024 * 1024 ? page : { messages: [], error: "too_large" };
 }
 async function callHost<T>(root: string, dispatchId: string, path: string, body: unknown): Promise<T> {
   const socket = socketPath(root, dispatchId);
@@ -56,7 +55,7 @@ async function callHost<T>(root: string, dispatchId: string, path: string, body:
   return new Promise((resolve, reject) => {
     const client = request({ socketPath: socket, path, method: "POST", timeout: 120_000, headers: { "Content-Type": "application/json" } }, (response) => {
       let text = ""; response.setEncoding("utf8"); response.on("data", (part: string) => {
-        text += part; if (text.length > 16 * 1024 * 1024) client.destroy(new Error("Oversized host snapshot"));
+        text += part; if (text.length > 32 * 1024 * 1024) client.destroy(new Error("Oversized host snapshot"));
       });
       response.on("end", () => { try { if (response.statusCode !== 200) throw new Error("Local host rejected request"); resolve(JSON.parse(text)); } catch (error) { reject(error); } });
     });

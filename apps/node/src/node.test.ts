@@ -395,3 +395,11 @@ describe("AND-391 scoped native stops", () => {
     expect(interrupts).toBe(1);
   });
 });
+
+it("preserves long snapshot text and never substitutes a shortened message", () => {
+  const text = "  " + "正文🎉".repeat(60_000) + "\n";
+  expect(boundedSnapshot({ status: "idle", messages: [{ sourceId: "long", role: "agent", text }] }).messages[0]?.text).toBe(text);
+  const result = boundedSnapshot({ status: "idle", history: { complete: true }, messages: [{ sourceId: "huge", role: "agent", text: "x".repeat(4_000_001) }] });
+  expect(result.messages).toEqual([]);
+  expect(result.history).toMatchObject({ complete: false, error: "too_large" });
+});

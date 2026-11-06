@@ -1,3 +1,4 @@
+import { AgentProgressReports } from "./agent-progress-reports";
 import { permissionReplyText } from "./permission-presentation";
 import { DeliveryCards } from "./merge-console";
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
@@ -158,6 +159,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                 if (!history.error && event.currentTarget.scrollTop <= 48 && event.currentTarget.scrollHeight > event.currentTarget.clientHeight + 1) void history.loadMore();
               }}>
                 <AgentHistoryLoader history={history} />
+                <AgentProgressReports session={session.data} />
                 {planTranscript(history.messages.filter((message) => !isWithdrawnCard(message)), session.data).map((message) => {
                   if (message === null) return <AgentPlanContent key="submitted-plan" session={session.data} surface="panel" />;
                   const repeatsPlan = repeatsSubmittedPlan(message, session.data);

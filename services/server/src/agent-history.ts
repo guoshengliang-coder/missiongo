@@ -8,12 +8,12 @@ import { invalidInput, notFound } from "./errors.js";
 const metadataSchema = z.object({ cursor: z.string().min(1).max(4096).nullable().optional(),
   complete: z.boolean(), error: z.enum(["unavailable", "unsupported"]).nullable().optional() }).strict();
 const messageSchema = z.object({ sourceId: z.string().min(1).max(200), turnId: z.string().max(200).nullable().optional(),
-  role: z.enum(["user", "agent", "plan"]), phase: z.string().max(50).nullable().optional(), text: z.string().min(1).max(100_000),
+  role: z.enum(["user", "agent", "plan"]), phase: z.string().max(50).nullable().optional(), text: z.string().min(1).max(4_000_000),
   occurredAt: z.string().datetime().nullable().optional(), questions: z.array(z.object({ title: z.string().max(4000),
     header: z.string().max(4000).optional(), detail: z.string().max(20_000).optional(),
     options: z.array(z.string().max(4000)).optional(), multiSelect: z.boolean().optional(), key: z.string().max(4000).optional(),
     kind: z.enum(["text", "number", "boolean"]).optional(), placeholder: z.string().max(4000).optional(),
-    custom: z.boolean().optional(), answered: z.string().max(100_000).optional(), withdrawn: z.boolean().optional(),
+    custom: z.boolean().optional(), answered: z.string().max(4_000_000).optional(), withdrawn: z.boolean().optional(),
   }).strict()).max(50).nullable().optional() }).strict();
 const resultSchema = z.object({ messages: z.array(messageSchema).max(2000), nextCursor: z.string().min(1).max(4096).nullable().optional(),
   error: z.enum(["unavailable", "unsupported", "node_unavailable", "too_large"]).nullable().optional() }).strict();
@@ -143,7 +143,7 @@ export class AgentHistory {
     const messages = data.messages.map(message => ({ ...message, id: `history:${message.sourceId}`,
       occurredAt: message.occurredAt ?? "" }));
     const payload = JSON.stringify(messages);
-    if (Buffer.byteLength(payload) > 1024 * 1024) throw invalidInput("History page is too large.");
+    if (Buffer.byteLength(payload) > 30 * 1024 * 1024) throw invalidInput("History page is too large.");
     this.database.transaction(() => {
       const nextId = data.nextCursor ? this.seed(accountId, row.session_id, data.nextCursor) : null;
       let candidate = nextId;

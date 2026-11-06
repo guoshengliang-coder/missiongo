@@ -22,7 +22,7 @@ export function readPrivate<T>(path: string): T | undefined {
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
   try {
     const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) || stat.size > 16 * 1024 * 1024) {
+    if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) || stat.size > 512 * 1024 * 1024) {
       throw new Error("Node file must be a private regular file owned by this user (0600)");
     }
     return JSON.parse(readFileSync(fd, "utf8")) as T;

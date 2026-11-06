@@ -332,7 +332,7 @@ export class ExternalNativeSessionStore {
       const now = new Date().toISOString(); let changed = false;
       let position = (this.db.prepare("SELECT COALESCE(MAX(position),-1) AS position FROM external_native_messages WHERE session_id=?").get(row.id) as { position: number }).position;
       for (const message of input.messages) {
-        if (!message.sourceId || message.sourceId.length > 200 || message.text.length > 100_000) throw invalidInput("Invalid native message.");
+        if (!message.sourceId || message.sourceId.length > 200 || message.text.length > 4_000_000) throw invalidInput("Invalid native message.");
         const old = this.db.prepare("SELECT payload_json FROM external_native_messages WHERE session_id=? AND source_id=?").get(row.id, message.sourceId) as { payload_json: string } | undefined;
         const previous = old ? JSON.parse(old.payload_json) as AgentSessionMessageInput : undefined;
         const questions = message.questions?.map((question, index) => {

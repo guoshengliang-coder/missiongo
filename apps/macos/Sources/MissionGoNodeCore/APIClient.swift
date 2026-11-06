@@ -1429,10 +1429,10 @@ public struct APIClient: Sendable {
     /// room to spare so a large session uploads instead of being refused with a
     /// 413 the sync loop treats as a generic offline blip.
     static let snapshotUploadBudget = 30 * 1_024 * 1_024
-    /// The server refuses one message longer than 100_000 UTF-16 code units
+    /// The server refuses one message longer than 4_000_000 UTF-16 code units
     /// (what its JavaScript `.length` counts), and the refusal rejects the
     /// whole snapshot with a 400.
-    static let snapshotMessageTextLimit = 100_000
+    static let snapshotMessageTextLimit = 4_000_000
     /// The server refuses a snapshot carrying more than 2_000 messages.
     static let snapshotMessageCountLimit = 2_000
     /// AND-210: the server also refuses a message whose text is blank ("message
@@ -1634,7 +1634,7 @@ public struct APIClient: Sendable {
     public func reportHistory(id: String, result: AgentHistoryResult) async throws {
         let validMessages = result.messages.count <= Self.snapshotMessageCountLimit
             && result.messages.allSatisfy { !$0.text.isEmpty && $0.text.utf16.count <= Self.snapshotMessageTextLimit }
-        let bounded = try validMessages && APIClient.encoder.encode(result).count <= 900_000 ? result : AgentHistoryResult(error: "too_large")
+        let bounded = try validMessages && APIClient.encoder.encode(result).count <= 30 * 1024 * 1024 ? result : AgentHistoryResult(error: "too_large")
         let response = try await send("POST", "/api/v1/node/agent-history/\(APIClient.encodePathComponent(id))",
             body: bounded, bearer: try nodeToken(), gzipBody: true)
         try requireSuccess(response, operation: "保存会话历史")
@@ -1719,7 +1719,8 @@ public struct APIClient: Sendable {
     }
 
     /// The report as it can go on the wire: no message longer than the server's
-    /// per-message limit, no more messages than it accepts, and — when the
+    /// per-message limit (oversized entries are reported as gaps, never clipped),
+    /// no more messages than it accepts, and — when the
     /// encoded body still exceeds the upload budget — the oldest messages
     /// dropped until it fits. Every host funnels through here, so this one
     /// chokepoint keeps a session of any size syncing (AND-181). Without it a
@@ -1732,7 +1733,8 @@ public struct APIClient: Sendable {
         var messages = report.messages
             .suffix(APIClient.snapshotMessageCountLimit)
             .compactMap { message -> AgentSessionMessage? in
-                let text = APIClient.cappedText(message.text, limit: APIClient.snapshotMessageTextLimit)
+                guard message.text.utf16.count <= APIClient.snapshotMessageTextLimit else { return nil }
+                let text = message.text
                 guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         || !(message.questions?.isEmpty ?? true) else { return nil }
                 return AgentSessionMessage(
@@ -1757,26 +1759,16 @@ public struct APIClient: Sendable {
             messages.removeFirst(max(1, messages.count / 4))
             uploadable = report.replacingMessages(messages)
         }
-        if let history = report.history, uploadable.messages != report.messages {
+        if uploadable.messages != report.messages {
             // Count/text/body caps must not turn a shortened upload into a
             // false claim that the native conversation is complete.
-            uploadable = uploadable.reportingHistory(AgentHistoryMetadata(cursor: history.cursor,
-                complete: false, error: "unavailable")).reportingHistoryLimit()
+            uploadable = uploadable.reportingHistoryLimit()
+            if let history = report.history {
+                uploadable = uploadable.reportingHistory(AgentHistoryMetadata(cursor: history.cursor,
+                    complete: false, error: "too_large"))
+            }
         }
         return uploadable
-    }
-
-    /// Caps text at `limit` UTF-16 code units — the unit the server's JavaScript
-    /// `.length` counts. `prefix` counts grapheme clusters, each of which can
-    /// span several units, so emoji-heavy text may still be over afterwards and
-    /// sheds trailing characters until it fits.
-    private static func cappedText(_ text: String, limit: Int) -> String {
-        guard text.utf16.count > limit else { return text }
-        var prefix = text.prefix(limit)
-        while prefix.utf16.count > limit {
-            prefix = prefix.dropLast()
-        }
-        return String(prefix)
     }
 
     public func me() async throws -> NodeProfile {

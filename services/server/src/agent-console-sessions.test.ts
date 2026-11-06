@@ -41,7 +41,7 @@ it("unifies historical native mirrors, keeps their records and exposes both IDs"
   expect(f.console.list("owner")).toMatchObject([{ id: f.sessionId, relatedSessionIds: [f.sessionId, f.externalId], unread: true }]);
   expect(f.console.list("owner")).toHaveLength(1);
   const detail = f.console.withMessages("owner", f.sessionId, f.dispatch.getForAccount("owner", f.sessionId));
-  expect(detail.messages.map((message) => message.text)).toContain(`${f.item.key} · Local tests passed`);
+  expect(detail.progressReports?.map((message) => message.text)).toContain(`${f.item.key} · Local tests passed`);
   expect(detail.replyable).toBe(true);
   expect(f.console.members("owner", f.externalId).map((row) => row.id)).toEqual([f.sessionId, f.externalId]);
   expect(f.db.prepare("SELECT COUNT(*) AS n FROM external_agent_sessions").get()).toMatchObject({ n: 1 });

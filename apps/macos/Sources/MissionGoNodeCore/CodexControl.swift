@@ -649,7 +649,7 @@ public enum CodexProtocol {
                         guard content["type"] as? String == "text" else { return nil }
                         return content["text"] as? String
                     }
-                    let text = parts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+                    let text = parts.joined(separator: "\n")
                     if !text.isEmpty {
                         messages.append(AgentSessionMessage(
                             sourceId: sourceId, turnId: turnId, role: "user", text: text,
@@ -661,7 +661,7 @@ public enum CodexProtocol {
                         guard let title = question["title"] as? String, !title.isEmpty else { return nil }
                         return AgentSessionQuestion(title: title, options: question["options"] as? [String])
                     }
-                    var text = (item["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    var text = (item["text"] as? String ?? "")
                     if text.isEmpty, let questions, !questions.isEmpty {
                         text = questions.map(\.title).joined(separator: "\n")
                     }
@@ -685,7 +685,7 @@ public enum CodexProtocol {
                             text: "![image](<\(href)>)", occurredAt: occurredAt))
                     }
                 case "plan":
-                    let text = (item["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    let text = (item["text"] as? String ?? "")
                     if !text.isEmpty {
                         messages.append(AgentSessionMessage(
                             sourceId: sourceId, turnId: turnId, role: "plan", text: text,
@@ -693,7 +693,7 @@ public enum CodexProtocol {
                         ))
                     }
                 default:
-                    if includeExecutionItems {
+                    if includeExecutionItems || ["commandExecution", "mcpToolCall", "dynamicToolCall", "webSearch", "fileChange"].contains(itemType) {
                         // Keep visible native tool/event records; never mirror encrypted reasoning payloads.
                         var visible = item
                         visible.removeValue(forKey: "encryptedContent")
@@ -939,7 +939,7 @@ public struct CodexAppServerControl: CodexControl {
         }
     }
 
-    /// Recover a long conversation using metadata and small display-summary
+    /// Recover a long conversation using metadata and native message
     /// pages. Old servers and even an oversized single turn still leave runtime
     /// state usable. The server keeps previously mirrored messages by source id.
     private static func readBoundedHistory(socketPath: String, threadId: String, timeout: TimeInterval,
@@ -962,20 +962,21 @@ public struct CodexAppServerControl: CodexControl {
         do { page = try Self.summaryPage(connection: connection, threadId: threadId, cursor: nil, timeout: timeout) }
         catch {
             var snapshot = try CodexProtocol.threadSnapshot(fromRead: result)
+            snapshot.messages = []
             snapshot.historyLimited = true
             snapshot.history = AgentHistoryMetadata(complete: false, error: "unavailable")
             return snapshot
         }
-        // The same summary page carries the most recent turn's error and id.
-        // summaryPage snapshots the thread metadata with those turns below.
         thread["turns"] = page.turns
         var snapshot = try CodexProtocol.threadSnapshot(fromRead: ["thread": thread])
         snapshot.historyLimited = true
+        let hadSummaryMessages = !snapshot.messages.isEmpty
+        snapshot.messages = []
         // Turn summaries omit commentary and plans. They supply runtime/turn
         // metadata only; visible conversation content must come from item pages.
         do {
             let items = try visibleItemPage(connection: connection, threadId: threadId, cursor: nil, timeout: timeout)
-            if items.messages.isEmpty && !snapshot.messages.isEmpty {
+            if items.messages.isEmpty && hadSummaryMessages {
                 throw CodexControlError.invalidResponse(method: "thread/items/list missing visible history")
             }
             snapshot.messages = items.messages

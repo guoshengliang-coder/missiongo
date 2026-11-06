@@ -37,10 +37,13 @@ export function codexMessages(thread: Wire): Message[] {
       && /\.(?:png|jpe?g|gif|webp|svg)$/i.test(item.savedPath)) {
       messages.push({ sourceId, turnId: turn.id, role: "agent", text: `![image](<${pathToFileURL(item.savedPath).href}>)` });
     } else if (["agentMessage", "plan"].includes(item.type) && item.text?.trim()) {
-      messages.push({ sourceId, turnId: turn.id, role: item.type === "plan" ? "plan" : "agent", text: item.text });
+      messages.push({ sourceId, turnId: turn.id, role: item.type === "plan" ? "plan" : "agent", text: item.text, ...(item.phase ? { phase: item.phase } : {}) });
+    } else if (["commandExecution", "mcpToolCall", "dynamicToolCall", "webSearch", "fileChange"].includes(item.type)) {
+      const { encryptedContent: _encrypted, encrypted_content: _encryptedSnake, ...visible } = item;
+      messages.push({ sourceId, turnId: turn.id, role: "agent", phase: "execution", text: JSON.stringify(visible) });
     }
   }
-  return messages.slice(-2000);
+  return messages;
 }
 export class CodexAdapter implements Adapter {
   private rpc: JsonProcess;
