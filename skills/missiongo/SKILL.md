@@ -1,7 +1,7 @@
 ---
 name: missiongo
 description: 通过 MissionGo MCP 查询项目概览、吞吐、交付周期和验收打回率，或完整读取及处理指定条目、评论、创建和上传附件；核实合并与发布后可靠交接。不修改条目正文与字段，不决定验收。
-version: 5.43.0
+version: 5.44.0
 ---
 
 # MissionGo 条目读取与评论
@@ -64,7 +64,8 @@ missiongo:
 - 调用状态工具前还须检查 `capabilities.writeTools` 包含对应的 `claim_item`、`submit_development_complete` 或 `submit_for_verification`；不能从 `canComment` 推断状态权限。
 - `capabilities.canCreateItems` 为 true：可以按「创建条目」建条目。为 false 或缺失时不得调用 `create_item`。
 - 上传附件还须确认 `capabilities.writeTools` 含 `prepare_attachment_upload`（脚本直传）或 `upload_attachment_chunk`（客户端编程传输），以及相应提交工具（已有条目用 `add_item_attachment`，新条目用 `create_item`）。缺少上传入口或提交工具时不得尝试上传。
-- 为 false：只读。可能是部署未开放写入、用户未授予 `missiongo:write`，也可能是本地 Skill 已过期。三种情况的处理相同——完成读取，把结论直接讲给用户，并说明当前连接不能回写。
+- `capabilities.supportsConversationAuthorization` 为 true：领取和恢复必须用 `authorizationMode: "conversation"`，按原身份交接，具体规则见「领取任务」；该标记不替代 `canComment` 或 `writeTools`。标记缺失时按旧服务兼容规则处理。
+- `capabilities.canComment` 为 false：只读。可能是部署未开放写入、用户未授予 `missiongo:write`，也可能是本地 Skill 已过期。三种情况的处理相同——完成读取，把结论直接讲给用户，并说明当前连接不能回写。
 
 以服务端返回的 `capabilities` 为准，不得因为本文件描述了评论能力就假定可以写入，也不得在 `canComment` 为 false 时尝试调用写入工具。
 
@@ -108,7 +109,7 @@ frontmatter 中的 `version` 对比。
 
 独立「状态检查」、每日补查、节点自动发现和自动校正已取消。不要调用旧的关联或证据上报工具，不等待后台任务改变条目状态。
 
-核实真实 PR/MR 合并或本地 Git 集成后，按「标记开发完成」调用 `submit_development_complete`；发布后核对全部必需产物，先写发布评论，再调用 `submit_for_verification`。两次交接都必须携带本轮 `executionAuthorization`。通过 `get_item_context` 核对条目的实际状态，最终验收仍由人决定。
+核实真实 PR/MR 合并或本地 Git 集成后，按「标记开发完成」调用 `submit_development_complete`；发布后核对全部必需产物，先写发布评论，再调用 `submit_for_verification`。两次交接都必须提供本轮原领取身份：`dispatchId`、外部 `sessionId` 或 `session`，三者选一，由服务端核验当前授权。旧服务仅支持凭据时遵守下文兼容规则。通过 `get_item_context` 核对条目的实际状态，最终验收仍由人决定。
 
 发布凭据文件及其上传仅保留发布事实，不触发任务、不改变条目状态。当前项目自己的发布流程、完整候选清单、产物覆盖门禁和公开产物核验仍须执行，详见「发布范围与覆盖门禁」和「发布后状态交接与版本回写」。
 
@@ -249,14 +250,17 @@ frontmatter 中的 `version` 对比。
    非本会话领取且没有有效接手授权时，**不要改代码**。人工开始后的终端会话可以先完整调查并用 `request_plan_approval` 以原身份登记明确方案，生成的审批关联不启动执行；用户在条目详情核实全部旧执行停止，再选择这个原会话接手，或新建接手派单。`get_item_context.executionPolicy.pendingAgentHandoff` 只展示本账号待接手目标，不是领取凭据。没有交接授权时说明具体入口，不把人工开始一概说成另一个 Agent 抢占；不代用户核实停止，不自行移回待处理。
    运行中的回合、排队/送达中/送达未知命令继续阻断。交接后新活动、范围或目标变化要求重新核实；领取被拒不得换身份、客户端或幂等键绕过。
 3. **领取前把「将要领取 HG-8」告诉用户。** 这是状态变更，用户要知道。
-4. 领取不要求方案审批记录或节点模式回执。服务端核对当前状态、归属、账号和客户端权限及幂等键，保持原有执行凭据隔离。历史原生批准的恢复只补充来源记录，不拦截领取、不额外启动回合。领取成功以实际返回的状态和凭据为准。
-   调用 `claim_item`，带 `agentId`（标明是哪个 AI）和稳定的 `idempotencyKey`。来自可信派单启动提示词的会话还应带该提示词给出的 `dispatchId`，沿用已有派单会话；外部主动处理的会话按「外部主动处理的会话与进展」提供 `session`，保存返回的 `sessionId`。
-5. 当前服务的状态写入和交接工具必须携带本轮 `executionAuthorization`，没有首次交接前的免凭据例外。领取成功返回 `executionAuthorization` 时，保存这份当前执行凭据；后续调用 `submit_development_complete` 和 `submit_for_verification` 都带上它。Builder 转交会永久撤销旧凭据，即使同一账号以后再次成为 Builder，也不能复用。旧服务没有返回此字段时不要伪造。新 Builder 接手仍处于「处理中」的条目时，只有已完成系统交接并指定给自己的接手派单才能再次调用 `claim_item`，必须带可信启动提示词中的 `dispatchId`；领取不会把条目退回或重复改变业务状态。收到执行授权失效或交接未完成的拒绝就停下，不换账号、客户端、幂等键或其他入口绕过。
+4. 领取不要求方案审批记录或节点模式回执。服务端核对当前状态、归属、账号和客户端权限及幂等键，保持原有执行凭据隔离。历史原生批准的恢复只补充来源记录，不拦截领取、不额外启动回合。领取成功以实际返回的状态和授权核验结果为准。
+   调用 `claim_item`，带 `agentId`（标明是哪个 AI）和稳定的 `idempotencyKey`。`capabilities.supportsConversationAuthorization` 为 true 时必须带 `authorizationMode: "conversation"`，避免把内部执行凭据返回给模型。来自可信派单启动提示词的会话还应带该提示词给出的 `dispatchId`，沿用已有派单会话；外部主动处理的会话按「外部主动处理的会话与进展」提供 `session`，保存返回的 `sessionId`。
+5. **按原会话身份交接，不让模型搬运凭据。** `capabilities.supportsConversationAuthorization` 为 true 时，领取使用 `authorizationMode: "conversation"`；返回的文本和 `structuredContent` 都提供 `executionIdentity`（只有原 `dispatchId` 或外部 `sessionId`），均不含内部执行凭据。保存该身份，调用 `submit_development_complete` 和 `submit_for_verification` 时把其中字段放在工具参数顶层，不嵌套 `executionIdentity`，不传 `executionAuthorization`。也可沿用可信原 `session`；三种身份只能选一种。服务端复用原领取回执，实时校验账号、OAuth 客户端、条目、轮次和撤销状态，不会因为提供身份而自动领取或创建授权。
+   - 仅保存非敏感身份；不为交接索要、打印、复制执行凭据，不依赖客户端能否展示 `structuredContent`。MCP HTTP 是无状态的，服务端不能仅凭当前登录账号自动选对话；仍须原身份。身份来源及权限边界不变，不能猜其他会话。
+   - **旧服务兼容**：能力标记缺失或不为 true 时，说明旧服务仍要求 `executionAuthorization`。仅在当前客户端已能取得原凭据时沿用旧工具参数，不能把不存在的字段伪造出来；OpenCode 等拿不到该字段的客户端须等待服务升级，不改用文本泄露凭据或跳过领取。旧客户端省略 `authorizationMode` 时服务端保留原凭据返回，供过渡兼容；此路径仍可能让凭据进入客户端上下文，新版 Skill 不主动选择。
+   - Builder 转交会永久撤销旧授权，即使同一账号以后再次成为 Builder，也不能复用。新 Builder 接手仍处于「处理中」的条目时，只有已完成系统交接并指定给自己的接手派单才能再次调用 `claim_item`，必须带可信启动提示词中的 `dispatchId`；领取不会把条目退回或重复改变业务状态。收到执行授权失效或交接未完成的拒绝就停下，不换账号、客户端、幂等键或其他入口绕过。
 6. 领取之后**必须写清楚结局**——完成、做不了、或需要用户补信息。都是评论，见「处理完成后回写」。不得领了就不说话。
 
 ### 长会话续接与执行凭据恢复
 
-上下文压缩或续接后，发现本会话遗失了 `executionAuthorization` 或原领取幂等键时，不要再次领取，
+上下文压缩或续接后，发现本会话遗失了原领取身份、旧执行凭据或原领取幂等键时，不要再次领取，
 不要仅凭卡片显示“处理中”就认定其他会话抢占了任务。先完整重读用户指定条目并重新核对
 `get_current_account`；`capabilities.writeTools` 包含 `recover_execution_authorization` 时，用该工具恢复原授权。
 
@@ -264,8 +268,8 @@ frontmatter 中的 `version` 对比。
   本会话原领取返回的外部 `sessionId`，或由可信客户端取得的原 `session`（`agentKind`、`refKind`、`sessionRef`）。
   身份来源沿用「外部主动处理的会话与进展」；tracking 只能沿用原值，不能新生成后冒充原会话。
 - 服务端核对原账号、OAuth 客户端、产品与 AI 权限、原领取回执的会话关联、撤销状态和当前执行轮次。
-  可核验的历史领取记录同样支持；工具只返回仍有效的原凭据，不新建会话、不重新领取、不改变状态或轮次。
-- 保存恢复的 `executionAuthorization`，后续状态与交接写入仍遵守合并和发布核验规则。恢复授权不证明交付完成。
+  可核验的历史领取记录同样支持；工具只确认仍有效的原授权（旧凭据模式才返回凭据），不新建会话、不重新领取、不改变状态或轮次。
+- 支持会话身份模式时，恢复调用必须带 `authorizationMode: "conversation"`，只确认原领取仍有效并返回可用 `executionIdentity`；保存其原身份用于后续交接，文本和结构化结果均不含执行凭据。旧服务只能在客户端已有可读原凭据时沿用旧路径。恢复仍不改变领取、会话或轮次，也不证明集成或发布完成。
 - 工具不可用、原身份不可取得、关联有歧义或授权已撤销时，保留原状态，报告具体限制并由用户核对。
   不扫描其他会话、不猜身份、不换账号/客户端/幂等键绕过，也不把已撤销授权当成可恢复的丢失凭据。
 
@@ -507,7 +511,7 @@ AI 每小时能建的条目有上限：衍生条目按来源条目计，独立�
 2. 正常部署使用 `scripts/deploy.sh --notice-origin <公网 origin>`。脚本在真正部署结束后打印一行 JSON 发布凭据。它记录部署前后实际线上产物的版本与来源提交，并按产物类型核验：Web/Server 核对公网 `/health` 报告的来源提交；Android App 和 macOS App 核对公开下载文件的哈希；Android SDK 核对公开 POM 的哈希。不同产品不得套用不存在的产物检查。没有这份凭据、相关 `changes` 中的 `verified` 或 `eligibleForMatching` 为 false 时，不能声称该产物已发布。构建脚本本地成功和 `released.json` 更新都不等于上线。首次发布或旧版本来源未知时，自动关联会跳过。
 3. 沿用发布前按「发布范围与覆盖门禁」取得并在部署前刷新的全量候选页；只对第 1 步限定的产品调用 `list_release_candidates`，带 `includeUnscoped: true`，从 `beforeSequence` 缺省值开始，按 `nextBeforeSequence` 读到结束，**即使某页 `candidates` 为空也继续**。它给出开发完成条目的编号、集成依据、必需产物或范围缺失提示，不给出正文。不得从条目描述、评论、提交标题或日志里扩展候选编号。记录每次请求的游标，第一页记为 `requestedBeforeSequence: null`，后续页记为实际传入的 `beforeSequence`。
 4. 把发布凭据和**所有候选页**写入工作区外的临时 JSON 文件。候选文件为 `{ "pages": [{ "requestedBeforeSequence": null, "productId": "...", "candidates": [...], "nextBeforeSequence": 123 }, { "requestedBeforeSequence": 123, "productId": "...", "candidates": [...] }] }`；末页没有 `nextBeforeSequence`。运行 `node scripts/release-notices.mjs --receipt <文件> --candidates <文件>`。脚本先拒绝分页不完整或跨产品的输入，再通过 `gh` 核实 PR 已合并、属于当前仓库，以条目明确登记的发布范围核对必需产物（文件路径只作建议），并核实**每一个**已登记必需产物当前公开可用、来源提交包含 PR；当前公开产物已经包含 PR 时也允许补齐以前漏掉的交接，不要求本次新增发布。多个产物可在不同发布批次完成。脚本只提出评论和状态交接参数，不写 MissionGo。任何命令失败、关联不明或结果为空都停在人工核对，不猜。
-5. 对脚本提出的每个条目，仍逐条完整执行「读取流程」：确认当前状态仍是开发完成，最近一次开发完成事件的 PR URL 和必需产物与候选结果相同，读完所有附件。只有全部成立、`capabilities.canComment` 为 true 且 `writeTools` 包含 `submit_for_verification` 时，先按脚本给出的 `text`、`summary` 和稳定 `idempotencyKey` 调用 `append_comment`（`bodyKind: "free"`），加上真实的 `agentName`；再用 `pullRequestUrl`、`releases`、`deployedCommit`、`receiptDigest` 和独立的 `transitionIdempotencyKey` 调用 `submit_for_verification`。重试复用各自原键。
+5. 对脚本提出的每个条目，仍逐条完整执行「读取流程」：确认当前状态仍是开发完成，最近一次开发完成事件的 PR URL 和必需产物与候选结果相同，读完所有附件。只有全部成立、`capabilities.canComment` 为 true 且 `writeTools` 包含 `submit_for_verification` 时，先按脚本给出的 `text`、`summary` 和稳定 `idempotencyKey` 调用 `append_comment`（`bodyKind: "free"`），加上真实的 `agentName`；再用本轮原领取身份（按上文身份交接规则）、`pullRequestUrl`、`releases`、`deployedCommit`、`receiptDigest` 和独立的 `transitionIdempotencyKey` 调用 `submit_for_verification`。重试复用各自原键。
 6. 评论只说正式发布了哪些产物及其版本、来源提交、关联 PR，并提示在这些版本验证。Web/Server 以线上来源提交作为核验版本；若产品同时展示 tag，可一并说明，但不得用 tag 代替线上提交校验。评论不得声称验收通过、已经安装到用户设备、或所有环境都已更新。逐条处理脚本提出的**所有**评论，不因本次部署由某一条触发而提前结束；报告实际推进了哪些条目，哪些被跳过及原因。现有待验证条目保持原状态，不做历史回填。
 
 ## 输出格式

@@ -191,6 +191,18 @@ function textResult(data: Readonly<Record<string, unknown>>, summary?: string) {
   };
 }
 
+/** Text-only clients receive the same usable identity, never the internal claim credential. */
+function conversationResult(result: Readonly<Record<string, unknown>>, summary: string, originalDispatchId?: string) {
+  const { executionAuthorization: _credential, ...visible } = result;
+  const dispatchId = typeof result.dispatchId === "string" ? result.dispatchId : originalDispatchId;
+  const executionIdentity = dispatchId ? { dispatchId } : { sessionId: result.sessionId };
+  const sessionHint = typeof result.projectSessionId === "string"
+    ? ` Reused project conversation: ${result.projectSessionId}. Its node already synchronizes messages and replies; do not register or report an external session.`
+    : typeof result.sessionId === "string" ? ` Progress session: ${result.sessionId}. Save this ID for subsequent reports.` : "";
+  return textResult({ ...visible, authorizationMode: "conversation", executionIdentity },
+    `${summary}${sessionHint} Pass the fields inside executionIdentity as top-level arguments to both submit_development_complete and submit_for_verification, not as a nested executionIdentity argument; do not request or copy a credential.\n${JSON.stringify({ executionIdentity })}`);
+}
+
 export function createMissionGoMcpServer(
   store: MissionGoStore,
   attachmentStorage: AttachmentStorage,
@@ -214,6 +226,20 @@ export function createMissionGoMcpServer(
     name: z.string().trim().min(1).max(100).optional(),
     autoConnect: z.boolean().optional(),
   });
+  const originalConversationFields = {
+    dispatchId: z.string().min(1).max(200).optional(),
+    sessionId: z.string().min(1).max(200).optional(),
+    session: sessionIdentity.pick({ agentKind: true, refKind: true, sessionRef: true }).optional(),
+  };
+  const authorizationMode = z.enum(["credential", "conversation"]).optional()
+    .describe("Use conversation to keep the claim credential out of text and structuredContent. Omitted retains the legacy credential response.");
+  const handoverAuthorizationFields = {
+    ...originalConversationFields,
+    executionAuthorization: z.string().uuid().optional().describe("Legacy claim credential. Otherwise provide exactly one original dispatchId, sessionId or session; never mix both paths."),
+  };
+  const handoverAuthorizationSchema = z.object(handoverAuthorizationFields);
+  const singleHandoverIdentity = (input: z.infer<typeof handoverAuthorizationSchema>) =>
+    [input.dispatchId, input.sessionId, input.session, input.executionAuthorization].filter(value => value !== undefined).length === 1;
   const authorizeSession = (ctx: ServerContext, sessionId: string, itemKey: string) =>
     sessions.authorize(accountAccess(ctx), sessionId, itemKey, (key) => requireItemAccess(ctx, store, key));
   const authorizeExecution = (ctx: ServerContext, itemKey: string, credential?: string) => {
@@ -221,6 +247,17 @@ export function createMissionGoMcpServer(
     if (options.canOperate && !options.canOperate(access.accountId,store.getWorkItem(key).productId)) throw new Error("Product operation is not permitted.");
     store.assertWorkItemWritable(key);
     assertExecutionAuthorization(store.database,store.getWorkItem(key).id,access.accountId,access.clientId ?? "",credential);
+  };
+  const authorizeHandover = (ctx: ServerContext, input: z.infer<typeof handoverAuthorizationSchema> & { itemKey: string }) => {
+    const access = accountAccess(ctx), key = requireItemAccess(ctx, store, input.itemKey);
+    if (options.canOperate && !options.canOperate(access.accountId, store.getWorkItem(key).productId)) throw new Error("Product operation is not permitted.");
+    const credential = input.executionAuthorization ?? recoverExecutionAuthorization(store, access.accountId, access.clientId ?? "", {
+      itemKey: key,
+      ...(input.dispatchId ? { dispatchId: input.dispatchId } : {}),
+      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+      ...(input.session ? { session: input.session } : {}),
+    }).executionAuthorization;
+    authorizeExecution(ctx, key, credential);
   };
   const server = new McpServer(
     { name: "missiongo", version: "0.1.0" },
@@ -282,6 +319,7 @@ export function createMissionGoMcpServer(
           writeTools,
           canComment: writeTools.includes("append_comment"),
           canCreateItems: writeTools.includes("create_item"),
+          supportsConversationAuthorization: true,
           supportsSharedReleaseObservations: true,
         },
         skill: skillVersionInfo(options.publicOrigin),
@@ -1001,18 +1039,19 @@ export function createMissionGoMcpServer(
         + "A project conversation may claim items in its own product using its original dispatchId; a verified native session identity also reuses that project conversation. "
         + "When projectSessionId is returned, keep using that original conversation; do not register or report a separate external session, since the node already synchronizes it. "
         + "A legacy call creates a per-claim tracking record, never a native transcript. Work-item and session states remain independent. "
-        + "Save the returned executionAuthorization and pass it to status-changing and handover tools; Builder transfer permanently revokes earlier execution credentials. "
+        + "Use authorizationMode: conversation to receive a usable original executionIdentity in text without exposing the claim credential. Pass that identity to both handover tools. Legacy calls may still use executionAuthorization; Builder transfer permanently revokes earlier execution credentials. "
         + "If continuation loses the credential or original idempotency key, use recover_execution_authorization with the original conversation identity, never claim again.",
       inputSchema: z.object({
         itemKey: z.string().min(2).max(50),
         agentId: z.string().min(1).max(200),
+        authorizationMode,
         session: sessionIdentity.optional(),
         dispatchId: z.string().min(1).max(200).optional(),
         idempotencyKey: z.string().min(1).max(200),
       }).refine((input) => !(input.session && input.dispatchId), "Use either an external session or a dispatchId."),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ itemKey, agentId, session, dispatchId, idempotencyKey }, ctx) => {
+    async ({ itemKey, agentId, session, dispatchId, authorizationMode, idempotencyKey }, ctx) => {
       requireWriteScope(ctx);
       const access = accountAccess(ctx);
       const key = requireItemAccess(ctx, store, itemKey);
@@ -1030,7 +1069,7 @@ export function createMissionGoMcpServer(
         if (!(error instanceof MissionGoError)) throw error;
       }
       const result = store.database.transaction(() => {
-        const digest = createHash("sha256").update(JSON.stringify([key, agentId, session ?? null, dispatchId ?? null])).digest("hex");
+        const digest = createHash("sha256").update(JSON.stringify([key, agentId, session ?? null, dispatchId ?? null, ...(authorizationMode === "conversation" ? ["conversation"] : [])])).digest("hex");
         const receipt = store.database.connection.prepare("SELECT digest, result_json FROM mcp_agent_claim_receipts WHERE account_id = ? AND client_id = ? AND idempotency_key = ?")
           .get(access.accountId, access.clientId ?? "", idempotencyKey) as { digest: string; result_json: string } | undefined;
         if (receipt) {
@@ -1069,6 +1108,8 @@ export function createMissionGoMcpServer(
           .run(access.accountId, access.clientId ?? "", idempotencyKey, digest, JSON.stringify(result));
         return result;
       });
+      if (authorizationMode === "conversation") return conversationResult(result,
+        `${key} is in progress. Keep this original conversation identity for this handling round.`, dispatchId);
       return textResult(result, `${key} is now in progress. Save executionAuthorization from this result and include it in every status-changing and handover tool for this handling round.${"projectSessionId" in result ? ` Reused project conversation: ${result.projectSessionId}. Its node already synchronizes messages and replies; do not register or report an external session.` : "sessionId" in result ? ` Progress session: ${result.sessionId}. Save this ID for subsequent reports.` : ""}`);
     },
   );
@@ -1080,13 +1121,12 @@ export function createMissionGoMcpServer(
       description: "After context compaction or continuation loses a claim credential, recover the original executionAuthorization for the user-named item. "
         + "Provide exactly one original dispatchId, external sessionId, or trusted session identity. Never guess another conversation's identity. "
         + "Requires current write, product operation and AI permissions, the original account and OAuth client, an unrevoked claim and the current execution round. "
-        + "Includes historical claims with verifiable receipts. Does not claim again, register sessions, mint credentials or change status. "
+        + "Use authorizationMode: conversation to confirm a usable executionIdentity in text without disclosing the credential. Includes historical claims with verifiable receipts. Does not claim again, register sessions, mint credentials or change status. "
         + "If recovery is refused, leave the item unchanged and ask the user to check execution ownership; do not retry with another identity.",
       inputSchema: z.object({
         itemKey: z.string().min(2).max(50),
-        dispatchId: z.string().min(1).max(200).optional(),
-        sessionId: z.string().min(1).max(200).optional(),
-        session: sessionIdentity.pick({ agentKind: true, refKind: true, sessionRef: true }).optional(),
+        ...originalConversationFields,
+        authorizationMode,
       }).refine(input => [input.dispatchId, input.sessionId, input.session].filter(Boolean).length === 1,
         "Provide exactly one original conversation identity."),
       // Credential disclosure is write-gated even though recovery changes no data.
@@ -1103,6 +1143,8 @@ export function createMissionGoMcpServer(
         ...(input.sessionId ? { sessionId: input.sessionId } : {}),
         ...(input.session ? { session: input.session } : {}),
       }));
+      if (input.authorizationMode === "conversation") return conversationResult(result,
+        `Confirmed the original claim for ${key}. No claim, session, or status was changed.`);
       return textResult(result, `Recovered the original executionAuthorization for ${key}. Keep it for this handling round. No claim, session, or status was changed.`);
     },
   );
@@ -1112,7 +1154,7 @@ export function createMissionGoMcpServer(
     {
       title: "Record integrated work as development complete",
       description:
-        "Always include executionAuthorization returned by the current claim; operation and AI permission are rechecked for every write. Move work to development complete after verifying GitHub PR merge (gh), GitLab MR merge (glab), or a local commit included in targetBranch (git merge-base --is-ancestor), with required checks passing. Manual completion is confirmed only by a signed-in person in the console. "
+        "Provide exactly one original dispatchId, external sessionId or session, or the legacy executionAuthorization. The server verifies the original claim, current round and revocation; operation and AI permission are rechecked for every write. Move work to development complete after verifying GitHub PR merge (gh), GitLab MR merge (glab), or a local commit included in targetBranch (git merge-base --is-ancestor), with required checks passing. Manual completion is confirmed only by a signed-in person in the console. "
         + "Enumerate artifacts using the current product repository's actual diff and release rules, never another "
         + "repository's path mapping. Identifiers are recorded automatically; no product setup is required. "
         + "Explicit no-release work may use requiredArtifacts: [] only with noReleaseReason explaining scope, evidence "
@@ -1120,13 +1162,13 @@ export function createMissionGoMcpServer(
         + "No-release work waits for a person to arrange verification; this tool never proves publication or acceptance.",
       inputSchema: z.object({
         itemKey: z.string().min(2).max(50),
-        executionAuthorization: z.string().uuid().describe("Current claim credential. If lost, recover_execution_authorization with the original conversation identity; do not claim again."),
+        ...handoverAuthorizationFields,
         ...completionFields,
         requiredArtifacts: z.array(z.string().regex(RELEASE_ARTIFACT_ID_PATTERN)).max(MAX_RELEASE_ARTIFACTS).optional(),
         noReleaseReason: z.string().trim().min(1).max(4_000).optional(),
         summary: z.string().min(1).max(4_000).optional(),
         idempotencyKey: z.string().min(1).max(200),
-      }).superRefine((input, ctx) => {
+      }).refine(singleHandoverIdentity, "Provide exactly one original conversation identity or a legacy executionAuthorization, never both.").superRefine((input, ctx) => {
         if (input.requiredArtifacts?.length === 0 && !input.noReleaseReason) {
           ctx.addIssue({ code: "custom", path: ["noReleaseReason"], message: "An empty artifact list needs an explicit no-release reason." });
         } else if (input.requiredArtifacts?.length !== 0 && input.noReleaseReason !== undefined) {
@@ -1135,10 +1177,11 @@ export function createMissionGoMcpServer(
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ itemKey, executionAuthorization, completion, pullRequestUrl, requiredArtifacts, noReleaseReason, summary, idempotencyKey }, ctx) => {
+    async (input, ctx) => {
+      const { itemKey, completion, pullRequestUrl, requiredArtifacts, noReleaseReason, summary, idempotencyKey } = input;
       requireWriteScope(ctx);
       const access = accountAccess(ctx);
-      authorizeExecution(ctx,itemKey,executionAuthorization);
+      authorizeHandover(ctx, input);
       const item = store.submitDevelopmentComplete({
         itemKey: requireItemAccess(ctx, store, itemKey),
         completion: normalizeCompletion({ completion, pullRequestUrl }),
@@ -1166,10 +1209,10 @@ export function createMissionGoMcpServer(
     "submit_for_verification",
     {
       title: "Hand published work over for verification",
-      description: "Always include executionAuthorization returned by the current claim; operation and AI permission are rechecked for every write. Only after independently checking the integration reference, verified release receipt and every required public artifact, move a development-complete item to pending verification. Read the item fully and write a release comment first. Artifacts must match the identifiers recorded at handover. The receipt digest and artifact versions are recorded for audit; the server cannot itself verify the repository host or public downloads.",
+      description: "Provide exactly one original dispatchId, external sessionId or session, or the legacy executionAuthorization. The server verifies the original claim, current round and revocation; operation and AI permission are rechecked for every write. Only after independently checking the integration reference, verified release receipt and every required public artifact, move a development-complete item to pending verification. Read the item fully and write a release comment first. Artifacts must match the identifiers recorded at handover. The receipt digest and artifact versions are recorded for audit; the server cannot itself verify the repository host or public downloads.",
       inputSchema: z.object({
         itemKey: z.string().min(2).max(50),
-        executionAuthorization: z.string().uuid().describe("Current claim credential. If lost, recover_execution_authorization with the original conversation identity; do not claim again."),
+        ...handoverAuthorizationFields,
         ...completionFields,
         releases: z.array(z.object({
           artifact: z.string().regex(RELEASE_ARTIFACT_ID_PATTERN),
@@ -1179,13 +1222,14 @@ export function createMissionGoMcpServer(
         deployedCommit: z.string().regex(/^[0-9a-f]{40}$/),
         receiptDigest: z.string().regex(/^[0-9a-f]{64}$/),
         idempotencyKey: z.string().min(1).max(200),
-      }),
+      }).refine(singleHandoverIdentity, "Provide exactly one original conversation identity or a legacy executionAuthorization, never both."),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ itemKey, executionAuthorization, completion, pullRequestUrl, releases, deployedCommit, receiptDigest, idempotencyKey }, ctx) => {
+    async (input, ctx) => {
+      const { itemKey, completion, pullRequestUrl, releases, deployedCommit, receiptDigest, idempotencyKey } = input;
       requireWriteScope(ctx);
       const access = accountAccess(ctx);
-      authorizeExecution(ctx,itemKey,executionAuthorization);
+      authorizeHandover(ctx, input);
       const item = store.submitForVerification({
         itemKey: requireItemAccess(ctx, store, itemKey), completion: normalizeCompletion({ completion, pullRequestUrl }), releases, deployedCommit, receiptDigest,
         attribution: { accountId: access.accountId, ...(access.clientId ? { clientId: access.clientId } : {}) },
