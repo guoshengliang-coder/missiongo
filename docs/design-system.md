@@ -500,3 +500,9 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 ### 批次集成计划与恢复
 
 待合并弹窗与集成会话共用 `IntegrationProgress`，复用 `merge-delivery-card`、有序列表及原生 details。计划摘要、验证目标、每项阶段和发布受阻提示直接可见；修复链和历史原位展开。原始提交、当前提交与验证证据分开说明，不以阶段文字冒充检查通过。不新增批准步骤或业务状态；新入口明确必要修复授权，旧批次保持原边界。回归见 `merge-console.audit.spec.ts`，覆盖明暗、320/1440px、三档字号、长提交、草稿和刷新恢复。
+
+### 长会话回执边界（AND-428）
+
+控制台复用 `useAgentHistory.hasMore` 与 `replyMirrorArrived`：普通文字命令为 delivered、确有更早历史且命令早于已加载窗口最早有效时间时，收起窗口外回执。此判断只控制显示，不证明原生回显或执行完成。无分页标记、空窗口、无效命令时间及边界相等时保留原匹配；附件按 commandId、其他投递状态及短会话保护保持。条目内面板不使用该合成气泡，其历史加载行为保持。
+
+回归见 `agent-session-view.test.ts`、`and-428-reply-window.audit.spec.ts`、既有 `and-421-reply-status.audit.spec.ts` 与 `codex-history-pagination.audit.spec.ts`；沿用原回执组件，无新增样式或例外。生产原会话端到端验证须在发布后进行。

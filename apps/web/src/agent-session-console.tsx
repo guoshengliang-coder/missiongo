@@ -627,7 +627,7 @@ export function AgentSessionConsole({
   const mirrorMessages = history.messages;
   const mirrorAttachments = sessionQuery.data?.attachmentMessages ?? [];
   const outgoingCandidate = outgoingReply(command, sendingRequest,
-    replyMirrorArrived(command, mirrorMessages, mirrorAttachments));
+    replyMirrorArrived(command, mirrorMessages, mirrorAttachments, history.hasMore));
   const outgoing = outgoingCandidate?.commandId === dismissedCommandId ? null : outgoingCandidate;
   const outgoingSignature = outgoing ? `${selectedId}:${outgoing.commandId ?? "request"}:${outgoing.status}:${outgoing.text}` : "";
   const sessionStatus = effectiveAgentSessionStatus(

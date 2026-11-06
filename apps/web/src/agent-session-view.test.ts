@@ -420,6 +420,27 @@ describe("agent session message view", () => {
     ])).toBe(true);
   });
 
+  it("hides only delivered plain replies before an explicitly paginated window (AND-428)", () => {
+    const command = { id: "old", kind: "message", text: "继续", status: "delivered", createdAt: "2026-11-06T00:00:00Z" } as const;
+    const messages = Array.from({ length: 50 }, (_, n) => ({ id: `m${n}`, sourceId: `m${n}`, role: "agent" as const,
+      text: "后续正文", occurredAt: new Date(Date.parse(command.createdAt) + (n + 1) * 60_000).toISOString() }));
+    for (const window of [messages, messages.slice(0, 2), [...messages].reverse()]) {
+      expect(outgoingReply(command, undefined, replyMirrorArrived(command, window, [], true))).toBeNull();
+      expect(replyMirrorArrived(command, window, [])).toBe(false);
+    }
+    for (const status of ["queued", "delivering", "delivery_unknown", "failed"] as const) {
+      expect(replyMirrorArrived({ ...command, status }, messages, [], true)).toBe(false);
+      expect(outgoingReply({ ...command, status }, undefined, false)?.status).toBe(status);
+    }
+    for (const occurredAt of [command.createdAt, "2026-11-05T23:59:00Z", "invalid"]) {
+      expect(replyMirrorArrived(command, [{ ...messages[0]!, occurredAt }], [], true)).toBe(false);
+    }
+    expect(replyMirrorArrived(command, [], [], true)).toBe(false);
+    expect(replyMirrorArrived({ ...command, createdAt: "invalid" }, messages, [], true)).toBe(false);
+    expect(replyMirrorArrived({ ...command, attachments: [{ id: "a", filename: "image.png", kind: "image", contentType: "image/png", sizeBytes: 1, sha256: "0", createdAt: command.createdAt }] }, messages, [], true)).toBe(false);
+    expect(replyMirrorArrived(command, [{ ...messages[0]!, role: "user", text: command.text }], [], true)).toBe(true);
+  });
+
   it("reads a session as working while its reply is still on its way (AND-195)", () => {
     const command = { id: "command-1", kind: "message", text: "继续", createdAt: "2026-09-25T00:00:00Z" } as const;
     // Submitting, queueing and delivering all mean the turn is about to run.
