@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { upgradeReleaseStatusDeploy, withoutReleaseStatus } from "./enable-release-status.mjs";
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -24,6 +25,9 @@ const hooks = [
 ];
 
 export function instrumentDeploy(source) {
+  // A reviewed release-status block composes both EXIT handlers. Validate it
+  // exactly, then retain all existing timing/unknown-trap checks on the rest.
+  if (source.includes("# BEGIN RELEASE STATUS")) return upgradeReleaseStatusDeploy(instrumentDeploy(withoutReleaseStatus(source)));
   // Existing production behavior remains byte-for-byte once our insertions are
   // removed. Reject partial installs and any unrecognized anchors/traps.
   if (source.includes("release_timing_") && !source.includes("# BEGIN RELEASE TIMING")) throw new Error("Partial timing installation; preserved existing deploy script");

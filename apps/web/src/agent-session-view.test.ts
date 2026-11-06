@@ -6,6 +6,9 @@ import {
   agentChatMessages,
   projectConversationMessages,
   approvalNeedsAction,
+  approvalTitleKey,
+  waitingStatusLabelKey,
+  runWaitingLabelKey,
   agentOtherProjectCounts,
   agentUnreadCounts,
   agentSessionDetailRefetchInterval,
@@ -623,4 +626,29 @@ it("keeps project-only unread attribution and hides only the launch instruction"
   expect(projectConversationMessages(messages, true)).toEqual(messages.slice(1));
   expect(projectConversationMessages(messages, false)).toBe(messages);
   expect(projectConversationMessages([human], true)).toEqual([human]);
+});
+
+describe("requestKind copy mapping (AND-408)", () => {
+  const prompt = { id: "prompt", kind: "manual" as const, status: "pending",
+    turnId: "turn", action: "fixture", startedAtMs: 1 };
+  it("maps the approval card title by request kind, neutral for legacy rows", () => {
+    expect(approvalTitleKey({ ...prompt, requestKind: "question" })).toBe("agentQuestionTitle");
+    expect(approvalTitleKey({ ...prompt, requestKind: "confirmation" })).toBe("agentConfirmationTitle");
+    expect(approvalTitleKey({ ...prompt, requestKind: "permission" })).toBe("agentApprovalTitle");
+    expect(approvalTitleKey(prompt)).toBe("agentNeutralApprovalTitle");
+    expect(approvalTitleKey({ ...prompt, kind: "auto" })).toBe("agentApprovalAutoTitle");
+  });
+  it("maps waiting pills and run labels, keeping other agents untouched", () => {
+    expect(waitingStatusLabelKey({ agentKind: "codex", approval: { ...prompt, requestKind: "question" } })).toBe("agentSessionWaitingQuestionStatus");
+    expect(waitingStatusLabelKey({ agentKind: "codex", approval: { ...prompt, requestKind: "confirmation" } })).toBe("agentSessionWaitingConfirmationStatus");
+    expect(waitingStatusLabelKey({ agentKind: "codex", approval: { ...prompt, requestKind: "permission" } })).toBe("agentSessionWaitingApprovalStatus");
+    expect(waitingStatusLabelKey({ agentKind: "codex", approval: prompt })).toBe("agentSessionWaitingPendingStatus");
+    expect(waitingStatusLabelKey({ agentKind: "codex", approval: undefined })).toBe("agentSessionWaitingPendingStatus");
+    expect(waitingStatusLabelKey({ agentKind: "claude_code", approval: undefined })).toBe("agentSessionWaitingStatus");
+    expect(runWaitingLabelKey({ agentKind: "codex", approval: { ...prompt, requestKind: "question" } })).toBe("agentRunQuestion");
+    expect(runWaitingLabelKey({ agentKind: "codex", approval: { ...prompt, requestKind: "confirmation" } })).toBe("agentRunConfirmation");
+    expect(runWaitingLabelKey({ agentKind: "codex", approval: { ...prompt, requestKind: "permission" } })).toBe("agentRunApproval");
+    expect(runWaitingLabelKey({ agentKind: "codex", approval: prompt })).toBe("agentRunWaiting");
+    expect(runWaitingLabelKey({ agentKind: "opencode", approval: undefined })).toBe("agentRunWaiting");
+  });
 });

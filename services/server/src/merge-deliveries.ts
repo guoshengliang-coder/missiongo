@@ -1,3 +1,6 @@
+import { legacyIntegratorPrompt } from "./legacy-merge-authorization.js";
+import type { MergeIntegration } from "@missiongo/contracts";
+import { integrationActionSchema, integrationDigest, applyIntegrationAction, assertIntegrationMerge, integrationDenied, type IntegrationAction } from "./merge-integration.js";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { MissionGoStore } from "./store.js";
@@ -10,6 +13,7 @@ import { AgentSessionStore } from "./agent-session-store.js";
 import { collaborationBlockers } from "./collaboration-policy.js";
 
 const sha = z.string().regex(/^[a-f0-9]{40}$/);
+const instructionQuote = z.string().trim().min(1).max(500);
 export const mergeEvidenceSchema = z.object({
   head: sha, base: sha, checkedAt: z.string().datetime(),
   checks: z.enum(["passed", "pending", "failed", "unknown"]),
@@ -34,9 +38,11 @@ interface Delivery extends DeliveryInput {
   id: string; productId: string; accountId: string; clientId: string; identity: Identity;
   sessionId: string; revision: string; scope: string; activity: string;
   state: "proposed" | "confirmed" | "withdrawn" | "batched" | "merged";
-  createdAt: string; confirmedAt?: string; batchId?: string;
+  createdAt: string; confirmedAt?: string; confirmedBy?: "console" | "session-instruction"; instructionQuote?: string;
+  batchId?: string;
 }
 interface Batch {
+  integration?: MergeIntegration;
   id: string; productId: string; accountId: string; requestKey: string;
   dispatchId: string; sessionId: string; config: FreeSessionConfig; publish: boolean;
   deliveries: string[]; selection: {id:string;revision:string}[]; state: "active" | "finished"; createdAt: string;
@@ -98,8 +104,17 @@ export class MergeDeliveries {
     if (d.itemKeys.some(key => collaborationBlockers(this.db, this.store.getWorkItem(key).id)>0)) return "dependency";
     return undefined;
   }
-  propose(accountId: string, clientId: string, identity: Identity, requestKey: string, input: DeliveryInput) {
+  /** Confirm binds the session's latest human input; a same-turn imperative order may confirm without a console click. */
+  private confirm(d: Delivery, by: "console" | "session-instruction", quote?: string) {
+    if (!["proposed", "confirmed"].includes(d.state)) throw changed();
+    this.sourceValid(d);
+    d.state = "confirmed"; d.confirmedAt ??= new Date().toISOString();
+    d.confirmedBy ??= by; if (quote) d.instructionQuote ??= quote;
+    this.save(d);
+  }
+  propose(accountId: string, clientId: string, identity: Identity, requestKey: string, input: DeliveryInput, confirmation?: {quote: string}) {
     input = deliverySchema.parse(input);
+    const quote = confirmation ? instructionQuote.parse(confirmation.quote) : undefined;
     const keys = [...new Set(input.itemKeys)].sort();
     return this.db.transaction(() => {
       const previous = this.db.connection.prepare("SELECT id FROM merge_deliveries WHERE account_id=? AND client_id=? AND request_key=?")
@@ -107,6 +122,7 @@ export class MergeDeliveries {
       if (previous) {
         const d = this.read<Delivery>("merge_deliveries", previous.id);
         if (digest({...input,itemKeys:keys}) !== d.revision || digest(identity) !== digest(d.identity)) throw changed();
+        if (quote && d.state === "proposed") this.confirm(d, "session-instruction", quote);
         return this.view(d);
       }
       for (const itemKey of keys) recoverExecutionAuthorization(this.store, accountId, clientId, {itemKey,...identity});
@@ -122,6 +138,7 @@ export class MergeDeliveries {
         revision:digest({...input,itemKeys:keys}),scope:this.scope(keys),activity:this.activity(sessionId),state:"proposed",createdAt:new Date().toISOString()};
       this.db.connection.prepare("INSERT INTO merge_deliveries(id,product_id,account_id,client_id,request_key,state,data_json) VALUES (?,?,?,?,?,?,?)")
         .run(d.id,productId,accountId,clientId,requestKey,d.state,JSON.stringify(d));
+      if (quote) this.confirm(d, "session-instruction", quote);
       return this.view(d);
     });
   }
@@ -142,11 +159,8 @@ export class MergeDeliveries {
     return this.db.transaction(() => {
       const d = this.read<Delivery>("merge_deliveries",id);
       if (d.accountId !== accountId || d.revision !== revision || d.state === "batched" || d.state === "merged") throw changed();
-      if (decision === "confirm") {
-        if (!["proposed","confirmed"].includes(d.state)) throw changed();
-        this.sourceValid(d);
-        d.state = "confirmed"; d.confirmedAt ??= new Date().toISOString();
-      } else d.state = "withdrawn";
+      if (decision === "confirm") this.confirm(d, "console");
+      else d.state = "withdrawn";
       this.save(d); return this.view(d);
     });
   }
@@ -162,11 +176,12 @@ export class MergeDeliveries {
     return (this.db.connection.prepare("SELECT data_json FROM merge_batches WHERE product_id=? AND account_id=? ORDER BY rowid DESC LIMIT 20")
       .all(productId,accountId) as {data_json:string}[]).map(row => JSON.parse(row.data_json) as Batch);
   }
-  start(accountId: string, requestKey: string, selection: {id:string;revision:string}[], config: FreeSessionConfig, publish: boolean) {
+  start(accountId: string, requestKey: string, selection: {id:string;revision:string}[], config: FreeSessionConfig, publish: boolean, integrationProtocol?: 1) {
     return this.db.transaction(() => {
       const prev = this.db.connection.prepare("SELECT id FROM merge_batches WHERE account_id=? AND request_key=?").get(accountId,requestKey) as {id:string}|undefined;
       if (prev) {
         const b = this.read<Batch>("merge_batches",prev.id);
+        if ((b.integration?.recoveredAuthorization?undefined:b.integration?.protocol)!==integrationProtocol) throw changed();
         if (digest(b.config)!==digest(config) || b.publish!==publish || digest(b.selection)!==digest(selection)) throw changed();
         return b;
       }
@@ -180,12 +195,14 @@ export class MergeDeliveries {
       });
       if(new Set(deliveries.map(d=>d.repository)).size!==1 || new Set(deliveries.map(d=>d.targetBranch)).size!==1) throw changed();
       const id=randomUUID();
-      const text = `执行用户已授权的合并批次 ${id}。派单启动后先调用 get_merge_batch，使用本会话原 dispatchId。仅合并批次冻结的 PR 与 head；每次执行前重新调用 get_merge_batch，entries 中 blocker 非空必须停止。用 gh pr merge --match-head-commit 绑定获准 head，禁止 --admin 或绕过保护；不要领取开发条目，不要重新创建批次。每项合并前重新核实目标仓库、主线、依赖、CI 及预期 head，提交变化必须停止，不允许合并新 head。清单中的旧检查证据仅供参考，由本合并会话统一读取实时结果；CI 排队或运行中时保留原批次等待，先查状态且状态未变时降低轮询频率，不将等待标记为失败或另建会话；实际检查失败、冲突或未结束依赖必须阻止实际合并。机械性冲突可调查，语义冲突交回原开发会话；新增代码需重新交付确认。使用 report_merge_batch 逐项记录实际结果；未知结果保留原批次。发布授权：${publish ? "合并完成后按项目既有全量候选覆盖门禁发布；批次选择不缩小发布范围。" : "仅合并，不发布。"} 完成所有操作且核实无后台执行后，才结束批次。遵守仓库权限和发布规则。`;
+      const text = `执行用户已授权的合并批次 ${id}。派单启动后先调用 get_merge_batch，使用本会话原 dispatchId。仅处理批次冻结的 PR；每次执行前重新调用 get_merge_batch，entries 中 blocker 非空必须停止。用 gh pr merge --match-head-commit 绑定实际合并的 head，禁止 --admin 或绕过保护；不要领取开发条目，不要重新创建批次。每项合并前重新核实目标仓库、主线、依赖、CI 及预期 head；他人推送的新提交必须停止，不得合并未经本会话核验的 head。清单中的旧检查证据仅供参考，由本合并会话统一读取实时结果；CI 排队或运行中时保留原批次等待，先查状态且状态未变时降低轮询频率，不将等待标记为失败或另建会话。${integrationProtocol===1 ? "你是集成者，以保障批次全部条目成功集成为目标：负责必要的冲突、兼容与回归修复，按下述协议登记后推送原 PR 分支，不扩大功能范围。" : "本批仅允许合并原确认版本，不授权修改代码。"}疑似 flaky 或超时的检查可有依据地重跑一次核实。修复后的最终 head 必须本地仓库检查通过、GitHub CI 全绿且无冲突才允许合并；穷尽合理修复仍无法集成的项记 blocked，写明已尝试的修复与剩余障碍，不编造修复结果。使用 report_merge_batch 逐项记录实际结果；未知结果保留原批次。发布授权：${publish ? "批次全部条目合并成功后按项目既有全量候选覆盖门禁发布，批次选择不缩小发布范围；存在 blocked 项时不得自动发布，先逐项报告，等用户明确决定是否先发已合并部分。" : "仅合并，不发布。"} 完成所有操作且核实无后台执行后，才结束批次。遵守仓库权限和发布规则。`;
       const dispatches=new DispatchStore(this.db);
       const free=new FreeSessionStore(this.db,dispatches,new AgentSessionStore(this.db));
-      const dispatch=free.prepare(accountId,id,config,text);
+      const integrationInstructions=integrationProtocol===1 ? `本批已授权集成所必需的修复与验证，但不扩大需求或绕过原生权限。先读取全批 PR、条目与主线，梳理依赖、文件/接口/迁移重叠、分组、顺序及组合验证目标，通过 record_merge_integration 的 plan 动作持久化计划；这是执行说明，不重复索取方案批准。可并行只读调查，重叠代码修改和合并按计划协调。修复前用 prepare_repair 绑定当前远端 head 和主线；原 worktree 内先确认远端仍为该 head，仅追加本会话所做提交，不 force、不混入外部提交。推送前后核对远端 head，使用 scripts/merge-integration-evidence.mjs 验证提交链；repair 动作登记真实修复提交，原确认保持不变。修复或基线变化后重新核验，不复用旧提交检查。使用 check 动作保存最终 head、当前目标分支 base、本地检查与实时 CI 证据；get_merge_batch 的 executionHead 才是实际允许合并的 head，mergeReady 为 true 且实时 Git 核验通过才可执行合并。使用 progress 动作保存阶段和下一步，恢复时先读计划、修复预留、历史与结果，不重推、不重复合并。每次调用携带当前 expectedRevision 和稳定 idempotencyKey；响应未知原样重试。确认没有推送、远端仍为预留 head 且无后台执行时，可用 cancel_repair 结束未发生的修复；未知结果不能撤销预留。他人提交必须停下核对，不能登记为自己的修复。合并必须满足计划依赖，report_merge_batch 后继续独立项。批次结果全部明确后在实际目标分支验证已合并组合，final_validation 记录真实目标 head 和证据，再执行已授权发布与交接。不得删除测试或降低断言来冒充修复。` : `本批来自旧版入口，未授权集成修复；只合并冻结 head，需改代码则停止并说明，不能套用新版修复授权。`;
+      const dispatch=free.prepare(accountId,id,config,`${text}\n\n${integrationInstructions}`);
       const b: Batch={id,productId:config.productId,accountId,requestKey,dispatchId:dispatch.id,sessionId:dispatch.agentSessionId!,
-        config,publish,selection,deliveries:deliveries.map(d=>d.id),state:"active",createdAt:new Date().toISOString(),results:{}};
+        config,publish,selection,deliveries:deliveries.map(d=>d.id),state:"active",createdAt:new Date().toISOString(),results:{},
+        ...(integrationProtocol===1?{integration:{protocol:1 as const,revision:0,plans:[],events:[],entries:Object.fromEntries(deliveries.map(d=>[d.id,{itemKeys:d.itemKeys,originalHead:d.head,head:d.head,progress:"queued" as const,detail:"",repairs:[]}]))}}:{})};
       this.db.connection.prepare("INSERT INTO merge_batches(id,product_id,account_id,request_key,state,data_json) VALUES (?,?,?,?,?,?)")
         .run(id,b.productId,accountId,requestKey,b.state,JSON.stringify(b));
       for(const d of deliveries){d.state="batched";d.batchId=id;this.save(d);}
@@ -198,7 +215,35 @@ export class MergeDeliveries {
     const live=this.db.connection.prepare("SELECT 1 FROM dispatches d JOIN nodes n ON n.id=d.node_id JOIN agent_sessions s ON s.dispatch_id=d.id WHERE d.id=? AND d.account_id=? AND s.id=? AND d.status='launched' AND n.revoked_at IS NULL")
       .get(dispatchId,accountId,b.sessionId);
     if(b.accountId!==accountId || !live) throw changed();
-    return {...b, dispatchId, entries:b.deliveries.map(id=>this.view(this.read<Delivery>("merge_deliveries",id)))};
+    // Restore only the exact persisted server-authored authorization, bound to this batch's original identity.
+    // Reading exposes the recoverable protocol; the first authorized write persists it atomically.
+    if(!b.integration && b.state==="active") {
+      const original=this.db.connection.prepare("SELECT initial_text FROM free_session_starts WHERE dispatch_id=? AND account_id=? AND request_key=? AND product_id=? AND ready=1")
+        .get(b.dispatchId,b.accountId,b.id,b.productId) as {initial_text:string}|undefined;
+      if(original?.initial_text===legacyIntegratorPrompt(b.id,b.publish)) {
+        b.integration={protocol:1,revision:0,plans:[],events:[],recoveredAuthorization:{dispatchId:b.dispatchId,promptDigest:digest(original.initial_text)},
+          entries:Object.fromEntries(b.deliveries.map(id=>{const d=this.read<Delivery>("merge_deliveries",id);return [id,{itemKeys:d.itemKeys,originalHead:d.head,head:b.results[id]?.head??d.head,progress:"queued" as const,detail:"",repairs:[]}];}))};
+      }
+    }
+    return {...b, dispatchId, entries:b.deliveries.map(id=>{
+      const d=this.view(this.read<Delivery>("merge_deliveries",id));
+      let mergeReady=!d.blocker;
+      if(b.integration){try{assertIntegrationMerge(b.integration,id,b.results);}catch{mergeReady=false;}}
+      return {...d,executionHead:b.integration?.entries[id]?.head??d.head,expectedBase:b.integration?.entries[id]?.check?.base,mergeReady};
+    })};
+  }
+  integrate(accountId:string,dispatchId:string,id:string,expectedRevision:number,key:string,raw:IntegrationAction) {
+    const action=integrationActionSchema.parse(raw);
+    return this.db.transaction(()=>{
+      const b=this.batch(accountId,dispatchId,id),state=b.integration;
+      if(!state)integrationDenied("未找到可核实的原始集成修复授权，请保留原批次授权边界。");
+      const previous=state.events.find(e=>e.id===key);
+      if(previous){if(previous.digest!==integrationDigest(action))throw changed();return b;}
+      if(b.state!=="active"||state.revision!==expectedRevision)throw changed();
+      const affected="deliveryId" in action?[action.deliveryId]:b.deliveries.filter(id=>!b.results[id]);
+      for(const id of affected){if(!b.deliveries.includes(id))throw changed();this.sourceValid(this.read<Delivery>("merge_deliveries",id));}
+      applyIntegrationAction(state,action,key,b.results);this.saveBatch(b);return this.batch(accountId,dispatchId,id);
+    });
   }
   report(accountId: string, dispatchId: string, id: string, deliveryId: string,
     result: {status:"merged"|"blocked";head:string;commit?:string;detail:string}) {
@@ -211,16 +256,23 @@ export class MergeDeliveries {
       }
       if(b.state!=="active") throw changed();
       const d=this.read<Delivery>("merge_deliveries",deliveryId);
-      if(result.head!==d.head) throw changed();
+      if(result.head!==(b.integration?.entries[deliveryId]?.head??d.head)) throw changed();
+      if(b.integration?.entries[deliveryId]?.repair) throw changed();
       if(result.status==="merged") {
         sha.parse(result.commit);
+        if(b.integration)assertIntegrationMerge(b.integration,deliveryId,b.results);
         if (this.eligible(d)) throw changed();
         for(const itemKey of d.itemKeys) this.store.submitDevelopmentComplete({itemKey,
           completion:{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`},requiredArtifacts:d.requiredArtifacts,
           ...(d.noReleaseReason?{noReleaseReason:d.noReleaseReason}:{}),summary:result.detail,idempotencyKey:`merge-batch:${id}:${itemKey}`,attribution:{accountId}});
         d.state="merged"; this.save(d);
       }
-      b.results[deliveryId]=result; this.saveBatch(b); return b;
+      b.results[deliveryId]=result;
+      if(b.integration){
+        b.integration.revision++;delete b.integration.finalValidation;
+        if(result.status==="merged")for(const [id,entry] of Object.entries(b.integration.entries))if(!b.results[id]){delete entry.check;if(entry.progress==="ready")entry.progress="queued";}
+      }
+      this.saveBatch(b); return b;
     });
   }
   finish(accountId:string,dispatchId:string,id:string) {
@@ -228,6 +280,8 @@ export class MergeDeliveries {
       const b=this.batch(accountId,dispatchId,id);
       if(b.state==="finished") return b;
       if(b.deliveries.some(id=>!b.results[id])) throw conflict("merge_results_unknown","仍有结果未核实，不能释放批次。");
+      if(b.integration && Object.values(b.results).some(r=>r.status==="merged") && b.integration.finalValidation?.selectionDigest!==integrationDigest(b.results))
+        integrationDenied("请先完成实际目标分支上的整批组合验证。");
       b.state="finished";this.saveBatch(b);
       for(const id of b.deliveries) {const d=this.read<Delivery>("merge_deliveries",id);if(d.state==="batched"){d.state="withdrawn";this.save(d);}}
       return b;

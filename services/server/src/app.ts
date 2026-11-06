@@ -2504,11 +2504,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const {productId}=request.params as {productId:string},body=objectBody(request.body);
     requireProductPermission(request,productId,"operate");requireProductPermission(request,productId,"ai");
     if(!Array.isArray(body.selection) || typeof body.publish!=="boolean") throw invalidInput("Select a batch and its publication scope.");
+    if(body.integrationProtocol!==undefined&&body.integrationProtocol!==1)throw invalidInput("Unsupported integration protocol.");
     const selection=body.selection.map(value=>{const row=objectBody(value);return {id:stringField(row,"id")!,revision:stringField(row,"revision")!};});
     return merges.start(requireAccountId(request),stringField(body,"requestKey")!,selection,{
       productId,nodeId:stringField(body,"nodeId")!,agentKind:stringField(body,"agentKind")! as AgentKind,mode:stringField(body,"mode")!,
       ...(optionalName(body,"model")?{model:optionalName(body,"model")!}:{}),...(optionalName(body,"effort")?{effort:optionalName(body,"effort")!}:{})
-    },body.publish);
+    },body.publish,body.integrationProtocol===1?1:undefined);
   });
 
   app.post("/api/v1/project-conversations", async (request, reply) => {
@@ -2858,10 +2859,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           canOperate,
           canUseAi,
         }) ?? (session.source === "external" && !session.replyable ? "external_native_unavailable" as const : undefined);
+        const approvalSnapshot = session.agentKind === "codex" ? agentApprovalStore.get(session.id) : undefined;
         return {
           ...session,
-          ...(session.agentKind === "codex" && agentApprovalStore.get(session.id)
-            ? { approval: agentApprovalStore.get(session.id) } : {}),
+          ...(approvalSnapshot ? { approval: approvalSnapshot } : {}),
           canReply: Boolean(session.agentSessionId) && replyBlockedReason === undefined,
           ...(session.source === "external" ? {
             canRegisterNative: !session.archivedAt && ["codex", "opencode", "claude_code"].includes(session.agentKind) && canOperate && canUseAi,
@@ -3631,12 +3632,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         const approval = objectBody(body.approval);
         const kind = stringField(approval, "kind");
         if (kind !== "manual" && kind !== "auto") throw invalidInput("approval kind must be manual or auto.");
+        const requestKind = stringField(approval, "requestKind", false);
+        if (requestKind !== undefined && (kind !== "manual"
+          || !["question", "permission", "confirmation"].includes(requestKind))) {
+          throw invalidInput("approval requestKind must be question, permission or confirmation on a manual request.");
+        }
         agentApprovalStore.record(node.nodeId, sessionId, {
           id: stringField(approval, "id")!, kind,
           status: stringField(approval, "status")!, turnId: stringField(approval, "turnId")!,
           action: stringField(approval, "action")!,
           ...(stringField(approval, "reason", false) ? { reason: approval.reason as string } : {}),
           startedAtMs: Number(approval.startedAtMs),
+          ...(requestKind !== undefined
+            ? { requestKind: requestKind as "question" | "permission" | "confirmation" } : {}),
           ...(approval.options === undefined ? {} : {
             options: (() => {
               if (!Array.isArray(approval.options)) throw invalidInput("approval options must be an array.");

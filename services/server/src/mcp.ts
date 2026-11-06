@@ -1,3 +1,4 @@
+import { integrationActionSchema } from "./merge-integration.js";
 import { MergeDeliveries, deliverySchema, mergeEvidenceSchema } from "./merge-deliveries.js";
 import { AgentHandoffs } from "./agent-handoffs.js";
 import { ImplementationPlans, planDigest, requestNativePlanApproval } from "./implementation-plans.js";
@@ -126,7 +127,7 @@ function accountAccess(ctx: ServerContext): McpAccountAccess {
  */
 export const WRITE_TOOLS_BY_TIER: Readonly<Record<McpWriteTier, readonly string[]>> = {
   none: [],
-  comments: ["propose_merge_delivery", "refresh_merge_delivery", "report_merge_batch", "finish_merge_batch", "prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "request_plan_approval", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "submit_release_batch", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
+  comments: ["propose_merge_delivery", "refresh_merge_delivery", "report_merge_batch", "finish_merge_batch", "record_merge_integration", "prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "request_plan_approval", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "submit_release_batch", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
 };
 
 /**
@@ -833,7 +834,7 @@ export function createMissionGoMcpServer(
   };
   server.registerTool("get_merge_batch", {
     annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},
-    description:"Read the user-authorized frozen batch from its original merge dispatch. Do not claim the source development items. Only these revisions are authorized; recheck Git and CI immediately before every merge. Respect publish=false. Unknown results keep the project lock until verified.",
+    description:"Read the user-authorized frozen batch from its original merge dispatch. Do not claim the source development items. Original revisions remain immutable. Protocol-1 integration repairs must be reserved and recorded with record_merge_integration; use executionHead, require mergeReady=true, and recheck live Git/CI before every merge. Legacy batches cannot repair. Respect publish=false. Unknown results keep the project lock until verified.",
     inputSchema:z.object({batchId:z.string(),dispatchId:z.string()}),
   },async (input,ctx)=>{
     const batch=merges.batch(accountAccess(ctx).accountId,input.dispatchId,input.batchId);
@@ -847,13 +848,14 @@ export function createMissionGoMcpServer(
   server.registerTool(
     "propose_merge_delivery", {
     annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false},
-    description:"Request human delivery confirmation after completing the user's agreed work and verification. This never merges, publishes or changes item status. Use the original claimed conversation. Bind the exact GitHub repository, PR, target branch and head; report current executor-verified check evidence, not inferred readiness. Existing non-batched offers for these items are superseded. No local-only or unpushed work can be offered as a GitHub PR. Human confirmation happens in the console.",
-    inputSchema:z.object({identity:mergeIdentity,idempotencyKey:z.string().min(1).max(200),delivery:deliverySchema}),
+    description:"Request human delivery confirmation after completing the user's agreed work and verification. This never merges, publishes or changes item status. Use the original claimed conversation. Bind the exact GitHub repository, PR, target branch and head; report current executor-verified check evidence, not inferred readiness. Existing non-batched offers for these items are superseded. No local-only or unpushed work can be offered as a GitHub PR. Pass instructionConfirmation only in the same turn as the user's explicit imperative delivery order (for example an add-to-merge order): the server stores the quoted instruction and confirms immediately, bound to the session's latest human input, which any later human input invalidates. Questions, discussion, or ambiguous turns must not carry it. Without instructionConfirmation, human confirmation happens in the console.",
+    inputSchema:z.object({identity:mergeIdentity,idempotencyKey:z.string().min(1).max(200),delivery:deliverySchema,
+      instructionConfirmation:z.object({quote:z.string().trim().min(1).max(500)}).optional()}),
   },async (input,ctx)=>{
     requireWriteScope(ctx);
     const access=mergeAccess(ctx,store.getWorkItem(requireItemAccess(ctx,store,input.delivery.itemKeys[0]!)).productId,true);
     for(const key of input.delivery.itemKeys) requireItemAccess(ctx,store,key);
-    return textResult({delivery:merges.propose(access.accountId,access.clientId??"",{...(input.identity.dispatchId?{dispatchId:input.identity.dispatchId}:{}),...(input.identity.sessionId?{sessionId:input.identity.sessionId}:{})},input.idempotencyKey,input.delivery)});
+    return textResult({delivery:merges.propose(access.accountId,access.clientId??"",{...(input.identity.dispatchId?{dispatchId:input.identity.dispatchId}:{}),...(input.identity.sessionId?{sessionId:input.identity.sessionId}:{})},input.idempotencyKey,input.delivery,input.instructionConfirmation)});
   });
   server.registerTool(
     "refresh_merge_delivery", {
@@ -869,7 +871,7 @@ export function createMissionGoMcpServer(
   server.registerTool(
     "report_merge_batch", {
     annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false},
-    description:"Report one verified batch result using its original merge dispatch. For merged results first verify the PR's frozen head, actual merge commit and required checks; write the completion comment. This limited handoff records development complete without taking over the development session. Never report timeout or an unknown external outcome as blocked/completed. Read the original item and required artifact scope before reporting.",
+    description:"Report one verified batch result using its original merge dispatch. For merged results first verify the PR's executionHead (original head for batches without an integration protocol), actual merge commit and required checks; write the completion comment. This limited handoff records development complete without taking over the development session. Never report timeout or an unknown external outcome as blocked/completed. Read the original item and required artifact scope before reporting.",
     inputSchema:z.object({batchId:z.string(),dispatchId:z.string(),deliveryId:z.string(),result:z.object({status:z.enum(["merged","blocked"]),head:z.string().regex(/^[a-f0-9]{40}$/),commit:z.string().regex(/^[a-f0-9]{40}$/).optional(),detail:z.string().trim().min(1).max(2000)})}),
   },async (input,ctx)=>{
     requireWriteScope(ctx);
@@ -891,7 +893,18 @@ export function createMissionGoMcpServer(
     return textResult({batch:merges.finish(access.accountId,input.dispatchId,input.batchId)});
   });
 
-
+  server.registerTool(
+    "record_merge_integration", {
+    annotations: {readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
+    description:"Persist this authorized integration batch's complete ordered plan, repair reservation and commit chain, live validation, progress, or final combined validation. No Git operations are performed here. Only protocol-1 batches explicitly authorize necessary integration repairs. Read get_merge_batch first; send expectedRevision and a stable idempotencyKey, retry exact inputs on uncertain response. Plans cover every selected delivery with dependencies before dependents. Before repairing, reserve the current remote head with prepare_repair. Push only your own necessary additive repair commits to that original PR, never force or include someone else's new head. Then repair records the exact reserved-to-new-head commit chain verified in the execution repository; preserve originalHead. check requires executor-verified local checks and live CI for executionHead and current target base. Recheck the base immediately before merging. A changed base invalidates reuse. Never weaken tests to turn CI green. final_validation follows all known item results and verifies the actual merged combination on the target branch; it does not authorize partial publication or acceptance. The service validates identity and consistency, not GitHub truth.",
+    inputSchema:z.object({batchId:z.string(),dispatchId:z.string(),expectedRevision:z.number().int().nonnegative(),idempotencyKey:z.string().min(1).max(200),action:integrationActionSchema}),
+  },async(input,ctx)=>{
+    requireWriteScope(ctx);
+    const batch=merges.batch(accountAccess(ctx).accountId,input.dispatchId,input.batchId);
+    requireAccessibleProduct(ctx,batch.productId);
+    const access=mergeAccess(ctx,batch.productId,true);
+    return textResult({batch:merges.integrate(access.accountId,input.dispatchId,input.batchId,input.expectedRevision,input.idempotencyKey,input.action)});
+  });
 
   server.registerTool(
     "prepare_collaboration_request", {

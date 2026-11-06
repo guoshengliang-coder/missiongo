@@ -241,16 +241,34 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 ### 会话权限请求（AND-361）
 
 - Claude MCP 空对象确认复用 `AgentSessionQuestions`，完整显示来源确认内容，提供批准／拒绝／取消；答复绑定原请求 ID，来源取消后撤销该卡，不能把迟到答复应用到下一个请求。外部桥接继续使用本机显式答复。选项按钮在触控下至少 44×44，回归见 `agent-approval-visibility.audit.spec.ts` 的 Claude MCP 用例。
-- 问题选项的“已选择，未发送”反馈放在选项之后，避免新增提示挤走刚点击的控件；回复框增高时仍保留会话阅读位置及选项可达性。控制台与条目内会话共用 `AgentSessionQuestions`，回归见 `agent-question-scroll.audit.spec.ts`。
+- 普通问题选项的“已选择，未发送”反馈放在选项之后，避免新增提示挤走刚点击的控件；回复框增高时仍保留会话阅读位置及选项可达性。控制台与条目内会话共用 `AgentSessionQuestions`，回归见 `agent-question-scroll.audit.spec.ts`。
 - 权限请求复用 `agent-console-attention-banner` 的黄色警告令牌、字号与圆角，在同一权限区展示状态、请求详情和来源提供的授权范围。请求期间不再同时显示通用计划批准或“无需处理”入口；来源请求消失后，独立的计划批准流程恢复。
 - 原生 `details` 默认展示两行请求摘要，点击或键盘展开可读完整请求与说明。授权选项始终在折叠区外；单次批准最多一个主按钮，其他范围和拒绝使用次级按钮，不替用户选择范围。
 - 按容器宽度排列可换行按钮，使用统一字号令牌；触控按钮和详情展开入口至少 44px。长来源文本和选项说明不能撑宽会话。
 - 提交期间保留原请求和排队反馈，禁止重复提交；失败保留选项可重试，重连不展示旧操作。复查入口包括手动授权、自动拒绝后的人工重试及普通计划批准。验证来源为 `and-361-unified-approval.audit.spec.ts`、`agent-approval-visibility.audit.spec.ts`、`and-349-approval-banner.audit.spec.ts` 与 `plan-approval.audit.spec.ts`。
 
+### Claude / OpenCode 授权直接提交（AND-416）
+
+- 控制台和条目内会话共用 `AgentSessionQuestions` / `PermissionQuestion`；授权卡使用黄色提示语义和原生 details，完整规则与保存位置可展开，决定按钮始终在折叠区外。点选即提交请求 ID 对应的决定，不写入或清空文字、附件草稿，也不显示“已选择，未发送”或“无需处理”。
+- 身份识别共用领域 `permissionQuestionKey`：沿用 `授权请求 <ID>` key，并兼容已发布 macOS Claude 的 `permission-<ID>` 来源＋授权 header；不凭正文猜测。列表使用服务端同一判定提供的 `waitingForPermission`。不迁移审批模型或改变推送 attention 分类。
+- 同步锁防重复点击，排队后保留反馈并禁用；提交失败保留来源选项可重试，来源撤回或已答复后只读。历史分页不得复活权限卡。普通 AskUserQuestion、多字段表单、ExitPlanMode 和外部桥接的本机答复流程保持。
+- 回归见 `and-416-418.audit.spec.ts`、`agent-approval-visibility.audit.spec.ts` 和既有问题/方案回归。覆盖两入口、当前与旧版 Claude、OpenCode、375px/桌面、明暗、三档字号及失败重试。
+
+### 发布等待与归档只读（AND-418/417）
+
+- 发布提示只依据独立宿主的有期限状态；Web 使用 `ReleaseNotice` 和公共 `Modal`，已有内容和草稿保留。等待不可误关，`pendingNotice={null}` 避免在返回时误说“正在保存修改”；过期或失败显示可关闭的恢复未确认提示。恢复只重新查询，不重放写请求或强制刷新。
+- 首次加载的宿主兜底与 Android 原生等待遵守同一信号边界：普通断网不冒充升级。宿主安装和真实设备验证边界见 [发布状态](release-status.md)。
+- 会话归档后仍可只读，不能仅因 archivedAt 显示不可访问；真实会话缺失仍显示错误，后续正常选择清除旧错误。控制台单条/批量归档、恢复及深链共享该判定。
+- 交互回归见 `and-416-418.audit.spec.ts`；脚本、代理停服和 Android 信号边界测试分别记录，不以本机模拟代替生产发布及真机。
+
 ### 方案批准前审阅（AND-401）
 
 - 复用控制台现有批准提示条及原生 details，摘要显示“审阅方案”，展开说明审阅事实依据、推荐、取舍和未决项。快捷按钮只发送批准，不表示调研质量已被评估；缺少依据时先在原会话要求调查或澄清。
 - 不新增调研评分、确认弹窗或样式豁免；技术权限请求仍优先显示，批准保留连接、内容修订和重复提交保护。回归见 `plan-approval.audit.spec.ts` 及既有批准提示条、统一权限回归。
+
+### Claude 权限选项文案（AND-431）
+
+控制台与条目内会话共用 `AgentSessionQuestions`。对带请求绑定键的 Claude 权限卡，展示层以原生参数区分自动接受编辑、目录访问与规则授权，说明有效期及后续确认边界；全部选项和说明常驻，不放进折叠区。原始 JSON 置于技术详情，未知参数保留原文；提交始终沿用原始选项值与请求键，不用展示文案代替授权值。路径无可靠仓库根信息时保留来源路径，不猜相对路径。回归见 `permission-presentation.test.ts`、`agent-session-questions.test.tsx` 与 `and-431-permission-copy.audit.spec.ts`。
 
 ### 会话加载边界（AND-375）
 
@@ -265,6 +283,14 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 - 停止反馈复用 `AgentStopFeedback` 与现有状态容器，控制台和条目内会话一致；原消息的未知交付恢复入口不能被停止失败遮住。前台停止后仍有后台任务时明确提示。
 - 等待节点接收与节点接收后正在中断分开展示。停止待处理期间禁用重复提交，未确认失败后恢复入口；超时不能显示为已停止。AND-394 回归沿用下述生命周期与同步恢复测试。
 - 操作复用确认弹窗、工具栏和触控尺寸；回归见 `and-391-stop-lifecycle.audit.spec.ts` 和 `agent-stop-feedback.test.tsx`，协议边界见 [停止协议](agent-session-stopping.md)。
+
+### 会话状态与停止入口（AND-427）
+
+- 控制台和条目内会话面板移除头部重复的会话状态，保留列表与底部运行状态、归档说明及异常恢复提示。派单阶段与条目业务状态仍独立展示。
+- 控制台的“停止当前回合”位于底部状态旁，与 `AgentRunDetails` 的原生 details 平级；展开或收起详情不影响停止操作，点击停止不切换详情。窄容器允许整项换行，不缩小字号或 44px 点击高度。
+- 加载中、首次读取失败和尚无原生会话的启动阶段使用底部后备状态与停止入口。Codex 失败由专用错误卡展示，不再重复通用失败状态，底部停止入口仍保留。沿用服务端 `canStop`、现有确认弹窗和 `AgentStopFeedback`，保留停止处理中禁用、未确认失败与续聊语义；条目内面板不新增停止权限或操作。
+- 本轮所有设备均不展示会话客户端跳转，覆盖控制台、异常恢复、派单成功和条目派单记录；同机也隐藏。不修改原生 URL 契约或新增设备识别。
+- 回归见 `and-427-session-controls.audit.spec.ts`、`and-391-stop-lifecycle.audit.spec.ts`、`agent-recovery.audit.spec.ts`、`dispatch-capture-defaults.audit.spec.ts` 和既有加载、后台状态与布局测试，包含明暗、触控、320px、断点两侧、短高度及三档字号。浏览器模拟停止状态不替代真实 Agent 与节点的真机验证。
 
 ### Codex 大体积会话历史
 
@@ -448,3 +474,7 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 ### 待合并识别与统一核验（AND-423）
 
 条目及会话列表共用 `MergeProgressBadge`、`item-handler-badge` 与现有主题令牌。有效人工确认显示“待合并”，活动批次显示“合并中”；撤回、确认失效或合并后移除，不新增业务状态。选择弹窗允许旧 CI 证据过期的有效确认，由专门合并会话统一核验；范围变化仍禁选，实时失败、冲突及依赖阻止实际合并。
+
+### 批次集成计划与恢复
+
+待合并弹窗与集成会话共用 `IntegrationProgress`，复用 `merge-delivery-card`、有序列表及原生 details。计划摘要、验证目标、每项阶段和发布受阻提示直接可见；修复链和历史原位展开。原始提交、当前提交与验证证据分开说明，不以阶段文字冒充检查通过。不新增批准步骤或业务状态；新入口明确必要修复授权，旧批次保持原边界。回归见 `merge-console.audit.spec.ts`，覆盖明暗、320/1440px、三档字号、长提交、草稿和刷新恢复。

@@ -9,6 +9,10 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.webkit.WebResourceResponse
+import io.missiongo.android.release.ReleaseAvailability
 import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
@@ -56,6 +60,12 @@ import org.json.JSONObject
 class MainActivity : ComponentActivity() {
     private lateinit var webView: WebView
     private lateinit var loadingView: LinearLayout
+    private lateinit var upgradeView: LinearLayout
+    private val releaseHandler = Handler(Looper.getMainLooper())
+    private val releaseExecutor = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "missiongo-release-status").apply { isDaemon = true } }
+    private var loadGeneration = 0
+    private var loadFailurePending = false
+    private var failedLoadUrl: String? = null
     private lateinit var errorView: LinearLayout
     private lateinit var outdatedView: LinearLayout
     // Registered in onCreate: activity results have to be registered before the
@@ -271,6 +281,14 @@ class MainActivity : ComponentActivity() {
                 FrameLayout.LayoutParams.MATCH_PARENT,
             ),
         )
+
+        upgradeView = centeredMessage().apply {
+            visibility = View.GONE
+            addView(ProgressBar(this@MainActivity))
+            addView(messageText(getString(R.string.release_updating), 20f))
+            addView(messageText(getString(R.string.release_wait)))
+        }
+        addView(upgradeView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         errorView = centeredMessage().apply {
             visibility = View.GONE
@@ -543,6 +561,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openMissionGo(widgetLink: String? = null) {
+        loadGeneration++
+        loadFailurePending = false
+        releaseHandler.removeCallbacksAndMessages(null)
+        upgradeView.visibility = View.GONE
         errorView.visibility = View.GONE
         loadingView.visibility = View.VISIBLE
         if (!MissionGoApplication.isConfiguredEndpoint(BuildConfig.MISSIONGO_ENDPOINT)) {
@@ -561,6 +583,56 @@ class MainActivity : ComponentActivity() {
         outdatedView.visibility = View.VISIBLE
     }
 
+    /** Only the independent host signal can identify a deployment during a failed first load. */
+    private fun checkFailedLoad(failedUrl: String, generation: Int, sawUpdate: Boolean = false) {
+        if (generation != loadGeneration || isFinishing || isDestroyed) return
+        releaseExecutor.execute {
+            val state = runCatching {
+                val connection = URL(BuildConfig.MISSIONGO_ENDPOINT.trimEnd('/') + "/release-status.json").openConnection() as java.net.HttpURLConnection
+                try {
+                    connection.connectTimeout = 5000
+                    connection.readTimeout = 5000
+                    connection.useCaches = false
+                    connection.instanceFollowRedirects = false
+                    if (connection.responseCode == 200) connection.inputStream.bufferedReader().use { reader ->
+                        val text = StringBuilder()
+                        val buffer = CharArray(1024)
+                        while (text.length <= 4096) {
+                            val count = reader.read(buffer)
+                            if (count < 0) break
+                            text.append(buffer, 0, count)
+                        }
+                        if (text.length <= 4096) JSONObject(text.toString()) else null
+                    } else null
+                } finally { connection.disconnect() }
+            }.getOrNull()
+            runOnUiThread {
+                if (generation != loadGeneration || !loadFailurePending || isFinishing || isDestroyed) return@runOnUiThread
+                val updating = state != null && ReleaseAvailability.isUpdating(state.optInt("version"), state.optString("phase"), state.optLong("expiresAt"), System.currentTimeMillis())
+                if (updating) {
+                    loadingView.visibility = View.GONE
+                    errorView.visibility = View.GONE
+                    upgradeView.visibility = View.VISIBLE
+                    releaseHandler.postDelayed({ checkFailedLoad(failedUrl, generation, true) }, 3000)
+                } else if (sawUpdate && state?.optInt("version") == 1 && state.optString("phase") == "idle") {
+                    // This retries only a failed main-frame GET, never an API mutation.
+                    openMissionGo(failedUrl)
+                } else {
+                    upgradeView.visibility = View.GONE
+                    showLoadError()
+                }
+            }
+        }
+    }
+
+    private fun failedMainFrame(request: WebResourceRequest) {
+        if (!request.isForMainFrame || request.method != "GET" || request.url.host != Uri.parse(BuildConfig.MISSIONGO_ENDPOINT).host) return
+        loadFailurePending = true
+        failedLoadUrl = request.url.toString()
+        val generation = ++loadGeneration
+        checkFailedLoad(request.url.toString(), generation)
+    }
+
     private fun showLoadError() {
         loadingView.visibility = View.GONE
         errorView.visibility = View.VISIBLE
@@ -575,6 +647,10 @@ class MainActivity : ComponentActivity() {
 
     private inner class MissionGoWebViewClient : WebViewClient() {
         override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+            loadGeneration++
+            loadFailurePending = false
+            upgradeView.visibility = View.GONE
+            releaseHandler.removeCallbacksAndMessages(null)
             // The count belongs to the document being replaced. The new one
             // reports as soon as it mounts; until then there is nothing to pop.
             backDepth = 0
@@ -621,8 +697,12 @@ class MainActivity : ComponentActivity() {
         override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
             if (request.isForMainFrame) {
                 Log.e(TAG, "MissionGo page failed: code=${error.errorCode}, description=${error.description}, url=${request.url}")
-                showLoadError()
+                failedMainFrame(request)
             }
+        }
+
+        override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: WebResourceResponse) {
+            if (response.statusCode >= 500) failedMainFrame(request)
         }
     }
 
@@ -639,6 +719,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (loadFailurePending) failedLoadUrl?.let { checkFailedLoad(it, ++loadGeneration) }
         // Belt and braces for the latch above: whatever happened while the app
         // was away, back routes through the WebView again from here.
         backCallback?.isEnabled = true
@@ -649,6 +730,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        loadGeneration++
+        releaseHandler.removeCallbacksAndMessages(null)
         super.onStop()
         // Leaving the app is when the widget and the launcher badge (AND-185)
         // are most likely out of date: whatever was just handled here is still
@@ -663,6 +746,9 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        loadGeneration++
+        releaseHandler.removeCallbacksAndMessages(null)
+        releaseExecutor.shutdownNow()
         if (::filePicker.isInitialized) filePicker.dispose()
         webView.apply {
             stopLoading()

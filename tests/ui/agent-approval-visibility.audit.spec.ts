@@ -90,6 +90,7 @@ test("only shows Codex authorization when a person must intervene", async ({ pag
 
 test("Simulator approval stays visible through delivery and clears after source resolution", async ({ page }, testInfo) => {
   let current = { ...approval, kind: "manual", status: "pending", decision: undefined as string | undefined,
+    requestKind: "permission",
     action: 'cua_repl：Allow Computer Use to use "Simulator"?', reason: "仅回复这一次请求，不授予会话或永久权限。" };
   const decisions: unknown[] = [];
   await page.route("**/api/v1/agent-sessions**", async (route) => {
@@ -237,17 +238,16 @@ test("Claude authorization shows rule scope and sends the selected lifetime as i
   });
   await page.setViewportSize({ width: 375, height: 850 });
   await page.goto('/?product=' + fixture.productId + '&console=agent&session=' + id);
-  const rule = page.getByText('将记住规则 Bash(git status *)，保存到当前项目本机设置。');
+  const rule = page.locator(".agent-session-question-detail").filter({ hasText: "将记住规则 Bash(git status *)" });
+  await page.locator(".agent-session-question summary").first().click();
   await expect(rule).toBeVisible();
   await page.getByRole("button", { name: selected, exact: true }).click();
-  await expect(page.locator(".agent-console-reply textarea")).toHaveValue(answer);
-  expect(sent).toEqual([]); // Picking a question answer still requires sending it.
+  await expect(page.locator(".agent-console-reply textarea")).toHaveValue("");
+  await expect.poll(() => sent.length).toBe(1); // A permission decision submits immediately.
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   const path = testInfo.outputPath("claude-rule-scopes-phone.png");
   await page.screenshot({ path, animations: "disabled" });
   await testInfo.attach("claude", { path, contentType: "image/png" });
-  await page.locator(".agent-console-reply button[type=submit]").click();
-  await expect.poll(() => sent.length).toBe(1);
   expect(sent[0]).toMatchObject({ text: answer });
 });
 
@@ -317,12 +317,91 @@ for (const viewport of [
       await page.screenshot({ path, animations: "disabled" });
       await testInfo.attach("confirmation", { path, contentType: "image/png" });
       await card.getByRole("button", { name: "取消", exact: true }).click();
-      await expect(reply.locator("textarea")).toHaveValue("授权请求 mcp-confirm-1: 取消");
-      expect(sent).toEqual([]);
-      await reply.locator("button[type=submit]").click();
+      await expect(reply.locator("textarea")).toHaveValue("");
       await expect.poll(() => sent.length).toBe(1);
       expect(sent[0]).toMatchObject({ text: "授权请求 mcp-confirm-1: 取消" });
       await expect(card.getByRole("button", { name: "批准", exact: true })).toBeDisabled();
     });
   });
 }
+
+test("AND-408 renders a question as a question instead of a permission request", async ({ page }, testInfo) => {
+  const question = {
+    id: "question", kind: "manual", status: "pending", turnId: "turn",
+    action: "选择产品偏好", startedAtMs: 1, requestKind: "question",
+    options: [{ id: "choice-0", kind: "choice", label: "方案 A" }, { id: "choice-1", kind: "choice", label: "方案 B" }],
+  };
+  const attention = { state: "needed", kind: "answer", reason: "Codex 正在等待回答。" };
+  const decisions: unknown[] = [];
+  let current: Record<string, unknown> | undefined = question;
+  await page.route("**/api/v1/agent-sessions**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() !== "GET") {
+      if (path.endsWith("/decision")) {
+        decisions.push(request.postDataJSON());
+        current = { ...question, decision: (request.postDataJSON() as { decision: string }).decision };
+        return route.fulfill({ status: 200, contentType: "application/json",
+          body: JSON.stringify({ approval: current }) });
+      }
+      return route.fulfill({ status: 204 });
+    }
+    const detail = { ...summary, messages: [], needsAttention: true, waitingForReply: true,
+      attention, ...(current ? { approval: current } : {}) };
+    await route.fulfill({ status: 200, contentType: "application/json",
+      body: JSON.stringify(path === "/api/v1/agent-sessions" ? { sessions: [detail] } : detail) });
+  });
+  const open = async () => {
+    await page.goto('/?product=' + fixture.productId + '&console=agent&session=' + id);
+    await expect(page.locator(".agent-console-reply textarea")).toBeVisible();
+  };
+  await open();
+  const panel = page.locator(".agent-console-approval");
+  await expect(panel).toBeVisible();
+  await expect(panel.locator("strong")).toHaveText("Codex 提问");
+  await expect(panel).toContainText("等待你回答");
+  await expect(panel).not.toContainText("权限");
+  // A question has no default answer: no primary action, only its choices.
+  await expect(panel.locator(".primary-button")).toHaveCount(0);
+  await expect(panel.getByRole("button")).toHaveCount(2);
+  await expect(panel.getByRole("button", { name: "方案 A", exact: true })).toBeEnabled();
+  await expect(page.locator("i.agent-console-attention").first()).toHaveText("待回答");
+  await panel.getByRole("button", { name: "方案 A", exact: true }).click();
+  await expect(panel.getByRole("button").first()).toBeDisabled();
+  expect(decisions).toEqual([{ decision: "choice-0" }]);
+  await expect(page.locator("body")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  for (const viewport of [{ width: 375, height: 812, name: "phone" }, { width: 1440, height: 900, name: "desktop" }]) {
+    await page.goto("about:blank");
+    for (const theme of ["light", "dark"] as const) {
+      await page.setViewportSize(viewport);
+      await page.emulateMedia({ colorScheme: theme });
+      await open();
+      await expect(panel).toBeVisible();
+      await expect(panel.locator("strong")).toHaveText("Codex 提问");
+      const screenshot = testInfo.outputPath(`${viewport.name}-question-${theme}.png`);
+      await panel.screenshot({ path: screenshot, animations: "disabled" });
+      await testInfo.attach(`${viewport.name}-${theme}`, { path: screenshot, contentType: "image/png" });
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    }
+  }
+});
+
+test("AND-408 keeps legacy prompts without requestKind on neutral copy", async ({ page }) => {
+  const legacy = { ...approval, kind: "manual", status: "pending" };
+  await page.route("**/api/v1/agent-sessions**", async (route) => {
+    const request = route.request();
+    if (request.method() !== "GET") return route.fulfill({ status: 204 });
+    const detail = { ...summary, messages: [], approval: legacy, needsAttention: true,
+      waitingForReply: true, attention: { state: "needed", kind: "approval", reason: "Codex 正在等待处理。" } };
+    await route.fulfill({ status: 200, contentType: "application/json",
+      body: JSON.stringify(new URL(request.url()).pathname === "/api/v1/agent-sessions"
+        ? { sessions: [detail] } : detail) });
+  });
+  await page.goto('/?product=' + fixture.productId + '&console=agent&session=' + id);
+  await expect(page.locator(".agent-console-reply textarea")).toBeVisible();
+  const panel = page.locator(".agent-console-approval");
+  await expect(panel).toBeVisible();
+  await expect(panel.locator("strong")).toHaveText("Codex 请求");
+  await expect(page.locator("i.agent-console-attention").first()).toHaveText("待处理");
+});
