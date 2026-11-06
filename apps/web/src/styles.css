@@ -558,6 +558,11 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-console-list { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--surface-strong); border-right: 1px solid var(--line); }
 .agent-console-mobile-filters { display: none; }
 .agent-console-list-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; margin: 10px 12px; }
+/* AND-426: per-option session counts, right-aligned inside the filter menus. */
+.agent-console-option { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.agent-console-option > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.agent-console-option-counts { display: inline-flex; flex: 0 0 auto; align-items: baseline; gap: 6px; margin-left: auto; color: var(--muted); font-size: var(--text-xs); white-space: nowrap; }
+.agent-console-option-running { padding: 1px 6px; color: var(--accent-text-strong); background: var(--accent-bg); border-radius: 999px; font-weight: 700; }
 .agent-console-search { min-width: 0; min-height: 44px; display: flex; flex-direction: row; align-items: center; gap: 7px; padding: 0 9px; color: var(--muted); background: var(--surface-field); border: 1px solid var(--line); border-radius: var(--radius-md); }
 .agent-console-search svg { flex: 0 0 auto; }
 .agent-console-search input { min-width: 0; height: auto; min-height: 42px; flex: 1; padding: 0; color: var(--ink); background: transparent; border: 0; outline: 0; font-size: var(--text-base); }
@@ -3105,6 +3110,12 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .builder-handover-notice p { margin: 8px 0; overflow-wrap: anywhere; }
 .builder-handover-notice button { min-height: 44px; }
 .execution-stop-notice { padding: 16px; margin-bottom: 16px; color: var(--warn-text); background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: var(--radius-md); overflow-wrap: anywhere; }
+/* AND-420: the takeover variant is an FYI, so it drops the full warn block
+   for a slim left-accent note; blocking keeps the loud treatment. */
+.execution-stop-notice-takeover { padding: 10px 12px; color: var(--ink-2); background: transparent; border-width: 0 0 0 3px; border-radius: 0; font-size: var(--text-sm); }
+.execution-stop-notice-takeover > strong { color: var(--warn-text); }
+.execution-stop-notice-takeover .execution-stop-observation { margin-top: 8px; }
+.execution-stop-notice-takeover .execution-stop-observation p { margin: 4px 0; }
 .execution-stop-observation { margin-top: 12px; }
 .execution-stop-observation p { margin: 8px 0; }
 .execution-stop-observation summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
