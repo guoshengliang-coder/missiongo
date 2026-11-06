@@ -81,6 +81,10 @@ describe("headless configuration and scope", () => {
           expect(ask).toBeGreaterThan(investigate);
           expect(approve).toBeGreaterThan(ask);
           expect(prompt).toContain("单独申请调查授权");
+          expect(prompt).toContain("方案表达按复杂度组织");
+          expect(prompt).toContain("向 request_plan_approval 提交的 plan/validation");
+          expect(prompt).toContain("特别是与推荐不同的选择");
+          expect(prompt).toContain("普通进度、澄清和等待提示不是正式方案");
           expect(prompt).toContain("有边界的复现或实验计划");
           if (freeSession) expect(prompt).toContain("不自行开始任务");
           else if (mode === "plan") {

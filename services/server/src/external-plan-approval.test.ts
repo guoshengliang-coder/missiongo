@@ -260,3 +260,16 @@ it("Web approval wins while a native form is pending; dismissing that form does 
   expect(f.store.database.connection.prepare("SELECT state FROM implementation_plan_continuations").get()).toMatchObject({state:"cancelled"});
   expect(f.store.database.connection.prepare("SELECT COUNT(*) AS n FROM implementation_plan_approvals").get()).toMatchObject({n:1});
 });
+
+it("publishes readable-plan guidance and preserves exact Markdown in the review content", async () => {
+  const f = await fixture();
+  const tool = (await f.rpc("tools/list")).tools.find((tool: {name: string}) => tool.name === "request_plan_approval");
+  expect(tool.inputSchema.properties.plan.description).toContain("never flatten");
+  expect(tool.inputSchema.properties.validation.description).toContain("expected outcomes");
+  const plan = "## 审批范围\n\n本地实施，发布另授权。\n\n| 条件 | 行为 |\n|---|---|\n| 未知 | 不静默放行 |\n\n**已定选择：**同轮开放。";
+  const validation = "| 场景 | 预期 |\n|---|---|\n| 真实活动 | 继续阻塞 |";
+  const result = await f.request({ plan, validation });
+  const detail = (await f.get(result.sessionId)).json();
+  expect(detail.implementationPlan).toMatchObject({ plan, validation, approved: false });
+  expect(detail.planApproval).toMatchObject({ plan, validation });
+});

@@ -76,3 +76,12 @@ it("ends the approval acknowledgement on native progress while retaining uncerta
     planApprovalState: { ...base.planApprovalState!, continuationQueued: false } } as unknown as AgentSession;
   expect(planContinuationObserved(offline)).toBe(false);
 });
+
+it("does not promote plan-mode progress to a submitted proposal", async () => {
+  const { planTranscript } = await import("./agent-plan-content");
+  const messages = [{ id: "progress", role: "plan", text: "正在调查，等待结果" }] as AgentSessionMessage[];
+  const session = { messages } as unknown as AgentSession;
+  expect(planTranscript(messages, session)).toBe(messages);
+  const html = renderToStaticMarkup(<I18nProvider><AgentPlanContent session={session} surface="panel" /></I18nProvider>);
+  expect(html).toBe("");
+});

@@ -65,13 +65,13 @@ export function AgentPlanContent({ session, surface }: { session: AgentSession |
     || session?.planApprovalState?.revision === plan.revision;
   const invalid = session?.implementationPlan?.valid === false;
   const prefix = surface === "console" ? "agent-console" : "agent-session";
-  return <article className={`${prefix}-message ${prefix}-message-plan`} aria-label={t("agentPlanContentTitle")}>
+  return <article className={`${prefix}-message ${prefix}-message-plan agent-plan-content`} aria-label={t("agentPlanContentTitle")}>
     <header className={`${prefix}-message-meta`}>
       <small>{t("agentPlanContentTitle")}{plan.itemKeys?.length ? ` · ${plan.itemKeys.join("、")}` : ""}</small>
       {approved && <small>{t("agentPlanApproved")}</small>}
       {invalid && <small>{t("agentPlanScopeChanged")}</small>}
     </header>
     <MarkdownText>{plan.plan}</MarkdownText>
-    {plan.validation && <><strong>{t("agentPlanValidation")}</strong><MarkdownText>{plan.validation}</MarkdownText></>}
+    {plan.validation && <section className="agent-plan-validation" aria-label={t("agentPlanValidation")}><h2>{t("agentPlanValidation")}</h2><MarkdownText>{plan.validation}</MarkdownText></section>}
   </article>;
 }

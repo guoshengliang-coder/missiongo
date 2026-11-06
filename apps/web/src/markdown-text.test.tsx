@@ -1,9 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
+import { I18nProvider } from "./i18n";
 import { MarkdownText } from "./markdown-text";
 
-const render = (text: string) => renderToStaticMarkup(<MarkdownText>{text}</MarkdownText>);
+const render = (text: string) => renderToStaticMarkup(<I18nProvider><MarkdownText>{text}</MarkdownText></I18nProvider>);
 
 describe("MarkdownText", () => {
   it("renders CJK labels beside punctuation and unspaced body text", () => {
@@ -46,4 +47,13 @@ describe("MarkdownText", () => {
     expect(html).not.toContain("<script>");
     expect(html).not.toContain("alert('x')");
   });
+});
+
+it("wraps GFM tables for keyboard scrolling without losing alignment or safe inline content", () => {
+  const html = render("| 条件 | 行为 |\n|:---|---:|\n| **未知** | [查看](https://example.invalid) |\n| `pending` | 不放行 |");
+  expect(html).toContain('class="markdown-table-scroll" role="region"');
+  expect(html).toContain('tabindex="0"');
+  expect(html).toContain('text-align:right');
+  expect(html).toContain("<strong>未知</strong>");
+  expect(html).toContain("不放行");
 });
