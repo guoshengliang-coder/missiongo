@@ -1,0 +1,6 @@
+{
+  "pullRequest": 467,
+  "items": [
+    { "key": "AND-408", "title": "区分 Codex 提问与技术权限请求，等待提示与详情不再混淆" }
+  ]
+}

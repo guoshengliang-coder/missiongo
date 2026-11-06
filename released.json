@@ -8,8 +8,8 @@
   ],
   "artifacts": {
     "linuxCli": {
-      "version": "0.1.10",
-      "commit": "5ddc21982cc0b396c6265046e904e7bd85fbed83",
+      "version": "0.1.11",
+      "commit": "4021c03a815eac6182332669a27fba281b993dd6",
       "versionFile": "product.json",
       "versionJsonPath": "linuxNode.version",
       "paths": [
@@ -17,11 +17,11 @@
         "packages/domain",
         "scripts/build-node.mjs"
       ],
-      "sha256": "6b13ee99f75803c14216453f6f27eb8d5abf8637f66995d1a8d916a1c1a221a6"
+      "sha256": "3a6582a30f02682ab426e4e170fb4dfe36dd6b8644a5b2b07cbf4c948e1b59af"
     },
     "androidApp": {
-      "version": "0.1.19",
-      "commit": "609c65b7a92c45540e3d79f8e4824d2980f93566",
+      "version": "0.1.20",
+      "commit": "f7cba0d60a40a86a5e4299959dfa7e869472e0b5",
       "versionFile": "sdks/android-feedback/gradle.properties",
       "versionProperty": "missiongoAndroidVersionName",
       "paths": [
