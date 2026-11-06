@@ -85,16 +85,25 @@ for (const width of [320,1440]) for (const theme of ["light","dark"] as const) {
 
 test("ordinary dispatch warns and submits takeover without a separate attestation",async({page,request})=>{
   const {item,product,nodeId}=setup(true);
-  await request.put("/api/v1/dispatch-defaults",{data:{nodeId,agentKind:"codex",agents:{codex:{mode:"auto"}}}});
-  await page.goto(`/?product=${product.id}&status=ready`);
-  await page.locator(".item-row").filter({hasText:item.key}).getByRole("checkbox").check();
-  await page.getByRole("button",{name:"派单",exact:true}).click();
-  const form=page.locator(".dispatch-form");
-  await expect(form).toContainText("接手不会自动停止旧设备上的进程或外部操作");
-  const submit=form.getByRole("button",{name:"启动新执行并接手",exact:true});
-  await expect(submit).toBeEnabled();
-  await submit.click();
-  await expect(page.locator(".dispatch-result")).toBeVisible();
-  const delivery=await (await request.get(`/api/v1/items/${item.key}/delivery`)).json();
-  expect(delivery.executions.find((row:{kind:string})=>row.kind==="human").status).toBe("working");
+  const previousDefaults = await (await request.get("/api/v1/dispatch-defaults")).json();
+  try {
+    expect((await request.put("/api/v1/dispatch-defaults", {
+      data: { nodeId, agentKind: "codex", agents: { codex: { mode: "auto" } } },
+    })).ok()).toBeTruthy();
+    await page.goto(`/?product=${product.id}&status=ready`);
+    await page.locator(".item-row").filter({hasText:item.key}).getByRole("checkbox").check();
+    await page.getByRole("button",{name:"派单",exact:true}).click();
+    const form=page.locator(".dispatch-form");
+    await expect(form).toContainText("接手不会自动停止旧设备上的进程或外部操作");
+    const submit=form.getByRole("button",{name:"启动新执行并接手",exact:true});
+    await expect(submit).toBeEnabled();
+    await submit.click();
+    await expect(page.locator(".dispatch-result")).toBeVisible();
+    const delivery=await (await request.get(`/api/v1/items/${item.key}/delivery`)).json();
+    expect(delivery.executions.find((row:{kind:string})=>row.kind==="human").status).toBe("working");
+  } finally {
+    // This account is shared across files; dispatch also initializes defaults.
+    // Restore the saved choices even if an assertion fails.
+    expect((await request.put("/api/v1/dispatch-defaults", { data: previousDefaults })).ok()).toBeTruthy();
+  }
 });
