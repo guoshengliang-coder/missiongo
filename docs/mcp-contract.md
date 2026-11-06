@@ -25,7 +25,7 @@ MissionGo MCP 让经过鉴权的 AI 按用户给出的编号完整读取一个�
 | 档位 | 开放的工具 |
 |---|---|
 | `none` | 无。工具清单与只读部署完全一致 |
-| `comments` | `append_comment`、`claim_item`、`recover_execution_authorization`、`submit_development_complete`、`submit_for_verification`、`create_item`、`upload_attachment_chunk`、`prepare_attachment_upload`、`add_item_attachment`、`register_agent_session`、`report_agent_session` |
+| `comments` | `append_comment`、`claim_item`、`recover_execution_authorization`、`submit_development_complete`、`submit_for_verification`、`submit_release_batch`、`create_item`、`upload_attachment_chunk`、`prepare_attachment_upload`、`add_item_attachment`、`register_agent_session`、`report_agent_session` |
 
 只有两级：写入面限于评论、三条受限状态流转、创建条目、关联附件与外部会话进展登记。
 
@@ -268,3 +268,15 @@ AI 写入的评论会成为下一次读取的上下文，所以来源必须可�
 ### 处理中条目的显式 Agent 接手（AND-409）
 
 人工在条目详情核实旧执行并指定原会话或新派单，保持处理中及 Builder。交接授权、方案决定、工作权限和实际领取分别生效。普通处理中条目不能直接重新领取；领取须消费有效交接授权并签发本轮凭据，不能因取消方案领取门禁绕过接手检查。接口与验证边界见 [AND-409 交接说明](and-409-agent-handoff.md)。
+
+### 发布批次交接（AND-415）
+
+`submit_release_batch` 用于用户授权的单产品发布或已发布漏交接修复。需要 OAuth write、当前产品操作和 AI 权限；发布者无须拥有候选条目的原领取授权。原 `submit_development_complete` / `submit_for_verification` 会话隔离不变。
+
+`get_current_account` 提供 `supportsReleaseBatchHandover`，调用前还须检查 `writeTools`。`list_release_candidates` 增加 `expectedRevision`、`developmentEventId`、`roundKey`；旧服务缺少这些字段时不得推测或填充。
+
+输入：`productId`、`idempotencyKey`、`deployedCommit`、`receiptDigest`，以及最多 100 个不重复的 `items`。每项包含候选快照三个字段、原 `completion`（兼容 `pullRequestUrl`）及覆盖全部必需产物的 `releases`。执行端必须事先核实集成、公开产物和来源提交包含关系；服务端没有代码托管或下载核验权限，提交证据仍属于经鉴权执行端的证明，不把观察上传当成验证。
+
+服务端拒绝跨产品批次，逐项在事务内检查开发完成状态、版本、开发完成事件、当前轮次、集成依据、完整产物、归档/转移及协作约束。独立的发布权限只适用于开发完成到待验证；不领取、不改变 Builder 或执行记录、不自动验收。成功事件记录账号、客户端、批次、来源版本与凭据摘要，保留正常待验证通知。
+
+批次幂等绑定账号、客户端、产品和完整请求；同键换内容拒绝。成功条目独立提交，失败可按原请求重试；`submitted`、`already_submitted`（同时返回实际当前状态）、`skipped` 与原因逐项报告。成功后若被打回，重放只报告历史提交，不恢复状态。候选变化须重新核实并使用新批次。后台自动检查、每日补查仍关闭，发布观察仅保存事实。

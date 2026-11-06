@@ -1,7 +1,7 @@
 ---
 name: missiongo
 description: 通过 MissionGo MCP 查询项目概览、吞吐、交付周期和验收打回率，或完整读取及处理指定条目、评论、创建和上传附件；核实合并与发布后可靠交接。不修改条目正文与字段，不决定验收。
-version: 5.45.0
+version: 5.46.0
 ---
 
 # MissionGo 条目读取与评论
@@ -109,7 +109,7 @@ frontmatter 中的 `version` 对比。
 
 独立「状态检查」、每日补查、节点自动发现和自动校正已取消。不要调用旧的关联或证据上报工具，不等待后台任务改变条目状态。
 
-核实真实 PR/MR 合并或本地 Git 集成后，按「标记开发完成」调用 `submit_development_complete`；发布后核对全部必需产物，先写发布评论，再调用 `submit_for_verification`。两次交接都必须提供本轮原领取身份：`dispatchId`、外部 `sessionId` 或 `session`，三者选一，由服务端核验当前授权。旧服务仅支持凭据时遵守下文兼容规则。通过 `get_item_context` 核对条目的实际状态，最终验收仍由人决定。
+核实真实 PR/MR 合并或本地 Git 集成后，按「标记开发完成」调用 `submit_development_complete`；发布后核对全部必需产物，先写发布评论，再调用 `submit_for_verification`。上述单条交接都必须提供本轮原领取身份：`dispatchId`、外部 `sessionId` 或 `session`，三者选一，由服务端核验当前授权。旧服务仅支持凭据时遵守下文兼容规则。通过 `get_item_context` 核对条目的实际状态，最终验收仍由人决定。
 
 发布凭据文件及其上传仅保留发布事实，不触发任务、不改变条目状态。当前项目自己的发布流程、完整候选清单、产物覆盖门禁和公开产物核验仍须执行，详见「发布范围与覆盖门禁」和「发布后状态交接与版本回写」。
 
@@ -503,7 +503,7 @@ AI 每小时能建的条目有上限：衍生条目按来源条目计，独立�
 
 用户让你执行一次发布或处理某次已经完成的发布时，**必须完成本节的发布交接核对**，不能只处理触发发布的那一条或会话里提到的条目。只为**这次发布实际包含且所有相关产物均已发布**的开发完成条目追加发布评论，并推到待验证。这不是验收。没有被核实发布的条目不能写「已发布」。普通条目的读取与分析仍遵守用户给出的编号范围；这一节是发布任务专用的范围规则。若发布已完成但凭据或授权缺失，如实报告未能交接，不能把部署成功当作条目交接成功。
 
-发布观察上传只保存事实。发布会话按下述候选范围逐项核实，写发布评论并显式调用正常交接工具；不等待节点自动推进。
+发布观察上传只保存事实。用户授权一次发布或已发布漏交接修复时，发布会话按下述候选范围核实，写发布评论并调用 `submit_release_batch`；不等待节点自动推进，也不要求其他条目原会话继续运行。这是产品发布权限下的受限交接，不授予开发处理权；单条原会话交接仍按原身份规则。
 
 **先确认发布流程属于当前产品仓库。** 下文的 `scripts/deploy.sh`、`scripts/release-notices.mjs` 和四种产物核验是 MissionGo 仓库的实现示例，不是所有产品的固定目录约定。其他仓库采用其自身的发布凭据、产物映射与核验流程；缺少可信的等效流程时停止自动交接并说明限制，不借用其他仓库脚本。明确无需发布的条目不参与此流程，由用户安排验证。
 
@@ -511,7 +511,7 @@ AI 每小时能建的条目有上限：衍生条目按来源条目计，独立�
 2. 正常部署使用 `scripts/deploy.sh --notice-origin <公网 origin>`。脚本在真正部署结束后打印一行 JSON 发布凭据。它记录部署前后实际线上产物的版本与来源提交，并按产物类型核验：Web/Server 核对公网 `/health` 报告的来源提交；Android App 和 macOS App 核对公开下载文件的哈希；Android SDK 核对公开 POM 的哈希。不同产品不得套用不存在的产物检查。没有这份凭据、相关 `changes` 中的 `verified` 或 `eligibleForMatching` 为 false 时，不能声称该产物已发布。构建脚本本地成功和 `released.json` 更新都不等于上线。首次发布或旧版本来源未知时，自动关联会跳过。
 3. 沿用发布前按「发布范围与覆盖门禁」取得并在部署前刷新的全量候选页；只对第 1 步限定的产品调用 `list_release_candidates`，带 `includeUnscoped: true`，从 `beforeSequence` 缺省值开始，按 `nextBeforeSequence` 读到结束，**即使某页 `candidates` 为空也继续**。它给出开发完成条目的编号、集成依据、必需产物或范围缺失提示，不给出正文。不得从条目描述、评论、提交标题或日志里扩展候选编号。记录每次请求的游标，第一页记为 `requestedBeforeSequence: null`，后续页记为实际传入的 `beforeSequence`。
 4. 把发布凭据和**所有候选页**写入工作区外的临时 JSON 文件。候选文件为 `{ "pages": [{ "requestedBeforeSequence": null, "productId": "...", "candidates": [...], "nextBeforeSequence": 123 }, { "requestedBeforeSequence": 123, "productId": "...", "candidates": [...] }] }`；末页没有 `nextBeforeSequence`。运行 `node scripts/release-notices.mjs --receipt <文件> --candidates <文件>`。脚本先拒绝分页不完整或跨产品的输入，再通过 `gh` 核实 PR 已合并、属于当前仓库，以条目明确登记的发布范围核对必需产物（文件路径只作建议），并核实**每一个**已登记必需产物当前公开可用、来源提交包含 PR；当前公开产物已经包含 PR 时也允许补齐以前漏掉的交接，不要求本次新增发布。多个产物可在不同发布批次完成。脚本只提出评论和状态交接参数，不写 MissionGo。任何命令失败、关联不明或结果为空都停在人工核对，不猜。
-5. 对脚本提出的每个条目，仍逐条完整执行「读取流程」：确认当前状态仍是开发完成，最近一次开发完成事件的 PR URL 和必需产物与候选结果相同，读完所有附件。只有全部成立、`capabilities.canComment` 为 true 且 `writeTools` 包含 `submit_for_verification` 时，先按脚本给出的 `text`、`summary` 和稳定 `idempotencyKey` 调用 `append_comment`（`bodyKind: "free"`），加上真实的 `agentName`；再用本轮原领取身份（按上文身份交接规则）、`pullRequestUrl`、`releases`、`deployedCommit`、`receiptDigest` 和独立的 `transitionIdempotencyKey` 调用 `submit_for_verification`。重试复用各自原键。
+5. 对脚本提出的每个条目，仍逐条完整执行「读取流程」：确认当前状态仍是开发完成，最新开发完成事件、集成依据、全部必需产物与候选相符，读完附件。`capabilities.supportsReleaseBatchHandover` 为 true 且 `writeTools` 包含 `submit_release_batch` 时，先按脚本给出的内容、稳定键写发布评论，再提交脚本 `batches` 中的全部批次（每批最多 100 条）。每批携带 `productId`、`idempotencyKey`、`deployedCommit`、`receiptDigest`；每项携带 `expectedRevision`、`developmentEventId`、`roundKey`、原 `completion` 或 `pullRequestUrl`、完整 `releases`。并发字段必须来自服务端候选快照，不猜、不删。原样重试复用原键；服务端逐条返回 submitted、already_submitted 和 skipped。部分失败不重复成功项，候选变化须重新核实并生成新批次；already_submitted 只证明该批曾交接，还要核对实际当前状态，不恢复人工打回的状态。旧服务不支持批次时，仅可用本会话原有效身份执行 `submit_for_verification`，其他条目报告缺少发布批次能力；不得借用其他会话凭据或身份。
 6. 评论只说正式发布了哪些产物及其版本、来源提交、关联 PR，并提示在这些版本验证。Web/Server 以线上来源提交作为核验版本；若产品同时展示 tag，可一并说明，但不得用 tag 代替线上提交校验。评论不得声称验收通过、已经安装到用户设备、或所有环境都已更新。逐条处理脚本提出的**所有**评论，不因本次部署由某一条触发而提前结束；报告实际推进了哪些条目，哪些被跳过及原因。现有待验证条目保持原状态，不做历史回填。
 
 ## 输出格式

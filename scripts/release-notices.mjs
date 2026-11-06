@@ -103,6 +103,29 @@ export function proposedComment(candidate, releases, receipt) {
   };
 }
 
+/** Build deterministic, bounded MCP requests; never invent concurrency tokens for old servers. */
+export function releaseBatches(productId, candidates, matched) {
+  const batches = [], skipped = [...matched.skipped], items = [];
+  for (const comment of matched.comments) {
+    const candidate = candidates.find(row => row.itemKey === comment.itemKey);
+    if (!Number.isSafeInteger(candidate?.expectedRevision) || candidate.expectedRevision < 1
+      || !/^[0-9a-f-]{36}$/.test(candidate.developmentEventId ?? "") || !/^[0-9a-f-]{36}$/.test(candidate.roundKey ?? "")) {
+      skipped.push({ itemKey: comment.itemKey, reason: "candidate snapshot missing; refresh from a server supporting release batches" });
+      continue;
+    }
+    items.push({ itemKey: candidate.itemKey, expectedRevision: candidate.expectedRevision,
+      developmentEventId: candidate.developmentEventId, roundKey: candidate.roundKey,
+      ...(candidate.completion ? { completion: candidate.completion } : { pullRequestUrl: candidate.pullRequestUrl }), releases: comment.releases });
+  }
+  items.sort((a, b) => a.itemKey.localeCompare(b.itemKey));
+  for (let offset = 0; offset < items.length; offset += 100) {
+    const request = { productId, deployedCommit: matched.comments[0].deployedCommit,
+      receiptDigest: matched.comments[0].receiptDigest, items: items.slice(offset, offset + 100) };
+    batches.push({ ...request, idempotencyKey: `release-batch:${createHash("sha256").update(JSON.stringify(request)).digest("hex")}` });
+  }
+  return { batches, skipped };
+}
+
 export function matchCandidates(receipt, candidates, resolvePr, ancestor = isAncestor) {
   const comments = [];
   const skipped = [];
@@ -152,12 +175,13 @@ function main() {
   const receipt = JSON.parse(readFileSync(args[receiptIndex + 1], "utf8"));
   const candidateResult = JSON.parse(readFileSync(args[candidatesIndex + 1], "utf8"));
   if (receipt.schemaVersion !== 1) throw new Error("Invalid release receipt");
-  const { candidates } = releaseCandidatesFromPages(candidateResult);
+  const { productId, candidates } = releaseCandidatesFromPages(candidateResult);
   if (!isAncestor(receipt.deployedCommit, git("rev-parse", "HEAD"))) {
     throw new Error("The deployed commit is not in this checkout; use the repository that was deployed");
   }
   const repository = gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner");
-  process.stdout.write(`${JSON.stringify(matchCandidates(receipt, candidates, (url) => pullRequestFacts(url, repository)), null, 2)}\n`);
+  const matched = matchCandidates(receipt, candidates, (url) => pullRequestFacts(url, repository));
+  process.stdout.write(`${JSON.stringify({ comments: matched.comments, ...releaseBatches(productId, candidates, matched) }, null, 2)}\n`);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

@@ -3,7 +3,7 @@ import { assertItemExecutionIdentity, takeOverItemExecutions } from "./item-exec
 import { AgentHandoffs } from "./agent-handoffs.js";
 import { Collaborations } from "./collaboration.js";
 import { collaborationTransitionDenial } from "./collaboration-policy.js";
-import { assertTransitionPolicy, itemRoles } from "./item-policy.js";
+import { assertTransitionPolicy, assertReleaseBatchTransition, itemRoles } from "./item-policy.js";
 import { resolveCommentAudience, enqueueCommentNotifications } from "./comment-discussions.js";
 import { assertBuilderExecution, assertDispatchExecution, latestBuilderHandover, hasOngoingItemExecution, hasBlockingItemExecution, hasPriorProcessing } from "./builder-authority.js";
 import { completionPayload, normalizeCompletion, sameCompletion } from "./completion.js";
@@ -49,6 +49,7 @@ import {
   type ClaimWorkItemInput,
   type SubmitDevelopmentCompleteInput,
   type SubmitForVerificationInput,
+  type SubmitReleaseBatchInput,
   type CommentBody,
   type CommentBodyKind,
   type CreateCommentInput,
@@ -1743,6 +1744,10 @@ export class MissionGoStore {
 
   /** Accept a verified release only when every artifact recorded at merge is present. */
   submitForVerification(input: SubmitForVerificationInput): WorkItemSnapshot {
+    return this.submitVerifiedRelease(input);
+  }
+
+  private submitVerifiedRelease(input: SubmitForVerificationInput, batch?: { id: string; developmentEventId: string; expectedRevision: number }): WorkItemSnapshot {
     this.assertWorkItemWritable(input.itemKey);
     const completion = normalizeCompletion(input);
     if (completion.kind === "manual") throw invalidInput("Human confirmation requires a signed-in person.");
@@ -1774,11 +1779,59 @@ export class MissionGoStore {
       const now = new Date().toISOString();
       this.applyTransition(item, "pending_verification", "agent", "release_verified", undefined, now,
         input.attribution ?? {}, { ...completionPayload(completion), releases, deployedCommit: input.deployedCommit,
-          receiptDigest: input.receiptDigest });
+          receiptDigest: input.receiptDigest, ...(batch ? { releaseBatchId: batch.id, developmentEventId: batch.developmentEventId, expectedRevision: batch.expectedRevision } : {}) }, Boolean(batch));
       const result = this.getWorkItem(item.item_key);
       this.saveIdempotentResult(idempotencyKey, operation, result, now);
       return result;
     });
+  }
+
+  submitReleaseBatch(input: SubmitReleaseBatchInput) {
+    const accounts = new AccountStore(this.database), account = accounts.findActive(input.attribution.accountId);
+    if (!account || !accounts.allows(account, input.productId, "operate") || !accounts.allows(account, input.productId, "ai")) {
+      throw new MissionGoError("release_not_permitted", "Product operation and AI permissions are required.", 403);
+    }
+    this.getProduct(input.productId);
+    this.validateIdempotencyKey(input.idempotencyKey);
+    if (!input.items.length || input.items.length > 100 || new Set(input.items.map(row => row.itemKey.toUpperCase())).size !== input.items.length) {
+      throw invalidInput("A release batch needs 1 to 100 distinct candidates.");
+    }
+    // Reject cross-product batches before any write, even when earlier rows are valid.
+    for (const row of input.items) if (this.getWorkItem(row.itemKey).productId !== input.productId) {
+      throw invalidInput("All candidates must belong to the authorized product.");
+    }
+    const batchId = createHash("sha256").update(JSON.stringify([input.attribution.accountId, input.attribution.clientId, input.productId, input.idempotencyKey])).digest("hex");
+    const digest = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+    this.database.transaction(() => {
+      const previous = this.getIdempotentResult<{ digest: string }>(`release-batch:${batchId}`, "release_batch");
+      if (previous && previous.digest !== digest) throw conflict("idempotency_conflict", "The release batch inputs changed; use a new batch after verification.");
+      if (!previous) this.saveIdempotentResult(`release-batch:${batchId}`, "release_batch", { digest, request: input }, new Date().toISOString());
+    });
+    const results = input.items.map(row => {
+      const itemKey = row.itemKey.toUpperCase();
+      try {
+        return this.database.transaction(() => {
+          const key = `release-batch-item:${batchId}:${itemKey}`;
+          const prior = this.getIdempotentResult<{ itemKey: string }>(key, "release_batch_item");
+          const item = this.getWorkItem(itemKey);
+          if (prior) return { itemKey, outcome: "already_submitted", currentStatus: item.status };
+          if (item.status !== "development_complete") throw conflict("item_not_ready_for_verification", "Only development-complete work can enter verification.");
+          const handover = [...this.getTimeline(itemKey)].reverse().find(event => !event.historySourceKey && event.eventType === "status_changed" && event.toStatus === "development_complete");
+          if (item.revision !== row.expectedRevision || handover?.id !== row.developmentEventId
+            || deliveryRound(this.database, item.id) !== row.roundKey || handover.payload.roundKey !== row.roundKey) {
+            throw conflict("release_candidate_changed", "The candidate revision, development event or handling round changed; verify it again.");
+          }
+          const published = this.submitVerifiedRelease({ ...row, deployedCommit: input.deployedCommit, receiptDigest: input.receiptDigest,
+            attribution: input.attribution, idempotencyKey: `release-transition:${batchId}:${itemKey}` }, { id: batchId, developmentEventId: row.developmentEventId, expectedRevision: row.expectedRevision });
+          this.saveIdempotentResult(key, "release_batch_item", { itemKey }, new Date().toISOString());
+          return { itemKey, outcome: "submitted", currentStatus: published.status };
+        });
+      } catch (error) {
+        if (!(error instanceof MissionGoError)) throw error;
+        return { itemKey, outcome: "skipped", code: error.code, message: error.message };
+      }
+    });
+    return { batchId, productId: input.productId, results };
   }
 
   /**
@@ -2050,6 +2103,7 @@ export class MissionGoStore {
     now: string,
     attribution: EventAttribution = {},
     payloadExtra: Readonly<Record<string, unknown>> = {},
+    releaseBatch = false,
   ): void {
     // Normalised before the domain sees it, so "is there a reason" and "what gets
     // stored" can never disagree. Newlines survive: a person explaining what
@@ -2064,7 +2118,10 @@ export class MissionGoStore {
     new Collaborations(this).beforeTransition(snapshot,to,actor,attribution.accountId,note,
       payloadExtra.collaborationDisposition as {mode:"withdraw"|"keep";successorAccountId?:string}|undefined);
     const evidenceRefresh = current.status === "development_complete" && to === "development_complete" && Boolean(payloadExtra.handoverId && payloadExtra.evidenceSource);
-    const authorization = attribution.accountId
+    if (releaseBatch && (to !== "pending_verification" || reason !== "release_verified" || actor !== "agent")) {
+      throw invalidInput("Release batches can only hand published work to verification.");
+    }
+    const authorization = releaseBatch ? assertReleaseBatchTransition(this.database, snapshot, attribution.accountId) : attribution.accountId
       ? assertTransitionPolicy(this.database,evidenceRefresh ? {...snapshot,status:"in_progress"} : snapshot,attribution.accountId,to,reason,actor)
       : undefined;
     if (current.status === "on_hold" && to !== "cancelled" && reason !== "manual_override" && to !== current.held_from) {
@@ -2083,7 +2140,7 @@ export class MissionGoStore {
         ? invalidInput(decision.message, "transition_note_required")
         : conflict("invalid_state_transition", decision.message);
     }
-    if (actor !== "system" && reason !== "manual_override" && (to === "in_progress" && reason === "claim" || actor === "agent")) assertBuilderExecution(this.database,current.id,attribution.accountId);
+    if (!releaseBatch && actor !== "system" && reason !== "manual_override" && (to === "in_progress" && reason === "claim" || actor === "agent")) assertBuilderExecution(this.database,current.id,attribution.accountId);
     if (to === "in_progress" && reason === "claim" && current.status !== "on_hold" && (current.execution_disposition || hasPriorProcessing(this.database,current.id)) && hasBlockingItemExecution(this.database,current.id,typeof payloadExtra.dispatchId === "string" ? payloadExtra.dispatchId : "")) {
       throw conflict("execution_stop_unconfirmed", "原执行仍有实际活动或待执行命令，请先查看执行记录。");
     }

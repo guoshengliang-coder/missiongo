@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { affectsArtifact, inReleasedRange, matchCandidates, releaseCandidatesFromPages, requiredArtifactsForFiles } from "./release-notices.mjs";
+import { affectsArtifact, releaseBatches, inReleasedRange, matchCandidates, releaseCandidatesFromPages, requiredArtifactsForFiles } from "./release-notices.mjs";
 
 const a = "a".repeat(40);
 const b = "b".repeat(40);
@@ -106,4 +106,22 @@ test("proposes a separate handoff for every eligible item in the release", () =>
   const result = matchCandidates(receipt, candidates, () => ({ mergeCommit: b, files: ["services/server/src/app.ts"] }), ancestor);
   assert.deepEqual(result.comments.map((comment) => comment.itemKey), ["AND-75", "AND-76"]);
   assert.notEqual(result.comments[0].idempotencyKey, result.comments[1].idempotencyKey);
+});
+
+
+test("release batch requests bind verified candidates, split at 100, and reject missing snapshots", () => {
+  const candidates = Array.from({ length: 102 }, (_, i) => ({ itemKey: `AND-${i + 1}`,
+    pullRequestUrl: "https://github.com/owner/repo/pull/42", requiredArtifacts: ["web"],
+    expectedRevision: 4, developmentEventId: "11111111-1111-4111-8111-111111111111", roundKey: "22222222-2222-4222-8222-222222222222" }));
+  delete candidates[101].roundKey;
+  const receipt = { deployedCommit: c, current: { web: { version: "1.0", commit: c, clean: true, ciPassed: true } }, publicEvidence: { checks: { web: true } } };
+  const matched = matchCandidates(receipt, candidates, () => ({ mergeCommit: b }), () => true);
+  const result = releaseBatches("product", candidates, matched);
+  assert.deepEqual(result.batches.map(row => row.items.length), [100, 1]);
+  assert.equal(result.skipped[0].itemKey, "AND-102");
+  assert.deepEqual(result, releaseBatches("product", candidates, matched));
+  assert.equal(result.batches[0].items[0].expectedRevision, 4);
+  candidates[0].expectedRevision++;
+  assert.notEqual(releaseBatches("product", candidates, matched).batches[0].idempotencyKey, result.batches[0].idempotencyKey);
+  assert.deepEqual(releaseBatches("product", [], { comments: [], skipped: [] }), { batches: [], skipped: [] });
 });

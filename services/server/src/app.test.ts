@@ -377,7 +377,7 @@ describe("Commenting over MCP", () => {
     expect(legacy.result?.structuredContent).toMatchObject({ candidates: [] });
     const coverage = await call(readToken, 2, "tools/call", { name: "list_release_candidates", arguments: { productId, includeUnscoped: true } });
     expect(coverage.result?.structuredContent).toMatchObject({ coverageVersion: 1, candidates: [{ itemKey: "HG-1" }], noReleaseItems: [] });
-    expect(coverage.result?.structuredContent?.candidates).toEqual([{ itemKey: "HG-1" }]);
+    expect(coverage.result?.structuredContent?.candidates).toEqual([{ itemKey: "HG-1", expectedRevision: expect.any(Number), developmentEventId: expect.any(String), roundKey: expect.any(String) }]);
   });
 
   it("learns task artifacts without manual product configuration and rejects clearing the inventory", async () => {
@@ -429,7 +429,7 @@ describe("Commenting over MCP", () => {
     const writer = await call(writeToken, 2, "tools/call", { name: "get_current_account", arguments: {} });
     expect(writer.result?.structuredContent).toMatchObject({
       capabilities: {
-        writeTools: ["prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "request_plan_approval", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
+        writeTools: ["prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "request_plan_approval", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "submit_release_batch", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
         canComment: true,
         canCreateItems: true,
       },
