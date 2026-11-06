@@ -13,7 +13,7 @@ const summary = {
   items: [{ key: "AND-349", title: "控制台待批准条排版异常", productId: fixture.productId }],
   activities: [], turnState: { turnActive: false }, canReply: true, canRetry: false, canStop: false, canArchive: true,
   attention: { state: "needed", kind: "approval", reason: "方案待批准", revision: "attention-revision" },
-  needsAttention: true, waitingForReply: true,
+  needsAttention: true, waitingForReply: true, planApprovalPending: true,
 };
 const detail = {
   ...summary,
@@ -38,7 +38,7 @@ for (const width of [353, 812, 1440]) for(const theme of ["light","dark"] as con
       const path = new URL(route.request().url()).pathname;
       if(path !== "/api/v1/agent-sessions" && hold) await held;
       const row=stalled?{...summary,status:"stalled",attention:{...summary.attention,revision:undefined}}:summary;
-      const current={...detail,...row,planApprovalStatus:{code},...(code==="ready"?{planApproval:{revision:"ready-plan",reason:"方案待批准"}}:{})};
+      const current={...detail,...row,planApprovalStatus:{code},planApproval:{revision:"ready-plan",reason:"方案待批准",plan:"计划：调整待批准条的布局。"}};
       return route.fulfill({status:200,json:path === "/api/v1/agent-sessions"?{sessions:[row]}:current});
     });
     await page.clock.install();
