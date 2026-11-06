@@ -15,6 +15,8 @@ const mock = (p = pr) => (command, args) => {
 };
 test("evidence fails closed on unknown checks, conflict, draft, and changed head", () => {
   assert.equal(inspectDelivery(delivery, mock()).ready, true);
+  assert.equal(inspectDelivery({ ...delivery, mergeReady: false }, mock()).ready, false);
+  assert.throws(() => inspectDelivery({ ...delivery, expectedBase: "c".repeat(40) }, mock()), /base/i);
   for (const change of [{ statusCheckRollup: [] }, { isDraft: true }, { mergeable: "CONFLICTING" },
     { statusCheckRollup: [{ __typename: "CheckRun", status: "IN_PROGRESS" }] }]) {
     assert.equal(inspectDelivery(delivery, mock({ ...pr, ...change })).ready, false);
