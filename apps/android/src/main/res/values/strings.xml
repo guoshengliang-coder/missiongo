@@ -69,4 +69,6 @@
     <string name="badge_channel_description">在桌面图标上显示有未读消息的会话数</string>
     <string name="badge_carrier_title">%1$d 个会话有未读消息</string>
     <string name="badge_carrier_text">点按查看 Agent 会话</string>
+    <string name="release_updating">正在发布新版本</string>
+    <string name="release_wait">正在升级更新，请稍等几分钟。恢复后会自动重新连接。</string>
 </resources>

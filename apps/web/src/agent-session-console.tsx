@@ -79,6 +79,7 @@ import {
   type AgentSessionFilter,
   withSessionReplyDraft,
 } from "./agent-session-view";
+import { hasPendingPermissionQuestion } from "@missiongo/domain";
 import { AgentSessionQuestions } from "./agent-session-questions";
 import { DraftChatFile } from "./agent-chat-draft-file";
 import { AgentSessionQuickSettings } from "./agent-session-settings";
@@ -305,7 +306,7 @@ export function AgentSessionConsole({
   useEffect(() => {
     if (!sessionsLoaded || !selectedSessionId) return;
     const linked = allSessions.find((session) => session.id === canonicalAgentSessionId(selectedSessionId, allSessions));
-    if (!linked || linked.archivedAt) setUnavailableSessionId(selectedSessionId);
+    setUnavailableSessionId(linked ? null : selectedSessionId);
   }, [allSessions, selectedSessionId, sessionsLoaded]);
 
   useEffect(() => {
@@ -631,7 +632,8 @@ export function AgentSessionConsole({
   const activities = sessionQuery.data?.activities ?? [];
   const turnState = sessionQuery.data?.turnState ?? selected?.turnState;
   const approval = sessionQuery.data ? sessionQuery.data.approval : selected?.approval;
-  const showPermissionApproval = Boolean(approval && (approvalNeedsAction(approval)
+  const questionPermission = Boolean(selected && hasPendingPermissionQuestion(selected.agentKind, visibleMessages.filter(message => !message.id.startsWith("history:"))));
+  const showPermissionApproval = questionPermission || Boolean(approval && (approvalNeedsAction(approval)
     || (approval.kind === "manual" && approval.status === "pending")));
   const planApproved = sessionQuery.data?.planApprovalState;
   const planContinued = planContinuationObserved(sessionQuery.data);
@@ -1013,7 +1015,7 @@ export function AgentSessionConsole({
             const rowWaiting = ["claude_code", "codex", "opencode"].includes(session.agentKind) && ["active", "idle"].includes(rowStatus)
               && (session.command?.status !== "queued" || session.agentKind === "codex") && session.turnState?.waitingForInput === true;
             const rowLabel = session.source === "external" && !session.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(session)) : rowBackground ? t("agentSessionBackgroundStatus")
-              : rowWaiting ? t(waitingStatusLabelKey(session)) : statusLabel(rowStatus, t);
+              : rowWaiting ? t(session.waitingForPermission ? "agentSessionWaitingApprovalStatus" : waitingStatusLabelKey(session)) : statusLabel(rowStatus, t);
             return (
               <div
                 key={session.id}
@@ -1201,6 +1203,10 @@ export function AgentSessionConsole({
                       {message.questions && (
                         <AgentSessionQuestions
                           questions={message.questions}
+                          sessionId={selected.agentSessionId}
+                          sourceId={message.sourceId}
+                          historical={message.id.startsWith("history:")}
+                          agentKind={selected.agentKind}
                           reply={reply}
                           canReply={selected.canReply && !message.id.startsWith("history:") && !pending && !sendingSelected && !cancellingSelected}
                           onChange={setReply}
@@ -1329,7 +1335,7 @@ export function AgentSessionConsole({
                     {selected.canArchive && <small>{t("agentRecoveryArchiveHint")}</small>}
                   </section>
                 )}
-                {approval && showPermissionApproval && (
+                {approval && !questionPermission && showPermissionApproval && (
                   <section className="agent-console-attention-banner agent-console-approval" role="alert" aria-label={t(approvalTitleKey(approval)) }>
                     <header>
                       <BellRing size={16} />
@@ -1397,7 +1403,7 @@ export function AgentSessionConsole({
                     {["stalled", "unavailable", "failed"].includes(sessionStatus) && <p className="agent-run-warning" role="alert">{activityText}</p>}
                     <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={visualStatus} />} actions={stopAction}
                       label={selected.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected))
-                        : agentWaiting ? t(runWaitingLabelKey({ agentKind: selected.agentKind, approval }), { agent: agentName })
+                        : agentWaiting ? t(questionPermission ? "agentRunApproval" : runWaitingLabelKey({ agentKind: selected.agentKind, approval }), { agent: agentName })
                           : claudeBackgroundOnly ? t("agentRunBackground") : sessionStatus === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(sessionStatus, t)}>
                       {!["stalled", "unavailable", "failed"].includes(sessionStatus) && <p>{statusDetail}</p>}
                       {outgoing && ["queued", "delivering", "delivered"].includes(outgoing.status) && <p>

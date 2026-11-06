@@ -241,11 +241,25 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 ### 会话权限请求（AND-361）
 
 - Claude MCP 空对象确认复用 `AgentSessionQuestions`，完整显示来源确认内容，提供批准／拒绝／取消；答复绑定原请求 ID，来源取消后撤销该卡，不能把迟到答复应用到下一个请求。外部桥接继续使用本机显式答复。选项按钮在触控下至少 44×44，回归见 `agent-approval-visibility.audit.spec.ts` 的 Claude MCP 用例。
-- 问题选项的“已选择，未发送”反馈放在选项之后，避免新增提示挤走刚点击的控件；回复框增高时仍保留会话阅读位置及选项可达性。控制台与条目内会话共用 `AgentSessionQuestions`，回归见 `agent-question-scroll.audit.spec.ts`。
+- 普通问题选项的“已选择，未发送”反馈放在选项之后，避免新增提示挤走刚点击的控件；回复框增高时仍保留会话阅读位置及选项可达性。控制台与条目内会话共用 `AgentSessionQuestions`，回归见 `agent-question-scroll.audit.spec.ts`。
 - 权限请求复用 `agent-console-attention-banner` 的黄色警告令牌、字号与圆角，在同一权限区展示状态、请求详情和来源提供的授权范围。请求期间不再同时显示通用计划批准或“无需处理”入口；来源请求消失后，独立的计划批准流程恢复。
 - 原生 `details` 默认展示两行请求摘要，点击或键盘展开可读完整请求与说明。授权选项始终在折叠区外；单次批准最多一个主按钮，其他范围和拒绝使用次级按钮，不替用户选择范围。
 - 按容器宽度排列可换行按钮，使用统一字号令牌；触控按钮和详情展开入口至少 44px。长来源文本和选项说明不能撑宽会话。
 - 提交期间保留原请求和排队反馈，禁止重复提交；失败保留选项可重试，重连不展示旧操作。复查入口包括手动授权、自动拒绝后的人工重试及普通计划批准。验证来源为 `and-361-unified-approval.audit.spec.ts`、`agent-approval-visibility.audit.spec.ts`、`and-349-approval-banner.audit.spec.ts` 与 `plan-approval.audit.spec.ts`。
+
+### Claude / OpenCode 授权直接提交（AND-416）
+
+- 控制台和条目内会话共用 `AgentSessionQuestions` / `PermissionQuestion`；授权卡使用黄色提示语义和原生 details，完整规则与保存位置可展开，决定按钮始终在折叠区外。点选即提交请求 ID 对应的决定，不写入或清空文字、附件草稿，也不显示“已选择，未发送”或“无需处理”。
+- 身份识别共用领域 `permissionQuestionKey`：沿用 `授权请求 <ID>` key，并兼容已发布 macOS Claude 的 `permission-<ID>` 来源＋授权 header；不凭正文猜测。列表使用服务端同一判定提供的 `waitingForPermission`。不迁移审批模型或改变推送 attention 分类。
+- 同步锁防重复点击，排队后保留反馈并禁用；提交失败保留来源选项可重试，来源撤回或已答复后只读。历史分页不得复活权限卡。普通 AskUserQuestion、多字段表单、ExitPlanMode 和外部桥接的本机答复流程保持。
+- 回归见 `and-416-418.audit.spec.ts`、`agent-approval-visibility.audit.spec.ts` 和既有问题/方案回归。覆盖两入口、当前与旧版 Claude、OpenCode、375px/桌面、明暗、三档字号及失败重试。
+
+### 发布等待与归档只读（AND-418/417）
+
+- 发布提示只依据独立宿主的有期限状态；Web 使用 `ReleaseNotice` 和公共 `Modal`，已有内容和草稿保留。等待不可误关，`pendingNotice={null}` 避免在返回时误说“正在保存修改”；过期或失败显示可关闭的恢复未确认提示。恢复只重新查询，不重放写请求或强制刷新。
+- 首次加载的宿主兜底与 Android 原生等待遵守同一信号边界：普通断网不冒充升级。宿主安装和真实设备验证边界见 [发布状态](release-status.md)。
+- 会话归档后仍可只读，不能仅因 archivedAt 显示不可访问；真实会话缺失仍显示错误，后续正常选择清除旧错误。控制台单条/批量归档、恢复及深链共享该判定。
+- 交互回归见 `and-416-418.audit.spec.ts`；脚本、代理停服和 Android 信号边界测试分别记录，不以本机模拟代替生产发布及真机。
 
 ### 方案批准前审阅（AND-401）
 

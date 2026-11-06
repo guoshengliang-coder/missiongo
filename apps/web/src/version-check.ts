@@ -1,3 +1,4 @@
+import { deploymentInProgress } from "./release-status";
 /**
  * Noticing that a newer build has been deployed, and moving onto it.
  *
@@ -157,7 +158,7 @@ export function startVersionWatch(options: { hasUnsavedInput: () => boolean }): 
   let lastCheck = 0;
   let checking = false;
   const check = async () => {
-    if (checking || updateReady) return;
+    if (checking || updateReady || deploymentInProgress()) return;
     checking = true;
     lastCheck = Date.now();
     try {

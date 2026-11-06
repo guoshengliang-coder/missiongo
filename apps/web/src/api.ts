@@ -1,3 +1,4 @@
+import { checkReleaseStatus, deploymentInProgress } from "./release-status";
 import type { AgentHistoryPage } from "./types";
 import type { PersonalAttentionCount, PersonalTodoPage, PersonalNotificationDetail, PersonalNotificationFilter, PersonalNotificationPage } from "@missiongo/domain";
 import type { CommentAudienceInput, CommentCandidate } from "@missiongo/domain";
@@ -195,6 +196,7 @@ const REQUEST_TIMEOUT_MS = 30_000;
 const TRANSFER_TIMEOUT_MS = 300_000;
 
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  if (init.method && init.method !== "GET" && deploymentInProgress()) throw new ApiError(503, "deployment_in_progress", "Deployment in progress.");
   const response = await fetch(path, {
     ...init,
     credentials: "same-origin",
@@ -208,6 +210,10 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   });
 
   if (!response.ok) {
+    if (response.status >= 500) {
+      await checkReleaseStatus();
+      if (deploymentInProgress()) throw new ApiError(503, "deployment_in_progress", "Deployment in progress.");
+    }
     const problem = (await response.json().catch(() => null)) as { code?: string; title?: string } | null;
     throw new ApiError(response.status, problem?.code ?? "request_failed", problem?.title ?? "Request failed.");
   }
@@ -215,6 +221,7 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
 }
 
 async function attachmentRequest(path: string, init: RequestInit = {}): Promise<Response> {
+  if (init.method && init.method !== "GET" && deploymentInProgress()) throw new ApiError(503, "deployment_in_progress", "Deployment in progress.");
   const response = await fetch(path, {
     ...init,
     credentials: "same-origin",
@@ -225,6 +232,10 @@ async function attachmentRequest(path: string, init: RequestInit = {}): Promise<
     },
   });
   if (!response.ok) {
+    if (response.status >= 500) {
+      await checkReleaseStatus();
+      if (deploymentInProgress()) throw new ApiError(503, "deployment_in_progress", "Deployment in progress.");
+    }
     const problem = (await response.json().catch(() => null)) as { code?: string; title?: string } | null;
     throw new ApiError(response.status, problem?.code ?? "request_failed", problem?.title ?? "Request failed.");
   }
