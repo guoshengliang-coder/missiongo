@@ -1633,8 +1633,6 @@ export function App() {
       {agentConsoleOpen && selectedProductId && (
         <AgentSessionConsole
           productId={selectedProductId}
-          products={products}
-          onEnterProduct={setSelectedProductId}
           search={agentConsoleSearch}
           initialFilter={agentConsoleLinkedFilter}
           allSessions={allAgentSessions}
