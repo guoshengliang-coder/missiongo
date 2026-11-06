@@ -473,3 +473,9 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 ### 待合并识别与统一核验（AND-423）
 
 条目及会话列表共用 `MergeProgressBadge`、`item-handler-badge` 与现有主题令牌。有效人工确认显示“待合并”，活动批次显示“合并中”；撤回、确认失效或合并后移除，不新增业务状态。选择弹窗允许旧 CI 证据过期的有效确认，由专门合并会话统一核验；范围变化仍禁选，实时失败、冲突及依赖阻止实际合并。
+
+### 长会话回执边界（AND-428）
+
+控制台复用 `useAgentHistory.hasMore` 与 `replyMirrorArrived`：普通文字命令为 delivered、确有更早历史且命令早于已加载窗口最早有效时间时，收起窗口外回执。此判断只控制显示，不证明原生回显或执行完成。无分页标记、空窗口、无效命令时间及边界相等时保留原匹配；附件按 commandId、其他投递状态及短会话保护保持。条目内面板不使用该合成气泡，其历史加载行为保持。
+
+回归见 `agent-session-view.test.ts`、`and-428-reply-window.audit.spec.ts`、既有 `and-421-reply-status.audit.spec.ts` 与 `codex-history-pagination.audit.spec.ts`；沿用原回执组件，无新增样式或例外。生产原会话端到端验证须在发布后进行。

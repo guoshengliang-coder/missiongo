@@ -418,8 +418,9 @@ export function mergeAgentSessionSnapshot(
 /**
  * The POST starts before MissionGo has a command id. Once it does, the mirrored
  * command carries the same bubble through queueing and delivery. A delivered
- * reply disappears only once the mirrored message proves it landed: the node
- * reports delivery and message in one snapshot, but a transcript read that
+ * reply disappears once its mirror arrives or it precedes an explicitly
+ * paginated loaded window. The node reports delivery and message in one
+ * snapshot, but a transcript read that
  * failed would otherwise make the reply vanish for good beside a command that
  * says delivered (AND-219). Cancelled replies return to the editor instead of
  * lingering.
@@ -451,7 +452,8 @@ export function outgoingReply(
 }
 
 /**
- * Whether the conversation already shows the message a delivered command sent.
+ * Whether the display receipt is replaced by a mirror or precedes the loaded
+ * history window. The latter is a display policy, not evidence of execution.
  * An attachment command mirrors as its own attachment bubble keyed by command
  * id; a plain reply mirrors as a user message with the same text from around
  * the moment the command was created. The clock tolerance is generous on
@@ -462,12 +464,20 @@ export function replyMirrorArrived(
   command: AgentSessionCommand | undefined,
   messages: readonly AgentSessionMessage[],
   attachmentMessages: NonNullable<AgentSession["attachmentMessages"]>,
+  hasOlderHistory = false,
 ): boolean {
   if (!command) return true;
   if (command.attachments?.length) {
     return attachmentMessages.some((message) => message.commandId === command.id);
   }
   const created = Date.parse(command.createdAt);
+  // A recent-history window cannot prove that an older reply never mirrored.
+  // Suppress only its display receipt, and only with an explicit older-page
+  // boundary; complete short histories must retain AND-219's pending receipt.
+  if (command.status === "delivered" && hasOlderHistory && Number.isFinite(created)) {
+    const times = messages.map(message => Date.parse(message.occurredAt)).filter(Number.isFinite);
+    if (times.length > 0 && times.every(time => created < time)) return true;
+  }
   const floor = Number.isNaN(created) ? Number.NEGATIVE_INFINITY : created - 60_000;
   return messages.some((message) => message.role === "user" && message.text === command.text
     && Date.parse(message.occurredAt) >= floor);
