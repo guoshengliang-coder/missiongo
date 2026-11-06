@@ -110,7 +110,7 @@ export function formatAgentMessageTime(value: string, locale: string, now = new 
 
 export type AgentSessionFilter = "unread" | "attention" | "active" | "all" | "failed" | "archived";
 
-export type AgentAssociationFilter = "all" | "unlinked" | "linked";
+export type AgentAssociationFilter = "all" | "unlinked" | "linked" | "integration";
 export type AgentKindFilter = "all" | AgentKind;
 
 export function isAbnormalAgentSession(session: Pick<AgentSessionSummary, "status" | "command">): boolean {
@@ -205,6 +205,7 @@ type FilterableAgentSession = Pick<
   | "nodeName"
   | "sessionName"
   | "latestMessage"
+  | "sessionPurpose"
   | "items"
 >;
 
@@ -283,6 +284,10 @@ export function agentOtherProjectCounts(
   return { attention, unread };
 }
 
+export function agentSessionCategory(session: Pick<AgentSessionSummary, "sessionPurpose" | "items">): Exclude<AgentAssociationFilter, "all"> {
+  return session.sessionPurpose === "integration" ? "integration" : session.items.length > 0 ? "linked" : "unlinked";
+}
+
 export function agentSessionMatches(
   session: FilterableAgentSession,
   filter: AgentSessionFilter,
@@ -290,8 +295,7 @@ export function agentSessionMatches(
   search: string,
   association: AgentAssociationFilter = "all",
 ): boolean {
-  if (association === "unlinked" && session.items.length > 0) return false;
-  if (association === "linked" && session.items.length === 0) return false;
+  if (association !== "all" && agentSessionCategory(session) !== association) return false;
   if (filter === "archived") {
     if (!session.archivedAt) return false;
   } else if (session.archivedAt) return false;

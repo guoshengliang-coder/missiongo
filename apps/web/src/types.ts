@@ -595,6 +595,7 @@ export interface AgentHistoryPage {
 }
 
 export interface AgentSessionSummary {
+  readonly sessionPurpose?: "integration";
   readonly waitingForPermission?: boolean;
   readonly productId?: string;
   readonly initialText?: string;

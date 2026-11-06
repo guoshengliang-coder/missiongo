@@ -47,6 +47,7 @@ import {
   projectConversationMessages,
   agentSessionDetailRefetchInterval,
   agentSessionMatches,
+  agentSessionCategory,
   agentOtherProjectCounts,
   archivableVisibleSessionIds,
   byLatestActivity,
@@ -98,11 +99,17 @@ import { useFileDropZone } from "./file-drop";
 
 const CHAT_FILE_ACCEPT = ".png,.jpg,.jpeg,.webp,.gif,.heic,.mp4,.mov,.webm,.log,.txt,.json,.md,.csv,.pdf";
 
-const ASSOCIATION_OPTION_LABELS = { all: "agentConsoleAssociationAll", unlinked: "agentConsoleAssociationUnlinked", linked: "agentConsoleAssociationLinked" } as const;
+const ASSOCIATION_OPTION_LABELS = { all: "agentConsoleAssociationAll", unlinked: "agentConsoleAssociationUnlinked", linked: "agentConsoleAssociationLinked", integration: "agentConsoleAssociationIntegration" } as const;
 const AGENT_OPTION_LABELS = { all: "agentConsoleAllAgents", codex: "agentCodex", opencode: "agentOpenCode", claude_code: "agentClaudeCode" } as const;
 // The console offers a fixed option set; sessions of other kinds only ever
 // appear under "all" (AND-426 keeps the counts tied to these options).
 type ConsoleAgentOption = keyof typeof AGENT_OPTION_LABELS;
+
+function SessionCategoryBadge({ session }: { session: AgentSessionSummary }) {
+  const { t } = useI18n();
+  const category = agentSessionCategory(session);
+  return <span className="agent-console-unlinked-badge" data-session-category={category}>{t(ASSOCIATION_OPTION_LABELS[category])}</span>;
+}
 
 function statusLabel(status: AgentSessionStatus, t: ReturnType<typeof useI18n>["t"]): string {
   if (status === "active") return t("agentSessionActive");
@@ -267,7 +274,7 @@ export function AgentSessionConsole({
       return { total: rows.length, running: rows.filter(session => !session.archivedAt && session.status === "active").length };
     };
     return {
-      association: { all: stats(agentFilter, "all"), unlinked: stats(agentFilter, "unlinked"), linked: stats(agentFilter, "linked") },
+      association: { all: stats(agentFilter, "all"), unlinked: stats(agentFilter, "unlinked"), linked: stats(agentFilter, "linked"), integration: stats(agentFilter, "integration") },
       agent: { all: stats("all", association), codex: stats("codex", association), opencode: stats("opencode", association), claude_code: stats("claude_code", association) },
     } satisfies {
       association: Record<keyof typeof ASSOCIATION_OPTION_LABELS, { total: number; running: number }>;
@@ -933,6 +940,7 @@ export function AgentSessionConsole({
             <option value="all">{t("agentConsoleAssociationAll")}</option>
             <option value="unlinked">{t("agentConsoleAssociationUnlinked")}</option>
             <option value="linked">{t("agentConsoleAssociationLinked")}</option>
+            <option value="integration">{t("agentConsoleAssociationIntegration")}</option>
           </Select>
           <label className="agent-console-agent-filter">
             <span>{t("agentConsoleAgentFilter")}</span>
@@ -1069,7 +1077,7 @@ export function AgentSessionConsole({
                   <span className="agent-console-session-copy">
                     <span className="agent-console-session-heading">
                       <strong>{sessionTitle(session, roundLabel)}</strong>
-                      {session.items.length === 0 && <span className="agent-console-unlinked-badge">{t("agentConsoleAssociationUnlinked")}</span>}
+                      <SessionCategoryBadge session={session} />
                       <time>{formatAgentMessageTime(session.activityAt ?? session.updatedAt, locale)}</time>
                     </span>
                     <small>{session.source === "external" ? t("agentExternalSource") : session.nodeName} · {agentLabel(session, t)}</small>
@@ -1096,7 +1104,7 @@ export function AgentSessionConsole({
               <BackButton className="agent-console-conversation-back" label={t("agentConsoleBackToSessions")} onClick={onBackToSessions} />
               <span className="agent-console-avatar"><AgentIcon kind={selected.agentKind} size={18} /></span>
               <div className="agent-console-heading">
-                <h2>{sessionTitle(selected, roundLabel)}{selected.items.length === 0 && <span className="agent-console-unlinked-badge">{t("agentConsoleAssociationUnlinked")}</span>}</h2>
+                <h2>{sessionTitle(selected, roundLabel)}<SessionCategoryBadge session={selected} /></h2>
                 {/* The items this session is working on stay in the head, where
                     scrolling the conversation cannot lose them (AND-159). */}
                 {selected.items.length > 0 && <div className="agent-console-dispatch agent-console-dispatch-head">
