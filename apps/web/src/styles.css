@@ -3430,12 +3430,5 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 
 .execution-stop-observation a.secondary-button { display: inline-flex; align-items: center; color: var(--ink); text-decoration: none; }
 
-/* Submitted plans share reading rhythm in the console and embedded session. */
-.agent-plan-content { min-width: 0; }
-.agent-plan-content .markdown-text { font-size: var(--console-text-sm); line-height: 1.75; margin-top: 12px; }
-.agent-plan-content .markdown-text p { margin-top: 12px; }
-.agent-plan-content .markdown-text :is(h1, h2) { font-size: var(--console-text-base); margin: 20px 0 10px; }
-.agent-plan-content .markdown-text :is(h3, h4, h5, h6) { font-size: var(--console-text-sm); margin: 16px 0 8px; }
-.agent-plan-content .markdown-text li + li { margin-top: 6px; }
-.agent-plan-validation { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
-.agent-plan-validation > h2 { margin: 0; font-size: var(--console-text-base); color: var(--ink); }
+/* Approval controls remain beneath the original proposal on both surfaces. */
+.agent-plan-inline-approval { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }

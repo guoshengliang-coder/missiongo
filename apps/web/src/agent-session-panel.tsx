@@ -2,7 +2,7 @@ import { permissionReplyText } from "./permission-presentation";
 import { DeliveryCards } from "./merge-console";
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
-import { AgentPlanContent, planTranscript, repeatsSubmittedPlan } from "./agent-plan-content";
+import { InlinePlanApproval, inlinePlanTranscript, currentPlan } from "./agent-plan-content";
 import { AgentStopFeedback } from "./agent-stop-feedback.js";
 import { useState, useEffect, useLayoutEffect, useRef, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -135,6 +135,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
     if (text && !pending && !send.isPending) send.mutate(text);
   };
 
+  const planMessages = inlinePlanTranscript(history.messages.filter(message => !isWithdrawnCard(message)), session.data);
   return (
     <div className="agent-session-panel">
       <button type="button" className="text-button agent-session-toggle" onClick={() => setOpen((value) => !value)}>
@@ -158,17 +159,15 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                 if (!history.error && event.currentTarget.scrollTop <= 48 && event.currentTarget.scrollHeight > event.currentTarget.clientHeight + 1) void history.loadMore();
               }}>
                 <AgentHistoryLoader history={history} />
-                {planTranscript(history.messages.filter((message) => !isWithdrawnCard(message)), session.data).map((message) => {
-                  if (message === null) return <AgentPlanContent key="submitted-plan" session={session.data} surface="panel" />;
-                  const repeatsPlan = repeatsSubmittedPlan(message, session.data);
-                  if (repeatsPlan && !message.questions?.length) return null;
+                {planMessages.messages.map((message) => {
                   return (
                     <article key={message.id} data-agent-message-id={`${message.role}:${message.sourceId || message.id}`} className={`agent-session-message agent-session-message-${message.role}`}>
                       <header className="agent-session-message-meta">
                         <small>{messageLabel(message.role, session.data.agentKind, t)}</small>
                         <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
                       </header>
-                      {!repeatsPlan && (message.role === "user" ? <MarkdownText>{permissionReplyText(session.data.messages.flatMap(message => message.questions ?? []), message.text)}</MarkdownText> : <AgentArtifactMarkdown text={message.text} sessionId={sessionId} messageId={message.id} />)}
+                      {(message.role === "user" ? <MarkdownText>{permissionReplyText(session.data.messages.flatMap(message => message.questions ?? []), message.text)}</MarkdownText> : <AgentArtifactMarkdown text={message.text} sessionId={sessionId} messageId={message.id} />)}
+                      {message.id === planMessages.planMessageId && <InlinePlanApproval key={`${session.data.id}:${currentPlan(session.data)?.revision}`} session={session.data} blocked={questionPermission || pending || send.isPending} />}
                       {message.questions && (
                         <AgentSessionQuestions
                           questions={message.questions}

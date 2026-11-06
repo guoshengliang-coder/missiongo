@@ -45,7 +45,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     await expect(page.getByRole("button", { name: "批准", exact: true })).toHaveCount(0);
     await expect(page.locator(".agent-console-session .agent-console-attention")).not.toHaveText("待批准");
     await expect(page.locator(".agent-console-attention-banner summary")).not.toHaveText("待批准");
-    await expect(page.getByRole("article", { name: "提交审批的方案", exact: true })).toHaveCount(0);
+    await expect(page.locator("article[data-agent-message-id]").filter({ has: page.locator(".agent-plan-inline-approval") })).toHaveCount(0);
     state = "followup";
     await advanceSessionDetailPoll(page);
     await expect(area.locator('[data-agent-message-id="user:followup"]')).toBeVisible();
@@ -62,7 +62,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     await expect(page.getByText("方案内容暂不可用，请重新加载后再审阅。")).toBeVisible();
     state = "formal";
     await page.locator(".agent-console-attention-banner").getByRole("button", { name: "重试", exact: true }).click();
-    await expect(page.getByRole("article", { name: "提交审批的方案", exact: true })).toContainText("验证目标");
+    await expect(page.locator("article[data-agent-message-id]").filter({ has: page.locator(".agent-plan-inline-approval") })).toContainText("验证目标");
     await expect(approve).toBeEnabled();
     await expect(reply).toHaveValue("保留草稿");
     await page.reload();

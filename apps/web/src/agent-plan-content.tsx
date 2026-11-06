@@ -1,4 +1,8 @@
-import { MarkdownText } from "./markdown-text";
+import { useRef } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { api } from "./api";
+import { localizedErrorText } from "./error-text";
+import { planApprovalStatusKey } from "./agent-session-view";
 import { useI18n } from "./i18n";
 import type { AgentSession, AgentSessionMessage } from "./types";
 
@@ -26,54 +30,64 @@ export function planContinuationObserved(session: AgentSession | undefined): boo
     || session.turnState?.turnActive === true && Date.parse(session.turnState.turnStartedAt ?? "") >= boundary;
 }
 
-/** Hide only an exact duplicate plan; ordinary commentary is never deduplicated by text. */
-export function withoutDuplicatePlan<T extends AgentSessionMessage>(messages: readonly T[], session: AgentSession | undefined): readonly T[] {
-  const text = currentPlan(session)?.plan?.trim();
-  return text ? messages.filter(message => message.role !== "plan" || message.text.trim() !== text) : messages;
-}
-
-/** True when an agent message repeats the submitted plan body that the card renders. */
-export function repeatsSubmittedPlan(message: AgentSessionMessage, session: AgentSession | undefined): boolean {
-  const text = currentPlan(session)?.plan?.trim();
-  return Boolean(text) && message.role === "agent" && message.text.trim() === text;
-}
-
-/** A null entry renders the submitted plan at its source position, never pinned below later replies. */
-export function planTranscript<T extends AgentSessionMessage>(messages: readonly T[], session: AgentSession | undefined): readonly (T | null)[] {
+/** Match the complete frozen body and validation, never a similar summary.
+ * Extra prose remains visible on the original message. */
+export function inlinePlanTranscript<T extends AgentSessionMessage>(messages: readonly T[], session: AgentSession | undefined): {
+  messages: readonly (T | (AgentSessionMessage & { readonly attachmentData?: undefined }))[]; planMessageId?: string;
+} {
   const plan = currentPlan(session);
-  if (!plan?.plan) return messages;
-  const submitted = session?.implementationPlan?.submittedAt;
-  const approved = session?.implementationPlan?.approvedAt;
-  const exactIndex = messages.map(message => ["plan", "agent"].includes(message.role) && message.text.trim() === plan.plan?.trim()).lastIndexOf(true);
-  // Legacy proposals have no submission time. Prefer their original message;
-  // otherwise use the recorded approval boundary. Unknown history stays above the current window.
-  let index = exactIndex;
-  const time = Date.parse(submitted ?? (exactIndex < 0 ? approved : undefined) ?? "");
-  if (index < 0 && Number.isFinite(time)) {
-    // Some native adapters report only whole seconds.
-    index = messages.findIndex(message => Date.parse(message.occurredAt) >= Math.floor(time / 1000) * 1000);
-    if (index < 0) index = messages.length;
-  }
-  if (index < 0) index = 0;
-  return [...withoutDuplicatePlan(messages.slice(0, index), session), null,
-    ...withoutDuplicatePlan(messages.slice(index), session)];
+  if (!plan?.plan?.trim()) return { messages };
+  const body = plan.plan.trim();
+  const validation = plan.validation?.trim();
+  const matches = messages.filter(message => ["agent", "plan"].includes(message.role)
+    && (message.text.trim() === body || message.text.trim().startsWith(body + "\n") && (!validation || message.text.includes(validation))));
+  // Multiple source messages are genuine history. Attach to the latest complete
+  // proposal, without deleting earlier messages or unrelated explanations.
+  const original = matches.at(-1);
+  if (original) return { messages: validation && !original.text.includes(validation)
+    ? messages.map(message => message.id === original.id ? { ...message, text: message.text + "\n\n" + validation } : message)
+    : messages, planMessageId: original.id };
+  const id = `submitted-plan:${plan.revision}`;
+  const fallback: AgentSessionMessage & { readonly attachmentData?: undefined } = { id, sourceId: id, role: "agent",
+    text: [body, validation].filter(Boolean).join("\n\n"),
+    occurredAt: session?.implementationPlan?.submittedAt ?? session?.implementationPlan?.approvedAt ?? messages[0]?.occurredAt ?? "" };
+  const index = messages.findIndex(message => message.occurredAt >= fallback.occurredAt);
+  const at = index < 0 ? messages.length : index;
+  return { messages: [...messages.slice(0, at), fallback, ...messages.slice(at)], planMessageId: id };
 }
 
-export function AgentPlanContent({ session, surface }: { session: AgentSession | undefined; surface: "console" | "panel" }) {
+/** Approval is attached to the message; the server still binds the revision,
+ * permissions and at-most-once continuation. */
+export function InlinePlanApproval({ session, blocked = false }: { session: AgentSession; blocked?: boolean }) {
   const { t } = useI18n();
+  const client = useQueryClient();
   const plan = currentPlan(session);
-  if (!plan?.plan) return null;
-  const approved = session?.implementationPlan?.revision === plan.revision && session.implementationPlan.approved
-    || session?.planApprovalState?.revision === plan.revision;
-  const invalid = session?.implementationPlan?.revision === plan.revision && session.implementationPlan.valid === false;
-  const prefix = surface === "console" ? "agent-console" : "agent-session";
-  return <article className={`${prefix}-message ${prefix}-message-plan agent-plan-content`} aria-label={t("agentPlanContentTitle")}>
-    <header className={`${prefix}-message-meta`}>
-      <small>{t("agentPlanContentTitle")}{plan.itemKeys?.length ? ` · ${plan.itemKeys.join("、")}` : ""}</small>
-      {approved && <small>{t("agentPlanApproved")}</small>}
-      {invalid && <small>{t("agentPlanScopeChanged")}</small>}
-    </header>
-    <MarkdownText>{plan.plan}</MarkdownText>
-    {plan.validation && <section className="agent-plan-validation" aria-label={t("agentPlanValidation")}><h2>{t("agentPlanValidation")}</h2><MarkdownText>{plan.validation}</MarkdownText></section>}
-  </article>;
+  const lock = useRef(false);
+  const approve = useMutation({
+    mutationFn: () => api.approveAgentSessionPlan(session.id, plan!.revision),
+    onError: () => { lock.current = false; void client.invalidateQueries({ queryKey: ["agent-session", session.id] }); },
+    onSuccess: result => {
+      client.setQueryData<AgentSession>(["agent-session", session.id], current => current
+        ? "approved" in result
+          ? { ...current, planApprovalState: result, canApprovePlan: false, planApprovalStatus: { code: "approved" } }
+          : { ...current, command: result, canApprovePlan: false, planApprovalStatus: { code: "reply_pending" } } : current);
+      void client.invalidateQueries({ queryKey: ["agent-session", session.id] });
+      void client.invalidateQueries({ queryKey: ["agent-sessions"] });
+    },
+  });
+  if (!plan) return null;
+  const approved = session.planApprovalState?.revision === plan.revision
+    || session.implementationPlan?.revision === plan.revision && session.implementationPlan.approved;
+  const invalid = session.implementationPlan?.revision === plan.revision && !session.implementationPlan.valid;
+  const enabled = !blocked && !invalid && (session.canApprovePlan ?? session.canReply)
+    && session.planApproval?.revision === plan.revision && session.planApprovalStatus?.code === "ready";
+  return <footer className="agent-plan-inline-approval" aria-label={t("agentPlanReview")}>
+    {approved ? <small>{t("agentPlanApproved")}</small> : invalid ? <small>{t("agentPlanScopeChanged")}</small>
+      : <button type="button" className="primary-button" disabled={!enabled || approve.isPending || approve.isSuccess}
+        onClick={() => { if (!lock.current) { lock.current = true; approve.mutate(); } }}>{t("agentPlanApprove")}</button>}
+    {!approved && !invalid && !enabled && <small>{t(planApprovalStatusKey(session.planApprovalStatus?.code ?? "reply_unavailable"))}</small>}
+    {approved && !planContinuationObserved(session) && session.planApprovalState && <small>{t(session.planApprovalState.continuationQueued
+      ? "agentPlanApprovedQueued" : session.planApprovalState.continuationPending ? "agentPlanApprovedWaiting" : "agentPlanApprovedNoReply")}</small>}
+    {approve.isError && <p role="alert">{localizedErrorText(approve.error, t)}</p>}
+  </footer>;
 }
