@@ -95,6 +95,12 @@ import { useMediaQuery } from "./use-media-query";
 
 const CHAT_FILE_ACCEPT = ".png,.jpg,.jpeg,.webp,.gif,.heic,.mp4,.mov,.webm,.log,.txt,.json,.md,.csv,.pdf";
 
+const ASSOCIATION_OPTION_LABELS = { all: "agentConsoleAssociationAll", unlinked: "agentConsoleAssociationUnlinked", linked: "agentConsoleAssociationLinked" } as const;
+const AGENT_OPTION_LABELS = { all: "agentConsoleAllAgents", codex: "agentCodex", opencode: "agentOpenCode", claude_code: "agentClaudeCode" } as const;
+// The console offers a fixed option set; sessions of other kinds only ever
+// appear under "all" (AND-426 keeps the counts tied to these options).
+type ConsoleAgentOption = keyof typeof AGENT_OPTION_LABELS;
+
 function statusLabel(status: AgentSessionStatus, t: ReturnType<typeof useI18n>["t"]): string {
   if (status === "active") return t("agentSessionActive");
   if (status === "idle") return t("agentSessionIdle");
@@ -249,6 +255,31 @@ export function AgentSessionConsole({
     productUnread: countMatches(productSessions, "all").filter(sessionCountsAsUnread).length,
     failedUnread: countMatches(productSessions, "failed").filter(sessionCountsAsUnread).length,
   };
+  // AND-426: an option shows the count the list would hold when picked -- the
+  // same promise the sidebar numbers make. Running reuses the sidebar's active
+  // rule; the active filter already lists only running sessions, so there the
+  // running badge would repeat the total and stays hidden.
+  const optionCounts = useMemo(() => {
+    const stats = (agent: AgentKindFilter, associationOption: AgentAssociationFilter) => {
+      const rows = productSessions.filter(session => agentSessionMatches(session, filter, agent, search, associationOption));
+      return { total: rows.length, running: rows.filter(session => !session.archivedAt && session.status === "active").length };
+    };
+    return {
+      association: { all: stats(agentFilter, "all"), unlinked: stats(agentFilter, "unlinked"), linked: stats(agentFilter, "linked") },
+      agent: { all: stats("all", association), codex: stats("codex", association), opencode: stats("opencode", association), claude_code: stats("claude_code", association) },
+    } satisfies {
+      association: Record<keyof typeof ASSOCIATION_OPTION_LABELS, { total: number; running: number }>;
+      agent: Record<ConsoleAgentOption, { total: number; running: number }>;
+    };
+  }, [association, agentFilter, filter, search, productSessions]);
+  const renderOptionCounts = (stats: { total: number; running: number }) => sessionsLoaded && (
+    <span className="agent-console-option-counts">
+      {filter !== "active" && stats.running > 0 && (
+        <span className="agent-console-option-running">{t("agentConsoleOptionRunning", { count: stats.running })}</span>
+      )}
+      <span>{t("agentConsoleOptionTotal", { count: stats.total })}</span>
+    </span>
+  );
   const otherProjectCounts = useMemo(
     () => agentOtherProjectCounts(allSessions, productId),
     [allSessions, productId],
@@ -889,12 +920,18 @@ export function AgentSessionConsole({
           {navigation}
         </div>
         <div className="agent-console-list-controls">
-          <Select aria-label={t("agentConsoleAssociationFilter")} value={association} onChange={event => {
-            const next = event.target.value as AgentAssociationFilter;
-            setAssociation(next);
-            if (selectedId && !productSessions.some(session => session.id === selectedId
-              && agentSessionMatches(session, filter, agentFilter, search, next))) onSelectSession(null, false);
-          }}>
+          <Select aria-label={t("agentConsoleAssociationFilter")} value={association}
+            renderValue={value => t(ASSOCIATION_OPTION_LABELS[value as AgentAssociationFilter])}
+            renderOption={value => <span className="agent-console-option">
+              <span>{t(ASSOCIATION_OPTION_LABELS[value as AgentAssociationFilter])}</span>
+              {renderOptionCounts(optionCounts.association[value as AgentAssociationFilter])}
+            </span>}
+            onChange={event => {
+              const next = event.target.value as AgentAssociationFilter;
+              setAssociation(next);
+              if (selectedId && !productSessions.some(session => session.id === selectedId
+                && agentSessionMatches(session, filter, agentFilter, search, next))) onSelectSession(null, false);
+            }}>
             <option value="all">{t("agentConsoleAssociationAll")}</option>
             <option value="unlinked">{t("agentConsoleAssociationUnlinked")}</option>
             <option value="linked">{t("agentConsoleAssociationLinked")}</option>
@@ -904,6 +941,11 @@ export function AgentSessionConsole({
             <Select
               aria-label={t("agentConsoleAgentFilter")}
               value={agentFilter}
+              renderValue={value => t(AGENT_OPTION_LABELS[value as ConsoleAgentOption])}
+              renderOption={value => <span className="agent-console-option">
+                <span>{t(AGENT_OPTION_LABELS[value as ConsoleAgentOption])}</span>
+                {renderOptionCounts(optionCounts.agent[value as ConsoleAgentOption])}
+              </span>}
               onChange={(event) => chooseAgent(event.target.value as AgentKindFilter)}
             >
               <option value="all">{t("agentConsoleAllAgents")}</option>
