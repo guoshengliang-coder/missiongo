@@ -112,6 +112,8 @@ describe("AND-423 explicit merge deliveries",()=>{
     const f=await prepared();f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
     const key=randomUUID(),selection=[{id:f.d.id,revision:f.d.revision}];
     const b=f.merges.start(f.owner.id,key,selection,f.config,false);
+    expect(new AgentSessionStore(f.store.database).getForAccount(f.owner.id,b.sessionId).sessionPurpose).toBe("integration");
+    expect(new AgentSessionStore(f.store.database).listForAccount(f.owner.id).find(row=>row.id===b.sessionId)?.sessionPurpose).toBe("integration");
     expect(f.merges.start(f.owner.id,key,selection,f.config,false).id).toBe(b.id);
     expect(()=>f.merges.start(f.owner.id,key,[{id:f.d.id,revision:"wrong"}],f.config,false)).toThrow();
     expect(()=>f.merges.start(f.owner.id,randomUUID(),selection,f.config,false)).toThrow();
@@ -123,6 +125,7 @@ describe("AND-423 explicit merge deliveries",()=>{
     f.merges.report(f.owner.id,b.dispatchId,b.id,f.d.id,{status:"merged",head:f.d.head,commit:"c".repeat(40),detail:"Verified merge"});
     expect(f.store.getWorkItem(f.item.key).status).toBe("development_complete");
     expect(f.merges.finish(f.owner.id,b.dispatchId,b.id).state).toBe("finished");
+    expect(new AgentSessionStore(f.store.database).getForAccount(f.owner.id,b.sessionId).sessionPurpose).toBe("integration");
     expect(f.db.prepare("SELECT COUNT(*) AS n FROM dispatch_items WHERE dispatch_id=?").get(b.dispatchId)).toMatchObject({n:0});
   });
   it("preserves confirmation when only same-head evidence refreshes",async()=>{
@@ -152,6 +155,7 @@ describe("AND-423 explicit merge deliveries",()=>{
     free.stop(f.owner.id,b.dispatchId);
     const next=free.retry(f.owner.id,b.dispatchId);
     expect(next.agentSessionId).toBe(b.sessionId);
+    expect(sessions.getForAccount(f.owner.id,b.sessionId).sessionPurpose).toBe("integration");
     dispatches.claimNextDispatch(f.node.nodeId);dispatches.recordDispatchResult({nodeId:f.node.nodeId,dispatchId:next.id,status:"launched"});
     expect(f.merges.batch(f.owner.id,next.id,b.id).id).toBe(b.id);
     expect(()=>f.merges.batch(f.owner.id,b.dispatchId,b.id)).toThrow();

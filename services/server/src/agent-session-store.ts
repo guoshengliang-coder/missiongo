@@ -104,6 +104,7 @@ export interface ManagedSessionBinding {
   id: string; runId: string; stageId: string; generation: number; role: string; stopRequested: boolean; state: string; ownershipHeld: boolean;
 }
 export interface AgentSessionSnapshot {
+  readonly sessionPurpose?: "integration";
   readonly productId?: string;
   readonly initialText?: string;
   readonly startReady?: boolean;
@@ -140,6 +141,7 @@ export interface AgentSessionSnapshot {
 }
 
 export interface AgentSessionListItem {
+  readonly sessionPurpose?: "integration";
   readonly waitingForPermission?: boolean;
   readonly productId?: string;
   readonly initialText?: string;
@@ -720,6 +722,14 @@ export class AgentSessionStore {
     return id;
   }
 
+  /** Stable batch identity survives completion, archival and startup retries. */
+  private integrationSessionIds(accountId: string): Set<string> {
+    const rows = this.database.connection.prepare(
+      "SELECT json_extract(data_json, '$.sessionId') AS session_id FROM merge_batches WHERE account_id = ?",
+    ).all(accountId) as unknown as Array<{ session_id: string }>;
+    return new Set(rows.map(row => row.session_id));
+  }
+
   getForAccount(accountId: string, sessionId: string): AgentSessionSnapshot {
     this.failStuckDeliveringCommands();
     const row = this.database.connection
@@ -751,6 +761,7 @@ export class AgentSessionStore {
     const health = sessionHealth(offlineDegradedStatus(row.status, row.node_last_seen_at, Boolean(row.node_revoked_at)).status, row.archived_at ? {} : turnState);
     return {
       id: row.id,
+      ...(this.integrationSessionIds(accountId).has(row.id) ? { sessionPurpose: "integration" as const } : {}),
       ...(free ? { productId: free.product_id, initialText: free.initial_text, startReady: free.ready === 1 } : {}),
       dispatchId: row.dispatch_id,
       ...(this.managedBinding(row.id) ? { managedExecution: this.managedBinding(row.id)! } : {}),
@@ -833,6 +844,7 @@ export class AgentSessionStore {
     // account passed a few hundred dispatches, which pinned the single-
     // threaded event loop for hundreds of milliseconds on every console read.
     // One batched statement per lookup now feeds the exact same row mapping.
+    const integrationIds = this.integrationSessionIds(accountId);
     const dispatchIds = [...new Set(rows.map((row) => row.dispatch_id))];
     const sessionIds = rows.flatMap((row) => (row.session_id ? [row.session_id as string] : []));
     const holes = (values: readonly string[]) => `(${values.map(() => "?").join(",")})`;
@@ -1029,6 +1041,7 @@ export class AgentSessionStore {
       const needsAttention = alertAttention.state === "needed";
       return {
         id: row.session_id ?? `dispatch:${row.dispatch_id}`,
+        ...(row.session_id && integrationIds.has(row.session_id) ? { sessionPurpose: "integration" as const } : {}),
         ...(row.session_id ? { agentSessionId: row.session_id } : {}),
         dispatchId: row.dispatch_id,
         round: (roundByDispatch.get(row.dispatch_id) ?? 0) + 1,

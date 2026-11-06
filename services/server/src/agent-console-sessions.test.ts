@@ -181,3 +181,26 @@ it("keeps older attention sessions beyond 100 newer conversations without loadin
   // Generous regression bound: an in-memory summary scan must not fetch histories.
   expect(performance.now() - started).toBeLessThan(5000);
 });
+
+it("classifies persisted integration identities beyond recent batches without changing item ownership (AND-435)", () => {
+  const f = fixture();
+  const insert = f.db.prepare(`INSERT INTO merge_batches(id,product_id,account_id,request_key,state,data_json) VALUES (?,?,?,?,?,?)`);
+  insert.run("original-batch", f.item.productId, "owner", "original", "finished", JSON.stringify({sessionId:f.sessionId}));
+  for (let i = 0; i < 25; i++) insert.run(`later-${i}`, f.item.productId, "owner", `later-${i}`, "finished", JSON.stringify({sessionId:`unrelated-${i}`}));
+  const sessions = new AgentSessionStore(f.store.database);
+  expect(sessions.getForAccount("owner", f.sessionId).sessionPurpose).toBe("integration");
+  expect(f.console.getSummary("owner", f.sessionId)).toMatchObject({sessionPurpose:"integration", items:[{key:f.item.key}]});
+  f.console.setArchived("owner", f.sessionId, true);
+  expect(f.console.getSummary("owner", f.sessionId)).toMatchObject({sessionPurpose:"integration", archivedAt:expect.any(String)});
+  expect(f.store.getWorkItem(f.item.key).status).toBe("in_progress");
+  expect(f.console.list("another-account")).toEqual([]);
+});
+
+it("does not infer integration from names or another account's batch (AND-435)", () => {
+  const f = fixture();
+  f.db.prepare("UPDATE dispatches SET session_name='集成会话' WHERE id='dispatch'").run();
+  f.db.prepare(`INSERT INTO merge_batches(id,product_id,account_id,request_key,state,data_json) VALUES ('foreign',?,'other','foreign','finished',?)`)
+    .run(f.item.productId, JSON.stringify({sessionId:f.sessionId}));
+  expect(f.console.getSummary("owner",f.sessionId).sessionPurpose).toBeUndefined();
+  expect(f.dispatch.getForAccount("owner",f.sessionId).sessionPurpose).toBeUndefined();
+});

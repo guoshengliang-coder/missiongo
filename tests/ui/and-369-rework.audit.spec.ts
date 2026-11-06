@@ -63,7 +63,7 @@ for (const width of [320, 768, 1023, 1024, 1440]) for (const theme of ["light", 
     await expect(association).toHaveText("无关联会话");
     await expect(rows).toContainText("项目讨论");
     await association.click();
-    await page.getByRole("option", { name: /^关联会话/ }).click();
+    await page.getByRole("option", { name: /^研发会话/ }).click();
     await expect(rows).toHaveCount(1);
     await expect(rows).toContainText("RW-1");
     await association.click();

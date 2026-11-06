@@ -16,6 +16,7 @@ import {
   agentSessionsRefetchInterval,
   archivableVisibleSessionIds,
   agentSessionMatches,
+  agentSessionCategory,
   answeredOptionSelected,
   byLatestActivity,
   canonicalAgentSessionId,
@@ -651,4 +652,26 @@ describe("requestKind copy mapping (AND-408)", () => {
     expect(runWaitingLabelKey({ agentKind: "codex", approval: prompt })).toBe("agentRunWaiting");
     expect(runWaitingLabelKey({ agentKind: "opencode", approval: undefined })).toBe("agentRunWaiting");
   });
+});
+
+
+it("keeps integration, development and unlinked categories exclusive with legacy fallback (AND-435)", () => {
+  const base = {id:"one",agentKind:"codex" as const,status:"idle" as const,nodeName:"Fixture",needsAttention:false,unread:false,items:[]};
+  const item = {key:"EX-1",title:"Task",productId:"product"};
+  const sameName = {...base,sessionName:"集成会话"};
+  for (const [session,category] of [
+    [base,"unlinked"], [{...base,items:[item]},"linked"],
+    [{...base,sessionPurpose:"integration" as const},"integration"],
+    [{...base,sessionPurpose:"integration" as const,items:[item]},"integration"],
+    [sameName,"unlinked"],
+  ] as const) {
+    expect(agentSessionCategory(session)).toBe(category);
+    for (const filter of ["unlinked","linked","integration"] as const) {
+      expect(agentSessionMatches(session,"all","all","",filter)).toBe(filter===category);
+    }
+    expect(agentSessionMatches(session,"all","all","","all")).toBe(true);
+    expect(agentSessionMatches(session,"all","claude_code","",category)).toBe(false);
+    expect(agentSessionMatches(session,"all","all","missing",category)).toBe(false);
+    expect(agentSessionMatches({...session,archivedAt:"2026-11-06T01:00:00Z"},"archived","all","",category)).toBe(true);
+  }
 });
