@@ -106,6 +106,7 @@ test("stop stays reachable for waiting, failures and startup; permissions remain
     else await expect(stop).toBeVisible();
     if (phase === "waiting") await expect(page.locator(".agent-run-details")).toContainText("等待");
     if (phase === "failed" || phase === "starting") await expect(page.locator(".agent-run-fallback")).toBeVisible();
+    if (phase === "failed") await expect(page.locator(".agent-console-activity-failed")).toHaveCount(0);
     await expect(page.locator(".dispatch-session-link")).toHaveCount(0);
     await expect(page.locator(".agent-console-conversation-head .status-pill")).toHaveCount(0);
   }

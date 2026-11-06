@@ -782,6 +782,7 @@ export function AgentSessionConsole({
         : selected?.canRetry ? "agentRecoveryRetry"
           : needsNewSession ? "agentRecoveryNewSession"
             : canContinue ? "agentRecoveryReply" : "agentRecoveryAtSource";
+  const showFailureCard = conversationReady && selected?.source !== "external" && selected?.agentKind === "codex" && sessionStatus === "failed";
   const showRunDetails = Boolean(selected?.agentSessionId && sessionQuery.data
     && !(selected.source !== "external" && selected.agentKind === "codex" && sessionStatus === "failed"));
   const stopAction = selected?.canStop && (
@@ -1259,7 +1260,7 @@ export function AgentSessionConsole({
                   </article>
                 )}
                 <AgentHistoryNotice error={sessionQuery.data ? sessionQuery.data.lastError : selected.lastError} />
-                {selected.source !== "external" && selected.agentKind === "codex" && sessionStatus === "failed" ? (
+                {showFailureCard ? (
                   <AgentSessionFailureNotice status={sessionStatus}
                     failure={sessionQuery.data ? sessionQuery.data.failure : selected.failure}
                     legacyError={sessionQuery.data ? sessionQuery.data.lastError : selected.lastError} />
@@ -1396,12 +1397,12 @@ export function AgentSessionConsole({
                 </>)}
                 </div>
                 </>}
-                {!showRunDetails && <div className="agent-run-controls agent-run-fallback">
-                  <p className={`agent-console-activity agent-console-activity-${visualStatus}`} role="status">
+                {!showRunDetails && (!showFailureCard || stopAction) && <div className="agent-run-controls agent-run-fallback">
+                  {!showFailureCard && <p className={`agent-console-activity agent-console-activity-${visualStatus}`} role="status">
                     <SessionStatusIcon status={visualStatus} />
                     {!conversationReady ? t("agentSessionLoading") : selected.archivedAt ? t("archived")
                       : !selected.agentSessionId ? t(dispatchActivityLabelKey(selected)) : statusLabel(sessionStatus, t)}
-                  </p>
+                  </p>}
                   {stopAction}
                 </div>}
               </div>
