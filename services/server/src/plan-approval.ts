@@ -1,13 +1,14 @@
+import { isNativePlanRequest } from "./native-plan-approval.js";
 import { ImplementationPlans, planDigest } from "./implementation-plans.js";
 import type { MissionGoDatabase } from "./storage/database.js";
 import { createHash } from "node:crypto";
 
 import type { AgentApproval } from "./agent-approval-store.js";
-import type { AgentSessionAttention, AgentSessionSnapshot } from "./agent-session-store.js";
+import type { AgentSessionAttention, AgentSessionListItem, AgentSessionSnapshot } from "./agent-session-store.js";
 import { conflict } from "./errors.js";
 
 export type PlanApprovalStatusCode = "ready" | "connection_unavailable" | "reply_unavailable" | "running"
-  | "permission_required" | "reply_pending" | "not_approval" | "dismissed" | "awaiting_source" | "approved";
+  | "content_unavailable" | "permission_required" | "reply_pending" | "not_approval" | "dismissed" | "awaiting_source" | "approved";
 export type PlanApprovalBlockReason = Extract<PlanApprovalStatusCode, "connection_unavailable" | "reply_pending" | "dismissed">;
 export interface PlanApprovalOffer {
   readonly revision: string;
@@ -23,7 +24,7 @@ export interface PlanApprovalAssessment {
 
 type Session = AgentSessionSnapshot & { readonly canReply: boolean; readonly approval?: AgentApproval; readonly attention: AgentSessionAttention; readonly canApprovePlan?: boolean };
 
-/** The existing attention label supplies the shortcut. No second semantic verdict. */
+/** Attention is a reminder, never authority to turn ordinary prose into a proposal. */
 export class PlanApprovalService {
   private readonly approvedRequests = new Map<string, string>();
   private readonly plans: ImplementationPlans | undefined;
@@ -31,13 +32,13 @@ export class PlanApprovalService {
     this.plans = database ? new ImplementationPlans(database) : undefined;
   }
 
-  private identity(session: Session): string {
+  private identity(session: Pick<AgentSessionSnapshot, "id" | "dispatchId">): string {
     if(session.dispatchId) return `dispatch:${session.dispatchId}`;
     const external=this.database?.connection.prepare("SELECT client_id,agent_kind,ref_kind,session_ref FROM external_agent_sessions WHERE id=?")
       .get(session.id) as {client_id:string;agent_kind:string;ref_kind:string;session_ref:string}|undefined;
     return external ? `native:${external.client_id}:${external.agent_kind}:${external.ref_kind}:${external.session_ref}` : `session:${session.id}`;
   }
-  private owner(session: Session): string | undefined {
+  private owner(session: Pick<AgentSessionSnapshot, "id">): string | undefined {
     return (this.database?.connection.prepare(`SELECT d.account_id FROM agent_sessions s JOIN dispatches d ON d.id=s.dispatch_id WHERE s.id=?
       UNION ALL SELECT account_id FROM external_agent_sessions WHERE id=? LIMIT 1`).get(session.id,session.id) as {account_id:string}|undefined)?.account_id;
   }
@@ -46,13 +47,54 @@ export class PlanApprovalService {
     return planDigest(last?.text ?? "");
   }
 
-  registered(session: Session) {
+  registered(session: Pick<AgentSessionSnapshot, "id" | "dispatchId" | "agentKind">) {
     const owner = this.owner(session);
     const proposal = owner ? this.plans?.proposal(owner,this.identity(session)) : undefined;
-    const visible = [...session.messages].reverse().find(message=>message.role!=="user")?.text;
-    if (proposal?.origin === "attention" && session.attention.state === "needed" && session.attention.kind === "approval"
-      && visible && visible !== proposal.plan) return undefined;
+    // Keep historical human decisions readable, but never revive an unapproved
+    // proposal inferred only by the attention classifier.
+    if (proposal?.origin === "attention" && !proposal.approvedAt) return undefined;
+    if (proposal?.origin === "native" && !proposal.approvedAt && proposal.nativeSourceId) {
+      const source = session.dispatchId
+        ? this.database?.connection.prepare("SELECT role,phase,source_id AS sourceId FROM agent_session_messages WHERE session_id=? AND source_id=?")
+          .get(session.id,proposal.nativeSourceId)
+        : this.database?.connection.prepare("SELECT json_extract(payload_json,'$.role') AS role,json_extract(payload_json,'$.phase') AS phase,source_id AS sourceId FROM external_native_messages WHERE session_id=? AND source_id=?")
+          .get(session.id,proposal.nativeSourceId);
+      if (source && !isNativePlanRequest(session.agentKind,source as {role:string;phase?:string;sourceId?:string})) return undefined;
+    }
     return proposal;
+  }
+
+  /** List polls use saved proposal metadata and the latest message, never full histories. */
+  withAttention<T extends AgentSessionListItem & {approval?: AgentApproval}>(session: T): T {
+    if (session.attention.kind !== "approval" || session.attention.state !== "needed") return session;
+    const request = session.approval;
+    const sourcePending = request && (request.kind === "manual"
+      ? request.status === "pending" && !request.decision || ["unavailable", "reconnecting"].includes(request.status)
+      : request.status === "denied" && (!request.retryId || request.retryStatus === "failed"));
+    if (sourcePending) return session;
+    const proposal = this.registered(session);
+    const input = session.command;
+    const newerInput = input?.kind === "message" && input.text !== "批准"
+      && !["failed", "cancelled"].includes(input.status) && proposal?.requestedAt
+      && Date.parse(input.createdAt) > Date.parse(proposal.requestedAt);
+    // Metadata-only checks keep a native follow-up from reviving a saved offer
+    // after its answering Agent message becomes the newest list message.
+    const table = session.source === "external" ? "external_native_messages" : "agent_session_messages";
+    const role = session.source === "external" ? "json_extract(payload_json,'$.role')" : "role";
+    const occurred = session.source === "external" ? "json_extract(payload_json,'$.occurredAt')" : "occurred_at";
+    const phase = session.source === "external" ? "json_extract(payload_json,'$.phase')" : "phase";
+    const user = proposal && this.database?.connection.prepare(`SELECT position,${occurred} AS occurredAt FROM ${table}
+      WHERE session_id=? AND ${role}='user' ORDER BY position DESC LIMIT 1`).get(session.id) as {position:number;occurredAt:string}|undefined;
+    const source = proposal?.nativeSourceId ? this.database?.connection.prepare(`SELECT position,${phase} AS phase FROM ${table}
+      WHERE session_id=? AND source_id=?`).get(session.id,proposal.nativeSourceId) as {position:number;phase:string}|undefined : undefined;
+    const changed = source?.phase === "plan_declined" || user && (source ? user.position > source.position
+      : proposal?.requestedAt && Date.parse(user.occurredAt) > Date.parse(proposal.requestedAt));
+    if (!session.archivedAt && !newerInput && !changed && session.latestMessage?.role !== "user"
+      && (proposal?.valid && !proposal.approved || !proposal && isNativePlanRequest(session.agentKind, session.latestMessage))) return { ...session, planApprovalPending: true };
+    if (proposal?.approved) return { ...session, needsAttention: false, waitingForReply: false,
+      attention: { state: "not_needed", ...(session.attention.revision ? {revision:session.attention.revision} : {}) } };
+    return { ...session, attention: { ...session.attention, kind: "uncertain",
+      reason: "请核对会话是否还需处理；当前没有可审阅的方案批准请求。" } };
   }
 
   /** Readable proposal survives approval, disconnection and scope changes. */
@@ -95,9 +137,28 @@ export class PlanApprovalService {
     const owner = this.owner(session);
     const prepared = this.registered(session);
     if(prepared?.approved) return {status:{code:this.independent(session) ? "approved" : "awaiting_source"}};
-    const visiblePlan=[...session.messages].reverse().find(message=>message.role!=="user")?.text;
-    if(!prepared && !visiblePlan?.trim()) return {status:{code:"not_approval"}};
-    if(prepared && !prepared.valid) return {status:{code:"not_approval"}};
+    const latest = session.messages.at(-1);
+    // OpenCode's plan role also contains ordinary plan-mode progress. Only
+    // explicit registration or the native Codex/Claude plan protocol is an offer.
+    const nativePlan = isNativePlanRequest(session.agentKind, latest) ? latest : undefined;
+    if (!prepared && !nativePlan) return {status:{code:"not_approval"}};
+    const visiblePlan = nativePlan?.text;
+    if (!(prepared?.plan ?? visiblePlan)?.trim()) return {status:{code:"content_unavailable"}};
+    if (prepared && !prepared.valid) return {status:{code:"not_approval"}};
+    if (prepared) {
+      const source = prepared.nativeSourceId
+        ? session.messages.findIndex(message => message.sourceId === prepared.nativeSourceId) : -1;
+      const changed = source >= 0
+        ? session.messages.slice(source + 1).some(message => message.role === "user")
+        : session.messages.some(message => message.role === "user" && prepared.requestedAt
+          && Date.parse(message.occurredAt ?? "") > Date.parse(prepared.requestedAt!));
+      const input = session.command;
+      const newerInput = input?.kind === "message" && input.text !== "批准"
+        && !["failed", "cancelled"].includes(input.status) && prepared.requestedAt
+        && Date.parse(input.createdAt) > Date.parse(prepared.requestedAt);
+      if (changed || newerInput || session.messages.some(message => message.sourceId === prepared.nativeSourceId
+        && message.phase === "plan_declined")) return {status:{code:"not_approval"}};
+    }
     if(session.canApprovePlan===false) return {status:{code:"reply_unavailable"}};
     if (!prepared && attention.dismissed) return { status: { code: "dismissed" } };
     if (!prepared && (attention.state !== "needed" || attention.kind !== "approval")) return { status: { code: "not_approval" } };
@@ -122,7 +183,6 @@ export class PlanApprovalService {
     if (owner && this.plans?.approved(owner,this.identity(session),this.planHash(session))) return { status: { code: "awaiting_source" } };
     const requestRevision = createHash("sha256").update(JSON.stringify(session.messages)).digest("hex");
     if (!this.plans && this.approvedRequests.get(session.id) === requestRevision) return { status: { code: "awaiting_source" } };
-    const latest = session.messages.at(-1);
     if (command?.status === "delivered" && (!latest?.occurredAt
       || Date.parse(command.createdAt) >= Date.parse(latest.occurredAt))) return { status: { code: "awaiting_source" } };
     const revision = prepared?.revision ?? createHash("sha256").update(JSON.stringify([session.id, attention, session.messages, this.plans && session.dispatchId ? this.plans.scope(this.plans.dispatchKeys(session.dispatchId)) : null])).digest("hex");
@@ -150,7 +210,7 @@ export class PlanApprovalService {
       const keys = prepared?.keys ?? (session.dispatchId ? this.plans.dispatchKeys(session.dispatchId)
         : (this.database!.connection.prepare(`SELECT w.item_key AS key FROM external_agent_session_items e JOIN work_items w ON w.id=e.item_id WHERE e.session_id=?`).all(session.id) as {key:string}[]).map(row => row.key));
       const plan = prepared?.plan ?? [...session.messages].reverse().find(message=>message.role!=="user")?.text ?? "";
-      this.plans.request(owner,this.identity(session),revision,{keys,plan,validation:prepared?.validation ?? "",...(!prepared ? {origin:"attention" as const} : prepared.origin ? {origin:prepared.origin} : {})});
+      this.plans.request(owner,this.identity(session),revision,{keys,plan,validation:prepared?.validation ?? "",...(!prepared ? {origin:"native" as const} : prepared.origin ? {origin:prepared.origin} : {})});
       this.plans.record({accountId:owner,identity:this.identity(session),revision,planHash:revision,keys,source:"web",validation:prepared?.validation ?? "",plan,
         ...(result && typeof result === "object" && "id" in result ? {commandId:String(result.id)} : {})});
       // Running sources continue themselves. Persist a single offline/blocked idle handoff.

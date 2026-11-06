@@ -3,7 +3,9 @@ import { useI18n } from "./i18n";
 import type { AgentSession, AgentSessionMessage } from "./types";
 
 export function currentPlan(session: AgentSession | undefined) {
-  return session?.implementationPlan ?? session?.planApproval;
+  const offer = session?.planApproval;
+  const saved = session?.implementationPlan;
+  return offer && offer.revision !== saved?.revision ? offer : saved ?? offer;
 }
 
 /** The durable approval remains readable; its acknowledgement ends on actual native progress. */
@@ -42,12 +44,12 @@ export function planTranscript<T extends AgentSessionMessage>(messages: readonly
   if (!plan?.plan) return messages;
   const submitted = session?.implementationPlan?.submittedAt;
   const approved = session?.implementationPlan?.approvedAt;
-  const exactIndex = messages.map(message => message.role === "plan" && message.text.trim() === plan.plan?.trim()).lastIndexOf(true);
+  const exactIndex = messages.map(message => ["plan", "agent"].includes(message.role) && message.text.trim() === plan.plan?.trim()).lastIndexOf(true);
   // Legacy proposals have no submission time. Prefer their original message;
   // otherwise use the recorded approval boundary. Unknown history stays above the current window.
   let index = exactIndex;
   const time = Date.parse(submitted ?? (exactIndex < 0 ? approved : undefined) ?? "");
-  if (Number.isFinite(time)) {
+  if (index < 0 && Number.isFinite(time)) {
     // Some native adapters report only whole seconds.
     index = messages.findIndex(message => Date.parse(message.occurredAt) >= Math.floor(time / 1000) * 1000);
     if (index < 0) index = messages.length;
@@ -61,9 +63,9 @@ export function AgentPlanContent({ session, surface }: { session: AgentSession |
   const { t } = useI18n();
   const plan = currentPlan(session);
   if (!plan?.plan) return null;
-  const approved = session?.implementationPlan?.approved
+  const approved = session?.implementationPlan?.revision === plan.revision && session.implementationPlan.approved
     || session?.planApprovalState?.revision === plan.revision;
-  const invalid = session?.implementationPlan?.valid === false;
+  const invalid = session?.implementationPlan?.revision === plan.revision && session.implementationPlan.valid === false;
   const prefix = surface === "console" ? "agent-console" : "agent-session";
   return <article className={`${prefix}-message ${prefix}-message-plan agent-plan-content`} aria-label={t("agentPlanContentTitle")}>
     <header className={`${prefix}-message-meta`}>

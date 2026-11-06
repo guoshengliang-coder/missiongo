@@ -95,17 +95,18 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
   });
 });
 
-test("stop stays reachable for waiting, failures and startup; permissions remain authoritative", async ({ page }) => {
+test("stop stays reachable for live waits and startup, and hides for ended failures", async ({ page }) => {
   const state = await mockSession(page);
   for (const phase of ["waiting", "failed", "starting", "readonly", "archived"] as const) {
     state.phase = phase;
     await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}${phase === "archived" ? "&consoleFilter=archived" : ""}`);
     await expect(page.locator(".agent-console-heading")).toContainText("底部会话控制");
     const stop = page.getByRole("button", { name: "停止当前回合", exact: true });
-    if (phase === "readonly" || phase === "archived") await expect(stop).toHaveCount(0);
+    if (phase === "readonly" || phase === "archived" || phase === "failed") await expect(stop).toHaveCount(0);
     else await expect(stop).toBeVisible();
     if (phase === "waiting") await expect(page.locator(".agent-run-details")).toContainText("等待");
-    if (phase === "failed" || phase === "starting") await expect(page.locator(".agent-run-fallback")).toBeVisible();
+    if (phase === "starting") await expect(page.locator(".agent-run-fallback")).toBeVisible();
+    if (phase === "failed") await expect(page.locator(".agent-run-fallback")).toHaveCount(0);
     if (phase === "failed") await expect(page.locator(".agent-console-activity-failed")).toHaveCount(0);
     await expect(page.locator(".dispatch-session-link")).toHaveCount(0);
     await expect(page.locator(".agent-console-conversation-head .status-pill")).toHaveCount(0);

@@ -7,10 +7,10 @@ const session = () => ({
   id: "session", agentKind: "codex" as const, status: "idle" as const, updatedAt: "2026-10-30T01:00:00Z",
   activities: [], turnState: {}, replyable: true, canReply: true,
   attention: { state: "needed" as const, kind: "approval" as const, reason: "待批准", revision: "attention" },
-  messages: [{ id: "plan", sourceId: "plan", role: "agent" as const, occurredAt: "2026-10-30T01:00:00Z", text: "等待批准" }],
+  messages: [{ id: "plan", sourceId: "plan", role: "plan" as const, occurredAt: "2026-10-30T01:00:00Z", text: "等待批准" }],
 } satisfies AgentSessionSnapshot & { canReply: boolean });
 
-it("uses the existing approval attention even with long context and unsettled historical question metadata", () => {
+it("offers a native plan even with long context and unsettled historical question metadata", () => {
   const input = session();
   const service = new PlanApprovalService();
   const assessment = service.assess({ ...input, messages: [
@@ -68,4 +68,23 @@ it("a pending question or confirmation no longer reads as a permission gate (AND
     action: "旧请求", startedAtMs: 1 } }).status.code).toBe("permission_required");
   expect(service.assess({ ...input, approval: { id: "permission", kind: "manual", status: "pending", turnId: "turn",
     action: "Shell access", startedAtMs: 1, requestKind: "permission" } }).status.code).toBe("permission_required");
+});
+
+// AND-430: even a confidently wrong classification cannot create a proposal.
+it.each(["codex", "claude_code", "opencode"] as const)("does not promote %s ordinary replies into approval", agentKind => {
+  const input = session();
+  const service = new PlanApprovalService();
+  const messages = [{ ...input.messages[0]!, role: "agent" as const,
+    text: "建议 1 acceptEdits：自动接受编辑。建议 2 addDirectories：允许访问目录。旁边的批准只批准一次。" }];
+  expect(service.assess({ ...input, agentKind, messages }).status.code).toBe("not_approval");
+  expect(() => service.approve({ ...input, agentKind, messages }, "invented", true, vi.fn())).toThrow(/changed/);
+});
+
+it("does not revive native plan approval after a follow-up or plan-mode progress", () => {
+  const input = session(), service = new PlanApprovalService();
+  expect(service.assess({ ...input, messages: [...input.messages,
+    { ...input.messages[0]!, id: "followup", role: "user", text: "？？" }] }).offer).toBeUndefined();
+  expect(service.assess({ ...input, messages: [{ ...input.messages[0]!, phase: "commentary" }] }).offer).toBeUndefined();
+  expect(service.assess({ ...input, agentKind: "opencode" }).offer).toBeUndefined();
+  expect(service.assess({ ...input, messages: [{ ...input.messages[0]!, text: " " }] }).status.code).toBe("content_unavailable");
 });

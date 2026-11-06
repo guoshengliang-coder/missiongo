@@ -628,6 +628,9 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-console-session-heading { min-width: 0; display: flex; align-items: flex-start; gap: 7px; }
 .agent-console-session-heading strong { min-width: 0; flex: 1; display: -webkit-box; overflow: hidden; line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .agent-console-session-heading time { flex: 0 0 auto; margin-left: auto; padding-top: 1px; }
+.agent-console-session-meta { min-width: 0; margin-top: 5px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 7px; }
+.agent-console-session-copy .agent-console-session-meta small { min-width: 0; margin-top: 0; }
+.agent-console-session-meta .agent-console-unlinked-badge { align-self: center; margin-top: 0; }
 .agent-console-unlinked-badge { flex: 0 0 auto; align-self: flex-start; margin-top: 1px; padding: 1px 6px; color: var(--muted); background: var(--surface-sunken); border: 1px solid var(--line); border-radius: var(--radius-xs); font-size: var(--text-xs); font-style: normal; font-weight: 700; line-height: 1.5; white-space: nowrap; }
 .agent-console-heading h2 .agent-console-unlinked-badge { margin-left: 8px; vertical-align: middle; }
 .agent-console-attention { display: inline-block; margin-top: 6px; padding: 2px 6px; color: var(--warn-text); background: var(--warn-bg); border-radius: var(--radius-xs); font-size: var(--text-xs); font-style: normal; font-weight: 700; }

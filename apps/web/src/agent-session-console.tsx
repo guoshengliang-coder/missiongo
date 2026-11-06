@@ -4,6 +4,7 @@ import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-opera
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
 import { AgentPlanContent, planContinuationObserved, planTranscript, repeatsSubmittedPlan } from "./agent-plan-content";
 import { AgentStopFeedback } from "./agent-stop-feedback.js";
+import { hasStoppableAgentTurn } from "@missiongo/domain";
 import { ChatAttachments } from "./chat-attachments";
 import type { ReactNode } from "react";
 import { OverlayDialog } from "./overlay";
@@ -160,10 +161,12 @@ function attentionLabel(session: AgentSessionSummary, t: ReturnType<typeof useI1
   // A source approval snapshot is a permission, a confirmation or an
   // unrecognizable legacy request; only a plan wait reads as 待批准 (AND-408).
   if (session.attention.kind === "approval") {
-    if (session.approval?.requestKind === "permission") return t("agentAttentionPermission");
-    if (session.approval?.requestKind === "confirmation") return t("agentAttentionConfirmation");
-    if (session.approval) return t("agentAttentionPending");
-    return t("agentAttentionApproval");
+    if (approvalNeedsAction(session.approval)) {
+      if (session.approval?.requestKind === "permission") return t("agentAttentionPermission");
+      if (session.approval?.requestKind === "confirmation") return t("agentAttentionConfirmation");
+      return t("agentAttentionPending");
+    }
+    return t(session.planApprovalPending ? "agentAttentionApproval" : "agentAttentionUncertain");
   }
   if (session.attention.kind === "action") return t("agentAttentionAction");
   if (session.attention.kind === "instruction") return t("agentAttentionInstruction");
@@ -631,6 +634,13 @@ export function AgentSessionConsole({
   const visibleMessages = agentChatMessages(messages, attachmentMessages, outgoing?.commandId);
   const activities = sessionQuery.data?.activities ?? [];
   const turnState = sessionQuery.data?.turnState ?? selected?.turnState;
+  // Detail polls are faster than list polls. Use the same foreground rule as
+  // the server so a stale canStop flag cannot outlive the turn shown here.
+  const canStopCurrentTurn = selected?.canStop && (
+    ["queued", "delivered"].includes(selected.dispatchStatus)
+    || hasStoppableAgentTurn({ status: sessionQuery.data?.status ?? selected.status,
+      turnState, command: sessionQuery.data ? command : selected.command, stopCommand })
+  );
   const approval = sessionQuery.data ? sessionQuery.data.approval : selected?.approval;
   const questionPermission = Boolean(selected && hasPendingPermissionQuestion(selected.agentKind, visibleMessages.filter(message => !message.id.startsWith("history:"))));
   const showPermissionApproval = questionPermission || Boolean(approval && (approvalNeedsAction(approval)
@@ -638,12 +648,13 @@ export function AgentSessionConsole({
   const planApproved = sessionQuery.data?.planApprovalState;
   const planContinued = planContinuationObserved(sessionQuery.data);
   const stalePlanAttention = Boolean(planApproved && planContinued && selected?.attention.kind === "approval");
-  const showPlanApproval = !planContinued && (Boolean(planApproved || sessionQuery.data?.planApproval)
-    || selected?.needsAttention && !selected.attention.dismissed && selected.attention.kind === "approval");
+  const showPlanApproval = !planContinued && (Boolean(planApproved || sessionQuery.data?.planApproval
+      || sessionQuery.data?.planApprovalStatus?.code === "content_unavailable"));
   const planApproval = sessionQuery.data?.planApproval;
   const planApprovalStatus = pending || sendingSelected ? { code: "reply_pending" }
     : sessionQuery.data?.planApprovalStatus;
-  const canApprovePlan = Boolean(!showPermissionApproval && planApproval && planApprovalStatus?.code === "ready"
+  const planContentMissing = Boolean(showPlanApproval && !planApproved && !planApproval?.plan?.trim());
+  const canApprovePlan = Boolean(!showPermissionApproval && planApproval?.plan?.trim() && planApprovalStatus?.code === "ready"
     && (sessionQuery.data?.canApprovePlan ?? (sessionQuery.data?.canReply && selected?.canReply)) && !pending && !sendingSelected && !cancellingSelected);
   const approvePlan = () => {
     if (!canApprovePlan || !planApproval || !selected?.agentSessionId) return;
@@ -822,7 +833,7 @@ export function AgentSessionConsole({
   const showFailureCard = conversationReady && selected?.source !== "external" && selected?.agentKind === "codex" && sessionStatus === "failed";
   const showRunDetails = Boolean(selected?.agentSessionId && sessionQuery.data
     && !(selected.source !== "external" && selected.agentKind === "codex" && sessionStatus === "failed"));
-  const stopAction = selected?.canStop && (
+  const stopAction = canStopCurrentTurn && (
     <button
       type="button"
       className="secondary-button agent-run-stop"
@@ -1069,10 +1080,12 @@ export function AgentSessionConsole({
                   <span className="agent-console-session-copy">
                     <span className="agent-console-session-heading">
                       <strong>{sessionTitle(session, roundLabel)}</strong>
-                      {session.items.length === 0 && <span className="agent-console-unlinked-badge">{t("agentConsoleAssociationUnlinked")}</span>}
                       <time>{formatAgentMessageTime(session.activityAt ?? session.updatedAt, locale)}</time>
                     </span>
-                    <small>{session.source === "external" ? t("agentExternalSource") : session.nodeName} · {agentLabel(session, t)}</small>
+                    <span className="agent-console-session-meta">
+                      <small>{session.source === "external" ? t("agentExternalSource") : session.nodeName} · {agentLabel(session, t)}</small>
+                      {session.items.length === 0 && <span className="agent-console-unlinked-badge">{t("agentConsoleAssociationUnlinked")}</span>}
+                    </span>
                     <MergeProgressBadge state={mergeProgress.sessions.get(session.agentSessionId ?? session.id)} />
                     {attentionLabel(session, t) && (
                       <i className="agent-console-attention" title={session.attention.reason}>
@@ -1218,7 +1231,7 @@ export function AgentSessionConsole({
                 {!showPermissionApproval && (showPlanApproval || !stalePlanAttention && (selected.needsAttention || selected.attention.dismissed) && selected.attention.reason) && (
                   <div className={`agent-console-attention-banner ${selected.attention.dismissed ? "dismissed" : ""}${showPlanApproval ? " agent-console-attention-banner--approval" : ""}`} role="status">
                     <BellRing size={16} />
-                    <details>
+                    <details open={planContentMissing || undefined}>
                       <summary>{selected.attention.dismissed
                         ? t("agentAttentionDismissedTitle")
                         : showPlanApproval && planApproved ? t("agentPlanApproved") : showPlanApproval ? t("agentPlanReview") : attentionLabel(selected, t)}
@@ -1228,11 +1241,13 @@ export function AgentSessionConsole({
                         {showPlanApproval && <p>{planApproved ? t(planApproved.continuationQueued ? "agentPlanApprovedQueued" : planApproved.continuationPending ? "agentPlanApprovedWaiting" : "agentPlanApprovedNoReply") : t("agentPlanReviewHelp")}</p>}
                         {showPlanApproval && !planApproved && !canApprovePlan && <p className="agent-console-approve-reason" role="status">
                           {sessionQuery.isPending ? t("agentPlanChecking") : sessionQuery.isError ? t("agentPlanCheckFailed")
-                            : t(planApprovalStatusKey(planApprovalStatus?.code ?? "reply_unavailable"))}
+                            : t(planApprovalStatusKey(planContentMissing ? "content_unavailable" : planApprovalStatus?.code ?? "reply_unavailable"))}
                         </p>}
                       </div>
                     </details>
                     {showPlanApproval && !planApproved && <div className="agent-console-approve-action">
+                      {planContentMissing && <button type="button" className="secondary-button" disabled={sessionQuery.isFetching}
+                        onClick={() => void sessionQuery.refetch()}>{t("retry")}</button>}
                       <button type="button" className="primary-button"
                         disabled={!canApprovePlan || dismissAttention.isPending}
                         onClick={approvePlan}>{t("agentPlanApprove")}</button>
