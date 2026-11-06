@@ -33,7 +33,7 @@ async function openSample(page: Page, sample: typeof planReadabilitySamples[numb
     await page.locator(".execution-record > summary").filter({ hasText: "派单 · Fixture" }).click();
     await page.locator(".agent-session-toggle").click();
   }
-  const card = page.getByRole("article", { name: "提交审批的方案", exact: true });
+  const card = page.locator("article[data-agent-message-id]").filter({ has: page.locator(".agent-plan-inline-approval") });
   await expect(card).toBeVisible();
   return card;
 }
@@ -43,8 +43,8 @@ test("nine edited historical examples preserve critical boundaries without promo
   for (const sample of planReadabilitySamples) {
     const card = await openSample(page, sample, "console");
     for (const term of sample.terms) await expect(card).toContainText(term);
-    await expect(card.locator(".agent-plan-validation")).toBeVisible();
-    await expect(page.getByRole("article", { name: "提交审批的方案", exact: true })).toHaveCount(1);
+    for (const text of sample.validation.split(/[|\n]/).map(text => text.trim()).filter(text => text && !/^[-:]+$/.test(text))) await expect(card).toContainText(text);
+    await expect(page.locator("article[data-agent-message-id]").filter({ has: page.locator(".agent-plan-inline-approval") })).toHaveCount(1);
     await expect(page.getByText("正在调查，尚未提交新方案", { exact: true })).toHaveCount(1);
     if (sample.size === "short") await expect(card.locator("table")).toHaveCount(0);
     else await expect(card.locator("table").first()).toBeVisible();

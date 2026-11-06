@@ -82,6 +82,7 @@ export function InlinePlanApproval({ session, blocked = false }: { session: Agen
   const enabled = !blocked && !invalid && (session.canApprovePlan ?? session.canReply)
     && session.planApproval?.revision === plan.revision && session.planApprovalStatus?.code === "ready";
   return <footer className="agent-plan-inline-approval" aria-label={t("agentPlanReview")}>
+    {plan.itemKeys?.length ? <span>{plan.itemKeys.join("、")}</span> : null}
     {approved ? <small>{t("agentPlanApproved")}</small> : invalid ? <small>{t("agentPlanScopeChanged")}</small>
       : <button type="button" className="primary-button" disabled={!enabled || approve.isPending || approve.isSuccess}
         onClick={() => { if (!lock.current) { lock.current = true; approve.mutate(); } }}>{t("agentPlanApprove")}</button>}

@@ -82,7 +82,7 @@ test("one permission area replaces generic approval, submits the native scope on
   await expect(page.getByText("方案内容暂不可用，请重新加载后再审阅。")).toBeVisible();
   planContentAvailable = true;
   await page.locator(".agent-console-attention-banner").getByRole("button", { name:"重试",exact:true }).click();
-  await expect(page.getByRole("article", { name:"提交审批的方案",exact:true })).toContainText("权限与方案独立");
+  await expect(page.locator("article[data-agent-message-id]").filter({ has: page.locator(".agent-plan-inline-approval") })).toContainText("权限与方案独立");
   await expect(page.getByRole("button", { name: "批准", exact: true })).toBeEnabled();
 });
 
