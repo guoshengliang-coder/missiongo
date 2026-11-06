@@ -238,16 +238,15 @@ test("Claude authorization shows rule scope and sends the selected lifetime as i
   await page.setViewportSize({ width: 375, height: 850 });
   await page.goto('/?product=' + fixture.productId + '&console=agent&session=' + id);
   const rule = page.getByText('将记住规则 Bash(git status *)，保存到当前项目本机设置。');
+  await page.locator(".agent-session-question summary").click();
   await expect(rule).toBeVisible();
   await page.getByRole("button", { name: selected, exact: true }).click();
-  await expect(page.locator(".agent-console-reply textarea")).toHaveValue(answer);
-  expect(sent).toEqual([]); // Picking a question answer still requires sending it.
+  await expect(page.locator(".agent-console-reply textarea")).toHaveValue("");
+  await expect.poll(() => sent.length).toBe(1); // A permission decision submits immediately.
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   const path = testInfo.outputPath("claude-rule-scopes-phone.png");
   await page.screenshot({ path, animations: "disabled" });
   await testInfo.attach("claude", { path, contentType: "image/png" });
-  await page.locator(".agent-console-reply button[type=submit]").click();
-  await expect.poll(() => sent.length).toBe(1);
   expect(sent[0]).toMatchObject({ text: answer });
 });
 
@@ -317,9 +316,7 @@ for (const viewport of [
       await page.screenshot({ path, animations: "disabled" });
       await testInfo.attach("confirmation", { path, contentType: "image/png" });
       await card.getByRole("button", { name: "取消", exact: true }).click();
-      await expect(reply.locator("textarea")).toHaveValue("授权请求 mcp-confirm-1: 取消");
-      expect(sent).toEqual([]);
-      await reply.locator("button[type=submit]").click();
+      await expect(reply.locator("textarea")).toHaveValue("");
       await expect.poll(() => sent.length).toBe(1);
       expect(sent[0]).toMatchObject({ text: "授权请求 mcp-confirm-1: 取消" });
       await expect(card.getByRole("button", { name: "批准", exact: true })).toBeDisabled();

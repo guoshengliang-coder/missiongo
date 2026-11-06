@@ -8,6 +8,14 @@ import { ITEM_STATUSES, type WorkItemPriority, type WorkItemStatus, type WorkIte
 export type Locale = "zh-CN" | "en";
 
 const EN_MESSAGES = {
+  releaseTitle: "Service update",
+  releaseUpdating: "A new version is being deployed",
+  releaseWait: "Please wait a few minutes. The page will reconnect automatically.",
+  releaseDrafts: "Your unsent text and attachments are kept. Submitted actions will not be sent again automatically.",
+  releaseUnconfirmed: "The update has not confirmed recovery",
+  releaseRetryHelp: "The deployment failed or its status expired. Check the connection or retry; your draft is kept.",
+  permissionSubmitting: "Submitting your decision…",
+  permissionQueued: "Decision queued. Waiting for the original request to finish.",
   agentHandoffTitle: "Hand over to Agent",
   agentHandoffPending: "A receiving conversation is authorized. Waiting for its Agent to obtain current plan approval and claim; execution has not been handed over yet.",
   agentHandoffHelp: "Keep this item in progress and its Builder unchanged. Unknown historical records do not block takeover. Authorize one specific conversation. The Agent still needs an approved current plan before claiming.",
@@ -1337,7 +1345,7 @@ const EN_MESSAGES = {
   agentAttentionDismissedTitle: "Marked as no action needed",
   agentConsoleUnreadCount: "{count} unread (not running)",
   agentConsoleUnread: "Unread sessions",
-  agentConsoleUnavailableLink: "This conversation is archived, unavailable, or no longer visible to your account.",
+  agentConsoleUnavailableLink: "This conversation is unavailable or no longer visible to your account.",
   agentConsoleWaiting: "Waiting for reply",
   agentConsoleActive: "Working",
   agentConsoleAll: "All conversations",
@@ -1489,6 +1497,14 @@ const EN_MESSAGES = {
 export type MessageKey = keyof typeof EN_MESSAGES;
 
 const ZH_MESSAGES: Record<MessageKey, string> = {
+  permissionSubmitting: "正在提交决定…",
+  permissionQueued: "决定已排队，等待原请求处理。",
+  releaseTitle: "服务更新",
+  releaseUpdating: "正在发布新版本",
+  releaseWait: "正在升级更新，请稍等几分钟。页面会自动重新连接。",
+  releaseDrafts: "未发送的文字和附件会保留，已提交的操作不会自动重复发送。",
+  releaseUnconfirmed: "升级尚未确认恢复",
+  releaseRetryHelp: "发布失败或升级状态已过期，请检查连接或重试；草稿已保留。",
   productTagline: PRODUCT_TAGLINES["zh-CN"],
   executionStopBlocked: "原执行仍有活动或待执行命令，请打开原会话停止或处理后再接手。",
   agentHandoffTitle: "交给 Agent 接手",
@@ -2818,7 +2834,7 @@ const ZH_MESSAGES: Record<MessageKey, string> = {
   agentAttentionDismissedTitle: "已标记为无需处理",
   agentConsoleUnreadCount: "{count} 个未读（不含运行中）",
   agentConsoleUnread: "未读会话",
-  agentConsoleUnavailableLink: "该会话已归档、失效，或当前账号已无查看权限。",
+  agentConsoleUnavailableLink: "该会话已失效，或当前账号已无查看权限。",
   agentConsoleWaiting: "等待回复",
   agentConsoleActive: "运行中",
   agentConsoleAll: "全部会话",

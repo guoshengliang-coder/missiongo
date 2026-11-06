@@ -228,3 +228,14 @@ it("observation heartbeats do not reorder a conversation or create unread activi
   f.snapshot({ status: "idle", messages: [message], turnState: { turnActive: false, observedAt: time(14), lastProgressAt: time(14) } });
   expect(f.store.listForAccount("owner")[0]!.status).toBe("idle");
 });
+
+it("permission summaries share request identity without changing notification attention classification", () => {
+  const { db, store, sessionId, snapshot } = fixture();
+  db.prepare("UPDATE dispatches SET agent_kind='claude_code' WHERE id='dispatch'").run();
+  const question = { header: "授权请求", title: "Claude Code 请求使用 Bash", options: ["批准", "拒绝"] };
+  const permission = { ...message, sourceId: "permission-request-1", questions: [question] };
+  snapshot({ status: "idle", messages: [permission], turnState: { turnActive: false, waitingForInput: true } });
+  expect(store.listForAccount("owner").find(row => row.id === sessionId)).toMatchObject({ waitingForPermission: true, attention: { kind: "answer" } });
+  snapshot({ status: "idle", messages: [{ ...permission, questions: [{ ...question, answered: "批准" }] }] });
+  expect(store.listForAccount("owner").find(row => row.id === sessionId)).toMatchObject({ waitingForPermission: false });
+});

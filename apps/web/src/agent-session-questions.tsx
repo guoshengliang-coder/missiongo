@@ -1,3 +1,5 @@
+import { permissionQuestionKey } from "@missiongo/domain";
+import { PermissionQuestion } from "./permission-question";
 import {
   answeredOptionSelected,
   questionAnswerText,
@@ -27,11 +29,16 @@ import type { AgentSessionQuestion } from "./types";
  */
 export function AgentSessionQuestions({
   questions,
+  sessionId, sourceId, agentKind, historical = false,
   reply,
   canReply,
   onChange,
 }: {
   questions: readonly AgentSessionQuestion[];
+  historical?: boolean;
+  sessionId?: string | undefined;
+  sourceId?: string | undefined;
+  agentKind?: string | undefined;
   reply: string;
   canReply: boolean;
   onChange: (next: string) => void;
@@ -45,6 +52,9 @@ export function AgentSessionQuestions({
   return (
     <>
       {shown.map((question, index) => {
+        const permissionKey = permissionQuestionKey(agentKind ?? "", sourceId, question);
+        if (permissionKey && sessionId) return <PermissionQuestion key={`${permissionKey}-${index}`}
+          question={question} requestKey={permissionKey} sessionId={sessionId} canReply={canReply} historical={historical} />;
         const label = question.key ?? question.header ?? question.title;
         const settled = question.answered !== undefined;
         const disabled = !canReply || settled;

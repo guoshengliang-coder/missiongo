@@ -10,6 +10,7 @@ import { MarkdownText } from "./markdown-text";
 import { AgentArtifactMarkdown } from "./agent-artifact-viewer";
 import { api } from "./api";
 import { activityLabelKey, agentSessionDetailRefetchInterval, formatAgentMessageTime, isWithdrawnCard, replyBlockedLabelKey } from "./agent-session-view";
+import { hasPendingPermissionQuestion } from "@missiongo/domain";
 import { AgentSessionQuestions } from "./agent-session-questions";
 import { useI18n } from "./i18n";
 import { localizedErrorText } from "./error-text";
@@ -109,6 +110,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
       await queryClient.invalidateQueries({ queryKey: ["agent-session", operation.sessionId] });
     },
   });
+  const questionPermission = Boolean(session.data && hasPendingPermissionQuestion(session.data.agentKind, history.messages.filter(message => !message.id.startsWith("history:"))));
   const command = session.data?.command;
   const canReply = session.data?.canReply === true;
   // A reply can go to any agent the console runs, so the delivery lines name
@@ -141,7 +143,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
               <header className="agent-session-head">
                 <strong>{t("agentSessionTitle")}</strong>
                 <span className={`status-pill agent-session-status-${session.data.status}`}>
-                  {waiting ? t(session.data.agentKind === "codex" ? "agentSessionWaitingApprovalStatus" : "agentSessionWaitingStatus")
+                  {waiting ? t(session.data.agentKind === "codex" || questionPermission ? "agentSessionWaitingApprovalStatus" : "agentSessionWaitingStatus")
                     : backgroundOnly ? t("agentSessionBackgroundStatus") : statusLabel(session.data.status, t)}
                 </span>
               </header>
@@ -164,6 +166,10 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                     {message.questions && (
                       <AgentSessionQuestions
                         questions={message.questions}
+                        sessionId={sessionId}
+                        sourceId={message.sourceId}
+                          historical={message.id.startsWith("history:")}
+                        agentKind={session.data.agentKind}
                         reply={reply}
                         canReply={canReply && !message.id.startsWith("history:") && !pending && !send.isPending}
                         onChange={setReply}
@@ -177,7 +183,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                 <AgentStopFeedback stop={session.data.stopCommand ?? (command?.kind === "interrupt" ? command : undefined)}
                   latestCommand={command} turnActive={session.data.turnState?.turnActive ?? false} backgroundRunning={session.data.activities.length > 0} />
               <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={visualStatus} />} label={waiting
-                ? t(session.data.agentKind === "codex" ? "agentRunApproval" : "agentRunWaiting", { agent: agentName })
+                ? t(session.data.agentKind === "codex" || questionPermission ? "agentRunApproval" : "agentRunWaiting", { agent: agentName })
                 : backgroundOnly ? t("agentRunBackground") : session.data.status === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(session.data.status, t)}>
                 <p>{t(activityLabelKey(session.data.status, command?.status === "queued"), { agent: agentName })}</p>
                 {session.data.activities.length > 0 && (

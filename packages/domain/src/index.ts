@@ -17,3 +17,5 @@ export * from "./dingtalk.js";
 
 export * from "./comment-discussion.js";
 export * from "./personal-notifications.js";
+
+export * from "./agent-permission-question.js";

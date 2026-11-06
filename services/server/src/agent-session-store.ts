@@ -3,7 +3,7 @@ import { handoffDispatchIsCurrent } from "./agent-handoffs.js";
 import { assertDispatchExecution, dispatchExecutionRevoked } from "./builder-authority.js";
 import { createHash, randomUUID } from "node:crypto";
 
-import { normalizeAgentMode, sessionErrorFields, storedSessionError, type CodexSessionFailure, isAcceptedSessionUrl, nodeConnectionState, type AgentKind, type NodeConnectionState } from "@missiongo/domain";
+import { hasPendingPermissionQuestion, normalizeAgentMode, sessionErrorFields, storedSessionError, type CodexSessionFailure, isAcceptedSessionUrl, nodeConnectionState, type AgentKind, type NodeConnectionState } from "@missiongo/domain";
 
 import { sessionHealth, executionTurnState } from "./agent-session-health.js";
 
@@ -138,6 +138,7 @@ export interface AgentSessionSnapshot {
 }
 
 export interface AgentSessionListItem {
+  readonly waitingForPermission?: boolean;
   readonly productId?: string;
   readonly initialText?: string;
   readonly startReady?: boolean;
@@ -1060,6 +1061,7 @@ export class AgentSessionStore {
         ...(row.session_turn_state_json
           ? { turnState: JSON.parse(row.session_turn_state_json) as AgentSessionTurnState }
           : {}),
+        waitingForPermission: Boolean(message && hasPendingPermissionQuestion(row.agent_kind, [{ sourceId: message.source_id, questions: JSON.parse(message.questions_json ?? "[]") }])),
         waitingForReply: needsAttention,
         retryable: (["failed", "cancelled"].includes(row.dispatch_status) || deliveryTimedOut)
           && (free ? free.ready === 1 && ["failed", "cancelled"].includes(row.dispatch_status) && pendingNativeFree : itemRows.length > 0 && itemRows.every((item) => item.status === "ready")),
