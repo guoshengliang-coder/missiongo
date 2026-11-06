@@ -42,13 +42,13 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
       expect(await button.evaluate(el => el.closest("details") === null)).toBe(true);
     }
     await expect(card).toContainText("修改是否需要确认，仍按当前权限规则执行");
+    // AND-416 makes a permission decision an immediate submit of the original
+    // option; the readable label never enters the outgoing draft.
     await card.getByRole("button", { name: /本次会话允许访问指定文件夹/ }).click();
-    await expect(page.locator(".agent-console-reply textarea")).toHaveValue(/授权请求 request-431: 本次会话允许访问指定文件夹/);
-    await page.getByRole("button", { name: "发送回复", exact: true }).click();
     await expect.poll(() => sent.length).toBe(1);
     expect(sent[0]).toMatchObject({ text: `授权请求 request-431: ${directory}` });
+    await expect(page.locator(".agent-console-reply textarea")).toHaveValue("");
     expect(await card.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
-    await expect(page.locator(".agent-console-message-outgoing")).not.toContainText("建议 2");
     await page.screenshot({ path: testInfo.outputPath("permission.png") });
   });
 }

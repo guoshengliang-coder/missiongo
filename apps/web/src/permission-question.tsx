@@ -30,7 +30,7 @@ export function PermissionQuestion({ question, requestKey, sessionId, canReply, 
   const settled = question.answered !== undefined || historical;
   const queued = send.isSuccess && !settled;
   const presentation = permissionPresentation(question);
-  return <section className={`agent-session-question agent-console-attention-banner${settled ? " answered" : ""}`} aria-label={t("agentSessionWaitingApprovalStatus")}>
+  return <section className={`agent-session-question agent-session-permission agent-console-attention-banner${settled ? " answered" : ""}`} aria-label={t("agentSessionWaitingApprovalStatus")}>
     <div>
       <strong>{historical && question.answered === undefined ? t("agentSessionOpenReadOnly") : settled ? t("agentSessionQuestionAnswered") : t("agentSessionWaitingApprovalStatus")}</strong>
       <details><summary>{question.title}</summary>
