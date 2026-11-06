@@ -412,12 +412,13 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 - 服务端 `implementationPlan` 提供独立阅读内容，批准状态与可执行操作仍由原审批契约判断。范围过期明确标注，不以正文可见推断可以批准。
 - 回归见 `agent-plan-content.audit.spec.ts`、`plan-approval.audit.spec.ts` 与 `codex-history-pagination.audit.spec.ts`；覆盖两处入口、四种 Agent 方案阅读、320px/桌面、明暗、三档字号、正文去重、批准后保留以及草稿和滚动保护。
 
-### 处理中条目交给 Agent 接手（AND-409）
+### 处理中条目 Agent 交接（AND-409，AND-432 收起入口）
 
-- 条目详情执行记录新增明确交接入口，复用 `Modal`、`ExecutionStopNotice`、`DispatchDialog` 与 `Select`。展示旧执行活动或未知状态提示，先填写范围和原因，再选择新派单或已登记方案的原会话；不开放泛化的并行安排执行入口。
+- AND-432 移除条目详情执行记录区域常驻的“交给 Agent 接手”入口及弹窗连接；不新增替代或异常恢复入口。继续原会话仍使用“控制台”，执行记录继续复用 `RecordDisclosure`。无记录、提示或错误时不因接手资格显示空面板。
+- 保留底层交接接口、授权边界、已有待接手提示及历史记录。保留的交接表单组件沿用 `Modal`、`ExecutionStopNotice`、`DispatchDialog` 与 `Select`，本轮不改变任务状态或执行规则。
 - 授权已保存、方案已批准、继续消息已排队和真正领取各自说明；处理中及 Builder 保持。失败保留输入，请求期间禁止关闭与重复提交。
 - 控制台和条目内会话共用 `AgentSessionError`，说明原客户端加载与重试步骤，原始诊断用 details 展开。沿用既有令牌，不新增样式豁免。
-- 回归见 `agent-handoff.audit.spec.ts`、`plan-approval.audit.spec.ts` 与 `execution-stop.audit.spec.ts`；覆盖 320/375/1440px、明暗、触控、三档字号、草稿/焦点/请求保护。
+- 入口移除、记录保留、空面板与待接手提示回归见 `agent-handoff.audit.spec.ts`；控制台跳转见 `item-mobile-clarity.audit.spec.ts`。底层授权继续由服务端 `agent-handoffs.test.ts` 覆盖，停止与审批沿用既有回归。
 
 ### 当前项目会话导航与跨项目提示（AND-410/411，AND-419 调整）
 
