@@ -87,3 +87,7 @@ missiongo-release deploy --candidates /path/to/refreshed-candidates.json --only-
 部署完成后覆盖不足会明确报错并保留真实发布事实，不伪造凭据、不盲目重发或回滚。
 随后用 `get_item_context` 核对相关候选的实际状态；独立状态检查和共享自动交接已取消，发布观察上传不再推进条目。需要回写时由获授权的发布会话核实依据后调用 `submit_release_batch`：同产品、每批最多 100 条，绑定候选版本、开发完成事件和处理轮次，不要求其他开发会话的领取凭据。`scripts/release-notices.mjs` 输出稳定批次参数；先完整读条目和写发布评论，再提交批次。成功、已提交和跳过分别对账；相同参数与幂等键可重试，候选变化须重新核验并生成新批次。旧服务缺少能力或候选快照时不伪造参数，也不借用其他会话身份。
 部署成功、待验证、通知送达各自报告，最终验收仍由人工决定。
+
+## 已发布历史条目补证据
+
+优先用 `supplement_release_evidence` 补齐后刷新服务端清单。旧客户端工具列表未更新但服务端已支持 5.54 时，可在已独立核实全部发布前置后给 `release-notices.mjs` 传 `--verified-evidence <JSON>`：对象含 productId、items，每项含 itemKey、原清单 expectedRevision/developmentEventId/roundKey、completion（GitHub PR）、完整 requiredArtifacts、verification 核验记录。原始 MCP 分页文件不得改写；脚本输出单列 verifiedEvidence，继续查询真实 PR 合并及公开产物来源覆盖，并生成原子补证据/交接请求。此文件仅用于已发布交接，不供部署覆盖门禁使用；不能将本地声明冒充服务端返回值或仅列已发布的子集。

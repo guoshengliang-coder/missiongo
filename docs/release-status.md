@@ -19,7 +19,7 @@ Web 轮询 `/release-status.json`（前台每 5 秒、恢复前台立即查询�
 2. 将 `deploy/release-status/wait.html`、`wait.js`、`wait.css` 安装到该目录，写入初始 `status.json`：`{"version":1,"phase":"idle","expiresAt":0,"release":"initial"}`。文件以 0644 供 nginx 读取，不放凭据、主机路径、命令或内部日志。
 3. 复制 `deploy/nginx-release-status.conf` 到宿主专用配置，替换目录占位符，在已有 HTTPS server 内 include；在原应用 `location /` 添加 `proxy_intercept_errors on;`。先备份原配置，运行 `nginx -t`，成功后 reload。保留原 TLS、安全头、MCP 和下载路由。不要替换整份站点配置。
 4. 公开核对状态 JSON、三个兜底静态文件及 `Cache-Control: no-store`，确认路径不经过应用容器。兜底页用独立外部脚本和样式，CSP 不需要 unsafe-inline。应用代理 502/503/504 的首次加载可显示该页：有有效升级信号才提示升级，否则明确连接失败。
-5. 在当前合并代码的 worktree 运行 `node scripts/enable-release-status.mjs` 只读检查补丁，再经授权执行同命令 `--apply`。它在共用 OS 发布锁内备份并原子修改本机共用 deploy 脚本，保留 CI、覆盖、签名和目标规则；不修改生产服务器。自定义目录通过发布环境 `MISSIONGO_RELEASE_STATUS_DIRECTORY` 指定。
+5. 在当前合并代码的 worktree 运行 `node scripts/enable-release-status.mjs` 只读检查完整补丁，再经授权执行同命令 `--apply`。安装器会先核实完整组合改动，再补齐缺失的计时依赖并接入状态切换，无需分开运行多个安装器。它在共用 OS 发布锁内备份并原子修改本机共用 deploy 脚本，保留 CI、覆盖、签名和目标规则；不修改生产服务器。自定义目录通过发布环境 `MISSIONGO_RELEASE_STATUS_DIRECTORY` 指定。
 6. 之后仍统一使用 `missiongo-release plan/check/deploy --candidates <完整清单>`。不能改用仓库脚本绕过统一入口。安装器拒绝不认识的共享脚本版本，不猜测修改。
 
 ## 发布顺序与失败边界

@@ -393,6 +393,19 @@ export interface SubmitReleaseBatchInput {
   readonly attribution: EventAttribution & { readonly accountId: string; readonly clientId: string };
 }
 
+export interface SupplementReleaseEvidenceInput {
+  readonly productId: string;
+  readonly itemKey: string;
+  readonly expectedRevision: number;
+  readonly developmentEventId: string;
+  readonly roundKey: string;
+  readonly completion?: CompletionReference;
+  readonly pullRequestUrl?: string;
+  readonly requiredArtifacts: readonly string[];
+  readonly idempotencyKey: string;
+  readonly attribution: EventAttribution & { readonly accountId: string; readonly clientId: string };
+}
+
 export interface WithdrawCommentInput {
   readonly itemKey: string;
   readonly commentId: string;

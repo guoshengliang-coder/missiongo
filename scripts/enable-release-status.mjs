@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Offline, narrowly scoped upgrade of the shared guarded deploy entry point.
+import { installTiming, instrumentDeploy } from "./enable-release-timing.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync, renameSync, lstatSync } from "node:fs";
 import { homedir } from "node:os";
@@ -43,7 +44,11 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     }
     const path = join(tools, "deploy.sh");
     if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink()) throw new Error("Expected a regular shared deploy script.");
-    const before = readFileSync(path, "utf8"), after = upgradeReleaseStatusDeploy(before);
+    // Validate the complete composed upgrade before writing either dependency.
+    // Older shared entries may have coverage but no timing hooks yet.
+    installTiming({ install: false });
+    const before = readFileSync(path, "utf8"), after = upgradeReleaseStatusDeploy(instrumentDeploy(before));
+    if (apply) installTiming({ install: true });
     if (apply && before !== after) {
       writeFileSync(`${path}.before-release-status-${Date.now()}`, before, { mode: 0o700, flag: "wx" });
       writeFileSync(`${path}.release-status-next`, after, { mode: 0o700, flag: "wx" });
