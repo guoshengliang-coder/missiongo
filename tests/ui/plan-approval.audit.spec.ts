@@ -33,7 +33,7 @@ for(const width of [320,1440]) for(const theme of ["light","dark"] as const) tes
       return route.fulfill({json:path==="/api/v1/agent-sessions"?{sessions:[offline]}:detail});
     });
     await page.goto(`/?product=${fixture.productId}&console=agent&session=${offline.id}`);
-    const banner=page.locator(".agent-console-attention-banner");
+    const banner=page.locator(".agent-plan-inline-approval");
     await expect(page.getByText(/该会话尚未加载到已连接的 Codex 运行时/)).toBeVisible();
     const button=banner.getByRole("button",{name:"批准",exact:true});await expect(button).toBeEnabled();
     await button.click();await expect(banner).toContainText("批准已保存，等待原连接恢复后续办一次");
@@ -69,7 +69,7 @@ for (const viewport of [{ width: 353, height: 757 }, { width: 1440, height: 900 
     const textarea = page.locator(".agent-console-reply textarea");
     await textarea.fill("保留这段尚未发送的补充说明");
     await page.locator('input[type="file"]').last().setInputFiles({ name: "draft.txt", mimeType: "text/plain", buffer: Buffer.from("unsent attachment") });
-    const button = page.locator(".agent-console-attention-banner").getByRole("button", { name: /^(批准|Approve)$/ });
+    const button = page.getByRole("button", { name: /^(批准|Approve)$/ });
     await expect(button).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     const path = testInfo.outputPath(`approval-${viewport.width}.png`);
@@ -102,8 +102,8 @@ test("an unavailable connection keeps approval visible but disabled; stale rejec
   });
   const open = () => page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
   await open();
-  const button = page.locator(".agent-console-attention-banner").getByRole("button", { name: /^(批准|Approve)$/ });
-  await expect(page.locator(".agent-console-attention-banner")).toBeVisible();
+  const button = page.getByRole("button", { name: /^(批准|Approve)$/ });
+  await expect(page.locator(".agent-plan-inline-approval")).toBeVisible();
   await expect(button).toBeVisible();
   await expect(button).toBeDisabled();
   allowed = true;
@@ -112,7 +112,7 @@ test("an unavailable connection keeps approval visible but disabled; stale rejec
   const textarea = page.locator(".agent-console-reply textarea");
   await textarea.fill("保留草稿");
   await button.click();
-  await expect(page.locator(".agent-console-message-outgoing")).toContainText(/待批内容已变化|approval request changed/);
+  await expect(page.locator(".agent-plan-inline-approval [role=alert]")).toContainText(/待批内容已变化|approval request changed/);
   await expect(textarea).toHaveValue("保留草稿");
   await expect(button).toBeDisabled();
   expect(posts).toBe(1);
@@ -142,11 +142,11 @@ for (const theme of ["light", "dark"] as const) {
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(new URL(route.request().url()).pathname === "/api/v1/agent-sessions" ? { sessions: [current] } : current) });
     });
     await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
-    const banner = page.locator(".agent-console-attention-banner");
+    const banner = page.locator(".agent-plan-inline-approval");
     await expect(banner.getByRole("button", { name: /^(批准|Approve)$/ })).toBeDisabled();
-    await expect(banner.locator(".agent-console-approve-reason")).toBeHidden();
-    await banner.locator("summary").click();
-    await expect(banner.locator(".agent-console-approve-reason")).toBeVisible();
+
+
+
     await expect(banner).toContainText(/会话连接当前不可用|connection is unavailable/);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await banner.scrollIntoViewIfNeeded();
@@ -173,12 +173,10 @@ for (const theme of ["light", "dark"] as const) {
         return route.fulfill({ status: 200, json: new URL(route.request().url()).pathname === "/api/v1/agent-sessions" ? { sessions: [current] } : current });
       });
       await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
-      const banner = page.locator(".agent-console-attention-banner");
-      await expect(banner.locator("summary")).toHaveText("审阅方案");
+      const banner = page.locator(".agent-plan-inline-approval");
+      await expect(banner).toBeVisible();
       await expect(banner.getByRole("button", { name: "批准", exact: true })).toBeEnabled();
-      await banner.locator("summary").click();
-      await expect(banner).toContainText("不判断调研是否充分");
-      await expect(page.locator(".agent-console-message-agent")).toContainText("剩余不确定性");
+      await expect(page.locator(".agent-console-message-agent").filter({ hasText: "剩余不确定性" })).toBeVisible();
       expect(approvals).toBe(0);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     });
@@ -227,12 +225,12 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
         return route.fulfill({ json: path === "/api/v1/agent-sessions" ? { sessions: [external] } : detail });
       });
       await page.goto(`/?product=${fixture.productId}&console=agent&session=${external.id}`);
-      const banner = page.locator(".agent-console-attention-banner");
+      const banner = page.locator(".agent-plan-inline-approval");
       const button = banner.getByRole("button", { name: "批准", exact: true });
       await expect(button).toBeEnabled();
       await expect(page.locator(".agent-console-connection-banner")).toContainText("领取前方案审批");
-      await banner.locator("summary").click();
-      await expect(page.getByRole("article", { name: "提交审批的方案" })).toContainText("领取前审阅的明确实施方案");
+
+      await expect(page.locator("article[data-agent-message-id]").filter({ has: page.locator(".agent-plan-inline-approval") })).toContainText("领取前审阅的明确实施方案");
       for (const scale of ["small", "medium", "large"]) {
         await page.evaluate(scale => { document.documentElement.dataset.fontScale = scale; document.documentElement.dataset.consoleFontScale = scale; }, scale);
         await expect(button).toBeVisible();
@@ -244,16 +242,16 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
       await button.dblclick();
       await expect.poll(() => attempts).toBe(1);
       finish();
-      await expect(banner.locator("summary")).toHaveText("方案已批准");
+      await expect(banner).toContainText("方案已批准");
       await expect(banner).toContainText("批准已保存，等待原连接恢复后续办一次");
       await expect(banner).not.toContainText("方案待批准");
       await expect(button).toHaveCount(0);
       await expect(page.locator(".agent-console-message-outgoing")).toHaveCount(0);
       await page.reload();
-      await expect(page.locator(".agent-console-attention-banner summary")).toHaveText("方案已批准");
+      await expect(page.locator(".agent-plan-inline-approval")).toContainText("方案已批准");
       expect(attempts).toBe(1);
       await expect(page.locator(".agent-console-attention-banner").getByRole("button",{name:"无需处理"})).toHaveCount(0);
-      await page.locator(".agent-console-attention-banner summary").click();
+
       await page.screenshot({ path: testInfo.outputPath(`and405-offline-${width}-${theme}.png`) });
     });
   });
@@ -284,8 +282,8 @@ for (const viewport of [{ width: 320, height: 900, theme: "dark" }, { width: 144
         : route.fulfill({ json: new URL(route.request().url()).pathname === "/api/v1/agent-sessions" ? { sessions: [detail()] } : detail() }));
       await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
       const banner = page.locator(".agent-console-attention-banner--approval");
-      const plan = page.getByRole("article", { name: "提交审批的方案", exact: true });
-      await expect(banner.locator("summary")).toHaveText("方案已批准");
+      const plan = page.locator("article[data-agent-message-id]").filter({ has: page.locator(".agent-plan-inline-approval") });
+      await expect(plan).toContainText("方案已批准");
       phase = "active";
       await advanceSessionDetailPoll(page);
       await expect(banner).toHaveCount(0);
@@ -305,7 +303,7 @@ for (const viewport of [{ width: 320, height: 900, theme: "dark" }, { width: 144
       await expect(attention.locator("summary")).not.toHaveText("方案已批准");
       phase = "new-plan";
       await page.reload();
-      await expect(banner.getByRole("button", { name: "批准", exact: true })).toBeEnabled();
+      await expect(plan.getByRole("button", { name: "批准", exact: true })).toBeEnabled();
       await page.unroute("**/api/v1/agent-sessions**");
     }
   });

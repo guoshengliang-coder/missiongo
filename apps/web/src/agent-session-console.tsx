@@ -3,7 +3,7 @@ import { permissionReplyText } from "./permission-presentation";
 import { DeliveryCards, MergeProgressBadge, useMergeProgress } from "./merge-console";
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
-import { AgentPlanContent, planContinuationObserved, planTranscript, repeatsSubmittedPlan } from "./agent-plan-content";
+import { InlinePlanApproval, inlinePlanTranscript, currentPlan, planContinuationObserved } from "./agent-plan-content";
 import { AgentStopFeedback } from "./agent-stop-feedback.js";
 import { hasStoppableAgentTurn } from "@missiongo/domain";
 import { ChatAttachments } from "./chat-attachments";
@@ -640,6 +640,7 @@ export function AgentSessionConsole({
   const messages = projectConversationMessages(history.messages, Boolean(selected?.productId));
   const attachmentMessages = sessionQuery.data?.attachmentMessages ?? [];
   const visibleMessages = agentChatMessages(messages, attachmentMessages, outgoing?.commandId);
+  const planMessages = inlinePlanTranscript(visibleMessages, sessionQuery.data);
   const activities = sessionQuery.data?.activities ?? [];
   const turnState = sessionQuery.data?.turnState ?? selected?.turnState;
   // Detail polls are faster than list polls. Use the same foreground rule as
@@ -1209,10 +1210,7 @@ export function AgentSessionConsole({
                   </div>
                 )}
                 <AgentProgressReports session={sessionQuery.data} />
-                {planTranscript(visibleMessages, sessionQuery.data).map((message) => {
-                  if (message === null) return <AgentPlanContent key="submitted-plan" session={sessionQuery.data} surface="console" />;
-                  const repeatsPlan = repeatsSubmittedPlan(message, sessionQuery.data);
-                  if (repeatsPlan && !message.questions?.length && !message.attachmentData?.length) return null;
+                {planMessages.messages.map((message) => {
                   const labelKey = messageLabelKey(message.role, selected.agentKind);
                   return (
                     <article key={message.id} data-agent-message-id={`${message.role}:${message.sourceId || message.id}`} className={`agent-console-message agent-console-message-${message.role}`}>
@@ -1220,10 +1218,11 @@ export function AgentSessionConsole({
                         {labelKey && <small>{t(labelKey)}</small>}
                         <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
                       </header>
-                      {!repeatsPlan && message.text && (selected.agentSessionId && ["agent", "plan"].includes(message.role)
+                      {message.text && (selected.agentSessionId && ["agent", "plan"].includes(message.role)
                         ? <AgentArtifactMarkdown text={message.text} sessionId={selected.agentSessionId} messageId={message.id} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />
                         : <MarkdownText>{permissionReplyText(sessionQuery.data?.messages.flatMap(message => message.questions ?? []) ?? [], message.text)}</MarkdownText>)}
                       {message.attachmentData && selected.agentSessionId && <ChatAttachments sessionId={selected.agentSessionId} attachments={message.attachmentData} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />}
+                      {message.id === planMessages.planMessageId && sessionQuery.data && <InlinePlanApproval key={`${sessionQuery.data.id}:${currentPlan(sessionQuery.data)?.revision}`} session={sessionQuery.data} blocked={showPermissionApproval || pending || sendingSelected || cancellingSelected} />}
                       {message.questions && (
                         <AgentSessionQuestions
                           questions={message.questions}
@@ -1239,7 +1238,7 @@ export function AgentSessionConsole({
                     </article>
                   );
                 })}
-                {!showPermissionApproval && (showPlanApproval || !stalePlanAttention && (selected.needsAttention || selected.attention.dismissed) && selected.attention.reason) && (
+                {(!currentPlan(sessionQuery.data)?.plan || !showPlanApproval && selected.attention.kind !== "approval") && !showPermissionApproval && (showPlanApproval || !stalePlanAttention && (selected.needsAttention || selected.attention.dismissed) && selected.attention.reason) && (
                   <div className={`agent-console-attention-banner ${selected.attention.dismissed ? "dismissed" : ""}${showPlanApproval ? " agent-console-attention-banner--approval" : ""}`} role="status">
                     <BellRing size={16} />
                     <details open={planContentMissing || undefined}>
