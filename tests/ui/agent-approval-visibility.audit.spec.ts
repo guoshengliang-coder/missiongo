@@ -238,7 +238,7 @@ test("Claude authorization shows rule scope and sends the selected lifetime as i
   });
   await page.setViewportSize({ width: 375, height: 850 });
   await page.goto('/?product=' + fixture.productId + '&console=agent&session=' + id);
-  const rule = page.getByText('将记住规则 Bash(git status *)，保存到当前项目本机设置。');
+  const rule = page.locator("p.agent-session-question-detail").filter({ hasText: "将记住规则 Bash(git status *)" });
   await expect(rule).toBeVisible();
   await page.getByRole("button", { name: selected, exact: true }).click();
   await expect(page.locator(".agent-console-reply textarea")).toHaveValue(answer);

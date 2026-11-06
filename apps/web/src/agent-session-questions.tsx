@@ -6,6 +6,7 @@ import {
   toggleQuestionOption,
   visibleQuestions,
 } from "./agent-session-view";
+import { permissionPresentation } from "./permission-presentation";
 import { useI18n } from "./i18n";
 import type { AgentSessionQuestion } from "./types";
 
@@ -45,6 +46,7 @@ export function AgentSessionQuestions({
   return (
     <>
       {shown.map((question, index) => {
+        const permission = permissionPresentation(question);
         const label = question.key ?? question.header ?? question.title;
         const settled = question.answered !== undefined;
         const disabled = !canReply || settled;
@@ -60,11 +62,16 @@ export function AgentSessionQuestions({
         const typed = question.kind === "text" || question.kind === "number";
         const custom = question.custom === true && question.options !== undefined && question.options.length > 0;
         return (
-          <div key={`${label}-${index}`} className={`agent-session-question ${settled ? "answered" : ""}`.trim()}>
+          <div key={`${label}-${index}`} className={["agent-session-question", permission && "agent-session-permission", settled && "answered"].filter(Boolean).join(" ")}>
             {question.header && <small>{question.header}</small>}
-            <strong>{question.title}</strong>
+            <strong>{permission ? question.title.replace(/请求使用 (Edit|Write|MultiEdit|NotebookEdit)$/, "请求修改文件") : question.title}</strong>
             {question.answered !== undefined && <small className="agent-session-question-answered">{t("agentSessionQuestionAnswered")}</small>}
-            {question.detail && <p className="agent-session-question-detail">{question.detail}</p>}
+            {permission && question.detail?.split("\n").filter(line => !(question.options ?? []).some(option =>
+              permission.has(option) && line.startsWith(option + "："))).map((line, lineIndex) =>
+                <p key={lineIndex} className="agent-session-question-detail">{line}</p>)}
+            {question.detail && (permission ? <details className="agent-session-question-detail">
+              <summary>技术详情</summary><p>{question.detail}</p>
+            </details> : <p className="agent-session-question-detail">{question.detail}</p>)}
             {question.kind === "boolean" ? (
               <div className="agent-session-options">
                 {options?.map((option) => {
@@ -99,7 +106,9 @@ export function AgentSessionQuestions({
                               ? toggleQuestionOption(reply, question, option, count)
                               : questionAnswerText(reply, question, option, count));
                           }}
-                        >{option}</button>
+                        >{permission ? <span>{permission.get(option)?.label ?? option}</span> : option}
+                          {permission?.get(option)?.detail && <small>{permission.get(option)!.detail}</small>}
+                        </button>
                       );
                     })}
                   </div>
