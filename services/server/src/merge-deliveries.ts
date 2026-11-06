@@ -10,6 +10,7 @@ import { AgentSessionStore } from "./agent-session-store.js";
 import { collaborationBlockers } from "./collaboration-policy.js";
 
 const sha = z.string().regex(/^[a-f0-9]{40}$/);
+const instructionQuote = z.string().trim().min(1).max(500);
 export const mergeEvidenceSchema = z.object({
   head: sha, base: sha, checkedAt: z.string().datetime(),
   checks: z.enum(["passed", "pending", "failed", "unknown"]),
@@ -34,7 +35,8 @@ interface Delivery extends DeliveryInput {
   id: string; productId: string; accountId: string; clientId: string; identity: Identity;
   sessionId: string; revision: string; scope: string; activity: string;
   state: "proposed" | "confirmed" | "withdrawn" | "batched" | "merged";
-  createdAt: string; confirmedAt?: string; batchId?: string;
+  createdAt: string; confirmedAt?: string; confirmedBy?: "console" | "session-instruction"; instructionQuote?: string;
+  batchId?: string;
 }
 interface Batch {
   id: string; productId: string; accountId: string; requestKey: string;
@@ -98,8 +100,17 @@ export class MergeDeliveries {
     if (d.itemKeys.some(key => collaborationBlockers(this.db, this.store.getWorkItem(key).id)>0)) return "dependency";
     return undefined;
   }
-  propose(accountId: string, clientId: string, identity: Identity, requestKey: string, input: DeliveryInput) {
+  /** Confirm binds the session's latest human input; a same-turn imperative order may confirm without a console click. */
+  private confirm(d: Delivery, by: "console" | "session-instruction", quote?: string) {
+    if (!["proposed", "confirmed"].includes(d.state)) throw changed();
+    this.sourceValid(d);
+    d.state = "confirmed"; d.confirmedAt ??= new Date().toISOString();
+    d.confirmedBy ??= by; if (quote) d.instructionQuote ??= quote;
+    this.save(d);
+  }
+  propose(accountId: string, clientId: string, identity: Identity, requestKey: string, input: DeliveryInput, confirmation?: {quote: string}) {
     input = deliverySchema.parse(input);
+    const quote = confirmation ? instructionQuote.parse(confirmation.quote) : undefined;
     const keys = [...new Set(input.itemKeys)].sort();
     return this.db.transaction(() => {
       const previous = this.db.connection.prepare("SELECT id FROM merge_deliveries WHERE account_id=? AND client_id=? AND request_key=?")
@@ -107,6 +118,7 @@ export class MergeDeliveries {
       if (previous) {
         const d = this.read<Delivery>("merge_deliveries", previous.id);
         if (digest({...input,itemKeys:keys}) !== d.revision || digest(identity) !== digest(d.identity)) throw changed();
+        if (quote && d.state === "proposed") this.confirm(d, "session-instruction", quote);
         return this.view(d);
       }
       for (const itemKey of keys) recoverExecutionAuthorization(this.store, accountId, clientId, {itemKey,...identity});
@@ -122,6 +134,7 @@ export class MergeDeliveries {
         revision:digest({...input,itemKeys:keys}),scope:this.scope(keys),activity:this.activity(sessionId),state:"proposed",createdAt:new Date().toISOString()};
       this.db.connection.prepare("INSERT INTO merge_deliveries(id,product_id,account_id,client_id,request_key,state,data_json) VALUES (?,?,?,?,?,?,?)")
         .run(d.id,productId,accountId,clientId,requestKey,d.state,JSON.stringify(d));
+      if (quote) this.confirm(d, "session-instruction", quote);
       return this.view(d);
     });
   }
@@ -142,11 +155,8 @@ export class MergeDeliveries {
     return this.db.transaction(() => {
       const d = this.read<Delivery>("merge_deliveries",id);
       if (d.accountId !== accountId || d.revision !== revision || d.state === "batched" || d.state === "merged") throw changed();
-      if (decision === "confirm") {
-        if (!["proposed","confirmed"].includes(d.state)) throw changed();
-        this.sourceValid(d);
-        d.state = "confirmed"; d.confirmedAt ??= new Date().toISOString();
-      } else d.state = "withdrawn";
+      if (decision === "confirm") this.confirm(d, "console");
+      else d.state = "withdrawn";
       this.save(d); return this.view(d);
     });
   }
