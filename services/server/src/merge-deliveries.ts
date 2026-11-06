@@ -190,7 +190,7 @@ export class MergeDeliveries {
       });
       if(new Set(deliveries.map(d=>d.repository)).size!==1 || new Set(deliveries.map(d=>d.targetBranch)).size!==1) throw changed();
       const id=randomUUID();
-      const text = `执行用户已授权的合并批次 ${id}。派单启动后先调用 get_merge_batch，使用本会话原 dispatchId。仅合并批次冻结的 PR 与 head；每次执行前重新调用 get_merge_batch，entries 中 blocker 非空必须停止。用 gh pr merge --match-head-commit 绑定获准 head，禁止 --admin 或绕过保护；不要领取开发条目，不要重新创建批次。每项合并前重新核实目标仓库、主线、依赖、CI 及预期 head，提交变化必须停止，不允许合并新 head。清单中的旧检查证据仅供参考，由本合并会话统一读取实时结果；CI 排队或运行中时保留原批次等待，先查状态且状态未变时降低轮询频率，不将等待标记为失败或另建会话；实际检查失败、冲突或未结束依赖必须阻止实际合并。机械性冲突可调查，语义冲突交回原开发会话；新增代码需重新交付确认。使用 report_merge_batch 逐项记录实际结果；未知结果保留原批次。发布授权：${publish ? "合并完成后按项目既有全量候选覆盖门禁发布；批次选择不缩小发布范围。" : "仅合并，不发布。"} 完成所有操作且核实无后台执行后，才结束批次。遵守仓库权限和发布规则。`;
+      const text = `执行用户已授权的合并批次 ${id}。派单启动后先调用 get_merge_batch，使用本会话原 dispatchId。仅处理批次冻结的 PR；每次执行前重新调用 get_merge_batch，entries 中 blocker 非空必须停止。用 gh pr merge --match-head-commit 绑定实际合并的 head，禁止 --admin 或绕过保护；不要领取开发条目，不要重新创建批次。每项合并前重新核实目标仓库、主线、依赖、CI 及预期 head；他人推送的新提交必须停止，不得合并未经本会话核验的 head。清单中的旧检查证据仅供参考，由本合并会话统一读取实时结果；CI 排队或运行中时保留原批次等待，先查状态且状态未变时降低轮询频率，不将等待标记为失败或另建会话。你是集成者，以保障批次全部条目成功集成为目标：冲突由你解决，导致检查失败的代码错误与测试回归由你修复，疑似 flaky 或超时的检查可重跑一次核实；修复只做完成集成所必需的改动（解冲突、兼容适配、修回归），不扩大功能范围，修复提交推送至原 PR 分支。修复后的最终 head 必须本地仓库检查通过、GitHub CI 全绿且无冲突才允许合并；穷尽合理修复仍无法集成的项记 blocked，写明已尝试的修复与剩余障碍，不编造修复结果。使用 report_merge_batch 逐项记录实际结果；未知结果保留原批次。发布授权：${publish ? "批次全部条目合并成功后按项目既有全量候选覆盖门禁发布，批次选择不缩小发布范围；存在 blocked 项时不得自动发布，先逐项报告，等用户明确决定是否先发已合并部分。" : "仅合并，不发布。"} 完成所有操作且核实无后台执行后，才结束批次。遵守仓库权限和发布规则。`;
       const dispatches=new DispatchStore(this.db);
       const free=new FreeSessionStore(this.db,dispatches,new AgentSessionStore(this.db));
       const dispatch=free.prepare(accountId,id,config,text);
