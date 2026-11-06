@@ -9,7 +9,7 @@ import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, SessionStatusI
 import { MarkdownText } from "./markdown-text";
 import { AgentArtifactMarkdown } from "./agent-artifact-viewer";
 import { api } from "./api";
-import { activityLabelKey, agentSessionDetailRefetchInterval, formatAgentMessageTime, isWithdrawnCard, replyBlockedLabelKey } from "./agent-session-view";
+import { activityLabelKey, agentSessionDetailRefetchInterval, formatAgentMessageTime, isWithdrawnCard, replyBlockedLabelKey, sessionInlineError, sessionStatusDetail } from "./agent-session-view";
 import { AgentSessionQuestions } from "./agent-session-questions";
 import { useI18n } from "./i18n";
 import { localizedErrorText } from "./error-text";
@@ -121,6 +121,10 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
   const backgroundOnly = session.data?.agentKind === "claude_code" && session.data.status === "active"
     && session.data.turnState?.turnActive === false && !waiting && session.data.activities.length > 0;
   const visualStatus = waiting ? "idle" : session.data?.status ?? "idle";
+  const activityText = session.data
+    ? t(activityLabelKey(session.data.status, command?.status === "queued"), { agent: agentName }) : "";
+  const inlineError = session.data ? sessionInlineError(session.data.status, session.data.lastError) : undefined;
+  const statusDetail = session.data ? sessionStatusDetail(session.data.status, session.data.lastError, activityText) : activityText;
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const text = reply.trim();
@@ -179,7 +183,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
               <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={visualStatus} />} label={waiting
                 ? t(session.data.agentKind === "codex" ? "agentRunApproval" : "agentRunWaiting", { agent: agentName })
                 : backgroundOnly ? t("agentRunBackground") : session.data.status === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(session.data.status, t)}>
-                <p>{t(activityLabelKey(session.data.status, command?.status === "queued"), { agent: agentName })}</p>
+                <p>{statusDetail}</p>
                 {session.data.activities.length > 0 && (
                   <section className="agent-session-background" aria-label={t("agentSessionBackgroundTitle")}>
                     <strong>{t("agentSessionBackgroundCount", { count: session.data.activities.length })}</strong>
@@ -200,7 +204,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
               </AgentRunDetails>
               </div>
               <AgentHistoryNotice error={session.data.lastError} />
-              {session.data.lastError && !isHistoryLimited(session.data.lastError) && <AgentSessionError error={session.data.lastError} onRetry={()=>void session.refetch()} />}
+              {inlineError && !isHistoryLimited(inlineError) && <AgentSessionError error={inlineError} onRetry={()=>void session.refetch()} />}
               {command?.kind === "message" && (
                 <div className={`agent-session-command agent-session-command-${command.status}`}>
                   <span>

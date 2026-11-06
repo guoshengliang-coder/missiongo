@@ -57,9 +57,9 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
     await expect(open).toBeFocused();
     await open.click(); await page.goBack(); await expect(viewer).toHaveCount(0);
     await expect(page.locator(".agent-console-conversation")).toBeVisible();
-    await expect(page.locator(".agent-reply-queued")).toHaveCSS("animation-name", "pulse");
+    await expect(page.locator(".agent-reply-spin")).toHaveCSS("animation-name", "spin");
     await page.emulateMedia({ reducedMotion: "reduce" });
-    await expect(page.locator(".agent-reply-queued")).toHaveCSS("animation-name", "none");
+    await expect(page.locator(".agent-reply-spin")).toHaveCSS("animation-name", "none");
     await page.emulateMedia({ reducedMotion: "no-preference" });
     for (const width of [320, 520, 521, 768, 1023, 1024, 1440, 1794]) {
       await page.setViewportSize({ width, height: width === 768 ? 375 : 955 });
@@ -80,10 +80,10 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
     rejectImage = false; await tile.getByRole("button", { name: "重试", exact: true }).click();
     await expect(tile).toHaveAttribute("data-image-state", "ready");
     delivery = "delivering"; await page.reload();
-    await expect(page.locator(".agent-reply-sending")).toHaveCSS("animation-name", "spin");
+    await expect(page.locator(".agent-reply-current .agent-reply-spin")).toHaveCSS("animation-name", "spin");
     delivery = "delivered"; sessionStatus = "idle"; await page.reload();
-    await expect(page.locator(".agent-reply-state")).toContainText("送达");
-    await expect(page.locator(".agent-reply-queued, .agent-reply-sending")).toHaveCount(0);
+    await expect(page.locator(".agent-reply-current .agent-reply-state")).toContainText("送达");
+    await expect(page.locator(".agent-reply-current .agent-reply-spin")).toHaveCount(0);
     await page.screenshot({ path: test.info().outputPath(`chat-fixes-${theme}.png`) });
   });
 });

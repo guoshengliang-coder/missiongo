@@ -36,7 +36,9 @@ import {
   replyBlockedLabelKey,
   resolvedAgentSessionId,
   sessionCountsAsUnread,
+  sessionInlineError,
   sessionReplyDraft,
+  sessionStatusDetail,
   shouldMarkRead,
   shouldResetMessageView,
   shouldScrollMessagesAfterChange,
@@ -413,6 +415,20 @@ describe("agent session message view", () => {
     for (const status of ["active", "suspended", "stalled", "unavailable", "failed"] as const) {
       expect(effectiveAgentSessionStatus(status, { ...command, status: "queued" })).toBe(status);
     }
+  });
+
+  it("keeps a released session out of the error banner but explains it in the run details", () => {
+    const release = "Claude Code 会话已空闲 2 小时，进程已挂起；发送下一条消息时会恢复。";
+    expect(sessionInlineError("suspended", release)).toBeUndefined();
+    expect(sessionStatusDetail("suspended", release, "本机 Claude 进程已释放")).toBe(release);
+    // Without a node explanation the neutral copy still says what happened.
+    expect(sessionStatusDetail("suspended", undefined, "本机 Claude 进程已释放")).toBe("本机 Claude 进程已释放");
+    // Genuine failures keep both the banner and their own detail.
+    for (const status of ["failed", "stalled", "unavailable"] as const) {
+      expect(sessionInlineError(status, "boom")).toBe("boom");
+      expect(sessionStatusDetail(status, "boom", "activity")).toBe("activity");
+    }
+    expect(sessionInlineError("idle", "boom")).toBe("boom");
   });
 
   it("has a bottom-of-conversation label for every session state", () => {
