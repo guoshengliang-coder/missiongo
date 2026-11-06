@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 export function inspectDelivery(delivery, run = (command, args) => execFileSync(command, args, { encoding: "utf8", timeout: 30_000 }).trim()) {
+  delivery = { ...delivery, head: delivery.executionHead ?? delivery.head };
   if (!/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+$/.test(delivery.repository)
     || !Number.isSafeInteger(delivery.pullRequest) || delivery.pullRequest < 1
     || !/^[a-f0-9]{40}$/.test(delivery.head) || !/^[\w][\w./-]{0,150}$/.test(delivery.targetBranch)) throw new Error("Invalid delivery identity");
@@ -15,6 +16,7 @@ export function inspectDelivery(delivery, run = (command, args) => execFileSync(
     "--json", "url,state,isDraft,headRefOid,baseRefName,baseRefOid,mergeable,statusCheckRollup,mergeCommit,mergedAt"]));
   if (pr.url !== `${delivery.repository}/pull/${delivery.pullRequest}` || pr.headRefOid !== delivery.head
     || pr.baseRefName !== delivery.targetBranch || !/^[a-f0-9]{40}$/.test(pr.baseRefOid)) throw new Error("PR identity or approved revision changed");
+  if (pr.state !== "MERGED" && delivery.expectedBase && delivery.expectedBase !== pr.baseRefOid) throw new Error("Target base changed; repeat validation");
   const checks = pr.statusCheckRollup ?? [];
   const passed = checks.length > 0 && checks.every(c => "conclusion" in c
     ? c.status === "COMPLETED" && ["SUCCESS", "SKIPPED", "NEUTRAL"].includes(c.conclusion)
@@ -32,7 +34,7 @@ export function inspectDelivery(delivery, run = (command, args) => execFileSync(
     return { evidence, result: { status: "merged", head: delivery.head, commit: pr.mergeCommit.oid,
       detail: `Verified ${pr.url} merged at ${pr.mergedAt}; merge commit is included in ${delivery.targetBranch}.` } };
   }
-  return { evidence, ready: evidence.checks === "passed" && evidence.mergeable === "clean",
+  return { evidence, ready: delivery.mergeReady !== false && evidence.checks === "passed" && evidence.mergeable === "clean",
     mergeArguments: ["pr", "merge", String(delivery.pullRequest), "--repo", repository, "--merge", "--match-head-commit", delivery.head] };
 }
 
