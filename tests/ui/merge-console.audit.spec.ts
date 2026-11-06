@@ -17,7 +17,14 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     const bodies:unknown[]=[];
     await page.route("**/merge-batches",route=>{bodies.push(route.request().postDataJSON());return route.fulfill({status:503,json:{title:"Synthetic lost acknowledgement"}});});
     await page.goto(`/?product=${product.id}&console=agent`);
-    await page.getByRole("button",{name:"待合并 1",exact:true}).click();
+    const entry=page.getByRole("button",{name:"待合并 1",exact:true});
+    const bar=page.locator(".agent-console-topbar");
+    const bounds=await bar.boundingBox();
+    for(const control of [entry,page.locator(".agent-console-topbar-actions")]) {
+      const box=await control.boundingBox();expect(box).not.toBeNull();
+      expect(box!.y+box!.height).toBeLessThanOrEqual(bounds!.y+bounds!.height+1);
+    }
+    await entry.click();
     const dialog=page.getByRole("dialog");
     await expect(dialog).toBeVisible();
     await expect(dialog.getByRole("button",{name:"开始合并（0 项）"})).toBeDisabled();

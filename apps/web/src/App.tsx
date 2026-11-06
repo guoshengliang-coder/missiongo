@@ -1302,8 +1302,8 @@ export function App() {
               clearItemPage();
             }}
           />
-        </div>
         {agentConsoleOpen && selectedProductId && <PendingMergeButton productId={selectedProductId} onSession={id=>selectAgentSession(id,true)} />}
+        </div>
         {products.length > 0 && !agentConsoleOpen && (
           <button
             type="button"
