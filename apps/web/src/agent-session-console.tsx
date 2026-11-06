@@ -1,3 +1,4 @@
+import { permissionReplyText } from "./permission-presentation";
 import { DeliveryCards, MergeProgressBadge, useMergeProgress } from "./merge-console";
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
@@ -1167,7 +1168,7 @@ export function AgentSessionConsole({
                       </header>
                       {!repeatsPlan && message.text && (selected.agentSessionId && ["agent", "plan"].includes(message.role)
                         ? <AgentArtifactMarkdown text={message.text} sessionId={selected.agentSessionId} messageId={message.id} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />
-                        : <MarkdownText>{message.text}</MarkdownText>)}
+                        : <MarkdownText>{permissionReplyText(sessionQuery.data?.messages.flatMap(message => message.questions ?? []) ?? [], message.text)}</MarkdownText>)}
                       {message.attachmentData && selected.agentSessionId && <ChatAttachments sessionId={selected.agentSessionId} attachments={message.attachmentData} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />}
                       {message.questions && (
                         <AgentSessionQuestions
@@ -1226,7 +1227,7 @@ export function AgentSessionConsole({
                     <header className="agent-console-message-meta">
                       <time dateTime={outgoing.occurredAt}>{formatAgentMessageTime(outgoing.occurredAt, locale)}</time>
                     </header>
-                    <MarkdownText>{outgoing.text}</MarkdownText>
+                    <MarkdownText>{permissionReplyText(sessionQuery.data?.messages.flatMap(message => message.questions ?? []) ?? [], outgoing.text)}</MarkdownText>
                     {command && command.id === outgoing.commandId && command.attachments && selected.agentSessionId
                       && <ChatAttachments sessionId={selected.agentSessionId} attachments={command.attachments} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />}
                     {sendingSelected && send.variables?.files.length ? <div className="agent-chat-draft-files">
@@ -1426,9 +1427,9 @@ export function AgentSessionConsole({
                     id={`agent-reply-${selected.id}`}
                     rows={1}
                     maximumHeight={240}
-                    value={reply}
+                    value={permissionReplyText(sessionQuery.data?.messages.flatMap(message => message.questions ?? []) ?? [], reply)}
                     onChange={(event) => {
-                      setReply(event.target.value);
+                      setReply(permissionReplyText(sessionQuery.data?.messages.flatMap(message => message.questions ?? []) ?? [], event.target.value, true));
                       if (send.isError && send.variables?.sessionId === selected.agentSessionId) send.reset();
                     }}
                     placeholder={t("agentSessionReplyPlaceholder", { agent: agentLabel(selected, t) })}

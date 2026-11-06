@@ -1,3 +1,4 @@
+import { permissionReplyText } from "./permission-presentation";
 import { DeliveryCards } from "./merge-console";
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
@@ -169,7 +170,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                         <small>{messageLabel(message.role, session.data.agentKind, t)}</small>
                         <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
                       </header>
-                      {!repeatsPlan && (message.role === "user" ? <MarkdownText>{message.text}</MarkdownText> : <AgentArtifactMarkdown text={message.text} sessionId={sessionId} messageId={message.id} />)}
+                      {!repeatsPlan && (message.role === "user" ? <MarkdownText>{permissionReplyText(session.data.messages.flatMap(message => message.questions ?? []), message.text)}</MarkdownText> : <AgentArtifactMarkdown text={message.text} sessionId={sessionId} messageId={message.id} />)}
                       {message.questions && (
                         <AgentSessionQuestions
                           questions={message.questions}
@@ -242,8 +243,8 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                       rows={1}
                       maximumHeight={240}
                       submitOnEnter
-                      value={reply}
-                      onChange={(event) => setReply(event.target.value)}
+                      value={permissionReplyText(session.data.messages.flatMap(message => message.questions ?? []), reply)}
+                      onChange={(event) => setReply(permissionReplyText(session.data.messages.flatMap(message => message.questions ?? []), event.target.value, true))}
                       placeholder={t("agentSessionReplyPlaceholder", {
                         agent: messageLabel("agent", session.data.agentKind, t),
                       })}
