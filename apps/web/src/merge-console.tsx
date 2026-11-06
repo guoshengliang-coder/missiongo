@@ -1,3 +1,4 @@
+import type { MergeIntegration } from "@missiongo/contracts";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { defaultAgentMode, type AgentKind } from "@missiongo/domain";
@@ -16,7 +17,7 @@ interface Delivery {
   itemKeys:string[];head:string;requiredArtifacts:string[];noReleaseReason?:string;pullRequestUrl:string;
   blocker?:string;evidence:{checkedAt:string;source:string};
 }
-interface Batch {id:string;sessionId:string;state:string;deliveries:string[];publish:boolean;results:Record<string,{status:string;detail:string}>}
+interface Batch {integration?:MergeIntegration;id:string;sessionId:string;state:string;deliveries:string[];publish:boolean;results:Record<string,{status:string;detail:string}>}
 const post=<T,>(path:string,body:unknown)=>request<T>(path,{method:"POST",body:JSON.stringify(body)});
 const useDeliveries=(productId:string)=>useQuery({
   queryKey:["merge-deliveries",productId],
@@ -41,8 +42,9 @@ export function DeliveryCards({productId,sessionId}:{productId:string;sessionId:
     onSuccess:()=>client.invalidateQueries({queryKey:["merge-deliveries",productId]})});
   const rows=query.data?.deliveries.filter(d=>d.sessionId===sessionId)??[];
   if(query.isError) return <p role="alert" className="inline-error">{t("mergeLoadError")} <button type="button" className="secondary-button" onClick={()=>void query.refetch()}>{t("retry")}</button></p>;
-  if(!rows.length) return null;
-  return <div className="merge-delivery-cards">{rows.map(d=><section className="merge-delivery-card" key={d.id}>
+  const batches=query.data?.batches.filter(b=>b.sessionId===sessionId)??[];
+  if(!rows.length&&!batches.length) return null;
+  return <div className="merge-delivery-cards">{batches.map(b=><IntegrationProgress key={b.id} batch={b}/>)}{rows.map(d=><section className="merge-delivery-card" key={d.id}>
     <strong>{t(d.state==="proposed"?"mergeOffer":d.state==="confirmed"?"mergeConfirmed":"mergeInBatch")}</strong>
     <p>{d.summary}</p><small>{d.itemKeys.join(" · ")} · {d.requiredArtifacts.join(" / ") || d.noReleaseReason}</small>
     <details><summary>{t("mergeDetails")}</summary><p>{d.validation}</p>
@@ -102,7 +104,7 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
     if(!config)throw new Error("Missing configuration");
     frozen.current??={requestKey:crypto.randomUUID(),selection:Object.entries(selected).map(([id,revision])=>({id,revision})),config,publish};
     const f=frozen.current;
-    return post<Batch>(`/api/v1/products/${productId}/merge-batches`,{...f.config,requestKey:f.requestKey,selection:f.selection,publish:f.publish});
+    return post<Batch>(`/api/v1/products/${productId}/merge-batches`,{...f.config,requestKey:f.requestKey,selection:f.selection,publish:f.publish,integrationProtocol:1});
   },onSuccess:b=>onSession(b.sessionId),onError:error=>{
     if(error instanceof ApiError && error.status>=400 && error.status<500) frozen.current=undefined;
     void query.refetch();
@@ -117,7 +119,7 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
       {query.isPending&&<p role="status">{t("mergeLoading")}</p>}
       {query.isError&&<p role="alert" className="inline-error">{t("mergeLoadError")} <button type="button" className="secondary-button" onClick={()=>void query.refetch()}>{t("retry")}</button></p>}
       {active&&<section className="merge-delivery-card"><strong>{t("mergeActive")}</strong>
-        <p>{t("mergeActiveHelp")}</p><button type="button" className="secondary-button" onClick={()=>onSession(active.sessionId)}>{t("mergeOpenSession")}</button></section>}
+        <p>{t("mergeActiveHelp")}</p><IntegrationProgress batch={active}/><button type="button" className="secondary-button" onClick={()=>onSession(active.sessionId)}>{t("mergeOpenSession")}</button></section>}
       {query.isSuccess&&!candidates.length&&!active&&<p>{t("mergeEmpty")}</p>}
       <div className="merge-list">{candidates.map(d=><div className="merge-row" key={d.id}>
         <label><input type="checkbox" checked={Boolean(selected[d.id])} disabled={locked||Boolean(active)||(d.blocker==="changed"&&!selected[d.id])}
@@ -130,6 +132,7 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
           {d.blocker&&<p>{t(d.blocker==="changed"?"mergeChanged":"mergeNeedsCheckHelp")}</p>}
         </details>
       </div>)}</div>
+      <p>{t("integrationAuthorization")}</p>
       <section className="merge-config"><strong>{t("mergeExecutor")}</strong><p>{t("mergeExecutorHelp")}</p>
         <div className="merge-config-fields">
           <label>{t("mergeDevice")}<Select value={config?.nodeId??""} disabled={locked} onChange={e=>{
@@ -156,4 +159,36 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
       </div>
     </div>}
   </Modal>;
+}
+
+function IntegrationProgress({batch}:{batch:Batch}) {
+  const {t,formatTime}=useI18n(),state=batch.integration;
+  if(!state)return <p>{t("integrationLegacy")}</p>;
+  const plan=state.plans.at(-1);
+  const order=plan?.entries.map(e=>e.deliveryId)??Object.keys(state.entries);
+  const labels={queued:"integrationQueued",investigating:"integrationInvestigating",repairing:"integrationRepairing",waiting_ci:"integrationWaiting",ready:"integrationReady",merged:"integrationMerged",blocked:"integrationBlocked"} as const;
+  return <section className="merge-delivery-card integration-progress" aria-label={t("integrationTitle")}>
+    <strong>{t(batch.state==="finished"?"integrationFinished":"integrationTitle")}</strong>
+    {plan?<><p>{plan.summary}</p><p>{t("integrationValidation")}: {plan.validation}</p></>:<p>{t("integrationPlanning")}</p>}
+    <ol>{order.map(id=>{const e=state.entries[id];if(!e)return null;const result=batch.results[id],step=plan?.entries.find(row=>row.deliveryId===id);
+      const status=result?.status==="merged"?"merged":result?.status==="blocked"?"blocked":e.progress;
+      return <li key={id}><strong>{e.itemKeys.join(" · ")}</strong>{" · "}<span>{t(labels[status])}</span>
+        <p>{result?.detail||e.detail||step?.reason||t("integrationPlanning")}</p>
+        {step&&<small>{t("integrationGroup")}: {step.group}{step.dependsOn.length?` · ${t("integrationDependencies")}: ${step.dependsOn.map(dep=>state.entries[dep]?.itemKeys.join(" / ")).join(" · ")}`:""}</small>}
+        <details><summary>{t("integrationEvidence")}</summary>
+          <p>{t("integrationOriginal")}: <code>{e.originalHead}</code></p><p>{t("integrationCurrent")}: <code>{e.head}</code></p>
+          {e.repair&&<p>{t("integrationRepairPending")}: {e.repair.reason}</p>}
+          {e.repairs.map(r=><div key={r.id}><p>{r.reason}</p><p><code>{r.fromHead}</code> → <code>{r.head}</code></p><p>{r.validation}</p><small>{formatTime(r.at)}</small></div>)}
+          {e.check&&<p>{e.check.validation} · {formatTime(e.check.checkedAt)}</p>}
+          {step&&<p>{t("integrationValidation")}: {step.validation}</p>}
+        </details>
+      </li>;
+    })}</ol>
+    {state.finalValidation&&<p>{t("integrationCombined")}: {state.finalValidation.validation}</p>}
+    {batch.publish&&Object.values(batch.results).some(r=>r.status==="blocked")&&<p role="status">{t("integrationPublishHeld")}</p>}
+    <details><summary>{t("integrationHistory")}</summary>
+      {state.plans.map((p,i)=><p key={i}>{i+1}. {p.summary} · {formatTime(p.at)}</p>)}
+      {state.events.map(e=><p key={e.id}>{e.detail} · {formatTime(e.at)}</p>)}
+    </details>
+  </section>;
 }

@@ -49,7 +49,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     await dialog.getByRole("button",{name:"重试原批次"}).click();
     await expect.poll(()=>bodies.length).toBe(2);
     expect(bodies[0]).toEqual(bodies[1]);
-    expect(bodies[0]).toMatchObject({selection:[{id:delivery.id,revision:delivery.revision}],publish:false,nodeId:"merge-node",agentKind:"codex",mode:"auto"});
+    expect(bodies[0]).toMatchObject({selection:[{id:delivery.id,revision:delivery.revision}],publish:false,integrationProtocol:1,nodeId:"merge-node",agentKind:"codex",mode:"auto"});
   });
 }
 
@@ -93,4 +93,35 @@ for (const width of [320,1440]) for (const theme of ["light","dark"] as const) f
     await expect(page.getByRole("dialog").locator(".merge-row input")).toBeDisabled();
   }
   const current=await(await request.get(`/api/v1/items/${item.key}`)).json();expect(current.status??current.item?.status).toBe("ready");
+});
+
+for(const width of [320,1440]) for(const theme of ["light","dark"] as const) test(`integration plan and recovery ${width} ${theme}`,async({page,request},testInfo)=>{
+  await page.setViewportSize({width,height:900});await page.emulateMedia({colorScheme:theme});
+  const product=await(await request.post("/api/v1/products",{data:{name:"Integration",keyPrefix:`IP${width}${theme[0]!.toUpperCase()}`}})).json();
+  const id="integration-session",at=new Date().toISOString();
+  const session={id,agentSessionId:id,dispatchId:"integration-dispatch",productId:product.id,agentKind:"codex",status:"idle",updatedAt:at,createdAt:at,
+    nodeName:"Fixture",nodeId:"fixture",nodeConnectionState:"online",mode:"auto",dispatchStatus:"launched",activities:[],settings:{},unread:false,
+    canReply:true,canRetry:false,canStop:false,canArchive:true,attention:{state:"none"},needsAttention:false,items:[]};
+  const entry=(key:string,progress:string)=>({itemKeys:[key],originalHead:"a".repeat(40),head:"b".repeat(40),progress,detail:"根据已确认需求核实接口兼容与回归，不扩大功能范围",repairs:[]});
+  const batch={id:"integration",sessionId:id,state:"active",deliveries:["a","b","c"],publish:true,results:{a:{status:"merged",detail:"基础改动已合并"},c:{status:"blocked",detail:"外部提交需要核对"}},
+    integration:{protocol:1,revision:7,plans:[{base:"c".repeat(40),summary:"先合基础接口，再核实依赖功能；独立改动单独处理",validation:"最终主线组合行为与仓库检查",at,
+      entries:["a","b","c"].map((deliveryId,i)=>({deliveryId,head:"b".repeat(40),dependsOn:i===1?["a"]:[],group:i<2?"接口兼容":"独立变更",reason:"读取相互影响后确定顺序",validation:"保留已有行为并验证新增功能"}))}],
+      entries:{a:entry("IP-1","ready"),b:{...entry("IP-2","waiting_ci"),repairs:[{id:"repair",fromHead:"a".repeat(40),head:"b".repeat(40),base:"c".repeat(40),reason:"修复重复渲染",commits:["b".repeat(40)],validation:"回归测试已通过，远程 CI 排队中",source:"Fixture",at}]},c:entry("IP-3","investigating")},events:[{id:"event",digest:"digest",action:"plan",at,detail:"整批计划已保存，断线恢复沿用原批次"}]}};
+  await page.route("**/api/v1/agent-sessions**",route=>route.fulfill({json:new URL(route.request().url()).pathname==="/api/v1/agent-sessions"?{sessions:[session]}:{...session,messages:[]}}));
+  await page.route("**/merge-deliveries",route=>route.fulfill({json:{deliveries:[],batches:[batch]}}));
+  await page.goto(`/?product=${product.id}&console=agent&session=${id}`);
+  const progress=page.getByRole("region",{name:"集成进度"});await expect(progress).toBeVisible();
+  await expect(progress).toContainText("先合基础接口");await expect(progress).toContainText("等待 CI");await expect(progress).toContainText("发布等待你决定");
+  await progress.locator("li").filter({hasText:"IP-2"}).getByText("查看修复与验证详情",{exact:true}).click();
+  await expect(progress).toContainText("修复重复渲染");
+  const draft=page.locator(".agent-console-reply textarea");await draft.fill("保留此草稿");
+  for(const scale of ["small","medium","large"]) {
+    await page.evaluate(value=>{document.documentElement.dataset.fontScale=value;},scale);
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+    const audit=await page.evaluate(AUDIT_SOURCE) as {text:Array<{fontSize:number;contrast:number;fontWeight:number}>};
+    expect(audit.text.filter(r=>r.fontSize>0&&r.fontSize<11)).toEqual([]);
+    expect(audit.text.filter(r=>r.contrast<(r.fontSize>=24||(r.fontWeight>=700&&r.fontSize>=18.66)?3:4.5))).toEqual([]);
+  }
+  await expect(draft).toHaveValue("保留此草稿");await page.screenshot({path:testInfo.outputPath("integration-progress.png"),fullPage:true});
+  await page.reload();await expect(progress).toContainText("先合基础接口");await expect(progress).toContainText("IP-2");
 });

@@ -480,3 +480,7 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 - 列表和头部共用 `SessionCategoryBadge`、`agentSessionCategory`，复用现有角标样式、主题令牌与 `Select`。筛选、总数和运行中数量使用同一分类判定，保留项目、Agent、搜索和状态筛选。
 - 服务端以账号内批次保存的稳定会话 ID 提供 `sessionPurpose`；已完成、归档及启动重试仍保留类别，不依赖最近批次清单或猜测标题，不改变条目关联、领取、权限和业务状态。旧响应缺少用途时沿用条目关联判断。
 - 回归见 `and-435-session-categories.audit.spec.ts`、`and-369-rework.audit.spec.ts`、会话视图、会话聚合及批次测试；覆盖两处角标、三类互斥、计数、历史、草稿、320px/桌面、触控、明暗与三档字号。生产真实会话留待发布后核对。
+
+### 批次集成计划与恢复
+
+待合并弹窗与集成会话共用 `IntegrationProgress`，复用 `merge-delivery-card`、有序列表及原生 details。计划摘要、验证目标、每项阶段和发布受阻提示直接可见；修复链和历史原位展开。原始提交、当前提交与验证证据分开说明，不以阶段文字冒充检查通过。不新增批准步骤或业务状态；新入口明确必要修复授权，旧批次保持原边界。回归见 `merge-console.audit.spec.ts`，覆盖明暗、320/1440px、三档字号、长提交、草稿和刷新恢复。

@@ -37,8 +37,8 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
     await expect(page.locator(".agent-console-heading h2")).toContainText("这是什么问题？");
-    await expect(page.locator(".agent-console-heading h2 .agent-console-unlinked-badge")).toHaveText("无关联会话");
-    await expect(page.locator(".agent-console-session-heading .agent-console-unlinked-badge")).toHaveText("无关联会话");
+    await expect(page.locator('.agent-console-heading h2 [data-session-category="unlinked"]')).toHaveText("无关联会话");
+    await expect(page.locator('.agent-console-session [data-session-category="unlinked"]')).toHaveText("无关联会话");
     for (const linked of [
       [{ key: fixture.detailKey, title: "首个处理条目", productId: fixture.productId }],
       [{ key: fixture.detailKey, title: "首个处理条目", productId: fixture.productId }, { key: "EXAMPLE-2", title: "第二个处理条目", productId: fixture.productId }],
@@ -49,7 +49,9 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
       const keys = linked.map(item => item.key).join("、");
       await expect(page.locator(".agent-console-session-heading strong")).toHaveText(`${keys} · 这是什么问题？`);
       await expect(page.locator(".agent-console-heading h2")).toContainText(`${keys} · 这是什么问题？`);
-      await expect(page.locator(".agent-console-unlinked-badge")).toHaveCount(0);
+      await expect(page.locator('[data-session-category="unlinked"]')).toHaveCount(0);
+      await expect(page.locator('.agent-console-session [data-session-category="linked"]')).toHaveText("研发会话");
+      await expect(page.locator('.agent-console-heading h2 [data-session-category="linked"]')).toHaveText("研发会话");
       await expect(page.getByRole("button", { name: /^运行中 \d+$/ }).locator("small")).toHaveText("1");
       await expect(page.locator(".agent-console-dispatch-head button")).toHaveCount(items.length);
       await expect(page.getByText("原项目会话的消息历史", { exact: true })).toBeVisible();
