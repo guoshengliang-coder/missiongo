@@ -42,7 +42,7 @@ import {
   projectConversationMessages,
   agentSessionDetailRefetchInterval,
   agentSessionMatches,
-  isGlobalAgentSessionFilter,
+  agentOtherProjectCounts,
   archivableVisibleSessionIds,
   byLatestActivity,
   canonicalAgentSessionId,
@@ -233,12 +233,11 @@ export function AgentSessionConsole({
     () => allSessions.filter((session) => session.productId === productId || session.items.some((item) => item.productId === productId)),
     [allSessions, productId],
   );
-  const sessions = isGlobalAgentSessionFilter(filter) ? allSessions : productSessions;
   const countMatches = (scope: readonly AgentSessionSummary[], key: AgentSessionFilter) =>
     scope.filter(session => agentSessionMatches(session, key, agentFilter, search, association));
   const counts = {
-    unread: countMatches(allSessions, "unread").length,
-    attention: countMatches(allSessions, "attention").length,
+    unread: countMatches(productSessions, "unread").length,
+    attention: countMatches(productSessions, "attention").length,
     active: countMatches(productSessions, "active").length,
     all: countMatches(productSessions, "all").length,
     failed: countMatches(productSessions, "failed").length,
@@ -246,13 +245,17 @@ export function AgentSessionConsole({
     productUnread: countMatches(productSessions, "all").filter(sessionCountsAsUnread).length,
     failedUnread: countMatches(productSessions, "failed").filter(sessionCountsAsUnread).length,
   };
+  const otherProjectCounts = useMemo(
+    () => agentOtherProjectCounts(allSessions, productId),
+    [allSessions, productId],
+  );
   const sessionProducts = (session: AgentSessionSummary) => {
     const ids = new Set([...(session.productId ? [session.productId] : []), ...session.items.map(item => item.productId)]);
     return products.filter(product => ids.has(product.id));
   };
   const visibleSessions = useMemo(
-    () => byLatestActivity(sessions.filter((session) => agentSessionMatches(session, filter, agentFilter, search, association))),
-    [agentFilter, association, filter, search, sessions],
+    () => byLatestActivity(productSessions.filter((session) => agentSessionMatches(session, filter, agentFilter, search, association))),
+    [agentFilter, association, filter, search, productSessions],
   );
   const archivableIds = useMemo(() => archivableVisibleSessionIds(visibleSessions), [visibleSessions]);
   const allArchivableSelected = archivableIds.length > 0
@@ -760,13 +763,12 @@ export function AgentSessionConsole({
   };
   const chooseFilter = (next: AgentSessionFilter) => {
     setFilter(next);
-    const nextSessions = isGlobalAgentSessionFilter(next) ? allSessions : productSessions;
-    if (selectedId && !nextSessions.some((session) => session.id === selectedId
+    if (selectedId && !productSessions.some((session) => session.id === selectedId
       && agentSessionMatches(session, next, agentFilter, search, association))) onSelectSession(null, false);
   };
   const chooseAgent = (next: AgentKindFilter) => {
     setAgentFilter(next);
-    if (selectedId && !sessions.some((session) => session.id === selectedId
+    if (selectedId && !productSessions.some((session) => session.id === selectedId
       && agentSessionMatches(session, filter, next, search, association))) onSelectSession(null, false);
   };
 
@@ -842,14 +844,10 @@ export function AgentSessionConsole({
     { key: "archived", icon: Archive, count: counts.archived, label: t("agentConsoleArchived") },
   ];
 
-  const filterGroups = [
-    { label: t("agentConsoleAllProjects"), filters: filters.filter(entry => isGlobalAgentSessionFilter(entry.key)) },
-    { label: t("agentConsoleCurrentProject"), filters: filters.filter(entry => !isGlobalAgentSessionFilter(entry.key)) },
-  ];
-  const navigation = filterGroups.map(group => <div className="agent-console-filter-group" key={group.label} role="group" aria-label={group.label}>
-    <p className="sidebar-label">{group.label}</p>
+  const navigation = <div className="agent-console-filter-group" role="group" aria-label={t("agentConsoleCurrentProject")}>
+    <p className="sidebar-label">{t("agentConsoleCurrentProject")}</p>
     <div className="agent-console-filter-items">
-      {group.filters.map(({ key, icon: Icon, count, unread, label }) => <button key={key} type="button"
+      {filters.map(({ key, icon: Icon, count, unread, label }) => <button key={key} type="button"
         className={`agent-console-filter ${filter === key ? "active" : ""}`} aria-pressed={filter === key} onClick={() => chooseFilter(key)}>
         <Icon className={key === "active" && filter === key ? "spin-when-active" : ""} size={16} />
         <span>{label}</span>
@@ -857,7 +855,16 @@ export function AgentSessionConsole({
         {sessionsLoaded && <small>{count}</small>}
       </button>)}
     </div>
-  </div>);
+  </div>;
+
+  const otherProjectHint = (otherProjectCounts.attention > 0 || otherProjectCounts.unread > 0) && (
+    <p className="agent-console-other-projects" role="status">
+      <span>{t("agentConsoleOtherProjects")}</span>
+      {otherProjectCounts.attention > 0 && <span>{t("agentConsoleNeedsAttention")} {otherProjectCounts.attention}</span>}
+      {otherProjectCounts.attention > 0 && otherProjectCounts.unread > 0 && <span>·</span>}
+      {otherProjectCounts.unread > 0 && <span>{t("agentConsoleUnread")} {otherProjectCounts.unread}</span>}
+    </p>
+  );
 
   return (
     <main className={`agent-console-page ${conversationOpen ? "mobile-conversation-open" : "mobile-list-open"}`}>
@@ -870,6 +877,7 @@ export function AgentSessionConsole({
 
       <section className="agent-console-list" aria-label={t("agentConsoleSessions")}>
         {unavailableSessionId && <p className="inline-error" role="alert">{t("agentConsoleUnavailableLink")}</p>}
+        {otherProjectHint}
         <div className="agent-console-mobile-filters" aria-label={t("agentConsoleFilters")}>
           {navigation}
         </div>
@@ -877,7 +885,7 @@ export function AgentSessionConsole({
           <Select aria-label={t("agentConsoleAssociationFilter")} value={association} onChange={event => {
             const next = event.target.value as AgentAssociationFilter;
             setAssociation(next);
-            if (selectedId && !sessions.some(session => session.id === selectedId
+            if (selectedId && !productSessions.some(session => session.id === selectedId
               && agentSessionMatches(session, filter, agentFilter, search, next))) onSelectSession(null, false);
           }}>
             <option value="all">{t("agentConsoleAssociationAll")}</option>
@@ -1017,7 +1025,6 @@ export function AgentSessionConsole({
                       {session.items.length === 0 && <span className="agent-console-unlinked-badge">{t("agentConsoleAssociationUnlinked")}</span>}
                       <time>{formatAgentMessageTime(session.activityAt ?? session.updatedAt, locale)}</time>
                     </span>
-                    {isGlobalAgentSessionFilter(filter) && <small className="agent-console-session-project">{sessionProducts(session).map(product => product.name).join(" · ")}</small>}
                     <small>{session.source === "external" ? t("agentExternalSource") : session.nodeName} · {agentLabel(session, t)}</small>
                     {attentionLabel(session, t) && (
                       <i className="agent-console-attention" title={session.attention.reason}>

@@ -6,6 +6,7 @@ import {
   agentChatMessages,
   projectConversationMessages,
   approvalNeedsAction,
+  agentOtherProjectCounts,
   agentUnreadCounts,
   agentSessionDetailRefetchInterval,
   agentSessionDispatchFailed,
@@ -143,6 +144,20 @@ describe("agent session message view", () => {
     expect(sessionCountsAsUnread({ unread: true, status: "failed" })).toBe(true);
     expect(sessionCountsAsUnread({ unread: true, status: "active" })).toBe(false);
     expect(sessionCountsAsUnread({ unread: false, status: "idle" })).toBe(false);
+  });
+
+  it("counts other-project attention and unread once, excluding archived and running (AND-419)", () => {
+    const sessions = [
+      { id: "selected", productId: "product-1", needsAttention: true, unread: true, status: "idle", items: [] },
+      { id: "shared", productId: "product-2", needsAttention: true, unread: true, status: "idle", items: [{ productId: "product-1" }] },
+      { id: "other-attention", productId: "product-2", needsAttention: true, unread: false, status: "idle", items: [] },
+      { id: "other-unread", productId: "product-3", needsAttention: false, unread: true, status: "idle", items: [] },
+      { id: "other-both", productId: "product-4", needsAttention: true, unread: true, status: "stalled", items: [{ productId: "product-2" }] },
+      { id: "other-running", productId: "product-4", needsAttention: false, unread: true, status: "active", items: [] },
+      { id: "other-archived", productId: "product-5", needsAttention: true, unread: true, status: "idle", archivedAt: "2026-09-21T00:00:00Z", items: [] },
+    ] as unknown as AgentSessionSummary[];
+    expect(agentOtherProjectCounts(sessions, "product-1")).toEqual({ attention: 2, unread: 2 });
+    expect(agentOtherProjectCounts([], "product-1")).toEqual({ attention: 0, unread: 0 });
   });
 
   it("opens on all non-failed conversations by default", () => {
