@@ -69,6 +69,19 @@ export function transitionPolicy(database: MissionGoDatabase,item: PolicyItem,ac
   if (["in_progress","development_complete"].includes(item.status)) return result(roles.manager || roles.builder,"release_not_permitted");
   return result(roles.manager || roles.proposer,"proposer_or_manager_required");
 }
+/** A publication is product-scoped, independently of the developer's execution identity. */
+export function assertReleaseBatchTransition(database: MissionGoDatabase, item: PolicyItem, accountId: string | undefined) {
+  const accounts = new AccountStore(database), account = accountId ? accounts.findActive(accountId) : undefined;
+  if (!account || !accounts.allows(account, item.productId, "operate") || !accounts.allows(account, item.productId, "ai")) {
+    throw new MissionGoError("release_not_permitted", "Product operation and AI permissions are required for release handover.", 403);
+  }
+  // Reuse archive, transfer, collaboration and exact state-edge guards. This is
+  // called only after the batch's immutable candidate and evidence checks.
+  const decision = transitionPolicy(database, item, accountId, "pending_verification", "release_verified", "system");
+  if (!decision.allowed) throw new MissionGoError(decision.code, "Release handover is no longer permitted.", 409);
+  return { ...decision, basis: "product_release_batch" };
+}
+
 export function assertTransitionPolicy(database: MissionGoDatabase,item: PolicyItem,accountId: string|undefined,to:WorkItemStatus,reason:TransitionReason,actor:ActorKind = "human") {
   const decision = transitionPolicy(database,item,accountId,to,reason,actor);
   if (!decision.allowed) throw new MissionGoError(decision.code,"当前身份不允许此操作，请刷新条目查看可用动作。",["execution_stop_unconfirmed","project_archived","invalid_state_transition","resume_origin_required"].includes(decision.code) ? 409 : 403);

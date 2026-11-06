@@ -380,6 +380,19 @@ export interface SubmitForVerificationInput {
   readonly idempotencyKey: string;
 }
 
+export interface SubmitReleaseBatchInput {
+  readonly productId: string;
+  readonly idempotencyKey: string;
+  readonly deployedCommit: string;
+  readonly receiptDigest: string;
+  readonly items: readonly (Omit<SubmitForVerificationInput, "attribution" | "idempotencyKey" | "deployedCommit" | "receiptDigest"> & {
+    readonly expectedRevision: number;
+    readonly developmentEventId: string;
+    readonly roundKey: string;
+  })[];
+  readonly attribution: EventAttribution & { readonly accountId: string; readonly clientId: string };
+}
+
 export interface WithdrawCommentInput {
   readonly itemKey: string;
   readonly commentId: string;
