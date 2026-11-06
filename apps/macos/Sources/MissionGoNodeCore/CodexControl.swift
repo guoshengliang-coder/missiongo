@@ -148,10 +148,12 @@ public struct CodexApprovalSnapshot: Codable, Equatable, Sendable {
     public let action: String
     public let reason: String?
     public let startedAtMs: Int64
+    public let requestKind: String?
     public let options: [CodexApprovalOption]?
 
     public init(id: String, kind: String, status: String, turnId: String, action: String,
-                reason: String? = nil, startedAtMs: Int64, options: [CodexApprovalOption]? = nil) {
+                reason: String? = nil, startedAtMs: Int64, requestKind: String? = nil,
+                options: [CodexApprovalOption]? = nil) {
         self.id = id
         self.kind = kind
         self.status = status
@@ -159,6 +161,7 @@ public struct CodexApprovalSnapshot: Codable, Equatable, Sendable {
         self.action = action
         self.reason = reason
         self.startedAtMs = startedAtMs
+        self.requestKind = requestKind
         self.options = options
     }
 }
@@ -1634,7 +1637,7 @@ final class CodexApprovalMonitor: @unchecked Sendable {
                               old.kind == "manual", ["pending", "unavailable", "reconnecting"].contains(old.status) else { return }
                         watch.snapshot = CodexApprovalSnapshot(id: old.id, kind: old.kind, status: "resolved",
                             turnId: old.turnId, action: old.action, reason: "来源回合已结束，旧授权请求已失效。",
-                            startedAtMs: old.startedAtMs, options: old.options)
+                            startedAtMs: old.startedAtMs, requestKind: old.requestKind, options: old.options)
                         watch.decision = nil
                         state[threadId] = watch
                     }
@@ -1676,7 +1679,7 @@ final class CodexApprovalMonitor: @unchecked Sendable {
                     watch.snapshot = CodexApprovalSnapshot(id: old.id, kind: old.kind, status: "reconnecting",
                         turnId: old.turnId, action: old.action,
                         reason: "授权连接已断开，正在重新连接并核实来源请求。旧决定不会自动重发。",
-                        startedAtMs: old.startedAtMs, options: old.options)
+                        startedAtMs: old.startedAtMs, requestKind: old.requestKind, options: old.options)
                     watch.decision = nil
                     state[threadId] = watch
                 }
@@ -1693,7 +1696,7 @@ final class CodexApprovalMonitor: @unchecked Sendable {
             if let old = watch.snapshot, old.kind == "manual", ["pending", "reconnecting"].contains(old.status) {
                 watch.snapshot = CodexApprovalSnapshot(id: old.id, kind: old.kind, status: "unavailable",
                     turnId: old.turnId, action: old.action, reason: "Codex 授权连接已断开，请在 Codex 中核实。",
-                    startedAtMs: old.startedAtMs, options: old.options)
+                    startedAtMs: old.startedAtMs, requestKind: old.requestKind, options: old.options)
             }
             watch.active = false
             watch.decision = nil
@@ -1760,7 +1763,7 @@ final class CodexApprovalMonitor: @unchecked Sendable {
                           old.kind == "manual", old.status == "reconnecting", old.turnId == turnId else { return }
                     watch.snapshot = CodexApprovalSnapshot(id: old.id, kind: old.kind, status: "resolved",
                         turnId: old.turnId, action: old.action, reason: "授权请求已随回合结束失效。",
-                        startedAtMs: old.startedAtMs, options: old.options)
+                        startedAtMs: old.startedAtMs, requestKind: old.requestKind, options: old.options)
                     watch.decision = nil
                     state[threadId] = watch
                 }

@@ -124,13 +124,24 @@ describe("AND-423 explicit merge deliveries",()=>{
     expect(f.merges.finish(f.owner.id,b.dispatchId,b.id).state).toBe("finished");
     expect(f.db.prepare("SELECT COUNT(*) AS n FROM dispatch_items WHERE dispatch_id=?").get(b.dispatchId)).toMatchObject({n:0});
   });
-  it("rejects stale evidence and preserves confirmation when only same-head evidence refreshes",async()=>{
+  it("preserves confirmation when only same-head evidence refreshes",async()=>{
     const f=await prepared();f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
     f.merges.refresh(f.owner.id,"original-client",f.identity,f.d.id,{...f.input.evidence,checkedAt:new Date(Date.now()-360_000).toISOString()});
     expect(f.merges.list(f.item.productId,f.owner.id)[0]?.blocker).toBe("stale");
-    expect(()=>f.merges.start(f.owner.id,randomUUID(),[{id:f.d.id,revision:f.d.revision}],f.config,false)).toThrow();
     const refreshed=f.merges.refresh(f.owner.id,"original-client",f.identity,f.d.id,{...f.input.evidence,checkedAt:new Date().toISOString()});
     expect(refreshed.state).toBe("confirmed");expect(refreshed.revision).toBe(f.d.revision);
+  });
+  it.each(["stale", "pending", "failed", "conflicting", "unknown"] as const)("delegates %s evidence to the frozen merge batch",async(reason)=>{
+    const f=await prepared();f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
+    f.merges.refresh(f.owner.id,"original-client",f.identity,f.d.id,{...f.input.evidence,
+      ...(reason==="stale"?{checkedAt:new Date(Date.now()-360_000).toISOString()}:reason==="conflicting"?{mergeable:"conflicting" as const}:{checks:reason})});
+    expect(f.merges.list(f.item.productId,f.owner.id)[0]?.blocker).toBe(reason);
+    const b=f.merges.start(f.owner.id,randomUUID(),[{id:f.d.id,revision:f.d.revision}],f.config,false);
+    const dispatches=new DispatchStore(f.store.database);
+    dispatches.claimNextDispatch(f.node.nodeId);dispatches.recordDispatchResult({nodeId:f.node.nodeId,dispatchId:b.dispatchId,status:"launched"});
+    const entry=f.merges.batch(f.owner.id,b.dispatchId,b.id).entries[0]!;
+    expect(entry.head).toBe(f.d.head);expect(entry.revision).toBe(f.d.revision);expect(entry.blocker).toBeUndefined();
+    expect(()=>f.merges.report(f.owner.id,b.dispatchId,b.id,f.d.id,{status:"merged",head:"b".repeat(40),commit:"c".repeat(40),detail:"Wrong head"})).toThrow();
   });
   it("keeps the batch usable after safe pre-launch retry changes only its dispatch",async()=>{
     const f=await prepared();f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
@@ -180,5 +191,31 @@ describe("AND-423 explicit merge deliveries",()=>{
       const result=await f.call("propose_merge_delivery",{identity:f.identity,idempotencyKey:randomUUID(),delivery:f.input},options);
       expect(result.error || result.isError).toBeTruthy();
     }
+  });
+  it("confirms immediately on a quoted same-turn instruction and stays idempotent",async()=>{
+    const f=await prepared();
+    const d=f.merges.propose(f.owner.id,"original-client",f.identity,"instruction",{...f.input},{quote:"  添加到待合并  "});
+    expect(d.state).toBe("confirmed");expect(d.confirmedBy).toBe("session-instruction");expect(d.instructionQuote).toBe("添加到待合并");
+    const again=f.merges.propose(f.owner.id,"original-client",f.identity,"instruction",{...f.input},{quote:"添加到待合并"});
+    expect(again.state).toBe("confirmed");expect(again.confirmedBy).toBe("session-instruction");
+    const b=f.merges.start(f.owner.id,randomUUID(),[{id:d.id,revision:d.revision}],f.config,false);
+    expect(b.state).toBe("active");
+  });
+  it("keeps the confirmation origin explicit and never overwrites it",async()=>{
+    const f=await prepared();
+    expect(f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm").confirmedBy).toBe("console");
+    const g=await prepared();
+    const d=g.merges.propose(g.owner.id,"original-client",g.identity,"instruction",{...g.input},{quote:"加入待合并"});
+    expect(g.merges.decide(g.owner.id,d.id,d.revision,"confirm").confirmedBy).toBe("session-instruction");
+    expect(()=>g.merges.propose(g.owner.id,"original-client",g.identity,"instruction",{...g.input,pullRequest:14},{quote:"加入待合并"})).toThrow();
+  });
+  it("confirms through the MCP tool only when instructionConfirmation is carried",async()=>{
+    const f=await prepared();
+    const ordered=await f.call("propose_merge_delivery",{identity:f.identity,idempotencyKey:"mcp-instruction",delivery:f.input,instructionConfirmation:{quote:"添加到待合并"}});
+    f.safe(ordered);
+    expect(ordered.structuredContent!.delivery).toMatchObject({state:"confirmed",confirmedBy:"session-instruction"});
+    const plain=await f.call("propose_merge_delivery",{identity:f.identity,idempotencyKey:"mcp-plain",delivery:f.input});
+    f.safe(plain);
+    expect(plain.structuredContent!.delivery).toMatchObject({state:"proposed"});
   });
 });

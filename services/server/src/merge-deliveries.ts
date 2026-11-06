@@ -10,6 +10,7 @@ import { AgentSessionStore } from "./agent-session-store.js";
 import { collaborationBlockers } from "./collaboration-policy.js";
 
 const sha = z.string().regex(/^[a-f0-9]{40}$/);
+const instructionQuote = z.string().trim().min(1).max(500);
 export const mergeEvidenceSchema = z.object({
   head: sha, base: sha, checkedAt: z.string().datetime(),
   checks: z.enum(["passed", "pending", "failed", "unknown"]),
@@ -34,7 +35,8 @@ interface Delivery extends DeliveryInput {
   id: string; productId: string; accountId: string; clientId: string; identity: Identity;
   sessionId: string; revision: string; scope: string; activity: string;
   state: "proposed" | "confirmed" | "withdrawn" | "batched" | "merged";
-  createdAt: string; confirmedAt?: string; batchId?: string;
+  createdAt: string; confirmedAt?: string; confirmedBy?: "console" | "session-instruction"; instructionQuote?: string;
+  batchId?: string;
 }
 interface Batch {
   id: string; productId: string; accountId: string; requestKey: string;
@@ -98,8 +100,17 @@ export class MergeDeliveries {
     if (d.itemKeys.some(key => collaborationBlockers(this.db, this.store.getWorkItem(key).id)>0)) return "dependency";
     return undefined;
   }
-  propose(accountId: string, clientId: string, identity: Identity, requestKey: string, input: DeliveryInput) {
+  /** Confirm binds the session's latest human input; a same-turn imperative order may confirm without a console click. */
+  private confirm(d: Delivery, by: "console" | "session-instruction", quote?: string) {
+    if (!["proposed", "confirmed"].includes(d.state)) throw changed();
+    this.sourceValid(d);
+    d.state = "confirmed"; d.confirmedAt ??= new Date().toISOString();
+    d.confirmedBy ??= by; if (quote) d.instructionQuote ??= quote;
+    this.save(d);
+  }
+  propose(accountId: string, clientId: string, identity: Identity, requestKey: string, input: DeliveryInput, confirmation?: {quote: string}) {
     input = deliverySchema.parse(input);
+    const quote = confirmation ? instructionQuote.parse(confirmation.quote) : undefined;
     const keys = [...new Set(input.itemKeys)].sort();
     return this.db.transaction(() => {
       const previous = this.db.connection.prepare("SELECT id FROM merge_deliveries WHERE account_id=? AND client_id=? AND request_key=?")
@@ -107,6 +118,7 @@ export class MergeDeliveries {
       if (previous) {
         const d = this.read<Delivery>("merge_deliveries", previous.id);
         if (digest({...input,itemKeys:keys}) !== d.revision || digest(identity) !== digest(d.identity)) throw changed();
+        if (quote && d.state === "proposed") this.confirm(d, "session-instruction", quote);
         return this.view(d);
       }
       for (const itemKey of keys) recoverExecutionAuthorization(this.store, accountId, clientId, {itemKey,...identity});
@@ -122,6 +134,7 @@ export class MergeDeliveries {
         revision:digest({...input,itemKeys:keys}),scope:this.scope(keys),activity:this.activity(sessionId),state:"proposed",createdAt:new Date().toISOString()};
       this.db.connection.prepare("INSERT INTO merge_deliveries(id,product_id,account_id,client_id,request_key,state,data_json) VALUES (?,?,?,?,?,?,?)")
         .run(d.id,productId,accountId,clientId,requestKey,d.state,JSON.stringify(d));
+      if (quote) this.confirm(d, "session-instruction", quote);
       return this.view(d);
     });
   }
@@ -142,11 +155,8 @@ export class MergeDeliveries {
     return this.db.transaction(() => {
       const d = this.read<Delivery>("merge_deliveries",id);
       if (d.accountId !== accountId || d.revision !== revision || d.state === "batched" || d.state === "merged") throw changed();
-      if (decision === "confirm") {
-        if (!["proposed","confirmed"].includes(d.state)) throw changed();
-        this.sourceValid(d);
-        d.state = "confirmed"; d.confirmedAt ??= new Date().toISOString();
-      } else d.state = "withdrawn";
+      if (decision === "confirm") this.confirm(d, "console");
+      else d.state = "withdrawn";
       this.save(d); return this.view(d);
     });
   }
@@ -175,12 +185,12 @@ export class MergeDeliveries {
         throw conflict("merge_batch_active","当前项目已有合并批次，请进入原会话核实或继续。");
       const deliveries = selection.map(s => {
         const d=this.read<Delivery>("merge_deliveries",s.id);
-        if(d.accountId!==accountId || d.productId!==config.productId || d.revision!==s.revision || d.state!=="confirmed" || this.eligible(d)) throw changed();
+        if(d.accountId!==accountId || d.productId!==config.productId || d.revision!==s.revision || d.state!=="confirmed" || this.eligible(d)==="changed") throw changed();
         return d;
       });
       if(new Set(deliveries.map(d=>d.repository)).size!==1 || new Set(deliveries.map(d=>d.targetBranch)).size!==1) throw changed();
       const id=randomUUID();
-      const text = `执行用户已授权的合并批次 ${id}。派单启动后先调用 get_merge_batch，使用本会话原 dispatchId。仅合并批次冻结的 PR 与 head；每次执行前重新调用 get_merge_batch，entries 中 blocker 非空必须停止。用 gh pr merge --match-head-commit 绑定获准 head，禁止 --admin 或绕过保护；不要领取开发条目，不要重新创建批次。每项合并前重新核实目标仓库、主线、依赖、CI 及预期 head，提交变化必须停止，不允许合并新 head。机械性冲突可调查，语义冲突交回原开发会话；新增代码需重新交付确认。使用 report_merge_batch 逐项记录实际结果；未知结果保留原批次。发布授权：${publish ? "合并完成后按项目既有全量候选覆盖门禁发布；批次选择不缩小发布范围。" : "仅合并，不发布。"} 完成所有操作且核实无后台执行后，才结束批次。遵守仓库权限和发布规则。`;
+      const text = `执行用户已授权的合并批次 ${id}。派单启动后先调用 get_merge_batch，使用本会话原 dispatchId。仅合并批次冻结的 PR 与 head；每次执行前重新调用 get_merge_batch，entries 中 blocker 非空必须停止。用 gh pr merge --match-head-commit 绑定获准 head，禁止 --admin 或绕过保护；不要领取开发条目，不要重新创建批次。每项合并前重新核实目标仓库、主线、依赖、CI 及预期 head，提交变化必须停止，不允许合并新 head。清单中的旧检查证据仅供参考，由本合并会话统一读取实时结果；CI 排队或运行中时保留原批次等待，先查状态且状态未变时降低轮询频率，不将等待标记为失败或另建会话；实际检查失败、冲突或未结束依赖必须阻止实际合并。机械性冲突可调查，语义冲突交回原开发会话；新增代码需重新交付确认。使用 report_merge_batch 逐项记录实际结果；未知结果保留原批次。发布授权：${publish ? "合并完成后按项目既有全量候选覆盖门禁发布；批次选择不缩小发布范围。" : "仅合并，不发布。"} 完成所有操作且核实无后台执行后，才结束批次。遵守仓库权限和发布规则。`;
       const dispatches=new DispatchStore(this.db);
       const free=new FreeSessionStore(this.db,dispatches,new AgentSessionStore(this.db));
       const dispatch=free.prepare(accountId,id,config,text);
@@ -214,7 +224,7 @@ export class MergeDeliveries {
       if(result.head!==d.head) throw changed();
       if(result.status==="merged") {
         sha.parse(result.commit);
-        this.sourceValid(d);
+        if (this.eligible(d)) throw changed();
         for(const itemKey of d.itemKeys) this.store.submitDevelopmentComplete({itemKey,
           completion:{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`},requiredArtifacts:d.requiredArtifacts,
           ...(d.noReleaseReason?{noReleaseReason:d.noReleaseReason}:{}),summary:result.detail,idempotencyKey:`merge-batch:${id}:${itemKey}`,attribution:{accountId}});

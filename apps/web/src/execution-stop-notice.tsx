@@ -14,7 +14,9 @@ export function ExecutionStopNotice({blockers}: {
   const {t} = useI18n();
   if (!blockers.length) return null;
   const blocking=blockers.some(blocksExecution);
-  return <section className="execution-stop-notice" aria-label={t("executionStopHeading")}>
+  // AND-420: the takeover variant is an FYI, not a blocker -- it renders as a
+  // slim note so the blocking variant keeps the visual weight for itself.
+  return <section className={`execution-stop-notice${blocking ? "" : " execution-stop-notice-takeover"}`} aria-label={t("executionStopHeading")}>
     <strong>{t(blocking ? "executionStopBlocked" : "executionTakeoverHeading")}</strong>
     {!blocking && <p>{t("executionTakeoverHelp")}</p>}
     {blockers.map(blocker=><div className="execution-stop-observation" key={blocker.id}>

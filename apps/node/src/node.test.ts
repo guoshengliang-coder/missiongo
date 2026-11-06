@@ -164,6 +164,22 @@ describe("Codex native control", () => {
     await expect(adapter.decide({ id: snapshot.approval!.id, choice: "accept" })).rejects.toThrow(/Stale/);
     expect(codexPolicy("plan")).toEqual({ sandbox: "workspace-write", approvalPolicy: "on-request", approvalsReviewer: "auto_review" });
   });
+  it("AND-408 labels command prompts as permissions and answers questions without granting", async () => {
+    const permissionAdapter = new CodexAdapter(job(temporary()), fixture); adapters.push(permissionAdapter);
+    await permissionAdapter.start("approval requested"); await delay(30);
+    expect((await permissionAdapter.snapshot()).approval).toMatchObject({ status: "pending", requestKind: "permission" });
+
+    const adapter = new CodexAdapter(job(temporary()), fixture); adapters.push(adapter);
+    await adapter.start("question requested"); await delay(30);
+    const snapshot = await adapter.snapshot();
+    expect(snapshot.approval).toMatchObject({ status: "pending", requestKind: "question",
+      action: "选择产品偏好",
+      options: [{ id: "choice-0", kind: "choice", label: "方案 A" }, { id: "choice-1", kind: "choice", label: "方案 B" }] });
+    await adapter.decide({ id: snapshot.approval!.id, choice: "choice-0" });
+    expect((await adapter.snapshot()).approval?.status).toBe("resolved");
+    const answered = (await adapter.snapshot()).messages.find((m) => m.text.startsWith("answered:"));
+    expect(answered?.text).toBe('answered:{"answers":{"q-1":{"answers":["方案 A"]}}}');
+  });
   it.each(["FAKE_BAD_POLICY", "FAKE_READ_ONLY", "FAKE_SKILL_STALE"])("does not send a task when %s is present", async (flag) => {
     const root = temporary(); const log = join(root, "events"); vi.stubEnv(flag, "1"); vi.stubEnv("TEST_AGENT_EVENTS", log);
     const adapter = new CodexAdapter(job(root), fixture, "1.0.0"); adapters.push(adapter);

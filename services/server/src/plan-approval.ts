@@ -108,8 +108,14 @@ export class PlanApprovalService {
     if (unavailableReason) return { status: { code: unavailableReason } };
     if (!session.canReply || session.managedExecution || session.archivedAt) return { status: { code: "reply_unavailable" } };
     if (session.lastError || (session.nativeConnection && session.nativeConnection.state !== "connected")) return { status: { code: "connection_unavailable" } };
-    // A chat reply never answers a tool permission request.
-    if (session.approval && !["approved", "resolved"].includes(session.approval.status)) return { status: { code: "permission_required" } };
+    // A chat reply never answers a tool permission request. Questions and
+    // confirmations no longer masquerade as permissions here (AND-408); they
+    // fall through to the reply checks below while the banner stays gated by
+    // attention.kind in the Web console.
+    if (session.approval && !["approved", "resolved"].includes(session.approval.status)
+      && session.approval.requestKind !== "question" && session.approval.requestKind !== "confirmation") {
+      return { status: { code: "permission_required" } };
+    }
     const command = session.command;
     if (command && ["queued", "delivering", "delivery_unknown"].includes(command.status)) return { status: { code: "reply_pending" } };
     if ((session.status !== "idle" || session.turnState.turnActive === true) && !this.awaitingNativePlan(session)) return { status: { code: "running" } };

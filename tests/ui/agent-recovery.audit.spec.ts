@@ -43,8 +43,7 @@ for (const theme of ["light", "dark"] as const) for (const phone of [false, true
     expect(descriptionBox!.y).toBeGreaterThanOrEqual(titleBox!.y + titleBox!.height);
     await expect(recovery.getByRole("button", { name: "重新派单" })).toHaveCount(0);
     await expect(recovery.getByRole("button", { name: "归档", exact: true })).toBeVisible();
-    await expect(recovery.locator(".dispatch-session-link")).toBeVisible();
-    if (!phone) expect(await recovery.locator(".dispatch-session-link a").evaluate((element) => getComputedStyle(element).fontSize)).not.toBe("0px");
+    await expect(page.locator(".dispatch-session-link")).toHaveCount(0);
     await expect(recovery.getByRole("link", { name: "打开条目 EX-341" })).toHaveAttribute("href", `/?product=${fixture.productId}&item=EX-341`);
     const markdown = page.locator(".agent-console-message .markdown-text");
     await expect(markdown.locator("strong")).toHaveText(["我的判断：", "方案："]);

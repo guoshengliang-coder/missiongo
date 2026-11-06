@@ -11,6 +11,8 @@ export interface AgentApprovalOption {
   label?: string;
 }
 
+export type AgentApprovalRequestKind = "question" | "permission" | "confirmation";
+
 export interface AgentApproval {
   id: string;
   kind: "manual" | "auto";
@@ -19,6 +21,7 @@ export interface AgentApproval {
   action: string;
   reason?: string;
   startedAtMs: number;
+  requestKind?: AgentApprovalRequestKind;
   options?: AgentApprovalOption[];
   decision?: string;
   retryId?: string;
@@ -37,6 +40,7 @@ interface ApprovalRow {
   started_at_ms: number;
   decision: string | null;
   options_json: string | null;
+  request_kind: AgentApprovalRequestKind | null;
   retry_id: string | null;
   retry_review_id: string | null;
   retry_status: "queued" | "delivering" | "delivered" | "restored" | "failed" | null;
@@ -46,11 +50,22 @@ interface ApprovalRow {
 const manualStatuses = new Set(["pending", "approved", "denied", "unavailable", "reconnecting", "resolved"]);
 const autoStatuses = new Set(["inProgress", "approved", "denied", "timedOut", "aborted"]);
 
+const requestKinds = new Set<AgentApprovalRequestKind>(["question", "permission", "confirmation"]);
+
+/** Neutral copy for snapshots a source reason did not explain (AND-408). */
+function attentionFallback(approval: AgentApproval): string {
+  if (approval.requestKind === "question") return "Codex 正在等待回答。";
+  if (approval.requestKind === "permission") return "Codex 正在等待授权。";
+  if (approval.requestKind === "confirmation") return "Codex 正在等待确认。";
+  return "Codex 正在等待处理。";
+}
+
 function publicApproval(row: ApprovalRow): AgentApproval {
   return {
     id: row.approval_id, kind: row.kind, status: row.status,
     turnId: row.turn_id, action: row.action, startedAtMs: row.started_at_ms,
     ...(row.reason ? { reason: row.reason } : {}),
+    ...(row.request_kind ? { requestKind: row.request_kind } : {}),
     ...(row.options_json ? { options: JSON.parse(row.options_json) as AgentApprovalOption[] } : {}),
     ...(row.decision ? { decision: row.decision } : {}),
     ...(row.retry_review_id === row.approval_id && row.retry_id ? { retryId: row.retry_id } : {}),
@@ -71,8 +86,9 @@ export class AgentApprovalStore {
       : approval.status === "denied" && (!approval.retryId || approval.retryStatus === "failed"));
     return { ...session, approval, ...(needed ? {
       needsAttention: true, waitingForReply: true,
-      attention: { state: "needed" as const, kind: "approval" as const,
-        reason: approval.reason ?? "Codex 正在等待权限确认。", revision: `approval:${approval.id}` },
+      attention: { state: "needed" as const,
+        kind: approval.requestKind === "question" ? "answer" as const : "approval" as const,
+        reason: approval.reason ?? attentionFallback(approval), revision: `approval:${approval.id}` },
     } : {}) };
   }
 
@@ -97,7 +113,9 @@ export class AgentApprovalStore {
       || (approval.reason?.length ?? 0) > 2_000
       || !Number.isSafeInteger(approval.startedAtMs) || approval.startedAtMs < 0
       || (approval.kind !== "manual" && approval.kind !== "auto")
-      || !(approval.kind === "manual" ? manualStatuses : autoStatuses).has(approval.status)) {
+      || !(approval.kind === "manual" ? manualStatuses : autoStatuses).has(approval.status)
+      || (approval.requestKind !== undefined
+        && (approval.kind !== "manual" || !requestKinds.has(approval.requestKind)))) {
       throw invalidInput("Invalid Codex approval snapshot.");
     }
     if (approval.options !== undefined && (!Array.isArray(approval.options) || approval.options.length > 20
@@ -139,14 +157,16 @@ export class AgentApprovalStore {
       } else {
         this.database.connection.prepare(
           `INSERT INTO agent_session_approvals
-           (session_id, approval_id, kind, status, turn_id, action, reason, started_at_ms, updated_at, options_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           (session_id, approval_id, kind, status, turn_id, action, reason, started_at_ms, updated_at, options_json, request_kind)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(session_id) DO UPDATE SET
            approval_id=excluded.approval_id,kind=excluded.kind,status=excluded.status,
            turn_id=excluded.turn_id,action=excluded.action,reason=excluded.reason,
-           started_at_ms=excluded.started_at_ms,decision=NULL,updated_at=excluded.updated_at,options_json=excluded.options_json`,
+           started_at_ms=excluded.started_at_ms,decision=NULL,updated_at=excluded.updated_at,options_json=excluded.options_json,
+           request_kind=excluded.request_kind`,
         ).run(sessionId, approval.id, approval.kind, approval.status, approval.turnId,
-          approval.action, approval.reason ?? null, approval.startedAtMs, now, approval.options === undefined ? null : JSON.stringify(approval.options));
+          approval.action, approval.reason ?? null, approval.startedAtMs, now, approval.options === undefined ? null : JSON.stringify(approval.options),
+          approval.requestKind ?? null);
       }
     });
   }
