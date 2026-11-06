@@ -30,7 +30,6 @@ import {
   nodeIneligibility,
   type NodeIneligibility,
 } from "./dispatch-eligibility";
-import { SessionLink } from "./session-link";
 import { agentConsoleUrl } from "./navigation";
 import { useI18n } from "./i18n";
 import type { Dispatch, DispatchDefaults, DispatchNode, FreeSessionConfig, Product, WorkItem } from "./types";
@@ -292,7 +291,6 @@ export function DispatchDialog({
           <span><small>{t("dispatchItemsLabel")}</small>{created.itemKeys.join("、")}</span>
           {created.sessionName && <span><small>{t("dispatchSessionName")}</small>{created.sessionName}</span>}
         </div>
-        {created.sessionUrl && <SessionLink url={created.sessionUrl} />}
         {created.error && <div className="inline-error"><CirclePause size={16} /><span>{created.error}</span></div>}
         <p className="dispatch-note">{t("dispatchSessionPending")}</p>
         <p className="dispatch-note">{t(newSession ? "newSessionDraftHint" : "dispatchDoesNotClaim")}</p>

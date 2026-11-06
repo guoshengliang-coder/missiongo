@@ -638,7 +638,6 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 
 .agent-console-conversation { min-width: 0; min-height: 0; position: relative; display: flex; flex-direction: column; overflow: hidden; background: var(--surface); container-type: inline-size; }
 .agent-console-conversation-head { min-height: 64px; flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 9px 18px; background: var(--surface-strong); border-bottom: 1px solid var(--line); }
-.agent-console-toolbar > .status-pill { min-height: 44px; box-sizing: border-box; }
 .agent-console-conversation-back { display: none; }
 .agent-console-avatar { width: 32px; height: 32px; flex: 0 0 auto; display: grid; place-items: center; margin-top: 2px; color: var(--status-ready-fg); background: var(--status-ready-bg); border-radius: var(--radius-md); }
 .agent-console-heading { min-width: 0; flex: 1; }
@@ -3339,6 +3338,11 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .agent-reply-edit:disabled { cursor: wait; }
 .agent-reply-edit:active { background: var(--row-hover); }
 .agent-run-details { align-self: center; max-width: 100%; margin: 0 0 4px; }
+.agent-run-controls { display: flex; align-items: flex-start; justify-content: center; flex-wrap: wrap; gap: 8px; max-width: 100%; }
+.agent-run-controls > .agent-run-details { min-width: 0; margin: 0; }
+.agent-run-controls .agent-console-activity { min-height: 44px; box-sizing: border-box; }
+.agent-run-stop { min-height: 44px; padding: 8px 10px; font-size: var(--text-xs); }
+.agent-run-fallback { align-self: center; }
 .agent-run-details > summary { list-style: none; cursor: pointer; }
 .agent-run-details > summary::-webkit-details-marker { display: none; }
 .agent-run-icon { display: inline-flex; }
