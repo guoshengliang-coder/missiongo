@@ -35,8 +35,21 @@ Job 时长包括 setup/teardown；文件时长只累加测试尝试，不能直�
 报告标明 run 与 attempt，只统计该次尝试并排除报告自身；并行 job 的耗时不能相加当作整个 workflow 的完成耗时。
 制品保留 14 天；现有行为报告和截图制品保持原位置。
 
-macOS job 限时 20 分钟，测试与打包步骤分别限时 10 分钟，为冷构建保留余量并阻止挂起占用 runner 六小时。
-超时仍使门禁失败，不自动重试或放行。这是故障止损，不代表测试挂起根因已经修复；排队时间也不会被该执行超时消除。
+macOS 测试与打包分别由 `scripts/macos-ci-watchdog.py` 监督，正常执行窗口各为 15 分钟。
+到期先固定超时结果，再在最多 45 秒内采集本次命令的进程树及调用栈，随后终止其进程组；返回 124，不能变成成功。
+调用栈通过 macOS `sample` 获取，优先采集 xctest，最多 6 个进程，每次采样 2 秒、采样命令最多 6 秒。
+采样失败或进程已退出会记录原因，仍继续清理并使检查失败。不读取进程环境或命令参数，也不扫描其他会话的调用栈。
+正常输出同步显示在 Actions 日志并写入 `command.log`；`result.json` 记录退出码、状态和时长。
+超时额外写入 `diagnostics.json`、采样报告及采样工具日志。该目录不提交 Git。
+
+GitHub 步骤硬上限各为 18 分钟，job 上限 45 分钟，给诊断、缓存和上传留出余量；排队不由这些执行超时解决。
+`always()` 上传 `macos-diagnostics-<attempt>` 制品，限时 3 分钟、保留 7 天，成功、失败时均保留本次命令日志。
+人工取消会尽快终止本次命令，不等待采样；runner 被强制终止、整机故障或网络故障时不能保证上传完成。
+超时不自动重试或放行。这是故障止损与现场取证，不代表测试挂起根因已经修复。
+先下载诊断制品核对卡住的测试及线程，再决定修复或仅重跑失败任务。
+
+超时与上传语义参见 [GitHub workflow syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax)
+和 [状态检查表达式](https://docs.github.com/en/actions/reference/workflows-and-actions/expressions)。
 
 汇总通过只读 Actions API 获取当前运行尝试的 job 数据，不增加仓库写权限。
 UI reporter 只记录仓库相对文件位置、测试 ID、时长、状态和重试次数，不复制测试输出、
