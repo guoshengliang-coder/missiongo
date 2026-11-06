@@ -3,32 +3,33 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { isReleaseMetadata } from "./check-release-metadata.mjs";
 
-const platforms = ["android", "macos", "linuxNode"];
+import { platforms, pathPlatforms } from "./ci-platform-impact.mjs";
+import { validBaseline } from "./ci-main-baseline.mjs";
 
-export function selectPlatforms({ head, eventName, changes, releaseMetadataValidated = false }) {
-  const full = reason => ({ version: 1, head, required: Object.fromEntries(platforms.map(name => [name, true])), reasons: [reason] });
-  if (eventName !== "pull_request") return full("Main and manual runs require every platform");
+export function selectPlatforms({ head, eventName, changes, releaseMetadataValidated = false, baseline = null, productImpact = null }) {
+  const full = reason => ({ version: 2, head, eventName, baseline, required: Object.fromEntries(platforms.map(name => [name, true])), reasons: [reason] });
+  if (eventName !== "pull_request" && !(eventName === "push" && validBaseline(baseline, head))) return full("No verified full-main baseline; require every platform");
   if (!changes?.length) return full("Missing change evidence");
-  const required = Object.fromEntries(platforms.map(name => [name, false]));
+  const required = Object.fromEntries(platforms.map(name => [name, false])), reasons = [];
   for (const { path, status } of changes) {
     if (typeof path !== "string" || path.startsWith("/") || path.split("/").includes("..") || path.includes("\\")
-      || !["A", "M"].includes(status)) return full("Unknown path or destructive change");
-    if (isReleaseMetadata(path) && releaseMetadataValidated) continue;
-    if (/^(docs\/.*\.md|[^/]+\.md)$/.test(path) || path.startsWith("tests/ui/") || path.startsWith("apps/web/")) continue;
-    if (path.startsWith("apps/macos/")) required.macos = true;
-    else if (path.startsWith("apps/android/") || path.startsWith("sdks/android-feedback/")) required.android = true;
-    else if (path.startsWith("apps/node/")) required.linuxNode = true;
-    else return full(`Shared or unknown platform input: ${path}`);
+      || path.split("/").some(part => !part || part === ".") || !["A", "M", "D"].includes(status)) return full("Unknown path or unsupported change type");
+    if (isReleaseMetadata(path) && releaseMetadataValidated) { reasons.push(`Validated publication facts: ${path}`); continue; }
+    const impact = path === "product.json" && status === "M" ? productImpact : pathPlatforms(path);
+    if (!Array.isArray(impact) || impact.some(name => !platforms.includes(name))) return full(`Shared or unknown platform input: ${path}`);
+    for (const platform of impact) required[platform] = true;
+    reasons.push(`${path}: ${impact.length ? impact.join(", ") : "no native build"}`);
   }
-  return { version: 1, head, required, reasons: ["Native checks selected from PR file dependencies; Web/contract checks always run"] };
+  return { version: 2, head, eventName, baseline, required, reasons };
 }
 
 export function assertPlatformResult({ plan, platform, head, eventName, planResult, buildResult }) {
-  if (!platforms.includes(platform) || plan?.version !== 1 || !/^[0-9a-f]{40}$/.test(plan.head ?? "") || plan.head !== head
+  if (!platforms.includes(platform) || plan?.version !== 2 || plan.eventName !== eventName || !/^[0-9a-f]{40}$/.test(plan.head ?? "") || plan.head !== head
     || !plan.required || Object.keys(plan.required).sort().join() !== [...platforms].sort().join()
     || platforms.some(name => typeof plan.required[name] !== "boolean")) throw new Error("Invalid or stale platform plan");
   if (planResult !== "success") throw new Error("Platform planning must succeed");
-  if (eventName !== "pull_request" && platforms.some(name => !plan.required[name])) throw new Error("Main and manual runs require every platform");
+  if (eventName !== "pull_request" && platforms.some(name => !plan.required[name])
+    && !(eventName === "push" && validBaseline(plan.baseline, head))) throw new Error("Narrow main plan requires a verified full-build baseline");
   const expected = plan.required[platform] ? "success" : "skipped";
   if (buildResult !== expected) throw new Error(`${platform} build must be ${expected}, found ${buildResult}`);
 }

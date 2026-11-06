@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # A daily full run refreshes native baseline evidence, independent of PRs.
+    - cron: "17 19 * * *"
   # Regenerating the interface baselines is a deliberate act: run this workflow
   # by hand, download the `ui-snapshots` artifact, and commit what changed.
   workflow_dispatch:
@@ -25,6 +28,9 @@ concurrency:
 jobs:
   ui-plan:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     outputs:
       plan: ${{ steps.plan.outputs.plan }}
       audit: ${{ steps.plan.outputs.audit }}
@@ -61,6 +67,7 @@ jobs:
         id: plan
         env:
           UI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
           UI_UPDATE_SNAPSHOTS: ${{ github.event_name == 'workflow_dispatch' && inputs.update_ui_snapshots }}
         run: node scripts/ui-test-plan.mjs
 
@@ -255,7 +262,8 @@ jobs:
           :sample:assembleDebug
           :missiongo-android-app:assembleDebug
 
-  # The macOS client. Tests run on relevant PRs and every main/manual run; the bundle is assembled the
+  # The macOS client. Impact-selected PR/main runs and full scheduled/manual runs
+  # assemble the bundle the
   # same way the publish script does it, so a change that breaks packaging fails
   # here rather than on the machine that happens to publish next.
   macos-build:

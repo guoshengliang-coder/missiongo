@@ -206,7 +206,7 @@ test("CLI plans from real commits and validates the skip gate without installed 
     for (const file of catalog) put(file, "// fixture");
     for (const feature of Object.values(map.features)) put(`apps/web/src/${feature.entry}`, "// fixture");
     put("scripts/.keep", "");
-    for (const file of ["ui-test-plan.mjs", "run-ui-tests.mjs", "check-release-metadata.mjs", "release-notes.mjs", "ui-shards.mjs", "ci-platform-plan.mjs"]) copyFileSync(new URL(`./${file}`, import.meta.url), join(directory, "scripts", file));
+    for (const file of ["ui-test-plan.mjs", "run-ui-tests.mjs", "check-release-metadata.mjs", "release-notes.mjs", "ui-shards.mjs", "ci-platform-plan.mjs", "ci-platform-impact.mjs", "ci-main-baseline.mjs"]) copyFileSync(new URL(`./${file}`, import.meta.url), join(directory, "scripts", file));
     copyFileSync(new URL("../tests/ui/audit-durations.json", import.meta.url), join(directory, "tests/ui/audit-durations.json"));
     put("README.md", "before");
     git("init"); git("add", "."); git("-c", "user.name=UI Fixture", "-c", "user.email=ui@example.test", "commit", "-m", "base");
@@ -228,6 +228,13 @@ test("CLI plans from real commits and validates the skip gate without installed 
       assert.notEqual(platformGate(platform, { GITHUB_EVENT_NAME: "push" }).status, 0);
       assert.notEqual(platformGate(platform, { CI_BUILD_RESULT: "failure" }).status, 0);
     }
+    // An unavailable baseline cannot produce narrow native jobs on main.
+    const mainOutput = join(directory, "main-output");
+    const mainRun = spawnSync(process.execPath, ["scripts/ui-test-plan.mjs"], { cwd: directory,
+      env: { ...environment, GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/heads/main", GITHUB_TOKEN: "", GITHUB_OUTPUT: mainOutput }, encoding: "utf8" });
+    assert.equal(mainRun.status, 0, mainRun.stderr);
+    assert.equal(JSON.parse(mainRun.stdout).mode, "full");
+    assert.match(readFileSync(mainOutput, "utf8"), /android_required=true\nmacos_required=true\nlinux_required=true/);
     const gateEnv = { ...environment, UI_TEST_PLAN: JSON.stringify(value), UI_PLAN_RESULT: "success", UI_AUDIT_RESULT: "skipped", UI_VISUAL_RESULT: "skipped" };
     const gate = env => spawnSync(process.execPath, ["scripts/run-ui-tests.mjs", "--kind=check"], { cwd: directory, env, encoding: "utf8" });
     assert.equal(gate(gateEnv).status, 0);

@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import { isReleaseMetadata, validateReleaseMetadata } from "./check-release-metadata.mjs";
 import { auditDurations, balancedAuditShards } from "./ui-shards.mjs";
 import { selectPlatforms } from "./ci-platform-plan.mjs";
+import { productPlatforms } from "./ci-platform-impact.mjs";
+import { findFullMainBaseline } from "./ci-main-baseline.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -135,7 +137,8 @@ export function selectUITests({ eventName, snapshotUpdate = false, head, changes
     // These trees are not inputs to the browser fixture. Everything else is
     // evaluated below or conservatively falls back to the full suite.
     if (/^(apps\/(android|macos|node)\/|sdks\/android-feedback\/)/.test(path)
-      || /^(docs\/.*\.md|[^/]+\.md)$/.test(path)) continue;
+      || /^(docs\/.*\.md|[^/]+\.md)$/.test(path)
+      || /^docs\/review-evidence\/.*\.(png|jpg|jpeg|webp)$/.test(path)) continue;
     if (path.startsWith(web) && unitName.test(path) && !graph?.reverse.has(path) && !graph?.uncertain) continue;
     const readable = status === "A" || status === "M";
     if (/^tests\/ui\/visual\.spec\.ts-snapshots\/[^/]+-linux\.png$/.test(path) && readable) { visual = true; continue; }
@@ -211,7 +214,7 @@ export function currentHead() {
   return execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
 }
 
-function main() {
+async function main() {
   const head = currentHead(), eventName = process.env.GITHUB_EVENT_NAME ?? "manual";
   let changes = null, graph;
   if (eventName === "pull_request") {
@@ -230,9 +233,36 @@ function main() {
   const value = validatePlan(selectUITests({ eventName, snapshotUpdate: process.env.UI_UPDATE_SNAPSHOTS === "true", head, changes,
     map: impactMap(), catalog: auditCatalog(), graph, releaseMetadataValidated }));
   const json = JSON.stringify(value);
-  const platforms = selectPlatforms({ head, eventName, changes, releaseMetadataValidated });
+  let platformChanges = changes, platformBase = process.env.UI_BASE_SHA, baseline = null;
+  if (eventName === "push" && process.env.GITHUB_REF === "refs/heads/main") {
+    try {
+      baseline = await findFullMainBaseline({ repository: process.env.GITHUB_REPOSITORY, head, token: process.env.GITHUB_TOKEN,
+        isAncestor: (base, tip) => {
+          try { execFileSync("git", ["merge-base", "--is-ancestor", base, tip], { cwd: root, stdio: "pipe" }); return true; }
+          catch { return false; }
+        } });
+      if (baseline) {
+        platformBase = baseline.sha;
+        platformChanges = parseDiff(execFileSync("git", ["diff", "--name-status", "--find-renames", "-z", platformBase, head], { cwd: root, encoding: "utf8" }));
+      }
+    } catch (error) {
+      console.error(`Native baseline unavailable; using full builds: ${error.message}`);
+      baseline = null; platformChanges = null;
+    }
+  }
+  const platformMetadataValidated = platformChanges === changes ? releaseMetadataValidated
+    : platformChanges?.some(change => isReleaseMetadata(change.path))
+      ? validateReleaseMetadata({ root, base: platformBase, changes: platformChanges }) : false;
+  let productImpact = null;
+  if (platformChanges?.some(change => change.path === "product.json" && change.status === "M")) {
+    try {
+      const before = JSON.parse(execFileSync("git", ["show", `${platformBase}:product.json`], { cwd: root, encoding: "utf8" }));
+      productImpact = productPlatforms(before, JSON.parse(readFileSync(join(root, "product.json"), "utf8")));
+    } catch { /* Incomplete declarations require every platform. */ }
+  }
+  const platforms = selectPlatforms({ head, eventName, changes: platformChanges, releaseMetadataValidated: platformMetadataValidated, baseline, productImpact });
   console.log(json);
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `plan=${json}\naudit=${["full", "targeted"].includes(value.mode)}\nvisual=${value.visual}\nshards=${JSON.stringify(value.shards)}\nplatform_plan=${JSON.stringify(platforms)}\nandroid_required=${platforms.required.android}\nmacos_required=${platforms.required.macos}\nlinux_required=${platforms.required.linuxNode}\n`);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## UI test selection\n\nMode: **${value.mode}**\n\n\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\`\n\n## Platform selection\n\n\`\`\`json\n${JSON.stringify(platforms, null, 2)}\n\`\`\`\n`);
 }
-if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) main();
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) await main();

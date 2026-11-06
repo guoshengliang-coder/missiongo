@@ -15,7 +15,7 @@ test("PR native sources select their own platform and mixed changes select the u
 });
 
 test("web, UI tests, documentation and validated publication facts skip unrelated PR builds", () => {
-  for (const path of ["apps/web/src/App.tsx", "apps/web/package.json", "tests/ui/polling.ts", "docs/release-coverage.md", "README.md"]) {
+  for (const path of ["apps/web/src/statistics-center.tsx", "apps/web/package.json", "tests/ui/polling.ts", "docs/release-coverage.md", "README.md"]) {
     assert.deepEqual(choose([path]).required, none, path);
   }
   for (const path of ["released.json", "release-notes/macos/pr-123.json"]) {
@@ -24,10 +24,10 @@ test("web, UI tests, documentation and validated publication facts skip unrelate
   }
 });
 
-test("shared, unknown, destructive or missing evidence always requires all platforms", () => {
+test("shared, unknown or missing evidence always requires all platforms", () => {
   for (const path of ["packages/contracts/src/mcp-tools.ts", "packages/domain/src/item.ts", "services/server/src/app.ts", "product.json",
-    "package.json", "package-lock.json", ".github/workflows/ci.yml", "scripts/build-macos-app.sh", "unknown/config.json", "../apps/web/app.ts"]) assert.deepEqual(choose([path]).required, all, path);
-  for (const paths of [null, [], [{ path: "apps/web/src/App.tsx", status: "D" }], [{ path: "docs/old.md", status: "D" }]]) assert.deepEqual(choose(paths).required, all);
+    "package.json", "package-lock.json", ".github/workflows/ci.yml", "unknown/config.json", "../apps/web/app.ts"]) assert.deepEqual(choose([path]).required, all, path);
+  for (const paths of [null, [], [{ path: "apps/web/src/statistics-center.tsx", status: "T" }], [{ path: "docs/old.md", status: "X" }]]) assert.deepEqual(choose(paths).required, all);
   for (const eventName of ["push", "workflow_dispatch", "unknown", undefined]) assert.deepEqual(choose(["README.md"], { eventName }).required, all);
 });
 
@@ -49,5 +49,21 @@ test("main cannot use a narrow plan, and stale or malformed plans cannot grant s
   for (const eventName of ["push", "workflow_dispatch", undefined]) assert.throws(() => check({ eventName }));
   assert.throws(() => check({ head: "b".repeat(40) }));
   assert.throws(() => check({ platform: "unknown" }));
-  for (const invalid of [null, { ...plan, version: 2 }, { ...plan, required: { ...plan.required, macos: "false" } }, { ...plan, required: { android: false } }]) assert.throws(() => check({ plan: invalid }));
+  for (const invalid of [null, { ...plan, version: 1 }, { ...plan, required: { ...plan.required, macos: "false" } }, { ...plan, required: { android: false } }]) assert.throws(() => check({ plan: invalid }));
+});
+
+test('review evidence and audited server internals do not trigger native builds', () => {
+  for (const path of ['docs/review-evidence/and-414/desktop-dark.png', 'services/server/src/item-execution-blockers.ts', 'services/server/src/item-execution-blockers.test.ts']) {
+    assert.deepEqual(choose([path]).required, none);
+  }
+  assert.deepEqual(choose(['docs/runtime.js']).required, all);
+  assert.deepEqual(choose(['services/server/src/new-api.ts']).required, all);
+});
+
+test('platform scripts, Android bridge consumers and shared icons retain their actual consumers', () => {
+  for (const path of ['scripts/build-macos-app.sh', 'scripts/macos-ci-watchdog.py']) assert.deepEqual(choose([path]).required, {...none,macos:true});
+  for (const path of ['apps/web/src/android-bridge.ts', 'apps/web/src/overlay.tsx', 'apps/web/src/App.tsx', 'scripts/publish-android-sdk.sh']) assert.deepEqual(choose([path]).required, {...none,android:true});
+  assert.deepEqual(choose(['scripts/build-node.mjs']).required, {...none,linuxNode:true});
+  assert.deepEqual(choose(['apps/web/public/icon-1024.png']).required, {...all,linuxNode:false});
+  assert.deepEqual(choose([{path:'apps/macos/old.swift',status:'D'}, {path:'apps/android/new.kt',status:'A'}]).required, {...all,linuxNode:false});
 });
