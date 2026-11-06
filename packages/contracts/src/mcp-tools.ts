@@ -14,6 +14,10 @@ export interface McpToolDefinition {
 }
 
 export const MCP_TOOL_DEFINITIONS = [
+  { name: "get_merge_reconciliation", access: "read", purpose: "Preview original-batch Git facts, per-item handoffs and recovery blockers without mutation." },
+  { name: "request_merge_reconciliation", access: "write", purpose: "Stage a snapshot-bound recovery action for human console approval; never grant authority." },
+  { name: "apply_merge_reconciliation", access: "write", purpose: "Apply an approved recovery through the original batch conversation, retaining history." },
+  { name: "record_merge_combined_validation", access: "write", purpose: "Bind final combined target validation to all current original-batch results." },
   { name: "get_merge_batch", access: "read", purpose: "Read the frozen selection from its authorized merge conversation." },
   { name: "propose_merge_delivery", access: "write", purpose: "Propose version-bound delivery for human confirmation without merging or changing item status." },
   { name: "refresh_merge_delivery", access: "write", purpose: "Refresh current Git evidence from the original development conversation." },

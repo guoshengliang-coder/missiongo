@@ -125,3 +125,46 @@ for(const width of [320,1440]) for(const theme of ["light","dark"] as const) tes
   await expect(draft).toHaveValue("保留此草稿");await page.screenshot({path:testInfo.outputPath("integration-progress.png"),fullPage:true});
   await page.reload();await expect(progress).toContainText("先合基础接口");await expect(progress).toContainText("IP-2");
 });
+
+for(const width of [320,375,1440]) for(const theme of ["light","dark"] as const) test(`reconciliation approval and reload ${width} ${theme}`,async({page,request},testInfo)=>{
+  await page.setViewportSize({width,height:width===375?812:900});await page.emulateMedia({colorScheme:theme});
+  const product=await(await request.post("/api/v1/products",{data:{name:"Recovery",keyPrefix:`RC${width}${theme[0]!.toUpperCase()}`}})).json();
+  const id="recovery-session",at=new Date().toISOString(),snapshot="a".repeat(64);
+  const session={id,agentSessionId:id,dispatchId:"recovery-dispatch",productId:product.id,agentKind:"codex",status:"idle",updatedAt:at,createdAt:at,
+    nodeName:"Fixture",nodeId:"fixture",nodeConnectionState:"online",mode:"auto",dispatchStatus:"launched",activities:[],settings:{},unread:false,
+    canReply:true,canRetry:false,canStop:false,canArchive:true,attention:{state:"none"},needsAttention:false,items:[]};
+  const batch={id:"recovery-batch",sessionId:id,state:"active",deliveries:["delivery"],publish:true,results:{}};
+  let decision:string|undefined,reads=0;
+  const row={id:"recovery-request",snapshot,digest:"digest",at,action:{kind:"accept_merge",deliveryId:"delivery",evidence:{head:"b".repeat(40),commit:"c".repeat(40),targetHead:"d".repeat(40),checkedAt:at,source:"https://github.com/example/project/pull/12",validation:"外部合并及真实目标回归已核实",checks:"passed",local:"passed",originalIncluded:true,targetIncludesMerge:true}}};
+  await page.route("**/api/v1/agent-sessions**",route=>route.fulfill({json:new URL(route.request().url()).pathname==="/api/v1/agent-sessions"?{sessions:[session]}:{...session,messages:[]}}));
+  await page.route("**/merge-deliveries",route=>route.fulfill({json:{deliveries:[],batches:[batch]}}));
+  await page.route("**/merge-batches/recovery-batch/reconciliation",route=>{reads++;return route.fulfill({json:{batchId:batch.id,state:"active",publish:true,snapshot,sessionId:id,
+    entries:[{deliveryId:"delivery",itemKeys:["RC-1","RC-2"],originalHead:"a".repeat(40),executionHead:"a".repeat(40),repository:"https://github.com/example/project",pullRequest:12,targetBranch:"main",requiredArtifacts:["web"],
+      items:[{itemKey:"RC-1",status:"development_complete",revision:4,missingEvidence:true,next:"补齐交付证据并核实必需产物发布"},{itemKey:"RC-2",status:"on_hold",revision:5,missingEvidence:false,blocker:"条目已暂缓；保留人工状态。",next:"等待人工决定"}]}],
+    reconciliation:{requests:[{...row,...(decision?{decision}:{})}],history:[],handoffs:{}}}});});
+  await page.route("**/merge-batches/recovery-batch/reconciliation/recovery-request/decision",route=>{
+    expect(route.request().postDataJSON()).toEqual({snapshot,decision:"approved",noExecutionRemaining:true});decision="approved";
+    // The server accepted the decision but the response was lost.
+    return route.fulfill({status:503,json:{title:"Synthetic lost response"}});
+  });
+  await page.goto(`/?product=${product.id}&console=agent&session=${id}`);
+  await expect(page.getByText("查看对账与恢复",{exact:true})).toBeVisible();expect(reads).toBe(0);
+  await page.getByText("查看对账与恢复",{exact:true}).click();
+  const region=page.getByRole("region",{name:"批次对账"});await expect(region).toContainText("条目已暂缓");
+  await expect(region).toContainText("交付证据尚不完整");
+  await expect(region.getByRole("button",{name:"批准本次恢复"})).toBeDisabled();
+  const draft=page.locator(".agent-console-reply textarea");await draft.fill("保留恢复审阅草稿");
+  for(const scale of ["small","medium","large"]) {
+    await page.evaluate(value=>{document.documentElement.dataset.fontScale=value;},scale);
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+    const audit=await page.evaluate(AUDIT_SOURCE) as {text:Array<{fontSize:number;contrast:number;fontWeight:number}>};
+    expect(audit.text.filter(r=>r.fontSize>0&&r.fontSize<11)).toEqual([]);
+    expect(audit.text.filter(r=>r.contrast<(r.fontSize>=24||(r.fontWeight>=700&&r.fontSize>=18.66)?3:4.5))).toEqual([]);
+  }
+  await region.getByRole("button",{name:"批准本次恢复"}).scrollIntoViewIfNeeded();
+  await page.screenshot({path:testInfo.outputPath(`reconciliation-${width}-${theme}.png`),fullPage:true});
+  await region.getByRole("checkbox").check();await region.getByRole("button",{name:"批准本次恢复"}).click();
+  await expect(region).toContainText("已批准，请原批次会话继续");await expect(draft).toHaveValue("保留恢复审阅草稿");
+  await page.reload();await page.getByText("查看对账与恢复",{exact:true}).click();await expect(region).toContainText("已批准，请原批次会话继续");
+  await expect(region.getByRole("button",{name:"批准本次恢复"})).toHaveCount(0);
+});

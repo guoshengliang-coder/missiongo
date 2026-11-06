@@ -2500,6 +2500,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if(decision!=="confirm" && decision!=="withdraw") throw invalidInput("Invalid delivery decision.");
     return merges.decide(requireAccountId(request),id,stringField(body,"revision")!,decision);
   });
+  app.get("/api/v1/merge-batches/:id/reconciliation",async request=>{
+    const {id}=request.params as {id:string};
+    requireProductPermission(request,merges.batchProduct(id),"view");
+    return merges.preview(requireAccountId(request),id);
+  });
+  app.post("/api/v1/merge-batches/:id/reconciliation/:requestId/decision",async request=>{
+    const {id,requestId}=request.params as {id:string;requestId:string},body=objectBody(request.body);
+    requireProductPermission(request,merges.batchProduct(id),"operate");requireProductPermission(request,merges.batchProduct(id),"ai");
+    const decision=stringField(body,"decision")!;
+    if(decision!=="approved"&&decision!=="rejected")throw invalidInput("Invalid recovery decision.");
+    if(body.noExecutionRemaining!==true)throw invalidInput("请先核实没有未结束的外部合并或发布操作。");
+    return merges.decideReconciliation(requireAccountId(request),id,requestId,stringField(body,"snapshot")!,decision,true);
+  });
   app.post("/api/v1/products/:productId/merge-batches",async request=>{
     const {productId}=request.params as {productId:string},body=objectBody(request.body);
     requireProductPermission(request,productId,"operate");requireProductPermission(request,productId,"ai");
