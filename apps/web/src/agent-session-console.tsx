@@ -1,4 +1,4 @@
-import { DeliveryCards } from "./merge-console";
+import { DeliveryCards, MergeProgressBadge, useMergeProgress } from "./merge-console";
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
 import { AgentPlanContent, planContinuationObserved, planTranscript, repeatsSubmittedPlan } from "./agent-plan-content";
@@ -191,6 +191,7 @@ export function AgentSessionConsole({
 }) {
   const confirm = useConfirm();
   const { locale, t } = useI18n();
+  const mergeProgress = useMergeProgress(productId);
   // A re-dispatched session keeps the item's name and adds the round (AND-365).
   const roundLabel = (round: number) => t("agentSessionRound", { round });
   const queryClient = useQueryClient();
@@ -1032,6 +1033,7 @@ export function AgentSessionConsole({
                       <time>{formatAgentMessageTime(session.activityAt ?? session.updatedAt, locale)}</time>
                     </span>
                     <small>{session.source === "external" ? t("agentExternalSource") : session.nodeName} · {agentLabel(session, t)}</small>
+                    <MergeProgressBadge state={mergeProgress.sessions.get(session.agentSessionId ?? session.id)} />
                     {attentionLabel(session, t) && (
                       <i className="agent-console-attention" title={session.attention.reason}>
                         {attentionLabel(session, t)}

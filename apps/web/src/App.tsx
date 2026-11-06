@@ -1,4 +1,4 @@
-import { PendingMergeButton } from "./merge-console";
+import { PendingMergeButton, MergeProgressBadge, useMergeProgress } from "./merge-console";
 import { PRODUCT_ICON_URL } from "./branding.generated";
 import { MediaLightbox } from "./media-lightbox";
 import { AgentConsoleSearch } from "./agent-console-search";
@@ -15,6 +15,7 @@ import { additionalMentionNames, editMentions, mentionQuery, mentionAudience } f
 import { WebVersion } from "./web-version";
 import { Select } from "./select";
 import { DraftChatFile } from "./agent-chat-draft-file";
+import type { MergeProgress } from "./merge-progress";
 import { BuilderBadge } from "./builder-badge";
 import { BackButton } from "./back-button";
 import { useDialogDraft } from "./dialog-state";
@@ -879,6 +880,7 @@ export function App() {
   });
   const products = productsQuery.data ?? bootstrapQuery.data?.products ?? [];
   const selectedProduct = products.find((product) => product.id === selectedProductId);
+  const mergeProgress = useMergeProgress(selectedProduct?.id ?? "");
   const selectedProductCanUseAi = productAllowsAi(selectedProduct);
   const selectedProductCanCapture = selectedProduct?.access?.canOperate === true;
   const hasAnyAiPermission = products.some(productAllowsAi);
@@ -1585,6 +1587,7 @@ export function App() {
                 <ItemRow
                   key={item.id}
                   item={item}
+                  mergeProgress={mergeProgress.items.get(item.key)}
                   canOperate={selectedProductCanCapture}
                   selected={item.key === selectedItemKey}
                   checked={selectedItemKeys.has(item.key)}
@@ -1856,6 +1859,7 @@ function StatusNavItem({ children, label, count, active, onClick }: { children: 
 
 function ItemRow({
   item,
+  mergeProgress,
   canOperate,
   sourceComponent,
   showAttachmentColumn,
@@ -1873,6 +1877,7 @@ function ItemRow({
   onStartWork,
 }: {
   item: WorkItem;
+  mergeProgress: MergeProgress | undefined;
   canOperate: boolean;
   sourceComponent: Component | undefined;
   showAttachmentColumn: boolean;
@@ -1968,6 +1973,7 @@ function ItemRow({
               <span className={`type-icon type-${item.type}`} role="img" aria-label={typeLabel(item.type)}><TypeIcon size={16} /></span>
               <code>{item.key}</code>
               <BuilderBadge name={item.builderName} needsReassignment={item.builderNeedsReassignment} />
+              <MergeProgressBadge state={mergeProgress} />
               {/* First of the badges, so the one that names the machine and
                   agent keeps its width when the line runs out. A failure calls
                   out that the item needs attention; a hand-off just says where

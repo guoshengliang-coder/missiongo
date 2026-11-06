@@ -443,3 +443,7 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 - `AgentPlanContent` 的正文与验证使用同一 Markdown 能力和聊天字号，验证区明确分隔但不折叠；历史原文、批准状态、去重与时间线语义不变。普通计划模式消息不因 role 被包装成已提交方案。
 - `MarkdownText` 表格共用可聚焦的 `markdown-table-scroll`，维持原表头和列对齐，单元格换行，宽表仅在自身横向滚动。表格正文继承字号，不以缩字容纳更多列；保留 Markdown 对齐、链接与安全过滤。
 - 控制台、条目内会话、评论、描述与文档预览共享表格容器。回归见 `and-422-plan-readability.audit.spec.ts`、`agent-plan-content.audit.spec.ts`、Markdown 单测。九组去敏编辑样例见 `tests/fixtures/plan-readability.ts`，其局限与验证记录见 `docs/and-422-plan-readability.md`。
+
+### 待合并识别与统一核验（AND-423）
+
+条目及会话列表共用 `MergeProgressBadge`、`item-handler-badge` 与现有主题令牌。有效人工确认显示“待合并”，活动批次显示“合并中”；撤回、确认失效或合并后移除，不新增业务状态。选择弹窗允许旧 CI 证据过期的有效确认，由专门合并会话统一核验；范围变化仍禁选，实时失败、冲突及依赖阻止实际合并。
