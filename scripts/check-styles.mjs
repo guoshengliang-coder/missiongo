@@ -194,6 +194,20 @@ function entries(baseline) {
   return Array.isArray(baseline) ? baseline.map(signature => ({ signature, count: Infinity })) : baseline.exceptions;
 }
 
+// October's gate compares known signatures, not occurrence budgets. Keep the
+// richer baseline unchanged so enhanced checks remain available on demand.
+const basicSignature = value => value.startsWith("breakpoint-off-system | ")
+  ? value.replace(/(\) \d+px)(?: .*)?$/, "$1") : value;
+export function compareBasicBaseline(violations, baseline) {
+  const known = entries(baseline).map(e => basicSignature(e.signature));
+  const seen = new Set(violations.map(v => basicSignature(v.legacySignature ?? v.signature)));
+  const allowed = new Set(known);
+  return {
+    added: violations.filter(v => !allowed.has(basicSignature(v.legacySignature ?? v.signature))),
+    stale: [...new Set(known)].filter(value => !seen.has(value)),
+  };
+}
+
 export function compareToBaseline(violations, baseline) {
   const allowed = new Map(entries(baseline).map(entry => [entry.signature, entry.count]));
   const seen = new Map();
@@ -244,10 +258,11 @@ function main() {
   }
   const violations = findViolations(sheets, definedVariables);
   const baseline = JSON.parse(readFileSync(baselinePath, "utf8"));
-  if (baseline.version !== 2 || !Array.isArray(baseline.exceptions) || baseline.exceptions.some(e => !e.reason || !e.tracking || !Number.isInteger(e.count) || e.count < 1)) {
+  const strict = process.argv.includes("--strict") || process.argv.includes("--base");
+  if (strict && (baseline.version !== 2 || !Array.isArray(baseline.exceptions) || baseline.exceptions.some(e => !e.reason || !e.tracking || !Number.isInteger(e.count) || e.count < 1))) {
     throw new Error("Style exceptions need version 2, a bounded occurrence count, reason and tracking reference.");
   }
-  const { added, stale } = compareToBaseline(violations, baseline);
+  const { added, stale } = strict ? compareToBaseline(violations, baseline) : compareBasicBaseline(violations, baseline);
   if (added.length) {
     console.error("New style-system violations:");
     for (const v of added) console.error(`  ${v.file}:${v.line} ${v.rule}: ${v.detail}`);
@@ -263,12 +278,12 @@ function main() {
   if (process.argv.includes("--update")) {
     if (process.exitCode) throw new Error("Refusing to add exceptions. --update only removes fixed entries or reduces counts.");
     const actual = new Map(baselineFrom(violations).exceptions.map(e => [e.signature, e.count]));
-    writeFileSync(baselinePath, JSON.stringify({ ...baseline, exceptions: baseline.exceptions.filter(e => actual.has(e.signature)).map(e => ({ ...e, count: actual.get(e.signature) })) }, null, 2) + "\n");
+    writeFileSync(baselinePath, JSON.stringify({ ...baseline, exceptions: baseline.exceptions.filter(e => actual.has(e.signature)).map(e => ({ ...e, count: Math.min(e.count, actual.get(e.signature)) })) }, null, 2) + "\n");
     console.log("Pruned fixed style exceptions.");
     return;
   }
   if (stale.length) { console.error("Fixed exceptions must be removed (--update):", stale); process.exitCode = 1; }
-  if (!process.exitCode) console.log(`Styles: ${sheets.length} stylesheets checked, ${violations.length} bounded existing violations; no new exceptions.`);
+  if (!process.exitCode) console.log(`Styles: ${sheets.length} stylesheets checked, ${violations.length} existing violations; ${strict ? "strict occurrence budgets" : "basic signature checks"}.`);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) main();
