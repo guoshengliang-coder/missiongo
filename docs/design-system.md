@@ -430,3 +430,10 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 方案卡片、批准提示条与设置继续复用 `AgentPlanContent`、`AgentSessionQuickSettings` 和现有会话控制。`planApprovalState` 分别展示已批准、已排队、等待原连接恢复；已批准不再出现第二个批准入口，也不把未额外发消息说成未批准。审批不禁用本来可用的回复和停止，保留草稿、附件及滚动位置。
 
 回归入口：派单和外部会话、原生同步和 Web 决定；`plan-approval.audit.spec.ts` 覆盖桌面/320px、明暗、触控和字号，既有权限、控制与模型强度回归保持。
+
+### 方案表达与表格阅读（AND-422）
+
+- 方案采用与复杂度匹配的短文、分组或完整计划；结论和审批范围在前，技术依据后置。表格按需选择范围、条件、比较、验证、已定选择或变化摘要，不强制模板。生成约束见分发 Skill「方案表达与提交正文」、MCP 的 plan/validation 字段说明及两种节点启动提示。
+- `AgentPlanContent` 的正文与验证使用同一 Markdown 能力和聊天字号，验证区明确分隔但不折叠；历史原文、批准状态、去重与时间线语义不变。普通计划模式消息不因 role 被包装成已提交方案。
+- `MarkdownText` 表格共用可聚焦的 `markdown-table-scroll`，维持原表头和列对齐，单元格换行，宽表仅在自身横向滚动。表格正文继承字号，不以缩字容纳更多列；保留 Markdown 对齐、链接与安全过滤。
+- 控制台、条目内会话、评论、描述与文档预览共享表格容器。回归见 `and-422-plan-readability.audit.spec.ts`、`agent-plan-content.audit.spec.ts`、Markdown 单测。九组去敏编辑样例见 `tests/fixtures/plan-readability.ts`，其局限与验证记录见 `docs/and-422-plan-readability.md`。

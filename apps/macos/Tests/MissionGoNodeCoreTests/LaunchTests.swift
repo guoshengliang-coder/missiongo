@@ -18,6 +18,10 @@ final class LaunchPromptTests: XCTestCase {
                     XCTAssertLessThan(investigate.lowerBound, questions.lowerBound)
                     XCTAssertLessThan(questions.lowerBound, approval.lowerBound)
                     XCTAssertTrue(prompt.contains("单独申请调查授权"))
+                    XCTAssertTrue(prompt.contains("方案表达按复杂度组织"))
+                    XCTAssertTrue(prompt.contains("向 request_plan_approval 提交的 plan/validation"))
+                    XCTAssertTrue(prompt.contains("特别是与推荐不同的选择"))
+                    XCTAssertTrue(prompt.contains("普通进度、澄清和等待提示不是正式方案"))
                     XCTAssertTrue(prompt.contains("有边界的复现或实验计划"))
                     if freeSession { XCTAssertTrue(prompt.contains("不自行开始任务")) }
                     else if mode == "plan" {

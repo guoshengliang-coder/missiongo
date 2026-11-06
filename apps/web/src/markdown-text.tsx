@@ -3,7 +3,17 @@ import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markd
 import { localArtifactPath } from "@missiongo/domain";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import { useI18n } from "./i18n";
 import { remarkCjkEmphasis } from "./remark-cjk-emphasis";
+
+// A real scroll container keeps wide tables inside every Markdown surface and
+// exposes keyboard scrolling on browsers which do not focus scroll areas by default.
+function MarkdownTable({ children }: { children: React.ReactNode }) {
+  const { t } = useI18n();
+  return <div className="markdown-table-scroll" role="region" aria-label={t("markdownTableScroll")} tabIndex={0}>
+    <table>{children}</table>
+  </div>;
+}
 
 /**
  * Render user-authored item text consistently. Raw HTML is deliberately
@@ -14,6 +24,7 @@ export function MarkdownText({ children, className, onLocalArtifactOpen, resolve
   // Stable renderer identities keep links mounted while a preview opens/closes,
   // preserving the trigger that the shared modal returns focus to.
   const components = useMemo<Components>(() => ({
+          table: ({ children }) => <MarkdownTable>{children}</MarkdownTable>,
           a: ({ href, children }) => href && localArtifactPath(href)
             ? onLocalArtifactOpen
               ? <button type="button" className="artifact-link" onClick={() => onLocalArtifactOpen(href)}>{children}</button>

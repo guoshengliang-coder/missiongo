@@ -49,7 +49,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
       }
       const card = page.getByRole("article", { name: "提交审批的方案", exact: true });
       await expect(card).toBeVisible();
-      await expect(card.locator("h2")).toHaveText("当前实施方案");
+      await expect(card.locator("h2").first()).toHaveText("当前实施方案");
       await expect(card).toContainText(plan.validation);
       await expect(page.getByText("完整正文始终可见", { exact: true })).toHaveCount(1);
       const area = page.locator(surface === "console" ? ".agent-console-messages" : ".agent-session-messages");
