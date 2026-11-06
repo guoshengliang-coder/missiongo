@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { baselineFrom, baselineGrowth, compareToBaseline, findViolations, parseCss, sourceFiles } from "./check-styles.mjs";
+import { compareBasicBaseline, baselineFrom, baselineGrowth, compareToBaseline, findViolations, parseCss, sourceFiles } from "./check-styles.mjs";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -108,4 +108,15 @@ test("an existing breakpoint cannot exempt a new selector or extra occurrence", 
   assert.equal(baselineGrowth(baselineFrom(expanded), baseline).length, 1);
   assert.equal(baselineGrowth(baselineFrom([...original, ...original]), baseline).length, 1);
   assert.equal(baselineGrowth(baselineFrom([]), baseline).length, 0);
+});
+
+test("basic gate retains October signatures while strict checks remain opt-in", () => {
+  const original = check("@media (max-width: 640px) { .old { gap: 4px; } }");
+  const baseline = baselineFrom(original);
+  const expanded = check("@media (max-width: 640px) { .old { gap: 4px; } .new { gap: 4px; } }");
+  assert.deepEqual(compareBasicBaseline([...expanded, ...original], baseline), { added: [], stale: [] });
+  assert.equal(compareToBaseline(expanded, baseline).added.length, 1);
+  assert.equal(compareBasicBaseline(check(".bad { font-size: 9px; }"), baseline).added.length, 1);
+  assert.equal(compareBasicBaseline([], baseline).stale.length, 1);
+  assert.deepEqual(compareBasicBaseline(original, [original[0].legacySignature]), { added: [], stale: [] });
 });

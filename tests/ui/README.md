@@ -162,3 +162,8 @@ node scripts/seed-ui-fixture.mjs --base http://127.0.0.1:8799 --cookie "<会话 
 半透明祖先整组绘制后的最终像素，也不能证明实际点击区域未被其他元素遮挡。这些情况需要截图和交互专项。
 
 UI 测试通过不代表 Safari、Android WebView 或 macOS 原生界面已验收。本轮新增的 `overlay-contract.audit.spec.ts` 覆盖分层返回、草稿、焦点恢复、iframe 和 SDK 桥接；`toolbar-font-contract.audit.spec.ts` 与 `visible-control.ts` 检查控件及裁切祖先、三档字号、320px 和断点两侧。这些专项不能证明所有入口或平台都没有缺陷；原始案例见 [2026-10 审计](../../docs/ui-ue-audit-2026-10.md)。新增入口需按[设计规范 §8–§9](../../docs/design-system.md)补同类交互验证。
+# 规范门禁范围（2026-11-06）
+
+默认开发门禁恢复 10 月末基础要求：移除每次修改的跨入口扩展复查清单，`npm run check` 不再运行浮层静态契约检查，PR 不再强制比较样式例外基线增长。基础样式检查按已知签名判断；数量预算改为 `npm run check:styles -- --strict` 按需运行，`--base` 和 `npm run check:ui-contracts` 也保留为可选诊断。基线文件及源码自动发现保留，未添加新的例外。
+
+没有删除 UI 用例、回退界面修复或调整快照。分片、容器、缓存、按影响选测、平台基线和计时报告保持现状。PR 与主线的 UI 运行策略也保持现状，因此此次简化门禁不承诺消除重复全量 UI 的等待。

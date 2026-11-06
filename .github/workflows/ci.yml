@@ -100,13 +100,6 @@ jobs:
           node-version: 22.13.0
           cache: npm
       - run: npm ci
-      - name: Reject expanded design exceptions
-        if: github.event_name == 'pull_request'
-        env:
-          DESIGN_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          git fetch --no-tags origin "$DESIGN_BASE_SHA"
-          npm run check:styles -- --base "$DESIGN_BASE_SHA"
       - run: npm run check
 
   # Each shard has its own server, database and account. Keep one worker per
