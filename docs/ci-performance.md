@@ -24,13 +24,32 @@ PR 只恢复缓存；仅成功的主分支/手动构建在完整键未命中时�
 每次 CI 结束后，`ci-timing-report` 在自己的 Job Summary 输出：
 
 - 各 job 的结果与运行时长，包含原生平台检查；
+- 各 job 从创建到 runner 启动的排队时长，与执行时长分列；
 - 各 UI 分片的测试数量与整组耗时；
 - 最慢的 UI 文件及测试尝试总耗时。
 
 下载 `ci-timing-summary-<attempt>` 制品可取得 `summary.md`、`summary.json` 和各分片原始 JSON。
 JSON 也包含各 job 的步骤耗时，可比较 macOS 编译、容器启动与实际测试时间。
 Job 时长包括 setup/teardown；文件时长只累加测试尝试，不能直接与 job 时长相减来推断全部构建开销。
+排队使用 job 的 `created_at` 与 `started_at`，不把前置依赖执行算成排队；缺失、异常时间或跳过的任务显示为未知。
+报告标明 run 与 attempt，只统计该次尝试并排除报告自身；并行 job 的耗时不能相加当作整个 workflow 的完成耗时。
 制品保留 14 天；现有行为报告和截图制品保持原位置。
+
+macOS 测试与打包分别由 `scripts/macos-ci-watchdog.py` 监督，正常执行窗口各为 15 分钟。
+到期先固定超时结果，再在最多 45 秒内采集本次命令的进程树及调用栈，随后终止其进程组；返回 124，不能变成成功。
+调用栈通过 macOS `sample` 获取，优先采集 xctest，最多 6 个进程，每次采样 2 秒、采样命令最多 6 秒。
+采样失败或进程已退出会记录原因，仍继续清理并使检查失败。不读取进程环境或命令参数，也不扫描其他会话的调用栈。
+正常输出同步显示在 Actions 日志并写入 `command.log`；`result.json` 记录退出码、状态和时长。
+超时额外写入 `diagnostics.json`、采样报告及采样工具日志。该目录不提交 Git。
+
+GitHub 步骤硬上限各为 18 分钟，job 上限 45 分钟，给诊断、缓存和上传留出余量；排队不由这些执行超时解决。
+`always()` 上传 `macos-diagnostics-<attempt>` 制品，限时 3 分钟、保留 7 天，成功、失败时均保留本次命令日志。
+人工取消会尽快终止本次命令，不等待采样；runner 被强制终止、整机故障或网络故障时不能保证上传完成。
+超时不自动重试或放行。这是故障止损与现场取证，不代表测试挂起根因已经修复。
+先下载诊断制品核对卡住的测试及线程，再决定修复或仅重跑失败任务。
+
+超时与上传语义参见 [GitHub workflow syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax)
+和 [状态检查表达式](https://docs.github.com/en/actions/reference/workflows-and-actions/expressions)。
 
 汇总通过只读 Actions API 获取当前运行尝试的 job 数据，不增加仓库写权限。
 UI reporter 只记录仓库相对文件位置、测试 ID、时长、状态和重试次数，不复制测试输出、

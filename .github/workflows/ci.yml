@@ -262,6 +262,9 @@ jobs:
     needs: ui-plan
     if: needs.ui-plan.outputs.macos_required == 'true'
     runs-on: macos-15
+    # Hung tests have exhausted the default six-hour job limit. Keep ample
+    # headroom for cold builds while bounding the release-blocking failure.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -280,9 +283,20 @@ jobs:
       - name: Restore unchanged build input timestamps
         run: node scripts/macos-ci-cache.mjs restore
       - name: Test the macOS client
-        run: swift test --package-path apps/macos
+        timeout-minutes: 18
+        run: python3 scripts/macos-ci-watchdog.py --output ci-diagnostics/macos-tests -- swift test --package-path apps/macos
       - name: Build the app bundle
-        run: ./scripts/build-macos-app.sh
+        timeout-minutes: 18
+        run: python3 scripts/macos-ci-watchdog.py --output ci-diagnostics/macos-build -- ./scripts/build-macos-app.sh
+      - name: Upload macOS diagnostics
+        if: ${{ always() }}
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v5
+        with:
+          name: macos-diagnostics-${{ github.run_attempt }}
+          path: ci-diagnostics/
+          retention-days: 7
+          if-no-files-found: warn
       - name: Snapshot Swift build inputs
         if: github.event_name != 'pull_request' && steps.swift-cache.outputs.cache-hit != 'true'
         run: node scripts/macos-ci-cache.mjs snapshot

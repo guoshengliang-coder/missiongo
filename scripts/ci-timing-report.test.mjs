@@ -57,6 +57,37 @@ test("job collection paginates the current attempt and fails visibly on API erro
   await assert.rejects(fetchJobs({ ...args, fetcher: async () => ({ ok: false, status: 403 }) }), /403/);
 });
 
+test("queue timing separates runner wait from execution without changing weight eligibility", () => {
+  const f = fixture();
+  // Actual delayed-runner shape: dependency finished at job creation, then
+  // macOS waited ten minutes before its four-minute build could start.
+  Object.assign(f.jobs[0], { name: "macos-build", created_at: "2026-11-05T15:45:57Z",
+    started_at: "2026-11-05T15:56:00Z", completed_at: "2026-11-05T16:00:17Z" });
+  const report = buildTimingReport(f);
+  assert.equal(report.jobs[0].queueMs, 603_000);
+  assert.equal(report.jobs[0].durationMs, 257_000);
+  assert.equal(report.eligibleForWeights, true);
+  assert.match(markdown(report), /603\.0s \| 257\.0s/);
+  assert.match(markdown(report), /Attempt: 1/);
+});
+
+test("unavailable, invalid and skipped queue measurements are unknown rather than zero", () => {
+  for (const change of [
+    j => { delete j.created_at; },
+    j => { j.created_at = "invalid"; },
+    j => { j.created_at = "2026-01-01T01:00:00Z"; },
+    j => { j.started_at = null; },
+    j => { j.conclusion = "skipped"; },
+  ]) {
+    const f = fixture(); f.jobs[0].created_at = "2026-01-01T00:00:00Z"; change(f.jobs[0]);
+    const report = buildTimingReport(f);
+    assert.equal(report.jobs[0].queueMs, null);
+    assert(!markdown(report).includes("NaN"));
+  }
+  const f = fixture(); f.jobs[0].created_at = f.jobs[0].started_at;
+  assert.equal(buildTimingReport(f).jobs[0].queueMs, 0);
+});
+
 test("Playwright reporter writes only relative locations and numeric/status data, preserving failed attempts", t => {
   const directory = mkdtempSync(join(tmpdir(), "mg-timing-")); t.after(() => rmSync(directory, { recursive: true, force: true }));
   const reporter = new UITimingReporter({ directory });
