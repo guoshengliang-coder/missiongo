@@ -1,3 +1,4 @@
+import { permissionReplyText } from "./permission-presentation";
 import { DeliveryCards, MergeProgressBadge, useMergeProgress } from "./merge-console";
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
@@ -79,6 +80,7 @@ import {
   type AgentSessionFilter,
   withSessionReplyDraft,
 } from "./agent-session-view";
+import { hasPendingPermissionQuestion } from "@missiongo/domain";
 import { AgentSessionQuestions } from "./agent-session-questions";
 import { DraftChatFile } from "./agent-chat-draft-file";
 import { AgentSessionQuickSettings } from "./agent-session-settings";
@@ -173,8 +175,6 @@ function attentionLabel(session: AgentSessionSummary, t: ReturnType<typeof useI1
 
 export function AgentSessionConsole({
   productId,
-  products,
-  onEnterProduct,
   initialFilter,
   search = "",
   allSessions,
@@ -190,8 +190,6 @@ export function AgentSessionConsole({
   onBackToSessions,
 }: {
   productId: string;
-  products: readonly { id: string; name: string }[];
-  onEnterProduct: (productId: string) => void;
   initialFilter: AgentSessionFilter | null;
   search?: string;
   allSessions: readonly AgentSessionSummary[];
@@ -291,10 +289,6 @@ export function AgentSessionConsole({
     () => agentOtherProjectCounts(allSessions, productId),
     [allSessions, productId],
   );
-  const sessionProducts = (session: AgentSessionSummary) => {
-    const ids = new Set([...(session.productId ? [session.productId] : []), ...session.items.map(item => item.productId)]);
-    return products.filter(product => ids.has(product.id));
-  };
   const visibleSessions = useMemo(
     () => byLatestActivity(productSessions.filter((session) => agentSessionMatches(session, filter, agentFilter, search, association))),
     [agentFilter, association, filter, search, productSessions],
@@ -315,7 +309,7 @@ export function AgentSessionConsole({
   useEffect(() => {
     if (!sessionsLoaded || !selectedSessionId) return;
     const linked = allSessions.find((session) => session.id === canonicalAgentSessionId(selectedSessionId, allSessions));
-    if (!linked || linked.archivedAt) setUnavailableSessionId(selectedSessionId);
+    setUnavailableSessionId(linked ? null : selectedSessionId);
   }, [allSessions, selectedSessionId, sessionsLoaded]);
 
   useEffect(() => {
@@ -648,7 +642,8 @@ export function AgentSessionConsole({
       turnState, command: sessionQuery.data ? command : selected.command, stopCommand })
   );
   const approval = sessionQuery.data ? sessionQuery.data.approval : selected?.approval;
-  const showPermissionApproval = Boolean(approval && (approvalNeedsAction(approval)
+  const questionPermission = Boolean(selected && hasPendingPermissionQuestion(selected.agentKind, visibleMessages.filter(message => !message.id.startsWith("history:"))));
+  const showPermissionApproval = questionPermission || Boolean(approval && (approvalNeedsAction(approval)
     || (approval.kind === "manual" && approval.status === "pending")));
   const planApproved = sessionQuery.data?.planApprovalState;
   const planContinued = planContinuationObserved(sessionQuery.data);
@@ -1031,7 +1026,7 @@ export function AgentSessionConsole({
             const rowWaiting = ["claude_code", "codex", "opencode"].includes(session.agentKind) && ["active", "idle"].includes(rowStatus)
               && (session.command?.status !== "queued" || session.agentKind === "codex") && session.turnState?.waitingForInput === true;
             const rowLabel = session.source === "external" && !session.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(session)) : rowBackground ? t("agentSessionBackgroundStatus")
-              : rowWaiting ? t(waitingStatusLabelKey(session)) : statusLabel(rowStatus, t);
+              : rowWaiting ? t(session.waitingForPermission ? "agentSessionWaitingApprovalStatus" : waitingStatusLabelKey(session)) : statusLabel(rowStatus, t);
             return (
               <div
                 key={session.id}
@@ -1115,13 +1110,6 @@ export function AgentSessionConsole({
               <span className="agent-console-avatar"><AgentIcon kind={selected.agentKind} size={18} /></span>
               <div className="agent-console-heading">
                 <h2>{sessionTitle(selected, roundLabel)}{selected.items.length === 0 && <span className="agent-console-unlinked-badge">{t("agentConsoleAssociationUnlinked")}</span>}</h2>
-                <div className="agent-console-session-projects">
-                  {sessionProducts(selected).map(product => <span key={product.id}>{product.name}
-                    {product.id !== productId && <button type="button" className="text-button" onClick={() => onEnterProduct(product.id)}>
-                      {t("agentConsoleEnterProject")}
-                    </button>}
-                  </span>)}
-                </div>
                 {/* The items this session is working on stay in the head, where
                     scrolling the conversation cannot lose them (AND-159). */}
                 {selected.items.length > 0 && <div className="agent-console-dispatch agent-console-dispatch-head">
@@ -1223,11 +1211,15 @@ export function AgentSessionConsole({
                       </header>
                       {!repeatsPlan && message.text && (selected.agentSessionId && ["agent", "plan"].includes(message.role)
                         ? <AgentArtifactMarkdown text={message.text} sessionId={selected.agentSessionId} messageId={message.id} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />
-                        : <MarkdownText>{message.text}</MarkdownText>)}
+                        : <MarkdownText>{permissionReplyText(sessionQuery.data?.messages.flatMap(message => message.questions ?? []) ?? [], message.text)}</MarkdownText>)}
                       {message.attachmentData && selected.agentSessionId && <ChatAttachments sessionId={selected.agentSessionId} attachments={message.attachmentData} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />}
                       {message.questions && (
                         <AgentSessionQuestions
                           questions={message.questions}
+                          sessionId={selected.agentSessionId}
+                          sourceId={message.sourceId}
+                          historical={message.id.startsWith("history:")}
+                          agentKind={selected.agentKind}
                           reply={reply}
                           canReply={selected.canReply && !message.id.startsWith("history:") && !pending && !sendingSelected && !cancellingSelected}
                           onChange={setReply}
@@ -1284,7 +1276,7 @@ export function AgentSessionConsole({
                     <header className="agent-console-message-meta">
                       <time dateTime={outgoing.occurredAt}>{formatAgentMessageTime(outgoing.occurredAt, locale)}</time>
                     </header>
-                    <MarkdownText>{outgoing.text}</MarkdownText>
+                    <MarkdownText>{permissionReplyText(sessionQuery.data?.messages.flatMap(message => message.questions ?? []) ?? [], outgoing.text)}</MarkdownText>
                     {command && command.id === outgoing.commandId && command.attachments && selected.agentSessionId
                       && <ChatAttachments sessionId={selected.agentSessionId} attachments={command.attachments} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />}
                     {sendingSelected && send.variables?.files.length ? <div className="agent-chat-draft-files">
@@ -1358,7 +1350,7 @@ export function AgentSessionConsole({
                     {selected.canArchive && <small>{t("agentRecoveryArchiveHint")}</small>}
                   </section>
                 )}
-                {approval && showPermissionApproval && (
+                {approval && !questionPermission && showPermissionApproval && (
                   <section className="agent-console-attention-banner agent-console-approval" role="alert" aria-label={t(approvalTitleKey(approval)) }>
                     <header>
                       <BellRing size={16} />
@@ -1426,7 +1418,7 @@ export function AgentSessionConsole({
                     {["stalled", "unavailable", "failed"].includes(sessionStatus) && <p className="agent-run-warning" role="alert">{activityText}</p>}
                     <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={visualStatus} />} actions={stopAction}
                       label={selected.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected))
-                        : agentWaiting ? t(runWaitingLabelKey({ agentKind: selected.agentKind, approval }), { agent: agentName })
+                        : agentWaiting ? t(questionPermission ? "agentRunApproval" : runWaitingLabelKey({ agentKind: selected.agentKind, approval }), { agent: agentName })
                           : claudeBackgroundOnly ? t("agentRunBackground") : sessionStatus === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(sessionStatus, t)}>
                       {!["stalled", "unavailable", "failed"].includes(sessionStatus) && <p>{statusDetail}</p>}
                       {outgoing && ["queued", "delivering", "delivered"].includes(outgoing.status) && <p>
@@ -1491,9 +1483,9 @@ export function AgentSessionConsole({
                     id={`agent-reply-${selected.id}`}
                     rows={1}
                     maximumHeight={240}
-                    value={reply}
+                    value={permissionReplyText(sessionQuery.data?.messages.flatMap(message => message.questions ?? []) ?? [], reply)}
                     onChange={(event) => {
-                      setReply(event.target.value);
+                      setReply(permissionReplyText(sessionQuery.data?.messages.flatMap(message => message.questions ?? []) ?? [], event.target.value, true));
                       if (send.isError && send.variables?.sessionId === selected.agentSessionId) send.reset();
                     }}
                     placeholder={t("agentSessionReplyPlaceholder", { agent: agentLabel(selected, t) })}

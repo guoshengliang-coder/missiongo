@@ -23,7 +23,7 @@ export function sessionHealth(status: AgentSessionStatus, turn: AgentSessionTurn
 }
 
 /** Observation clocks must not reorder conversations or create unread activity. */
-export function executionTurnState(turn: AgentSessionTurnState): Omit<AgentSessionTurnState, "observedAt" | "lastProgressAt"> {
-  const { observedAt: _observed, lastProgressAt: _progress, ...execution } = turn;
+export function executionTurnState(turn: AgentSessionTurnState): Omit<AgentSessionTurnState, "observedAt" | "lastProgressAt" | "waitingForPermission"> {
+  const { observedAt: _observed, lastProgressAt: _progress, waitingForPermission: _permission, ...execution } = turn;
   return execution;
 }

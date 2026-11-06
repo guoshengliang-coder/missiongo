@@ -1,3 +1,4 @@
+import { permissionReplyText } from "./permission-presentation";
 import { DeliveryCards } from "./merge-console";
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
@@ -11,6 +12,7 @@ import { MarkdownText } from "./markdown-text";
 import { AgentArtifactMarkdown } from "./agent-artifact-viewer";
 import { api } from "./api";
 import { activityLabelKey, agentSessionDetailRefetchInterval, formatAgentMessageTime, isWithdrawnCard, replyBlockedLabelKey, runWaitingLabelKey, sessionInlineError, sessionStatusDetail } from "./agent-session-view";
+import { hasPendingPermissionQuestion } from "@missiongo/domain";
 import { AgentSessionQuestions } from "./agent-session-questions";
 import { useI18n } from "./i18n";
 import { localizedErrorText } from "./error-text";
@@ -110,6 +112,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
       await queryClient.invalidateQueries({ queryKey: ["agent-session", operation.sessionId] });
     },
   });
+  const questionPermission = Boolean(session.data && hasPendingPermissionQuestion(session.data.agentKind, history.messages.filter(message => !message.id.startsWith("history:"))));
   const command = session.data?.command;
   const canReply = session.data?.canReply === true;
   // A reply can go to any agent the console runs, so the delivery lines name
@@ -165,15 +168,18 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                         <small>{messageLabel(message.role, session.data.agentKind, t)}</small>
                         <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
                       </header>
-                      {!repeatsPlan && (message.role === "user" ? <MarkdownText>{message.text}</MarkdownText> : <AgentArtifactMarkdown text={message.text} sessionId={sessionId} messageId={message.id} />)}
+                      {!repeatsPlan && (message.role === "user" ? <MarkdownText>{permissionReplyText(session.data.messages.flatMap(message => message.questions ?? []), message.text)}</MarkdownText> : <AgentArtifactMarkdown text={message.text} sessionId={sessionId} messageId={message.id} />)}
                       {message.questions && (
                         <AgentSessionQuestions
                           questions={message.questions}
+                          sessionId={sessionId}
+                          sourceId={message.sourceId}
+                          historical={message.id.startsWith("history:")}
+                          agentKind={session.data.agentKind}
                           reply={reply}
                           canReply={canReply && !message.id.startsWith("history:") && !pending && !send.isPending}
                           onChange={setReply}
-                        />
-                      )}
+                        />                      )}
                     </article>
                   );
                 })}
@@ -183,7 +189,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                 <AgentStopFeedback stop={session.data.stopCommand ?? (command?.kind === "interrupt" ? command : undefined)}
                   latestCommand={command} turnActive={session.data.turnState?.turnActive ?? false} backgroundRunning={session.data.activities.length > 0} />
               <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={visualStatus} />} label={waiting
-                ? t(runWaitingLabelKey(session.data), { agent: agentName })
+                ? t(questionPermission ? "agentRunApproval" : runWaitingLabelKey(session.data), { agent: agentName })
                 : backgroundOnly ? t("agentRunBackground") : session.data.status === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(session.data.status, t)}>
                 <p>{statusDetail}</p>
                 {session.data.activities.length > 0 && (
@@ -238,8 +244,8 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                       rows={1}
                       maximumHeight={240}
                       submitOnEnter
-                      value={reply}
-                      onChange={(event) => setReply(event.target.value)}
+                      value={permissionReplyText(session.data.messages.flatMap(message => message.questions ?? []), reply)}
+                      onChange={(event) => setReply(permissionReplyText(session.data.messages.flatMap(message => message.questions ?? []), event.target.value, true))}
                       placeholder={t("agentSessionReplyPlaceholder", {
                         agent: messageLabel("agent", session.data.agentKind, t),
                       })}

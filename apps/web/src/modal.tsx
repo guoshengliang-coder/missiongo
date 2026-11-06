@@ -5,7 +5,7 @@ import { useI18n } from "./i18n";
 import { DialogDraftContext, type DialogDraft } from "./dialog-state";
 import { useModalSurface } from "./overlay";
 
-export function Modal({ className = "", fullScreenOnCompact = false, title, subtitle, onClose, children, wide = false, scrolls = false, dirty: ownDirty = false, pending: ownPending = false, closeWarning }: {
+export function Modal({ className = "", fullScreenOnCompact = false, title, subtitle, onClose, children, wide = false, scrolls = false, dirty: ownDirty = false, pending: ownPending = false, pendingNotice, closeWarning }: {
   title: string;
   subtitle: string;
   onClose: () => void;
@@ -15,6 +15,8 @@ export function Modal({ className = "", fullScreenOnCompact = false, title, subt
   closeWarning?: string | undefined;
   dirty?: boolean;
   pending?: boolean;
+  /** A caller with its own ongoing-operation message can suppress the save-specific notice. */
+  pendingNotice?: string | null;
   wide?: boolean;
   scrolls?: boolean;
 }) {
@@ -73,7 +75,7 @@ export function Modal({ className = "", fullScreenOnCompact = false, title, subt
       onMouseDown={event => { if (event.target === event.currentTarget) close.current(); }}>
       <section className={`modal ${wide ? "wide" : ""} ${scrolls ? "scrolls" : ""}`}>
         <header><div><p className="eyebrow">{subtitle}</p><h2 id={titleId}>{discarding ? t(closeWarning ? "confirmAction" : "discardDialogTitle") : title}</h2></div><button type="button" className="icon-button" disabled={pending} onClick={() => close.current()} aria-label={t("close")}><X size={20} /></button></header>
-        {waiting && pending && <p role="status" className="account-note">{t("settingsWaitForSave")}</p>}
+        {waiting && pending && pendingNotice !== null && <p role="status" className="account-note">{pendingNotice ?? t("settingsWaitForSave")}</p>}
         {discarding && <div className="discard-dialog">
           <p>{closeWarning ?? t("discardDialogHelp")}</p>
           <div className="form-footer">

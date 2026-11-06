@@ -2504,11 +2504,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const {productId}=request.params as {productId:string},body=objectBody(request.body);
     requireProductPermission(request,productId,"operate");requireProductPermission(request,productId,"ai");
     if(!Array.isArray(body.selection) || typeof body.publish!=="boolean") throw invalidInput("Select a batch and its publication scope.");
+    if(body.integrationProtocol!==undefined&&body.integrationProtocol!==1)throw invalidInput("Unsupported integration protocol.");
     const selection=body.selection.map(value=>{const row=objectBody(value);return {id:stringField(row,"id")!,revision:stringField(row,"revision")!};});
     return merges.start(requireAccountId(request),stringField(body,"requestKey")!,selection,{
       productId,nodeId:stringField(body,"nodeId")!,agentKind:stringField(body,"agentKind")! as AgentKind,mode:stringField(body,"mode")!,
       ...(optionalName(body,"model")?{model:optionalName(body,"model")!}:{}),...(optionalName(body,"effort")?{effort:optionalName(body,"effort")!}:{})
-    },body.publish);
+    },body.publish,body.integrationProtocol===1?1:undefined);
   });
 
   app.post("/api/v1/project-conversations", async (request, reply) => {

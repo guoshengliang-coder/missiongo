@@ -19,6 +19,7 @@ export const MCP_TOOL_DEFINITIONS = [
   { name: "refresh_merge_delivery", access: "write", purpose: "Refresh current Git evidence from the original development conversation." },
   { name: "report_merge_batch", access: "write", purpose: "Record a verified frozen merge result without claiming source items." },
   { name: "finish_merge_batch", access: "write", purpose: "Close a fully reconciled batch with no remaining external execution." },
+  { name: "record_merge_integration", access: "write", purpose: "Record authorized batch planning, reserved repairs, validation and recovery progress." },
   {name:"get_collaboration_attachment",access:"read",purpose:"Read explicitly shared unchanged attachment evidence without source project access."},
   {name:"get_item_collaborations",access:"read",purpose:"Read scoped dependencies and approval drafts for one item."},
   {name:"list_collaboration_targets",access:"read",purpose:"List directed receiving grants without project or Git access."},

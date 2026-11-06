@@ -3,7 +3,7 @@ import { handoffDispatchIsCurrent } from "./agent-handoffs.js";
 import { assertDispatchExecution, dispatchExecutionRevoked } from "./builder-authority.js";
 import { createHash, randomUUID } from "node:crypto";
 
-import { hasStoppableAgentTurn, normalizeAgentMode, sessionErrorFields, storedSessionError, type CodexSessionFailure, isAcceptedSessionUrl, nodeConnectionState, type AgentKind, type NodeConnectionState } from "@missiongo/domain";
+import { hasStoppableAgentTurn, hasPendingPermissionQuestion, normalizeAgentMode, sessionErrorFields, storedSessionError, type CodexSessionFailure, isAcceptedSessionUrl, nodeConnectionState, type AgentKind, type NodeConnectionState } from "@missiongo/domain";
 
 import { sessionHealth, executionTurnState } from "./agent-session-health.js";
 
@@ -71,6 +71,8 @@ export interface AgentSessionActivity {
 }
 
 export interface AgentSessionTurnState {
+  /** Derived by the server from the current snapshot, never a node-supplied grant. */
+  readonly waitingForPermission?: boolean;
   readonly observedAt?: string;
   readonly lastProgressAt?: string;
   readonly turnActive?: boolean;
@@ -138,6 +140,7 @@ export interface AgentSessionSnapshot {
 }
 
 export interface AgentSessionListItem {
+  readonly waitingForPermission?: boolean;
   readonly productId?: string;
   readonly initialText?: string;
   readonly startReady?: boolean;
@@ -1061,6 +1064,7 @@ export class AgentSessionStore {
         ...(row.session_turn_state_json
           ? { turnState: JSON.parse(row.session_turn_state_json) as AgentSessionTurnState }
           : {}),
+        waitingForPermission: turnState.waitingForPermission ?? Boolean(message && hasPendingPermissionQuestion(row.agent_kind, [{ sourceId: message.source_id, questions: JSON.parse(message.questions_json ?? "[]") }])),
         waitingForReply: needsAttention,
         retryable: (["failed", "cancelled"].includes(row.dispatch_status) || deliveryTimedOut)
           && (free ? free.ready === 1 && ["failed", "cancelled"].includes(row.dispatch_status) && pendingNativeFree : itemRows.length > 0 && itemRows.every((item) => item.status === "ready")),
@@ -1738,7 +1742,12 @@ export class AgentSessionStore {
     const storedTurnState = session.turn_state_json
       ? JSON.parse(session.turn_state_json) as AgentSessionTurnState
       : {};
-    const turnStateJson = JSON.stringify({ ...storedTurnState, ...incomingTurnState });
+    // Permissions need not be the last message: OpenCode can append ordinary
+    // forms after them. Derive once during ingestion, not by scanning history
+    // on every list poll. A failed empty snapshot retains the last known state.
+    const permissionState = ["claude_code", "opencode"].includes(session.agent_kind) && (!input.error || input.messages.length)
+      ? { waitingForPermission: hasPendingPermissionQuestion(session.agent_kind, input.messages) } : {};
+    const turnStateJson = JSON.stringify({ ...storedTurnState, ...incomingTurnState, ...permissionState });
     const sourceActivityAt = normalizedSourceTimestamp(input.activityAt, now, "activityAt");
     const error = storedSessionError(input.error, input.status === "failed" ? input.failure : undefined);
     const sessionUrl = input.sessionUrl?.trim();

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import { withoutReleaseStatus } from "./enable-release-status.mjs";
 import { installTiming, instrumentDeploy } from "./enable-release-timing.mjs";
 
 const scripts = dirname(fileURLToPath(import.meta.url));
@@ -51,7 +52,8 @@ test("empty timings and unavailable/report-write-failed destinations do not chan
   assert.equal(writeFailure.status, 0); assert.equal(writeFailure.stdout, "receipt"); assert.match(writeFailure.stderr, /Warning/);
 });
 
-const currentDeploy = readFileSync(join(scripts, "deploy.sh"), "utf8");
+const actualDeploy = readFileSync(join(scripts, "deploy.sh"), "utf8");
+const currentDeploy = withoutReleaseStatus(actualDeploy);
 const original = currentDeploy.replace(/\n# BEGIN RELEASE TIMING[\s\S]*?# END RELEASE TIMING\n/, "")
   .replace(/^.*release_timing_(?:stage|skip).*\n/gm, "");
 const instrumented = instrumentDeploy(original);
@@ -62,6 +64,7 @@ const installed = original.replace('cd "$(dirname "$0")/.."', 'cd "${MISSIONGO_R
   .replace("# checkout has none of its own.", "# checkout has none of its own.\n# preserve cp -an historical versions");
 
 test("instrumentation is idempotent, makes only additive hooks, and refuses unknown/partial/trapped scripts", () => {
+  assert.equal(instrumentDeploy(actualDeploy), actualDeploy);
   assert.equal(instrumentDeploy(instrumented), instrumented);
   assert.equal(instrumented, currentDeploy);
   const added = instrumented.split("\n").filter(line => !original.split("\n").includes(line));

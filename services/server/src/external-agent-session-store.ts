@@ -2,7 +2,7 @@ import { assertItemExecutionIdentity } from "./item-execution-blockers.js";
 import { assertBuilderExecution, assertExternalExecution } from "./builder-authority.js";
 import { createHash, randomUUID } from "node:crypto";
 
-import type { AgentKind } from "@missiongo/domain";
+import { hasPendingPermissionQuestion, type AgentKind } from "@missiongo/domain";
 
 import type { AgentSessionListItem, AgentSessionSnapshot, AgentSessionStatus } from "./agent-session-store.js";
 import { conflict, invalidInput, notFound } from "./errors.js";
@@ -273,6 +273,7 @@ export class ExternalAgentSessionStore {
         unread: Boolean(row.unread_at && (!row.read_at || row.unread_at > row.read_at)),
         ...(row.unread_at ? { unreadAt: row.unread_at } : {}),
         ...native,
+        waitingForPermission: hasPendingPermissionQuestion(row.agent_kind, nativeMessages),
         ...(pendingApproval ? {attention:{state:row.dismissed_revision === proposal.revision ? "not_needed" as const : "needed" as const,
           kind:"approval" as const,reason:"方案等待批准，请审阅当前方案与验证目标。",revision:proposal.revision,
           ...(row.dismissed_revision === proposal.revision ? {dismissed:true} : {})},needsAttention:row.dismissed_revision !== proposal.revision,waitingForReply:row.dismissed_revision !== proposal.revision} : {}),
