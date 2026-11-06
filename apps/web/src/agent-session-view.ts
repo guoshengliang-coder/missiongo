@@ -692,6 +692,19 @@ export function activityLabelKey(status: AgentSessionStatus, replyQueued = false
   return replyQueued ? "agentSessionActivityUnavailableQueued" : "agentSessionActivityUnavailable";
 }
 
+/** Releasing an idle Claude session is routine housekeeping, not an error
+ *  (AND-424). Only a real failure keeps the danger-coloured inline error; the
+ *  suspension explanation belongs in the run details instead. */
+export function sessionInlineError(status: AgentSessionStatus, lastError: string | undefined): string | undefined {
+  return status === "suspended" ? undefined : lastError;
+}
+
+/** The run-details body for a released session names the release and how to
+ *  resume it. Every other status keeps its usual activity copy. */
+export function sessionStatusDetail(status: AgentSessionStatus, lastError: string | undefined, activity: string): string {
+  return status === "suspended" && lastError ? lastError : activity;
+}
+
 /** Keep the intervention panel for work a person still needs to act on. */
 export function approvalNeedsAction(approval: AgentApproval | undefined): boolean {
   if (!approval) return false;

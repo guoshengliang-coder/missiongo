@@ -3315,10 +3315,16 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .agent-console-topbar-actions.has-bulk > .agent-console-topbar-more { display: block; }
 }
 
-/* AND-371: one delivery footer and one disclosure for conversation diagnostics. */
-.agent-reply-feedback { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; color: var(--muted); font-size: var(--text-xs); line-height: 1.6; }
-.agent-reply-state, .agent-reply-edit { display: inline-flex; align-items: center; gap: 4px; }
-.agent-reply-edit { min-height: 28px; padding: 4px; margin: -4px; border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--accent-text-strong); font-size: var(--text-sm); font-weight: 500; line-height: 1.6; cursor: pointer; }
+/* AND-371/AND-421: one delivery footer for every console. Its hidden sizer
+   renders the widest state, so switching queued → sending → delivering only
+   swaps the words and the action; the message bubble never moves or resizes. */
+.agent-reply-feedback { display: inline-grid; margin-top: 8px; color: var(--muted); font-size: var(--text-xs); line-height: 1.6; }
+.agent-reply-feedback > * { grid-area: 1 / 1; }
+.agent-reply-current, .agent-reply-variant { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.agent-reply-state { display: inline-flex; align-items: center; gap: 4px; }
+.agent-reply-sizer { display: inline-grid; visibility: hidden; pointer-events: none; user-select: none; }
+.agent-reply-icon-slot { flex: 0 0 12px; width: 12px; height: 12px; }
+.agent-reply-edit { min-height: 28px; padding: 4px; margin: -4px; border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--accent-text-strong); font-size: var(--text-xs); font-weight: 600; line-height: 1.6; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .agent-reply-edit:disabled { cursor: wait; }
 .agent-reply-edit:active { background: var(--row-hover); }
 .agent-run-details { align-self: center; max-width: 100%; margin: 0 0 4px; }
@@ -3336,7 +3342,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .agent-output-image-open img { display: block; width: auto; height: auto; max-width: 100%; max-height: 240px; object-fit: contain; }
 .agent-output-image-state { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-sunken); color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
 @media (hover: hover) {
-  .agent-reply-edit:hover { background: var(--row-hover); text-decoration: underline; }
+  .agent-reply-edit:hover { background: var(--row-hover); }
   .agent-run-details > summary:hover { border-color: var(--accent-line); }
 }
 @media (pointer: coarse) {
@@ -3359,10 +3365,9 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .agent-chat-image-error { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 8px; color: var(--muted); font-size: var(--text-sm); }
 .agent-chat-image-error button { min-height: 44px; }
 .agent-chat-image-download-error { position: absolute; left: var(--safe-left); right: var(--safe-right); bottom: calc(64px + var(--safe-bottom)); margin: 12px; padding: 12px; color: var(--danger); background: var(--danger-bg); border-radius: var(--radius-md); font-size: var(--text-base); }
-.agent-reply-queued { animation: pulse 1.4s ease-in-out infinite; }
-.agent-reply-sending { animation: spin 0.8s linear infinite; }
+.agent-reply-spin { animation: spin 0.8s linear infinite; }
 @media (prefers-reduced-motion: reduce) {
-  .agent-reply-queued, .agent-reply-sending, .agent-session-running { animation: none; }
+  .agent-reply-spin, .agent-session-running { animation: none; }
 }
 
 /* Console search uses the existing topbar and leaves both list filters in place. */

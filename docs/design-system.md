@@ -282,18 +282,20 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 ### 会话消息反馈与图片产物（AND-371）
 
 - 消息正文与投递反馈分层：时间置于顶部，底部只显示发送中、排队中、送达中或已送达待执行。送达不能表示已经执行；失败与送达不确定继续明确展示恢复操作。
-- 可取消的排队消息使用常驻的小号“铅笔图标＋撤回编辑”，无边框，悬停、按下和焦点有反馈。取消成功后恢复文字与附件，取消失败保留原消息；恢复中的草稿不能再次发送，切换会话不串入附件。
+- 可取消的排队消息在状态文字右侧显示常驻下划线的「撤回编辑」文字按钮：与状态同字号、字重 600、无图标无边框，悬停、按下和焦点有反馈。取消成功后恢复文字与附件，取消失败保留原消息；恢复中的草稿不能再次发送，切换会话不串入附件。
+- 排队、发送、送达中统一使用旋转图标，已送达用静止对勾；四种状态的文字与操作在同一位置原地替换，由隐藏度量层预留最大宽度和行高，气泡位置与尺寸不随状态变化。投递完成后仍显示「已送达，待执行」，等回复出现在对话记录里才整行消失（AND-421）。
+- 空闲挂起属于常规资源回收（AND-424）：节点给出的挂起说明收进「运行详情」展开区，折叠时只保留中性的「已挂起」状态；红色错误条只留给 stalled、unavailable、failed。控制台与条目内面板共用同一判定。
 - 消息级详情合并到唯一的“运行详情”。默认按内容收宽，只显示简短运行状态；等待原因、耗时、同步诊断和活动明细原位展开。权限请求及异常恢复提示不放进折叠区。复用 `AgentReplyFeedback`、`AgentRunDetails`，控制台和条目内会话面板共用。
-- 正文沿用 `--console-text-sm`（默认12px、行高1.6），时间与状态使用 `--text-xs`，编辑操作使用 `--text-sm`；独立会话字号与全局字号均保持现有缩放和11px下限。气泡内边距上下12px、左右16px，正文至状态行8px，消息间12px，图标文字4px。触控操作至少44×44；气泡按内容收宽并保持用户消息右边缘一致。
+- 正文沿用 `--console-text-sm`（默认12px、行高1.6），时间与状态使用 `--text-xs`，编辑操作与状态同字号并加粗到 600；独立会话字号与全局字号均保持现有缩放和11px下限。气泡内边距上下12px、左右16px，正文至状态行8px，消息间12px，图标文字4px。触控操作至少44×44；气泡按内容收宽并保持用户消息右边缘一致。
 - 完成的 Codex 图片生成记录通过同一条原生记录明确给出的 `savedPath` 生成图片产物引用，不转发生成提示词、Base64或无关工具日志。普通 Agent 明确输出的本地图片链接也自动显示缩略图；普通文档继续按需预览。复用既有账号/会话/节点绑定、产物存储和预览弹层，不把本机路径交给浏览器直接读取。
 - 图片必须有加载、失败和重试反馈；预览可查看原图并下载，关闭恢复触发器焦点。已保存的图片可在原节点离线后查看；尚未保存时仍需要原节点和原文件，旧版节点需更新才能同步图片生成事件。Linux 节点的图片产物读取同样校验精确原生会话引用、文件类型、大小和符号链接。
-- 回归来源：`and-371-session-feedback.audit.spec.ts`、`agent-artifacts.audit.spec.ts`、`and-360-session-health.audit.spec.ts`、`agent-approval-visibility.audit.spec.ts`，以及 `AgentArtifactTests`、`CodexProtocolTests` 和 Linux `artifacts.test.ts`。浏览器覆盖明暗、320px窄屏、触控、三档字号、状态变化、撤回附件恢复与图片加载/失败/重试。
+- 回归来源：`and-371-session-feedback.audit.spec.ts`、`and-421-reply-status.audit.spec.ts`、`and-424-suspended-idle.audit.spec.ts`、`agent-artifacts.audit.spec.ts`、`and-360-session-health.audit.spec.ts`、`agent-approval-visibility.audit.spec.ts`，以及 `AgentArtifactTests`、`CodexProtocolTests` 和 Linux `artifacts.test.ts`。浏览器覆盖明暗、320px窄屏、触控、三档字号、状态变化、投递状态几何稳定、挂起说明归属、撤回附件恢复与图片加载/失败/重试。
 
 ### 聊天图片与状态反馈（AND-377/378/379/380）
 
 - 评论与会话发送前的图片共用 `DraftChatFile`，点击缩略图复用 `MediaLightbox` 与 `ZoomableImage` 查看大图；预览与移除是独立按钮，关闭预览保留输入、附件并恢复焦点。无法解码时说明加载失败，不移除草稿。发送前预览不上传文件；发送中的只读图片同样可查看。新会话与状态原因弹窗沿用同一组件，嵌套预览只关闭顶层。回归来源：`and-376-draft-image.audit.spec.ts`、`external-attachments.audit.spec.ts`、`new-session.audit.spec.ts`、`transition-attachments.audit.spec.ts`。
 - 用户聊天图片只展示缩略图，下载与文件名留在图片详情。下载及解码期间保留灰色占位，加载失败提供常驻重试；历史消息与待投递消息共用 `ChatAttachments`。全屏预览复用 `MediaLightbox`、`OverlayDialog` 与 `ZoomableImage`，关闭恢复焦点及底层聊天上下文。
-- 消息排队图标轻微闪动，发送及送达中图标旋转，终态静止；文字仍区分投递与执行，系统减少动态效果时停止图标动画。控制台与条目内面板共用 `AgentReplyFeedback`。
+- 消息排队、发送及送达中统一使用旋转图标，终态静止；文字仍区分投递与执行，系统减少动态效果时停止图标动画。控制台与条目内面板共用 `AgentReplyFeedback`。
 - 会话头部状态与操作组成同一工具栏，同行外框最小高度 44px 并垂直对齐；窄屏沿用图标操作及现有状态信息布局。
 - 手动状态流转的确认按钮使用“移至＋目标状态中文名”，语义流转继续保留“验收打回”等动作文案；共用 `translateTransition`，列表、详情及确认弹窗不直接展示状态枚举值。
 - 回归来源：`and-377-380-console.audit.spec.ts`、`external-attachments.audit.spec.ts`、`and-371-session-feedback.audit.spec.ts`、`i18n.test.ts`；共用灯箱同时由既有媒体与缩放回归约束。

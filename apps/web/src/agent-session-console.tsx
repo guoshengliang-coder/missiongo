@@ -63,7 +63,9 @@ import {
   replyMirrorArrived,
   resolvedAgentSessionId,
   sessionCountsAsUnread,
+  sessionInlineError,
   sessionReplyDraft,
+  sessionStatusDetail,
   shouldMarkRead,
   shouldResetMessageView,
   shouldScrollMessagesAfterChange,
@@ -652,6 +654,9 @@ export function AgentSessionConsole({
       : turnRunning
         ? t("agentSessionTurnRunning", { duration: elapsed(turnState?.turnStartedAt, clock) ?? "–", agent: agentName })
         : t(activityLabelKey(sessionStatus, command?.kind !== "interrupt" && command?.status === "queued"), { agent: agentName });
+  const sessionError = sessionQuery.data ? sessionQuery.data.lastError : selected?.lastError;
+  const statusDetail = sessionStatusDetail(sessionStatus, sessionError, activityText);
+  const inlineError = sessionInlineError(sessionStatus, sessionError);
 
   const markRead = useMutation({
     mutationFn: ({ sessionId, dispatchId, through }: { id: string; sessionId?: string | undefined; dispatchId?: string | undefined; through: string }) =>
@@ -1268,9 +1273,9 @@ export function AgentSessionConsole({
                     failure={sessionQuery.data ? sessionQuery.data.failure : selected.failure}
                     legacyError={sessionQuery.data ? sessionQuery.data.lastError : selected.lastError} />
                 ) : (selected.agentKind !== "codex" || (sessionStatus !== "idle" && sessionStatus !== "active"))
-                  && (sessionQuery.data ? sessionQuery.data.lastError : selected.lastError)
-                  && !isHistoryLimited(sessionQuery.data ? sessionQuery.data.lastError : selected.lastError) ? (
-                  <AgentSessionError error={(sessionQuery.data ? sessionQuery.data.lastError : selected.lastError)!} onRetry={()=>void sessionQuery.refetch()} />
+                  && inlineError
+                  && !isHistoryLimited(inlineError) ? (
+                  <AgentSessionError error={inlineError} onRetry={()=>void sessionQuery.refetch()} />
                 ) : null}
                 {showRecovery && (
                   <section className="agent-console-recovery" aria-label={t("agentRecoveryTitle")}>
@@ -1362,7 +1367,7 @@ export function AgentSessionConsole({
                       label={selected.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected))
                         : agentWaiting ? t(selected.agentKind === "codex" ? "agentRunApproval" : "agentRunWaiting", { agent: agentName })
                           : claudeBackgroundOnly ? t("agentRunBackground") : sessionStatus === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(sessionStatus, t)}>
-                      {!["stalled", "unavailable", "failed"].includes(sessionStatus) && <p>{activityText}</p>}
+                      {!["stalled", "unavailable", "failed"].includes(sessionStatus) && <p>{statusDetail}</p>}
                       {outgoing && ["queued", "delivering", "delivered"].includes(outgoing.status) && <p>
                         {outgoing.status === "delivered" ? t("agentSessionReplyAwaitingExecution", { agent: agentName, duration: elapsed(outgoing.occurredAt, clock) ?? "–" })
                           : t("agentSessionReplyWaitingReason", { duration: elapsed(outgoing.occurredAt, clock) ?? "–",
