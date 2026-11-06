@@ -9,7 +9,7 @@ for (const agent of ["codex", "claude_code", "opencode"]) for (const phone of [f
     await page.emulateMedia({ colorScheme: dark ? "dark" : "light" });
     const id = "stop-lifecycle";
     const stamp = new Date().toISOString();
-    let phase: "running" | "queued" | "delivering" | "failed" | "background" | "continued" = "running";
+    let phase: "idle" | "running" | "queued" | "delivering" | "failed" | "background" | "continued" = "idle";
     const sent: string[] = [];
     await page.route("**/api/v1/dispatches/stop-dispatch/stop", async route => {
       phase = "queued";
@@ -24,10 +24,10 @@ for (const agent of ["codex", "claude_code", "opencode"]) for (const phone of [f
         } else await route.fulfill({ status: 204 });
         return;
       }
-      const stopCommand = phase === "running" ? undefined : { id: "stop", kind: "interrupt", text: "stop", createdAt: stamp,
+      const stopCommand = phase === "running" || phase === "idle" ? undefined : { id: "stop", kind: "interrupt", text: "stop", createdAt: stamp,
         stopConfirmed: phase === "background" || phase === "continued", status: phase === "queued" ? "queued" : phase === "delivering" ? "delivering" : phase === "failed" ? "failed" : "delivered", ...(phase === "failed" ? { error: "停止尚未确认" } : {}) };
       const command = phase === "continued" ? { id: "next", kind: "message", text: "继续处理", status: "delivered", createdAt: new Date(Date.now()+1000).toISOString() } : stopCommand;
-      const common = { id, agentSessionId: id, dispatchId: "stop-dispatch", agentKind: agent, status: phase === "failed" ? "unavailable" : "active",
+      const common = { id, agentSessionId: id, dispatchId: "stop-dispatch", agentKind: agent, status: phase === "failed" ? "unavailable" : phase === "idle" ? "idle" : "active",
         createdAt: stamp, updatedAt: stamp, activityAt: stamp, nodeName: "Fixture", nodeConnectionState: "online", nodeRevoked: false,
         dispatchStatus: "launched", mode: "default", items: [{ key: "AND-391", title: "停止可靠性", productId: fixture.productId }],
         canReply: true, canStop: true, canRetry: false, canArchive: true, settings: {}, unread: false,
@@ -39,6 +39,10 @@ for (const agent of ["codex", "claude_code", "opencode"]) for (const phone of [f
     });
     await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
     const stop = page.getByRole("button", { name: "停止当前回合", exact: true });
+    // Old servers (or slower list polls) can still advertise canStop for idle sessions.
+    await expect(page.getByText("会话上下文保留。", { exact: true })).toBeVisible();
+    await expect(stop).toHaveCount(0);
+    phase = "running"; await page.reload();
     await expect(stop).toBeVisible();
     await expect(page.locator(".agent-console-conversation-head").getByRole("button", { name: "停止当前回合", exact: true })).toHaveCount(0);
     await expect(page.locator(".agent-run-controls").getByRole("button", { name: "停止当前回合", exact: true })).toHaveCount(1);
@@ -63,12 +67,14 @@ for (const agent of ["codex", "claude_code", "opencode"]) for (const phone of [f
     await expect(composer).toBeEnabled();
     phase = "background"; await page.reload();
     await expect(page.locator(".agent-session-command")).toContainText("仍有后台任务运行");
+    await expect(stop).toHaveCount(0);
     await expect(composer).toBeEnabled();
     await page.screenshot({ path: testInfo.outputPath("background-after-stop.png") });
     await composer.fill("继续处理");
     await page.getByRole("button", { name: "发送回复", exact: true }).click();
     await expect.poll(() => sent.length).toBe(1);
     await expect(page.locator(".agent-session-command")).toHaveCount(0);
+    await expect(stop).toBeVisible();
     await expect(page.getByText("会话上下文保留。", { exact: true })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });

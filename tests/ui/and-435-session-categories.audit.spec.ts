@@ -26,8 +26,9 @@ for (const width of [320,1440]) for (const theme of ["light","dark"] as const) {
       const list=page.locator(".agent-console-session"),filter=page.getByRole("combobox",{name:"关联条目筛选",exact:true});
       await expect(list).toHaveCount(3);
       for(const [category,label] of [["unlinked","无关联会话"],["linked","研发会话"],["integration","集成会话"]]) {
-        await expect(list.locator(`[data-session-category="${category}"]`)).toHaveText(label!);
+        await expect(list.locator(`.agent-console-session-meta [data-session-category="${category}"]`)).toHaveText(label!);
       }
+      await expect(list.locator(".agent-console-session-heading [data-session-category]")).toHaveCount(0);
       await filter.click();
       await expect(page.getByRole("option",{name:/^全部/})).toContainText("共 3");
       const integrationOption=page.getByRole("option",{name:/^集成会话/});

@@ -59,3 +59,7 @@ Claude 的 `ExitPlanMode` 使用 `can_use_tool`，MCP 的原生方案确认另�
 - 协议及真实宿主子进程回归见 `ClaudeElicitationTests`、`ClaudeExternalBridgeTests` 和
   `apps/node/src/node.test.ts`；界面沿用 `AgentSessionQuestions`，验证见
   `tests/ui/agent-approval-visibility.audit.spec.ts`。
+
+## 审批请求来源（AND-430）
+
+自动待处理分类不提供方案批准权限，也不将普通回答包装为方案。正式审批来自明确登记的方案或原生 Codex/Claude 方案请求；OpenCode 的 plan 模式进度需明确登记后才可审批。正文缺失时返回 `content_unavailable`，前端禁止批准并允许重试。新的用户追问使旧待审请求不能批准，已登记正文和历史决定仍可阅读。以普通 Agent 消息承载的正式方案沿用来源消息位置，不因登记时间晚于正文而移到会话前后。

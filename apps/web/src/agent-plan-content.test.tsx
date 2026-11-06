@@ -85,3 +85,37 @@ it("does not promote plan-mode progress to a submitted proposal", async () => {
   const html = renderToStaticMarkup(<I18nProvider><AgentPlanContent session={session} surface="panel" /></I18nProvider>);
   expect(html).toBe("");
 });
+
+
+it("anchors an agent-carried proposal at its original message, including legacy timing and polling", async () => {
+  const { planTranscript } = await import("./agent-plan-content");
+  const messages = [
+    { id: "progress", role: "agent", text: "Investigating", occurredAt: "2026-11-06T07:51:17Z" },
+    { id: "answer", role: "agent", text: "Exact proposal", occurredAt: "2026-11-06T07:51:23Z" },
+    { id: "followup", role: "user", text: "？？", occurredAt: "2026-11-06T07:54:32Z" },
+  ] as AgentSessionMessage[];
+  for (const submittedAt of [undefined, "2026-11-06T07:55:00Z"]) {
+    const session = { implementationPlan: { plan: "Exact proposal", submittedAt } } as AgentSession;
+    expect(planTranscript(messages, session).map(message => message?.id ?? "card"))
+      .toEqual(["progress", "card", "answer", "followup"]);
+    expect(repeatsSubmittedPlan(messages[1]!, session)).toBe(true);
+  }
+  expect(planTranscript(messages, { messages } as unknown as AgentSession)).toBe(messages);
+});
+
+it("shows the offered revision rather than an older persisted proposal", async () => {
+  const { currentPlan } = await import("./agent-plan-content");
+  const session = { implementationPlan: { revision: "old", plan: "Old body" },
+    planApproval: { revision: "new", plan: "New body", validation: "New verification" } } as AgentSession;
+  expect(currentPlan(session)?.plan).toBe("New body");
+});
+
+
+it("does not carry an older human approval onto a different current proposal", () => {
+  const session={implementationPlan:{revision:"old",plan:"Old approved plan",approved:true,valid:false},
+    planApprovalState:{revision:"old",approved:true},planApproval:{revision:"new",plan:"New unapproved proposal"}} as AgentSession;
+  const html=renderToStaticMarkup(<I18nProvider><AgentPlanContent session={session} surface="console" /></I18nProvider>);
+  expect(html).toContain("New unapproved proposal");
+  expect(html).not.toContain("方案已批准");
+  expect(html).not.toContain("范围已变化");
+});

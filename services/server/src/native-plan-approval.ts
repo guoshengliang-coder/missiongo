@@ -2,13 +2,20 @@ import type { AgentSessionMessageInput } from "./agent-session-store.js";
 import { ImplementationPlans, planDigest } from "./implementation-plans.js";
 import type { MissionGoDatabase } from "./storage/database.js";
 
+/** A plan-mode progress message is not a submitted proposal. */
+export function isNativePlanRequest(agentKind: string, message: {role: string; sourceId?: string; phase?: string} | undefined): boolean {
+  return message?.role === "plan" && message.phase !== "commentary"
+    && message.phase !== "plan_approved" && message.phase !== "plan_declined"
+    && (agentKind === "codex" || agentKind === "claude_code" && /^(permission|request)-/.test(message.sourceId ?? ""));
+}
+
 /** Called only after an authenticated original-node snapshot, never MCP prose reports.
  * Native Codex emits the complete accepted plan as the next user turn. Freeze its
  * item scope while it is pending; a historical transcript alone cannot invent scope. */
 export function synchronizeNativePlan(database: MissionGoDatabase, accountId: string, sessionId: string): void {
   const db = database.connection;
-  const dispatch = db.prepare(`SELECT s.dispatch_id FROM agent_sessions s JOIN dispatches d ON d.id=s.dispatch_id
-    WHERE s.id=? AND d.account_id=? AND s.agent_kind IN ('codex','claude_code') AND s.archived_at IS NULL`).get(sessionId,accountId) as {dispatch_id:string}|undefined;
+  const dispatch = db.prepare(`SELECT s.dispatch_id,s.agent_kind FROM agent_sessions s JOIN dispatches d ON d.id=s.dispatch_id
+    WHERE s.id=? AND d.account_id=? AND s.agent_kind IN ('codex','claude_code') AND s.archived_at IS NULL`).get(sessionId,accountId) as {dispatch_id:string;agent_kind:string}|undefined;
   const external = !dispatch ? db.prepare(`SELECT client_id,agent_kind,ref_kind,session_ref FROM external_agent_sessions
     WHERE id=? AND account_id=? AND agent_kind IN ('codex','claude_code') AND native_node_id IS NOT NULL AND archived_at IS NULL`)
     .get(sessionId,accountId) as {client_id:string;agent_kind:string;ref_kind:string;session_ref:string}|undefined : undefined;
@@ -23,7 +30,7 @@ export function synchronizeNativePlan(database: MissionGoDatabase, accountId: st
         ORDER BY position DESC,rowid DESC LIMIT 1`).get(sessionId) as {payload_json:string;position:number}|undefined;
   if (!latest) return;
   const plan:NativeMessage = "payload_json" in latest ? {...JSON.parse(latest.payload_json),position:latest.position} : latest;
-  if (plan.text.length < 20) return;
+  if (plan.text.length < 20 || plan.phase === "commentary") return;
   const next = dispatch
     ? db.prepare(`SELECT source_id AS sourceId,turn_id AS turnId,role,text,occurred_at AS occurredAt,position FROM agent_session_messages
         WHERE session_id=? AND role='user' AND position>? ORDER BY position,rowid LIMIT 1`).get(sessionId,plan.position) as NativeMessage|undefined
@@ -32,6 +39,7 @@ export function synchronizeNativePlan(database: MissionGoDatabase, accountId: st
   const user:AgentSessionMessageInput|undefined = next && ("payload_json" in next ? JSON.parse(next.payload_json) : next);
   const accepted = plan.phase === "plan_approved" || (plan.turnId && plan.occurredAt && user?.turnId && user.turnId!==plan.turnId && user.occurredAt && user.occurredAt>plan.occurredAt
     && user.text===`PLEASE IMPLEMENT THIS PLAN:\n${plan.text}`);
+  if (!accepted && plan.phase !== "plan_declined" && !isNativePlanRequest(dispatch?.agent_kind ?? external?.agent_kind ?? "",plan)) return;
   database.transaction(()=>{
     let proposal = plans.proposal(accountId,identity);
     // An explicit MCP proposal owns its scope; a different native text cannot approve it.
