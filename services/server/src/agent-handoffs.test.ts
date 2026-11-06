@@ -63,8 +63,7 @@ it("hands human work to the exact original external conversation and claims once
   // Approval-only visibility neither starts an execution nor creates a claim credential.
   expect((await f.http("GET",`${f.url}/delivery`)).json().agentHandoffTargets).toContainEqual(expect.objectContaining({sessionId:p.sessionId}));
   expect((await f.claim()).isError).toBe(true);
-  expect((await f.http("POST",`${f.url}/agent-handoffs`,f.handoffInput({kind:"session",sessionId:p.sessionId}))).json().code).toBe("execution_stop_unconfirmed");
-  await f.confirm();
+  // An unfinished human record is a warning, not a physical-stop attestation gate.
   const input=f.handoffInput({kind:"session",sessionId:p.sessionId});
   const granted=await f.http("POST",`${f.url}/agent-handoffs`,input);
   expect(granted.statusCode,granted.body).toBe(201);
@@ -164,8 +163,12 @@ it.each(["queued","delivering","delivery_unknown","active"])("does not hand off 
   f.db.prepare("UPDATE external_agent_sessions SET native_snapshot_json=?,native_synced_at=? WHERE id=?")
     .run(JSON.stringify({status:"unavailable",turnState:{}}),new Date().toISOString(),old);
   await f.confirm();
-  if(state==="active") f.db.prepare("UPDATE external_agent_sessions SET native_snapshot_json=? WHERE id=?")
-    .run(JSON.stringify({status:"active",turnState:{turnActive:true}}),old);
+  if(state==="active") {
+    const nodes=new DispatchStore(f.store.database),node=nodes.registerNode({accountId:config.id,name:"Active source",installationId:randomUUID()});
+    nodes.recordHeartbeat(node.nodeId,[{kind:"codex",ready:true,planApprovalProtocol:1}]);
+    f.db.prepare("UPDATE external_agent_sessions SET native_node_id=?,native_snapshot_json=? WHERE id=?")
+      .run(node.nodeId,JSON.stringify({status:"active",turnState:{turnActive:true}}),old);
+  }
   else f.db.prepare("INSERT INTO external_native_commands(id,session_id,text,status,created_at) VALUES (?,?,?,?,?)")
     .run(randomUUID(),old,"More work",state,new Date().toISOString());
   const data=(await f.http("GET",`${f.url}/delivery`)).json();

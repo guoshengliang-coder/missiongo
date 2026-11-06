@@ -1,6 +1,7 @@
 import type { AgentModeCapability } from "@missiongo/domain";
 import { handoffDispatchIsCurrent } from "./agent-handoffs.js";
-import { assertBuilderExecution, assertDispatchExecution, latestBuilderHandover, hasOngoingItemExecution, requiresExecutionStopCheck } from "./builder-authority.js";
+import { itemExecutionBlockers, executionBlocksTakeover } from "./item-execution-blockers.js";
+import { assertBuilderExecution, assertDispatchExecution, latestBuilderHandover, hasBlockingItemExecution, requiresExecutionStopCheck } from "./builder-authority.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
@@ -753,7 +754,7 @@ export class DispatchStore {
         if ((this.database.connection.prepare("SELECT archived_at FROM products WHERE id=?").get(row.product_id) as {archived_at:string|null})?.archived_at) throw conflict("project_archived","归档项目只读。");
         if (this.database.connection.prepare("SELECT 1 FROM item_transfers WHERE source_item_id=?").get(row.id)) throw conflict("item_transferred","已迁移条目只读。");
         assertBuilderExecution(this.database,row.id,input.accountId);
-        if (requiresExecutionStopCheck(this.database,row.id) && hasOngoingItemExecution(this.database,row.id)) throw conflict("execution_stop_unconfirmed","原执行仍在运行或停止待确认，请先核实原执行。");
+        if (requiresExecutionStopCheck(this.database,row.id) && hasBlockingItemExecution(this.database,row.id)) throw conflict("execution_stop_unconfirmed","原执行仍有实际活动或待执行命令，请先在原会话处理。");
         const handover = latestBuilderHandover(this.database,row.id);
         if (row.status !== "ready" && !(row.status === "in_progress" && input.handoffItemId===row.id && keys.length===1) && !(row.status === "in_progress" && handover?.status === "completed"
           && handover.to_account_id === input.accountId && !handover.claimed_at)) {
@@ -768,7 +769,7 @@ export class DispatchStore {
       // two sessions would plan it, and the one that lost the claim race had been
       // told to carry on anyway. Only a complete, owned queued batch can be
       // explicitly cancelled and replaced.
-      const active = this.dispatchesFor(items.map((item) => item.id));
+      const active = this.dispatchesFor(items.map((item) => item.id)).filter(entry=>!this.isHistoricalDispatch(entry));
       const handoff = items.length===1 && input.handoffItemId===items[0]!.id && items[0]!.status==="in_progress";
       if (!handoff && active.length > 0 && (!input.force || this.redispatchBlockReason(input.accountId,keys,active))) {
         const described = active
@@ -951,14 +952,24 @@ export class DispatchStore {
       const row = this.database.connection.prepare("SELECT id FROM work_items WHERE item_key=?").get(key) as {id:string}|undefined;
       if (!row) throw notFound("Work item"); return row.id;
     });
-    const active = this.dispatchesFor(itemIds);
+    const active = this.dispatchesFor(itemIds).filter(entry=>!this.isHistoricalDispatch(entry));
     const reason = this.redispatchBlockReason(accountId,keys,active)
-      ?? (itemIds.some(id => requiresExecutionStopCheck(this.database,id) && hasOngoingItemExecution(this.database,id)) ? "execution_unconfirmed" as const : null);
+      ?? (itemIds.some(id => requiresExecutionStopCheck(this.database,id) && hasBlockingItemExecution(this.database,id)) ? "execution_unconfirmed" as const : null);
     const conflicts = active.map(({accountId:owner,...entry}) => {
       const session = owner === accountId ? this.database.connection.prepare("SELECT id FROM agent_sessions WHERE dispatch_id=?").get(entry.dispatchId) as {id:string}|undefined : undefined;
       return {...entry,...(session ? {agentSessionId:session.id} : {})};
     });
-    return {allowed:reason === null,requiresConfirmation:active.length > 0 && reason === null,reason,conflicts};
+    const takeoverWarnings = itemIds.flatMap((id,index) => requiresExecutionStopCheck(this.database,id)
+      ? itemExecutionBlockers(this.database,id).filter(row=>!executionBlocksTakeover(row)).map(row=>({...row,itemKey:keys[index]!})) : []);
+    return {allowed:reason === null,requiresConfirmation:active.length > 0 && reason === null,reason,conflicts,takeoverWarnings};
+  }
+
+  private isHistoricalDispatch(entry:{dispatchId:string;itemKey:string;status:string}):boolean {
+    if(entry.status!=="launched") return false;
+    const row=this.database.connection.prepare(`SELECT w.id FROM work_items w WHERE w.item_key=? AND EXISTS (
+      SELECT 1 FROM work_item_events e WHERE e.item_id=w.id AND e.to_status='in_progress'
+      AND json_extract(e.payload_json,'$.dispatchId')=?)`).get(entry.itemKey,entry.dispatchId) as {id:string}|undefined;
+    return Boolean(row && !itemExecutionBlockers(this.database,row.id).some(b=>b.source==="dispatch" && b.executionId===entry.dispatchId && executionBlocksTakeover(b)));
   }
 
   private redispatchBlockReason(accountId: string, keys: readonly string[], active: ReturnType<DispatchStore["dispatchesFor"]>) {

@@ -162,16 +162,13 @@ describe("AND-357 public command boundaries",()=>{
   const hold=await app.inject({method:"POST",url:`/api/v1/items/${item.key}/transitions`,headers:{cookie:cookies.builder!},payload:{to:"on_hold",reason:"request_human_input",note:"Wait",expectedStatus:current.status,expectedRevision:current.revision,idempotencyKey:"explicit-disposition"}});
   expect(hold.json().code).toBe("execution_disposition_required");
  });
- it("blocks conflicting rework until the real execution is ended, without pretending a status change stopped it",async()=>{
+ it("allows rework over a historical performer and records handover instead of a stop receipt",async()=>{
   await move("in_progress","claim","builder");
   preset("pending_verification");await move("ready","verification_failed","builder");
-  const blocked=await move("in_progress","claim","builder");expect(blocked.json().code).toBe("execution_stop_unconfirmed");
-  const executions=app.missionGoStore.database.connection.prepare("SELECT id,account_id FROM item_executions WHERE item_id=?").all(item.id) as Array<{id:string;account_id:string}>;
-  for(const row of executions){
-   const ended=await app.inject({method:"PATCH",url:`/api/v1/items/${item.key}/executions/${row.id}`,headers:{cookie:cookies.admin!},payload:{status:"completed",result:"Original execution ended; scope requires a new round"}});
-   expect(ended.statusCode,ended.body).toBe(200);
-  }
   expect((await move("in_progress","claim","builder")).statusCode).toBe(200);
+  const rows=app.missionGoStore.database.connection.prepare("SELECT status,authorization_revoked FROM item_executions WHERE item_id=? ORDER BY rowid").all(item.id);
+  expect(rows.slice(0,-1).every(row=>row.status==="handed_over" && row.authorization_revoked===1)).toBe(true);
+  expect(rows.at(-1)).toMatchObject({status:"working",authorization_revoked:0});
  });
 });
 

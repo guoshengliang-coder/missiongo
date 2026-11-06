@@ -746,6 +746,7 @@ export interface ActiveDispatch extends Omit<ItemDispatchSummary, "status"> {
 }
 
 export interface RedispatchEligibility {
+  readonly takeoverWarnings?: readonly {itemKey:string;executionId:string}[];
   readonly allowed: boolean;
   readonly requiresConfirmation: boolean;
   readonly reason: "other_account" | "started" | "partial_batch" | "execution_unconfirmed" | null;
