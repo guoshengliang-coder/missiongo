@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ChevronDown, CircleAlert, CircleCheck, CircleDot, Clock3, LoaderCircle, Pencil } from "lucide-react";
+import { ChevronDown, CircleAlert, CircleCheck, CircleDot, LoaderCircle } from "lucide-react";
 import { useI18n } from "./i18n";
 import type { AgentSessionStatus } from "./types";
 import type { OutgoingReply } from "./agent-session-view";
@@ -28,20 +28,49 @@ export function AgentHistoryNotice({ error }: { error: string | undefined }) {
     ? <p className="agent-console-attention-banner" role="status">{t("agentHistoryLimited")}</p> : null;
 }
 
-/** Delivery describes a message, never whether the Agent has started its turn. */
+/** Delivery describes a message, never whether the Agent has started its turn.
+ *
+ * AND-421: every state keeps the same spinner and the same footprint. The
+ * hidden sizer renders the widest state (queued with recall, or the longest
+ * label), so switching states only swaps the words and the action — the
+ * message bubble never moves or resizes.
+ */
+const replyFeedbackKeys = {
+  sending: "agentReplySendingShort",
+  queued: "agentReplyQueuedShort",
+  delivering: "agentReplyDeliveringShort",
+  delivered: "agentReplyDeliveredShort",
+} as const;
+
+const replyFeedbackStates = ["queued", "sending", "delivering", "delivered"] as const;
+
 export function AgentReplyFeedback({ status, cancelling = false, onEdit }: {
   status: OutgoingReply["status"]; cancelling?: boolean; onEdit?: (() => void) | undefined;
 }) {
   const { t } = useI18n();
   if (status === "failed" || status === "delivery_unknown") return null;
-  const key = { sending: "agentReplySendingShort", queued: "agentReplyQueuedShort",
-    delivering: "agentReplyDeliveringShort", delivered: "agentReplyDeliveredShort" } as const;
-  const Icon = status === "delivered" ? CircleCheck : status === "queued" ? Clock3 : LoaderCircle;
+  const Icon = status === "delivered" ? CircleCheck : LoaderCircle;
   return <footer className="agent-reply-feedback">
-    <span className="agent-reply-state" role="status"><Icon className={status === "delivered" ? undefined : status === "queued" ? "agent-reply-queued" : "agent-reply-sending"} size={12} aria-hidden="true" />{t(key[status])}</span>
-    {status === "queued" && onEdit && <button type="button" className="agent-reply-edit" disabled={cancelling} onClick={onEdit}>
-      <Pencil size={12} aria-hidden="true" />{t(cancelling ? "agentSessionCancelling" : "agentReplyEditShort")}
-    </button>}
+    <span className="agent-reply-current">
+      <span className="agent-reply-state" role="status">
+        <Icon className={status === "delivered" ? undefined : "agent-reply-spin"} size={12} aria-hidden="true" />
+        {t(replyFeedbackKeys[status])}
+      </span>
+      {status === "queued" && onEdit && <button type="button" className="agent-reply-edit" disabled={cancelling} onClick={onEdit}>
+        {t(cancelling ? "agentSessionCancelling" : "agentReplyEditShort")}
+      </button>}
+    </span>
+    <span className="agent-reply-sizer" aria-hidden="true">
+      {replyFeedbackStates.map((candidate) => <span className="agent-reply-variant" key={candidate}>
+        <span className="agent-reply-state">
+          <span className="agent-reply-icon-slot" />
+          {t(replyFeedbackKeys[candidate])}
+        </span>
+        {candidate === "queued" && onEdit && <button type="button" className="agent-reply-edit" tabIndex={-1} disabled>
+          {t("agentReplyEditShort")}
+        </button>}
+      </span>)}
+    </span>
   </footer>;
 }
 

@@ -109,10 +109,6 @@ export function formatAgentMessageTime(value: string, locale: string, now = new 
 }
 
 export type AgentSessionFilter = "unread" | "attention" | "active" | "all" | "failed" | "archived";
-/** Cross-project navigation has one scope for both rows and counters. */
-export function isGlobalAgentSessionFilter(filter: AgentSessionFilter): boolean {
-  return filter === "unread" || filter === "attention";
-}
 
 export type AgentAssociationFilter = "all" | "unlinked" | "linked";
 export type AgentKindFilter = "all" | AgentKind;
@@ -217,9 +213,19 @@ type UnreadCountableSession = Pick<
   "id" | "archivedAt" | "unread" | "status" | "items" | "productId"
 >;
 
+type OtherProjectCountableSession = Pick<
+  AgentSessionSummary,
+  "archivedAt" | "needsAttention" | "unread" | "status" | "items" | "productId"
+>;
+
 export interface AgentUnreadCounts {
   readonly total: number;
   readonly byProduct: ReadonlyMap<string, number>;
+}
+
+export interface AgentOtherProjectCounts {
+  readonly attention: number;
+  readonly unread: number;
 }
 
 export function archivableVisibleSessionIds(
@@ -253,6 +259,28 @@ export function agentUnreadCounts(
     total: globalSessionIds.size,
     byProduct: new Map([...productSessionIds].map(([productId, sessionIds]) => [productId, sessionIds.size])),
   };
+}
+
+/**
+ * The console lists one project at a time (AND-419). A conversation that
+ * reaches the selected project through any item belongs to that project;
+ * everything else is another project and only feeds the read-only hint above
+ * the filters. Count conversations rather than product links, so one
+ * conversation spanning several other projects still counts once.
+ */
+export function agentOtherProjectCounts(
+  sessions: readonly OtherProjectCountableSession[],
+  productId: string,
+): AgentOtherProjectCounts {
+  let attention = 0;
+  let unread = 0;
+  for (const session of sessions) {
+    if (session.archivedAt) continue;
+    if (session.productId === productId || session.items.some((item) => item.productId === productId)) continue;
+    if (session.needsAttention) attention++;
+    if (sessionCountsAsUnread(session)) unread++;
+  }
+  return { attention, unread };
 }
 
 export function agentSessionMatches(
@@ -662,6 +690,19 @@ export function activityLabelKey(status: AgentSessionStatus, replyQueued = false
   if (status === "stalled") return "agentSessionActivityStalled";
   if (status === "failed") return "agentSessionActivityFailed";
   return replyQueued ? "agentSessionActivityUnavailableQueued" : "agentSessionActivityUnavailable";
+}
+
+/** Releasing an idle Claude session is routine housekeeping, not an error
+ *  (AND-424). Only a real failure keeps the danger-coloured inline error; the
+ *  suspension explanation belongs in the run details instead. */
+export function sessionInlineError(status: AgentSessionStatus, lastError: string | undefined): string | undefined {
+  return status === "suspended" ? undefined : lastError;
+}
+
+/** The run-details body for a released session names the release and how to
+ *  resume it. Every other status keeps its usual activity copy. */
+export function sessionStatusDetail(status: AgentSessionStatus, lastError: string | undefined, activity: string): string {
+  return status === "suspended" && lastError ? lastError : activity;
 }
 
 /** Keep the intervention panel for work a person still needs to act on. */

@@ -41,7 +41,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       if (message.params.input[0].text.includes("auto-denied")) emit({ method: "item/autoApprovalReview/completed", params: {
         threadId: ref, turnId: turn.id, reviewId: "review-1", startedAtMs: Date.now(), review: { status: "denied", rationale: "fixture denied" }, action: { type: "command", command: "echo test" },
       } });
-      if (message.params.input[0].text.includes("approval")) emit({ id: "native-approval", method: "item/commandExecution/requestApproval",
+      if (message.params.input[0].text === "approval requested") emit({ id: "native-approval", method: "item/commandExecution/requestApproval",
         params: { threadId: ref, turnId: turn.id, command: "echo test", availableDecisions: ["accept", "decline"] } });
     } else if (message.id === "native-approval" && message.result) {
       turn.items.push({ id: "decision", type: "agentMessage", text: message.result.decision });
@@ -78,7 +78,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     }
     else if (message.message.content[0].text.includes("native-plan-fixture")) emit({ type: "control_request", request_id: "claude-plan-1",
       request: { subtype: "can_use_tool", tool_name: "ExitPlanMode", input: { plan: "Implement the reviewed scope and verify the original entry points." } } });
-    else if (prompt.includes("approval")) emit({ type: "control_request", request_id: "claude-native-1",
+    else if (prompt === "approval requested") emit({ type: "control_request", request_id: "claude-native-1",
       request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "echo test" } } });
     else emit({ type: "result", is_error: false });
   } else if (message.type === "control_response") {

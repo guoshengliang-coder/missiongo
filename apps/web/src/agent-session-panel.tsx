@@ -1,6 +1,7 @@
+import { DeliveryCards } from "./merge-console";
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
-import { AgentPlanContent, planTranscript } from "./agent-plan-content";
+import { AgentPlanContent, planTranscript, repeatsSubmittedPlan } from "./agent-plan-content";
 import { AgentStopFeedback } from "./agent-stop-feedback.js";
 import { useState, useEffect, useLayoutEffect, useRef, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -9,7 +10,7 @@ import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, SessionStatusI
 import { MarkdownText } from "./markdown-text";
 import { AgentArtifactMarkdown } from "./agent-artifact-viewer";
 import { api } from "./api";
-import { activityLabelKey, agentSessionDetailRefetchInterval, formatAgentMessageTime, isWithdrawnCard, replyBlockedLabelKey } from "./agent-session-view";
+import { activityLabelKey, agentSessionDetailRefetchInterval, formatAgentMessageTime, isWithdrawnCard, replyBlockedLabelKey, sessionInlineError, sessionStatusDetail } from "./agent-session-view";
 import { AgentSessionQuestions } from "./agent-session-questions";
 import { useI18n } from "./i18n";
 import { localizedErrorText } from "./error-text";
@@ -37,7 +38,7 @@ function statusLabel(status: AgentSessionStatus, t: ReturnType<typeof useI18n>["
   return t("agentSessionUnavailable");
 }
 
-export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
+export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: string; productId?: string }) {
   const { locale, t } = useI18n();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -121,6 +122,10 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
   const backgroundOnly = session.data?.agentKind === "claude_code" && session.data.status === "active"
     && session.data.turnState?.turnActive === false && !waiting && session.data.activities.length > 0;
   const visualStatus = waiting ? "idle" : session.data?.status ?? "idle";
+  const activityText = session.data
+    ? t(activityLabelKey(session.data.status, command?.status === "queued"), { agent: agentName }) : "";
+  const inlineError = session.data ? sessionInlineError(session.data.status, session.data.lastError) : undefined;
+  const statusDetail = session.data ? sessionStatusDetail(session.data.status, session.data.lastError, activityText) : activityText;
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const text = reply.trim();
@@ -145,6 +150,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                     : backgroundOnly ? t("agentSessionBackgroundStatus") : statusLabel(session.data.status, t)}
                 </span>
               </header>
+              <DeliveryCards productId={productId} sessionId={sessionId} />
               {history.messages.length === 0 && (
                 <p className="agent-session-muted">{t("agentSessionNoMessages")}</p>
               )}
@@ -153,24 +159,28 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                 if (!history.error && event.currentTarget.scrollTop <= 48 && event.currentTarget.scrollHeight > event.currentTarget.clientHeight + 1) void history.loadMore();
               }}>
                 <AgentHistoryLoader history={history} />
-                {planTranscript(history.messages.filter((message) => !isWithdrawnCard(message)), session.data).map((message) => message === null
-                  ? <AgentPlanContent key="submitted-plan" session={session.data} surface="panel" /> : (
-                  <article key={message.id} data-agent-message-id={`${message.role}:${message.sourceId || message.id}`} className={`agent-session-message agent-session-message-${message.role}`}>
-                    <header className="agent-session-message-meta">
-                      <small>{messageLabel(message.role, session.data.agentKind, t)}</small>
-                      <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
-                    </header>
-                    {message.role === "user" ? <MarkdownText>{message.text}</MarkdownText> : <AgentArtifactMarkdown text={message.text} sessionId={sessionId} messageId={message.id} />}
-                    {message.questions && (
-                      <AgentSessionQuestions
-                        questions={message.questions}
-                        reply={reply}
-                        canReply={canReply && !message.id.startsWith("history:") && !pending && !send.isPending}
-                        onChange={setReply}
-                      />
-                    )}
-                  </article>
-                ))}
+                {planTranscript(history.messages.filter((message) => !isWithdrawnCard(message)), session.data).map((message) => {
+                  if (message === null) return <AgentPlanContent key="submitted-plan" session={session.data} surface="panel" />;
+                  const repeatsPlan = repeatsSubmittedPlan(message, session.data);
+                  if (repeatsPlan && !message.questions?.length) return null;
+                  return (
+                    <article key={message.id} data-agent-message-id={`${message.role}:${message.sourceId || message.id}`} className={`agent-session-message agent-session-message-${message.role}`}>
+                      <header className="agent-session-message-meta">
+                        <small>{messageLabel(message.role, session.data.agentKind, t)}</small>
+                        <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
+                      </header>
+                      {!repeatsPlan && (message.role === "user" ? <MarkdownText>{message.text}</MarkdownText> : <AgentArtifactMarkdown text={message.text} sessionId={sessionId} messageId={message.id} />)}
+                      {message.questions && (
+                        <AgentSessionQuestions
+                          questions={message.questions}
+                          reply={reply}
+                          canReply={canReply && !message.id.startsWith("history:") && !pending && !send.isPending}
+                          onChange={setReply}
+                        />
+                      )}
+                    </article>
+                  );
+                })}
               </div>
               <div className="agent-run-status" aria-label={t("agentRunFeedback")}>
                 <AgentOperationFeedback failures={feedback.failures} sessionId={sessionId} command={command} />
@@ -179,7 +189,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
               <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={visualStatus} />} label={waiting
                 ? t(session.data.agentKind === "codex" ? "agentRunApproval" : "agentRunWaiting", { agent: agentName })
                 : backgroundOnly ? t("agentRunBackground") : session.data.status === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(session.data.status, t)}>
-                <p>{t(activityLabelKey(session.data.status, command?.status === "queued"), { agent: agentName })}</p>
+                <p>{statusDetail}</p>
                 {session.data.activities.length > 0 && (
                   <section className="agent-session-background" aria-label={t("agentSessionBackgroundTitle")}>
                     <strong>{t("agentSessionBackgroundCount", { count: session.data.activities.length })}</strong>
@@ -200,7 +210,7 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
               </AgentRunDetails>
               </div>
               <AgentHistoryNotice error={session.data.lastError} />
-              {session.data.lastError && !isHistoryLimited(session.data.lastError) && <AgentSessionError error={session.data.lastError} onRetry={()=>void session.refetch()} />}
+              {inlineError && !isHistoryLimited(inlineError) && <AgentSessionError error={inlineError} onRetry={()=>void session.refetch()} />}
               {command?.kind === "message" && (
                 <div className={`agent-session-command agent-session-command-${command.status}`}>
                   <span>
