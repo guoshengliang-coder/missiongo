@@ -165,6 +165,31 @@ export function matchCandidates(receipt, candidates, resolvePr, ancestor = isAnc
 }
 
 
+/** Keep service pages immutable; verified local supplements are explicit and snapshot-bound. */
+export function withVerifiedEvidence(productId, candidates, evidence) {
+  if (!evidence || evidence.productId !== productId || !Array.isArray(evidence.items) || !evidence.items.length
+    || evidence.items.length > 100 || new Set(evidence.items.map(row => row.itemKey)).size !== evidence.items.length) throw new Error("Invalid verified evidence product/items");
+  const result = candidates.map(row => ({...row}));
+  for (const row of evidence.items) {
+    const candidate = result.find(c => c.itemKey === row.itemKey);
+    if (!candidate || !Number.isSafeInteger(row.expectedRevision) || row.expectedRevision < 1
+      || ["expectedRevision", "developmentEventId", "roundKey"].some(key => !row[key] || candidate[key] !== row[key])) throw new Error("Verified evidence candidate changed");
+    if (typeof row.verification !== "string" || !row.verification.trim() || row.verification.length > 4000
+      || row.completion?.kind !== "github" || !/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/[1-9][0-9]*$/.test(row.completion.url ?? "")
+      || !Array.isArray(row.requiredArtifacts) || !row.requiredArtifacts.length || row.requiredArtifacts.length > 20
+      || new Set(row.requiredArtifacts).size !== row.requiredArtifacts.length
+      || row.requiredArtifacts.some(a => typeof a !== "string" || !/^[a-z][A-Za-z0-9_-]{0,49}$/.test(a))) throw new Error("Explicit verified integration, complete artifact scope and verification record required");
+    if (candidate.completion && JSON.stringify(candidate.completion) !== JSON.stringify(row.completion)
+      || candidate.pullRequestUrl && candidate.pullRequestUrl !== row.completion.url
+      || candidate.requiredArtifacts && JSON.stringify([...candidate.requiredArtifacts].sort()) !== JSON.stringify([...row.requiredArtifacts].sort())) throw new Error("Verified evidence conflicts with service evidence");
+    candidate.completion = row.completion;
+    candidate.pullRequestUrl = row.completion.url;
+    candidate.requiredArtifacts = [...row.requiredArtifacts];
+  }
+  return result;
+}
+
+
 function main() {
   const args = process.argv.slice(2);
   const receiptIndex = args.indexOf("--receipt");
@@ -175,13 +200,17 @@ function main() {
   const receipt = JSON.parse(readFileSync(args[receiptIndex + 1], "utf8"));
   const candidateResult = JSON.parse(readFileSync(args[candidatesIndex + 1], "utf8"));
   if (receipt.schemaVersion !== 1) throw new Error("Invalid release receipt");
-  const { productId, candidates } = releaseCandidatesFromPages(candidateResult);
+  const { productId, candidates: originalCandidates } = releaseCandidatesFromPages(candidateResult);
+  const evidenceIndex = args.indexOf("--verified-evidence");
+  if (evidenceIndex >= 0 && !args[evidenceIndex + 1]) throw new Error("Missing verified evidence file");
+  const evidence = evidenceIndex >= 0 ? JSON.parse(readFileSync(args[evidenceIndex + 1], "utf8")) : undefined;
+  const candidates = evidence ? withVerifiedEvidence(productId, originalCandidates, evidence) : originalCandidates;
   if (!isAncestor(receipt.deployedCommit, git("rev-parse", "HEAD"))) {
     throw new Error("The deployed commit is not in this checkout; use the repository that was deployed");
   }
   const repository = gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner");
   const matched = matchCandidates(receipt, candidates, (url) => pullRequestFacts(url, repository));
-  process.stdout.write(`${JSON.stringify({ comments: matched.comments, ...releaseBatches(productId, candidates, matched) }, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({ comments: matched.comments, ...releaseBatches(productId, candidates, matched), ...(evidence ? { verifiedEvidence: evidence } : {}) }, null, 2)}\n`);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

@@ -8,7 +8,7 @@ import { MissionGoError } from "./errors.js";
 import { Collaborations, collaborationDraftSchema } from "./collaboration.js";
 import { collaborationLinkedRead } from "./collaboration-policy.js";
 import { transitionPolicy, itemRoles } from "./item-policy.js";
-import { releaseBatchSchema } from "./release-batch.js";
+import { releaseBatchSchema, releaseEvidenceSchema } from "./release-batch.js";
 import { deliveryRound } from "./delivery-round.js";
 import { recoverExecutionAuthorization } from "./execution-authorization-recovery.js";
 import { commentAudienceSchema, commentCandidates } from "./comment-discussions.js";
@@ -128,7 +128,7 @@ function accountAccess(ctx: ServerContext): McpAccountAccess {
  */
 export const WRITE_TOOLS_BY_TIER: Readonly<Record<McpWriteTier, readonly string[]>> = {
   none: [],
-  comments: ["request_merge_reconciliation", "apply_merge_reconciliation", "record_merge_combined_validation", "propose_merge_delivery", "refresh_merge_delivery", "report_merge_batch", "finish_merge_batch", "record_merge_integration", "prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "request_plan_approval", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "submit_release_batch", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
+  comments: ["request_merge_reconciliation", "apply_merge_reconciliation", "record_merge_combined_validation", "propose_merge_delivery", "refresh_merge_delivery", "report_merge_batch", "finish_merge_batch", "record_merge_integration", "prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "request_plan_approval", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "submit_release_batch", "supplement_release_evidence", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
 };
 
 /**
@@ -1369,7 +1369,7 @@ export function createMissionGoMcpServer(
     "submit_release_batch",
     {
       title: "Hand a verified release batch over for verification",
-      description: "Only for a user-authorized publication in one product. Read each candidate fully, verify its integration and every required public artifact, write its release comment, then submit the frozen candidate revision, development event and round from list_release_candidates. Product operation and AI permissions replace original developer claim ownership only for this release handover. Never copy another conversation's credential. Up to 100 items; keep exact inputs and idempotencyKey on retry. Results distinguish submitted, already_submitted and skipped; changed candidates need fresh verification and a new batch. This does not accept work or verify public evidence on the server.",
+      description: "Only for a user-authorized publication in one product. Read each candidate fully, verify its integration and every required public artifact, write its release comment, then submit the frozen candidate revision, development event and round from list_release_candidates. Product operation and AI permissions replace original developer claim ownership only for this release handover. Never copy another conversation's credential. Up to 100 items; keep exact inputs and idempotencyKey on retry. Results distinguish submitted, already_submitted and skipped; changed candidates need fresh verification and a new batch. For missing historical integration/scope only, the supplied completion and complete releases atomically append evidence before handover; conflicting evidence or changed content/Builder is refused. No original merge session or separate approval is needed. This does not accept work or verify public evidence on the server.",
       inputSchema: releaseBatchSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
@@ -1379,6 +1379,25 @@ export function createMissionGoMcpServer(
       const access = accountAccess(ctx);
       if (options.canOperate && !options.canOperate(access.accountId, input.productId)) throw new Error("Product operation is not permitted.");
       return textResult(store.submitReleaseBatch({ ...input, items: input.items.map(({ completion, pullRequestUrl, ...row }) => ({ ...row, ...(completion ? { completion } : {}), ...(pullRequestUrl ? { pullRequestUrl } : {}) })), attribution: { accountId: access.accountId, clientId: access.clientId ?? "" } }));
+    },
+  );
+
+  server.registerTool(
+    "supplement_release_evidence",
+    {
+      title: "Supplement missing integration and release scope",
+      description: "For user-authorized work or publication, the current conversation may append missing integration and complete release scope to a development-complete item. Independently verify Git and all required artifacts/configuration first; use the exact candidate revision, development event and round. Product operation and AI permissions are required. No original developer/merge identity or separate recovery approval is needed. Existing conflicts, content/Builder/round changes are refused. This preserves human events and does not change item status or approve work. Refresh candidates after success.",
+      inputSchema: releaseEvidenceSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (input, ctx) => {
+      requireWriteScope(ctx);
+      requireAccessibleProduct(ctx, input.productId);
+      requireItemAccess(ctx, store, input.itemKey);
+      const access = accountAccess(ctx);
+      if (options.canOperate && !options.canOperate(access.accountId, input.productId)) throw new Error("Product operation is not permitted.");
+      const { completion, pullRequestUrl, ...candidate } = input;
+      return textResult(store.supplementReleaseEvidence({ ...candidate, completion:normalizeCompletion({completion,pullRequestUrl}), attribution:{accountId:access.accountId,clientId:access.clientId ?? ""} }));
     },
   );
 

@@ -50,6 +50,7 @@ import {
   type SubmitDevelopmentCompleteInput,
   type SubmitForVerificationInput,
   type SubmitReleaseBatchInput,
+  type SupplementReleaseEvidenceInput,
   type CommentBody,
   type CommentBodyKind,
   type CreateCommentInput,
@@ -1735,8 +1736,8 @@ export class MissionGoStore {
     return { handover, completion, roundKey: round };
   }
 
-  /** Only the frozen batch reconciliation domain calls this; no generic field-writing API. */
-  supplementDevelopmentEvidence(input: {itemKey:string;accountId:string;batchId:string;requestId:string;
+  /** Shared append-only writer for bounded merge recovery and authorized release evidence. */
+  supplementDevelopmentEvidence(input: {itemKey:string;accountId:string;batchId?:string;requestId:string;clientId?:string;releaseEvidenceId?:string;
     completion: ReturnType<typeof normalizeCompletion>; requiredArtifacts:string[];noReleaseReason?:string}) {
     this.assertWorkItemWritable(input.itemKey);
     const item = this.getWorkItem(input.itemKey), resolved = this.getDevelopmentEvidence(item.key);
@@ -1753,8 +1754,10 @@ export class MissionGoStore {
     const now = new Date().toISOString();
     this.insertEvent(item.id,"delivery_evidence_added","agent",null,null,{
       ...completionPayload(completion),requiredArtifacts:[...input.requiredArtifacts].sort(),...(input.noReleaseReason?{noReleaseReason:input.noReleaseReason}:{}),
-      developmentEventId:resolved.handover.id,roundKey:resolved.roundKey,batchId:input.batchId,requestId:input.requestId,
-    },now,{accountId:input.accountId});
+      developmentEventId:resolved.handover.id,roundKey:resolved.roundKey,requestId:input.requestId,
+      ...(input.batchId ? {batchId:input.batchId} : {}),
+      ...(input.releaseEvidenceId ? {releaseEvidenceId:input.releaseEvidenceId,authorizationBasis:"product_release_evidence"} : {}),
+    },now,{accountId:input.accountId,...(input.clientId?{clientId:input.clientId}:{})});
     this.database.connection.prepare("UPDATE work_items SET revision=revision+1,updated_at=? WHERE id=?").run(now,item.id);
     this.recordProductReleaseArtifacts(item.productId,input.requiredArtifacts);
   }
@@ -1827,12 +1830,55 @@ export class MissionGoStore {
     });
   }
 
-  submitReleaseBatch(input: SubmitReleaseBatchInput) {
-    const accounts = new AccountStore(this.database), account = accounts.findActive(input.attribution.accountId);
-    if (!account || !accounts.allows(account, input.productId, "operate") || !accounts.allows(account, input.productId, "ai")) {
+  /** Current product publisher may repair missing evidence without impersonating the developer. */
+  supplementReleaseEvidence(input: SupplementReleaseEvidenceInput) {
+    this.assertReleaseOperator(input.productId, input.attribution.accountId);
+    this.assertWorkItemWritable(input.itemKey);
+    const item = this.getWorkItem(input.itemKey);
+    if (item.productId !== input.productId) throw invalidInput("Evidence must belong to the authorized product.");
+    this.validateIdempotencyKey(input.idempotencyKey);
+    const completion = normalizeCompletion(input);
+    if (completion.kind === "manual" || !input.requiredArtifacts.length) throw invalidInput("Verified integration and nonempty release scope required.");
+    const id = createHash("sha256").update(JSON.stringify([input.attribution.accountId, input.attribution.clientId, input.productId, input.idempotencyKey])).digest("hex");
+    const digest = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+    return this.database.transaction(() => {
+      const previous = this.getIdempotentResult<{digest:string}>(id, "release_evidence");
+      if (previous) {
+        if (previous.digest !== digest) throw conflict("idempotency_conflict", "Evidence request changed; reverify before retrying.");
+        return { item: this.getWorkItem(item.key), alreadyRecorded: true };
+      }
+      this.assertReleaseCandidate(input);
+      this.supplementDevelopmentEvidence({ itemKey:item.key, accountId:input.attribution.accountId,
+        clientId:input.attribution.clientId, requestId:input.idempotencyKey, releaseEvidenceId:id,
+        completion, requiredArtifacts:[...input.requiredArtifacts] });
+      this.saveIdempotentResult(id, "release_evidence", {digest}, new Date().toISOString());
+      return { item: this.getWorkItem(item.key), alreadyRecorded: false };
+    });
+  }
+
+  private assertReleaseOperator(productId: string, accountId: string) {
+    const accounts = new AccountStore(this.database), account = accounts.findActive(accountId);
+    if (!account || !accounts.allows(account, productId, "operate") || !accounts.allows(account, productId, "ai")) {
       throw new MissionGoError("release_not_permitted", "Product operation and AI permissions are required.", 403);
     }
-    this.getProduct(input.productId);
+    this.getProduct(productId);
+  }
+
+  private assertReleaseCandidate(row: {itemKey:string;expectedRevision:number;developmentEventId:string;roundKey:string}) {
+    const item = this.getWorkItem(row.itemKey);
+    if (item.status !== "development_complete") throw conflict("item_not_ready_for_verification", "Only development-complete work can enter verification.");
+    const timeline = this.getTimeline(item.key).filter(event => !event.historySourceKey);
+    const handover = [...timeline].reverse().find(event => event.eventType === "status_changed" && event.toStatus === "development_complete");
+    if (item.revision !== row.expectedRevision || handover?.id !== row.developmentEventId
+      || deliveryRound(this.database, item.id) !== row.roundKey || handover.payload.roundKey !== row.roundKey
+      || handover.payload.contentVersion !== item.contentVersion
+      || timeline.slice(timeline.findIndex(event => event.id === handover.id) + 1).some(event => event.eventType === "builder_changed")) {
+      throw conflict("release_candidate_changed", "The candidate revision, development event, content, Builder or handling round changed; verify it again.");
+    }
+  }
+
+  submitReleaseBatch(input: SubmitReleaseBatchInput) {
+    this.assertReleaseOperator(input.productId, input.attribution.accountId);
     this.validateIdempotencyKey(input.idempotencyKey);
     if (!input.items.length || input.items.length > 100 || new Set(input.items.map(row => row.itemKey.toUpperCase())).size !== input.items.length) {
       throw invalidInput("A release batch needs 1 to 100 distinct candidates.");
@@ -1856,11 +1902,15 @@ export class MissionGoStore {
           const prior = this.getIdempotentResult<{ itemKey: string }>(key, "release_batch_item");
           const item = this.getWorkItem(itemKey);
           if (prior) return { itemKey, outcome: "already_submitted", currentStatus: item.status };
-          if (item.status !== "development_complete") throw conflict("item_not_ready_for_verification", "Only development-complete work can enter verification.");
-          const handover = [...this.getTimeline(itemKey)].reverse().find(event => !event.historySourceKey && event.eventType === "status_changed" && event.toStatus === "development_complete");
-          if (item.revision !== row.expectedRevision || handover?.id !== row.developmentEventId
-            || deliveryRound(this.database, item.id) !== row.roundKey || handover.payload.roundKey !== row.roundKey) {
-            throw conflict("release_candidate_changed", "The candidate revision, development event or handling round changed; verify it again.");
+          this.assertReleaseCandidate(row);
+          const evidence = this.getDevelopmentEvidence(itemKey), scope = this.getDevelopmentReleaseScope(itemKey);
+          if (!evidence.completion || scope === null) {
+            // Old clients already send an explicit integration and the complete verified
+            // artifact set. Repair and transition share this transaction: failed release
+            // validation rolls back the evidence as well.
+            this.supplementReleaseEvidence({ productId:input.productId, ...row,
+              requiredArtifacts:row.releases.map(release => release.artifact),
+              idempotencyKey:`release-evidence:${batchId}:${itemKey}`, attribution:input.attribution });
           }
           const published = this.submitVerifiedRelease({ ...row, deployedCommit: input.deployedCommit, receiptDigest: input.receiptDigest,
             attribution: input.attribution, idempotencyKey: `release-transition:${batchId}:${itemKey}` }, { id: batchId, developmentEventId: row.developmentEventId, expectedRevision: row.expectedRevision });

@@ -34,12 +34,16 @@ async function fixture() {
     const parsed = JSON.parse(raw);
     return parsed.result ?? { error: parsed.error ?? parsed };
   };
-  const add = async (requiredArtifacts = ["web"]) => {
+  const add = async (requiredArtifacts = ["web"], manual = false) => {
     const item = store.createWorkItem({ productId: product.id, title: "Batch fixture", description: "Synthetic release regression",
       type: "task", priority: "normal", status: "ready", environment: { platform: "server" } });
     const claim = await call("claim_item", { itemKey: item.key, agentId: "Synthetic developer", session: {
       agentKind: "codex", refKind: "tracking", sessionRef: randomUUID() }, idempotencyKey: randomUUID() }, developer.id);
     expect(claim.isError, JSON.stringify(claim)).toBeFalsy();
+    if (manual) {
+      store.transitionWorkItem({itemKey:item.key,actor:"human",to:"development_complete",reason:"resolution_submitted",attribution:{accountId:config.id}});
+      return item;
+    }
     const result = await call("submit_development_complete", { itemKey: item.key, completion, requiredArtifacts,
       executionAuthorization: claim.structuredContent.executionAuthorization, idempotencyKey: randomUUID() }, developer.id);
     expect(result.isError, JSON.stringify(result)).toBeFalsy();
@@ -145,5 +149,84 @@ describe("AND-415 release batch", () => {
     request.items.push({ ...request.items[0], itemKey: foreign.key });
     expect((await f.call("submit_release_batch", request)).isError).toBe(true);
     expect(f.store.getWorkItem(item.key).status).toBe("development_complete");
+  });
+});
+
+
+describe("AND-417/418 current-conversation evidence repair", () => {
+  it("atomically supplements a human completion and hands over through an existing client", async () => {
+    const f = await fixture(), item = await f.add(["web"], true), request = await f.batch();
+    const human = f.store.getDevelopmentEvidence(item.key).handover!;
+    const result = await f.call("submit_release_batch", request);
+    expect(result.structuredContent.results[0].outcome).toBe("submitted");
+    expect(f.store.getTimeline(item.key).find(e => e.id === human.id)).toEqual(human);
+    const evidence = f.store.getTimeline(item.key).filter(e => e.eventType === "delivery_evidence_added");
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]).toMatchObject({accountId:f.publisher.id,clientId:f.publisher.id,
+      payload:{developmentEventId:human.id,roundKey:request.items[0].roundKey,completion,requiredArtifacts:["web"],authorizationBasis:"product_release_evidence"}});
+    expect(evidence[0].payload).not.toHaveProperty("batchId");
+    expect((await f.call("submit_release_batch", request)).structuredContent.results[0].outcome).toBe("already_submitted");
+    expect(f.store.getTimeline(item.key).filter(e => e.eventType === "delivery_evidence_added")).toHaveLength(1);
+  });
+
+  it("repairs evidence before deployment without a merge session, then refreshes the candidate", async () => {
+    const f = await fixture(), item = await f.add(["web"], true), batch = await f.batch();
+    const {releases: _releases, ...row} = batch.items[0];
+    const request = {productId:f.product.id,...row,requiredArtifacts:["web"],idempotencyKey:randomUUID()};
+    const result = await f.call("supplement_release_evidence", request);
+    expect(result.isError, JSON.stringify(result)).toBeFalsy();
+    expect(result.structuredContent.item.status).toBe("development_complete");
+    expect(result.structuredContent.item.revision).toBe(row.expectedRevision+1);
+    expect((await f.call("supplement_release_evidence", request)).structuredContent.alreadyRecorded).toBe(true);
+    expect((await f.call("supplement_release_evidence", {...request,requiredArtifacts:["androidApp"]})).isError).toBe(true);
+    expect((await f.call("submit_release_batch", batch)).structuredContent.results[0].code).toBe("release_candidate_changed");
+    const candidates = (await f.call("list_release_candidates", {productId:f.product.id,includeUnscoped:true})).structuredContent.candidates;
+    expect(candidates[0]).toMatchObject({completion,requiredArtifacts:["web"]});
+    expect((await f.call("submit_release_batch", await f.batch())).structuredContent.results[0].outcome).toBe("submitted");
+    expect(f.store.getWorkItem(item.key).status).toBe("pending_verification");
+  });
+
+  it("rolls evidence back if public release validation fails", async () => {
+    const f = await fixture(), item = await f.add(["web"], true), request = await f.batch();
+    request.items[0].releases = [releases[0], releases[0]];
+    const before = f.store.getWorkItem(item.key), timeline = f.store.getTimeline(item.key);
+    expect((await f.call("submit_release_batch", request)).structuredContent.results[0].outcome).toBe("skipped");
+    expect(f.store.getWorkItem(item.key)).toEqual(before);
+    expect(f.store.getTimeline(item.key)).toEqual(timeline);
+  });
+
+  it("does not replace recorded integration or shrink known artifact scope", async () => {
+    const f = await fixture(), item = await f.add(["web", "androidApp"]), batch = await f.batch();
+    const {releases: _releases, ...row} = batch.items[0];
+    for (const fields of [{completion:{...completion,commit:"c".repeat(40)},requiredArtifacts:["web","androidApp"]},
+      {completion,requiredArtifacts:["web"]}]) {
+      expect((await f.call("supplement_release_evidence", {productId:f.product.id,...row,...fields,idempotencyKey:randomUUID()})).isError).toBe(true);
+    }
+    expect(f.store.getDevelopmentReleaseScope(item.key)).toEqual(["androidApp","web"]);
+    expect(f.store.getTimeline(item.key).some(e => e.eventType === "delivery_evidence_added")).toBe(false);
+  });
+
+  it("rejects changed content even with a freshly read revision", async () => {
+    const f = await fixture(), item = await f.add(["web"], true);
+    f.store.updateWorkItem(item.key,{description:"Changed requirement",attribution:{accountId:config.id}});
+    const request = await f.batch();
+    expect((await f.call("submit_release_batch", request)).structuredContent.results[0].code).toBe("release_candidate_changed");
+    expect(f.store.getTimeline(item.key).some(e => e.eventType === "delivery_evidence_added")).toBe(false);
+  });
+
+  it.each(["read-only","operate","ai","foreign","event","round","revision"])("refuses unauthorized/stale evidence: %s", async kind => {
+    const f = await fixture(), item = await f.add(["web"], true), batch = await f.batch();
+    const {releases: _releases, ...row} = batch.items[0];
+    const request = {productId:f.product.id,...row,requiredArtifacts:["web"],idempotencyKey:randomUUID()};
+    if(kind==="operate")f.grant(false,true);
+    if(kind==="ai")f.grant(true,false);
+    if(kind==="foreign")request.productId=f.store.createProduct({name:"Other",keyPrefix:"OTH",createdByAccountId:config.id}).id;
+    if(kind==="event")request.developmentEventId=randomUUID();
+    if(kind==="round")request.roundKey=randomUUID();
+    if(kind==="revision")request.expectedRevision--;
+    const result=await f.call("supplement_release_evidence",request,f.publisher.id,kind==="read-only"?["missiongo:read"]:undefined);
+    expect(result.isError||result.error).toBeTruthy();
+    expect(f.store.getWorkItem(item.key).status).toBe("development_complete");
+    expect(f.store.getTimeline(item.key).some(e=>e.eventType==="delivery_evidence_added")).toBe(false);
   });
 });

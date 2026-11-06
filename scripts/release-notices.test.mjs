@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { affectsArtifact, releaseBatches, inReleasedRange, matchCandidates, releaseCandidatesFromPages, requiredArtifactsForFiles } from "./release-notices.mjs";
+import { withVerifiedEvidence, affectsArtifact, releaseBatches, inReleasedRange, matchCandidates, releaseCandidatesFromPages, requiredArtifactsForFiles } from "./release-notices.mjs";
 
 const a = "a".repeat(40);
 const b = "b".repeat(40);
@@ -124,4 +124,20 @@ test("release batch requests bind verified candidates, split at 100, and reject 
   candidates[0].expectedRevision++;
   assert.notEqual(releaseBatches("product", candidates, matched).batches[0].idempotencyKey, result.batches[0].idempotencyKey);
   assert.deepEqual(releaseBatches("product", [], { comments: [], skipped: [] }), { batches: [], skipped: [] });
+});
+
+
+test("explicit evidence supplements preserve service pages, bind snapshots and retain artifact checks", () => {
+  const candidates=[{itemKey:"AND-417",expectedRevision:4,developmentEventId:"11111111-1111-4111-8111-111111111111",roundKey:"22222222-2222-4222-8222-222222222222"}];
+  const evidence={productId:"product",items:[{...candidates[0],completion:{kind:"github",url:"https://github.com/owner/repo/pull/42"},requiredArtifacts:["web","androidApp"],verification:"Verified merged source and complete scope; host preconditions checked."}]};
+  const combined=withVerifiedEvidence("product",candidates,evidence);
+  assert.equal(candidates[0].completion,undefined);
+  assert.deepEqual(combined[0].requiredArtifacts,["web","androidApp"]);
+  for(const changes of [{expectedRevision:5},{roundKey:"changed"},{itemKey:"AND-999"},{verification:""},{requiredArtifacts:[]}]) {
+    assert.throws(()=>withVerifiedEvidence("product",candidates,{...evidence,items:[{...evidence.items[0],...changes}]}));
+  }
+  assert.throws(()=>withVerifiedEvidence("other",candidates,evidence));
+  assert.throws(()=>withVerifiedEvidence("product",[{...candidates[0],requiredArtifacts:["web"]}],evidence),/conflicts/);
+  const receipt={deployedCommit:c,current:{web:{version:"1.0",commit:c,clean:true,ciPassed:true}},publicEvidence:{checks:{web:true}}};
+  assert.equal(matchCandidates(receipt,combined,()=>({mergeCommit:b}),()=>true).comments.length,0);
 });

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync, spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync, realpathSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync, realpathSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer } from "node:net";
@@ -67,4 +67,32 @@ test("host nginx serves status and first-load fallback with the application upst
     if (child) { const ended = new Promise(yes => child.once("exit", yes)); child.kill("SIGTERM"); await ended; }
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+
+test("one installer composes missing timing and status, preserves guards, and rejects unknown scripts before writes", () => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "mg-status-install-")));
+  const tools = join(directory,"missiongo/release-tools"); mkdirSync(tools,{recursive:true});
+  const path = join(tools,"deploy.sh");
+  // A legacy shared entry has target/CI/coverage guards, but neither timing nor status.
+  const old = script.replace(/# BEGIN RELEASE STATUS[\s\S]*?# END RELEASE STATUS/,
+    'echo "==> Rebuilding and restarting"\nremote "cd \'${target}/deploy\' && sudo env MISSIONGO_RELEASE=\'${commit}\' docker compose --env-file \'${env_file}\' up -d --build"')
+    .replace(/\n# BEGIN RELEASE TIMING[\s\S]*?# END RELEASE TIMING\n/, "")
+    .replace(/^.*release_timing_(?:stage|skip).*\n/gm, "")
+    + '\n# release-lock.py MISSIONGO_RELEASE_ROOT\n# node "$RELEASE_TOOLS/release-ci.mjs"\n';
+  const run = (...args) => spawnSync(process.execPath,[join(root,"scripts/enable-release-status.mjs"),...args],{
+    encoding:"utf8",env:{...process.env,XDG_CONFIG_HOME:directory,MISSIONGO_RELEASE_STATUS_INSTALL_LOCK:"held"}});
+  try {
+    writeFileSync(path,old,{mode:0o700});
+    let result=run();assert.equal(result.status,0,result.stderr);assert.equal(readFileSync(path,"utf8"),old);
+    assert.equal(existsSync(join(tools,"release-timing.sh")),false);
+    result=run("--apply");assert.equal(result.status,0,result.stderr);
+    const installed=readFileSync(path,"utf8");
+    assert.match(installed,/# BEGIN RELEASE STATUS/);assert.match(installed,/# BEGIN RELEASE TIMING/);
+    for(const guard of ['check_release_coverage','reconcile_release_coverage','release-lock.py','MISSIONGO_RELEASE_ROOT','release-ci.mjs'])assert.ok(installed.includes(guard));
+    assert.equal(readFileSync(join(tools,"release-timing.sh"),"utf8"),readFileSync(join(root,"scripts/release-timing.sh"),"utf8"));
+    result=run("--apply");assert.equal(result.status,0,result.stderr);assert.equal(readFileSync(path,"utf8"),installed);
+    const unknown=old.replace('echo "==> Rebuilding and restarting"','echo "different switch"');writeFileSync(path,unknown);
+    result=run("--apply");assert.notEqual(result.status,0);assert.equal(readFileSync(path,"utf8"),unknown);
+  } finally {rmSync(directory,{recursive:true,force:true});}
 });
