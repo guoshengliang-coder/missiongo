@@ -232,10 +232,14 @@ it("observation heartbeats do not reorder a conversation or create unread activi
 it("permission summaries share request identity without changing notification attention classification", () => {
   const { db, store, sessionId, snapshot } = fixture();
   db.prepare("UPDATE dispatches SET agent_kind='claude_code' WHERE id='dispatch'").run();
+  db.prepare("UPDATE agent_sessions SET agent_kind='claude_code' WHERE id=?").run(sessionId);
   const question = { header: "授权请求", title: "Claude Code 请求使用 Bash", options: ["批准", "拒绝"] };
   const permission = { ...message, sourceId: "permission-request-1", questions: [question] };
-  snapshot({ status: "idle", messages: [permission], turnState: { turnActive: false, waitingForInput: true } });
+  const laterForm = { ...message, sourceId: "form-1", questions: [{ title: "选择输出", key: "format", options: ["A", "B"] }] };
+  snapshot({ status: "idle", messages: [permission, laterForm], turnState: { turnActive: false, waitingForInput: true } });
   expect(store.listForAccount("owner").find(row => row.id === sessionId)).toMatchObject({ waitingForPermission: true, attention: { kind: "answer" } });
-  snapshot({ status: "idle", messages: [{ ...permission, questions: [{ ...question, answered: "批准" }] }] });
+  snapshot({ status: "unavailable", messages: [], error: "offline" });
+  expect(store.listForAccount("owner").find(row => row.id === sessionId)).toMatchObject({ waitingForPermission: true });
+  snapshot({ status: "idle", messages: [{ ...permission, questions: [{ ...question, answered: "批准" }] }, laterForm] });
   expect(store.listForAccount("owner").find(row => row.id === sessionId)).toMatchObject({ waitingForPermission: false });
 });
