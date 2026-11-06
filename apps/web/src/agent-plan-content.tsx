@@ -30,6 +30,12 @@ export function withoutDuplicatePlan<T extends AgentSessionMessage>(messages: re
   return text ? messages.filter(message => message.role !== "plan" || message.text.trim() !== text) : messages;
 }
 
+/** True when an agent message repeats the submitted plan body that the card renders. */
+export function repeatsSubmittedPlan(message: AgentSessionMessage, session: AgentSession | undefined): boolean {
+  const text = currentPlan(session)?.plan?.trim();
+  return Boolean(text) && message.role === "agent" && message.text.trim() === text;
+}
+
 /** A null entry renders the submitted plan at its source position, never pinned below later replies. */
 export function planTranscript<T extends AgentSessionMessage>(messages: readonly T[], session: AgentSession | undefined): readonly (T | null)[] {
   const plan = currentPlan(session);
@@ -59,13 +65,13 @@ export function AgentPlanContent({ session, surface }: { session: AgentSession |
     || session?.planApprovalState?.revision === plan.revision;
   const invalid = session?.implementationPlan?.valid === false;
   const prefix = surface === "console" ? "agent-console" : "agent-session";
-  return <article className={`${prefix}-message ${prefix}-message-plan`} aria-label={t("agentPlanContentTitle")}>
+  return <article className={`${prefix}-message ${prefix}-message-plan agent-plan-content`} aria-label={t("agentPlanContentTitle")}>
     <header className={`${prefix}-message-meta`}>
       <small>{t("agentPlanContentTitle")}{plan.itemKeys?.length ? ` · ${plan.itemKeys.join("、")}` : ""}</small>
       {approved && <small>{t("agentPlanApproved")}</small>}
       {invalid && <small>{t("agentPlanScopeChanged")}</small>}
     </header>
     <MarkdownText>{plan.plan}</MarkdownText>
-    {plan.validation && <><strong>{t("agentPlanValidation")}</strong><MarkdownText>{plan.validation}</MarkdownText></>}
+    {plan.validation && <section className="agent-plan-validation" aria-label={t("agentPlanValidation")}><h2>{t("agentPlanValidation")}</h2><MarkdownText>{plan.validation}</MarkdownText></section>}
   </article>;
 }

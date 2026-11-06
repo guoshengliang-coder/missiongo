@@ -414,6 +414,8 @@ export const INITIAL_SCHEMA = `
 
   -- The latest Codex permission request or automatic review for a session.
   -- Decisions are separate from chat commands and cannot change work-item state.
+  -- request_kind distinguishes questions and confirmations from permission
+  -- prompts (AND-408); NULL rows predate it and render as neutral.
   CREATE TABLE IF NOT EXISTS agent_session_approvals (
     session_id TEXT PRIMARY KEY REFERENCES agent_sessions(id) ON DELETE CASCADE,
     approval_id TEXT NOT NULL,
@@ -425,6 +427,7 @@ export const INITIAL_SCHEMA = `
     started_at_ms INTEGER NOT NULL,
     decision TEXT,
     options_json TEXT CHECK (options_json IS NULL OR json_valid(options_json)),
+    request_kind TEXT CHECK (request_kind IS NULL OR request_kind IN ('question','permission','confirmation')),
     retry_id TEXT,
     retry_review_id TEXT,
     retry_status TEXT CHECK (retry_status IN ('queued', 'delivering', 'delivered', 'restored', 'failed')),

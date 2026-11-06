@@ -31,7 +31,7 @@ for (const width of [375, 1440]) test(`historical artifacts preview, isolation, 
     const kind = path.match(/artifacts\/[^/]+-(html|md|pdf|png)/)?.[1] ?? "html";
     if (path.endsWith("/preview")) return route.fulfill({ contentType: "text/html", headers: { "content-security-policy": ARTIFACT_PREVIEW_POLICY, "x-frame-options": "SAMEORIGIN" }, body: ARTIFACT_PREVIEW_SHELL });
     if (path.endsWith("/bundle")) return route.fulfill({ json: kind === "html" ? htmlBundle
-      : kind === "md" ? { entry: "notes.md", files: [file("notes.md", "text/markdown", "# 已保存说明\n\n**可以离线查看**\n\n![本地图](diagram.svg)"), file("diagram.svg", "image/svg+xml", '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8"/></svg>')] }
+      : kind === "md" ? { entry: "notes.md", files: [file("notes.md", "text/markdown", "# 已保存说明\n\n**可以离线查看**\n\n| 范围 | 条件 | 验证 |\n|---|---|---|\n| 共用 Markdown 表格 | 保留完整内容与字号 | 窄屏内部滚动 |\n\n![本地图](diagram.svg)"), file("diagram.svg", "image/svg+xml", '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8"/></svg>')] }
       : kind === "pdf" ? { entry: "report.pdf", files: [file("report.pdf", "application/pdf", "%PDF-1.4\n%%EOF")] }
       : { entry: "overview.png", files: [{ name: "overview.png", contentType: "image/png", base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK1cAAAAASUVORK5CYII=" }] } });
     if (path.endsWith("/artifacts")) {
@@ -74,6 +74,8 @@ for (const width of [375, 1440]) test(`historical artifacts preview, isolation, 
   await dialog.getByRole("button", { name: "关闭", exact: true }).click();
   await page.getByRole("button", { name: "说明", exact: true }).click();
   await expect(dialog.getByRole("heading", { name: "已保存说明" })).toBeVisible();
+  await expect(dialog.locator(".markdown-table-scroll table")).toBeVisible();
+  expect(await dialog.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
   await expect(dialog.getByRole("img", { name: "本地图" })).toBeVisible();
   await expect(dialog.getByRole("img", { name: "本地图" })).toHaveAttribute("src", /^data:image\/svg\+xml;base64,/);
   await dialog.getByRole("button", { name: "关闭", exact: true }).click();

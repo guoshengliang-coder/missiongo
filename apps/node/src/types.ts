@@ -23,7 +23,9 @@ export interface Message {
 }
 export interface Approval {
   id: string; kind: "manual" | "auto"; status: string; turnId: string; action: string;
-  reason?: string; startedAtMs: number; options?: { id: string; kind: string; label?: string; detail?: string }[];
+  reason?: string; startedAtMs: number;
+  requestKind?: "question" | "permission" | "confirmation";
+  options?: { id: string; kind: string; label?: string; detail?: string }[];
 }
 export interface Command {
   id: string; kind?: string; text: string; planApprovalRevision?: string; turnId?: string; status: string;

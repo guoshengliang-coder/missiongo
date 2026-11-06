@@ -684,6 +684,8 @@ export interface AgentApproval {
   readonly action: string;
   readonly reason?: string;
   readonly startedAtMs: number;
+  /** Distinguishes questions and confirmations from permission prompts (AND-408); absent on legacy rows. */
+  readonly requestKind?: "question" | "permission" | "confirmation";
   readonly options?: readonly {
     readonly id: string;
     readonly kind: "once" | "turn" | "session" | "always" | "choice" | "rule" | "networkAllow" | "networkDeny" | "decline" | "cancel";

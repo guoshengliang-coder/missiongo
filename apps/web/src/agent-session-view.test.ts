@@ -6,6 +6,10 @@ import {
   agentChatMessages,
   projectConversationMessages,
   approvalNeedsAction,
+  approvalTitleKey,
+  waitingStatusLabelKey,
+  runWaitingLabelKey,
+  agentOtherProjectCounts,
   agentUnreadCounts,
   agentSessionDetailRefetchInterval,
   agentSessionDispatchFailed,
@@ -36,7 +40,9 @@ import {
   replyBlockedLabelKey,
   resolvedAgentSessionId,
   sessionCountsAsUnread,
+  sessionInlineError,
   sessionReplyDraft,
+  sessionStatusDetail,
   shouldMarkRead,
   shouldResetMessageView,
   shouldScrollMessagesAfterChange,
@@ -143,6 +149,20 @@ describe("agent session message view", () => {
     expect(sessionCountsAsUnread({ unread: true, status: "failed" })).toBe(true);
     expect(sessionCountsAsUnread({ unread: true, status: "active" })).toBe(false);
     expect(sessionCountsAsUnread({ unread: false, status: "idle" })).toBe(false);
+  });
+
+  it("counts other-project attention and unread once, excluding archived and running (AND-419)", () => {
+    const sessions = [
+      { id: "selected", productId: "product-1", needsAttention: true, unread: true, status: "idle", items: [] },
+      { id: "shared", productId: "product-2", needsAttention: true, unread: true, status: "idle", items: [{ productId: "product-1" }] },
+      { id: "other-attention", productId: "product-2", needsAttention: true, unread: false, status: "idle", items: [] },
+      { id: "other-unread", productId: "product-3", needsAttention: false, unread: true, status: "idle", items: [] },
+      { id: "other-both", productId: "product-4", needsAttention: true, unread: true, status: "stalled", items: [{ productId: "product-2" }] },
+      { id: "other-running", productId: "product-4", needsAttention: false, unread: true, status: "active", items: [] },
+      { id: "other-archived", productId: "product-5", needsAttention: true, unread: true, status: "idle", archivedAt: "2026-09-21T00:00:00Z", items: [] },
+    ] as unknown as AgentSessionSummary[];
+    expect(agentOtherProjectCounts(sessions, "product-1")).toEqual({ attention: 2, unread: 2 });
+    expect(agentOtherProjectCounts([], "product-1")).toEqual({ attention: 0, unread: 0 });
   });
 
   it("opens on all non-failed conversations by default", () => {
@@ -415,6 +435,20 @@ describe("agent session message view", () => {
     }
   });
 
+  it("keeps a released session out of the error banner but explains it in the run details", () => {
+    const release = "Claude Code 会话已空闲 2 小时，进程已挂起；发送下一条消息时会恢复。";
+    expect(sessionInlineError("suspended", release)).toBeUndefined();
+    expect(sessionStatusDetail("suspended", release, "本机 Claude 进程已释放")).toBe(release);
+    // Without a node explanation the neutral copy still says what happened.
+    expect(sessionStatusDetail("suspended", undefined, "本机 Claude 进程已释放")).toBe("本机 Claude 进程已释放");
+    // Genuine failures keep both the banner and their own detail.
+    for (const status of ["failed", "stalled", "unavailable"] as const) {
+      expect(sessionInlineError(status, "boom")).toBe("boom");
+      expect(sessionStatusDetail(status, "boom", "activity")).toBe("activity");
+    }
+    expect(sessionInlineError("idle", "boom")).toBe("boom");
+  });
+
   it("has a bottom-of-conversation label for every session state", () => {
     expect(activityLabelKey("active")).toBe("agentSessionActivityActive");
     expect(activityLabelKey("idle")).toBe("agentSessionActivityIdle");
@@ -592,4 +626,29 @@ it("keeps project-only unread attribution and hides only the launch instruction"
   expect(projectConversationMessages(messages, true)).toEqual(messages.slice(1));
   expect(projectConversationMessages(messages, false)).toBe(messages);
   expect(projectConversationMessages([human], true)).toEqual([human]);
+});
+
+describe("requestKind copy mapping (AND-408)", () => {
+  const prompt = { id: "prompt", kind: "manual" as const, status: "pending",
+    turnId: "turn", action: "fixture", startedAtMs: 1 };
+  it("maps the approval card title by request kind, neutral for legacy rows", () => {
+    expect(approvalTitleKey({ ...prompt, requestKind: "question" })).toBe("agentQuestionTitle");
+    expect(approvalTitleKey({ ...prompt, requestKind: "confirmation" })).toBe("agentConfirmationTitle");
+    expect(approvalTitleKey({ ...prompt, requestKind: "permission" })).toBe("agentApprovalTitle");
+    expect(approvalTitleKey(prompt)).toBe("agentNeutralApprovalTitle");
+    expect(approvalTitleKey({ ...prompt, kind: "auto" })).toBe("agentApprovalAutoTitle");
+  });
+  it("maps waiting pills and run labels, keeping other agents untouched", () => {
+    expect(waitingStatusLabelKey({ agentKind: "codex", approval: { ...prompt, requestKind: "question" } })).toBe("agentSessionWaitingQuestionStatus");
+    expect(waitingStatusLabelKey({ agentKind: "codex", approval: { ...prompt, requestKind: "confirmation" } })).toBe("agentSessionWaitingConfirmationStatus");
+    expect(waitingStatusLabelKey({ agentKind: "codex", approval: { ...prompt, requestKind: "permission" } })).toBe("agentSessionWaitingApprovalStatus");
+    expect(waitingStatusLabelKey({ agentKind: "codex", approval: prompt })).toBe("agentSessionWaitingPendingStatus");
+    expect(waitingStatusLabelKey({ agentKind: "codex", approval: undefined })).toBe("agentSessionWaitingPendingStatus");
+    expect(waitingStatusLabelKey({ agentKind: "claude_code", approval: undefined })).toBe("agentSessionWaitingStatus");
+    expect(runWaitingLabelKey({ agentKind: "codex", approval: { ...prompt, requestKind: "question" } })).toBe("agentRunQuestion");
+    expect(runWaitingLabelKey({ agentKind: "codex", approval: { ...prompt, requestKind: "confirmation" } })).toBe("agentRunConfirmation");
+    expect(runWaitingLabelKey({ agentKind: "codex", approval: { ...prompt, requestKind: "permission" } })).toBe("agentRunApproval");
+    expect(runWaitingLabelKey({ agentKind: "codex", approval: prompt })).toBe("agentRunWaiting");
+    expect(runWaitingLabelKey({ agentKind: "opencode", approval: undefined })).toBe("agentRunWaiting");
+  });
 });

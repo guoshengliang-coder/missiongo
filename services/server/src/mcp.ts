@@ -1,3 +1,4 @@
+import { MergeDeliveries, deliverySchema, mergeEvidenceSchema } from "./merge-deliveries.js";
 import { AgentHandoffs } from "./agent-handoffs.js";
 import { ImplementationPlans, planDigest, requestNativePlanApproval } from "./implementation-plans.js";
 import { recoverLegacyPlanApproval } from "./legacy-plan-approval-recovery.js";
@@ -125,7 +126,7 @@ function accountAccess(ctx: ServerContext): McpAccountAccess {
  */
 export const WRITE_TOOLS_BY_TIER: Readonly<Record<McpWriteTier, readonly string[]>> = {
   none: [],
-  comments: ["prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "request_plan_approval", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "submit_release_batch", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
+  comments: ["propose_merge_delivery", "refresh_merge_delivery", "report_merge_batch", "finish_merge_batch", "prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "request_plan_approval", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "submit_release_batch", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
 };
 
 /**
@@ -321,6 +322,7 @@ export function createMissionGoMcpServer(
           canComment: writeTools.includes("append_comment"),
           canCreateItems: writeTools.includes("create_item"),
           supportsConversationAuthorization: true,
+          supportsMergeBatches: true,
           supportsReleaseBatchHandover: true,
           supportsSharedReleaseObservations: true,
         },
@@ -819,11 +821,79 @@ export function createMissionGoMcpServer(
   );
 
   if (writeToolsTier === "none") return server;
-
+  const merges = new MergeDeliveries(store);
+  const mergeIdentity = z.object({dispatchId:z.string().min(1).optional(),sessionId:z.string().min(1).optional()})
+    .refine(i=>Boolean(i.dispatchId)!==Boolean(i.sessionId),"Use one original conversation identity.");
+  const mergeAccess = (ctx:ServerContext,productId:string,write=false) => {
+    if(write) requireWriteScope(ctx);
+    requireProductAccess(ctx,productId);
+    const access=accountAccess(ctx);
+    if(write && options.canOperate && !options.canOperate(access.accountId,productId)) throw new Error("Product operation is not permitted.");
+    return access;
+  };
+  server.registerTool("get_merge_batch", {
+    annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},
+    description:"Read the user-authorized frozen batch from its original merge dispatch. Do not claim the source development items. Only these revisions are authorized; recheck Git and CI immediately before every merge. Respect publish=false. Unknown results keep the project lock until verified.",
+    inputSchema:z.object({batchId:z.string(),dispatchId:z.string()}),
+  },async (input,ctx)=>{
+    const batch=merges.batch(accountAccess(ctx).accountId,input.dispatchId,input.batchId);
+    mergeAccess(ctx,batch.productId);
+    return textResult({batch});
+  });
   // MCP_WRITE_SECTION: every tool below this line mutates MissionGo or reads an
   // execution, so each one must authorize the caller itself. The guard in
   // mcp-authorization.test.ts anchors on this marker.
   // MCP_WRITE_TIER: comments
+  server.registerTool(
+    "propose_merge_delivery", {
+    annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false},
+    description:"Request human delivery confirmation after completing the user's agreed work and verification. This never merges, publishes or changes item status. Use the original claimed conversation. Bind the exact GitHub repository, PR, target branch and head; report current executor-verified check evidence, not inferred readiness. Existing non-batched offers for these items are superseded. No local-only or unpushed work can be offered as a GitHub PR. Pass instructionConfirmation only in the same turn as the user's explicit imperative delivery order (for example an add-to-merge order): the server stores the quoted instruction and confirms immediately, bound to the session's latest human input, which any later human input invalidates. Questions, discussion, or ambiguous turns must not carry it. Without instructionConfirmation, human confirmation happens in the console.",
+    inputSchema:z.object({identity:mergeIdentity,idempotencyKey:z.string().min(1).max(200),delivery:deliverySchema,
+      instructionConfirmation:z.object({quote:z.string().trim().min(1).max(500)}).optional()}),
+  },async (input,ctx)=>{
+    requireWriteScope(ctx);
+    const access=mergeAccess(ctx,store.getWorkItem(requireItemAccess(ctx,store,input.delivery.itemKeys[0]!)).productId,true);
+    for(const key of input.delivery.itemKeys) requireItemAccess(ctx,store,key);
+    return textResult({delivery:merges.propose(access.accountId,access.clientId??"",{...(input.identity.dispatchId?{dispatchId:input.identity.dispatchId}:{}),...(input.identity.sessionId?{sessionId:input.identity.sessionId}:{})},input.idempotencyKey,input.delivery,input.instructionConfirmation)});
+  });
+  server.registerTool(
+    "refresh_merge_delivery", {
+    annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false},
+    description:"Refresh a delivery's exact-head Git/CI evidence from the original claimed conversation. New head withdraws the human confirmation; never silently authorize changed code. Read live repository evidence first.",
+    inputSchema:z.object({identity:mergeIdentity,deliveryId:z.string(),evidence:mergeEvidenceSchema}),
+  },async (input,ctx)=>{
+    requireWriteScope(ctx);
+    requireAccessibleProduct(ctx,merges.product(input.deliveryId));
+    const access=mergeAccess(ctx,merges.product(input.deliveryId),true);
+    return textResult({delivery:merges.refresh(access.accountId,access.clientId??"",{...(input.identity.dispatchId?{dispatchId:input.identity.dispatchId}:{}),...(input.identity.sessionId?{sessionId:input.identity.sessionId}:{})},input.deliveryId,input.evidence)});
+  });
+  server.registerTool(
+    "report_merge_batch", {
+    annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false},
+    description:"Report one verified batch result using its original merge dispatch. For merged results first verify the PR's frozen head, actual merge commit and required checks; write the completion comment. This limited handoff records development complete without taking over the development session. Never report timeout or an unknown external outcome as blocked/completed. Read the original item and required artifact scope before reporting.",
+    inputSchema:z.object({batchId:z.string(),dispatchId:z.string(),deliveryId:z.string(),result:z.object({status:z.enum(["merged","blocked"]),head:z.string().regex(/^[a-f0-9]{40}$/),commit:z.string().regex(/^[a-f0-9]{40}$/).optional(),detail:z.string().trim().min(1).max(2000)})}),
+  },async (input,ctx)=>{
+    requireWriteScope(ctx);
+    const batch=merges.batch(accountAccess(ctx).accountId,input.dispatchId,input.batchId);
+    requireAccessibleProduct(ctx,batch.productId);
+    const access=mergeAccess(ctx,batch.productId,true);
+    return textResult({batch:merges.report(access.accountId,input.dispatchId,input.batchId,input.deliveryId,{status:input.result.status,head:input.result.head,detail:input.result.detail,...(input.result.commit?{commit:input.result.commit}:{})})});
+  });
+  server.registerTool(
+    "finish_merge_batch", {
+    annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false},
+    description:"Release this project's batch only after every result is verified and no merge or publication remains running. A timeout, lost connection, or unknown result must not finish the batch. If publication was selected, finish only after its verified result is recorded in the session and normal release handoff is complete. Source item acceptance remains human-only.",
+    inputSchema:z.object({batchId:z.string(),dispatchId:z.string(),noExecutionRemaining:z.literal(true)}),
+  },async (input,ctx)=>{
+    requireWriteScope(ctx);
+    const batch=merges.batch(accountAccess(ctx).accountId,input.dispatchId,input.batchId);
+    requireAccessibleProduct(ctx,batch.productId);
+    const access=mergeAccess(ctx,batch.productId,true);
+    return textResult({batch:merges.finish(access.accountId,input.dispatchId,input.batchId)});
+  });
+
+
+
   server.registerTool(
     "prepare_collaboration_request", {
     title:"Prepare a collaboration draft for human approval",
@@ -933,7 +1003,8 @@ export function createMissionGoMcpServer(
     description: "After diagnosis and clarification, present this exact plan and validation goals in the conversation. When a plan still needs review, request one explicit human decision for the current item batch. Claiming responsibility is independent; never request a second decision for a plan already approved in the original native conversation or MissionGo. This is separate from tool permissions. Use the original dispatchId or external conversation identity; never register another session. It does not claim, comment or change item status. It prepares an approval-only association for a first external conversation and returns its sessionId and reviewUrl; claiming later reuses this same record. Native confirmation uses the protocol's bound input-required round trip. Registered external plans can be approved on the Web without a native reply connection. Reuse an existing current approval without asking again. Changed scope requires fresh approval; never provide an approval answer as a tool argument.",
     inputSchema: z.object({ itemKeys:z.array(z.string().min(2).max(50)).min(1).max(20),
       approvalMethod:z.enum(["native","web"]).optional(),
-      plan:z.string().trim().min(1).max(3000), validation:z.string().trim().min(1).max(700),
+      plan:z.string().trim().min(1).max(3000).describe("Exact reviewed Markdown plan: lead with recommendation and approval scope; use short prose for simple work, optional 2-4 column tables for changes, conditions or choices. Keep risks, constraints, user decisions and revision changes visible; move detailed evidence after them. Preserve the structure shown in conversation, never flatten into a dense summary or silently truncate an approved plan."),
+      validation:z.string().trim().min(1).max(700).describe("Exact reviewed validation goals: concrete scenarios, expected outcomes and methods, using short prose or a compact Markdown table. Distinguish verified facts from pending reproduction and implementation-time checks; do not repeat the plan."),
       dispatchId:z.string().min(1).max(200).optional(), session:sessionIdentity.optional(),
     }).refine(input => Boolean(input.dispatchId) !== Boolean(input.session), "Use exactly one conversation identity."),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },

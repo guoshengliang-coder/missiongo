@@ -9,7 +9,9 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     await page.clock.install();
     await page.setViewportSize({ width, height: 900 });
     await page.emulateMedia({ colorScheme: theme });
-    for (const agentKind of surface === "console" ? ["codex", "claude_code", "opencode", "hermes"] : ["codex"]) {
+    // Claude Code delivers its plan as an ordinary agent message; the other
+    // adapters use the dedicated plan role (AND-425).
+    for (const agentKind of surface === "console" ? ["codex", "claude_code", "opencode", "hermes"] : ["codex", "claude_code"]) {
       let approved = false;
       const id = `plan-${agentKind}`;
       const plan = { revision: "reviewed-revision", plan: "## 当前实施方案\n\n**完整正文始终可见**\n\n- 恢复中间消息\n- 保留方案文件",
@@ -29,7 +31,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
         if (route.request().method() !== "GET") return route.fulfill({ status: 204 });
         return route.fulfill({ json: path === "/api/v1/agent-sessions" ? { sessions: [summary] } : { ...summary,
           messages: [...Array.from({ length: 6 }, (_, n) => ({ id: `comment-${n}`, sourceId: `comment-${n}`, role: "agent", text: `过程正文 ${n + 1}`, occurredAt: stamp })),
-            { id: "native-plan", sourceId: "native-plan", role: "plan", text: plan.plan, occurredAt: plan.submittedAt },
+            { id: "native-plan", sourceId: "native-plan", role: agentKind === "claude_code" ? "agent" : "plan", text: plan.plan, occurredAt: plan.submittedAt },
             ...(approved ? [{ id: "implementation-result", sourceId: "implementation-result", role: "agent", text: "批准后执行完成的最新正文", occurredAt: "2026-11-05T01:00:00.000Z" }] : [])],
           implementationPlan: { ...plan, approved, ...(approved ? { approvedAt: "2026-11-05T00:01:00.000Z" } : {}) },
           planApprovalStatus: { code: approved ? "approved" : "ready" },
@@ -49,11 +51,12 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
       }
       const card = page.getByRole("article", { name: "提交审批的方案", exact: true });
       await expect(card).toBeVisible();
-      await expect(card.locator("h2")).toHaveText("当前实施方案");
+      await expect(card.locator("h2").first()).toHaveText("当前实施方案");
       await expect(card).toContainText(plan.validation);
       await expect(page.getByText("完整正文始终可见", { exact: true })).toHaveCount(1);
       const area = page.locator(surface === "console" ? ".agent-console-messages" : ".agent-session-messages");
       await expect(area.locator("[data-agent-message-id]")).toHaveCount(6);
+      if (agentKind === "claude_code") await expect(area.locator('[data-agent-message-id="agent:native-plan"]')).toHaveCount(0);
       const reply = page.locator(surface === "console" ? ".agent-console-reply textarea" : ".agent-session-reply textarea");
       await reply.fill("保留尚未发送的草稿");
       for (const scale of ["small", "medium", "large"]) {
@@ -75,8 +78,8 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
       expect(bounds.bottom - bounds.top).toBeLessThanOrEqual(2);
       await expect(card).toContainText(plan.validation);
       await expect(reply).toHaveValue("保留尚未发送的草稿");
-      if (agentKind === "codex") {
-        const path = info.outputPath(`plan-${surface}-${width}-${theme}.png`);
+      if (agentKind === "codex" || agentKind === "claude_code") {
+        const path = info.outputPath(`plan-${surface}-${agentKind}-${width}-${theme}.png`);
         await page.screenshot({ path, animations: "disabled" });
         await info.attach("plan", { path, contentType: "image/png" });
       }

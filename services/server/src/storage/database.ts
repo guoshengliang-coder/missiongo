@@ -2421,5 +2421,37 @@ export class MissionGoDatabase {
       });
     }
 
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611060435").get()) {
+      this.transaction(() => {
+        this.connection.exec(`
+          CREATE TABLE merge_deliveries (
+            id TEXT PRIMARY KEY, product_id TEXT NOT NULL REFERENCES products(id), account_id TEXT NOT NULL,
+            client_id TEXT NOT NULL, request_key TEXT NOT NULL, state TEXT NOT NULL,
+            data_json TEXT NOT NULL CHECK(json_valid(data_json)), UNIQUE(account_id,client_id,request_key)
+          ) STRICT;
+          CREATE INDEX merge_deliveries_product ON merge_deliveries(product_id,state);
+          CREATE TABLE merge_batches (
+            id TEXT PRIMARY KEY, product_id TEXT NOT NULL REFERENCES products(id), account_id TEXT NOT NULL,
+            request_key TEXT NOT NULL, state TEXT NOT NULL,
+            data_json TEXT NOT NULL CHECK(json_valid(data_json)), UNIQUE(account_id,request_key)
+          ) STRICT;
+          CREATE UNIQUE INDEX merge_batches_active ON merge_batches(product_id) WHERE state='active';
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611060435,new Date().toISOString());
+      });
+    }
+
+    // AND-408: distinguish Codex questions, technical permissions and generic
+    // confirmations. Existing rows stay NULL and read as neutral.
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611060654").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611060654").get()) return;
+        this.connection.exec(`ALTER TABLE agent_session_approvals ADD COLUMN request_kind TEXT
+          CHECK(request_kind IS NULL OR request_kind IN ('question','permission','confirmation'));`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202611060654,new Date().toISOString());
+      });
+    }
+
   }
 }

@@ -1,6 +1,7 @@
+import { DeliveryCards, MergeProgressBadge, useMergeProgress } from "./merge-console";
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
-import { AgentPlanContent, planContinuationObserved, planTranscript } from "./agent-plan-content";
+import { AgentPlanContent, planContinuationObserved, planTranscript, repeatsSubmittedPlan } from "./agent-plan-content";
 import { AgentStopFeedback } from "./agent-stop-feedback.js";
 import { ChatAttachments } from "./chat-attachments";
 import type { ReactNode } from "react";
@@ -37,12 +38,15 @@ import {
   activityLabelKey,
   dispatchActivityLabelKey,
   approvalNeedsAction,
+  approvalTitleKey,
+  runWaitingLabelKey,
+  waitingStatusLabelKey,
   planApprovalStatusKey,
   agentChatMessages,
   projectConversationMessages,
   agentSessionDetailRefetchInterval,
   agentSessionMatches,
-  isGlobalAgentSessionFilter,
+  agentOtherProjectCounts,
   archivableVisibleSessionIds,
   byLatestActivity,
   canonicalAgentSessionId,
@@ -63,7 +67,9 @@ import {
   replyMirrorArrived,
   resolvedAgentSessionId,
   sessionCountsAsUnread,
+  sessionInlineError,
   sessionReplyDraft,
+  sessionStatusDetail,
   shouldMarkRead,
   shouldResetMessageView,
   shouldScrollMessagesAfterChange,
@@ -83,15 +89,19 @@ import { useI18n } from "./i18n";
 import { localizedErrorText } from "./error-text";
 import { MarkdownText } from "./markdown-text";
 import { AgentArtifactMarkdown } from "./agent-artifact-viewer";
-import { SessionLink } from "./session-link";
 import type { AgentSession, AgentSessionAttachment, AgentSessionStatus, AgentSessionSummary, WorkItemAttachment } from "./types";
 import { AutoGrowTextarea } from "./auto-grow-textarea";
 import { mergeChatFiles } from "./agent-chat-files";
 import { FileDropOverlay } from "./file-drop-overlay";
 import { useFileDropZone } from "./file-drop";
-import { useMediaQuery } from "./use-media-query";
 
 const CHAT_FILE_ACCEPT = ".png,.jpg,.jpeg,.webp,.gif,.heic,.mp4,.mov,.webm,.log,.txt,.json,.md,.csv,.pdf";
+
+const ASSOCIATION_OPTION_LABELS = { all: "agentConsoleAssociationAll", unlinked: "agentConsoleAssociationUnlinked", linked: "agentConsoleAssociationLinked" } as const;
+const AGENT_OPTION_LABELS = { all: "agentConsoleAllAgents", codex: "agentCodex", opencode: "agentOpenCode", claude_code: "agentClaudeCode" } as const;
+// The console offers a fixed option set; sessions of other kinds only ever
+// appear under "all" (AND-426 keeps the counts tied to these options).
+type ConsoleAgentOption = keyof typeof AGENT_OPTION_LABELS;
 
 function statusLabel(status: AgentSessionStatus, t: ReturnType<typeof useI18n>["t"]): string {
   if (status === "active") return t("agentSessionActive");
@@ -146,7 +156,14 @@ function agentLabel(session: AgentSessionSummary, t: ReturnType<typeof useI18n>[
 function attentionLabel(session: AgentSessionSummary, t: ReturnType<typeof useI18n>["t"]): string | null {
   if (!session.needsAttention) return null;
   if (session.attention.kind === "answer") return t("agentAttentionAnswer");
-  if (session.attention.kind === "approval") return t("agentAttentionApproval");
+  // A source approval snapshot is a permission, a confirmation or an
+  // unrecognizable legacy request; only a plan wait reads as 待批准 (AND-408).
+  if (session.attention.kind === "approval") {
+    if (session.approval?.requestKind === "permission") return t("agentAttentionPermission");
+    if (session.approval?.requestKind === "confirmation") return t("agentAttentionConfirmation");
+    if (session.approval) return t("agentAttentionPending");
+    return t("agentAttentionApproval");
+  }
   if (session.attention.kind === "action") return t("agentAttentionAction");
   if (session.attention.kind === "instruction") return t("agentAttentionInstruction");
   return t("agentAttentionUncertain");
@@ -189,6 +206,7 @@ export function AgentSessionConsole({
 }) {
   const confirm = useConfirm();
   const { locale, t } = useI18n();
+  const mergeProgress = useMergeProgress(productId);
   // A re-dispatched session keeps the item's name and adds the round (AND-365).
   const roundLabel = (round: number) => t("agentSessionRound", { round });
   const queryClient = useQueryClient();
@@ -208,10 +226,6 @@ export function AgentSessionConsole({
   const [followLatest, setFollowLatest] = useState(true);
   const [newMessageCount, setNewMessageCount] = useState(0);
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
-  // A handset is a coarse pointer. The same signal the stylesheet uses for touch
-  // sizing decides whether a session link can reach a client on this device
-  // (AND-214), rather than guessing from the viewport width.
-  const touchDevice = useMediaQuery("(pointer: coarse)");
   // The conversation the person clicked. Only that one counts as read; merely
   // opening the console or changing a filter never selects or reads a row.
   // (conversationOpen cannot tell: it only ever turns true on the one-pane layout.)
@@ -234,12 +248,11 @@ export function AgentSessionConsole({
     () => allSessions.filter((session) => session.productId === productId || session.items.some((item) => item.productId === productId)),
     [allSessions, productId],
   );
-  const sessions = isGlobalAgentSessionFilter(filter) ? allSessions : productSessions;
   const countMatches = (scope: readonly AgentSessionSummary[], key: AgentSessionFilter) =>
     scope.filter(session => agentSessionMatches(session, key, agentFilter, search, association));
   const counts = {
-    unread: countMatches(allSessions, "unread").length,
-    attention: countMatches(allSessions, "attention").length,
+    unread: countMatches(productSessions, "unread").length,
+    attention: countMatches(productSessions, "attention").length,
     active: countMatches(productSessions, "active").length,
     all: countMatches(productSessions, "all").length,
     failed: countMatches(productSessions, "failed").length,
@@ -247,13 +260,42 @@ export function AgentSessionConsole({
     productUnread: countMatches(productSessions, "all").filter(sessionCountsAsUnread).length,
     failedUnread: countMatches(productSessions, "failed").filter(sessionCountsAsUnread).length,
   };
+  // AND-426: an option shows the count the list would hold when picked -- the
+  // same promise the sidebar numbers make. Running reuses the sidebar's active
+  // rule; the active filter already lists only running sessions, so there the
+  // running badge would repeat the total and stays hidden.
+  const optionCounts = useMemo(() => {
+    const stats = (agent: AgentKindFilter, associationOption: AgentAssociationFilter) => {
+      const rows = productSessions.filter(session => agentSessionMatches(session, filter, agent, search, associationOption));
+      return { total: rows.length, running: rows.filter(session => !session.archivedAt && session.status === "active").length };
+    };
+    return {
+      association: { all: stats(agentFilter, "all"), unlinked: stats(agentFilter, "unlinked"), linked: stats(agentFilter, "linked") },
+      agent: { all: stats("all", association), codex: stats("codex", association), opencode: stats("opencode", association), claude_code: stats("claude_code", association) },
+    } satisfies {
+      association: Record<keyof typeof ASSOCIATION_OPTION_LABELS, { total: number; running: number }>;
+      agent: Record<ConsoleAgentOption, { total: number; running: number }>;
+    };
+  }, [association, agentFilter, filter, search, productSessions]);
+  const renderOptionCounts = (stats: { total: number; running: number }) => sessionsLoaded && (
+    <span className="agent-console-option-counts">
+      {filter !== "active" && stats.running > 0 && (
+        <span className="agent-console-option-running">{t("agentConsoleOptionRunning", { count: stats.running })}</span>
+      )}
+      <span>{t("agentConsoleOptionTotal", { count: stats.total })}</span>
+    </span>
+  );
+  const otherProjectCounts = useMemo(
+    () => agentOtherProjectCounts(allSessions, productId),
+    [allSessions, productId],
+  );
   const sessionProducts = (session: AgentSessionSummary) => {
     const ids = new Set([...(session.productId ? [session.productId] : []), ...session.items.map(item => item.productId)]);
     return products.filter(product => ids.has(product.id));
   };
   const visibleSessions = useMemo(
-    () => byLatestActivity(sessions.filter((session) => agentSessionMatches(session, filter, agentFilter, search, association))),
-    [agentFilter, association, filter, search, sessions],
+    () => byLatestActivity(productSessions.filter((session) => agentSessionMatches(session, filter, agentFilter, search, association))),
+    [agentFilter, association, filter, search, productSessions],
   );
   const archivableIds = useMemo(() => archivableVisibleSessionIds(visibleSessions), [visibleSessions]);
   const allArchivableSelected = archivableIds.length > 0
@@ -651,6 +693,9 @@ export function AgentSessionConsole({
       : turnRunning
         ? t("agentSessionTurnRunning", { duration: elapsed(turnState?.turnStartedAt, clock) ?? "–", agent: agentName })
         : t(activityLabelKey(sessionStatus, command?.kind !== "interrupt" && command?.status === "queued"), { agent: agentName });
+  const sessionError = sessionQuery.data ? sessionQuery.data.lastError : selected?.lastError;
+  const statusDetail = sessionStatusDetail(sessionStatus, sessionError, activityText);
+  const inlineError = sessionInlineError(sessionStatus, sessionError);
 
   const markRead = useMutation({
     mutationFn: ({ sessionId, dispatchId, through }: { id: string; sessionId?: string | undefined; dispatchId?: string | undefined; through: string }) =>
@@ -762,13 +807,12 @@ export function AgentSessionConsole({
   };
   const chooseFilter = (next: AgentSessionFilter) => {
     setFilter(next);
-    const nextSessions = isGlobalAgentSessionFilter(next) ? allSessions : productSessions;
-    if (selectedId && !nextSessions.some((session) => session.id === selectedId
+    if (selectedId && !productSessions.some((session) => session.id === selectedId
       && agentSessionMatches(session, next, agentFilter, search, association))) onSelectSession(null, false);
   };
   const chooseAgent = (next: AgentKindFilter) => {
     setAgentFilter(next);
-    if (selectedId && !sessions.some((session) => session.id === selectedId
+    if (selectedId && !productSessions.some((session) => session.id === selectedId
       && agentSessionMatches(session, filter, next, search, association))) onSelectSession(null, false);
   };
 
@@ -782,12 +826,21 @@ export function AgentSessionConsole({
         : selected?.canRetry ? "agentRecoveryRetry"
           : needsNewSession ? "agentRecoveryNewSession"
             : canContinue ? "agentRecoveryReply" : "agentRecoveryAtSource";
+  const showFailureCard = conversationReady && selected?.source !== "external" && selected?.agentKind === "codex" && sessionStatus === "failed";
+  const showRunDetails = Boolean(selected?.agentSessionId && sessionQuery.data
+    && !(selected.source !== "external" && selected.agentKind === "codex" && sessionStatus === "failed"));
+  const stopAction = selected?.canStop && (
+    <button
+      type="button"
+      className="secondary-button agent-run-stop"
+      disabled={retryDispatch.isPending || stopDispatch.isPending || stopPending}
+      onClick={async () => {
+        if (await confirm(t("agentConsoleStopConfirm"))) stopDispatch.mutate({ sessionId: operationSessionId, dispatchId: selected.dispatchId! });
+      }}
+    ><Square size={16} />{t("agentConsoleStop")}</button>
+  );
   const sessionActions = selected && (
     <div className="agent-console-actions">
-      {selected.sessionUrl && <SessionLink url={selected.sessionUrl} compact={!showRecovery} mobile={touchDevice} />}
-      {selected.source !== "external" && selected.agentKind === "claude_code" && selected.agentSessionId && !selected.sessionUrl && (
-        <span className="agent-session-muted" title={t("agentConsoleClaudeLocal")}>{t("agentConsoleClaudeLocalBadge")}</span>
-      )}
       {selected.canRetry && (
         <button
           type="button"
@@ -799,16 +852,6 @@ export function AgentSessionConsole({
             if (await confirm(confirmation)) retryDispatch.mutate({ sessionId: operationSessionId, dispatchId: selected.dispatchId! });
           }}
         ><RotateCcw size={15} />{t(selected.productId ? "newSessionRetry" : "agentConsoleRetry")}</button>
-      )}
-      {selected.canStop && (
-        <button
-          type="button"
-          className="secondary-button"
-          disabled={retryDispatch.isPending || stopDispatch.isPending || stopPending}
-          onClick={async () => {
-            if (await confirm(t("agentConsoleStopConfirm"))) stopDispatch.mutate({ sessionId: operationSessionId, dispatchId: selected.dispatchId! });
-          }}
-        ><Square size={16} />{t("agentConsoleStop")}</button>
       )}
       {selected.canArchive && selected.archivedSource !== "source" && (
         <button
@@ -844,14 +887,10 @@ export function AgentSessionConsole({
     { key: "archived", icon: Archive, count: counts.archived, label: t("agentConsoleArchived") },
   ];
 
-  const filterGroups = [
-    { label: t("agentConsoleAllProjects"), filters: filters.filter(entry => isGlobalAgentSessionFilter(entry.key)) },
-    { label: t("agentConsoleCurrentProject"), filters: filters.filter(entry => !isGlobalAgentSessionFilter(entry.key)) },
-  ];
-  const navigation = filterGroups.map(group => <div className="agent-console-filter-group" key={group.label} role="group" aria-label={group.label}>
-    <p className="sidebar-label">{group.label}</p>
+  const navigation = <div className="agent-console-filter-group" role="group" aria-label={t("agentConsoleCurrentProject")}>
+    <p className="sidebar-label">{t("agentConsoleCurrentProject")}</p>
     <div className="agent-console-filter-items">
-      {group.filters.map(({ key, icon: Icon, count, unread, label }) => <button key={key} type="button"
+      {filters.map(({ key, icon: Icon, count, unread, label }) => <button key={key} type="button"
         className={`agent-console-filter ${filter === key ? "active" : ""}`} aria-pressed={filter === key} onClick={() => chooseFilter(key)}>
         <Icon className={key === "active" && filter === key ? "spin-when-active" : ""} size={16} />
         <span>{label}</span>
@@ -859,7 +898,16 @@ export function AgentSessionConsole({
         {sessionsLoaded && <small>{count}</small>}
       </button>)}
     </div>
-  </div>);
+  </div>;
+
+  const otherProjectHint = (otherProjectCounts.attention > 0 || otherProjectCounts.unread > 0) && (
+    <p className="agent-console-other-projects" role="status">
+      <span>{t("agentConsoleOtherProjects")}</span>
+      {otherProjectCounts.attention > 0 && <span>{t("agentConsoleNeedsAttention")} {otherProjectCounts.attention}</span>}
+      {otherProjectCounts.attention > 0 && otherProjectCounts.unread > 0 && <span>·</span>}
+      {otherProjectCounts.unread > 0 && <span>{t("agentConsoleUnread")} {otherProjectCounts.unread}</span>}
+    </p>
+  );
 
   return (
     <main className={`agent-console-page ${conversationOpen ? "mobile-conversation-open" : "mobile-list-open"}`}>
@@ -872,16 +920,23 @@ export function AgentSessionConsole({
 
       <section className="agent-console-list" aria-label={t("agentConsoleSessions")}>
         {unavailableSessionId && <p className="inline-error" role="alert">{t("agentConsoleUnavailableLink")}</p>}
+        {otherProjectHint}
         <div className="agent-console-mobile-filters" aria-label={t("agentConsoleFilters")}>
           {navigation}
         </div>
         <div className="agent-console-list-controls">
-          <Select aria-label={t("agentConsoleAssociationFilter")} value={association} onChange={event => {
-            const next = event.target.value as AgentAssociationFilter;
-            setAssociation(next);
-            if (selectedId && !sessions.some(session => session.id === selectedId
-              && agentSessionMatches(session, filter, agentFilter, search, next))) onSelectSession(null, false);
-          }}>
+          <Select aria-label={t("agentConsoleAssociationFilter")} value={association}
+            renderValue={value => t(ASSOCIATION_OPTION_LABELS[value as AgentAssociationFilter])}
+            renderOption={value => <span className="agent-console-option">
+              <span>{t(ASSOCIATION_OPTION_LABELS[value as AgentAssociationFilter])}</span>
+              {renderOptionCounts(optionCounts.association[value as AgentAssociationFilter])}
+            </span>}
+            onChange={event => {
+              const next = event.target.value as AgentAssociationFilter;
+              setAssociation(next);
+              if (selectedId && !productSessions.some(session => session.id === selectedId
+                && agentSessionMatches(session, filter, agentFilter, search, next))) onSelectSession(null, false);
+            }}>
             <option value="all">{t("agentConsoleAssociationAll")}</option>
             <option value="unlinked">{t("agentConsoleAssociationUnlinked")}</option>
             <option value="linked">{t("agentConsoleAssociationLinked")}</option>
@@ -891,6 +946,11 @@ export function AgentSessionConsole({
             <Select
               aria-label={t("agentConsoleAgentFilter")}
               value={agentFilter}
+              renderValue={value => t(AGENT_OPTION_LABELS[value as ConsoleAgentOption])}
+              renderOption={value => <span className="agent-console-option">
+                <span>{t(AGENT_OPTION_LABELS[value as ConsoleAgentOption])}</span>
+                {renderOptionCounts(optionCounts.agent[value as ConsoleAgentOption])}
+              </span>}
               onChange={(event) => chooseAgent(event.target.value as AgentKindFilter)}
             >
               <option value="all">{t("agentConsoleAllAgents")}</option>
@@ -962,7 +1022,7 @@ export function AgentSessionConsole({
             const rowWaiting = ["claude_code", "codex", "opencode"].includes(session.agentKind) && ["active", "idle"].includes(rowStatus)
               && (session.command?.status !== "queued" || session.agentKind === "codex") && session.turnState?.waitingForInput === true;
             const rowLabel = session.source === "external" && !session.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(session)) : rowBackground ? t("agentSessionBackgroundStatus")
-              : rowWaiting ? t(session.agentKind === "codex" || session.waitingForPermission ? "agentSessionWaitingApprovalStatus" : "agentSessionWaitingStatus") : statusLabel(rowStatus, t);
+              : rowWaiting ? t(session.waitingForPermission ? "agentSessionWaitingApprovalStatus" : waitingStatusLabelKey(session)) : statusLabel(rowStatus, t);
             return (
               <div
                 key={session.id}
@@ -1019,8 +1079,8 @@ export function AgentSessionConsole({
                       {session.items.length === 0 && <span className="agent-console-unlinked-badge">{t("agentConsoleAssociationUnlinked")}</span>}
                       <time>{formatAgentMessageTime(session.activityAt ?? session.updatedAt, locale)}</time>
                     </span>
-                    {isGlobalAgentSessionFilter(filter) && <small className="agent-console-session-project">{sessionProducts(session).map(product => product.name).join(" · ")}</small>}
                     <small>{session.source === "external" ? t("agentExternalSource") : session.nodeName} · {agentLabel(session, t)}</small>
+                    <MergeProgressBadge state={mergeProgress.sessions.get(session.agentSessionId ?? session.id)} />
                     {attentionLabel(session, t) && (
                       <i className="agent-console-attention" title={session.attention.reason}>
                         {attentionLabel(session, t)}
@@ -1060,7 +1120,6 @@ export function AgentSessionConsole({
                 </div>}
               </div>
               <div className="agent-console-toolbar">
-                <span className={`status-pill agent-session-status-${visualStatus}`}>{selected.archivedAt ? t("archived") : selected.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected)) : claudeBackgroundOnly ? t("agentSessionBackgroundStatus") : agentWaiting ? t(selected.agentKind === "codex" || questionPermission ? "agentSessionWaitingApprovalStatus" : "agentSessionWaitingStatus") : statusLabel(sessionStatus, t)}</span>
                 {!showRecovery && sessionActions}
               </div>
             </header>
@@ -1138,11 +1197,12 @@ export function AgentSessionConsole({
                   <div className="agent-console-dispatch-state">
                     <Bot size={20} />
                     <strong>{t(dispatchActivityLabelKey(selected))}</strong>
-                    {selected.sessionUrl && <p>{t("agentConsoleOpenExternalHelp")}</p>}
                   </div>
                 )}
                 {planTranscript(visibleMessages, sessionQuery.data).map((message) => {
                   if (message === null) return <AgentPlanContent key="submitted-plan" session={sessionQuery.data} surface="console" />;
+                  const repeatsPlan = repeatsSubmittedPlan(message, sessionQuery.data);
+                  if (repeatsPlan && !message.questions?.length && !message.attachmentData?.length) return null;
                   const labelKey = messageLabelKey(message.role, selected.agentKind);
                   return (
                     <article key={message.id} data-agent-message-id={`${message.role}:${message.sourceId || message.id}`} className={`agent-console-message agent-console-message-${message.role}`}>
@@ -1150,7 +1210,7 @@ export function AgentSessionConsole({
                         {labelKey && <small>{t(labelKey)}</small>}
                         <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
                       </header>
-                      {message.text && (selected.agentSessionId && ["agent", "plan"].includes(message.role)
+                      {!repeatsPlan && message.text && (selected.agentSessionId && ["agent", "plan"].includes(message.role)
                         ? <AgentArtifactMarkdown text={message.text} sessionId={selected.agentSessionId} messageId={message.id} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />
                         : <MarkdownText>{message.text}</MarkdownText>)}
                       {message.attachmentData && selected.agentSessionId && <ChatAttachments sessionId={selected.agentSessionId} attachments={message.attachmentData} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />}
@@ -1260,14 +1320,14 @@ export function AgentSessionConsole({
                   </article>
                 )}
                 <AgentHistoryNotice error={sessionQuery.data ? sessionQuery.data.lastError : selected.lastError} />
-                {selected.source !== "external" && selected.agentKind === "codex" && sessionStatus === "failed" ? (
+                {showFailureCard ? (
                   <AgentSessionFailureNotice status={sessionStatus}
                     failure={sessionQuery.data ? sessionQuery.data.failure : selected.failure}
                     legacyError={sessionQuery.data ? sessionQuery.data.lastError : selected.lastError} />
                 ) : (selected.agentKind !== "codex" || (sessionStatus !== "idle" && sessionStatus !== "active"))
-                  && (sessionQuery.data ? sessionQuery.data.lastError : selected.lastError)
-                  && !isHistoryLimited(sessionQuery.data ? sessionQuery.data.lastError : selected.lastError) ? (
-                  <AgentSessionError error={(sessionQuery.data ? sessionQuery.data.lastError : selected.lastError)!} onRetry={()=>void sessionQuery.refetch()} />
+                  && inlineError
+                  && !isHistoryLimited(inlineError) ? (
+                  <AgentSessionError error={inlineError} onRetry={()=>void sessionQuery.refetch()} />
                 ) : null}
                 {showRecovery && (
                   <section className="agent-console-recovery" aria-label={t("agentRecoveryTitle")}>
@@ -1290,12 +1350,12 @@ export function AgentSessionConsole({
                   </section>
                 )}
                 {approval && !questionPermission && showPermissionApproval && (
-                  <section className="agent-console-attention-banner agent-console-approval" role="alert" aria-label={t("agentApprovalTitle") }>
+                  <section className="agent-console-attention-banner agent-console-approval" role="alert" aria-label={t(approvalTitleKey(approval)) }>
                     <header>
                       <BellRing size={16} />
-                      <strong>{approval.kind === "auto" ? t("agentApprovalAutoTitle") : t("agentApprovalTitle")}</strong>
+                      <strong>{t(approvalTitleKey(approval))}</strong>
                       <span>{approval.status === "inProgress" ? t("agentApprovalReviewing")
-                      : approval.status === "pending" ? t("agentApprovalWaiting")
+                      : approval.status === "pending" ? t(approval.requestKind === "question" ? "agentQuestionWaiting" : "agentApprovalWaiting")
                         : approval.status === "denied" ? t("agentApprovalDenied")
                           : approval.status === "approved" ? t("agentApprovalApproved")
                             : approval.status === "reconnecting" ? t("agentApprovalReconnecting")
@@ -1347,19 +1407,19 @@ export function AgentSessionConsole({
                     )}
                   </section>
                 )}
+                {conversationReady && selected && <DeliveryCards productId={selected.productId ?? selected.items[0]?.productId ?? productId} sessionId={selected.agentSessionId ?? selected.id} />}
                 <div className="agent-run-status" aria-label={t("agentRunFeedback")}>
                   <AgentOperationFeedback failures={feedback.failures} sessionId={operationSessionId} command={command} />
                   <AgentStopFeedback stop={stopCommand}
                     latestCommand={command} turnActive={sessionQuery.data?.turnState?.turnActive ?? false}
                     backgroundRunning={(sessionQuery.data?.activities.length ?? 0) > 0} />
-                {selected.agentSessionId && sessionQuery.data
-                  && !(selected.source !== "external" && selected.agentKind === "codex" && sessionStatus === "failed") && (<>
+                {showRunDetails && (<>
                     {["stalled", "unavailable", "failed"].includes(sessionStatus) && <p className="agent-run-warning" role="alert">{activityText}</p>}
-                    <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={visualStatus} />}
+                    <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={visualStatus} />} actions={stopAction}
                       label={selected.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected))
-                        : agentWaiting ? t(selected.agentKind === "codex" || questionPermission ? "agentRunApproval" : "agentRunWaiting", { agent: agentName })
+                        : agentWaiting ? t(questionPermission ? "agentRunApproval" : runWaitingLabelKey({ agentKind: selected.agentKind, approval }), { agent: agentName })
                           : claudeBackgroundOnly ? t("agentRunBackground") : sessionStatus === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(sessionStatus, t)}>
-                      {!["stalled", "unavailable", "failed"].includes(sessionStatus) && <p>{activityText}</p>}
+                      {!["stalled", "unavailable", "failed"].includes(sessionStatus) && <p>{statusDetail}</p>}
                       {outgoing && ["queued", "delivering", "delivered"].includes(outgoing.status) && <p>
                         {outgoing.status === "delivered" ? t("agentSessionReplyAwaitingExecution", { agent: agentName, duration: elapsed(outgoing.occurredAt, clock) ?? "–" })
                           : t("agentSessionReplyWaitingReason", { duration: elapsed(outgoing.occurredAt, clock) ?? "–",
@@ -1397,6 +1457,14 @@ export function AgentSessionConsole({
                 </>)}
                 </div>
                 </>}
+                {!showRunDetails && (!showFailureCard || stopAction) && <div className="agent-run-controls agent-run-fallback">
+                  {!showFailureCard && <p className={`agent-console-activity agent-console-activity-${visualStatus}`} role="status">
+                    <SessionStatusIcon status={visualStatus} />
+                    {!conversationReady ? t("agentSessionLoading") : selected.archivedAt ? t("archived")
+                      : !selected.agentSessionId ? t(dispatchActivityLabelKey(selected)) : statusLabel(sessionStatus, t)}
+                  </p>}
+                  {stopAction}
+                </div>}
               </div>
               {newMessageCount > 0 && (
                 <button type="button" className="agent-console-new-messages" onClick={() => scrollToLatest("smooth")}>

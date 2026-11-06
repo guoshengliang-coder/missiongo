@@ -81,6 +81,10 @@ describe("headless configuration and scope", () => {
           expect(ask).toBeGreaterThan(investigate);
           expect(approve).toBeGreaterThan(ask);
           expect(prompt).toContain("单独申请调查授权");
+          expect(prompt).toContain("方案表达按复杂度组织");
+          expect(prompt).toContain("向 request_plan_approval 提交的 plan/validation");
+          expect(prompt).toContain("特别是与推荐不同的选择");
+          expect(prompt).toContain("普通进度、澄清和等待提示不是正式方案");
           expect(prompt).toContain("有边界的复现或实验计划");
           if (freeSession) expect(prompt).toContain("不自行开始任务");
           else if (mode === "plan") {
@@ -159,6 +163,22 @@ describe("Codex native control", () => {
     expect((await adapter.snapshot()).messages.some((m) => m.text === "decline")).toBe(true);
     await expect(adapter.decide({ id: snapshot.approval!.id, choice: "accept" })).rejects.toThrow(/Stale/);
     expect(codexPolicy("plan")).toEqual({ sandbox: "workspace-write", approvalPolicy: "on-request", approvalsReviewer: "auto_review" });
+  });
+  it("AND-408 labels command prompts as permissions and answers questions without granting", async () => {
+    const permissionAdapter = new CodexAdapter(job(temporary()), fixture); adapters.push(permissionAdapter);
+    await permissionAdapter.start("approval requested"); await delay(30);
+    expect((await permissionAdapter.snapshot()).approval).toMatchObject({ status: "pending", requestKind: "permission" });
+
+    const adapter = new CodexAdapter(job(temporary()), fixture); adapters.push(adapter);
+    await adapter.start("question requested"); await delay(30);
+    const snapshot = await adapter.snapshot();
+    expect(snapshot.approval).toMatchObject({ status: "pending", requestKind: "question",
+      action: "选择产品偏好",
+      options: [{ id: "choice-0", kind: "choice", label: "方案 A" }, { id: "choice-1", kind: "choice", label: "方案 B" }] });
+    await adapter.decide({ id: snapshot.approval!.id, choice: "choice-0" });
+    expect((await adapter.snapshot()).approval?.status).toBe("resolved");
+    const answered = (await adapter.snapshot()).messages.find((m) => m.text.startsWith("answered:"));
+    expect(answered?.text).toBe('answered:{"answers":{"q-1":{"answers":["方案 A"]}}}');
   });
   it.each(["FAKE_BAD_POLICY", "FAKE_READ_ONLY", "FAKE_SKILL_STALE"])("does not send a task when %s is present", async (flag) => {
     const root = temporary(); const log = join(root, "events"); vi.stubEnv(flag, "1"); vi.stubEnv("TEST_AGENT_EVENTS", log);

@@ -59,8 +59,16 @@ final class SettingsHostFixture {
             process.terminate()
             let deadline = Date().addingTimeInterval(3)
             while process.isRunning && Date() < deadline { usleep(10_000) }
-            if process.isRunning { kill(-process.processIdentifier, SIGKILL) }
-            process.waitUntilExit()
+            if process.isRunning {
+                // A fixture may not have established its own process group.
+                // Terminate the owned PID too; never block the test runner in
+                // Foundation's unbounded waitUntilExit during teardown.
+                kill(-process.processIdentifier, SIGKILL)
+                kill(process.processIdentifier, SIGKILL)
+                let killDeadline = Date().addingTimeInterval(2)
+                while process.isRunning && Date() < killDeadline { usleep(10_000) }
+                XCTAssertFalse(process.isRunning, "Fixture process did not exit after SIGKILL")
+            }
         }
         try? FileManager.default.removeItem(at: root)
     }

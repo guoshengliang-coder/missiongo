@@ -109,10 +109,6 @@ export function formatAgentMessageTime(value: string, locale: string, now = new 
 }
 
 export type AgentSessionFilter = "unread" | "attention" | "active" | "all" | "failed" | "archived";
-/** Cross-project navigation has one scope for both rows and counters. */
-export function isGlobalAgentSessionFilter(filter: AgentSessionFilter): boolean {
-  return filter === "unread" || filter === "attention";
-}
 
 export type AgentAssociationFilter = "all" | "unlinked" | "linked";
 export type AgentKindFilter = "all" | AgentKind;
@@ -217,9 +213,19 @@ type UnreadCountableSession = Pick<
   "id" | "archivedAt" | "unread" | "status" | "items" | "productId"
 >;
 
+type OtherProjectCountableSession = Pick<
+  AgentSessionSummary,
+  "archivedAt" | "needsAttention" | "unread" | "status" | "items" | "productId"
+>;
+
 export interface AgentUnreadCounts {
   readonly total: number;
   readonly byProduct: ReadonlyMap<string, number>;
+}
+
+export interface AgentOtherProjectCounts {
+  readonly attention: number;
+  readonly unread: number;
 }
 
 export function archivableVisibleSessionIds(
@@ -253,6 +259,28 @@ export function agentUnreadCounts(
     total: globalSessionIds.size,
     byProduct: new Map([...productSessionIds].map(([productId, sessionIds]) => [productId, sessionIds.size])),
   };
+}
+
+/**
+ * The console lists one project at a time (AND-419). A conversation that
+ * reaches the selected project through any item belongs to that project;
+ * everything else is another project and only feeds the read-only hint above
+ * the filters. Count conversations rather than product links, so one
+ * conversation spanning several other projects still counts once.
+ */
+export function agentOtherProjectCounts(
+  sessions: readonly OtherProjectCountableSession[],
+  productId: string,
+): AgentOtherProjectCounts {
+  let attention = 0;
+  let unread = 0;
+  for (const session of sessions) {
+    if (session.archivedAt) continue;
+    if (session.productId === productId || session.items.some((item) => item.productId === productId)) continue;
+    if (session.needsAttention) attention++;
+    if (sessionCountsAsUnread(session)) unread++;
+  }
+  return { attention, unread };
 }
 
 export function agentSessionMatches(
@@ -664,11 +692,57 @@ export function activityLabelKey(status: AgentSessionStatus, replyQueued = false
   return replyQueued ? "agentSessionActivityUnavailableQueued" : "agentSessionActivityUnavailable";
 }
 
+/** Releasing an idle Claude session is routine housekeeping, not an error
+ *  (AND-424). Only a real failure keeps the danger-coloured inline error; the
+ *  suspension explanation belongs in the run details instead. */
+export function sessionInlineError(status: AgentSessionStatus, lastError: string | undefined): string | undefined {
+  return status === "suspended" ? undefined : lastError;
+}
+
+/** The run-details body for a released session names the release and how to
+ *  resume it. Every other status keeps its usual activity copy. */
+export function sessionStatusDetail(status: AgentSessionStatus, lastError: string | undefined, activity: string): string {
+  return status === "suspended" && lastError ? lastError : activity;
+}
+
 /** Keep the intervention panel for work a person still needs to act on. */
 export function approvalNeedsAction(approval: AgentApproval | undefined): boolean {
   if (!approval) return false;
   if (approval.kind === "manual") return (approval.status === "pending" && !approval.decision) || ["unavailable", "reconnecting"].includes(approval.status);
   return approval.status === "denied" && (!approval.retryId || approval.retryStatus === "failed");
+}
+
+/** Card title keys distinguish questions and confirmations from permission
+ *  prompts; legacy rows without requestKind read as neutral (AND-408). */
+export function approvalTitleKey(approval: Pick<AgentApproval, "kind" | "requestKind">): MessageKey {
+  if (approval.kind === "auto") return "agentApprovalAutoTitle";
+  if (approval.requestKind === "question") return "agentQuestionTitle";
+  if (approval.requestKind === "confirmation") return "agentConfirmationTitle";
+  if (approval.requestKind === "permission") return "agentApprovalTitle";
+  return "agentNeutralApprovalTitle";
+}
+
+function codexWaitingKindKey(approval: AgentApproval | undefined): MessageKey {
+  if (approval?.requestKind === "question") return "agentSessionWaitingQuestionStatus";
+  if (approval?.requestKind === "confirmation") return "agentSessionWaitingConfirmationStatus";
+  if (approval?.requestKind === "permission") return "agentSessionWaitingApprovalStatus";
+  return "agentSessionWaitingPendingStatus";
+}
+
+/** Status-pill copy while a session waits on a person; only Codex approvals
+ *  carry requestKind, other agents keep their waiting copy. */
+export function waitingStatusLabelKey(session: { agentKind: AgentSessionSummary["agentKind"]; approval?: AgentApproval | undefined }): MessageKey {
+  if (session.agentKind !== "codex") return "agentSessionWaitingStatus";
+  return codexWaitingKindKey(session.approval);
+}
+
+/** Run-details copy for a session waiting on a person. */
+export function runWaitingLabelKey(session: { agentKind: AgentSessionSummary["agentKind"]; approval?: AgentApproval | undefined }): MessageKey {
+  if (session.agentKind !== "codex") return "agentRunWaiting";
+  if (session.approval?.requestKind === "question") return "agentRunQuestion";
+  if (session.approval?.requestKind === "confirmation") return "agentRunConfirmation";
+  if (session.approval?.requestKind === "permission") return "agentRunApproval";
+  return "agentRunWaiting";
 }
 
 export function externalProgressLabelKey(session: Pick<AgentSessionSummary, "status" | "progressStatus" | "approvalOnly">) {

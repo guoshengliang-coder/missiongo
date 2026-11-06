@@ -18,19 +18,22 @@ function summary(id: string, productId: string, attention = true) {
     needsAttention: attention, attention: { state: attention ? "needed" : "not_needed", kind: "answer", revision: id, reason: "请回答问题" } };
 }
 
-test.describe("grouped navigation on touch devices", () => {
+test.describe("project-scoped navigation on touch devices", () => {
 test.use({ hasTouch: true });
 for (const dark of [false, true]) for (const scale of ["small", "medium", "large"]) {
-  test(`global navigation preserves context ${dark} ${scale}`, async ({ page }) => {
+  test(`project navigation keeps other projects in a read-only hint ${dark} ${scale}`, async ({ page }) => {
     await page.emulateMedia({ colorScheme: dark ? "dark" : "light" });
-    const a = summary("当前会话", fixture.productId, false);
-    const b = summary("其他项目问题", other.id);
+    const current = summary("当前会话", fixture.productId, false);
+    const currentAttention = summary("当前待处理", fixture.productId, true);
     const shared = { ...summary("多项目问题", other.id), items: [
       { key: "X-1", title: "shared", productId: fixture.productId },
       { key: "X-2", title: "shared", productId: fixture.productId },
     ] };
-    const running = { ...summary("运行中未读", other.id, false), status: "active" };
-    const sessions = [a, b, shared, running];
+    const otherAttention = { ...summary("其他项目待处理", other.id), unread: false };
+    const otherUnread = summary("其他项目未读", other.id, false);
+    const otherRunning = { ...summary("运行中未读", other.id, false), status: "active" };
+    const otherArchived = { ...summary("已归档未读", other.id, true), archivedAt: "2026-11-01T00:00:00.000Z" };
+    const sessions = [current, currentAttention, shared, otherAttention, otherUnread, otherRunning, otherArchived];
     let sent = 0;
     await page.route("**/api/v1/agent-sessions**", async route => {
       const path = new URL(route.request().url()).pathname;
@@ -47,38 +50,67 @@ for (const dark of [false, true]) for (const scale of ["small", "medium", "large
     await page.goto(`/?product=${fixture.productId}&console=agent`);
     const nav = page.locator(".agent-console-filters");
     const pending = nav.getByRole("button", { name: /^待我处理/ });
+    const unread = nav.getByRole("button", { name: /^未读会话/ });
+    const all = nav.getByRole("button", { name: /^全部会话/ });
     await expect(pending.locator("small")).toHaveText("2");
     await page.evaluate(scale => { document.documentElement.dataset.fontScale = scale; document.documentElement.dataset.consoleFontScale = scale; }, scale);
-    await expect(nav.getByRole("button", { name: /^未读会话/ }).locator("small")).toHaveText("3");
-    await expect(page.locator(".agent-console-total-unread")).toHaveCount(0);
-    await pending.click();
-    await expect(page.locator(".agent-console-session")).toHaveCount(2);
-    const row = page.locator(".agent-console-session").filter({ hasText: "其他项目问题" });
-    await expect(row).toContainText(other.name);
-    await row.click();
-    await expect(page.locator(".agent-console-reply textarea")).toBeVisible();
-    await advanceSessionListPoll(page);
-    await expect(pending.locator("small")).toHaveText("2");
-    expect(await page.evaluate(() => localStorage.getItem("missiongo.product"))).toBe(fixture.productId);
-    await page.locator(".agent-console-reply textarea").fill("另一个项目的草稿");
+    await expect(unread.locator("small")).toHaveText("3");
+    await expect(all.locator("small")).toHaveText("3");
+    await expect(nav.getByRole("group", { name: "所有项目", exact: true })).toHaveCount(0);
+    await expect(nav.getByRole("group", { name: "当前项目", exact: true })).toBeVisible();
+    const hint = page.locator(".agent-console-other-projects");
+    await expect(hint).toHaveAttribute("role", "status");
+    await expect(hint.getByRole("button")).toHaveCount(0);
+    await expect(hint).toContainText("其他项目：待我处理 1");
+    await expect(hint).toContainText("未读会话 1");
+    await expect(page.locator(".agent-console-session-project")).toHaveCount(0);
+    await expect(page.locator(".agent-console-session")).toHaveCount(3);
+    await expect(page.locator(".agent-console-session").filter({ hasText: "其他项目未读" })).toHaveCount(0);
+    const hintBox = await hint.boundingBox();
+    const controlsBox = await page.locator(".agent-console-list-controls").boundingBox();
+    expect(hintBox!.y).toBeLessThan(controlsBox!.y);
+
+    // The shared session reaches the current project through an item, so it stays
+    // in this list; its draft is still isolated from the other project's sessions.
     await page.locator(".agent-console-session").filter({ hasText: "多项目问题" }).click();
+    await expect(page.locator(".agent-console-reply textarea")).toBeVisible();
+    await page.locator(".agent-console-reply textarea").fill("另一个项目的草稿");
+    await page.locator(".agent-console-session").filter({ hasText: "当前会话" }).click();
     await expect(page.locator(".agent-console-reply textarea")).toHaveValue("");
-    await row.click();
+    await page.locator(".agent-console-session").filter({ hasText: "多项目问题" }).click();
     await expect(page.locator(".agent-console-reply textarea")).toHaveValue("另一个项目的草稿");
     await page.getByRole("button", { name: "进入所属项目", exact: true }).click();
     expect(await page.evaluate(() => localStorage.getItem("missiongo.product"))).toBe(other.id);
-    await expect(page.locator(".agent-console-reply textarea")).toHaveValue("另一个项目的草稿");
+
+    // The list now belongs to the other project; the hint points back at the first.
+    // Opening the shared and current rows cleared their unread, not their attention.
+    await expect(pending.locator("small")).toHaveText("2");
+    await expect(unread.locator("small")).toHaveText("1");
+    await expect(hint).toContainText("其他项目：待我处理 1");
+    await expect(hint).toContainText("未读会话 1");
+
     await page.locator(".agent-console-reply textarea").fill("回答");
     await page.getByRole("button", { name: "发送回复", exact: true }).click();
     await expect.poll(() => sent).toBe(1);
+    await advanceSessionListPoll(page);
     await expect(pending.locator("small")).toHaveText("1");
-    await pending.click();
+    await expect(hint).toContainText("待我处理 1");
+    expect(await page.evaluate(() => localStorage.getItem("missiongo.product"))).toBe(other.id);
+
+    // Leave the conversation before checking the single-pane layout: the list
+    // and its hint are the pane this test measures.
+    await nav.getByRole("button", { name: /^异常/ }).click();
     await expect(page.locator(".agent-console-conversation h2")).toHaveCount(0);
+
     for (const width of [320, 520, 521, 1023, 1024, 1280, 1440]) {
       await page.setViewportSize({ width, height: 900 });
       const visibleNav = page.locator(width <= 1023 ? ".agent-console-mobile-filters" : ".agent-console-filters");
-      await expect(visibleNav.getByRole("group", { name: "所有项目", exact: true })).toBeVisible();
       await expect(visibleNav.getByRole("group", { name: "当前项目", exact: true })).toBeVisible();
+      await expect(visibleNav.getByRole("group", { name: "所有项目", exact: true })).toHaveCount(0);
+      await expect(hint).toBeVisible();
+      const hintAtWidth = await hint.boundingBox();
+      const filterBarAtWidth = await page.locator(width <= 1023 ? ".agent-console-mobile-filters" : ".agent-console-list-controls").boundingBox();
+      expect(hintAtWidth!.y).toBeLessThan(filterBarAtWidth!.y);
       for (const label of ["待我处理", "未读会话", "运行中", "全部会话", "异常", "已归档"]) {
         const button = visibleNav.getByRole("button", { name: new RegExp(`^${label}`) });
         await button.scrollIntoViewIfNeeded();
@@ -94,6 +126,48 @@ for (const dark of [false, true]) for (const scale of ["small", "medium", "large
   });
 }
 
+});
+
+test.describe("cross-project hint", () => {
+  test("shows separate counts only while another project has work", async ({ page }) => {
+    const current = summary("当前会话", fixture.productId, false);
+    current.unread = false;
+    const otherBoth = summary("其他项目问题", other.id);
+    const otherRunning = { ...summary("运行中未读", other.id, false), status: "active" };
+    const otherArchived = { ...summary("已归档未读", other.id, true), archivedAt: "2026-11-01T00:00:00.000Z" };
+    const sessions = [current, otherBoth, otherRunning, otherArchived];
+    await page.route("**/api/v1/agent-sessions**", async route => {
+      const path = new URL(route.request().url()).pathname;
+      const id = decodeURIComponent(path.split("/")[4] ?? "");
+      const row = sessions.find(session => session.id === id);
+      if (path.endsWith("/read")) { row!.unread = false; await route.fulfill({ status: 204 }); return; }
+      await route.fulfill({ json: path === "/api/v1/agent-sessions" ? { sessions } : { ...row, messages: [], canResolveDelivery: false } });
+    });
+    await page.clock.install();
+    await page.goto(`/?product=${fixture.productId}&console=agent`);
+    const hint = page.locator(".agent-console-other-projects");
+    await expect(hint).toContainText("其他项目：待我处理 1");
+    await expect(hint).toContainText("未读会话 1");
+    const controlsWithHint = await page.locator(".agent-console-list-controls").boundingBox();
+
+    otherBoth.unread = false;
+    await advanceSessionListPoll(page);
+    await expect(hint).toContainText("其他项目：待我处理 1");
+    await expect(hint).not.toContainText("未读会话");
+
+    otherBoth.needsAttention = false;
+    otherBoth.attention.state = "not_needed";
+    otherBoth.unread = true;
+    await advanceSessionListPoll(page);
+    await expect(hint).toContainText("其他项目：未读会话 1");
+    await expect(hint).not.toContainText("待我处理");
+
+    otherBoth.unread = false;
+    await advanceSessionListPoll(page);
+    await expect(hint).toHaveCount(0);
+    const controlsWithoutHint = await page.locator(".agent-console-list-controls").boundingBox();
+    expect(controlsWithoutHint!.y).toBeLessThan(controlsWithHint!.y);
+  });
 });
 
 for (const phone of [false, true]) test(`cancellation race stays in its session and clears on next send ${phone}`, async ({ page }) => {

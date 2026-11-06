@@ -20,7 +20,7 @@ for (const viewport of viewports) for (const theme of ["light", "dark"] as const
       const item = await (await page.request.post("/api/v1/items", { data: {
         productId: fixture.productId, type: "note", priority: "normal", title: "评论卡片与全文展开", description: "", environment: { platform: "web" },
       } })).json();
-      const text = "请确认卡片边界。\n\n" + "每条评论独立展示，长内容展开后仍在原卡片内。Long comment content remains readable inside the same card.\n\n".repeat(6);
+      const text = "请确认卡片边界。\n\n| 范围 | 条件 | 验证 |\n|---|---|---|\n| 评论中的共用表格 | 保留完整内容与字号 | 窄屏内部滚动 |\n\n" + "每条评论独立展示，长内容展开后仍在原卡片内。Long comment content remains readable inside the same card.\n\n".repeat(6);
       const post = async (body: object) => {
         const response = await page.request.post(`/api/v1/items/${item.key}/comments`, { data: body });
         expect(response.ok(), await response.text()).toBe(true);
@@ -103,6 +103,8 @@ for (const viewport of viewports) for (const theme of ["light", "dark"] as const
               return content.left >= card.left && content.right <= card.right + 1 && content.bottom <= card.bottom + 1;
             });
             expect(contained).toBe(true);
+            await expect(folded.locator(".markdown-table-scroll table")).toBeVisible();
+            expect(await folded.locator(".comment-content").evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
             await folded.locator("summary").click();
             await expect(folded.locator(".comment-content")).toBeHidden();
           }

@@ -92,6 +92,24 @@ final class CodexApprovalTests: XCTestCase {
         }
     }
 
+    func testRequestKindDistinguishesQuestionsPermissionsAndConfirmations() throws {
+        let question = try XCTUnwrap(CodexApprovalRequest(["id": 1, "method": "item/tool/requestUserInput", "params": [
+            "threadId": "thread-1", "turnId": "turn-1", "questions": [[
+                "id": "q", "question": "选择产品偏好", "options": [["label": "方案 A"], ["label": "方案 B"]]]]]], threadId: "thread-1"))
+        XCTAssertEqual(question.snapshot.requestKind, "question")
+        XCTAssertEqual(question.ended("resolved").requestKind, "question")
+
+        let permission = try XCTUnwrap(CodexApprovalRequest(command(), threadId: "thread-1"))
+        XCTAssertEqual(permission.snapshot.requestKind, "permission")
+
+        let fileChange = try XCTUnwrap(CodexApprovalRequest(["id": 2, "method": "item/fileChange/requestApproval", "params": [
+            "threadId": "thread-1", "turnId": "turn-1", "grantRoot": "/tmp/repo"]], threadId: "thread-1"))
+        XCTAssertEqual(fileChange.snapshot.requestKind, "permission")
+
+        let confirmation = try XCTUnwrap(CodexApprovalRequest(elicitation(), threadId: "thread-1"))
+        XCTAssertEqual(confirmation.snapshot.requestKind, "confirmation")
+    }
+
     func testNonemptyFormsCannotGainPersistenceEvenWhenMetadataOffersIt() throws {
         let request = try XCTUnwrap(CodexApprovalRequest(elicitation(schema: ["type": "object",
             "properties": ["token": ["type": "string"]]]), threadId: "thread-1"))

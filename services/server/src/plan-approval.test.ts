@@ -54,3 +54,18 @@ it("pending delivery and delivered replies block another approval until new sour
   }
   expect(service.assess({ ...input, approval: { id: "permission", kind: "manual", status: "pending", turnId: "turn", action: "Shell access", startedAtMs: 1 } }).status.code).toBe("permission_required");
 });
+
+it("a pending question or confirmation no longer reads as a permission gate (AND-408)", () => {
+  const service = new PlanApprovalService();
+  const input = session();
+  for (const requestKind of ["question", "confirmation"] as const) {
+    expect(service.assess({ ...input, approval: { id: "prompt", kind: "manual", status: "pending", turnId: "turn",
+      action: "选择产品偏好", startedAtMs: 1, requestKind } }).status.code).not.toBe("permission_required");
+  }
+  // Legacy prompts without requestKind keep blocking: they predate the split
+  // and most of them are permissions.
+  expect(service.assess({ ...input, approval: { id: "legacy", kind: "manual", status: "pending", turnId: "turn",
+    action: "旧请求", startedAtMs: 1 } }).status.code).toBe("permission_required");
+  expect(service.assess({ ...input, approval: { id: "permission", kind: "manual", status: "pending", turnId: "turn",
+    action: "Shell access", startedAtMs: 1, requestKind: "permission" } }).status.code).toBe("permission_required");
+});

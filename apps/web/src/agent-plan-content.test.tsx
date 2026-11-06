@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it } from "vitest";
-import { AgentPlanContent, withoutDuplicatePlan } from "./agent-plan-content";
+import { AgentPlanContent, repeatsSubmittedPlan, withoutDuplicatePlan } from "./agent-plan-content";
 import { I18nProvider } from "./i18n";
 import type { AgentSession, AgentSessionMessage } from "./types";
 
@@ -26,6 +26,16 @@ it("deduplicates only identical plan messages, preserving commentary and differe
     { id: "comment", role: "agent", text: "Exact plan" },
   ] as AgentSessionMessage[];
   expect(withoutDuplicatePlan(messages, session).map(message => message.id)).toEqual(["different", "comment"]);
+});
+
+it("hides only the agent message that repeats the submitted plan body", () => {
+  const session = { implementationPlan: { plan: "Exact plan" } } as AgentSession;
+  const message = (role: AgentSessionMessage["role"], text: string) => ({ role, text }) as AgentSessionMessage;
+  expect(repeatsSubmittedPlan(message("agent", " Exact plan\n"), session)).toBe(true);
+  expect(repeatsSubmittedPlan(message("plan", "Exact plan"), session)).toBe(false);
+  expect(repeatsSubmittedPlan(message("user", "Exact plan"), session)).toBe(false);
+  expect(repeatsSubmittedPlan(message("agent", "Exact plan plus commentary"), session)).toBe(false);
+  expect(repeatsSubmittedPlan(message("agent", "Exact plan"), undefined)).toBe(false);
 });
 
 it("keeps post-approval replies after the plan, including legacy plans and paged history", async () => {
@@ -65,4 +75,13 @@ it("ends the approval acknowledgement on native progress while retaining uncerta
   const offline = { ...base, implementationPlan: undefined, command: undefined,
     planApprovalState: { ...base.planApprovalState!, continuationQueued: false } } as unknown as AgentSession;
   expect(planContinuationObserved(offline)).toBe(false);
+});
+
+it("does not promote plan-mode progress to a submitted proposal", async () => {
+  const { planTranscript } = await import("./agent-plan-content");
+  const messages = [{ id: "progress", role: "plan", text: "正在调查，等待结果" }] as AgentSessionMessage[];
+  const session = { messages } as unknown as AgentSession;
+  expect(planTranscript(messages, session)).toBe(messages);
+  const html = renderToStaticMarkup(<I18nProvider><AgentPlanContent session={session} surface="panel" /></I18nProvider>);
+  expect(html).toBe("");
 });

@@ -1,3 +1,4 @@
+import { PendingMergeButton, MergeProgressBadge, useMergeProgress } from "./merge-console";
 import { PRODUCT_ICON_URL } from "./branding.generated";
 import { MediaLightbox } from "./media-lightbox";
 import { AgentConsoleSearch } from "./agent-console-search";
@@ -14,6 +15,7 @@ import { additionalMentionNames, editMentions, mentionQuery, mentionAudience } f
 import { WebVersion } from "./web-version";
 import { Select } from "./select";
 import { DraftChatFile } from "./agent-chat-draft-file";
+import type { MergeProgress } from "./merge-progress";
 import { BuilderBadge } from "./builder-badge";
 import { BackButton } from "./back-button";
 import { useDialogDraft } from "./dialog-state";
@@ -210,7 +212,6 @@ import {
   readListPaneWidth,
 } from "./pane-layout";
 import { ProductBadge } from "./product-badge";
-import { SessionLink } from "./session-link";
 import { AgentSessionPanel } from "./agent-session-panel";
 import { AgentSessionConsole } from "./agent-session-console";
 import { currentDispatchForStatus, dispatchIssueLabelKey, itemProgressKeys } from "./dispatch-attention";
@@ -878,6 +879,7 @@ export function App() {
   });
   const products = productsQuery.data ?? bootstrapQuery.data?.products ?? [];
   const selectedProduct = products.find((product) => product.id === selectedProductId);
+  const mergeProgress = useMergeProgress(selectedProduct?.id ?? "");
   const selectedProductCanUseAi = productAllowsAi(selectedProduct);
   const selectedProductCanCapture = selectedProduct?.access?.canOperate === true;
   const hasAnyAiPermission = products.some(productAllowsAi);
@@ -1301,6 +1303,7 @@ export function App() {
               clearItemPage();
             }}
           />
+        {agentConsoleOpen && selectedProductId && <PendingMergeButton productId={selectedProductId} onSession={id=>selectAgentSession(id,true)} />}
         </div>
         {products.length > 0 && !agentConsoleOpen && (
           <button
@@ -1583,6 +1586,7 @@ export function App() {
                 <ItemRow
                   key={item.id}
                   item={item}
+                  mergeProgress={mergeProgress.items.get(item.key)}
                   canOperate={selectedProductCanCapture}
                   selected={item.key === selectedItemKey}
                   checked={selectedItemKeys.has(item.key)}
@@ -1854,6 +1858,7 @@ function StatusNavItem({ children, label, count, active, onClick }: { children: 
 
 function ItemRow({
   item,
+  mergeProgress,
   canOperate,
   sourceComponent,
   showAttachmentColumn,
@@ -1871,6 +1876,7 @@ function ItemRow({
   onStartWork,
 }: {
   item: WorkItem;
+  mergeProgress: MergeProgress | undefined;
   canOperate: boolean;
   sourceComponent: Component | undefined;
   showAttachmentColumn: boolean;
@@ -1966,6 +1972,7 @@ function ItemRow({
               <span className={`type-icon type-${item.type}`} role="img" aria-label={typeLabel(item.type)}><TypeIcon size={16} /></span>
               <code>{item.key}</code>
               <BuilderBadge name={item.builderName} needsReassignment={item.builderNeedsReassignment} />
+              <MergeProgressBadge state={mergeProgress} />
               {/* First of the badges, so the one that names the machine and
                   agent keeps its width when the line runs out. A failure calls
                   out that the item needs attention; a hand-off just says where
@@ -2915,7 +2922,7 @@ function DetailPane({
                 )}
               </div>
             )}
-            <ItemDeliveryPanel key={item.key} item={item} summarizedSessionId={jumpSessionId} dispatches={dispatchesQuery.data?.dispatches ?? []} dispatchesFailed={dispatchesQuery.isError} notificationsQuery={notificationsQuery} renderDispatch={dispatch => <DispatchRow dispatch={dispatch} itemKey={item.key} />} />
+            <ItemDeliveryPanel key={item.key} item={item} summarizedSessionId={jumpSessionId} dispatches={dispatchesQuery.data?.dispatches ?? []} dispatchesFailed={dispatchesQuery.isError} notificationsQuery={notificationsQuery} renderDispatch={dispatch => <DispatchRow dispatch={dispatch} itemKey={item.key} productId={item.productId} />} />
             {!readOnlySource && <CollaborationPanel key={`collaboration-${item.key}`} item={item} requestedAction={collaborationAction} onActionHandled={()=>setCollaborationAction(undefined)} onOpenItem={onOpenItem} />}
             {!readOnlySource && <ItemRelations item={item} onOpenItem={onOpenItem} />}
             {item.verificationReturn && <VerificationReturnCallout info={item.verificationReturn} />}
@@ -3125,7 +3132,7 @@ function DetailPane({
   );
 }
 
-function DispatchRow({ dispatch, itemKey }: { dispatch: Dispatch; itemKey: string }) {
+function DispatchRow({ dispatch, itemKey, productId }: { dispatch: Dispatch; itemKey: string; productId: string }) {
   const { formatTime, t } = useI18n();
   const agentKey = agentLabelKey(dispatch.agentKind);
   const modeKey = dispatchModeLabelKey(dispatch.agentKind, dispatch.mode);
@@ -3143,8 +3150,7 @@ function DispatchRow({ dispatch, itemKey }: { dispatch: Dispatch; itemKey: strin
         {dispatch.sessionName ? ` · ${dispatch.sessionName}` : ""}
       </small>
       {batch.length > 0 && <small className="dispatch-row-detail">{t("dispatchBatch", { keys: batch.join("、") })}</small>}
-      {dispatch.sessionUrl && <SessionLink url={dispatch.sessionUrl} />}
-      {dispatch.agentSessionId && <AgentSessionPanel sessionId={dispatch.agentSessionId} />}
+      {dispatch.agentSessionId && <AgentSessionPanel sessionId={dispatch.agentSessionId} productId={productId} />}
       {dispatch.error && <InlineError message={dispatch.error} />}
     </article>
   );
