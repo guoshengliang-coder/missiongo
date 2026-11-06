@@ -1,3 +1,4 @@
+import { PendingMergeButton } from "./merge-console";
 import { PRODUCT_ICON_URL } from "./branding.generated";
 import { MediaLightbox } from "./media-lightbox";
 import { AgentConsoleSearch } from "./agent-console-search";
@@ -1302,6 +1303,7 @@ export function App() {
             }}
           />
         </div>
+        {agentConsoleOpen && selectedProductId && <PendingMergeButton productId={selectedProductId} onSession={id=>selectAgentSession(id,true)} />}
         {products.length > 0 && !agentConsoleOpen && (
           <button
             type="button"
@@ -2915,7 +2917,7 @@ function DetailPane({
                 )}
               </div>
             )}
-            <ItemDeliveryPanel key={item.key} item={item} summarizedSessionId={jumpSessionId} dispatches={dispatchesQuery.data?.dispatches ?? []} dispatchesFailed={dispatchesQuery.isError} notificationsQuery={notificationsQuery} renderDispatch={dispatch => <DispatchRow dispatch={dispatch} itemKey={item.key} />} />
+            <ItemDeliveryPanel key={item.key} item={item} summarizedSessionId={jumpSessionId} dispatches={dispatchesQuery.data?.dispatches ?? []} dispatchesFailed={dispatchesQuery.isError} notificationsQuery={notificationsQuery} renderDispatch={dispatch => <DispatchRow dispatch={dispatch} itemKey={item.key} productId={item.productId} />} />
             {!readOnlySource && <CollaborationPanel key={`collaboration-${item.key}`} item={item} requestedAction={collaborationAction} onActionHandled={()=>setCollaborationAction(undefined)} onOpenItem={onOpenItem} />}
             {!readOnlySource && <ItemRelations item={item} onOpenItem={onOpenItem} />}
             {item.verificationReturn && <VerificationReturnCallout info={item.verificationReturn} />}
@@ -3125,7 +3127,7 @@ function DetailPane({
   );
 }
 
-function DispatchRow({ dispatch, itemKey }: { dispatch: Dispatch; itemKey: string }) {
+function DispatchRow({ dispatch, itemKey, productId }: { dispatch: Dispatch; itemKey: string; productId: string }) {
   const { formatTime, t } = useI18n();
   const agentKey = agentLabelKey(dispatch.agentKind);
   const modeKey = dispatchModeLabelKey(dispatch.agentKind, dispatch.mode);
@@ -3144,7 +3146,7 @@ function DispatchRow({ dispatch, itemKey }: { dispatch: Dispatch; itemKey: strin
       </small>
       {batch.length > 0 && <small className="dispatch-row-detail">{t("dispatchBatch", { keys: batch.join("、") })}</small>}
       {dispatch.sessionUrl && <SessionLink url={dispatch.sessionUrl} />}
-      {dispatch.agentSessionId && <AgentSessionPanel sessionId={dispatch.agentSessionId} />}
+      {dispatch.agentSessionId && <AgentSessionPanel sessionId={dispatch.agentSessionId} productId={productId} />}
       {dispatch.error && <InlineError message={dispatch.error} />}
     </article>
   );
