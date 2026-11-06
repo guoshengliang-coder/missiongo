@@ -1,6 +1,6 @@
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
-import { AgentPlanContent, planContinuationObserved, planTranscript } from "./agent-plan-content";
+import { AgentPlanContent, planContinuationObserved, planTranscript, repeatsSubmittedPlan } from "./agent-plan-content";
 import { AgentStopFeedback } from "./agent-stop-feedback.js";
 import { ChatAttachments } from "./chat-attachments";
 import type { ReactNode } from "react";
@@ -1141,6 +1141,8 @@ export function AgentSessionConsole({
                 )}
                 {planTranscript(visibleMessages, sessionQuery.data).map((message) => {
                   if (message === null) return <AgentPlanContent key="submitted-plan" session={sessionQuery.data} surface="console" />;
+                  const repeatsPlan = repeatsSubmittedPlan(message, sessionQuery.data);
+                  if (repeatsPlan && !message.questions?.length && !message.attachmentData?.length) return null;
                   const labelKey = messageLabelKey(message.role, selected.agentKind);
                   return (
                     <article key={message.id} data-agent-message-id={`${message.role}:${message.sourceId || message.id}`} className={`agent-console-message agent-console-message-${message.role}`}>
@@ -1148,7 +1150,7 @@ export function AgentSessionConsole({
                         {labelKey && <small>{t(labelKey)}</small>}
                         <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
                       </header>
-                      {message.text && (selected.agentSessionId && ["agent", "plan"].includes(message.role)
+                      {!repeatsPlan && message.text && (selected.agentSessionId && ["agent", "plan"].includes(message.role)
                         ? <AgentArtifactMarkdown text={message.text} sessionId={selected.agentSessionId} messageId={message.id} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />
                         : <MarkdownText>{message.text}</MarkdownText>)}
                       {message.attachmentData && selected.agentSessionId && <ChatAttachments sessionId={selected.agentSessionId} attachments={message.attachmentData} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />}

@@ -1,6 +1,6 @@
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
-import { AgentPlanContent, planTranscript } from "./agent-plan-content";
+import { AgentPlanContent, planTranscript, repeatsSubmittedPlan } from "./agent-plan-content";
 import { AgentStopFeedback } from "./agent-stop-feedback.js";
 import { useState, useEffect, useLayoutEffect, useRef, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -153,24 +153,28 @@ export function AgentSessionPanel({ sessionId }: { sessionId: string }) {
                 if (!history.error && event.currentTarget.scrollTop <= 48 && event.currentTarget.scrollHeight > event.currentTarget.clientHeight + 1) void history.loadMore();
               }}>
                 <AgentHistoryLoader history={history} />
-                {planTranscript(history.messages.filter((message) => !isWithdrawnCard(message)), session.data).map((message) => message === null
-                  ? <AgentPlanContent key="submitted-plan" session={session.data} surface="panel" /> : (
-                  <article key={message.id} data-agent-message-id={`${message.role}:${message.sourceId || message.id}`} className={`agent-session-message agent-session-message-${message.role}`}>
-                    <header className="agent-session-message-meta">
-                      <small>{messageLabel(message.role, session.data.agentKind, t)}</small>
-                      <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
-                    </header>
-                    {message.role === "user" ? <MarkdownText>{message.text}</MarkdownText> : <AgentArtifactMarkdown text={message.text} sessionId={sessionId} messageId={message.id} />}
-                    {message.questions && (
-                      <AgentSessionQuestions
-                        questions={message.questions}
-                        reply={reply}
-                        canReply={canReply && !message.id.startsWith("history:") && !pending && !send.isPending}
-                        onChange={setReply}
-                      />
-                    )}
-                  </article>
-                ))}
+                {planTranscript(history.messages.filter((message) => !isWithdrawnCard(message)), session.data).map((message) => {
+                  if (message === null) return <AgentPlanContent key="submitted-plan" session={session.data} surface="panel" />;
+                  const repeatsPlan = repeatsSubmittedPlan(message, session.data);
+                  if (repeatsPlan && !message.questions?.length) return null;
+                  return (
+                    <article key={message.id} data-agent-message-id={`${message.role}:${message.sourceId || message.id}`} className={`agent-session-message agent-session-message-${message.role}`}>
+                      <header className="agent-session-message-meta">
+                        <small>{messageLabel(message.role, session.data.agentKind, t)}</small>
+                        <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
+                      </header>
+                      {!repeatsPlan && (message.role === "user" ? <MarkdownText>{message.text}</MarkdownText> : <AgentArtifactMarkdown text={message.text} sessionId={sessionId} messageId={message.id} />)}
+                      {message.questions && (
+                        <AgentSessionQuestions
+                          questions={message.questions}
+                          reply={reply}
+                          canReply={canReply && !message.id.startsWith("history:") && !pending && !send.isPending}
+                          onChange={setReply}
+                        />
+                      )}
+                    </article>
+                  );
+                })}
               </div>
               <div className="agent-run-status" aria-label={t("agentRunFeedback")}>
                 <AgentOperationFeedback failures={feedback.failures} sessionId={sessionId} command={command} />
