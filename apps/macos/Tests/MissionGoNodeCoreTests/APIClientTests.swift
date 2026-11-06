@@ -636,7 +636,7 @@ final class APIClientTests: XCTestCase {
     func testHistoryRejectsAnOversizedSingleMessageWithAnExplicitPageError() async throws {
         StubURLProtocol.install { _, _ in .response(status: 204, body: "") }
         try await client().reportHistory(id: "page", result: AgentHistoryResult(messages: [
-            AgentSessionMessage(sourceId: "large", role: "plan", text: String(repeating: "x", count: 100_001))]))
+            AgentSessionMessage(sourceId: "large", role: "plan", text: String(repeating: "x", count: 4_000_001))]))
         let sent = try XCTUnwrap(StubURLProtocol.recorded.first)
         let object = try JSONSerialization.jsonObject(with: sent.body) as? [String: Any]
         XCTAssertEqual(object?["error"] as? String, "too_large")
@@ -774,32 +774,32 @@ final class APIClientTests: XCTestCase {
 
     func testShortenedRecentUploadCannotClaimCompleteHistory() throws {
         let report = AgentSessionReport(status: "idle", messages: [
-            AgentSessionMessage(sourceId: "large", role: "agent", text: String(repeating: "字", count: 100_050))
+            AgentSessionMessage(sourceId: "large", role: "agent", text: String(repeating: "字", count: 4_000_001))
         ]).reportingHistory(AgentHistoryMetadata(complete: true))
         let uploadable = try APIClient.uploadableSnapshot(report)
         XCTAssertEqual(uploadable.history?.complete, false)
-        XCTAssertEqual(uploadable.history?.error, "unavailable")
+        XCTAssertEqual(uploadable.history?.error, "too_large")
         XCTAssertTrue(uploadable.error?.hasPrefix("codex_history_limited:") == true)
     }
 
-    func testSnapshotUploadCapsMessageTextToTheServerContract() throws {
+    func testSnapshotUploadPreservesLongMessageText() throws {
         let uploadable = try APIClient.uploadableSnapshot(AgentSessionReport(status: "idle", messages: [
             AgentSessionMessage(sourceId: "m1", role: "user", text: String(repeating: "字", count: 100_050)),
         ]))
         XCTAssertEqual(uploadable.messages.count, 1)
-        // The cap is 100_000 UTF-16 code units, the unit the server's `.length` counts.
-        XCTAssertEqual(uploadable.messages[0].text.utf16.count, 100_000)
-        XCTAssertEqual(uploadable.messages[0].text, String(repeating: "字", count: 100_000))
+        // A message exceeding the former 100,000-unit limit remains intact.
+        XCTAssertEqual(uploadable.messages[0].text.utf16.count, 100_050)
+        XCTAssertEqual(uploadable.messages[0].text, String(repeating: "字", count: 100_050))
     }
 
-    func testSnapshotUploadCapCountsUTF16UnitsNotGraphemes() throws {
+    func testSnapshotUploadPreservesSurrogatePairsBeyondFormerLimit() throws {
         // One party popper is one grapheme cluster but two UTF-16 units.
         let uploadable = try APIClient.uploadableSnapshot(AgentSessionReport(status: "idle", messages: [
             AgentSessionMessage(sourceId: "m1", role: "agent", text: String(repeating: "🎉", count: 50_001)),
         ]))
-        XCTAssertEqual(uploadable.messages[0].text.utf16.count, 100_000)
-        // The cut lands on a whole character, never inside a surrogate pair.
-        XCTAssertEqual(uploadable.messages[0].text.count, 50_000)
+        XCTAssertEqual(uploadable.messages[0].text.utf16.count, 100_002)
+        // No truncation or surrogate-pair splitting occurs.
+        XCTAssertEqual(uploadable.messages[0].text.count, 50_001)
     }
 
     func testSnapshotUploadKeepsTheNewestMessagesWithinTheServerCountLimit() throws {

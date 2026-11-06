@@ -126,7 +126,7 @@ it.each(["codex", "opencode", "claude_code"] as const)("connects %s by exact nat
   expect(list[0]).not.toHaveProperty("dispatchId");
   report();
   expect(progress.getForAccount("owner", id)).toMatchObject({ nativeConnection: { state: "connected" }, replyable: true, status: "idle" });
-  expect(progress.getForAccount("owner", id).messages.map((message) => message.role)).toEqual(["agent", "user", "agent"]);
+  expect(progress.getForAccount("owner", id).messages.map((message) => message.role)).toEqual(["user", "agent"]);
   expect(store.getWorkItem(item.key).status).toBe("in_progress");
   expect(store.database.connection.prepare("SELECT COUNT(*) AS count FROM dispatches").get()).toMatchObject({ count: 0 });
 });
@@ -164,10 +164,10 @@ it("deduplicates changing transcripts, preserves omitted history and advances un
   const original = f.progress.getForAccount("owner", f.id).messages.at(-1)!.id;
   f.report({ messages: [{ sourceId: "agent-1", role: "agent", text: "Fixed and checked" }] });
   const detail = f.progress.getForAccount("owner", f.id);
-  expect(detail.messages).toHaveLength(3); expect(detail.messages.at(-1)!.id).toBe(original);
+  expect(detail.messages).toHaveLength(2); expect(detail.messages.at(-1)!.id).toBe(original);
   expect(f.progress.listForAccount("owner")[0]!.unread).toBe(true);
   f.report({ status: "unavailable", messages: [], error: "Transport unavailable" });
-  expect(f.progress.getForAccount("owner", f.id).messages).toHaveLength(3);
+  expect(f.progress.getForAccount("owner", f.id).messages).toHaveLength(2);
   expect(f.native.overlay("owner", f.id).replyable).toBe(false);
 });
 
@@ -455,4 +455,15 @@ it("rejects policy-disabled full access through the external settings API too",(
  const f=settingsFixture("codex");
  expect(()=>f.native.requestSettings("owner",f.id,{mode:"full-access"})).toThrow(/managed_workspace_required/);
  expect(f.native.overlay("owner",f.id).settings.pending).toBeUndefined();
+});
+
+it("preserves long native text and keeps progress reports out of the transcript", () => {
+  const f = fixture("codex");
+  f.native.connect("owner", f.id, "node");
+  const text = "  " + "正文🎉".repeat(60_000) + "\n";
+  f.report({ messages: [{ sourceId: "long", role: "agent", text }] });
+  const detail = f.progress.getForAccount("owner", f.id);
+  expect(detail.messages.find(message => message.sourceId === "long")?.text).toBe(text);
+  expect(detail.progressReports?.length).toBeGreaterThan(0);
+  expect(detail.messages.every(message => !detail.progressReports?.some(report => report.id === message.id))).toBe(true);
 });

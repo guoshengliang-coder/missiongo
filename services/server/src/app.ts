@@ -335,7 +335,7 @@ const BULK_TRANSITION_LIMIT = 50;
 
 /**
  * AND-181: a session snapshot the store's contract accepts (2_000 messages of
- * up to 100_000 characters) can easily exceed Fastify's 1 MiB default
+ * up to 4_000_000 characters) can easily exceed Fastify's 1 MiB default
  * bodyLimit. The 413 it answered with is indistinguishable from a network blip
  * to the node, so a large session silently stopped syncing. The route keeps a
  * bound of its own -- far above any real mirrored conversation, well under the
@@ -2708,7 +2708,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       catch { agentHistory.reject(job.id); return false; }
     }) };
   });
-  app.post("/api/v1/node/agent-history/:pageId", { bodyLimit: 2 * 1024 * 1024 }, async (request, reply) => {
+  app.post("/api/v1/node/agent-history/:pageId", { bodyLimit: 32 * 1024 * 1024 }, async (request, reply) => {
     const node = requireNode(request);
     const { pageId } = request.params as { pageId: string };
     const job = agentHistory.authorizeJob(node.accountId, node.nodeId, pageId);

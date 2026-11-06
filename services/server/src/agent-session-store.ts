@@ -104,6 +104,7 @@ export interface ManagedSessionBinding {
   id: string; runId: string; stageId: string; generation: number; role: string; stopRequested: boolean; state: string; ownershipHeld: boolean;
 }
 export interface AgentSessionSnapshot {
+  readonly progressReports?: ReadonlyArray<{ id: string; text: string; occurredAt: string }>;
   readonly sessionPurpose?: "integration";
   readonly productId?: string;
   readonly initialText?: string;
@@ -403,17 +404,17 @@ interface AttentionRow {
   dismissed_by_account_id: string | null;
 }
 
-const MAX_MESSAGE_LENGTH = 100_000;
+const MAX_MESSAGE_LENGTH = 4_000_000;
 const MAX_COMMAND_LENGTH = 20_000;
 const MAX_MESSAGES_PER_SNAPSHOT = 2_000;
 const MAX_ACTIVITIES_PER_SNAPSHOT = 100;
 const SOURCE_ARCHIVE_POLL_MS = 30_000;
 
-function requiredText(value: string, field: string, maximum: number): string {
+function requiredText(value: string, field: string, maximum: number, preserve = false): string {
   const text = value.trim();
   if (!text) throw invalidInput(`${field} is required.`);
-  if (text.length > maximum) throw invalidInput(`${field} must be ${maximum} characters or fewer.`);
-  return text;
+  if ((preserve ? value : text).length > maximum) throw invalidInput(`${field} must be ${maximum} characters or fewer.`);
+  return preserve ? value : text;
 }
 
 function attentionMessageHash(
@@ -1707,7 +1708,7 @@ export class AgentSessionStore {
       turnId: message.turnId?.slice(0, 200) || null,
       role: message.role,
       phase: message.phase?.slice(0, 50) || null,
-      text: requiredText(message.text, "message text", MAX_MESSAGE_LENGTH),
+      text: requiredText(message.text, "message text", MAX_MESSAGE_LENGTH, true),
       questionsJson: message.questions ? JSON.stringify(message.questions) : null,
       sourceOccurredAt: normalizedSourceTimestamp(message.occurredAt, now, "message occurredAt"),
       position,

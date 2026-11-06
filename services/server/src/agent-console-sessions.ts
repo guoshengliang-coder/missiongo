@@ -97,17 +97,19 @@ export class AgentConsoleSessions {
     group: AgentSessionListItem[] = this.members(accountId, id)): AgentSessionSnapshot {
     if (group.length === 1) return primary;
     const messages = new Map<string, AgentSessionSnapshot["messages"][number]>();
+    const reports = new Map<string, NonNullable<AgentSessionSnapshot["progressReports"]>[number]>();
     // The requested control channel wins when both mirrors carry the same native message.
     const rows = [...group].sort((a, b) => Number(b.id === id) - Number(a.id === id));
     for (const row of rows) {
       const snapshot = row.id === id ? primary : row.source === "external"
         ? this.external.getForAccount(accountId, row.id) : this.dispatch.getForAccount(accountId, row.id);
+      for (const report of snapshot.progressReports ?? []) reports.set(report.id, report);
       for (const message of snapshot.messages) {
         const key = JSON.stringify([message.role, message.sourceId ?? message.id]);
         if (!messages.has(key)) messages.set(key, message);
       }
     }
-    return { ...primary, updatedAt: group.map((row) => row.updatedAt).sort().at(-1)!,
+    return { ...primary, progressReports: [...reports.values()].sort((a, b) => a.occurredAt.localeCompare(b.occurredAt)), updatedAt: group.map((row) => row.updatedAt).sort().at(-1)!,
       messages: [...messages.values()].sort((a, b) => (a.occurredAt ?? "").localeCompare(b.occurredAt ?? "")) };
   }
 

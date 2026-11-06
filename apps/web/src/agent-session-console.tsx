@@ -1,3 +1,4 @@
+import { AgentProgressReports } from "./agent-progress-reports";
 import { permissionReplyText } from "./permission-presentation";
 import { DeliveryCards, MergeProgressBadge, useMergeProgress } from "./merge-console";
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
@@ -1208,6 +1209,7 @@ export function AgentSessionConsole({
                     <strong>{t(dispatchActivityLabelKey(selected))}</strong>
                   </div>
                 )}
+                <AgentProgressReports session={sessionQuery.data} />
                 {planMessages.messages.map((message) => {
                   const labelKey = messageLabelKey(message.role, selected.agentKind);
                   return (

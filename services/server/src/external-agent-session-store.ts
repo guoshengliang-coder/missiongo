@@ -212,8 +212,9 @@ export class ExternalAgentSessionStore {
       updatedAt: row.updated_at, ...(row.archived_at ? { archivedAt: row.archived_at, archivedSource: "missiongo" as const } : {}),
       activities: [], turnState: {},
       ...native,
-      messages: [...reports.map((report) => ({ id: report.id, sourceId: report.id, role: "agent" as const,
-        text: `${report.item_key} · ${report.text ?? report.status}`, occurredAt: report.created_at })), ...nativeMessages, ...(proposal && !reports.length && !nativeMessages.length ? [{id:`plan:${proposal.revision}`,sourceId:`plan:${proposal.revision}`,role:"plan" as const,text:proposal.plan,occurredAt:row.updated_at}] : [])],
+      progressReports: reports.map(report => ({ id: report.id,
+        text: `${report.item_key} · ${report.text ?? report.status}`, occurredAt: report.created_at })),
+      messages: [...nativeMessages, ...(proposal && !reports.length && !nativeMessages.length ? [{id:`plan:${proposal.revision}`,sourceId:`plan:${proposal.revision}`,role:"plan" as const,text:proposal.plan,occurredAt:row.updated_at}] : [])],
     };
   }
 

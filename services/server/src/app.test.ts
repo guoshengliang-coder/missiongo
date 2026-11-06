@@ -1177,8 +1177,9 @@ describe("Commenting over MCP", () => {
     expect(listed[0].dispatchId).toBeUndefined();
     expect(listed[0].nodeConnectionState).toBeUndefined();
     const detail = (await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${sessionId}`, headers })).json();
-    expect(detail.messages).toHaveLength(3);
-    expect(detail.messages[1].text).toContain("Fix verified locally");
+    expect(detail.messages).toHaveLength(0);
+    expect(detail.progressReports).toHaveLength(3);
+    expect(detail.progressReports[1].text).toContain("Fix verified locally");
     expect(detail).toMatchObject({ canReply: false, canAttach: false, canResolveDelivery: false });
     expect(app.missionGoStore.getWorkItem("HG-1").status).toBe("in_progress");
     for (const [path, payload] of [["commands", { text: "Do not execute" }], ["settings", { mode: "auto" }]] as const) {
@@ -1217,7 +1218,7 @@ describe("Commenting over MCP", () => {
     expect((await post(snapshot)).statusCode).toBe(204);
     const detail = (await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${id}`, headers })).json();
     expect(detail).toMatchObject({ canReply: true, canAttach: false, nativeConnection: { state: "connected" } });
-    expect(detail.messages.map((message: { role: string }) => message.role)).toEqual(["agent", "user", "agent"]);
+    expect(detail.messages.map((message: { role: string }) => message.role)).toEqual(["user", "agent"]);
     const changeSettings = (payload: object) => app.inject({ method: "PATCH", url: `/api/v1/agent-sessions/${id}/settings`, headers, payload });
     expect((await changeSettings({ mode: "plan" })).statusCode).toBe(409); // old node
     expect((await post({ ...snapshot, settingsSupport: ["unknown"] })).statusCode).toBe(400);
@@ -1238,7 +1239,7 @@ describe("Commenting over MCP", () => {
     expect((await app.inject({ method: "POST", url: `/api/v1/agent-sessions/${id}/commands/${command.id}/cancel`, headers })).statusCode).toBe(409);
     const delivered = { ...snapshot, messages: [...snapshot.messages, { sourceId: command.id, role: "user", text: command.text }], commandId: command.id, commandStatus: "delivered" };
     expect((await post(delivered)).statusCode).toBe(204); expect((await post(delivered)).statusCode).toBe(204);
-    expect((await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${id}`, headers })).json()).toMatchObject({ command: { status: "delivered" }, messages: [{}, {}, {}, {}] });
+    expect((await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${id}`, headers })).json()).toMatchObject({ command: { status: "delivered" }, messages: [{}, {}, {}], progressReports: [{}] });
     // An old node stays text-only. Only the updated, exact bound worker may receive originals.
     const upload = (name: string, bytes = Buffer.from("reference"), h = headers) => app.inject({ method: "POST",
       url: `/api/v1/agent-sessions/${id}/attachments`, headers: { ...h, "content-type": "application/octet-stream",
@@ -1380,7 +1381,8 @@ describe("Commenting over MCP", () => {
       const detail = await f.app.inject({ method: "GET", url: `/api/v1/agent-sessions/${id}`, headers: f.headers });
       expect(detail.statusCode).toBe(200);
       expect(detail.json().messages.map((message: { text: string }) => message.text))
-        .toEqual(expect.arrayContaining(["Native answer", "HG-1 · Progress needs a reply"]));
+        .toEqual(["Native answer"]);
+      expect(detail.json().progressReports.map((report: { text: string }) => report.text)).toContain("HG-1 · Progress needs a reply");
     }
     const reply = await f.app.inject({ method: "POST", url: `/api/v1/agent-sessions/${f.sessionId}/commands`, headers: f.headers, payload: { text: "Continue" } });
     expect(reply.statusCode).toBe(201);

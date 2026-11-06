@@ -419,7 +419,7 @@ public struct ClaudeStreamSnapshot: Sendable {
                 return block["text"] as? String
             }.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
                 .joined(separator: "\n")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+
             let questions = Self.questions(content)
             let nativePlan = content.first { $0["type"] as? String == "tool_use" && $0["name"] as? String == "ExitPlanMode" }
             let planText = (nativePlan?["input"] as? [String: Any])?["plan"] as? String
@@ -716,7 +716,7 @@ public struct ClaudeStreamSnapshot: Sendable {
             state.messages[index] = message
         } else {
             state.messages.append(message)
-            if state.messages.count > 2_000 { state.messages.removeFirst(state.messages.count - 2_000) }
+
         }
         if message.role == "user" || message.questions?.isEmpty == false {
             state.messages = AgentSessionAnswerTrace.markingAnswered(state.messages)
@@ -863,13 +863,13 @@ public struct ClaudeStreamSnapshot: Sendable {
     }
 
     private static func textContent(_ value: Any?) -> String? {
-        if let text = value as? String { return text.trimmingCharacters(in: .whitespacesAndNewlines) }
+        if let text = value as? String { return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text }
         guard let blocks = value as? [[String: Any]] else { return nil }
         let text = blocks.compactMap { block -> String? in
             guard block["type"] as? String == "text" else { return nil }
             return block["text"] as? String
-        }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? nil : text
+        }.joined(separator: "\n")
+        return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text
     }
 
     private static func questions(_ content: [[String: Any]]) -> [AgentSessionQuestion] {
