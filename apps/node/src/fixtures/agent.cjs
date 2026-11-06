@@ -43,8 +43,13 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       } });
       if (message.params.input[0].text === "approval requested") emit({ id: "native-approval", method: "item/commandExecution/requestApproval",
         params: { threadId: ref, turnId: turn.id, command: "echo test", availableDecisions: ["accept", "decline"] } });
+      if (message.params.input[0].text.includes("question")) emit({ id: "native-question", method: "item/tool/requestUserInput",
+        params: { threadId: ref, turnId: turn.id, questions: [{ id: "q-1", question: "选择产品偏好",
+          options: [{ label: "方案 A" }, { label: "方案 B" }] }] } });
     } else if (message.id === "native-approval" && message.result) {
       turn.items.push({ id: "decision", type: "agentMessage", text: message.result.decision });
+    } else if (message.id === "native-question" && message.result) {
+      turn.items.push({ id: "answered", type: "agentMessage", text: `answered:${JSON.stringify(message.result)}` });
     } else if (message.id) emit({ id: message.id, result: {} });
   } else if (message.type === "control_request") {
     const respond = () => {

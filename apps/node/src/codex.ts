@@ -88,10 +88,12 @@ export class CodexAdapter implements Adapter {
     const p = object(event.params);
     const results = new Map<string, unknown>();
     const options: NonNullable<Approval["options"]> = [];
+    let requestKind: "question" | "permission" | "confirmation" | undefined;
     const add = (choice: string, kind: string, result: unknown, label?: string) => {
       options.push({ id: choice, kind, ...(label ? { label } : {}) }); results.set(choice, result);
     };
     if (event.method === "item/commandExecution/requestApproval" || event.method === "item/fileChange/requestApproval") {
+      requestKind = "permission";
       const offered = p.availableDecisions ?? ["accept", "acceptForSession", "decline", "cancel"];
       if (Array.isArray(offered)) for (const choice of offered) {
         if (["accept", "acceptForSession", "decline", "cancel"].includes(choice) && !(p.kind === "humanCommand" && choice === "acceptForSession")) {
@@ -99,9 +101,11 @@ export class CodexAdapter implements Adapter {
         }
       }
     } else if (event.method === "item/permissions/requestApproval") {
+      requestKind = "permission";
       add("accept", "turn", { permissions: p.permissions, scope: "turn" });
       add("decline", "decline", { permissions: {}, scope: "turn" });
     } else if (["item/tool/requestUserInput", "tool/requestUserInput"].includes(event.method)) {
+      requestKind = "question";
       const question = p.questions?.[0];
       if (p.questions?.length === 1 && !question.isSecret && question.id) {
         for (const [i, choice] of (question.options ?? []).entries()) {
@@ -109,6 +113,7 @@ export class CodexAdapter implements Adapter {
         }
       }
     } else if (event.method === "mcpServer/elicitation/request") {
+      requestKind = "confirmation";
       const schema = p.requestedSchema;
       if (["form", "openai/form"].includes(p.mode) && schema?.type === "object"
         && (schema.properties === undefined || (schema.properties && typeof schema.properties === "object" && !Array.isArray(schema.properties)))
@@ -121,7 +126,8 @@ export class CodexAdapter implements Adapter {
     const action = p.command ?? p.grantRoot ?? p.questions?.[0]?.question ?? p.message ?? JSON.stringify(p.permissions ?? {});
     this.pending.set(approvalId, { rpcId: event.id, results,
       snapshot: { id: approvalId, kind: "manual", status: options.length && String(action).length <= 4000 ? "pending" : "unavailable",
-        action: String(action).slice(0, 4000), turnId: p.turnId ?? "thread-scoped", startedAtMs: Date.now(), options } });
+        action: String(action).slice(0, 4000), turnId: p.turnId ?? "thread-scoped", startedAtMs: Date.now(),
+        ...(requestKind ? { requestKind } : {}), options } });
   }
   async start(prompt: string): Promise<string> {
     this.job = { ...this.job, repoPath: realpathSync(this.job.repoPath) };
@@ -191,7 +197,8 @@ export class CodexAdapter implements Adapter {
     };
     if (await observe().catch(() => "unknown") === "idle") return { status: "idle", turnActive: false, messages: [] };
     for (const [key, request] of this.pending) if (request.snapshot.turnId === target) {
-      this.rpc.write({ id: request.rpcId, result: request.results.get("decline") ?? { decision: "decline" } });
+      this.rpc.write({ id: request.rpcId, result: request.results.get("decline")
+        ?? (request.snapshot.requestKind === "question" ? { answers: {} } : { decision: "decline" }) });
       this.pending.delete(key);
     }
     let failure: unknown;
@@ -213,7 +220,9 @@ export class CodexAdapter implements Adapter {
     const request = this.pending.get(decision.id);
     if (!request || request.snapshot.status !== "pending" || !request.results.has(decision.choice)) throw new Error("Stale or unsupported approval choice");
     this.rpc.write({ id: request.rpcId, result: request.results.get(decision.choice) });
-    request.snapshot.status = ["decline", "cancel"].includes(decision.choice) ? "denied" : "approved";
+    // An answered question resolves the prompt; it is not a permission grant (AND-408).
+    request.snapshot.status = ["decline", "cancel"].includes(decision.choice) ? "denied"
+      : request.snapshot.requestKind === "question" ? "resolved" : "approved";
     this.lastApproval = request.snapshot; this.pending.delete(decision.id);
   }
   async settings(settings: NonNullable<Session["desiredSettings"]>): Promise<void> {

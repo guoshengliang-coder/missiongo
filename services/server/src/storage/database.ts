@@ -2442,5 +2442,16 @@ export class MissionGoDatabase {
       });
     }
 
+    // AND-408: distinguish Codex questions, technical permissions and generic
+    // confirmations. Existing rows stay NULL and read as neutral.
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611060654").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611060654").get()) return;
+        this.connection.exec(`ALTER TABLE agent_session_approvals ADD COLUMN request_kind TEXT
+          CHECK(request_kind IS NULL OR request_kind IN ('question','permission','confirmation'));`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202611060654,new Date().toISOString());
+      });
+    }
+
   }
 }

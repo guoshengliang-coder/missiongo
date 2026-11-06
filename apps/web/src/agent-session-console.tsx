@@ -38,6 +38,9 @@ import {
   activityLabelKey,
   dispatchActivityLabelKey,
   approvalNeedsAction,
+  approvalTitleKey,
+  runWaitingLabelKey,
+  waitingStatusLabelKey,
   planApprovalStatusKey,
   agentChatMessages,
   projectConversationMessages,
@@ -152,7 +155,14 @@ function agentLabel(session: AgentSessionSummary, t: ReturnType<typeof useI18n>[
 function attentionLabel(session: AgentSessionSummary, t: ReturnType<typeof useI18n>["t"]): string | null {
   if (!session.needsAttention) return null;
   if (session.attention.kind === "answer") return t("agentAttentionAnswer");
-  if (session.attention.kind === "approval") return t("agentAttentionApproval");
+  // A source approval snapshot is a permission, a confirmation or an
+  // unrecognizable legacy request; only a plan wait reads as 待批准 (AND-408).
+  if (session.attention.kind === "approval") {
+    if (session.approval?.requestKind === "permission") return t("agentAttentionPermission");
+    if (session.approval?.requestKind === "confirmation") return t("agentAttentionConfirmation");
+    if (session.approval) return t("agentAttentionPending");
+    return t("agentAttentionApproval");
+  }
   if (session.attention.kind === "action") return t("agentAttentionAction");
   if (session.attention.kind === "instruction") return t("agentAttentionInstruction");
   return t("agentAttentionUncertain");
@@ -1010,7 +1020,7 @@ export function AgentSessionConsole({
             const rowWaiting = ["claude_code", "codex", "opencode"].includes(session.agentKind) && ["active", "idle"].includes(rowStatus)
               && (session.command?.status !== "queued" || session.agentKind === "codex") && session.turnState?.waitingForInput === true;
             const rowLabel = session.source === "external" && !session.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(session)) : rowBackground ? t("agentSessionBackgroundStatus")
-              : rowWaiting ? t(session.agentKind === "codex" ? "agentSessionWaitingApprovalStatus" : "agentSessionWaitingStatus") : statusLabel(rowStatus, t);
+              : rowWaiting ? t(waitingStatusLabelKey(session)) : statusLabel(rowStatus, t);
             return (
               <div
                 key={session.id}
@@ -1334,12 +1344,12 @@ export function AgentSessionConsole({
                   </section>
                 )}
                 {approval && showPermissionApproval && (
-                  <section className="agent-console-attention-banner agent-console-approval" role="alert" aria-label={t("agentApprovalTitle") }>
+                  <section className="agent-console-attention-banner agent-console-approval" role="alert" aria-label={t(approvalTitleKey(approval)) }>
                     <header>
                       <BellRing size={16} />
-                      <strong>{approval.kind === "auto" ? t("agentApprovalAutoTitle") : t("agentApprovalTitle")}</strong>
+                      <strong>{t(approvalTitleKey(approval))}</strong>
                       <span>{approval.status === "inProgress" ? t("agentApprovalReviewing")
-                      : approval.status === "pending" ? t("agentApprovalWaiting")
+                      : approval.status === "pending" ? t(approval.requestKind === "question" ? "agentQuestionWaiting" : "agentApprovalWaiting")
                         : approval.status === "denied" ? t("agentApprovalDenied")
                           : approval.status === "approved" ? t("agentApprovalApproved")
                             : approval.status === "reconnecting" ? t("agentApprovalReconnecting")
@@ -1401,7 +1411,7 @@ export function AgentSessionConsole({
                     {["stalled", "unavailable", "failed"].includes(sessionStatus) && <p className="agent-run-warning" role="alert">{activityText}</p>}
                     <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={visualStatus} />} actions={stopAction}
                       label={selected.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected))
-                        : agentWaiting ? t(selected.agentKind === "codex" ? "agentRunApproval" : "agentRunWaiting", { agent: agentName })
+                        : agentWaiting ? t(runWaitingLabelKey({ agentKind: selected.agentKind, approval }), { agent: agentName })
                           : claudeBackgroundOnly ? t("agentRunBackground") : sessionStatus === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(sessionStatus, t)}>
                       {!["stalled", "unavailable", "failed"].includes(sessionStatus) && <p>{statusDetail}</p>}
                       {outgoing && ["queued", "delivering", "delivered"].includes(outgoing.status) && <p>

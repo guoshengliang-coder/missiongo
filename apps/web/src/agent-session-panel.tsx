@@ -10,7 +10,7 @@ import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, SessionStatusI
 import { MarkdownText } from "./markdown-text";
 import { AgentArtifactMarkdown } from "./agent-artifact-viewer";
 import { api } from "./api";
-import { activityLabelKey, agentSessionDetailRefetchInterval, formatAgentMessageTime, isWithdrawnCard, replyBlockedLabelKey, sessionInlineError, sessionStatusDetail } from "./agent-session-view";
+import { activityLabelKey, agentSessionDetailRefetchInterval, formatAgentMessageTime, isWithdrawnCard, replyBlockedLabelKey, runWaitingLabelKey, sessionInlineError, sessionStatusDetail } from "./agent-session-view";
 import { AgentSessionQuestions } from "./agent-session-questions";
 import { useI18n } from "./i18n";
 import { localizedErrorText } from "./error-text";
@@ -183,7 +183,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                 <AgentStopFeedback stop={session.data.stopCommand ?? (command?.kind === "interrupt" ? command : undefined)}
                   latestCommand={command} turnActive={session.data.turnState?.turnActive ?? false} backgroundRunning={session.data.activities.length > 0} />
               <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={visualStatus} />} label={waiting
-                ? t(session.data.agentKind === "codex" ? "agentRunApproval" : "agentRunWaiting", { agent: agentName })
+                ? t(runWaitingLabelKey(session.data), { agent: agentName })
                 : backgroundOnly ? t("agentRunBackground") : session.data.status === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(session.data.status, t)}>
                 <p>{statusDetail}</p>
                 {session.data.activities.length > 0 && (

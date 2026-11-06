@@ -54,8 +54,10 @@ struct CodexApprovalRequest {
                 }
             }
         }
+        var requestKind: String?
         switch method {
         case "item/commandExecution/requestApproval":
+            requestKind = "permission"
             action = params["command"] as? String ?? reason ?? "执行命令"
             // Honor an explicit list, including an empty list. Older servers
             // omit it; their documented command decisions remain supported.
@@ -69,11 +71,13 @@ struct CodexApprovalRequest {
             }
             for (index, decision) in decisions.enumerated() { commandDecision(decision, index: index) }
         case "item/fileChange/requestApproval":
+            requestKind = "permission"
             action = params["grantRoot"] as? String ?? reason ?? "修改文件"
             for (index, decision) in ["accept", "acceptForSession", "decline", "cancel"].enumerated() {
                 commandDecision(decision, index: index)
             }
         case "item/permissions/requestApproval":
+            requestKind = "permission"
             let data = try? JSONSerialization.data(withJSONObject: params["permissions"] ?? [:], options: [.sortedKeys])
             action = data.flatMap { String(data: $0, encoding: .utf8) } ?? "申请额外权限"
             let permissions = params["permissions"] as? [String: Any] ?? [:]
@@ -81,6 +85,7 @@ struct CodexApprovalRequest {
             add("acceptForSession", "session", ["permissions": permissions, "scope": "session"])
             add("decline", "decline", ["permissions": [String: Any](), "scope": "turn"])
         case "mcpServer/elicitation/request":
+            requestKind = "confirmation"
             let server = params["serverName"] as? String ?? "MCP"
             action = "\(server)：\(params["message"] as? String ?? "请求确认")"
             // Empty confirmation forms support only the persistence lifetimes
@@ -117,6 +122,7 @@ struct CodexApprovalRequest {
         case "item/tool/requestUserInput", "tool/requestUserInput":
             // Older app approvals use a closed question instead of elicitation.
             // Preserve every offered label and return the exact native answer.
+            requestKind = "question"
             let questions = params["questions"] as? [[String: Any]] ?? []
             let question = questions.first ?? [:]
             action = question["question"] as? String ?? "请求确认"
@@ -154,7 +160,7 @@ struct CodexApprovalRequest {
         snapshot = CodexApprovalSnapshot(id: UUID().uuidString, kind: "manual",
             status: supported ? "pending" : "unavailable", turnId: turnId,
             action: String(action.prefix(4_000)), reason: reason.map { String($0.prefix(2_000)) },
-            startedAtMs: timestamp, options: options)
+            startedAtMs: timestamp, requestKind: requestKind, options: options)
     }
 
     func result(decision: String) -> [String: Any] {
@@ -177,6 +183,6 @@ struct CodexApprovalRequest {
     func ended(_ status: String, reason: String? = nil) -> CodexApprovalSnapshot {
         CodexApprovalSnapshot(id: snapshot.id, kind: "manual", status: status,
             turnId: snapshot.turnId, action: snapshot.action, reason: reason ?? snapshot.reason,
-            startedAtMs: snapshot.startedAtMs, options: snapshot.options)
+            startedAtMs: snapshot.startedAtMs, requestKind: snapshot.requestKind, options: snapshot.options)
     }
 }
