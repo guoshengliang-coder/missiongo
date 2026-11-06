@@ -1721,15 +1721,55 @@ export class MissionGoStore {
     });
   }
 
+  /** Resolve append-only evidence for precisely the current development event and round. */
+  getDevelopmentEvidence(itemKey: string) {
+    const timeline = this.getTimeline(itemKey).filter(event => !event.historySourceKey);
+    const handover = [...timeline].reverse().find(event => event.eventType === "status_changed" && event.toStatus === "development_complete");
+    let completion: ReturnType<typeof normalizeCompletion> | undefined;
+    try { completion = normalizeCompletion(handover?.payload); } catch { /* Missing evidence is explicit. */ }
+    const round = deliveryRound(this.database, this.getWorkItem(itemKey).id);
+    for (const event of timeline) {
+      if (event.eventType !== "delivery_evidence_added" || event.payload.developmentEventId !== handover?.id || event.payload.roundKey !== round) continue;
+      completion = normalizeCompletion(event.payload);
+    }
+    return { handover, completion, roundKey: round };
+  }
+
+  /** Only the frozen batch reconciliation domain calls this; no generic field-writing API. */
+  supplementDevelopmentEvidence(input: {itemKey:string;accountId:string;batchId:string;requestId:string;
+    completion: ReturnType<typeof normalizeCompletion>; requiredArtifacts:string[];noReleaseReason?:string}) {
+    this.assertWorkItemWritable(input.itemKey);
+    const item = this.getWorkItem(input.itemKey), resolved = this.getDevelopmentEvidence(item.key);
+    if (item.status !== "development_complete" || !resolved.handover || !resolved.roundKey
+      || resolved.handover.payload.roundKey !== resolved.roundKey) throw conflict("delivery_evidence_changed", "开发事件或处理轮次已变化，不能补入旧交付证据。");
+    const completion = normalizeCompletion({completion:input.completion});
+    const scope = this.getDevelopmentReleaseDecision(item.key);
+    if (resolved.completion && !sameCompletion(resolved.completion, completion)
+      || scope.requiredArtifacts !== null && JSON.stringify([...scope.requiredArtifacts].sort()) !== JSON.stringify([...input.requiredArtifacts].sort())
+      || scope.noReleaseReason && scope.noReleaseReason !== input.noReleaseReason) throw conflict("delivery_evidence_conflict", "已有交付依据或发布范围冲突，请人工核对。");
+    if (resolved.completion && scope.requiredArtifacts !== null) return;
+    if (new Set(input.requiredArtifacts).size !== input.requiredArtifacts.length || input.requiredArtifacts.length > MAX_RELEASE_ARTIFACTS
+      || input.requiredArtifacts.some(a => !isReleaseArtifactId(a)) || (!input.requiredArtifacts.length && !input.noReleaseReason?.trim())) throw invalidInput("Explicit valid release scope required.");
+    const now = new Date().toISOString();
+    this.insertEvent(item.id,"delivery_evidence_added","agent",null,null,{
+      ...completionPayload(completion),requiredArtifacts:[...input.requiredArtifacts].sort(),...(input.noReleaseReason?{noReleaseReason:input.noReleaseReason}:{}),
+      developmentEventId:resolved.handover.id,roundKey:resolved.roundKey,batchId:input.batchId,requestId:input.requestId,
+    },now,{accountId:input.accountId});
+    this.database.connection.prepare("UPDATE work_items SET revision=revision+1,updated_at=? WHERE id=?").run(now,item.id);
+    this.recordProductReleaseArtifacts(item.productId,input.requiredArtifacts);
+  }
+
   /** Read the task scope, including corrections made after development completion. */
   getDevelopmentReleaseScope(itemKey: string): readonly string[] | null {
     return this.getDevelopmentReleaseDecision(itemKey).requiredArtifacts;
   }
 
   getDevelopmentReleaseDecision(itemKey: string): { requiredArtifacts: readonly string[] | null; noReleaseReason?: string } {
+    const evidence = this.getDevelopmentEvidence(itemKey);
     for (const event of [...this.getTimeline(itemKey)].reverse()) {
       if (event.historySourceKey) continue;
-      if (event.eventType === "handover_scope_confirmed"
+      if (event.eventType === "delivery_evidence_added" && (event.payload.developmentEventId !== evidence.handover?.id || event.payload.roundKey !== evidence.roundKey)) continue;
+      if (event.eventType === "delivery_evidence_added" || event.eventType === "handover_scope_confirmed"
         || event.eventType === "status_changed" && event.toStatus === "development_complete") {
         const scope = event.payload.requiredArtifacts;
         return {
@@ -1768,7 +1808,8 @@ export class MissionGoStore {
         .find((event) => !event.historySourceKey && event.eventType === "status_changed" && event.toStatus === "development_complete");
       const required = this.getDevelopmentReleaseScope(item.item_key);
       const releases = input.releases;
-      if (!handover || !sameCompletion(normalizeCompletion(handover.payload), completion) || !Array.isArray(required) || required.length === 0
+      const recordedCompletion = this.getDevelopmentEvidence(item.item_key).completion;
+      if (!handover || !recordedCompletion || !sameCompletion(recordedCompletion, completion) || !Array.isArray(required) || required.length === 0
         || releases.length !== required.length
         || new Set(releases.map((release) => release.artifact)).size !== releases.length
         || releases.some((release) => !isReleaseArtifactId(release.artifact) || !required.includes(release.artifact)

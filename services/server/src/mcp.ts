@@ -1,3 +1,4 @@
+import { reconciliationActionSchema, combinedValidationSchema } from "./merge-reconciliation.js";
 import { integrationActionSchema } from "./merge-integration.js";
 import { MergeDeliveries, deliverySchema, mergeEvidenceSchema } from "./merge-deliveries.js";
 import { AgentHandoffs } from "./agent-handoffs.js";
@@ -127,7 +128,7 @@ function accountAccess(ctx: ServerContext): McpAccountAccess {
  */
 export const WRITE_TOOLS_BY_TIER: Readonly<Record<McpWriteTier, readonly string[]>> = {
   none: [],
-  comments: ["propose_merge_delivery", "refresh_merge_delivery", "report_merge_batch", "finish_merge_batch", "record_merge_integration", "prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "request_plan_approval", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "submit_release_batch", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
+  comments: ["request_merge_reconciliation", "apply_merge_reconciliation", "record_merge_combined_validation", "propose_merge_delivery", "refresh_merge_delivery", "report_merge_batch", "finish_merge_batch", "record_merge_integration", "prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "request_plan_approval", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "submit_release_batch", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
 };
 
 /**
@@ -324,6 +325,7 @@ export function createMissionGoMcpServer(
           canCreateItems: writeTools.includes("create_item"),
           supportsConversationAuthorization: true,
           supportsMergeBatches: true,
+          supportsMergeReconciliation: true,
           supportsReleaseBatchHandover: true,
           supportsSharedReleaseObservations: true,
         },
@@ -451,7 +453,7 @@ export function createMissionGoMcpServer(
         const handover = [...store.getTimeline(item.key)].reverse()
           .find((event) => !event.historySourceKey && event.toStatus === "development_complete" && event.eventType === "status_changed");
         let completion;
-        try { completion = normalizeCompletion(handover?.payload ?? {}); } catch { /* Coverage mode must report missing evidence. */ }
+        try { completion = store.getDevelopmentEvidence(item.key).completion; } catch { /* Coverage mode must report missing evidence. */ }
         const { requiredArtifacts, noReleaseReason } = store.getDevelopmentReleaseDecision(item.key);
         if (Array.isArray(requiredArtifacts) && !requiredArtifacts.length && typeof noReleaseReason === "string" && noReleaseReason.trim()) {
           noReleaseItems.push({ itemKey: item.key, noReleaseReason }); return [];
@@ -841,10 +843,49 @@ export function createMissionGoMcpServer(
     mergeAccess(ctx,batch.productId);
     return textResult({batch});
   });
+  server.registerTool(
+    "get_merge_reconciliation", {
+    annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false},
+    description:"Read the original user-specified batch reconciliation preview: frozen and execution heads, executor-reported Git outcomes, item states, missing evidence and next steps. No Git fetch, approval or mutation occurs. Never infer publication from item status alone.",
+    inputSchema:z.object({batchId:z.string().min(1)}),
+  },async(input,ctx)=>{
+    const productId=merges.batchProduct(input.batchId);mergeAccess(ctx,productId);
+    return textResult({...merges.preview(accountAccess(ctx).accountId,input.batchId)});
+  });
   // MCP_WRITE_SECTION: every tool below this line mutates MissionGo or reads an
   // execution, so each one must authorize the caller itself. The guard in
   // mcp-authorization.test.ts anchors on this marker.
   // MCP_WRITE_TIER: comments
+  server.registerTool(
+    "request_merge_reconciliation", {
+    annotations:{readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
+    description:"Stage an exact original-batch recovery action for a signed-in person's console approval. Use the preview snapshot and original merge dispatch; this does not grant authority or execute recovery. accept_merge needs independently verified GitHub merged head, merge commit, actual target ancestry, original-head inclusion and passing validation; never impersonate external repairs. retry_handover only supplements missing compatible evidence. retry_blocked preserves history. Publication choices require a human decision. No generic field writes or developer credentials.",
+    inputSchema:z.object({batchId:z.string().min(1),dispatchId:z.string().min(1),idempotencyKey:z.string().min(1).max(200),snapshot:z.string().length(64),action:reconciliationActionSchema}),
+  },async(input,ctx)=>{
+    requireWriteScope(ctx);requireAccessibleProduct(ctx,merges.batchProduct(input.batchId));
+    const access=mergeAccess(ctx,merges.batchProduct(input.batchId),true);
+    return textResult({...merges.requestReconciliation(access.accountId,input.dispatchId,input.batchId,input.idempotencyKey,input.snapshot,input.action)});
+  });
+  server.registerTool(
+    "apply_merge_reconciliation", {
+    annotations:{readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
+    description:"Apply one console-approved recovery request through the original merge dispatch. Rechecks the exact snapshot and current permissions; preserves history and reports per-item results. Retry the same request after a lost response. Never create another batch, re-merge Git, borrow developer credentials or override human rework. Changed snapshots need a new reviewed request, not an altered retry.",
+    inputSchema:z.object({batchId:z.string().min(1),dispatchId:z.string().min(1),requestId:z.string().min(1)}),
+  },async(input,ctx)=>{
+    requireWriteScope(ctx);requireAccessibleProduct(ctx,merges.batchProduct(input.batchId));
+    const access=mergeAccess(ctx,merges.batchProduct(input.batchId),true);
+    return textResult({...merges.applyReconciliation(access.accountId,input.dispatchId,input.batchId,input.requestId)});
+  });
+  server.registerTool(
+    "record_merge_combined_validation", {
+    annotations:{readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
+    description:"Record verified final combined validation on the actual target head for the original batch, including legacy recovery. All Git outcomes must be known. Evidence binds the complete current results; later recovery invalidates it. Does not authorize publication or item acceptance.",
+    inputSchema:z.object({batchId:z.string().min(1),dispatchId:z.string().min(1),validation:combinedValidationSchema}),
+  },async(input,ctx)=>{
+    requireWriteScope(ctx);requireAccessibleProduct(ctx,merges.batchProduct(input.batchId));
+    const access=mergeAccess(ctx,merges.batchProduct(input.batchId),true);
+    return textResult({...merges.recordCombinedValidation(access.accountId,input.dispatchId,input.batchId,input.validation)});
+  });
   server.registerTool(
     "propose_merge_delivery", {
     annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false},

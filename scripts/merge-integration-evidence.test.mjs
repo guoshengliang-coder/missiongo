@@ -18,7 +18,7 @@ test("real overlapping branches require a recorded repair; external commits and 
   writeFileSync(join(dir,"api.txt"),"foundation\nfeature\n");git("add",".");git("commit","-m","Resolve both behaviors");const repaired=git("rev-parse","HEAD");
   const input={repository:"https://github.com/example/project",pullRequest:1,targetBranch:"main",fromHead:original,head:repaired,base:target,commits:[repaired]};
   let remote=repaired;
-  const run=(cmd,args)=>cmd==="git"?git(...args):JSON.stringify(args[0]==="repo"?{nameWithOwner:"example/project"}:{url:input.repository+"/pull/1",state:"OPEN",headRefOid:remote,baseRefName:"main",baseRefOid:target,mergeable:"MERGEABLE",statusCheckRollup:[{status:"COMPLETED",conclusion:"SUCCESS"}]});
+  const run=(cmd,args)=>cmd==="git"?(args[0]==="ls-remote"?git("ls-remote","--refs",dir,"refs/heads/main"):git(...args)):JSON.stringify(args[0]==="repo"?{nameWithOwner:"example/project"}:{url:input.repository+"/pull/1",state:"OPEN",headRefOid:remote,baseRefName:"main",baseRefOid:target,mergeable:"MERGEABLE",statusCheckRollup:[{status:"COMPLETED",conclusion:"SUCCESS"}]});
   assert.equal(inspectRepair(input,run).head,repaired);
   assert.equal(inspectDelivery({...input,head:original,executionHead:repaired,expectedBase:target},run).ready,true);
   assert.throws(()=>inspectDelivery({...input,expectedBase:base},run),/base changed/);

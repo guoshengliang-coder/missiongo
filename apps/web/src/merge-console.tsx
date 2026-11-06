@@ -1,3 +1,4 @@
+import { MergeReconciliation } from "./merge-reconciliation";
 import type { MergeIntegration } from "@missiongo/contracts";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -163,11 +164,12 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
 
 function IntegrationProgress({batch}:{batch:Batch}) {
   const {t,formatTime}=useI18n(),state=batch.integration;
-  if(!state)return <p>{t("integrationLegacy")}</p>;
+  if(!state)return <section className="merge-delivery-card"><p>{t("integrationLegacy")}</p><MergeReconciliation batchId={batch.id}/></section>;
   const plan=state.plans.at(-1);
   const order=plan?.entries.map(e=>e.deliveryId)??Object.keys(state.entries);
   const labels={queued:"integrationQueued",investigating:"integrationInvestigating",repairing:"integrationRepairing",waiting_ci:"integrationWaiting",ready:"integrationReady",merged:"integrationMerged",blocked:"integrationBlocked"} as const;
   return <section className="merge-delivery-card integration-progress" aria-label={t("integrationTitle")}>
+    <MergeReconciliation batchId={batch.id}/>
     <strong>{t(batch.state==="finished"?"integrationFinished":"integrationTitle")}</strong>
     {plan?<><p>{plan.summary}</p><p>{t("integrationValidation")}: {plan.validation}</p></>:<p>{t("integrationPlanning")}</p>}
     <ol>{order.map(id=>{const e=state.entries[id];if(!e)return null;const result=batch.results[id],step=plan?.entries.find(row=>row.deliveryId===id);
