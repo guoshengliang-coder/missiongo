@@ -68,7 +68,7 @@ const detail = {
 };
 
 /** Answers the session reads; the callback counts list refetches. */
-async function stubSession(page: Page, onListFetch: () => void): Promise<void> {
+async function stubSession(page: Page, onListFetch: () => void, sessionSummary: object = summary): Promise<void> {
   await page.route("**/api/v1/agent-sessions**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -81,10 +81,46 @@ async function stubSession(page: Page, onListFetch: () => void): Promise<void> {
       return;
     }
     if (url.pathname === "/api/v1/agent-sessions") onListFetch();
-    const body = url.pathname === "/api/v1/agent-sessions" ? { sessions: [summary] } : detail;
+    const body = url.pathname === "/api/v1/agent-sessions" ? { sessions: [sessionSummary] } : detail;
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   });
 }
+
+test("session header hides project names while preserving session controls", async ({ page }) => {
+  const suffix = Math.random().toString(36).slice(2, 8).toUpperCase();
+  const created = await page.request.post("/api/v1/products", {
+    data: { name: `AND-429 其他项目 ${suffix}`, keyPrefix: `HP${suffix}`.slice(0, 10) },
+  });
+  expect(created.status()).toBe(201);
+  const other = await created.json() as { id: string; name: string };
+  const current = (await (await page.request.get("/api/v1/products")).json() as { id: string; name: string }[])
+    .find(product => product.id === fixture.productId)!;
+  const crossProject = { ...summary, productId: fixture.productId, items: [
+    ...summary.items, { key: "OTHER-1", title: "跨项目条目", productId: other.id },
+  ] };
+  await stubSession(page, () => {}, crossProject);
+  for (const [width, colorScheme] of [[1470, "light"], [320, "dark"]] as const) {
+    await page.setViewportSize({ width, height: 780 });
+    await page.emulateMedia({ colorScheme });
+    await page.goto(CONSOLE_URL);
+    await page.evaluate(() => { document.documentElement.dataset.fontScale = "large"; document.documentElement.dataset.consoleFontScale = "large"; });
+    const header = page.locator(".agent-console-conversation-head");
+    await expect(header.locator("h2")).toBeVisible();
+    await expect(header.getByText(current.name, { exact: true })).toHaveCount(0);
+    await expect(header.getByText(other.name, { exact: true })).toHaveCount(0);
+    await expect(header.getByRole("button", { name: "AND-263" })).toBeVisible();
+    await expect(header.locator(".agent-console-toolbar")).toBeVisible();
+    await expect(page.locator("span.product-switcher-name")).toHaveText(current.name);
+    expect(await header.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  }
+  await page.unrouteAll({ behavior: "wait" });
+  await stubSession(page, () => {}, { ...summary, productId: fixture.productId, items: [] });
+  await page.goto(CONSOLE_URL);
+  const header = page.locator(".agent-console-conversation-head");
+  await expect(header.locator("h2")).toBeVisible();
+  await expect(header.getByText(current.name, { exact: true })).toHaveCount(0);
+  await expect(header.locator(".agent-console-dispatch-head")).toHaveCount(0);
+});
 
 test("a manual product pick survives the 5s session refetch", async ({ page }) => {
   // A second product, created before the page loads so bootstrap sees it. A

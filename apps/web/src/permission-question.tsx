@@ -5,6 +5,7 @@ import { api } from "./api";
 import { localizedErrorText } from "./error-text";
 import { useI18n } from "./i18n";
 import { answeredOptionSelected } from "./agent-session-view";
+import { permissionPresentation } from "./permission-presentation";
 import type { AgentSession, AgentSessionQuestion } from "./types";
 
 /** An approval is an action, never an edit to the conversation's unsent draft. */
@@ -28,6 +29,7 @@ export function PermissionQuestion({ question, requestKey, sessionId, canReply, 
   });
   const settled = question.answered !== undefined || historical;
   const queued = send.isSuccess && !settled;
+  const presentation = permissionPresentation(question);
   return <section className={`agent-session-question agent-console-attention-banner${settled ? " answered" : ""}`} aria-label={t("agentSessionWaitingApprovalStatus")}>
     <div>
       <strong>{historical && question.answered === undefined ? t("agentSessionOpenReadOnly") : settled ? t("agentSessionQuestionAnswered") : t("agentSessionWaitingApprovalStatus")}</strong>
@@ -44,7 +46,9 @@ export function PermissionQuestion({ question, requestKey, sessionId, canReply, 
             locked.current = true;
             setChoice(option);
             send.mutate(option);
-          }}>{option}</button>)}
+          }}>{(() => { const readable = presentation?.get(option); return readable
+            ? <span>{readable.label}</span> : option; })()}
+            {presentation?.get(option)?.detail && <small>{presentation.get(option)!.detail}</small>}</button>)}
       </div>
       {send.isPending && <p role="status"><LoaderCircle className="spin" size={14} /> {t("permissionSubmitting")}</p>}
       {queued && <p role="status">{t("permissionQueued")}</p>}

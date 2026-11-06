@@ -1,3 +1,4 @@
+import { permissionReplyText } from "./permission-presentation";
 import { DeliveryCards, MergeProgressBadge, useMergeProgress } from "./merge-console";
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
@@ -171,8 +172,6 @@ function attentionLabel(session: AgentSessionSummary, t: ReturnType<typeof useI1
 
 export function AgentSessionConsole({
   productId,
-  products,
-  onEnterProduct,
   initialFilter,
   search = "",
   allSessions,
@@ -188,8 +187,6 @@ export function AgentSessionConsole({
   onBackToSessions,
 }: {
   productId: string;
-  products: readonly { id: string; name: string }[];
-  onEnterProduct: (productId: string) => void;
   initialFilter: AgentSessionFilter | null;
   search?: string;
   allSessions: readonly AgentSessionSummary[];
@@ -289,10 +286,6 @@ export function AgentSessionConsole({
     () => agentOtherProjectCounts(allSessions, productId),
     [allSessions, productId],
   );
-  const sessionProducts = (session: AgentSessionSummary) => {
-    const ids = new Set([...(session.productId ? [session.productId] : []), ...session.items.map(item => item.productId)]);
-    return products.filter(product => ids.has(product.id));
-  };
   const visibleSessions = useMemo(
     () => byLatestActivity(productSessions.filter((session) => agentSessionMatches(session, filter, agentFilter, search, association))),
     [agentFilter, association, filter, search, productSessions],
@@ -1104,13 +1097,6 @@ export function AgentSessionConsole({
               <span className="agent-console-avatar"><AgentIcon kind={selected.agentKind} size={18} /></span>
               <div className="agent-console-heading">
                 <h2>{sessionTitle(selected, roundLabel)}{selected.items.length === 0 && <span className="agent-console-unlinked-badge">{t("agentConsoleAssociationUnlinked")}</span>}</h2>
-                <div className="agent-console-session-projects">
-                  {sessionProducts(selected).map(product => <span key={product.id}>{product.name}
-                    {product.id !== productId && <button type="button" className="text-button" onClick={() => onEnterProduct(product.id)}>
-                      {t("agentConsoleEnterProject")}
-                    </button>}
-                  </span>)}
-                </div>
                 {/* The items this session is working on stay in the head, where
                     scrolling the conversation cannot lose them (AND-159). */}
                 {selected.items.length > 0 && <div className="agent-console-dispatch agent-console-dispatch-head">
@@ -1212,7 +1198,7 @@ export function AgentSessionConsole({
                       </header>
                       {!repeatsPlan && message.text && (selected.agentSessionId && ["agent", "plan"].includes(message.role)
                         ? <AgentArtifactMarkdown text={message.text} sessionId={selected.agentSessionId} messageId={message.id} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />
-                        : <MarkdownText>{message.text}</MarkdownText>)}
+                        : <MarkdownText>{permissionReplyText(sessionQuery.data?.messages.flatMap(message => message.questions ?? []) ?? [], message.text)}</MarkdownText>)}
                       {message.attachmentData && selected.agentSessionId && <ChatAttachments sessionId={selected.agentSessionId} attachments={message.attachmentData} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />}
                       {message.questions && (
                         <AgentSessionQuestions
@@ -1275,7 +1261,7 @@ export function AgentSessionConsole({
                     <header className="agent-console-message-meta">
                       <time dateTime={outgoing.occurredAt}>{formatAgentMessageTime(outgoing.occurredAt, locale)}</time>
                     </header>
-                    <MarkdownText>{outgoing.text}</MarkdownText>
+                    <MarkdownText>{permissionReplyText(sessionQuery.data?.messages.flatMap(message => message.questions ?? []) ?? [], outgoing.text)}</MarkdownText>
                     {command && command.id === outgoing.commandId && command.attachments && selected.agentSessionId
                       && <ChatAttachments sessionId={selected.agentSessionId} attachments={command.attachments} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />}
                     {sendingSelected && send.variables?.files.length ? <div className="agent-chat-draft-files">
@@ -1482,9 +1468,9 @@ export function AgentSessionConsole({
                     id={`agent-reply-${selected.id}`}
                     rows={1}
                     maximumHeight={240}
-                    value={reply}
+                    value={permissionReplyText(sessionQuery.data?.messages.flatMap(message => message.questions ?? []) ?? [], reply)}
                     onChange={(event) => {
-                      setReply(event.target.value);
+                      setReply(permissionReplyText(sessionQuery.data?.messages.flatMap(message => message.questions ?? []) ?? [], event.target.value, true));
                       if (send.isError && send.variables?.sessionId === selected.agentSessionId) send.reset();
                     }}
                     placeholder={t("agentSessionReplyPlaceholder", { agent: agentLabel(selected, t) })}
