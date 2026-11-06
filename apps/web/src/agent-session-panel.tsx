@@ -145,10 +145,6 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
             <>
               <header className="agent-session-head">
                 <strong>{t("agentSessionTitle")}</strong>
-                <span className={`status-pill agent-session-status-${session.data.status}`}>
-                  {waiting ? t(session.data.agentKind === "codex" ? "agentSessionWaitingApprovalStatus" : "agentSessionWaitingStatus")
-                    : backgroundOnly ? t("agentSessionBackgroundStatus") : statusLabel(session.data.status, t)}
-                </span>
               </header>
               <DeliveryCards productId={productId} sessionId={sessionId} />
               {history.messages.length === 0 && (

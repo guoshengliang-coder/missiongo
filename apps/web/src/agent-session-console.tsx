@@ -85,13 +85,11 @@ import { useI18n } from "./i18n";
 import { localizedErrorText } from "./error-text";
 import { MarkdownText } from "./markdown-text";
 import { AgentArtifactMarkdown } from "./agent-artifact-viewer";
-import { SessionLink } from "./session-link";
 import type { AgentSession, AgentSessionAttachment, AgentSessionStatus, AgentSessionSummary, WorkItemAttachment } from "./types";
 import { AutoGrowTextarea } from "./auto-grow-textarea";
 import { mergeChatFiles } from "./agent-chat-files";
 import { FileDropOverlay } from "./file-drop-overlay";
 import { useFileDropZone } from "./file-drop";
-import { useMediaQuery } from "./use-media-query";
 
 const CHAT_FILE_ACCEPT = ".png,.jpg,.jpeg,.webp,.gif,.heic,.mp4,.mov,.webm,.log,.txt,.json,.md,.csv,.pdf";
 
@@ -210,10 +208,6 @@ export function AgentSessionConsole({
   const [followLatest, setFollowLatest] = useState(true);
   const [newMessageCount, setNewMessageCount] = useState(0);
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
-  // A handset is a coarse pointer. The same signal the stylesheet uses for touch
-  // sizing decides whether a session link can reach a client on this device
-  // (AND-214), rather than guessing from the viewport width.
-  const touchDevice = useMediaQuery("(pointer: coarse)");
   // The conversation the person clicked. Only that one counts as read; merely
   // opening the console or changing a filter never selects or reads a row.
   // (conversationOpen cannot tell: it only ever turns true on the one-pane layout.)
@@ -788,12 +782,20 @@ export function AgentSessionConsole({
         : selected?.canRetry ? "agentRecoveryRetry"
           : needsNewSession ? "agentRecoveryNewSession"
             : canContinue ? "agentRecoveryReply" : "agentRecoveryAtSource";
+  const showRunDetails = Boolean(selected?.agentSessionId && sessionQuery.data
+    && !(selected.source !== "external" && selected.agentKind === "codex" && sessionStatus === "failed"));
+  const stopAction = selected?.canStop && (
+    <button
+      type="button"
+      className="secondary-button agent-run-stop"
+      disabled={retryDispatch.isPending || stopDispatch.isPending || stopPending}
+      onClick={async () => {
+        if (await confirm(t("agentConsoleStopConfirm"))) stopDispatch.mutate({ sessionId: operationSessionId, dispatchId: selected.dispatchId! });
+      }}
+    ><Square size={16} />{t("agentConsoleStop")}</button>
+  );
   const sessionActions = selected && (
     <div className="agent-console-actions">
-      {selected.sessionUrl && <SessionLink url={selected.sessionUrl} compact={!showRecovery} mobile={touchDevice} />}
-      {selected.source !== "external" && selected.agentKind === "claude_code" && selected.agentSessionId && !selected.sessionUrl && (
-        <span className="agent-session-muted" title={t("agentConsoleClaudeLocal")}>{t("agentConsoleClaudeLocalBadge")}</span>
-      )}
       {selected.canRetry && (
         <button
           type="button"
@@ -805,16 +807,6 @@ export function AgentSessionConsole({
             if (await confirm(confirmation)) retryDispatch.mutate({ sessionId: operationSessionId, dispatchId: selected.dispatchId! });
           }}
         ><RotateCcw size={15} />{t(selected.productId ? "newSessionRetry" : "agentConsoleRetry")}</button>
-      )}
-      {selected.canStop && (
-        <button
-          type="button"
-          className="secondary-button"
-          disabled={retryDispatch.isPending || stopDispatch.isPending || stopPending}
-          onClick={async () => {
-            if (await confirm(t("agentConsoleStopConfirm"))) stopDispatch.mutate({ sessionId: operationSessionId, dispatchId: selected.dispatchId! });
-          }}
-        ><Square size={16} />{t("agentConsoleStop")}</button>
       )}
       {selected.canArchive && selected.archivedSource !== "source" && (
         <button
@@ -1071,7 +1063,6 @@ export function AgentSessionConsole({
                 </div>}
               </div>
               <div className="agent-console-toolbar">
-                <span className={`status-pill agent-session-status-${visualStatus}`}>{selected.archivedAt ? t("archived") : selected.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected)) : claudeBackgroundOnly ? t("agentSessionBackgroundStatus") : agentWaiting ? t(selected.agentKind === "codex" ? "agentSessionWaitingApprovalStatus" : "agentSessionWaitingStatus") : statusLabel(sessionStatus, t)}</span>
                 {!showRecovery && sessionActions}
               </div>
             </header>
@@ -1149,7 +1140,6 @@ export function AgentSessionConsole({
                   <div className="agent-console-dispatch-state">
                     <Bot size={20} />
                     <strong>{t(dispatchActivityLabelKey(selected))}</strong>
-                    {selected.sessionUrl && <p>{t("agentConsoleOpenExternalHelp")}</p>}
                   </div>
                 )}
                 {planTranscript(visibleMessages, sessionQuery.data).map((message) => {
@@ -1362,10 +1352,9 @@ export function AgentSessionConsole({
                   <AgentStopFeedback stop={stopCommand}
                     latestCommand={command} turnActive={sessionQuery.data?.turnState?.turnActive ?? false}
                     backgroundRunning={(sessionQuery.data?.activities.length ?? 0) > 0} />
-                {selected.agentSessionId && sessionQuery.data
-                  && !(selected.source !== "external" && selected.agentKind === "codex" && sessionStatus === "failed") && (<>
+                {showRunDetails && (<>
                     {["stalled", "unavailable", "failed"].includes(sessionStatus) && <p className="agent-run-warning" role="alert">{activityText}</p>}
-                    <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={visualStatus} />}
+                    <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={visualStatus} />} actions={stopAction}
                       label={selected.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected))
                         : agentWaiting ? t(selected.agentKind === "codex" ? "agentRunApproval" : "agentRunWaiting", { agent: agentName })
                           : claudeBackgroundOnly ? t("agentRunBackground") : sessionStatus === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(sessionStatus, t)}>
@@ -1407,6 +1396,14 @@ export function AgentSessionConsole({
                 </>)}
                 </div>
                 </>}
+                {!showRunDetails && <div className="agent-run-controls agent-run-fallback">
+                  <p className={`agent-console-activity agent-console-activity-${visualStatus}`} role="status">
+                    <SessionStatusIcon status={visualStatus} />
+                    {!conversationReady ? t("agentSessionLoading") : selected.archivedAt ? t("archived")
+                      : !selected.agentSessionId ? t(dispatchActivityLabelKey(selected)) : statusLabel(sessionStatus, t)}
+                  </p>
+                  {stopAction}
+                </div>}
               </div>
               {newMessageCount > 0 && (
                 <button type="button" className="agent-console-new-messages" onClick={() => scrollToLatest("smooth")}>

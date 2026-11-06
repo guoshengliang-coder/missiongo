@@ -211,7 +211,6 @@ import {
   readListPaneWidth,
 } from "./pane-layout";
 import { ProductBadge } from "./product-badge";
-import { SessionLink } from "./session-link";
 import { AgentSessionPanel } from "./agent-session-panel";
 import { AgentSessionConsole } from "./agent-session-console";
 import { currentDispatchForStatus, dispatchIssueLabelKey, itemProgressKeys } from "./dispatch-attention";
@@ -3145,7 +3144,6 @@ function DispatchRow({ dispatch, itemKey, productId }: { dispatch: Dispatch; ite
         {dispatch.sessionName ? ` · ${dispatch.sessionName}` : ""}
       </small>
       {batch.length > 0 && <small className="dispatch-row-detail">{t("dispatchBatch", { keys: batch.join("、") })}</small>}
-      {dispatch.sessionUrl && <SessionLink url={dispatch.sessionUrl} />}
       {dispatch.agentSessionId && <AgentSessionPanel sessionId={dispatch.agentSessionId} productId={productId} />}
       {dispatch.error && <InlineError message={dispatch.error} />}
     </article>

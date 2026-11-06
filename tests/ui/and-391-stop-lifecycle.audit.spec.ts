@@ -40,6 +40,8 @@ for (const agent of ["codex", "claude_code", "opencode"]) for (const phone of [f
     await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
     const stop = page.getByRole("button", { name: "停止当前回合", exact: true });
     await expect(stop).toBeVisible();
+    await expect(page.locator(".agent-console-conversation-head").getByRole("button", { name: "停止当前回合", exact: true })).toHaveCount(0);
+    await expect(page.locator(".agent-run-controls").getByRole("button", { name: "停止当前回合", exact: true })).toHaveCount(1);
     const box = await stop.boundingBox(); expect(box!.height).toBeGreaterThanOrEqual(44);
     await stop.click();
     const dialog = page.getByRole("dialog");
