@@ -5,7 +5,7 @@ import { expect, test } from "@playwright/test";
 const fixture = JSON.parse(readFileSync(fileURLToPath(new URL("./.auth/fixture.json", import.meta.url)), "utf8")) as { productId: string };
 const id = "and-310-plan-approval";
 const stamp = "2026-10-30T01:00:00.000Z";
-const offer = { revision: "observed-context", evidence: "以上计划等待批准。", reason: "方案明确且没有待答问题。" };
+const offer = { plan: "计划：添加快捷批准并测试。\n以上计划等待批准。", revision: "observed-context", evidence: "以上计划等待批准。", reason: "方案明确且没有待答问题。" };
 const summary = {
   id, agentSessionId: id, dispatchId: "fixture-dispatch", agentKind: "codex", status: "idle",
   updatedAt: stamp, activityAt: stamp, nodeName: "Fixture", nodeConnectionState: "online", nodeRevoked: false,
@@ -58,7 +58,7 @@ for (const viewport of [{ width: 353, height: 757 }, { width: 1440, height: 900 
         posts.push({ url: path, body: request.postDataJSON() });
         await held;
         const command = { id: "approved", kind: "message", text: "批准", status: "queued", createdAt: stamp };
-        current = { ...current, planApproval: undefined, command };
+        current = { ...current, planApproval: offer, planApprovalStatus: { code: "reply_pending" }, canApprovePlan: false, command };
         return route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify(command) });
       }
       if (request.method() === "POST" && !path.endsWith("/read")) posts.push({ url: path, body: request.postData() });
@@ -97,7 +97,7 @@ test("an unavailable connection keeps approval visible but disabled; stale rejec
       return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ code: "agent_plan_approval_changed", title: "changed" }) });
     }
     if (request.method() !== "GET") return route.fulfill({ status: 204 });
-    const detail = { ...summary, messages: [{ id: "plan", sourceId: "plan", role: "agent", text: "当前方案待批准", occurredAt: stamp }], planApprovalStatus: { code: allowed ? "ready" : "connection_unavailable" }, ...(allowed ? { planApproval: offer } : {}) };
+    const detail = { ...summary, messages: [{ id: "plan", sourceId: "plan", role: "agent", text: "当前方案待批准", occurredAt: stamp }], planApprovalStatus: { code: allowed ? "ready" : "connection_unavailable" }, planApproval: offer };
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(path === "/api/v1/agent-sessions" ? { sessions: [summary] } : detail) });
   });
   const open = () => page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
@@ -138,7 +138,7 @@ for (const theme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme: theme });
     await page.route("**/api/v1/agent-sessions**", async route => {
       if (route.request().method() !== "GET") return route.fulfill({ status: 204 });
-      const current = { ...summary, canReply: false, planApprovalStatus: { code: "connection_unavailable" }, messages: [] };
+      const current = { ...summary, canReply: false, planApproval: offer, planApprovalStatus: { code: "connection_unavailable" }, messages: [] };
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(new URL(route.request().url()).pathname === "/api/v1/agent-sessions" ? { sessions: [current] } : current) });
     });
     await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
@@ -154,7 +154,7 @@ for (const theme of ["light", "dark"] as const) {
   });
 }
 
-// The shortcut is available from source attention, even when the conversation
+// A submitted proposal remains available even when the conversation
 // still has uncertainties. Show the review boundary rather than certify quality.
 for (const theme of ["light", "dark"] as const) {
   test.describe(`research review ${theme}`, () => {

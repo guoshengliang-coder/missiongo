@@ -3,7 +3,7 @@ import { handoffDispatchIsCurrent } from "./agent-handoffs.js";
 import { assertDispatchExecution, dispatchExecutionRevoked } from "./builder-authority.js";
 import { createHash, randomUUID } from "node:crypto";
 
-import { hasPendingPermissionQuestion, normalizeAgentMode, sessionErrorFields, storedSessionError, type CodexSessionFailure, isAcceptedSessionUrl, nodeConnectionState, type AgentKind, type NodeConnectionState } from "@missiongo/domain";
+import { hasStoppableAgentTurn, hasPendingPermissionQuestion, normalizeAgentMode, sessionErrorFields, storedSessionError, type CodexSessionFailure, isAcceptedSessionUrl, nodeConnectionState, type AgentKind, type NodeConnectionState } from "@missiongo/domain";
 
 import { sessionHealth, executionTurnState } from "./agent-session-health.js";
 
@@ -183,11 +183,12 @@ export interface AgentSessionListItem {
     readonly title: string;
     readonly productId: string;
   }[];
-  readonly latestMessage?: Pick<AgentSessionMessageInput, "role" | "text">;
+  readonly latestMessage?: Pick<AgentSessionMessageInput, "role" | "text"> & Partial<Pick<AgentSessionMessageInput, "sourceId" | "phase">>;
   readonly command?: AgentSessionCommand;
   readonly stopCommand?: AgentSessionCommand;
   readonly attention: AgentSessionAttention;
   readonly needsAttention: boolean;
+  readonly planApprovalPending?: boolean;
   /** Kept for clients shipped before the broader "needs attention" wording. */
   readonly waitingForReply: boolean;
   readonly retryable: boolean;
@@ -1052,7 +1053,7 @@ export class AgentSessionStore {
         ...(row.session_url ? { sessionUrl: row.session_url } : {}),
         createdAt: row.created_at,
         items: itemRows.map((item) => ({ key: item.item_key, title: item.title, productId: item.product_id })),
-        ...(message ? { latestMessage: { role: message.role, text: message.text } } : {}),
+        ...(message ? { latestMessage: { role: message.role, text: message.text, sourceId: message.source_id, ...(message.phase ? {phase:message.phase} : {}) } } : {}),
         ...(command ? { command: this.mapCommand(command) } : {}),
         ...(stopCommand ? { stopCommand: this.mapCommand(stopCommand) } : {}),
         attention: alertAttention,
@@ -1067,8 +1068,12 @@ export class AgentSessionStore {
         waitingForReply: needsAttention,
         retryable: (["failed", "cancelled"].includes(row.dispatch_status) || deliveryTimedOut)
           && (free ? free.ready === 1 && ["failed", "cancelled"].includes(row.dispatch_status) && pendingNativeFree : itemRows.length > 0 && itemRows.every((item) => item.status === "ready")),
-        stoppable: ["queued", "delivered"].includes(row.dispatch_status)
-          || Boolean(row.session_id && !binding && !itemsCompleted && row.session_status !== "suspended"),
+        stoppable: (["queued", "delivered"].includes(row.dispatch_status)
+          && (!free || free.ready === 1))
+          || Boolean(row.dispatch_status === "launched" && row.session_id && !binding && !itemsCompleted
+            && hasStoppableAgentTurn({ status, turnState,
+              command: command ? this.mapCommand(command) : undefined,
+              stopCommand: stopCommand ? this.mapCommand(stopCommand) : undefined })),
         replyable: row.session_id && (!free || free.dispatch_status === "launched") ? !revokedDispatches.has(row.dispatch_id) && !binding && !itemsCompleted : false,
         settings: sessionSettings(
           row,

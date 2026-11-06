@@ -654,6 +654,7 @@ export interface AgentSessionSummary {
     readonly revision?: string;
     readonly dismissed?: boolean;
   };
+  readonly planApprovalPending?: boolean;
   readonly needsAttention: boolean;
   /** Compatibility alias for older clients; prefer needsAttention. */
   readonly waitingForReply: boolean;
