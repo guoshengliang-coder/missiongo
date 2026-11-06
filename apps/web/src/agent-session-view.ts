@@ -712,6 +712,39 @@ export function approvalNeedsAction(approval: AgentApproval | undefined): boolea
   return approval.status === "denied" && (!approval.retryId || approval.retryStatus === "failed");
 }
 
+/** Card title keys distinguish questions and confirmations from permission
+ *  prompts; legacy rows without requestKind read as neutral (AND-408). */
+export function approvalTitleKey(approval: Pick<AgentApproval, "kind" | "requestKind">): MessageKey {
+  if (approval.kind === "auto") return "agentApprovalAutoTitle";
+  if (approval.requestKind === "question") return "agentQuestionTitle";
+  if (approval.requestKind === "confirmation") return "agentConfirmationTitle";
+  if (approval.requestKind === "permission") return "agentApprovalTitle";
+  return "agentNeutralApprovalTitle";
+}
+
+function codexWaitingKindKey(approval: AgentApproval | undefined): MessageKey {
+  if (approval?.requestKind === "question") return "agentSessionWaitingQuestionStatus";
+  if (approval?.requestKind === "confirmation") return "agentSessionWaitingConfirmationStatus";
+  if (approval?.requestKind === "permission") return "agentSessionWaitingApprovalStatus";
+  return "agentSessionWaitingPendingStatus";
+}
+
+/** Status-pill copy while a session waits on a person; only Codex approvals
+ *  carry requestKind, other agents keep their waiting copy. */
+export function waitingStatusLabelKey(session: { agentKind: AgentSessionSummary["agentKind"]; approval?: AgentApproval | undefined }): MessageKey {
+  if (session.agentKind !== "codex") return "agentSessionWaitingStatus";
+  return codexWaitingKindKey(session.approval);
+}
+
+/** Run-details copy for a session waiting on a person. */
+export function runWaitingLabelKey(session: { agentKind: AgentSessionSummary["agentKind"]; approval?: AgentApproval | undefined }): MessageKey {
+  if (session.agentKind !== "codex") return "agentRunWaiting";
+  if (session.approval?.requestKind === "question") return "agentRunQuestion";
+  if (session.approval?.requestKind === "confirmation") return "agentRunConfirmation";
+  if (session.approval?.requestKind === "permission") return "agentRunApproval";
+  return "agentRunWaiting";
+}
+
 export function externalProgressLabelKey(session: Pick<AgentSessionSummary, "status" | "progressStatus" | "approvalOnly">) {
   if (session.approvalOnly) return "agentPlanUnclaimed" as const;
   if (session.status === "unavailable") return "agentExternalStale" as const;
