@@ -34,17 +34,28 @@ main push 和普通手动运行执行全量 UI 测试；PR 先生成变更影响
 发布元数据校验失败会直接阻止计划成功，不能借跳过 UI 获得绿灯。Web/后端与契约检查始终执行；原生平台按下述规则选择。
 同一 PR 的新提交取消旧 CI；main 和手动运行各自保留，不因新提交取消发布依据。
 
-原生平台共用同一份提交差异证据；main、手动运行、缺失证据、删除/类型变化和未知路径均全量：
+原生平台通过 `scripts/ci-platform-impact.mjs` 共用依赖规则。PR 比较已核实的 base 到当前合并候选；主线只有找到祖先提交的完整成功原生构建时，才比较该基线到当前提交。不是只比较上一个提交。
 
-| PR 文件范围 | 原生构建 |
-|---|---|
-| `apps/macos/` | macOS |
-| `apps/android/`、`sdks/android-feedback/` | Android |
-| `apps/node/` | 两个 Ubuntu 版本的 Linux Node |
-| `apps/web/`、`tests/ui/`、文档、已校验的发布元数据 | 无关原生构建可跳过 |
-| 共享包、服务端、产品声明、根依赖、构建/CI 脚本及其他未知输入 | 全部平台 |
+| 文件范围 | 原生构建 |
+| --- | --- |
+| `apps/macos/` 及 macOS 构建/签名/缓存/监督脚本 | macOS |
+| `apps/android/`、`sdks/android-feedback/` 及 Android 发布脚本 | Android（保留 App、SDK、Sample 的现有验证） |
+| `apps/node/` 及 Linux 构建/安装/发布脚本 | Linux 两个受支持 Ubuntu 环境 |
+| Web 的 Android 桥接、已登记的桥接消费者及更新逻辑 | Android |
+| Web 公共产品图标 | Android + macOS（macOS 打包直接读取生成图标） |
+| 普通 Web/UI、Markdown、`docs/review-evidence` 图片、Web 版本发布说明、已校验发布事实 | 无关原生构建可跳过 |
+| 已审阅的 Server 内部模块 `item-execution-blockers.ts` 及其测试 | 无关原生构建可跳过；服务端检查与主线 UI 仍执行 |
+| `product.json` | 比较字段；web.version 不触发原生构建，平台字段触发对应平台，共用身份/未知字段全量 |
+| 其他 Server、共享 domain/contracts、锁文件、CI、未知路径/类型变化 | 全平台 |
 
-混合变更取并集。`android`、`macos` 和 `linux-node` 汇总检查验证计划属于当前提交，且实际构建的 success/skipped 与计划完全一致；计划失败、构建失败、取消和意外跳过都不能获得成功。主线汇总还强制所有平台必须执行，保留发布门禁所用的固定检查名。
+混合变更取并集，重命名同时考虑旧路径与新路径。新增内部模块不能仅按目录或名称自动免检，须审阅并更新映射。
+`android`、`macos` 和 `linux-node` 汇总检查验证当前提交、事件、计划结果和 success/skipped 完全一致；主线窄计划还必须携带完整构建的基线身份。失败、取消和意外跳过不能获得成功。
+
+主线基线查询只读 Actions API，限定本仓库 main 上 CI workflow 的成功 push/schedule；排除 PR、手动截图、当前提交和非祖先提交。
+还要求对应 run attempt 的三个原生平台构建、Linux 两个环境、固定汇总检查及 Web/UI 全部成功；只有跳过汇总为绿、缺失 jobs 或部分重跑均不能作为基线。
+最多读取 20 个近期成功 run、检查 10 个祖先候选，API 总预算 15 秒；权限不足、超时、证据缺失或找不到全量成功基线时回退全平台，不阻断正常全量验证。
+每日 UTC 19:17 定期执行全量 CI，刷新基线；普通手动运行也保持全量。UI 主线策略不缩减，发布门禁仍要求当前提交的汇总检查成功。
+
 
 功能边界和专项对应关系在 `impact-map.json`。当前只收窄统计、独立决策页、下载面板和 Agent 产物预览；
 沿实际静态导入、再导出和字面量动态导入追踪私有依赖，多个功能同时受影响时取并集。共享 URL、权限
