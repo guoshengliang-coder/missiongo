@@ -140,7 +140,8 @@ it("requires fresh evidence, a note, explicit attestation and a signed-in delive
   const login=await f.app.inject({method:"POST",url:"/api/v1/auth/login",payload:{username:other.email,password:"operator-password"}});
   const cookie=login.headers["set-cookie"]!.toString().split(";")[0]!;
   expect((await f.confirm(item.key,b,{}, {cookie})).statusCode).toBe(403);
-  vi.advanceTimersByTime(1000);f.snapshot(sessionId,"unavailable");
+  f.db.prepare("INSERT INTO external_native_messages(id,session_id,source_id,payload_json,position) VALUES (?,?,?,?,0)")
+    .run(randomUUID(),sessionId,randomUUID(),JSON.stringify({role:"user",text:"Changed evidence"}));
   expect((await f.confirm(item.key,b)).statusCode).toBe(409);
   b=(await f.read(item.key)).executionBlockers[0];
   f.store.updateWorkItem(item.key,{description:"Changed scope"});
@@ -160,14 +161,32 @@ it("keeps other executions blocked and confirmations scoped to a single item, in
   expect(()=>f.dispatch(first.item.key)).toThrow();
 });
 
-it.each(["offline","revoked","stale"])("keeps unknown %s nodes blocked until a human verifies the exact completed old execution",async state=>{
+it.each(["offline","revoked"])("keeps unknown %s nodes blocked until a human verifies the exact completed old execution",async state=>{
   const f=await fixture(),{item,sessionId}=f.create();
   f.snapshot(sessionId,"idle");
   if(state==="offline") f.db.prepare("UPDATE nodes SET last_seen_at=NULL WHERE id=?").run(f.node.nodeId);
   if(state==="revoked") f.db.prepare("UPDATE nodes SET revoked_at=? WHERE id=?").run(new Date().toISOString(),f.node.nodeId);
-  if(state==="stale") f.db.prepare("UPDATE external_agent_sessions SET native_synced_at='2000-01-01T00:00:00Z' WHERE id=?").run(sessionId);
   expect((await f.read(item.key)).executionBlockers[0]).toMatchObject({reason:"connection_unknown",canConfirmStopped:true});
   expect((await f.confirm(item.key)).statusCode).toBe(200);
+});
+
+it("releases an idle native session whose last report is older than the window while its node keeps heartbeating",async()=>{
+  const f=await fixture(),{item,sessionId}=f.create();
+  f.snapshot(sessionId,"idle");
+  // Idle sessions report less often than the window; the node heartbeat, not the
+  // session report time, carries connection health.
+  vi.advanceTimersByTime(120_000);
+  f.dispatches.recordHeartbeat(f.node.nodeId,[{kind:"codex",planApprovalProtocol:1,ready:true}]);
+  f.db.prepare("UPDATE external_agent_sessions SET native_synced_at='2000-01-01T00:00:00Z' WHERE id=?").run(sessionId);
+  expect((await f.read(item.key)).executionBlockers).toEqual([]);
+  expect(f.dispatches.checkRedispatch(f.accountId,[item.key]).allowed).toBe(true);
+});
+
+it("accepts a stop check when only the observation timestamp moved since the form was read",async()=>{
+  const f=await fixture(),{item,sessionId}=f.create();
+  const b=(await f.read(item.key)).executionBlockers[0];
+  vi.advanceTimersByTime(1000);f.snapshot(sessionId,"unavailable");
+  expect((await f.confirm(item.key,b)).statusCode).toBe(200);
 });
 
 it("does not require stop confirmation for a completed tracking record or a fresh idle native session",async()=>{
@@ -321,6 +340,28 @@ it("rejects a stale performer check, preserves separate performer scopes and acc
   expect((await f.read(item.key)).executionBlockers).toMatchObject([{source:"external"}]);
 });
 
+
+it("lets a verification return redispatch and reclaim directly when the node is online and the old session is idle",async()=>{
+  const f=await fixture();
+  const item=f.store.createWorkItem({productId:f.product.id,title:"Returned item",description:"Scope",type:"task",priority:"normal",status:"ready",environment:{platform:"shared"}});
+  const d=f.dispatch(item.key);f.dispatches.claimNextDispatch(f.node.nodeId);
+  f.dispatches.recordDispatchResult({nodeId:f.node.nodeId,dispatchId:d.id,status:"launched"});
+  const sessions=new AgentSessionStore(f.store.database);
+  const sessionId=sessions.createForDispatch({dispatchId:d.id,nodeId:f.node.nodeId,sessionRef:randomUUID()});
+  f.store.claimWorkItem({itemKey:item.key,agentId:"Codex",idempotencyKey:randomUUID(),attribution:f.owner,dispatchId:d.id});
+  f.store.transitionWorkItem({itemKey:item.key,to:"pending_verification",reason:"manual_override",actor:"human",note:"Delivered",attribution:{accountId:f.accountId}});
+  sessions.recordSnapshot({sessionId,nodeId:f.node.nodeId,status:"idle",messages:[],turnState:{}});
+  f.store.transitionWorkItem({itemKey:item.key,to:"ready",reason:"verification_failed",actor:"human",note:"Same problem again",attribution:{accountId:f.accountId}});
+  vi.advanceTimersByTime(120_000);
+  f.dispatches.recordHeartbeat(f.node.nodeId,[{kind:"codex",planApprovalProtocol:1,ready:true}]);
+  f.db.prepare("UPDATE agent_sessions SET updated_at='2000-01-01T00:00:00Z' WHERE id=?").run(sessionId);
+  expect((await f.read(item.key)).executionBlockers).toEqual([]);
+  expect(f.dispatches.checkRedispatch(f.accountId,[item.key]).allowed).toBe(true);
+  const redispatch=f.dispatch(item.key);f.dispatches.claimNextDispatch(f.node.nodeId);
+  f.dispatches.recordDispatchResult({nodeId:f.node.nodeId,dispatchId:redispatch.id,status:"launched"});
+  new AgentSessionStore(f.store.database).createForDispatch({dispatchId:redispatch.id,nodeId:f.node.nodeId,sessionRef:randomUUID()});
+  expect(f.store.claimWorkItem({itemKey:item.key,agentId:"Codex",idempotencyKey:randomUUID(),attribution:f.owner,dispatchId:redispatch.id}).status).toBe("in_progress");
+});
 
 it("keeps startup placeholders fenced even when their status becomes unavailable",async()=>{
   const f=await fixture(),{item}=f.create();
