@@ -1,3 +1,4 @@
+import { legacyIntegratorPrompt } from "./legacy-merge-authorization.js";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "./app.js";
@@ -301,6 +302,36 @@ describe("planned integration batches",()=>{
     f.grant(true,false);
     const denied=await f.call("record_merge_integration",{...input,idempotencyKey:"revoked",expectedRevision:f.current().integration!.revision});
     expect(denied.error||denied.isError).toBeTruthy();
+  });
+  it("recovers exact historical authorization without replacing the batch or changing retry parameters",async()=>{
+    const f=await prepared();f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
+    const key=randomUUID(),selection=[{id:f.d.id,revision:f.d.revision}];
+    const b=f.merges.start(f.owner.id,key,selection,f.config,false);
+    const dispatches=new DispatchStore(f.store.database);dispatches.claimNextDispatch(f.node.nodeId);dispatches.recordDispatchResult({nodeId:f.node.nodeId,dispatchId:b.dispatchId,status:"launched"});
+    const setPrompt=(text:string)=>f.store.database.connection.prepare("UPDATE free_session_starts SET initial_text=? WHERE dispatch_id=?").run(text,b.dispatchId);
+    for(const prompt of [legacyIntegratorPrompt("different-batch",false),legacyIntegratorPrompt(b.id,true),legacyIntegratorPrompt(b.id,false)+" extra instructions"]) {
+      setPrompt(prompt);expect(f.merges.batch(f.owner.id,b.dispatchId,b.id).integration).toBeUndefined();
+    }
+    setPrompt(legacyIntegratorPrompt(b.id,false));
+    f.store.database.connection.prepare("UPDATE free_session_starts SET ready=0 WHERE dispatch_id=?").run(b.dispatchId);
+    expect(f.merges.batch(f.owner.id,b.dispatchId,b.id).integration).toBeUndefined();
+    f.store.database.connection.prepare("UPDATE free_session_starts SET ready=1 WHERE dispatch_id=?").run(b.dispatchId);
+    f.store.database.connection.prepare("UPDATE merge_batches SET data_json=? WHERE id=?").run(JSON.stringify({...b,state:"finished"}),b.id);
+    expect(f.merges.batch(f.owner.id,b.dispatchId,b.id).integration).toBeUndefined();
+    f.store.database.connection.prepare("UPDATE merge_batches SET data_json=? WHERE id=?").run(JSON.stringify(b),b.id);
+    const restored=f.merges.batch(f.owner.id,b.dispatchId,b.id);
+    expect(restored.integration?.recoveredAuthorization?.dispatchId).toBe(b.dispatchId);
+    expect(restored.entries[0]!.mergeReady).toBe(false);
+    const action={kind:"plan" as const,base:"b".repeat(40),summary:"Recover existing authorization",validation:"Combined verification",entries:[{deliveryId:f.d.id,head:f.d.head,dependsOn:[],group:"one",reason:"Original scope",validation:"Check repaired head"}]};
+    f.merges.integrate(f.owner.id,b.dispatchId,b.id,0,"recover-plan",action);
+    f.merges.integrate(f.owner.id,b.dispatchId,b.id,0,"recover-plan",action);
+    const loaded=new MergeDeliveries(f.store).batch(f.owner.id,b.dispatchId,b.id);
+    expect(loaded.integration!.plans).toHaveLength(1);expect(loaded.integration!.recoveredAuthorization).toEqual(restored.integration!.recoveredAuthorization);
+    expect(f.merges.start(f.owner.id,key,selection,f.config,false).id).toBe(b.id);
+    expect(()=>f.merges.start(f.owner.id,key,selection,f.config,false,1)).toThrow();
+    f.merges.integrate(f.owner.id,b.dispatchId,b.id,1,"recover-repair",{kind:"prepare_repair",deliveryId:f.d.id,expectedHead:f.d.head,base:"b".repeat(40),reason:"Recover verified original-session repair"});
+    f.merges.integrate(f.owner.id,b.dispatchId,b.id,2,"recover-head",{kind:"repair",deliveryId:f.d.id,expectedHead:f.d.head,repairId:"recover-repair",head:"e".repeat(40),commits:["e".repeat(40)],validation:"Git chain checked",source:"Synthetic historical recovery"});
+    expect(f.merges.batch(f.owner.id,b.dispatchId,b.id).entries[0]!.executionHead).toBe("e".repeat(40));
   });
   it("does not silently grant repair authority to legacy batches or retries",async()=>{
     const f=await prepared();f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");

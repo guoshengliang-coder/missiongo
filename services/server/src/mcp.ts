@@ -871,7 +871,7 @@ export function createMissionGoMcpServer(
   server.registerTool(
     "report_merge_batch", {
     annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false},
-    description:"Report one verified batch result using its original merge dispatch. For merged results first verify the PR's executionHead (original head for legacy batches), actual merge commit and required checks; write the completion comment. This limited handoff records development complete without taking over the development session. Never report timeout or an unknown external outcome as blocked/completed. Read the original item and required artifact scope before reporting.",
+    description:"Report one verified batch result using its original merge dispatch. For merged results first verify the PR's executionHead (original head for batches without an integration protocol), actual merge commit and required checks; write the completion comment. This limited handoff records development complete without taking over the development session. Never report timeout or an unknown external outcome as blocked/completed. Read the original item and required artifact scope before reporting.",
     inputSchema:z.object({batchId:z.string(),dispatchId:z.string(),deliveryId:z.string(),result:z.object({status:z.enum(["merged","blocked"]),head:z.string().regex(/^[a-f0-9]{40}$/),commit:z.string().regex(/^[a-f0-9]{40}$/).optional(),detail:z.string().trim().min(1).max(2000)})}),
   },async (input,ctx)=>{
     requireWriteScope(ctx);

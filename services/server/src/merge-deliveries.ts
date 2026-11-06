@@ -1,3 +1,4 @@
+import { legacyIntegratorPrompt } from "./legacy-merge-authorization.js";
 import type { MergeIntegration } from "@missiongo/contracts";
 import { integrationActionSchema, integrationDigest, applyIntegrationAction, assertIntegrationMerge, integrationDenied, type IntegrationAction } from "./merge-integration.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -180,7 +181,7 @@ export class MergeDeliveries {
       const prev = this.db.connection.prepare("SELECT id FROM merge_batches WHERE account_id=? AND request_key=?").get(accountId,requestKey) as {id:string}|undefined;
       if (prev) {
         const b = this.read<Batch>("merge_batches",prev.id);
-        if (b.integration?.protocol!==integrationProtocol) throw changed();
+        if ((b.integration?.recoveredAuthorization?undefined:b.integration?.protocol)!==integrationProtocol) throw changed();
         if (digest(b.config)!==digest(config) || b.publish!==publish || digest(b.selection)!==digest(selection)) throw changed();
         return b;
       }
@@ -214,6 +215,16 @@ export class MergeDeliveries {
     const live=this.db.connection.prepare("SELECT 1 FROM dispatches d JOIN nodes n ON n.id=d.node_id JOIN agent_sessions s ON s.dispatch_id=d.id WHERE d.id=? AND d.account_id=? AND s.id=? AND d.status='launched' AND n.revoked_at IS NULL")
       .get(dispatchId,accountId,b.sessionId);
     if(b.accountId!==accountId || !live) throw changed();
+    // Restore only the exact persisted server-authored authorization, bound to this batch's original identity.
+    // Reading exposes the recoverable protocol; the first authorized write persists it atomically.
+    if(!b.integration && b.state==="active") {
+      const original=this.db.connection.prepare("SELECT initial_text FROM free_session_starts WHERE dispatch_id=? AND account_id=? AND request_key=? AND product_id=? AND ready=1")
+        .get(b.dispatchId,b.accountId,b.id,b.productId) as {initial_text:string}|undefined;
+      if(original?.initial_text===legacyIntegratorPrompt(b.id,b.publish)) {
+        b.integration={protocol:1,revision:0,plans:[],events:[],recoveredAuthorization:{dispatchId:b.dispatchId,promptDigest:digest(original.initial_text)},
+          entries:Object.fromEntries(b.deliveries.map(id=>{const d=this.read<Delivery>("merge_deliveries",id);return [id,{itemKeys:d.itemKeys,originalHead:d.head,head:b.results[id]?.head??d.head,progress:"queued" as const,detail:"",repairs:[]}];}))};
+      }
+    }
     return {...b, dispatchId, entries:b.deliveries.map(id=>{
       const d=this.view(this.read<Delivery>("merge_deliveries",id));
       let mergeReady=!d.blocker;
@@ -225,7 +236,7 @@ export class MergeDeliveries {
     const action=integrationActionSchema.parse(raw);
     return this.db.transaction(()=>{
       const b=this.batch(accountId,dispatchId,id),state=b.integration;
-      if(!state)integrationDenied("旧批次未授权集成修复，请保留原批次授权边界。");
+      if(!state)integrationDenied("未找到可核实的原始集成修复授权，请保留原批次授权边界。");
       const previous=state.events.find(e=>e.id===key);
       if(previous){if(previous.digest!==integrationDigest(action))throw changed();return b;}
       if(b.state!=="active"||state.revision!==expectedRevision)throw changed();

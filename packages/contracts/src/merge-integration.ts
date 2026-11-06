@@ -21,6 +21,7 @@ export interface IntegrationEntry {
 }
 export interface MergeIntegration {
   protocol: 1; revision: number;
+  recoveredAuthorization?: { dispatchId: string; promptDigest: string };
   plans: (IntegrationPlan & { at: string })[];
   entries: Record<string, IntegrationEntry>;
   events: { id: string; digest: string; action: string; deliveryId?: string; at: string; detail: string }[];
