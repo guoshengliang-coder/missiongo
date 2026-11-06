@@ -847,13 +847,14 @@ export function createMissionGoMcpServer(
   server.registerTool(
     "propose_merge_delivery", {
     annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false},
-    description:"Request human delivery confirmation after completing the user's agreed work and verification. This never merges, publishes or changes item status. Use the original claimed conversation. Bind the exact GitHub repository, PR, target branch and head; report current executor-verified check evidence, not inferred readiness. Existing non-batched offers for these items are superseded. No local-only or unpushed work can be offered as a GitHub PR. Human confirmation happens in the console.",
-    inputSchema:z.object({identity:mergeIdentity,idempotencyKey:z.string().min(1).max(200),delivery:deliverySchema}),
+    description:"Request human delivery confirmation after completing the user's agreed work and verification. This never merges, publishes or changes item status. Use the original claimed conversation. Bind the exact GitHub repository, PR, target branch and head; report current executor-verified check evidence, not inferred readiness. Existing non-batched offers for these items are superseded. No local-only or unpushed work can be offered as a GitHub PR. Pass instructionConfirmation only in the same turn as the user's explicit imperative delivery order (for example an add-to-merge order): the server stores the quoted instruction and confirms immediately, bound to the session's latest human input, which any later human input invalidates. Questions, discussion, or ambiguous turns must not carry it. Without instructionConfirmation, human confirmation happens in the console.",
+    inputSchema:z.object({identity:mergeIdentity,idempotencyKey:z.string().min(1).max(200),delivery:deliverySchema,
+      instructionConfirmation:z.object({quote:z.string().trim().min(1).max(500)}).optional()}),
   },async (input,ctx)=>{
     requireWriteScope(ctx);
     const access=mergeAccess(ctx,store.getWorkItem(requireItemAccess(ctx,store,input.delivery.itemKeys[0]!)).productId,true);
     for(const key of input.delivery.itemKeys) requireItemAccess(ctx,store,key);
-    return textResult({delivery:merges.propose(access.accountId,access.clientId??"",{...(input.identity.dispatchId?{dispatchId:input.identity.dispatchId}:{}),...(input.identity.sessionId?{sessionId:input.identity.sessionId}:{})},input.idempotencyKey,input.delivery)});
+    return textResult({delivery:merges.propose(access.accountId,access.clientId??"",{...(input.identity.dispatchId?{dispatchId:input.identity.dispatchId}:{}),...(input.identity.sessionId?{sessionId:input.identity.sessionId}:{})},input.idempotencyKey,input.delivery,input.instructionConfirmation)});
   });
   server.registerTool(
     "refresh_merge_delivery", {
