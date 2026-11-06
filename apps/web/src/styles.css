@@ -3410,9 +3410,6 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 /* AND-419: the project-scoped navigation adapts to both console shells. */
 .agent-console-filter-group { min-width: 0; }
 .agent-console-filter-group > .sidebar-label { margin: 16px 10px 6px; }
-.agent-console-session-projects { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: var(--text-sm); }
-.agent-console-session-projects > span { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; }
-.agent-console-session-projects button { min-height: 44px; }
 @media (max-width: 1023px) {
   .agent-console-mobile-filters { flex-direction: column; overflow: visible; padding-bottom: 8px; }
   .agent-console-mobile-filters .agent-console-filter-group { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px; }

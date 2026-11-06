@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 import { advanceSessionListPoll, advanceSessionDetailPoll } from "./polling";
+import { chooseOption } from "./select-helpers";
 
 const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as { productId: string };
 let other: { id: string; name: string };
@@ -79,7 +80,7 @@ for (const dark of [false, true]) for (const scale of ["small", "medium", "large
     await expect(page.locator(".agent-console-reply textarea")).toHaveValue("");
     await page.locator(".agent-console-session").filter({ hasText: "多项目问题" }).click();
     await expect(page.locator(".agent-console-reply textarea")).toHaveValue("另一个项目的草稿");
-    await page.getByRole("button", { name: "进入所属项目", exact: true }).click();
+    await chooseOption(page.getByRole("combobox", { name: "当前产品", exact: true }), other.id);
     expect(await page.evaluate(() => localStorage.getItem("missiongo.product"))).toBe(other.id);
 
     // The list now belongs to the other project; the hint points back at the first.
