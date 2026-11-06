@@ -16,7 +16,7 @@ export class JsonProcess {
     let buffer = "";
     this.child.stdout.on("data", (chunk: Buffer) => {
       buffer += decoder.write(chunk);
-      if (buffer.length > 8 * 1024 * 1024) { this.child.kill(); return; }
+      if (buffer.length > 32 * 1024 * 1024) { this.child.kill(); return; }
       let end: number;
       while ((end = buffer.indexOf("\n")) >= 0) {
         const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);

@@ -502,6 +502,28 @@ final class CodexAppServerControlTests: XCTestCase {
         XCTAssertEqual(snapshot.messages.filter { $0.role == "user" }.count, 1)
         XCTAssertEqual(snapshot.history?.complete, true)
     }
+    func testItemReadFailureNeverPublishesTurnSummaryAsConversation() async throws {
+        let server = try FakeAppServer { message in
+            guard let id = message["id"] else { return [] }
+            switch message["method"] as? String {
+            case "thread/read":
+                return [["id": id, "result": ["thread": ["id": "thread", "status": ["type": "idle"]]]]]
+            case "thread/turns/list":
+                return [["id": id, "result": ["data": [["id": "turn", "status": "completed", "items": [
+                    ["id": "summary", "type": "agentMessage", "text": "Summary must never become the transcript"]]]]]]]
+            case "thread/items/list":
+                return [["id": id, "error": ["code": -32603, "message": "Unavailable"]]]
+            default: return [["id": id, "result": [:]]]
+            }
+        }
+        let snapshot = try await CodexAppServerControl().readThread(socketPath: server.path, threadId: "thread")
+        server.waitUntilDone()
+        XCTAssertTrue(snapshot.messages.isEmpty)
+        XCTAssertEqual(snapshot.history?.complete, false)
+        XCTAssertEqual(snapshot.history?.error, "unavailable")
+        XCTAssertEqual(snapshot.status, "idle")
+    }
+
     func testItemHistoryRestoresCommentaryAndPlanMissingFromTurnSummary() async throws {
         let server = try FakeAppServer { message in
             guard let id = message["id"] else { return [] }

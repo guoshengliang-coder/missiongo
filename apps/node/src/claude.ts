@@ -156,7 +156,7 @@ export class ClaudeAdapter implements Adapter {
   private add(message: Message): void {
     const index = this.state.messages.findIndex((m) => m.sourceId === message.sourceId);
     if (index >= 0) this.state.messages[index] = message; else this.state.messages.push(message);
-    this.state.messages = this.state.messages.slice(-1900);
+
   }
   async start(prompt: string): Promise<string> {
     const requestId = randomUUID(); const ready = this.wait(requestId, 60_000);

@@ -544,6 +544,7 @@ export interface AgentSessionAttachment {
 }
 
 export interface AgentSession {
+  readonly progressReports?: ReadonlyArray<{ id: string; text: string; occurredAt: string }>;
   readonly history?: { readonly nextCursor?: string; readonly error?: string };
   readonly planApproval?: { readonly revision: string; readonly reason: string; readonly plan?: string; readonly validation?: string; readonly itemKeys?: readonly string[] } | undefined;
   readonly implementationPlan?: { readonly revision: string; readonly plan: string; readonly validation: string;

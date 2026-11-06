@@ -38,7 +38,7 @@ it("deduplicates a conversation across multiple items and keeps different client
   const second = create();
   expect(sessions.register(owner, identity, item.key)).toBe(id);
   expect(sessions.register(owner, identity, second.key)).toBe(id);
-  expect(sessions.getForAccount(owner.accountId, id).messages).toHaveLength(2);
+  expect(sessions.getForAccount(owner.accountId, id).progressReports).toHaveLength(2);
   expect(sessions.listForAccount(owner.accountId)[0]!.items.map((item) => item.key)).toEqual([item.key, second.key]);
   expect(sessions.register({ ...owner, clientId: "different-client" }, identity, item.key)).not.toBe(id);
 });
@@ -64,7 +64,7 @@ it("report retries neither duplicate messages nor reopen a newer completed repor
   sessions.report(owner, id, item.key, "completed", "Finished handling", "finish");
   sessions.report(owner, id, item.key, "working", "Checking", "progress");
   expect(sessions.getForAccount(owner.accountId, id)).toMatchObject({ status: "idle", progressStatus: "completed" });
-  expect(sessions.getForAccount(owner.accountId, id).messages).toHaveLength(3);
+  expect(sessions.getForAccount(owner.accountId, id).progressReports).toHaveLength(3);
   expect(store.getWorkItem(item.key).status).toBe("in_progress");
   expect(() => sessions.report(owner, id, item.key, "failed", "Different", "finish")).toThrow(/different content/);
 });
@@ -131,7 +131,7 @@ it("persists session identity and reports across database reopen without rerunni
     store = new MissionGoStore(path);
     const reopened = new ExternalAgentSessionStore(store);
     expect(reopened.register(owner, identity, item.key)).toBe(id);
-    expect(reopened.getForAccount(owner.accountId, id)).toMatchObject({ progressStatus: "completed", messages: [{}, {}] });
+    expect(reopened.getForAccount(owner.accountId, id)).toMatchObject({ progressStatus: "completed", messages: [], progressReports: [{}, {}] });
     expect(store.database.connection.prepare("SELECT COUNT(*) AS n FROM schema_migrations WHERE version = 202610090518").get()).toMatchObject({ n: 1 });
     expect(store.database.connection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   } finally {

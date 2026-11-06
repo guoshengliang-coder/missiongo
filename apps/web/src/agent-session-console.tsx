@@ -1,3 +1,4 @@
+import { AgentProgressReports } from "./agent-progress-reports";
 import { permissionReplyText } from "./permission-presentation";
 import { DeliveryCards, MergeProgressBadge, useMergeProgress } from "./merge-console";
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
@@ -1207,6 +1208,7 @@ export function AgentSessionConsole({
                     <strong>{t(dispatchActivityLabelKey(selected))}</strong>
                   </div>
                 )}
+                <AgentProgressReports session={sessionQuery.data} />
                 {planTranscript(visibleMessages, sessionQuery.data).map((message) => {
                   if (message === null) return <AgentPlanContent key="submitted-plan" session={sessionQuery.data} surface="console" />;
                   const repeatsPlan = repeatsSubmittedPlan(message, sessionQuery.data);
