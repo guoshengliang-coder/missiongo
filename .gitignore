@@ -66,3 +66,6 @@ tests/ui/**/*-win32.png
 
 # Local supervised execution test scratch.
 .tmp-and232/
+
+# Local/CI command logs and timeout stack samples
+ci-diagnostics/

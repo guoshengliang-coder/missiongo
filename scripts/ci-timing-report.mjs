@@ -3,7 +3,11 @@ import { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } f
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const milliseconds = (start, end) => start && end ? Math.max(0, Date.parse(end) - Date.parse(start)) : null;
+const milliseconds = (start, end) => {
+  if (!start || !end) return null;
+  const duration = Date.parse(end) - Date.parse(start);
+  return Number.isFinite(duration) && duration >= 0 ? duration : null;
+};
 const cell = value => String(value ?? "—").replace(/[|\r\n<>]/g, " ");
 const seconds = value => value == null ? "—" : `${(value / 1000).toFixed(1)}s`;
 
@@ -46,6 +50,9 @@ export function buildTimingReport({ jobs, reports, plan, catalog, identity, warn
   if (!plan || !["full", "targeted", "skip", "snapshots"].includes(plan.mode) || plan.head !== identity.head) issues.push("Missing or stale UI plan");
   const summaryJobs = jobs.filter(j => j.name !== "ci-timing-report").map(job => ({
     name: job.name, status: job.status, conclusion: job.conclusion,
+    // Job creation follows dependency readiness; workflow creation would
+    // incorrectly count dependency execution as runner queue time.
+    queueMs: job.conclusion === "skipped" ? null : milliseconds(job.created_at, job.started_at),
     durationMs: milliseconds(job.started_at, job.completed_at),
     steps: (job.steps ?? []).map(step => ({ name: step.name, conclusion: step.conclusion, durationMs: milliseconds(step.started_at, step.completed_at) })),
   })).sort((a, b) => (b.durationMs ?? 0) - (a.durationMs ?? 0));
@@ -61,13 +68,14 @@ export function buildTimingReport({ jobs, reports, plan, catalog, identity, warn
 export function markdown(report) {
   return ["## CI timing", "", `UI mode: **${cell(report.mode)}** · Eligible weight sample: **${report.eligibleForWeights ? "yes" : "no"}**`, "",
     ...report.warnings.map(w => `- ${cell(w)}`), "",
-    "| Job | Result | Duration |", "| --- | --- | --- |",
-    ...report.jobs.map(j => `| ${cell(j.name)} | ${cell(j.conclusion ?? j.status)} | ${seconds(j.durationMs)} |`), "",
+    `Run: ${cell(report.runId)} · Attempt: ${cell(report.attempt)}`, "",
+    "| Job | Result | Queue | Execution |", "| --- | --- | --- | --- |",
+    ...report.jobs.map(j => `| ${cell(j.name)} | ${cell(j.conclusion ?? j.status)} | ${seconds(j.queueMs)} | ${seconds(j.durationMs)} |`), "",
     "### UI shards", "", "| Shard | Tests | Duration |", "| --- | --- | --- |",
     ...report.shards.map(s => `| ${s.shard} | ${s.testCount} | ${seconds(s.durationMs)} |`), "",
     "### Slowest UI files", "", "| File | Attempts | Test duration |", "| --- | --- | --- |",
     ...report.files.slice(0, 15).map(f => `| ${cell(f.file)} | ${f.attempts} | ${seconds(f.durationMs)} |`), "",
-    "Job durations include setup and teardown; file durations sum test attempts. Reports never change coverage or weights automatically.", ""].join("\n");
+    "Queue is job creation to runner start, excluding dependency execution. Missing, invalid or skipped queue timings are shown as —. Execution includes setup and teardown; file durations sum test attempts. Jobs run concurrently: do not add these values to estimate workflow elapsed time. This report covers only the displayed attempt and excludes its own job. Reports never change coverage or weights automatically.", ""].join("\n");
 }
 
 export async function fetchJobs({ repository, runId, attempt, token, fetcher = fetch }) {

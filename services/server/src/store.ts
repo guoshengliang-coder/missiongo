@@ -1,10 +1,11 @@
 import { collaborationBlockers } from "./collaboration-policy.js";
+import { assertItemExecutionIdentity, takeOverItemExecutions } from "./item-execution-blockers.js";
 import { AgentHandoffs } from "./agent-handoffs.js";
 import { Collaborations } from "./collaboration.js";
 import { collaborationTransitionDenial } from "./collaboration-policy.js";
 import { assertTransitionPolicy, assertReleaseBatchTransition, itemRoles } from "./item-policy.js";
 import { resolveCommentAudience, enqueueCommentNotifications } from "./comment-discussions.js";
-import { assertBuilderExecution, assertDispatchExecution, latestBuilderHandover, hasOngoingItemExecution, hasPriorProcessing } from "./builder-authority.js";
+import { assertBuilderExecution, assertDispatchExecution, latestBuilderHandover, hasOngoingItemExecution, hasBlockingItemExecution, hasPriorProcessing } from "./builder-authority.js";
 import { completionPayload, normalizeCompletion, sameCompletion } from "./completion.js";
 import { deliveryRound } from "./delivery-round.js";
 import { enqueueDecisionNotifications, enqueueVerificationNotification } from "./dingtalk-notifications.js";
@@ -1633,6 +1634,7 @@ export class MissionGoStore {
       const item = this.getWorkItemRow(input.itemKey);
       if (!item) throw notFound("Work item");
       assertBuilderExecution(this.database,item.id,input.attribution?.accountId);
+      assertItemExecutionIdentity(this.database,item.id,input.executionIdentity ?? (input.dispatchId ? `dispatch:${input.dispatchId}` : ""));
       if (input.dispatchId) {
         assertDispatchExecution(this.database,input.dispatchId);
         if (!this.database.connection.prepare(`SELECT 1 FROM dispatches d JOIN dispatch_items di ON di.dispatch_id=d.id
@@ -1660,7 +1662,7 @@ export class MissionGoStore {
       }
       if (item.status !== "ready") throw conflict("item_not_claimable", "Only a ready work item can be claimed.");
       this.applyTransition(item, "in_progress", "agent", "claim", agentId, now, input.attribution ?? {},
-        input.dispatchId ? { dispatchId: input.dispatchId } : {});
+        { ...(input.dispatchId ? {dispatchId:input.dispatchId} : {}), executionIdentity:input.executionIdentity });
       const result = this.getWorkItem(item.item_key);
       this.saveIdempotentResult(idempotencyKey, operation, result, now);
       return result;
@@ -2139,8 +2141,8 @@ export class MissionGoStore {
         : conflict("invalid_state_transition", decision.message);
     }
     if (!releaseBatch && actor !== "system" && reason !== "manual_override" && (to === "in_progress" && reason === "claim" || actor === "agent")) assertBuilderExecution(this.database,current.id,attribution.accountId);
-    if (to === "in_progress" && reason === "claim" && current.status !== "on_hold" && (current.execution_disposition || hasPriorProcessing(this.database,current.id)) && hasOngoingItemExecution(this.database,current.id,typeof payloadExtra.dispatchId === "string" ? payloadExtra.dispatchId : "")) {
-      throw conflict("execution_stop_unconfirmed", "原执行仍在运行或停止尚未确认，请先查看执行记录。");
+    if (to === "in_progress" && reason === "claim" && current.status !== "on_hold" && (current.execution_disposition || hasPriorProcessing(this.database,current.id)) && hasBlockingItemExecution(this.database,current.id,typeof payloadExtra.dispatchId === "string" ? payloadExtra.dispatchId : "")) {
+      throw conflict("execution_stop_unconfirmed", "原执行仍有实际活动或待执行命令，请先查看执行记录。");
     }
     if (actor === "human" && attribution.accountId && ["on_hold","cancelled"].includes(to) && this.hasOngoingExecution(current.id)
       && payloadExtra.executionDisposition !== "keep_running" && payloadExtra.executionDisposition !== "stop_requested") throw invalidInput("请选择在途执行的处置方式。","execution_disposition_required");
@@ -2166,6 +2168,12 @@ export class MissionGoStore {
         if (assigned.changes) this.insertEvent(current.id,"builder_changed",actor,null,null,
           {from:null,to:account.id,fromName:"待分配",toName:account.nickname || account.email.split("@")[0],note:"首次开始处理，自动认领 Builder"},now,attribution);
       }
+    }
+    if(to === "in_progress" && reason === "claim" && hasPriorProcessing(this.database,current.id)) {
+      const identity=typeof payloadExtra.executionIdentity === "string" ? payloadExtra.executionIdentity : "";
+      const external=identity.startsWith("native:") ? this.database.connection.prepare(`SELECT id FROM external_agent_sessions
+        WHERE 'native:'||client_id||':'||agent_kind||':'||ref_kind||':'||session_ref=?`).get(identity) as {id:string}|undefined : undefined;
+      takeOverItemExecutions(this.database,current.id,attribution.accountId ?? "",typeof payloadExtra.dispatchId === "string" ? payloadExtra.dispatchId : "",external?.id ?? "");
     }
     let humanExecutionId: string | undefined;
     if (to === "in_progress" && reason === "claim" && actor === "human" && attribution.accountId) {

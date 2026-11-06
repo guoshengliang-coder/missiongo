@@ -177,6 +177,8 @@ export function ItemDeliveryPanel({item,summarizedSessionId,dispatches,dispatche
     {data?.canHandoffToAgent && <button type="button" className="secondary-button" onClick={()=>setAgentHandoffOpen(true)}>{t("agentHandoffTitle")}</button>}
     {data?.pendingAgentHandoff && <p className="account-note" role="status">{t("agentHandoffPending")}</p>}
     {data && ["ready","inbox"].includes(item.status) && <ExecutionStopNotice itemKey={item.key} blockers={data.executionBlockers ?? []} onRefresh={refresh} />}
+    {data && item.status==="in_progress" && <ExecutionStopNotice itemKey={item.key}
+      blockers={(data.executionBlockers ?? []).filter(row=>row.superseded && row.blocking)} onRefresh={refresh} />}
     {data && agentHandoffOpen && <AgentHandoffDialog item={item} delivery={data} onRefresh={refresh} onClose={()=>setAgentHandoffOpen(false)} />}
     {EXECUTION_ASSIGNMENT_ENABLED && data && mode==="execution" && <Modal title="安排执行／交接" subtitle="交付与执行" onClose={()=>setMode(null)} dirty={Boolean(scope || performer || previousId || executionNote)} pending={assign.isPending}>
       <form className="delivery-form" onSubmit={event=>{event.preventDefault();assign.mutate();}}>
