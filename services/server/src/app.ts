@@ -601,7 +601,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const externalNativeStore = new ExternalNativeSessionStore(store, externalSessionAttachments);
   const consoleSessions = new AgentConsoleSessions(store, agentSessionStore, externalSessionStore);
   const agentApprovalStore = new AgentApprovalStore(store.database);
-  const listConsoleSessions = (accountId: string) => consoleSessions.list(accountId).map((session) => agentApprovalStore.withAttention(session));
+  const planApprovals = new PlanApprovalService(store.database);
+  const listConsoleSessions = (accountId: string) => consoleSessions.list(accountId).map((session) => planApprovals.withAttention(agentApprovalStore.withAttention(session)));
   const accountStore = new AccountStore(store.database);
   const deviceAuthorizations = new DeviceAuthorizationStore(store.database);
   const aiTitle = new AiTitleService(
@@ -658,7 +659,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     log: app.log,
   });
   const attentionClassifications = new Map<string, Promise<void>>();
-  const planApprovals = new PlanApprovalService(store.database);
   const scheduleAttentionClassification = (sessionId: string): void => {
     if (!aiTitle.attentionEnabled() || attentionClassifications.has(sessionId)) return;
     const candidate = agentSessionStore.pendingAttention(sessionId);
@@ -2746,7 +2746,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const planApprovalContext = (request: FastifyRequest, sessionId: string, operate = false) => {
     const members = consoleSessions.members(requireAccountId(request), sessionId);
     let unavailableReason: PlanApprovalBlockReason | undefined = members.some((row) => row.command && ["queued", "delivering", "delivery_unknown"].includes(row.command.status)) ? "reply_pending" : undefined;
-    const attention = agentApprovalStore.withAttention(consoleSessions.getSummary(requireAccountId(request), sessionId)).attention;
+    const attention = planApprovals.withAttention(agentApprovalStore.withAttention(consoleSessions.getSummary(requireAccountId(request), sessionId))).attention;
     if (externalSessionStore.has(sessionId)) {
       const loaded = loadExternalSession(request, sessionId, operate, operate);
       const account = requireAccount(request);

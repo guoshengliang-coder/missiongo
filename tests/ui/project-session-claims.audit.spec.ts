@@ -38,7 +38,28 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
     await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
     await expect(page.locator(".agent-console-heading h2")).toContainText("这是什么问题？");
     await expect(page.locator(".agent-console-heading h2 .agent-console-unlinked-badge")).toHaveText("无关联会话");
-    await expect(page.locator(".agent-console-session-heading .agent-console-unlinked-badge")).toHaveText("无关联会话");
+    await expect(page.locator(".agent-console-session-heading .agent-console-unlinked-badge")).toHaveCount(0);
+    const meta = page.locator(".agent-console-session-meta");
+    await expect(meta.locator(".agent-console-unlinked-badge")).toHaveText("无关联会话");
+    for (const width of [320, 520, 521, 1440]) for (const scale of ["small", "medium", "large"]) {
+      await page.setViewportSize({ width, height: width === 1440 ? 375 : 900 });
+      await page.evaluate(value => { document.documentElement.dataset.fontScale = value; }, scale);
+      if (width <= 520) {
+        await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+      }
+      const badge = meta.locator(".agent-console-unlinked-badge");
+      await expect(badge).toBeVisible();
+      const labelBox = await meta.locator("small").boundingBox();
+      const badgeBox = await badge.boundingBox();
+      const sameRow = Math.abs(badgeBox!.y + badgeBox!.height / 2 - labelBox!.y - labelBox!.height / 2) <= 1;
+      if (sameRow) expect(badgeBox!.x).toBeGreaterThanOrEqual(labelBox!.x + labelBox!.width);
+      else expect(badgeBox!.y).toBeGreaterThanOrEqual(labelBox!.y + labelBox!.height);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
+      if (width === 320 && scale === "large") await page.screenshot({ path: info.outputPath("unlinked-meta-phone.png") });
+      if (width <= 520) await page.locator(".agent-console-session").click();
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.screenshot({ path: info.outputPath("unlinked-meta.png") });
     for (const linked of [
       [{ key: fixture.detailKey, title: "首个处理条目", productId: fixture.productId }],
       [{ key: fixture.detailKey, title: "首个处理条目", productId: fixture.productId }, { key: "EXAMPLE-2", title: "第二个处理条目", productId: fixture.productId }],

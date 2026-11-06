@@ -277,7 +277,7 @@ export class ExternalAgentSessionStore {
           kind:"approval" as const,reason:"方案等待批准，请审阅当前方案与验证目标。",revision:proposal.revision,
           ...(row.dismissed_revision === proposal.revision ? {dismissed:true} : {})},needsAttention:row.dismissed_revision !== proposal.revision,waitingForReply:row.dismissed_revision !== proposal.revision} : {}),
         ...(proposal?.approved && !latest ? {attention:{state:"not_needed" as const},needsAttention:false,waitingForReply:false} : {}),
-        ...(nativeMessages.at(-1) ? { latestMessage: { role: nativeMessages.at(-1)!.role, text: nativeMessages.at(-1)!.text } } : {}),
+        ...(nativeMessages.at(-1) ? { latestMessage: { role: nativeMessages.at(-1)!.role, text: nativeMessages.at(-1)!.text, sourceId:nativeMessages.at(-1)!.sourceId, ...(nativeMessages.at(-1)!.phase ? {phase:nativeMessages.at(-1)!.phase} : {}) } } : {}),
       };
     });
   }

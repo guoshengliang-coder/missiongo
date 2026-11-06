@@ -44,9 +44,11 @@ async function mockSession(page: Page, getDetail: () => Record<string, unknown>,
 
 test("one permission area replaces generic approval, submits the native scope once, then restores plan approval", async ({ page }) => {
   let current: Record<string, unknown> | undefined = permission;
+  let planContentAvailable = false;
   const decisions: unknown[] = [];
   const commands: unknown[] = [];
-  await mockSession(page, () => ({ ...session, ...(current ? { approval: current } : {}) }), async (path, body) => {
+  await mockSession(page, () => ({ ...session, ...(current ? { approval: current } : {}),
+    planApproval: { ...session.planApproval, ...(planContentAvailable ? { plan: "权限与方案独立，审阅完整正文后批准。" } : {}) } }), async (path, body) => {
     if (path.endsWith("/decision")) {
       decisions.push(body);
       current = { ...permission, decision: (body as { decision: string }).decision };
@@ -76,6 +78,11 @@ test("one permission area replaces generic approval, submits the native scope on
   expect(commands).toEqual([]);
   current = undefined;
   await expect(panel).toHaveCount(0, { timeout: 10_000 });
+  await expect(page.getByRole("button", { name: "批准", exact: true })).toBeDisabled();
+  await expect(page.getByText("方案内容暂不可用，请重新加载后再审阅。")).toBeVisible();
+  planContentAvailable = true;
+  await page.locator(".agent-console-attention-banner").getByRole("button", { name:"重试",exact:true }).click();
+  await expect(page.getByRole("article", { name:"提交审批的方案",exact:true })).toContainText("权限与方案独立");
   await expect(page.getByRole("button", { name: "批准", exact: true })).toBeEnabled();
 });
 

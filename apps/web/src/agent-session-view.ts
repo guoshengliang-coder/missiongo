@@ -27,7 +27,7 @@ export function visibleQuestions(questions: readonly AgentSessionQuestion[]): Ag
 
 export function planApprovalStatusKey(code: string): MessageKey {
   const keys: Readonly<Record<string, MessageKey>> = {
-    connection_unavailable: "agentPlanConnectionUnavailable", reply_unavailable: "agentPlanReplyUnavailable",
+    content_unavailable: "agentPlanContentUnavailable", connection_unavailable: "agentPlanConnectionUnavailable", reply_unavailable: "agentPlanReplyUnavailable",
     running: "agentPlanRunning", permission_required: "agentPlanPermissionRequired", reply_pending: "agentPlanReplyPending",
     not_approval: "agentPlanNotApproval", dismissed: "agentPlanDismissed", awaiting_source: "agentPlanAwaitingSource",
   };

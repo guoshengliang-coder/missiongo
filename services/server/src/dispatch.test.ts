@@ -1437,6 +1437,23 @@ describe("Claiming a dispatch on the node", () => {
       const reply = () => f.app.inject({ method: "POST", url: `/api/v1/agent-sessions/${sessionId}/commands`, headers: { cookie: f.cookie }, payload: { text: "continue explicitly" } });
       return { ...f, headers, sessionId, snapshot, stop, reply };
     }
+    it.each(kinds)("exposes stop only while %s has foreground or pending work", async kind => {
+      const f = await started(kind);
+      const canStop = async () => {
+        const response = await f.app.inject({ method: "GET", url: "/api/v1/agent-sessions", headers: { cookie: f.cookie } });
+        return response.json().sessions.find((session: { id: string }) => session.id === f.sessionId).canStop;
+      };
+      expect(await canStop()).toBe(true);
+      for (const status of ["idle", "failed", "suspended", "unavailable", "active"]) {
+        expect((await f.snapshot({ status, turnActive: false, waitingForInput: false, messages: [] })).statusCode).toBe(204);
+        expect(await canStop()).toBe(false);
+      }
+      await f.snapshot({ status: "idle", turnActive: true, waitingForInput: true, messages: [] });
+      expect(await canStop()).toBe(true);
+      await f.snapshot({ status: "idle", turnActive: false, waitingForInput: false, messages: [] });
+      expect((await f.reply()).statusCode).toBe(201);
+      expect(await canStop()).toBe(true);
+    });
     it.each(kinds)("cancels %s after node claim but before launch, without starting native work", async kind => {
       const f = await queuedDispatch(undefined, kind);
       const headers = { authorization: `Bearer ${f.node.token}` };
@@ -1718,7 +1735,7 @@ describe("Claiming a dispatch on the node", () => {
     expect(explicitApproval.sessions[0]).toMatchObject({
       needsAttention: true,
       waitingForReply: true,
-      attention: { state: "needed", kind: "approval", reason: "AI 明确要求批准或确认后再继续。" },
+      attention: { state: "needed", kind: "uncertain", reason: "请核对会话是否还需处理；当前没有可审阅的方案批准请求。" },
     });
     expect(provider).toHaveBeenCalledTimes(1);
 
@@ -1734,7 +1751,7 @@ describe("Claiming a dispatch on the node", () => {
     })).json<{ sessions: Array<Record<string, unknown>> }>();
     expect(cachedFalse.sessions[0]).toMatchObject({
       needsAttention: true,
-      attention: { state: "needed", kind: "approval", reason: "AI 明确要求批准或确认后再继续。" },
+      attention: { state: "needed", kind: "uncertain", reason: "请核对会话是否还需处理；当前没有可审阅的方案批准请求。" },
     });
 
     app.missionGoStore.database.connection.prepare(
@@ -2368,7 +2385,7 @@ describe("Claiming a dispatch on the node", () => {
     });
     expect(listed.json()).toMatchObject({
       sessions: [{
-        agentKind: "claude_code", canReply: true, canStop: true,
+        agentKind: "claude_code", canReply: true, canStop: false,
         activities: [{ id: "task-1", title: "Inspect synchronization", detail: "运行中" }],
         turnState: { turnActive: false, waitingForInput: false },
       }],
@@ -5008,10 +5025,11 @@ describe("AND-369 project conversations", () => {
   it("distinguishes startup from finished work and keeps the itemless composer usable through later turns", async () => {
     const f = await fixture();
     const d = (await f.prepare()).json();
-    await f.start(d.id);
     const list = async () => (await f.app.inject({ method: "GET", url: "/api/v1/agent-sessions", headers: { cookie: f.cookie } })).json().sessions[0];
+    expect(await list()).toMatchObject({ canStop: false });
+    await f.start(d.id);
     const detail = async () => (await f.app.inject({ method: "GET", url: `/api/v1/agent-sessions/${d.agentSessionId}`, headers: { cookie: f.cookie } })).json();
-    expect(await list()).toMatchObject({ canReply: false, replyBlockedReason: "starting" });
+    expect(await list()).toMatchObject({ canReply: false, canStop: true, replyBlockedReason: "starting" });
     expect(await detail()).toMatchObject({ canReply: false, replyBlockedReason: "starting" });
     await f.claim();
     expect(await list()).toMatchObject({ canReply: false, replyBlockedReason: "starting" });
@@ -5023,9 +5041,11 @@ describe("AND-369 project conversations", () => {
       url: `/api/v1/node/agent-sessions/${d.agentSessionId}/snapshot`, headers: f.headers,
       payload: { status, messages: [{ sourceId: "answer", role: "agent", text: "继续讨论" }], commandId, commandStatus } });
     expect((await snapshot(firstCommand.id, "delivered", "idle")).statusCode).toBe(204);
+    expect(await list()).toMatchObject({ status: "idle", canStop: false });
     const followup = await f.app.inject({ method: "POST", url: `/api/v1/agent-sessions/${d.agentSessionId}/commands`,
       headers: { cookie: f.cookie }, payload: { text: "请继续" } });
     expect(followup.statusCode, followup.body).toBe(201);
+    expect(await list()).toMatchObject({ canStop: true });
     for (const state of ["delivering", "delivered"]) {
       expect((await snapshot(followup.json().id, state)).statusCode).toBe(204);
       for (const read of [await list(), await detail()]) {
@@ -5034,6 +5054,8 @@ describe("AND-369 project conversations", () => {
         expect(read.archivedAt).toBeUndefined();
       }
     }
+    expect((await snapshot(followup.json().id, "delivered", "idle")).statusCode).toBe(204);
+    expect(await list()).toMatchObject({ status: "idle", canStop: false });
     expect(f.app.missionGoStore.database.connection.prepare("SELECT COUNT(*) AS n FROM work_items").get()).toMatchObject({ n: 0 });
   });
 

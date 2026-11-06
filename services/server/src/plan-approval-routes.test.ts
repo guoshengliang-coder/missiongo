@@ -33,7 +33,7 @@ async function fixture(external = false, initialMessages?: AgentSessionMessageIn
   db.prepare(`INSERT INTO nodes(id,account_id,installation_id,name,token_hash,agents_json,last_seen_at,created_at,updated_at)
     VALUES ('node','owner','fixture','Fixture','synthetic','[]',?,?,?)`).run(now, now, now);
   const dispatch = new AgentSessionStore(store.database);
-  const messages = initialMessages ?? [{ sourceId: "plan", role: "agent" as const, text: "方案：增加快捷按钮并测试。\n" + evidence, occurredAt: now }];
+  const messages = initialMessages ?? [{ sourceId: "plan", role: "plan" as const, text: "方案：增加快捷按钮并测试。\n" + evidence, occurredAt: now }];
   let id: string;
   if (external) {
     // A native mirror shares the same existing approval attention as its dispatch.
@@ -54,6 +54,11 @@ async function fixture(external = false, initialMessages?: AgentSessionMessageIn
     db.prepare("INSERT INTO dispatch_items(dispatch_id,item_id,position) VALUES ('dispatch',?,0)").run(item.id);
     id = dispatch.createForDispatch({ dispatchId: "dispatch", nodeId: "node", sessionRef: "thread" });
     dispatch.recordSnapshot({ nodeId: "node", sessionId: id, status: "idle", messages });
+  }
+  if (external && messages.at(-1)?.role === "plan") {
+    const { ImplementationPlans } = await import("./implementation-plans.js");
+    new ImplementationPlans(store.database).request("owner", "native:fixture:codex:native:thread", "explicit-mirror-plan",
+      { keys: [item.key], plan: messages.at(-1)!.text, validation: "Verify original channel" });
   }
   const get = () => app.inject({ method: "GET", url: `/api/v1/agent-sessions/${id}`, headers });
   const offer = async () => {
@@ -109,7 +114,7 @@ it("offers approval after two text answers to historical cards, then blocks a ne
     { sourceId: "a1", role: "user", text: "全部" },
     { sourceId: "q2", role: "agent", text: "原生还是统一自定义？", questions: [{ title: "实现", options: ["原生", "统一自定义"] }] },
     { sourceId: "a2", role: "user", text: "统一自定义" },
-    { sourceId: "plan", role: "agent", text: "方案：全产品统一自定义控件。两项选择已明确，无新增问题。\n" + evidence },
+    { sourceId: "plan", role: "plan", text: "方案：全产品统一自定义控件。两项选择已明确，无新增问题。\n" + evidence },
   ];
   const f = await fixture(false, messages);
   const offer = await f.offer();
@@ -227,7 +232,7 @@ it("a Web approval during an active turn does not start another turn later",asyn
 it.each(["codex","claude_code"])("syncs one %s native plan decision without a continuation or a second Web approval",async(kind)=>{
   const f=await fixture();
   f.db.prepare("UPDATE agent_sessions SET agent_kind=? WHERE id=?").run(kind,f.id);
-  const plan={sourceId:"native-plan",role:"plan",turnId:"planning-turn",text:"Implement the exact reviewed behavior and verify all original entry points.",occurredAt:new Date(Date.now()-1000).toISOString()};
+  const plan={sourceId:kind==="claude_code" ? "permission-native-plan" : "native-plan",role:"plan",turnId:"planning-turn",text:"Implement the exact reviewed behavior and verify all original entry points.",occurredAt:new Date(Date.now()-1000).toISOString()};
   expect((await nodeReport(f,{messages:[plan]})).statusCode).toBe(204);
   const pending=(await f.get()).json();
   expect(pending.implementationPlan).toMatchObject({plan:plan.text,approved:false});
@@ -309,4 +314,125 @@ it("archiving and restoring a conversation does not revive its deferred continua
   await nodeReport(f,{});
   expect(f.db.prepare("SELECT state FROM implementation_plan_continuations").get()).toMatchObject({state:"cancelled"});
   expect(f.db.prepare("SELECT COUNT(*) AS n FROM agent_session_commands").get()).toMatchObject({n:0});
+});
+
+
+it.each([false, true])("a misclassified ordinary answer never becomes approvable (external=%s)", async external => {
+  const f = await fixture(external, [{ sourceId: "answer", role: "agent", text:
+    "建议 1 acceptEdits 是自动接受编辑；建议 2 addDirectories 是允许访问目录。批准只批准当前一次。" }]);
+  if (!external) {
+    const pending = f.dispatch.pendingAttention(f.id)!;
+    f.dispatch.completeAttention(f.id, pending.messageHash, { needsAttention: true, kind: "approval", reason: "误判的批准提醒", model: "fixture" });
+  }
+  const detail = (await f.get()).json();
+  expect(detail.planApprovalStatus.code).toBe("not_approval");
+  const summaries = (await f.app.inject({ method:"GET", url:"/api/v1/agent-sessions", headers:f.headers })).json().sessions;
+  expect(summaries.find((row:{id:string})=>row.id===f.id)?.attention.kind).not.toBe("approval");
+
+  expect(detail.planApproval).toBeUndefined();
+  expect(detail.implementationPlan).toBeUndefined();
+  expect(detail.messages.some((message: { text: string }) => message.text.includes("addDirectories"))).toBe(true);
+  expect((await f.approve("invented")).statusCode).toBe(409);
+  expect(f.db.prepare("SELECT COUNT(*) AS n FROM implementation_plan_approvals").get()).toMatchObject({ n: 0 });
+});
+
+
+it("a follow-up invalidates the old offer while preserving its registered body", async () => {
+  const f = await fixture();
+  const { ImplementationPlans } = await import("./implementation-plans.js");
+  const plans = new ImplementationPlans(f.store.database);
+  plans.request("owner", "dispatch:dispatch", "followup-plan", { keys: plans.dispatchKeys("dispatch"),
+    plan: "Explicit implementation proposal", validation: "Verify before approval" });
+  const offered = (await f.get()).json();
+  expect(offered.planApproval.revision).toBe("followup-plan");
+  f.dispatch.recordSnapshot({ nodeId: "node", sessionId: f.id, status: "idle", messages: [
+    { sourceId: "followup", role: "user", text: "？？", occurredAt: new Date(Date.now() + 100).toISOString() },
+  ] });
+  const detail = (await f.get()).json();
+  expect(detail.planApproval).toBeUndefined();
+  expect(detail.implementationPlan.plan).toBe("Explicit implementation proposal");
+  expect((await f.approve("followup-plan")).statusCode).toBe(409);
+});
+
+it.each(["queued", "delivering", "delivered"])("new user input fences approval before transcript sync (%s)", async status => {
+  const f = await fixture();
+  const { ImplementationPlans } = await import("./implementation-plans.js");
+  const plans = new ImplementationPlans(f.store.database);
+  plans.request("owner", "dispatch:dispatch", "queued-followup", { keys: plans.dispatchKeys("dispatch"),
+    plan: "Explicit implementation proposal", validation: "Verify before approval" });
+  const requestedAt = new Date(Date.now() - 1000).toISOString();
+  f.db.prepare("UPDATE implementation_plan_requests SET proposal_json=json_set(proposal_json,'$.requestedAt',?)").run(requestedAt);
+  f.db.prepare(`INSERT INTO agent_session_commands(id,session_id,account_id,text,kind,status,created_at) VALUES ('followup',?,'owner','？？','message',?,?)`)
+    .run(f.id, status, new Date().toISOString());
+  expect((await f.get()).json().planApproval).toBeUndefined();
+  expect((await f.approve("queued-followup")).statusCode).toBe(409);
+});
+
+it("native plan-mode commentary remains ordinary history without a registered proposal", async () => {
+  const f = await fixture(false, [{ sourceId: "progress", role: "agent", text: "Investigating" }]);
+  await nodeReport(f, { messages: [{ sourceId: "plan-mode-progress", role: "plan", phase: "commentary",
+    text: "I am still investigating and have not submitted an implementation proposal." }] });
+  const detail = (await f.get()).json();
+  expect(detail.planApproval).toBeUndefined();
+  expect(detail.implementationPlan).toBeUndefined();
+});
+
+it("does not revive classifier-only requests, but preserves historical human decisions after scope changes", async () => {
+  const f = await fixture(false, [{ sourceId: "answer", role: "agent", text: "Ordinary historical answer" }]);
+  const { ImplementationPlans } = await import("./implementation-plans.js");
+  const plans = new ImplementationPlans(f.store.database), identity = "dispatch:dispatch", keys = plans.dispatchKeys("dispatch");
+  plans.request("owner", identity, "legacy-attention", { keys, plan: "Ordinary historical answer", validation: "", origin: "attention" });
+  expect((await f.get()).json().planApproval).toBeUndefined();
+  expect((await f.get()).json().implementationPlan).toBeUndefined();
+  plans.record({ accountId: "owner", identity, revision: "legacy-attention", planHash: "legacy-attention", keys,
+    source: "web", plan: "Ordinary historical answer" });
+  f.db.prepare("UPDATE work_items SET content_version=content_version+1").run();
+  expect((await f.get()).json().implementationPlan).toMatchObject({ plan: "Ordinary historical answer", approved: false, valid: false });
+  expect((await f.get()).json().planApproval).toBeUndefined();
+});
+
+
+it("keeps a registered proposal in the list, then settles its badge after human approval", async () => {
+  const f=await fixture(false,[{sourceId:"ordinary",role:"agent",text:"实施方案已登记，请审阅。"}]);
+  const pending=f.dispatch.pendingAttention(f.id)!;
+  f.dispatch.completeAttention(f.id,pending.messageHash,{needsAttention:true,kind:"approval",reason:"批准提醒",model:"fixture"});
+  const {ImplementationPlans}=await import("./implementation-plans.js");
+  const plans=new ImplementationPlans(f.store.database), keys=plans.dispatchKeys("dispatch");
+  plans.request("owner","dispatch:dispatch","explicit-list-plan",{keys,plan:"明确方案，批准后实施。",validation:"核对列表与详情。"});
+  const list=async()=> (await f.app.inject({method:"GET",url:"/api/v1/agent-sessions",headers:f.headers})).json().sessions[0];
+  expect(await list()).toMatchObject({needsAttention:true,planApprovalPending:true,attention:{kind:"approval"}});
+  expect((await f.get()).json().planApproval.revision).toBe("explicit-list-plan");
+  await f.approve("explicit-list-plan");
+  expect(await list()).toMatchObject({needsAttention:false,attention:{state:"not_needed"}});
+});
+
+it("a later native question and answer do not revive a saved list approval",async()=>{
+  const f=await fixture();
+  const {ImplementationPlans}=await import("./implementation-plans.js");
+  const plans=new ImplementationPlans(f.store.database);
+  plans.request("owner","dispatch:dispatch","old-native-plan",{keys:plans.dispatchKeys("dispatch"),plan:f.messages[0]!.text,validation:"核对后续输入。",origin:"native"});
+  f.db.prepare("UPDATE implementation_plan_requests SET proposal_json=json_set(proposal_json,'$.nativeSourceId','plan')").run();
+  f.dispatch.recordSnapshot({nodeId:"node",sessionId:f.id,status:"idle",messages:[
+    {sourceId:"followup",role:"user",text:"先解释一下"},
+    {sourceId:"answer",role:"agent",text:"这是解释，后续发布需要另行授权。"},
+  ]});
+  const pending=f.dispatch.pendingAttention(f.id)!;
+  f.dispatch.completeAttention(f.id,pending.messageHash,{needsAttention:true,kind:"approval",reason:"误判后续回答",model:"fixture"});
+  const rows=(await f.app.inject({method:"GET",url:"/api/v1/agent-sessions",headers:f.headers})).json().sessions;
+  expect(rows[0].attention.kind).toBe("uncertain");
+  expect((await f.get()).json().planApproval).toBeUndefined();
+});
+
+
+it("does not revive a persisted native plan-mode progress proposal",async()=>{
+  const f=await fixture(false,[{sourceId:"progress",role:"plan",phase:"commentary",text:"仍在调查，不是提交方案。"}]);
+  const {ImplementationPlans}=await import("./implementation-plans.js");
+  const plans=new ImplementationPlans(f.store.database);
+  plans.request("owner","dispatch:dispatch","legacy-progress",{keys:plans.dispatchKeys("dispatch"),plan:f.messages[0]!.text,validation:"",origin:"native"});
+  f.db.prepare("UPDATE implementation_plan_requests SET proposal_json=json_set(proposal_json,'$.nativeSourceId','progress')").run();
+  const detail=(await f.get()).json();
+  expect(detail.implementationPlan).toBeUndefined();
+  expect(detail.planApproval).toBeUndefined();
+  const rows=(await f.app.inject({method:"GET",url:"/api/v1/agent-sessions",headers:f.headers})).json().sessions;
+  expect(rows[0].attention.kind).not.toBe("approval");
 });
