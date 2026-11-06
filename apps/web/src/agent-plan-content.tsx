@@ -30,6 +30,12 @@ export function withoutDuplicatePlan<T extends AgentSessionMessage>(messages: re
   return text ? messages.filter(message => message.role !== "plan" || message.text.trim() !== text) : messages;
 }
 
+/** True when an agent message repeats the submitted plan body that the card renders. */
+export function repeatsSubmittedPlan(message: AgentSessionMessage, session: AgentSession | undefined): boolean {
+  const text = currentPlan(session)?.plan?.trim();
+  return Boolean(text) && message.role === "agent" && message.text.trim() === text;
+}
+
 /** A null entry renders the submitted plan at its source position, never pinned below later replies. */
 export function planTranscript<T extends AgentSessionMessage>(messages: readonly T[], session: AgentSession | undefined): readonly (T | null)[] {
   const plan = currentPlan(session);
