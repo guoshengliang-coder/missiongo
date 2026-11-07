@@ -74,11 +74,11 @@
   --type-bug-fg: #a23b43; --type-bug-bg: #ffe6e7;
   --type-task-fg: #197258; --type-task-bg: #dcf7ec;
   --type-note-fg: #56606f; --type-note-bg: #e9edf1;
-  /* Conversation purposes share the theme palette, independently of work status. */
-  --session-item-fg: var(--type-requirement-fg);
-  --session-item-bg: var(--type-requirement-bg);
-  --session-integration-fg: var(--status-verify-fg);
-  --session-integration-bg: var(--status-verify-bg);
+  /* Conversation-purpose colors stay separate from approval and verification status. */
+  --session-item-fg: #245ca8;
+  --session-item-bg: #e5efff;
+  --session-integration-fg: #086678;
+  --session-integration-bg: #def3f6;
   --priority-low: #a5abb5;
 
   /* Code and log panels stay dark in both themes, the way an editor does. */
@@ -221,6 +221,10 @@
   --type-bug-fg: #ef9a9d; --type-bug-bg: #352022;
   --type-task-fg: #6ecfa9; --type-task-bg: #133027;
   --type-note-fg: #adb8c6; --type-note-bg: #262f3a;
+  --session-item-fg: #9fc6ff;
+  --session-item-bg: #1b304c;
+  --session-integration-fg: #7cdae8;
+  --session-integration-bg: #14333b;
   --priority-low: #6d7885;
 
   --shadow: 0 18px 46px rgba(0, 0, 0, 0.42);
