@@ -37,7 +37,10 @@
 .integration-outcomes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
 .integration-outcomes > div { display: grid; gap: 6px; padding: 16px; background: var(--surface-sunken); border-radius: var(--radius-md); }
 .integration-outcomes strong { font-size: var(--text-xl); }
-.integration-progress [data-complete="true"] { background: var(--status-done-bg); color: var(--status-done-fg); }
+.integration-progress [data-outcome="merge"][data-complete="true"] { background: var(--integration-merged-bg); color: var(--integration-merged-fg); }
+.integration-progress [data-outcome="publication"][data-complete="true"] { background: var(--integration-published-bg); color: var(--integration-published-fg); }
+.integration-outcome-label { display: inline-flex; align-items: center; gap: 6px; }
+.integration-outcome-label svg { flex-shrink: 0; }
 .integration-note { color: var(--muted); font-size: var(--text-sm); }
 .integration-screen > h3 { margin: 24px 0 12px; font-size: var(--text-lg); }
 .integration-groups { border-top: 1px solid var(--line); }
