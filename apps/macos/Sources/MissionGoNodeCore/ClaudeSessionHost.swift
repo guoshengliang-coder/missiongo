@@ -882,11 +882,17 @@ public struct ClaudeStreamSnapshot: Sendable {
             else { return [] }
             return questions.compactMap { question in
                 guard let title = question["question"] as? String ?? question["header"] as? String else { return nil }
-                let options = (question["options"] as? [[String: Any]])?.compactMap { $0["label"] as? String }
+                let sourceOptions = question["options"] as? [[String: Any]] ?? []
+                let options = sourceOptions.compactMap { $0["label"] as? String }
+                let details = sourceOptions.compactMap { option -> String? in
+                    guard let label = option["label"] as? String, let description = option["description"] as? String else { return nil }
+                    return "\(label): \(description)"
+                }.joined(separator: "\n")
                 return AgentSessionQuestion(
                     header: question["header"] as? String,
                     title: title,
-                    options: options?.isEmpty == false ? options : nil,
+                    detail: details.isEmpty ? nil : details,
+                    options: options.isEmpty ? nil : options,
                     multiSelect: question["multiSelect"] as? Bool
                 )
             }

@@ -34,18 +34,20 @@ describe("how a dispatch session's title writes out its item keys", () => {
     expect(sessionTitle(session([]))).toBe("session-1");
   });
 
-  it("keeps a project conversation's name and leads with the keys linked during it", () => {
+  it("names a project conversation by the items it claimed, like a dispatch", () => {
     const roundLabel = (round: number) => `第${round}轮`;
     expect(sessionTitle({ ...session([], "这是什么问题？"), productId: "product-1" }, roundLabel)).toBe("这是什么问题？");
-    expect(sessionTitle({ ...session([{ key: "AND-169" }], "这是什么问题？"), productId: "product-1", round: 2 }, roundLabel))
-      .toBe("AND-169 · 这是什么问题？");
+    expect(sessionTitle({ ...session([{ key: "AND-169" }], "这是什么问题？"), productId: "product-1" }))
+      .toBe("AND-169 · 条目标题");
     expect(sessionTitle({ ...session([{ key: "AND-169" }, { key: "IOS-3" }], "这是什么问题？"), productId: "product-1" }))
-      .toBe("AND-169、IOS-3 · 这是什么问题？");
+      .toBe("AND-169、IOS-3 · 条目标题");
+    expect(sessionTitle({ ...session([{ key: "AND-169", title: "认领后的标题" }], "这是什么问题？"), productId: "product-1" }))
+      .toBe("AND-169 · 认领后的标题");
   });
 
-  it("keeps the round label off a linked project conversation", () => {
+  it("keeps the round label off a project conversation that claimed items", () => {
     expect(sessionTitle({ ...session([{ key: "AND-169" }], "这是什么问题？"), productId: "product-1", round: 2 }, (round) => `第${round}轮`))
-      .toBe("AND-169 · 这是什么问题？");
+      .toBe("AND-169 · 条目标题");
   });
 
   it("names the dispatch round from the second attempt on, when the caller has wording for it", () => {

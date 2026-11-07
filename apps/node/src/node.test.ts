@@ -81,13 +81,15 @@ describe("headless configuration and scope", () => {
           expect(ask).toBeGreaterThan(investigate);
           expect(approve).toBeGreaterThan(ask);
           expect(prompt).toContain("单独申请调查授权");
-          expect(prompt).toContain("方案表达按复杂度组织");
           expect(prompt).toContain("本机绝对路径的 Markdown 链接");
           expect(prompt).toContain("20 MiB、整份 32 MiB、最多 64 个资源");
           expect(prompt).toContain("旧 Linux 节点仅支持图片");
           expect(prompt).toContain("文件需要源节点在线");
-          expect(prompt).toContain("方案输出规范 v2");
-          expect(prompt).toContain("不重贴摘要或全文");
+          expect(prompt).toContain("不能按条目数量决定是否结构化");
+          expect(prompt).toContain("输出可见性规范 v3");
+          expect(prompt).toContain("最终答复（final_answer）");
+          expect(prompt).toContain("最终答复必须自足");
+          expect(prompt).not.toContain("若已在进度中展示，最终答复只");
           expect(prompt).toContain("向 request_plan_approval 提交的 plan/validation");
           expect(prompt).toContain("特别是与推荐不同的选择");
           expect(prompt).toContain("普通进度、澄清和等待提示不是正式方案");
@@ -180,7 +182,7 @@ describe("Codex native control", () => {
     const snapshot = await adapter.snapshot();
     expect(snapshot.approval).toMatchObject({ status: "pending", requestKind: "question",
       action: "选择产品偏好",
-      options: [{ id: "choice-0", kind: "choice", label: "方案 A" }, { id: "choice-1", kind: "choice", label: "方案 B" }] });
+      options: [{ id: "choice-0", kind: "choice", label: "方案 A", detail: "保留原有行为" }, { id: "choice-1", kind: "choice", label: "方案 B" }] });
     await adapter.decide({ id: snapshot.approval!.id, choice: "choice-0" });
     expect((await adapter.snapshot()).approval?.status).toBe("resolved");
     const answered = (await adapter.snapshot()).messages.find((m) => m.text.startsWith("answered:"));
@@ -354,14 +356,14 @@ describe("OpenCode shared-service control", () => {
     await adapter.settings({revision:2,mode,planning:true,planApproved:false});expect(actual).toBe(mode);
   });
   it("uses the existing V2 service, displays real form options and preserves permission denial", async () => {
-    let pending = true; const calls: { method: string; path: string; body?: unknown }[] = [];
+    let pending = true; let resources = ["echo test"]; const calls: { method: string; path: string; body?: unknown }[] = [];
     const api = { call: async (method: string, path: string, body?: unknown): Promise<Wire> => {
       calls.push({ method, path, ...(body ? { body } : {}) });
       if (path === "/api/info") return { version: "2.1.0" };
       if (path.startsWith("/api/mcp")) return { data: [{ name: "missiongo", status: { status: "connected" } }] };
       if (path === "/api/session") return { data: { id: "session-1" } };
       if(path==="/api/session/session-1") return {data:{agent:"plan"}};
-      if (path.endsWith("/permission") && method === "GET") return { data: pending ? [{ id: "permit-1", action: "bash", resources: ["echo test"] }] : [] };
+      if (path.endsWith("/permission") && method === "GET") return { data: pending ? [{ id: "permit-1", action: "bash", resources }] : [] };
       if (path.endsWith("/form")) return { data: [] };
       if (path.endsWith("/permission/permit-1/reply")) { pending = false; return {}; }
       if (path.includes("/message?")) return { data: [{ id: "m-1", type: "assistant", content: [{ type: "text", text: "hello" }] }] };
@@ -371,6 +373,11 @@ describe("OpenCode shared-service control", () => {
     expect(await adapter.start("hello")).toBe("session-1");
     expect((await adapter.snapshot()).messages.at(-1)?.questions?.[0]?.key).toBe("授权请求 permit-1");
     await expect(adapter.deliver({ id: "stale", status: "queued", text: "授权请求 stale: 允许一次" })).rejects.toThrow();
+    resources = ["scope-".repeat(1000), "last-resource"];
+    expect((await adapter.snapshot()).messages.at(-1)?.questions?.[0]?.detail).toBe(JSON.stringify(resources));
+    resources = ["x".repeat(512_001)];
+    expect((await adapter.snapshot()).messages.at(-1)?.questions?.[0]?.options).toEqual(["拒绝"]);
+    await expect(adapter.deliver({id:"oversize",status:"queued",text:"授权请求 permit-1: 允许一次"})).rejects.toThrow(/展示上限/);
     await adapter.deliver({ id: "deny", status: "queued", text: "授权请求 permit-1: 拒绝" });
     expect(calls.at(-1)?.body).toEqual({ decision: "reject" });
     expect(calls.some((c) => c.path.includes("permission/permit-1/reply") && JSON.stringify(c.body).includes("always"))).toBe(false);
@@ -471,4 +478,45 @@ it("keeps a long Claude native confirmation complete and rejects oversized or un
   expect(claudeAnswer(request,"授权请求 long-form: 批准")).toEqual({action:"accept",content:{}});
   expect(()=>claudeAnswer(request,"批准")).toThrow();
   expect(claudeAnswer({...request,message:"x".repeat(512001)},"授权请求 long-form: 批准")).toEqual({action:"cancel"});
+});
+
+
+it("preserves Claude choice explanations without changing submitted labels",async()=>{
+  const adapter=new ClaudeAdapter(job(temporary(),"claude_code"),fixture);adapters.push(adapter);
+  const request={tool_name:"AskUserQuestion",requestId:"choices",input:{questions:[{question:"Choose",options:[{label:"A",description:"Keeps history"},{label:"B",description:"Needs migration"}]}]}};
+  (adapter as unknown as {requests:Wire[]}).requests=[request];
+  const question=(await adapter.snapshot()).messages.at(-1)?.questions?.[0];
+  expect(question).toMatchObject({options:["A","B"],detail:"A: Keeps history\nB: Needs migration"});
+  expect(claudeAnswer(request,"A").updatedInput.answers).toEqual({Choose:"A"});
+});
+
+it("preserves OpenCode field and option explanations and still sends source option values",async()=>{
+ const writes:Wire[]=[];
+ class FormAPI extends OpenCodeAPI {
+  override async call(method:string,path:string,body?:Wire):Promise<Wire>{
+   if(method!=="GET"&&path.endsWith("/reply"))writes.push(body!);
+   if(path==="/api/info")return {version:"2.1.0"};
+   if(path.startsWith("/api/mcp?"))return {data:[{name:"missiongo",status:{status:"connected"}}]};
+   if(path==="/api/session"&&method==="POST")return {data:{id:"description-session"}};
+   if(path==="/api/session/description-session")return {data:{agent:"plan"}};
+   if(path.endsWith("/form")&&method==="GET")return {data:[{id:"choices",title:"Choice",fields:[{key:"scope",title:"Scope",type:"string",description:"Choose one",options:[{value:"small",label:"Small",description:"Keeps existing data"},{value:"full",label:"Full",description:"Requires migration"}]}]}]};
+   return {data:[]};
+  }
+ }
+ const adapter=new OpenCodeAdapter(job(temporary(),"opencode"),new FormAPI());adapters.push(adapter);
+ await adapter.start("Fixture");
+ const question=(await adapter.snapshot()).messages.find(m=>m.sourceId==="form-choices")?.questions?.[0];
+ expect(question).toMatchObject({options:["Small","Full"],detail:"Choose one\nSmall: Keeps existing data\nFull: Requires migration"});
+ await adapter.deliver({id:"answer",status:"queued",text:"Scope: Small"});
+ expect(writes).toEqual([{answer:{scope:"small"}}]);
+});
+
+it("does not accept a Codex choice whose explanation exceeds the transport limit",async()=>{
+ const adapter=new CodexAdapter(job(temporary()),fixture);adapters.push(adapter);
+ const ref=await adapter.start("Fixture");
+ (adapter as unknown as {request(event:Wire):void}).request({id:900,method:"item/tool/requestUserInput",params:{threadId:ref,turnId:"turn",questions:[{id:"q",question:"Choose",options:[{label:"A",description:"x".repeat(4001)}]}]}});
+ const approval=(await adapter.snapshot()).approval!;
+ expect(approval.status).toBe("unavailable");
+ expect(approval.options?.[0]?.detail).toContain("展示上限");
+ await expect(adapter.decide({id:approval.id,choice:"choice-0"})).rejects.toThrow(/unsupported/);
 });

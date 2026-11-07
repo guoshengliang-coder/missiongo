@@ -56,7 +56,9 @@ export function inlinePlanTranscript<T extends AgentSessionMessage>(messages: re
     return (message.text.trim() === body || message.text.trim().startsWith(body + "\n"))
       && (!validation || message.text.includes(validation));
   });
-  const original = matches.at(-1);
+  // A later progress reference must not move controls away from the formal answer.
+  // Phase-less legacy clients remain supported; source messages stay untouched.
+  const original = [...matches].reverse().find(message => message.phase === "final_answer") ?? matches.at(-1);
   return { messages, ...(original ? {planMessageId: original.id} : {}) };
 }
 
