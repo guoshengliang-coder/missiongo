@@ -42,6 +42,15 @@ for (const width of [375, 768, 1440]) for (const theme of ["light", "dark"] as c
       await control.press("c"); // closed typeahead commits once
       await expect(control).toHaveAttribute("data-value", "charlie");
       await control.click();
+      const menu = page.getByRole("listbox");
+      const selected = menu.getByRole("option", { selected: true });
+      await expect(menu.locator(".single-select-option > svg")).toHaveCount(0);
+      await expect(selected).toHaveText("Charlie");
+      await expect(selected).toHaveCSS("outline-width", "2px");
+      await control.press("ArrowUp");
+      await expect(selected).toHaveText("Charlie");
+      await expect(selected).toHaveCSS("outline-width", "2px");
+      await expect(control).toHaveAttribute("data-value", "charlie");
       await expect(page.getByRole("option", { name: "组内禁用", exact: true })).toHaveAttribute("aria-disabled", "true");
       await control.press("Tab");
       await expect(control).not.toBeFocused();

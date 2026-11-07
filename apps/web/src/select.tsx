@@ -1,11 +1,12 @@
 import { useOverlay } from "./overlay";
 import { Children, Fragment, isValidElement, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type SelectHTMLAttributes } from "react";
 import { createPortal } from "react-dom";
-import { Check, ChevronDown } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 
 interface Choice { value: string; label: string; disabled: boolean; group?: string | undefined }
 interface Props extends Omit<SelectHTMLAttributes<HTMLSelectElement>, "multiple" | "size"> {
   anchorToLabel?: boolean;
+  fitContent?: boolean;
   renderValue?: (value: string) => ReactNode;
   renderOption?: (value: string) => ReactNode;
 }
@@ -30,7 +31,7 @@ function choicesOf(children: ReactNode, group?: string, disabled = false): Choic
  * users interact with the button/listbox on every platform. No UA menu is opened.
  * Portals go beside a modal's content, inside its top layer and outside scrollers.
  * This also works on the browser baseline, without the newer Popover API. */
-export function Select({ children, value, defaultValue, onChange, className = "", style, id, disabled, anchorToLabel = false, renderValue, renderOption, ...props }: Props) {
+export function Select({ children, value, defaultValue, onChange, className = "", style, id, disabled, anchorToLabel = false, fitContent = false, renderValue, renderOption, ...props }: Props) {
   const generatedId = useId();
   const controlId = id ?? `select-${generatedId}`;
   const listId = `${controlId}-list`;
@@ -92,29 +93,59 @@ export function Select({ children, value, defaultValue, onChange, className = ""
       if (anchor.bottom < y || anchor.top > y + height || anchor.right < x || anchor.left > x + width) { setOpen(false); return; }
       const below = Math.max(0, y + height - anchor.bottom - 14);
       const above = Math.max(0, anchor.top - y - 14);
+      const previousWidth = menu.style.width;
+      const previousMaxWidth = menu.style.maxWidth;
+      let contentWidth = 0;
+      if (fitContent) {
+        // Measure the real option content (including custom counts) before
+        // applying viewport limits. Default long-option wrapping is unchanged.
+        menu.style.width = "max-content";
+        menu.style.maxWidth = `${Math.max(0, width - 16)}px`;
+        contentWidth = Math.ceil(menu.getBoundingClientRect().width);
+      }
+      const menuWidth = Math.min(Math.max(anchor.width, 200, contentWidth), Math.max(0, width - 16));
+      menu.style.width = `${menuWidth}px`;
       const desiredHeight = Math.min(320, menu.scrollHeight);
+      menu.style.width = previousWidth;
+      menu.style.maxWidth = previousMaxWidth;
       const upward = below < desiredHeight && above > below;
       const maxHeight = Math.min(320, upward ? above : below);
-      const menuWidth = Math.min(Math.max(anchor.width, 200), Math.max(0, width - 16));
-      setPosition({
+      const next = {
         left: Math.min(Math.max(x + 8, anchor.left), x + width - menuWidth - 8),
         top: upward ? Math.max(y + 8, anchor.top - Math.min(desiredHeight, maxHeight) - 6) : anchor.bottom + 6,
         width: menuWidth, maxHeight, side: upward ? "top" : "bottom",
-      });
+      };
+      setPosition(previous => previous && previous.left === next.left && previous.top === next.top
+        && previous.width === next.width && previous.maxHeight === next.maxHeight && previous.side === next.side ? previous : next);
     };
     fit();
-    const observer = new ResizeObserver(fit);
+    // Defer observer-driven measurements so fitting the menu cannot resize an
+    // observed element during the same ResizeObserver delivery cycle.
+    let frame: number | undefined;
+    const scheduleFit = () => {
+      if (frame !== undefined) return;
+      frame = window.requestAnimationFrame(() => { frame = undefined; fit(); });
+    };
+    const observer = new ResizeObserver(scheduleFit);
     observer.observe(trigger);
+    observer.observe(menu);
     if (anchorElement !== trigger) observer.observe(anchorElement);
+    // Custom renderOption content may update without changing option labels.
+    const contentObserver = new MutationObserver(scheduleFit);
+    contentObserver.observe(menu, { childList: true, characterData: true, subtree: true });
+    const fontObserver = new MutationObserver(scheduleFit);
+    fontObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-font-scale"] });
     window.addEventListener("resize", fit);
     window.addEventListener("scroll", fit, true);
     window.visualViewport?.addEventListener("resize", fit);
     window.visualViewport?.addEventListener("scroll", fit);
     return () => {
-      observer.disconnect(); window.removeEventListener("resize", fit); window.removeEventListener("scroll", fit, true);
+      observer.disconnect(); contentObserver.disconnect(); fontObserver.disconnect();
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", fit); window.removeEventListener("scroll", fit, true);
       window.visualViewport?.removeEventListener("resize", fit); window.visualViewport?.removeEventListener("scroll", fit);
     };
-  }, [open, optionsKey, anchorToLabel]);
+  }, [open, optionsKey, anchorToLabel, fitContent]);
 
   useEffect(() => {
     if (open && active >= 0) document.getElementById(`${listId}-${active}`)?.scrollIntoView({ block: "nearest" });
@@ -162,7 +193,6 @@ export function Select({ children, value, defaultValue, onChange, className = ""
             onPointerMove={event => { if (event.pointerType === "mouse" && !option.disabled) setActive(index); }}
             onClick={event => { event.preventDefault(); choose(index); }}>
             <span className="single-select-option-content">{renderOption ? renderOption(option.value) : option.label}</span>
-            <Check size={16} aria-hidden="true" className={index === selectedIndex ? "" : "single-select-unchecked"} />
           </div>;
         })}
       </div>)}

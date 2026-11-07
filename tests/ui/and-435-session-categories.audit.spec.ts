@@ -52,9 +52,9 @@ for (const width of [320,1440]) for (const theme of ["light","dark"] as const) {
       }
       await page.screenshot({ path: testInfo.outputPath("all-categories.png"), fullPage: true });
       await filter.click();
-      await expect(page.getByRole("option",{name:/^全部/})).toContainText("共 3");
+      await expect(page.getByRole("option",{name:/^全部/})).toHaveAccessibleName(/1 个运行中，共 3 个会话/);
       const integrationOption=page.getByRole("option",{name:/^集成会话/});
-      await expect(integrationOption).toContainText("共 1");await expect(integrationOption).toContainText("1 运行中");
+      await expect(integrationOption).toHaveAccessibleName(/1 个运行中，共 1 个会话/);
       await integrationOption.click();await expect(list).toHaveCount(1);await expect(list).toContainText("批次任务");
       await list.click();await expect(page.locator(".agent-console-heading [data-session-category]")).toHaveText("集成会话");
       await assertHeaderPalette("integration");
