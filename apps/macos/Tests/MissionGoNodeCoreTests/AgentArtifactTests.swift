@@ -34,6 +34,54 @@ final class AgentArtifactTests: XCTestCase {
         let job = AgentArtifactJob(id: "output", sessionId: "session", sessionRef: "native", agentKind: "codex", sourceId: "message", href: href)
         return try AgentArtifactReader.read(job: job, messages: [AgentSessionMessage(sourceId: "message", role: role, text: text ?? "[查看](<\(href)>)")])
     }
+    func diagnosticRead(_ file: URL, protocolVersion: Int? = 1) throws -> AgentArtifactBundle {
+        let job = AgentArtifactJob(id: "output", sessionId: "session", sessionRef: "native", agentKind: "codex", sourceId: "message", href: file.path, diagnosticsProtocol: protocolVersion)
+        return try AgentArtifactReader.read(job: job, messages: [AgentSessionMessage(sourceId: "message", role: "agent", text: "[Preview](<\(file.path)>)")])
+    }
+    func testUnknownDownloadLinksAreSkippedButRequiredResourcesStayStrict() throws {
+        try fixture { root in
+            let page = root.appendingPathComponent("report.html")
+            try Data("<a href=evidence.jsonl download>Evidence</a><a href='notes.md'>Notes</a><img src='image.png'>".utf8).write(to: page)
+            try Data("# Notes\n[Evidence](evidence.jsonl)".utf8).write(to: root.appendingPathComponent("notes.md"))
+            try Data("image".utf8).write(to: root.appendingPathComponent("image.png"))
+            let bundle = try diagnosticRead(page)
+            XCTAssertEqual(bundle.skippedResources, ["evidence.jsonl"])
+            XCTAssertEqual(Set(bundle.files.map(\.name)), ["report.html", "notes.md", "image.png"])
+            XCTAssertThrowsError(try diagnosticRead(page, protocolVersion: nil)) { XCTAssertEqual($0 as? AgentArtifactError, .unsupported) }
+            for (html, code, resource) in [
+                ("<link href='missing.css'>", AgentArtifactError.resourceMissing, "missing.css"),
+                ("<link href=missing.css>", .resourceMissing, "missing.css"),
+                ("<img src='missing.png'>", .resourceMissing, "missing.png"),
+                ("<script type='module'>import './evidence.jsonl';</script>", .unsupported, "evidence.jsonl")
+            ] {
+                try Data(html.utf8).write(to: page)
+                XCTAssertThrowsError(try diagnosticRead(page)) {
+                    XCTAssertEqual(($0 as? AgentArtifactFailure)?.code, code)
+                    XCTAssertEqual(($0 as? AgentArtifactFailure)?.resource, resource)
+                }
+            }
+            for href in ["../outside.jsonl", "%2fetc/private.jsonl", ".hidden.jsonl", "%5coutside.jsonl"] {
+                try Data("<a href='\(href)'>Evidence</a>".utf8).write(to: page)
+                XCTAssertThrowsError(try diagnosticRead(page)) { XCTAssertEqual(($0 as? AgentArtifactFailure)?.code, .fileDenied) }
+            }
+        }
+    }
+    func testDiagnosticLimitsAndDirectorySymlinks() throws {
+        try fixture { root in
+            let page = root.appendingPathComponent("report.html")
+            let links = (0..<63).map { "<a href='\($0).jsonl'>Data</a>" }.joined()
+            try Data(links.utf8).write(to: page)
+            XCTAssertEqual(try diagnosticRead(page).skippedResources?.count, 63)
+            try Data((links + "<a href='last.jsonl'>Data</a>").utf8).write(to: page)
+            XCTAssertThrowsError(try diagnosticRead(page)) { XCTAssertEqual(($0 as? AgentArtifactFailure)?.code, .tooLarge) }
+            try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("linked"), withDestinationURL: root)
+            try Data("<img src='linked/report.html'>".utf8).write(to: page)
+            XCTAssertThrowsError(try diagnosticRead(page)) { XCTAssertEqual(($0 as? AgentArtifactFailure)?.code, .fileDenied) }
+            try Data("<img src='.private.png'>".utf8).write(to: page)
+            XCTAssertThrowsError(try diagnosticRead(page)) { XCTAssertNil(($0 as? AgentArtifactFailure)?.resource) }
+        }
+    }
+
     func testCollectsHtmlCssScriptAndImagesWithoutExecutingThem() throws {
         try fixture { root in
             let page = root.appendingPathComponent("prototype.html")

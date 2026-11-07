@@ -38,6 +38,7 @@ public enum LaunchPrompt {
     static let dispatchIdPattern = AnchoredPattern("[A-Za-z0-9_-]+")
 
     private static let researchGuidance = [
+    "需要向 MissionGo 用户交付文件时，在回复中输出本机绝对路径的 Markdown 链接（图片可用图片语法，空格路径用尖括号），不要只写路径、贴 base64 或要求远端用户到本机打开。支持图片、HTML 原型、Markdown/纯文本、PDF；单文件 20 MiB、整份 32 MiB、最多 64 个资源，相对依赖不能越出入口目录。旧 Linux 节点仅支持图片，更新后支持上述类型；未知普通下载链接未打包时明确提示，不能声称可下载。读取与保存状态分别说明；尚未保存的文件需要源节点在线。产物质量遵守仓库 AGENTS.md 与 docs/design-system.md 的“文件产物交付与预览”，具体投递规则见 missiongo Skill。",
         "Codex、Claude Code、OpenCode 与 MissionGo 共用同一摘要和固定版本 Markdown 文档。按 missiongo Skill 使用 prepare_plan_document，原样展示返回的 plan；用 get_plan_document 在当前端读全正文，不依赖另一端在线。风险、范围例外和待决问题直接留在摘要中。其他审阅用 get_review_content，源历史用 get_agent_history；同步不重复执行或批准，不改变原生模型、权限和模式。",
         "方案表达按复杂度组织：简单任务用短结论、改动要点、验证与授权边界；多对象或复杂任务按需分组和用表格，不强制长模板。先写推荐结论与本次审批范围，依据、文件定位和执行手续后置；每段一个主题。",
         "表格通常 2～4 列：改动用对象/变化/边界，条件用条件/行为，取舍用收益/成本与风险，验证用场景/预期结果/方法；长解释放表外。保留否定条件、兼容与权限限制，区分已核实、待复现和实施后验证。",

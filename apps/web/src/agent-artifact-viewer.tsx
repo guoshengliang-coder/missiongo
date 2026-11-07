@@ -2,7 +2,7 @@ import { OverlayDialog } from "./overlay";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Download, LoaderCircle, RotateCcw, X } from "lucide-react";
-import { localArtifactLinks, localArtifactImageLinks, localArtifactPath, type AgentArtifactBundle } from "@missiongo/domain";
+import { localArtifactLinks, localArtifactImageLinks, localArtifactPath, artifactResourceName, type AgentArtifactBundle } from "@missiongo/domain";
 import { createPortal } from "react-dom";
 
 import { api } from "./api";
@@ -58,7 +58,7 @@ function ArtifactImage({ sessionId, messageId, href, onOpen, onLoad }: {
   const url = useMemo(() => entry?.contentType.startsWith("image/") ? artifactDataUrl(entry) : undefined, [entry]);
   const failed = request.isError || state.isError || bundle.isError || status?.status === "failed" || decodeFailed || Boolean(entry && !url);
   return <div className="agent-output-image">
-    {failed ? <div className="agent-output-image-state" role="alert"><span>{t(errorKeys[status?.error ?? ""] ?? "agentImageUnavailable")}</span>
+    {failed ? <div className="agent-output-image-state" role="alert"><span>{t(errorKeys[status?.error ?? ""] ?? "agentImageUnavailable")}</span>{status?.errorResource && artifactResourceName(status.errorResource) && <span>{t("artifactProblemResource", { name: status.errorResource })}</span>}
       <button type="button" className="artifact-link" onClick={() => { setDecodeFailed(false); void retry(); }}>{t("retry")}</button></div>
       : url ? <button type="button" className="agent-output-image-open" aria-label={t("agentImagePreview")} onClick={onOpen}>
         <img src={url} alt={t("agentImagePreview")} onLoad={onLoad} onError={() => setDecodeFailed(true)} />
@@ -76,7 +76,7 @@ function ArtifactViewer({ sessionId, messageId, href, onClose }: { sessionId: st
   return <OverlayDialog className="artifact-backdrop" onClose={onClose} aria-label={t("artifactPreview")}>
     <div className="artifact-viewer">
       <header><strong>{status?.filename ?? t("artifactPreview")}</strong><button className="icon-button" type="button" onClick={onClose} aria-label={t("close")}><X size={20} /></button></header>
-      {failed ? <div className="artifact-status" role="alert"><p>{t(errorKeys[status?.error ?? ""] ?? "artifactFailed")}</p><button className="secondary-button" type="button" onClick={() => void retry()}><RotateCcw size={16} />{t("retry")}</button></div>
+      {failed ? <div className="artifact-status" role="alert"><p>{t(errorKeys[status?.error ?? ""] ?? "artifactFailed")}</p>{status?.errorResource && artifactResourceName(status.errorResource) && <p>{t("artifactProblemResource", { name: status.errorResource })}</p>}<button className="secondary-button" type="button" onClick={() => void retry()}><RotateCcw size={16} />{t("retry")}</button></div>
         : bundle.data ? <ArtifactContent bundle={bundle.data} previewUrl={`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(status!.id)}/preview`} />
         : <div className="artifact-status" role="status"><LoaderCircle className="spin" size={24} /><p>{t(waiting ? "artifactWaiting" : "artifactLoading")}</p></div>}
     </div>
@@ -96,6 +96,7 @@ function ArtifactContent({ bundle, previewUrl }: { bundle: AgentArtifactBundle; 
   }, [entry, html]);
   return <>
     <div className="artifact-toolbar"><span>{t("artifactSaved")}</span><a className="secondary-button" href={url || undefined} download={entry.name.split("/").at(-1)}><Download size={16} />{t("download")}</a></div>
+    {Boolean(bundle.skippedResources?.length) && <div className="artifact-help" role="status">{t("artifactSkippedHelp")}<ul>{bundle.skippedResources!.map(name => <li key={name}>{name}</li>)}</ul></div>}
     {html !== undefined ? <><p className="artifact-help">{t("artifactHtmlHelp")}</p><iframe title={entry.name} sandbox="allow-scripts" referrerPolicy="no-referrer" src={previewUrl} onLoad={(event) => {
         event.currentTarget.contentWindow?.postMessage({ type: "missiongo-artifact-preview", html }, "*");
       }} /></>
@@ -105,8 +106,8 @@ function ArtifactContent({ bundle, previewUrl }: { bundle: AgentArtifactBundle; 
         try {
           const resolved = new URL(href, `https://artifact.invalid/${bundle.entry}`);
           const file = resolved.origin === "https://artifact.invalid" && bundle.files.find((resource) => resource.name === decodeURIComponent(resolved.pathname.slice(1)) && resource.contentType.startsWith("image/"));
-          return file ? artifactDataUrl(file) : undefined;
-        } catch { return undefined; }
+          return file ? artifactDataUrl(file) : "about:blank";
+        } catch { return "about:blank"; }
       }}>{artifactText(entry)}</MarkdownText></div>
       : <pre className="artifact-document">{artifactText(entry)}</pre>}
   </>;

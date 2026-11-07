@@ -150,11 +150,28 @@ function register(id: string, close: Layer["close"]): () => void {
 }
 
 /** Use for nonmodal popups. Return false to retain a guarded/pending layer. */
-export function useOverlay(open: boolean, onClose: () => boolean | void) {
+export function useOverlay(open: boolean, onClose: () => boolean | void,
+  outside?: { ref: RefObject<HTMLElement | null>; close: () => void }) {
   const id = useId();
   const close = useRef(onClose);
   close.current = onClose;
   useEffect(() => open ? register(id, () => close.current()) : undefined, [id, open]);
+  const outsideClose = useRef(outside);
+  outsideClose.current = outside;
+  useEffect(() => {
+    if (!open || !outside) return;
+    const pointer = (event: PointerEvent) => {
+      // Page Back already traverses the shared history. Closing here as well
+      // would race that click and consume two levels (popup + conversation).
+      if (event.target instanceof Element && event.target.closest(".back-button")) return;
+      // A child Select is portaled outside its parent. Only the top layer may
+      // handle an outside click; never unmount its parent before a choice lands.
+      if (active().at(-1)?.id !== id || outsideClose.current?.ref.current?.contains(event.target as Node)) return;
+      outsideClose.current?.close();
+    };
+    document.addEventListener("pointerdown", pointer, true);
+    return () => document.removeEventListener("pointerdown", pointer, true);
+  }, [id, open, Boolean(outside)]);
 }
 
 /** The only native dialog lifecycle: top-layer inertness and focus belong to

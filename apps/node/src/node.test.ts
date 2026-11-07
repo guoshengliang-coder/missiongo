@@ -82,6 +82,10 @@ describe("headless configuration and scope", () => {
           expect(approve).toBeGreaterThan(ask);
           expect(prompt).toContain("单独申请调查授权");
           expect(prompt).toContain("方案表达按复杂度组织");
+          expect(prompt).toContain("本机绝对路径的 Markdown 链接");
+          expect(prompt).toContain("20 MiB、整份 32 MiB、最多 64 个资源");
+          expect(prompt).toContain("旧 Linux 节点仅支持图片");
+          expect(prompt).toContain("文件需要源节点在线");
           expect(prompt).toContain("向 request_plan_approval 提交的 plan/validation");
           expect(prompt).toContain("特别是与推荐不同的选择");
           expect(prompt).toContain("普通进度、澄清和等待提示不是正式方案");

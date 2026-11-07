@@ -20,7 +20,8 @@ export function artifactHtml(bundle: AgentArtifactBundle): string {
     let url: URL;
     try { url = new URL(reference, `https://artifact.invalid/${from}`); } catch { return "about:blank"; }
     if (url.origin !== "https://artifact.invalid") return "about:blank";
-    const name = decodeURIComponent(url.pathname.slice(1));
+    let name: string;
+    try { name = decodeURIComponent(url.pathname.slice(1)); } catch { return "about:blank"; }
     const file = files.get(name);
     if (!file || resolving.has(name)) return "about:blank";
     if (cache.has(name)) return cache.get(name)! + url.hash;
@@ -43,7 +44,12 @@ export function artifactHtml(bundle: AgentArtifactBundle): string {
     document.querySelectorAll("base,meta,iframe,object,embed").forEach((element) => element.remove());
     document.querySelectorAll("*").forEach((element) => {
       for (const attr of ["src", "href", "poster", "xlink:href"]) {
-        if (element.hasAttribute(attr)) element.setAttribute(attr, resource(element.getAttribute(attr)!, name));
+        if (element.hasAttribute(attr)) {
+          const value = resource(element.getAttribute(attr)!, name);
+          if (element.tagName === "A" && attr === "href" && value === "about:blank") {
+            element.removeAttribute("href"); element.removeAttribute("download"); element.setAttribute("aria-disabled", "true");
+          } else element.setAttribute(attr, value);
+        }
       }
       element.removeAttribute("srcset");
       element.removeAttribute("ping");

@@ -57,3 +57,25 @@ it("rejects traversal, duplicate names, hidden files, noncanonical base64 and ac
     { ...bundle, files: [{ ...bundle.files[0]!, contentType: "text/html" }] },
   ]) expect(() => validateArtifactBundle(bad)).toThrow();
 });
+
+it("persists bounded relative failure details across reopen and clears them on retry", async () => {
+  const f = await fixture();
+  const result = f.artifacts.request("owner", f.session, "message", "/tmp/fixture-output/report.html", f.artifacts.binding("owner", f.session));
+  expect(f.artifacts.jobs("owner", f.node.nodeId)[0]).toMatchObject({ diagnosticsProtocol: 1 });
+  for (const errorResource of ["/etc/private", "../secret", "a\nsecret", ".env", "x".repeat(1025)]) {
+    await expect(f.artifacts.complete("owner", f.node.nodeId, result.id, { error: "resource_missing", errorResource })).rejects.toThrow();
+  }
+  await f.artifacts.complete("owner", f.node.nodeId, result.id, { error: "resource_missing", errorResource: "assets/site.css" });
+  expect(new AgentArtifacts(f.store.database, join(f.root, "outputs")).get("owner", f.session, result.id)).toMatchObject({ errorResource: "assets/site.css", error: "resource_missing" });
+  f.artifacts.request("owner", f.session, "message", "/tmp/fixture-output/report.html", f.artifacts.binding("owner", f.session));
+  expect(f.artifacts.get("owner", f.session, result.id)).not.toHaveProperty("errorResource");
+  const saved = { ...bundle, skippedResources: ["evidence.jsonl"] };
+  await f.artifacts.complete("owner", f.node.nodeId, result.id, { bundle: saved });
+  expect(await f.artifacts.bundle("owner", f.session, result.id)).toEqual(saved);
+});
+
+it("rejects unsafe, supported, duplicate or excessive skipped resources", () => {
+  for (const skippedResources of [["../evidence.jsonl"], ["/secret.jsonl"], ["site.css"], ["a.jsonl", "a.jsonl"], Array.from({ length: 64 }, (_, n) => `${n}.jsonl`)]) {
+    expect(() => validateArtifactBundle({ ...bundle, skippedResources })).toThrow();
+  }
+});

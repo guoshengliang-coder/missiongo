@@ -369,7 +369,9 @@ public final class NodeLoop: @unchecked Sendable {
                         let messages = try await adapter.artifactMessages(sessionRef: job.sessionRef, sourceId: job.sourceId)
                         result = AgentArtifactResult(bundle: try AgentArtifactReader.read(job: job, messages: messages))
                     } catch {
-                        result = AgentArtifactResult(error: (error as? AgentArtifactError)?.rawValue ?? "node_unavailable")
+                        let failure = error as? AgentArtifactFailure
+                        result = AgentArtifactResult(error: failure?.code.rawValue ?? (error as? AgentArtifactError)?.rawValue ?? "node_unavailable",
+                            errorResource: job.diagnosticsProtocol == 1 ? failure?.resource : nil)
                     }
                     try await api.reportArtifact(id: job.id, result: result)
                 }
