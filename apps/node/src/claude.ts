@@ -145,6 +145,7 @@ export class ClaudeAdapter implements Adapter {
     }
     if (["assistant", "user"].includes(event.type)) {
       if (event.parent_tool_use_id != null) return;
+      if (event.type === "user" && (event.isMeta === true || event.isCompactSummary === true)) return;
       if (event.type === "user" && event.origin?.kind !== "human"
         && !this.visibleUserMessageIds.has(event.uuid)) return;
       const message = event.message ?? {};

@@ -215,6 +215,15 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
         XCTAssertTrue(snapshot.state.messages.isEmpty)
     }
 
+    func testMetadataCannotBecomeHumanTextWhenImportAssignsHumanOrigin() {
+        var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
+        for flag in ["isMeta", "isCompactSummary"] {
+            snapshot.consume(["type": "user", "uuid": flag, flag: true,
+                "origin": ["kind": "human"], "message": ["content": "internal"]])
+        }
+        XCTAssertTrue(snapshot.state.messages.isEmpty)
+    }
+
     func testOnlyMirrorsHumanAndExplicitHostMessages() {
         var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
         snapshot.consume([

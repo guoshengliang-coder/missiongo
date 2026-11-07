@@ -420,6 +420,8 @@ it("does not mirror Claude child tasks or internal user frames as conversation",
   const consume = (value: Wire) => (adapter as unknown as { event(value: Wire): void }).event(value);
   consume({ type: "assistant", uuid: "child", parent_tool_use_id: "task", message: { content: [{ type: "text", text: "internal child" }] } });
   consume({ type: "user", uuid: "injected", message: { content: "internal context" } });
+  consume({ type: "user", uuid: "meta", origin: { kind: "human" }, isMeta: true, message: { content: "internal metadata" } });
+  consume({ type: "user", uuid: "summary", origin: { kind: "human" }, isCompactSummary: true, message: { content: "internal summary" } });
   consume({ type: "user", uuid: "human", origin: { kind: "human" }, message: { content: "  JSON {}  " } });
   consume({ type: "assistant", uuid: "reply", message: { content: [
     { type: "thinking", text: "private" }, { type: "tool_use", text: "private" }, { type: "text", text: "Visible reply" },
