@@ -842,7 +842,7 @@ export function AgentSessionConsole({
   const showFailureCard = conversationReady && selected?.source !== "external" && selected?.agentKind === "codex" && sessionStatus === "failed";
   const showRunDetails = Boolean(selected?.agentSessionId && sessionQuery.data
     && !(selected.source !== "external" && selected.agentKind === "codex" && sessionStatus === "failed"));
-  const stopAction = canStopCurrentTurn && (
+  const stopAction = conversationReady && canStopCurrentTurn && (
     <button
       type="button"
       className="secondary-button agent-run-stop"
@@ -1286,6 +1286,7 @@ export function AgentSessionConsole({
                   </div>
                 )}
                 {outgoing && (
+                  <div className={`agent-console-outgoing agent-console-outgoing-${outgoing.status}`}>
                   <article className={`agent-console-message agent-console-message-user agent-console-message-outgoing agent-console-message-outgoing-${outgoing.status}`}>
                     <header className="agent-console-message-meta">
                       <time dateTime={outgoing.occurredAt}>{formatAgentMessageTime(outgoing.occurredAt, locale)}</time>
@@ -1296,6 +1297,7 @@ export function AgentSessionConsole({
                     {sendingSelected && send.variables?.files.length ? <div className="agent-chat-draft-files">
                       {send.variables.files.map((file, index) => <DraftChatFile key={`${file.name}-${index}`} file={file} disabled />)}
                     </div> : null}
+                  </article>
                     <AgentReplyFeedback status={outgoing.status} cancelling={cancellingSelected}
                       onEdit={outgoing.commandId && selected.canReply ? () => cancel.mutate({ sessionId: selected.agentSessionId!, commandId: outgoing.commandId!, text: outgoing.text }) : undefined} />
                     {(outgoing.status === "failed" || outgoing.status === "delivery_unknown") && (
@@ -1332,7 +1334,7 @@ export function AgentSessionConsole({
                       )}
                     </footer>
                     )}
-                  </article>
+                  </div>
                 )}
                 <AgentHistoryNotice error={sessionQuery.data ? sessionQuery.data.lastError : selected.lastError} />
                 {showFailureCard ? (
@@ -1472,10 +1474,10 @@ export function AgentSessionConsole({
                 </>)}
                 </div>
                 </>}
-                {!showRunDetails && (!showFailureCard || stopAction) && <div className="agent-run-controls agent-run-fallback">
+                {conversationReady && !showRunDetails && (!showFailureCard || stopAction) && <div className="agent-run-controls agent-run-fallback">
                   {!showFailureCard && <p className={`agent-console-activity agent-console-activity-${visualStatus}`} role="status">
                     <SessionStatusIcon status={visualStatus} />
-                    {!conversationReady ? t("agentSessionLoading") : selected.archivedAt ? t("archived")
+                    {selected.archivedAt ? t("archived")
                       : !selected.agentSessionId ? t(dispatchActivityLabelKey(selected)) : statusLabel(sessionStatus, t)}
                   </p>}
                   {stopAction}
