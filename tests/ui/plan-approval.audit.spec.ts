@@ -38,6 +38,8 @@ for(const width of [320,1440]) for(const theme of ["light","dark"] as const) tes
     const button=banner.getByRole("button",{name:"批准",exact:true});await expect(button).toBeEnabled();
     await button.click();await expect(banner).toContainText("批准已保存，等待原连接恢复后续办一次");
     expect(posts).toBe(1);await expect(page.locator(".agent-console-message-outgoing")).toHaveCount(0);
+    await expect(page.locator("article[data-agent-message-id]")).toHaveCount(0);
+    await page.getByText("查看已登记的历史方案",{exact:true}).click();
     await expect(page.getByText("明确登记的派单实施方案",{exact:true})).toBeVisible();
     await page.screenshot({path:info.outputPath("offline-plan-approval.png")});
     expect(await page.evaluate(()=>document.documentElement.scrollWidth-innerWidth)).toBeLessThanOrEqual(1);
@@ -230,7 +232,9 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
       await expect(button).toBeEnabled();
       await expect(page.locator(".agent-console-connection-banner")).toContainText("领取前方案审批");
 
-      await expect(page.locator("article[data-agent-message-id]").filter({ has: page.locator(".agent-plan-inline-approval") })).toContainText("领取前审阅的明确实施方案");
+      await expect(page.locator("article[data-agent-message-id]")).toHaveCount(0);
+      await page.getByText("查看已登记的历史方案",{exact:true}).click();
+      await expect(page.getByRole("region",{name:"方案记录"})).toContainText("领取前审阅的明确实施方案");
       for (const scale of ["small", "medium", "large"]) {
         await page.evaluate(scale => { document.documentElement.dataset.fontScale = scale; document.documentElement.dataset.consoleFontScale = scale; }, scale);
         await expect(button).toBeVisible();
@@ -268,7 +272,7 @@ for (const viewport of [{ width: 320, height: 900, theme: "dark" }, { width: 144
       const approvedAt = "2026-10-30T01:01:00.500Z", resumedAt = "2026-10-30T01:02:00Z";
       const detail = () => ({ ...summary, agentKind, status: phase === "active" ? "active" : "idle",
         attention: phase === "action" ? { state: "needed", kind: "action", reason: "请处理新的独立事项" } : summary.attention,
-        messages: [{ id: "original-plan", sourceId: "original-plan", role: "plan", text: "保留这份方案正文", occurredAt: stamp }],
+        messages: [{ id: "original-plan", sourceId: "original-plan", role: "plan", text: "保留这份方案正文\n\n确认正文保留", occurredAt: stamp }],
         implementationPlan: { revision: phase === "new-plan" ? "new-revision" : "reviewed", plan: "保留这份方案正文", validation: "确认正文保留", itemKeys: [], approved: phase !== "new-plan", valid: true,
           submittedAt: stamp, ...(phase !== "new-plan" ? { approvedAt } : {}) },
         ...(phase !== "new-plan" ? { planApprovalState: { approved: true, revision: "reviewed", continuationQueued: true } }

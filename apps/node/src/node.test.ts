@@ -82,6 +82,8 @@ describe("headless configuration and scope", () => {
           expect(approve).toBeGreaterThan(ask);
           expect(prompt).toContain("单独申请调查授权");
           expect(prompt).toContain("方案表达按复杂度组织");
+          expect(prompt).toContain("方案输出规范 v2");
+          expect(prompt).toContain("不重贴摘要或全文");
           expect(prompt).toContain("向 request_plan_approval 提交的 plan/validation");
           expect(prompt).toContain("特别是与推荐不同的选择");
           expect(prompt).toContain("普通进度、澄清和等待提示不是正式方案");
@@ -89,7 +91,7 @@ describe("headless configuration and scope", () => {
           if (freeSession) expect(prompt).toContain("不自行开始任务");
           else if (mode === "plan") {
             expect(prompt).toContain("领取记录任务归属，不要求方案批准");
-            expect(prompt).toContain("批准后将已批准的计划以结构化评论写入各条");
+            expect(prompt).toContain("批准后用 append_comment(planDocumentId) 将固定文档及摘要归档到各条");
           }
         }
       });
