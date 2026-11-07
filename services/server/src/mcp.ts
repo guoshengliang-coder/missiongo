@@ -2,7 +2,7 @@ import { PlanDocuments } from "./plan-documents.js";
 import { NativeHumanConfirmations } from "./native-human-confirmation.js";
 import { AccountStore } from "./accounts-store.js";
 import { localArtifactLinks } from "@missiongo/domain";
-import { CURRENT_ENTRY_CONTENT_GUIDANCE, MAX_PLAN_CHARACTERS, MAX_VALIDATION_CHARACTERS, reviewContentPage } from "./review-content.js";
+import { CURRENT_ENTRY_CONTENT_GUIDANCE, PLAN_SUMMARY_STRUCTURE_GUIDANCE, MAX_PLAN_CHARACTERS, MAX_VALIDATION_CHARACTERS, reviewContentPage } from "./review-content.js";
 import { AgentHistory } from "./agent-history.js";
 import { AgentArtifacts } from "./agent-artifacts.js";
 import { ManagedDecisionStore } from "./managed-decision-store.js";
@@ -360,7 +360,7 @@ export function createMissionGoMcpServer(
           supportsSharedReleaseObservations: true,
         },
         skill: skillVersionInfo(options.publicOrigin),
-        planOutputContract: { version: 3, guidance: "Use the current Skill document-plan workflow even when a generated legacy startup template requests full chat text. Publish the exact concise plan, material boundaries and fixed document link in final_answer, not only commentary. Do not publish the formal plan prematurely in progress; if it was, final completeness takes priority over deduplication. Web registration may precede final display. Before native confirmation show the content; unresolved confirmation must retain it in the final answer. Pending questions, rework changes, outcomes, verification gaps and deliverable links must also remain visible in final answers. Full Markdown is Agent context, not another chat response. Preserve explicit user preferences and existing authorization." },
+        planOutputContract: { version: 4, guidance: PLAN_SUMMARY_STRUCTURE_GUIDANCE + " Use the current Skill document-plan workflow even when a generated legacy startup template requests full chat text. Publish the exact concise plan, material boundaries and fixed document link in final_answer, not only commentary. Do not publish the formal plan prematurely in progress; if it was, final completeness takes priority over deduplication. Web registration may precede final display. Before native confirmation show the content; unresolved confirmation must retain it in the final answer. Pending questions, rework changes, outcomes, verification gaps and deliverable links must also remain visible in final answers. Full Markdown is Agent context, not another chat response. Preserve explicit user preferences and existing authorization." },
       });
     },
   );
@@ -1247,8 +1247,8 @@ export function createMissionGoMcpServer(
   server.registerTool(
     "prepare_plan_document", {
     title:"Prepare an immutable implementation plan document",
-    description:"After diagnosis prepare one fixed Markdown document starting with the exact concise summary plus a newline. Include detailed evidence, scope, constraints and validation in the Markdown. Return the exact plan text for unchanged final_answer display. Web approval may be registered with documentId before that final answer. Native confirmation requires prior content display; unresolved confirmation still needs a complete final answer. Tool output is not final delivery. Does not approve, claim, comment or start another conversation. Use a new idempotency key for revisions; retry unchanged inputs with the same key.",
-    inputSchema:z.object({itemKeys:z.array(z.string().min(2).max(50)).min(1).max(20),summary:z.string().trim().min(1).max(6000),
+    description:PLAN_SUMMARY_STRUCTURE_GUIDANCE + " After diagnosis prepare one fixed Markdown document starting with the exact concise summary plus a newline. Include detailed evidence, scope, constraints and validation in the Markdown. Return the exact plan text for unchanged final_answer display. Web approval may be registered with documentId before that final answer. Native confirmation requires prior content display; unresolved confirmation still needs a complete final answer. Tool output is not final delivery. Does not approve, claim, comment or start another conversation. Use a new idempotency key for revisions; retry unchanged inputs with the same key.",
+    inputSchema:z.object({itemKeys:z.array(z.string().min(2).max(50)).min(1).max(20),summary:z.string().trim().min(1).max(6000).describe(PLAN_SUMMARY_STRUCTURE_GUIDANCE),
       markdown:z.string().min(1).max(512000),parentDocumentId:z.string().uuid().optional().describe("Only for a rework diagnostic record within the unchanged approved scope: reference the original current approved document. This record grants no new approval. For a materially changed plan omit this field and request fresh approval."),idempotencyKey:z.string().min(1).max(200),dispatchId:z.string().min(1).max(200).optional(),session:sessionIdentity.optional()})
       .refine(input=>Boolean(input.dispatchId)!==Boolean(input.session),"Use exactly one original conversation identity."),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },

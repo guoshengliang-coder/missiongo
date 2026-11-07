@@ -81,7 +81,7 @@ describe("headless configuration and scope", () => {
           expect(ask).toBeGreaterThan(investigate);
           expect(approve).toBeGreaterThan(ask);
           expect(prompt).toContain("单独申请调查授权");
-          expect(prompt).toContain("方案表达按复杂度组织");
+          expect(prompt).toContain("不能按条目数量决定是否结构化");
           expect(prompt).toContain("输出可见性规范 v3");
           expect(prompt).toContain("最终答复（final_answer）");
           expect(prompt).toContain("最终答复必须自足");
