@@ -21,4 +21,11 @@ describe("merge list labels",()=>{
     expect(deriveMergeProgress("p",[d],[{...batch,results:{d:{status:"merged"}}}]).items.size).toBe(0);
     expect(deriveMergeProgress("p",[d,delivery],[batch]).sessions.get("s")).toBe("merging");
   });
+  it("keeps the batch's item keys for the integration session that ran it",()=>{
+    const second={id:"d2",productId:"p",sessionId:"s",itemKeys:["P-2","P-3"],state:"merged"};
+    const batch={state:"finished",deliveries:["d","d2"],results:{}};
+    expect(deriveMergeProgress("p",[delivery,second],[batch]).sessionItems.get("s")).toEqual(["P-1","P-2","P-3"]);
+    expect(deriveMergeProgress("other",[delivery,second],[batch]).sessionItems.size).toBe(0);
+    expect(deriveMergeProgress("p",[delivery],[]).sessionItems.size).toBe(0);
+  });
 });

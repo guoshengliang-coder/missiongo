@@ -191,7 +191,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                 <AgentOperationFeedback failures={feedback.failures} sessionId={sessionId} command={command} />
                 <AgentStopFeedback stop={session.data.stopCommand ?? (command?.kind === "interrupt" ? command : undefined)}
                   latestCommand={command} turnActive={session.data.turnState?.turnActive ?? false} backgroundRunning={session.data.activities.length > 0} />
-              <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={visualStatus} />} label={waiting
+              <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={waiting ? "waiting" : visualStatus} />} label={waiting
                 ? t(questionPermission ? "agentRunApproval" : runWaitingLabelKey(session.data), { agent: agentName })
                 : backgroundOnly ? t("agentRunBackground") : session.data.status === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(session.data.status, t)}>
                 <p>{statusDetail}</p>

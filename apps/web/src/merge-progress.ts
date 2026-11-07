@@ -13,5 +13,23 @@ export function deriveMergeProgress(productId:string, deliveries:ProgressDeliver
     for(const key of d.itemKeys)put(items,key,state);
     put(sessions,d.sessionId,state);
   }
-  return {items,sessions};
+  return {items,sessions,sessionItems:deriveSessionItemKeys(productId,deliveries,batches)};
+}
+
+/**
+ * The work items one integration session runs (AND-449). Read from the batch
+ * itself rather than the delivery state: a finished batch keeps its items in
+ * its entries after every delivery has been merged or withdrawn.
+ */
+export function deriveSessionItemKeys(productId:string, deliveries:ProgressDelivery[], batches:ProgressBatch[]) {
+  const byId=new Map(deliveries.filter(d=>d.productId===productId).map(d=>[d.id,d]));
+  const result=new Map<string,string[]>();
+  for(const batch of batches)for(const id of batch.deliveries) {
+    const delivery=byId.get(id);
+    if(!delivery)continue;
+    const keys=result.get(delivery.sessionId)??[];
+    for(const key of delivery.itemKeys)if(!keys.includes(key))keys.push(key);
+    result.set(delivery.sessionId,keys);
+  }
+  return result;
 }
