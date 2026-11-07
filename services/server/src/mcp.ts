@@ -1,5 +1,6 @@
 import { reconciliationActionSchema, combinedValidationSchema } from "./merge-reconciliation.js";
 import { integrationActionSchema } from "./merge-integration.js";
+import { recoveryTransportHelp } from "./merge-recovery-transport.js";
 import { MergeDeliveries, deliverySchema, mergeEvidenceSchema } from "./merge-deliveries.js";
 import { AgentHandoffs } from "./agent-handoffs.js";
 import { ImplementationPlans, planDigest, requestNativePlanApproval } from "./implementation-plans.js";
@@ -841,7 +842,7 @@ export function createMissionGoMcpServer(
   },async (input,ctx)=>{
     const batch=merges.batch(accountAccess(ctx).accountId,input.dispatchId,input.batchId);
     mergeAccess(ctx,batch.productId);
-    return textResult({batch});
+    return textResult({batch,recovery:merges.preview(accountAccess(ctx).accountId,input.batchId),recoveryTransport:recoveryTransportHelp});
   });
   server.registerTool(
     "get_merge_reconciliation", {
@@ -944,7 +945,8 @@ export function createMissionGoMcpServer(
     const batch=merges.batch(accountAccess(ctx).accountId,input.dispatchId,input.batchId);
     requireAccessibleProduct(ctx,batch.productId);
     const access=mergeAccess(ctx,batch.productId,true);
-    return textResult({batch:merges.integrate(access.accountId,input.dispatchId,input.batchId,input.expectedRevision,input.idempotencyKey,input.action)});
+    const result=merges.integrate(access.accountId,input.dispatchId,input.batchId,input.expectedRevision,input.idempotencyKey,input.action);
+    return textResult({batch:result,recovery:merges.preview(access.accountId,input.batchId),recoveryTransport:recoveryTransportHelp});
   });
 
   server.registerTool(

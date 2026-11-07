@@ -1,4 +1,5 @@
 import { legacyIntegratorPrompt } from "./legacy-merge-authorization.js";
+import { recoveryDetailPrefix } from "./merge-recovery-transport.js";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "./app.js";
@@ -348,12 +349,12 @@ describe("planned integration batches",()=>{
 });
 
 describe("AND-439 batch reconciliation",()=>{
-  async function recoveryFixture(options:{mixed?:boolean;publish?:boolean;protocol?:1}={}) {
+  async function recoveryFixture(options:{mixed?:boolean;publish?:boolean;protocol?:1;artifacts?:string[]}={}) {
     const f=await fixture(),launched=f.launch("opencode"),merges=new MergeDeliveries(f.store);
     const keys=[f.item.key];
     if(options.mixed)keys.push(f.store.createWorkItem({productId:f.item.productId,title:"Other row",description:"Synthetic",type:"task",priority:"normal",status:"ready",environment:{platform:"web"}}).key);
     for(const itemKey of keys)f.safe(await f.call("claim_item",{...f.claimInput,session:undefined,dispatchId:launched.dispatch.id,itemKey,idempotencyKey:`claim-${itemKey}`}));
-    const d=merges.propose(f.owner.id,"original-client",{dispatchId:launched.dispatch.id},"offer",{...proposal(f.item.key),itemKeys:keys});
+    const d=merges.propose(f.owner.id,"original-client",{dispatchId:launched.dispatch.id},"offer",{...proposal(f.item.key),itemKeys:keys,...(options.artifacts?{requiredArtifacts:options.artifacts}:{})});
     merges.decide(f.owner.id,d.id,d.revision,"confirm");
     const b=merges.start(f.owner.id,randomUUID(),[{id:d.id,revision:d.revision}],{productId:f.item.productId,nodeId:launched.node.nodeId,agentKind:"opencode",mode:"default"},options.publish??false,options.protocol);
     const ds=new DispatchStore(f.store.database);ds.claimNextDispatch(launched.node.nodeId);ds.recordDispatchResult({nodeId:launched.node.nodeId,dispatchId:b.dispatchId,status:"launched"});
@@ -465,6 +466,43 @@ describe("AND-439 batch reconciliation",()=>{
     const approved=await f.app.inject({method:"POST",url:`/api/v1/merge-batches/${f.b.id}/reconciliation/${input.idempotencyKey}/decision`,headers:{cookie},payload:{snapshot,decision:"approved",noExecutionRemaining:true}});
     expect(approved.statusCode,approved.body).toBe(200);f.safe(await f.call("apply_merge_reconciliation",{batchId:f.b.id,dispatchId:f.b.dispatchId,requestId:input.idempotencyKey}));
   });
+  it("recovers through the old tool catalogue without minting approval or changing ordinary progress",async()=>{
+    const f=await recoveryFixture({protocol:1});
+    f.merges.integrate(f.owner.id,f.b.dispatchId,f.b.id,0,"plan",{kind:"plan",base:"b".repeat(40),summary:"Plan",validation:"Combined",entries:[{deliveryId:f.d.id,head:f.d.head,dependsOn:[],group:"one",reason:"Fixture",validation:"Regression"}]});
+    f.merges.integrate(f.owner.id,f.b.dispatchId,f.b.id,1,"ordinary",{kind:"progress",deliveryId:f.d.id,expectedHead:f.d.head,phase:"investigating",detail:"request recovery after investigation"});
+    expect(f.preview().reconciliation?.requests).toBeUndefined();
+    f.merges.report(f.owner.id,f.b.dispatchId,f.b.id,f.d.id,{status:"blocked",head:f.d.head,detail:"External merged head differs"});
+    const snapshot=f.preview().snapshot;
+    const transport=(key:string,payload:unknown,head=f.d.head,revision=3)=>({batchId:f.b.id,dispatchId:f.b.dispatchId,expectedRevision:revision,idempotencyKey:key,
+      action:{kind:"progress",deliveryId:f.d.id,expectedHead:head,phase:"investigating",detail:recoveryDetailPrefix+JSON.stringify(payload)}});
+    const input=transport("old-request",{operation:"request",snapshot,action:{kind:"accept_merge",deliveryId:f.d.id,evidence:f.evidence}});
+    const loaded=await f.call("get_merge_batch",{batchId:f.b.id,dispatchId:f.b.dispatchId});f.safe(loaded);
+    expect(loaded.structuredContent!.recovery).toMatchObject({snapshot});expect(loaded.structuredContent!.recoveryTransport).toMatchObject({tool:"record_merge_integration"});
+    for(const options of [{scopes:["missiongo:read"]},{accountId:f.other.id}])expect((await f.call("record_merge_integration",input,options)).isError).toBe(true);
+    expect((await f.call("record_merge_integration",{...input,dispatchId:randomUUID()})).isError).toBe(true);
+    expect((await f.call("record_merge_integration",{...input,expectedRevision:1})).isError).toBe(true);
+    expect((await f.call("record_merge_integration",transport("stale",{operation:"request",snapshot:"0".repeat(64),action:{kind:"accept_merge",deliveryId:f.d.id,evidence:f.evidence}}))).isError).toBe(true);
+    expect((await f.call("record_merge_integration",transport("other-delivery",{operation:"request",snapshot,action:{kind:"accept_merge",deliveryId:randomUUID(),evidence:f.evidence}}))).isError).toBe(true);
+    expect((await f.call("record_merge_integration",{...input,idempotencyKey:"ordinary"})).isError).toBe(true);
+    f.safe(await f.call("record_merge_integration",input));f.safe(await f.call("record_merge_integration",input));
+    expect(f.preview().snapshot).toBe(snapshot);expect(f.preview().reconciliation?.requests).toHaveLength(1);
+    const applying=transport("old-apply",{operation:"apply",requestId:"old-request"});
+    expect((await f.call("record_merge_integration",applying)).isError).toBe(true);
+    expect((await f.call("record_merge_integration",transport("approve",{operation:"approve",requestId:"old-request"}))).isError).toBe(true);
+    expect((await f.call("record_merge_integration",transport("bad-json",{operation:"apply",requestId:"old-request",decision:"approved"}))).isError).toBe(true);
+    expect(f.preview().entries[0]?.result?.status).toBe("blocked");
+    f.approve({key:"old-request",snapshot});f.safe(await f.call("record_merge_integration",applying));
+    const after=f.preview(),timeline=f.store.getTimeline(f.item.key);
+    f.safe(await f.call("record_merge_integration",applying));
+    expect(f.preview()).toEqual(after);expect(f.store.getTimeline(f.item.key)).toEqual(timeline);
+    expect((await f.call("record_merge_integration",{...applying,action:{...applying.action,expectedHead:"0".repeat(40)}})).isError).toBe(true);
+    f.grant(false);expect((await f.call("record_merge_integration",applying)).isError).toBe(true);f.grant();
+    expect(after.entries[0]).toMatchObject({originalHead:f.d.head,executionHead:f.evidence.head,result:{status:"merged"}});
+    expect(()=>f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id)).toThrow();
+    f.safe(await f.call("record_merge_integration",{batchId:f.b.id,dispatchId:f.b.dispatchId,expectedRevision:4,idempotencyKey:"old-final",
+      action:{kind:"final_validation",head:f.evidence.targetHead,checkedAt:new Date().toISOString(),source:"Synthetic target checks",validation:"Combined check passed"}}));
+    expect(f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id).state).toBe("finished");
+  });
   it("settles an existing reservation through external evidence without claiming it as a repair",async()=>{
     const f=await recoveryFixture({protocol:1});
     f.merges.integrate(f.owner.id,f.b.dispatchId,f.b.id,0,"plan",{kind:"plan",base:"b".repeat(40),summary:"Plan",validation:"Combined",entries:[{deliveryId:f.d.id,head:f.d.head,dependsOn:[],group:"one",reason:"Fixture",validation:"Regression"}]});
@@ -493,6 +531,38 @@ describe("AND-439 batch reconciliation",()=>{
     const f=await recoveryFixture({publish:true});f.merged();
     f.store.transitionWorkItem({itemKey:f.item.key,actor:"human",to:"pending_verification",reason:"manual_override",note:"Human move",attribution:{accountId:config.id}});
     expect(()=>f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id)).toThrow(/发布凭据/);
+  });
+  it("does not let later conversation input block an independently published unchanged delivery",async()=>{
+    const f=await recoveryFixture({publish:true});f.merged();
+    const listing=await f.call("list_release_candidates",{productId:f.item.productId,includeUnscoped:true});
+    const row=(listing.structuredContent!.candidates as Record<string,unknown>[])[0]!;
+    const {requiredArtifacts:_scope,...candidate}=row;
+    f.safe(await f.call("submit_release_batch",{productId:f.item.productId,idempotencyKey:"published",deployedCommit:"f".repeat(40),receiptDigest:"a".repeat(64),
+      items:[{...candidate,releases:[{artifact:"web",version:"test",sourceCommit:"f".repeat(40)}]}]}));
+    new AgentSessionStore(f.store.database).enqueue(f.owner.id,f.d.sessionId,"Discuss next work",[]);
+    expect(f.preview().entries[0]?.items[0]?.blocker).toBeUndefined();
+    const before=f.store.getTimeline(f.item.key);
+    expect(f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id).state).toBe("finished");
+    expect(f.store.getTimeline(f.item.key)).toEqual(before);
+    f.store.transitionWorkItem({itemKey:f.item.key,actor:"human",to:"ready",reason:"verification_failed",note:"New rework",attribution:{accountId:config.id}});
+    expect(f.preview().entries[0]?.items[0]?.blocker).toBeTruthy();
+  });
+  it("closes the original external-merge batch after supplementing a manually advanced item",async()=>{
+    const f=await recoveryFixture({publish:true,artifacts:["web","androidApp"]});
+    f.merges.report(f.owner.id,f.b.dispatchId,f.b.id,f.d.id,{status:"blocked",head:f.d.head,detail:"External head differs"});
+    f.store.transitionWorkItem({itemKey:f.item.key,actor:"human",to:"development_complete",reason:"resolution_submitted",attribution:{accountId:config.id}});
+    f.store.transitionWorkItem({itemKey:f.item.key,actor:"human",to:"pending_verification",reason:"release_verified",attribution:{accountId:config.id}});
+    new AgentSessionStore(f.store.database).enqueue(f.owner.id,f.d.sessionId,"Next discussion",[]);
+    const item=f.preview().entries[0]!.items[0]!;
+    expect(item.missingPublicationEvidence).toBe(true);expect(item.blocker).toBeTruthy();
+    const statuses=f.store.getTimeline(f.item.key).filter(e=>e.eventType==="status_changed");
+    f.safe(await f.call("submit_release_batch",{productId:f.item.productId,idempotencyKey:"manual-published",deployedCommit:"f".repeat(40),receiptDigest:"a".repeat(64),
+      items:[{itemKey:f.item.key,expectedRevision:item.revision,developmentEventId:item.developmentEventId,roundKey:item.roundKey,
+        completion:{kind:"github",url:f.d.pullRequestUrl},releases:[{artifact:"web",version:"test",sourceCommit:"f".repeat(40)}]}]}));
+    const r=f.request({kind:"accept_merge",deliveryId:f.d.id,evidence:f.evidence});f.approve(r);f.apply(r.key);f.final();
+    expect(f.preview().entries[0]?.items[0]).toMatchObject({status:"pending_verification",missingPublicationEvidence:false,handoff:{status:"completed"}});
+    expect(f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id).state).toBe("finished");
+    expect(f.store.getTimeline(f.item.key).filter(e=>e.eventType==="status_changed")).toEqual(statuses);
   });
   it("does not heal a rejected delivery or reuse stale supplement evidence",async()=>{
     const f=await recoveryFixture();f.merged();

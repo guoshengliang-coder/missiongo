@@ -1738,10 +1738,10 @@ export class MissionGoStore {
 
   /** Shared append-only writer for bounded merge recovery and authorized release evidence. */
   supplementDevelopmentEvidence(input: {itemKey:string;accountId:string;batchId?:string;requestId:string;clientId?:string;releaseEvidenceId?:string;
-    completion: ReturnType<typeof normalizeCompletion>; requiredArtifacts:string[];noReleaseReason?:string}) {
+    completion: ReturnType<typeof normalizeCompletion>; requiredArtifacts:string[];noReleaseReason?:string;preserveVerification?:boolean}) {
     this.assertWorkItemWritable(input.itemKey);
     const item = this.getWorkItem(input.itemKey), resolved = this.getDevelopmentEvidence(item.key);
-    if (item.status !== "development_complete" || !resolved.handover || !resolved.roundKey
+    if ((item.status !== "development_complete" && !(input.preserveVerification && item.status === "pending_verification")) || !resolved.handover || !resolved.roundKey
       || resolved.handover.payload.roundKey !== resolved.roundKey) throw conflict("delivery_evidence_changed", "开发事件或处理轮次已变化，不能补入旧交付证据。");
     const completion = normalizeCompletion({completion:input.completion});
     const scope = this.getDevelopmentReleaseDecision(item.key);
@@ -1864,9 +1864,9 @@ export class MissionGoStore {
     this.getProduct(productId);
   }
 
-  private assertReleaseCandidate(row: {itemKey:string;expectedRevision:number;developmentEventId:string;roundKey:string}) {
+  private assertReleaseCandidate(row: {itemKey:string;expectedRevision:number;developmentEventId:string;roundKey:string}, preserveVerification=false) {
     const item = this.getWorkItem(row.itemKey);
-    if (item.status !== "development_complete") throw conflict("item_not_ready_for_verification", "Only development-complete work can enter verification.");
+    if (item.status !== "development_complete" && !(preserveVerification && item.status === "pending_verification")) throw conflict("item_not_ready_for_verification", "Only development-complete work can enter verification.");
     const timeline = this.getTimeline(item.key).filter(event => !event.historySourceKey);
     const handover = [...timeline].reverse().find(event => event.eventType === "status_changed" && event.toStatus === "development_complete");
     if (item.revision !== row.expectedRevision || handover?.id !== row.developmentEventId
@@ -1902,6 +1902,30 @@ export class MissionGoStore {
           const prior = this.getIdempotentResult<{ itemKey: string }>(key, "release_batch_item");
           const item = this.getWorkItem(itemKey);
           if (prior) return { itemKey, outcome: "already_submitted", currentStatus: item.status };
+          if(item.status==="pending_verification") {
+            // Explicit publication repair for a manually advanced card. Append
+            // proof to this exact round; never replay a transition or acceptance.
+            this.assertWorkItemWritable(itemKey);this.assertReleaseCandidate(row,true);
+            const completion=normalizeCompletion(row);
+            if(completion.kind==="manual"||!/^[0-9a-f]{40}$/.test(input.deployedCommit)||!/^[0-9a-f]{64}$/.test(input.receiptDigest))throw invalidInput("Verified publication proof required.");
+            const timeline=this.getTimeline(itemKey).filter(e=>!e.historySourceKey);
+            const previous=[...timeline].reverse().find(e=>e.eventType==="release_evidence_added"||e.eventType==="status_changed"&&e.toStatus==="pending_verification");
+            if(previous?.payload.receiptDigest)throw conflict("release_evidence_conflict","已有发布凭据，不能替换；请核对原发布记录。");
+            this.supplementDevelopmentEvidence({itemKey,accountId:input.attribution.accountId,clientId:input.attribution.clientId,
+              requestId:`release-evidence:${batchId}:${itemKey}`,releaseEvidenceId:batchId,completion,
+              requiredArtifacts:row.releases.map(r=>r.artifact),preserveVerification:true});
+            const required=this.getDevelopmentReleaseScope(itemKey);
+            if(!required?.length||row.releases.length!==required.length||new Set(row.releases.map(r=>r.artifact)).size!==row.releases.length
+              ||row.releases.some(r=>!required.includes(r.artifact)||!r.version.trim()||r.version.length>100||!/^[0-9a-f]{40}$/.test(r.sourceCommit)))throw invalidInput("Release evidence must cover every required artifact.");
+            const now=new Date().toISOString();
+            this.insertEvent(item.id,"release_evidence_added","agent",null,null,{...completionPayload(completion),releases:row.releases,
+              deployedCommit:input.deployedCommit,receiptDigest:input.receiptDigest,releaseBatchId:batchId,
+              developmentEventId:row.developmentEventId,roundKey:row.roundKey,expectedRevision:row.expectedRevision,
+              authorizationBasis:"product_release_batch",preservedStatus:item.status},now,input.attribution);
+            this.database.connection.prepare("UPDATE work_items SET revision=revision+1,updated_at=? WHERE id=?").run(now,item.id);
+            this.saveIdempotentResult(key,"release_batch_item",{itemKey},now);
+            return {itemKey,outcome:"submitted",currentStatus:item.status};
+          }
           this.assertReleaseCandidate(row);
           const evidence = this.getDevelopmentEvidence(itemKey), scope = this.getDevelopmentReleaseScope(itemKey);
           if (!evidence.completion || scope === null) {

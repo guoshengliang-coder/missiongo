@@ -3,6 +3,7 @@ import { MissionGoError } from "./errors.js";
 import { normalizeCompletion, sameCompletion } from "./completion.js";
 import { reconciliationActionSchema, combinedValidationSchema, type ReconciliationAction, type ReconciliationState } from "./merge-reconciliation.js";
 import { legacyIntegratorPrompt } from "./legacy-merge-authorization.js";
+import { readRecoveryTransport } from "./merge-recovery-transport.js";
 import type { MergeIntegration, MergeReconciliationPreview } from "@missiongo/contracts";
 import { integrationActionSchema, integrationDigest, applyIntegrationAction, assertIntegrationMerge, freshIntegrationCheck, integrationDenied, type IntegrationAction } from "./merge-integration.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -244,12 +245,38 @@ export class MergeDeliveries {
     return this.db.transaction(()=>{
       const b=this.batch(accountId,dispatchId,id),state=b.integration;this.permit(accountId,b,true);
       if(!state)integrationDenied("未找到可核实的原始集成修复授权，请保留原批次授权边界。");
+      const recovery=action.kind==="progress"?readRecoveryTransport(action.detail):undefined;
+      if(!recovery&&b.reconciliation?.transportReceipts?.[key])throw changed();
+      if(recovery&&action.kind==="progress") {
+        if(state.events.some(e=>e.id===key))throw changed();
+        const receipt=b.reconciliation?.transportReceipts?.[key];
+        if(receipt){if(receipt.digest!==integrationDigest(action))throw changed();return b;}
+        if(Object.keys(b.reconciliation?.transportReceipts??{}).length>=1000)throw conflict("recovery_limit","兼容恢复记录已达上限，请核对历史记录。");
+        const entry=state.entries[action.deliveryId];
+        const prior=b.reconciliation?.requests.find(r=>r.id===(recovery.operation==="request"?key:recovery.requestId));
+        if(action.phase!=="investigating"||!entry||!b.deliveries.includes(action.deliveryId))throw changed();
+        if(recovery.operation==="request"&&"deliveryId" in recovery.action&&recovery.action.deliveryId!==action.deliveryId)throw changed();
+        if(recovery.operation==="apply"&&prior&&"deliveryId" in prior.action&&prior.action.deliveryId!==action.deliveryId)throw changed();
+        if(state.revision!==expectedRevision||entry.head!==action.expectedHead)throw changed();
+        if(recovery.operation==="request")this.requestReconciliation(accountId,dispatchId,id,key,recovery.snapshot,recovery.action);
+        else this.applyReconciliation(accountId,dispatchId,id,recovery.requestId);
+        // Read the mutation's current state; saving the old view would undo it.
+        const current=this.batch(accountId,dispatchId,id);
+        const receipts=this.reconciliation(current).transportReceipts??={};
+        receipts[key]={digest:integrationDigest(action)};
+        this.saveBatch(current);
+        return this.batch(accountId,dispatchId,id);
+      }
       const previous=state.events.find(e=>e.id===key);
       if(previous){if(previous.digest!==integrationDigest(action))throw changed();return b;}
       if(b.state!=="active"||state.revision!==expectedRevision)throw changed();
       const affected="deliveryId" in action?[action.deliveryId]:b.deliveries.filter(id=>!b.results[id]);
       for(const id of affected){if(!b.deliveries.includes(id))throw changed();this.sourceValid(this.read<Delivery>("merge_deliveries",id));}
-      applyIntegrationAction(state,action,key,b.results);this.saveBatch(b);return this.batch(accountId,dispatchId,id);
+      applyIntegrationAction(state,action,key,b.results);
+      // The legacy final_validation transport also fulfils the recovery close
+      // gate; both records bind the same complete current results and target.
+      if(action.kind==="final_validation")this.reconciliation(b).finalValidation={head:action.head,checkedAt:action.checkedAt,source:action.source,validation:action.validation,resultsDigest:digest(b.results)};
+      this.saveBatch(b);return this.batch(accountId,dispatchId,id);
     });
   }
   report(accountId: string, dispatchId: string, id: string, deliveryId: string,
@@ -289,16 +316,35 @@ export class MergeDeliveries {
       || write && (!accounts.allows(account,b.productId,"operate") || !accounts.allows(account,b.productId,"ai") || this.store.getProduct(b.productId).archivedAt)) throw changed();
   }
   batchProduct(id:string) {return this.read<Batch>("merge_batches",id).productId;}
+  private publishedHandoff(d:Delivery,key:string) {
+    const item=this.store.getWorkItem(key),e=this.store.getDevelopmentEvidence(key);
+    // A delivery lists the PR's artifact union. Each independently completed
+    // item keeps its own authoritative scope; do not require sibling artifacts.
+    const required=this.store.getDevelopmentReleaseScope(key)??d.requiredArtifacts;
+    if(!["pending_verification","done"].includes(item.status)||!e.handover||!e.roundKey||!required.length)return false;
+    const timeline=this.store.getTimeline(key).filter(event=>!event.historySourceKey);
+    const release=[...timeline].reverse().find(event=>event.eventType==="release_evidence_added"||event.eventType==="status_changed"&&event.toStatus==="pending_verification");
+    const p=release?.payload,artifacts=p?.releases as {artifact:string;sourceCommit:string;version:string}[]|undefined;
+    let matches=false;try{matches=sameCompletion(normalizeCompletion(p),{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`});}catch{/* Missing proof is not publication. */}
+    return Boolean(matches&&timeline.findIndex(event=>event.id===release?.id)>=timeline.findIndex(event=>event.id===e.handover!.id)
+      &&(p?.developmentEventId===undefined||p.developmentEventId===e.handover.id)&&p?.roundKey===e.roundKey
+      &&typeof p?.receiptDigest==="string"&&/^[a-f0-9]{64}$/.test(p.receiptDigest)
+      &&typeof p?.deployedCommit==="string"&&sha.safeParse(p.deployedCommit).success
+      &&Array.isArray(artifacts)&&required.every(a=>artifacts.some(r=>r.artifact===a&&sha.safeParse(r.sourceCommit).success&&r.version)));
+  }
   private itemBlocker(d:Delivery,key:string):string|undefined {
     try {
       const item=this.store.getWorkItem(key);
       if(d.itemScopes ? d.itemScopes[key]!==this.scope([key]) : d.scope!==this.scope(d.itemKeys)) return "条目内容、Builder 或处理轮次已变化；旧交付不能覆盖。";
-      if(this.activity(d.sessionId)!==d.activity) return "开发会话收到新的人工输入，请重新核对交付范围。";
       if(this.store.getTimeline(key).some(e=>!e.historySourceKey&&e.eventType==="status_changed"&&e.createdAt>=d.createdAt
         && ["development_complete","pending_verification","done"].includes(e.fromStatus??"")&&["ready","in_progress"].includes(e.toStatus??"")))return "人工已将交付退回处理，旧交付不能恢复其状态。";
       if(!["in_progress","development_complete","pending_verification","done"].includes(item.status)) return "条目已退回、取消或暂缓；保留人工状态。";
-      recoverExecutionAuthorization(this.store,d.accountId,d.clientId,{itemKey:key,...d.identity});
       if(collaborationBlockers(this.db,item.id)>0) return "协作依赖未结束。";
+      // A publisher's completed handover is independent of later conversation
+      // activity. Scope/round/rework/dependency guards above still apply.
+      if(this.publishedHandoff(d,key))return undefined;
+      if(this.activity(d.sessionId)!==d.activity) return "开发会话收到新的人工输入，请重新核对交付范围。";
+      recoverExecutionAuthorization(this.store,d.accountId,d.clientId,{itemKey:key,...d.identity});
     } catch {return "原开发授权、项目或条目范围已失效，请由当前 Builder 核对。";}
     return undefined;
   }
@@ -321,8 +367,9 @@ export class MergeDeliveries {
           repair:b.integration?.entries[deliveryId]?.repair,
           items:d.itemKeys.map(itemKey=>{const item=this.store.getWorkItem(itemKey),e=this.store.getDevelopmentEvidence(itemKey),scope=this.store.getDevelopmentReleaseDecision(itemKey);
             const blocker=this.itemBlocker(d,itemKey);
-            return {itemKey,status:item.status,revision:item.revision,blocker,
-              missingEvidence:item.status==="development_complete"&&(!e.completion||scope.requiredArtifacts===null),
+            return {itemKey,status:item.status,revision:item.revision,blocker,developmentEventId:e.handover?.id,roundKey:e.roundKey??undefined,requiredArtifacts:scope.requiredArtifacts,
+              missingPublicationEvidence:item.status==="pending_verification"&&!this.publishedHandoff(d,itemKey),
+              missingEvidence:["development_complete","pending_verification"].includes(item.status)&&(!e.completion||scope.requiredArtifacts===null),
               handoff:b.reconciliation?.handoffs[itemKey],
               next:blocker??(!b.results[deliveryId]?"核实 Git 结果":b.results[deliveryId]!.status==="blocked"?"障碍解除后申请恢复":item.status==="development_complete"?"补齐交付证据并核实必需产物发布":"保留现有状态并核对交接证据")};})};
       })};
@@ -446,17 +493,7 @@ export class MergeDeliveries {
       const d=this.read<Delivery>("merge_deliveries",id);
       for(const key of d.itemKeys) {
         if(!d.requiredArtifacts.length)continue;
-        const item=this.store.getWorkItem(key),e=this.store.getDevelopmentEvidence(key);
-        const timeline=this.store.getTimeline(key).filter(event=>!event.historySourceKey);
-        const release=[...timeline].reverse().find(event=>event.eventType==="status_changed"&&event.toStatus==="pending_verification");
-        const p=release?.payload,artifacts=p?.releases as {artifact:string;sourceCommit:string;version:string}[]|undefined;
-        let matches=false;try{matches=sameCompletion(normalizeCompletion(p),{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`});}catch{/* Missing proof is not publication. */}
-        if(!["pending_verification","done"].includes(item.status)||this.itemBlocker(d,key)||!e.handover||!e.roundKey
-          ||timeline.findIndex(event=>event.id===release?.id)<timeline.findIndex(event=>event.id===e.handover?.id)
-          ||p?.developmentEventId!==undefined&&p.developmentEventId!==e.handover.id
-          ||p?.roundKey!==e.roundKey||typeof p?.receiptDigest!=="string"||!/^[a-f0-9]{64}$/.test(p.receiptDigest)
-          ||typeof p?.deployedCommit!=="string"||!/^[a-f0-9]{40}$/.test(p.deployedCommit)||!matches
-          ||!Array.isArray(artifacts)||d.requiredArtifacts.some(a=>!artifacts.some(r=>r.artifact===a&&sha.safeParse(r.sourceCommit).success&&r.version)))throw conflict("merge_publication_incomplete",`${key} 缺少匹配本轮交付的发布凭据或完整产物交接；保留批次。`);
+        if(this.itemBlocker(d,key)||!this.publishedHandoff(d,key))throw conflict("merge_publication_incomplete",`${key} 缺少匹配本轮交付的发布凭据或完整产物交接；保留批次。`);
       }
     }
   }
