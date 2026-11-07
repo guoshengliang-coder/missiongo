@@ -18,7 +18,7 @@ final class LaunchPromptTests: XCTestCase {
                     XCTAssertLessThan(investigate.lowerBound, questions.lowerBound)
                     XCTAssertLessThan(questions.lowerBound, approval.lowerBound)
                     XCTAssertTrue(prompt.contains("单独申请调查授权"))
-                    XCTAssertTrue(prompt.contains("方案表达按复杂度组织"))
+                    XCTAssertTrue(prompt.contains("不能按条目数量决定是否结构化"))
                     XCTAssertTrue(prompt.contains("向 request_plan_approval 提交的 plan/validation"))
                     XCTAssertTrue(prompt.contains("prepare_plan_document"))
                     XCTAssertTrue(prompt.contains("最终答复（final_answer）"))
