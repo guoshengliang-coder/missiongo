@@ -9,6 +9,8 @@ export function repairSessionUnread({ database, baseline, nodeId, from, until, a
     || Date.parse(until) < Date.parse(from) || Date.parse(until) - Date.parse(from) > 600_000) {
     throw new Error("A node ID and an explicit window of at most ten minutes are required.");
   }
+  from = new Date(from).toISOString();
+  until = new Date(until).toISOString();
   const db = new DatabaseSync(database, { readOnly: !apply });
   const old = new DatabaseSync(baseline, { readOnly: true });
   const results = [];

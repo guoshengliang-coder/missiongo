@@ -74,6 +74,22 @@ it("a source replay omitting an acknowledged answer cannot reopen a settled card
   expect(f.report([{ ...message("settled", 5), questions: [{}] }])).toBe(false);
 });
 
+it("legacy receipt-time fallbacks cannot hide genuine offline output on first recovery", () => {
+  const db = new MissionGoDatabase(":memory:"); databases.push(db);
+  const stored = [message("known", 9)]; // Old server stored poll time, not source time.
+  const report = (messages: UnreadMessage[], status: string) => observeSessionUnread(db, {
+    key: "legacy", previousStatus: "unavailable", status, now: time(10), stored, messages,
+  });
+  expect(report([], "unavailable")).toBe(false);
+  expect(report([message("known", 1),message("historical", 0),message("offline", 5)], "idle")).toBe(true);
+  expect(db.connection.prepare("SELECT event_key FROM session_unread_events").all()).toEqual([{ event_key: "message:offline" }]);
+});
+
+it("a newly discovered unresolved question remains actionable even with an old source timestamp", () => {
+  const f = fixture(); f.report([message("answer", 5)]);
+  expect(f.report([{ ...message("ask", 1), questions: [{}] }])).toBe(true);
+});
+
 it("records the source boundary covered by an acknowledgement without absorbing later arrivals", () => {
   const f = fixture();
   f.report([message("a", 5)]);

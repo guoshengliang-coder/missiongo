@@ -24,9 +24,16 @@ export function observeSessionUnread(database: MissionGoDatabase, input: {
 }): boolean {
   const db = database.connection;
   const old = new Map(input.stored.map(message => [message.sourceId, message]));
-  const seed = input.stored.filter(visible).map(message => timestamp(message.occurredAt)).filter((v): v is string => Boolean(v)).sort().at(-1);
+  // Legacy occurred_at can be a receipt-time fallback. Seed only from an
+  // explicit source timestamp reobserved for an already-known message.
+  const sourceTimestamp = (message: UnreadMessage) => {
+    const value = timestamp(message.occurredAt);
+    return value && Date.parse(value) <= Date.parse(input.now) + 60_000 ? value : undefined;
+  };
+  const seed = input.messages.filter(message => visible(message) && old.has(message.sourceId))
+    .map(sourceTimestamp).filter((v): v is string => Boolean(v)).sort().at(-1);
   const state = db.prepare("SELECT source_at,healthy_status,cycle FROM session_unread_state WHERE session_key=?").get(input.key) as State | undefined;
-  const frontier = state ? state.source_at ?? undefined : seed;
+  const frontier = state?.source_at ?? seed;
   const priorStatus = state?.healthy_status ?? (healthy(input.previousStatus) ? input.previousStatus : null);
   let sourceAt = frontier;
   let cycle = state?.cycle ?? 0;
@@ -35,7 +42,7 @@ export function observeSessionUnread(database: MissionGoDatabase, input: {
   for (const message of input.messages) {
     if (!visible(message)) continue;
     const previous = old.get(message.sourceId);
-    const occurredAt = timestamp(message.occurredAt);
+    const occurredAt = sourceTimestamp(message);
     const questionVersion = (value: UnreadMessage) => JSON.stringify(value.questions?.filter(q => q.answered === undefined && !q.withdrawn));
     // Sources can omit the server's answer/withdrawal acknowledgement when
     // replaying a card. Omission must not reopen an already settled question.
@@ -51,7 +58,7 @@ export function observeSessionUnread(database: MissionGoDatabase, input: {
     // A question newly attached to an existing message is a current action,
     // even though the message itself has an old source timestamp.
     const historical = occurredAt && frontier && occurredAt < frontier;
-    if ((!previous && !historical) || (newQuestion && (previous || !historical))) {
+    if ((!previous && !historical) || newQuestion) {
       events.push({ key: newQuestion ? `question:${message.sourceId}:${createHash("sha256").update(questionVersion(effective)).digest("hex")}` : `message:${message.sourceId}`,
         reason: newQuestion ? "pending_question" : "new_output", sourceAt: occurredAt });
     }
