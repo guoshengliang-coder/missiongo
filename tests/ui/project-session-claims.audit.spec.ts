@@ -6,7 +6,7 @@ const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.m
 
 for (const touch of [false, true]) for (const theme of ["light", "dark"] as const) test.describe(`project claims ${theme} ${touch ? "touch" : "mouse"}`, () => {
   test.use({ colorScheme: theme, hasTouch: touch, isMobile: touch });
-  test("keeps the project name behind its linked keys, one running conversation, history and reply after linking multiple items", async ({ page }, info) => {
+  test("names the conversation after the items it claimed, keeps one running conversation, history and reply", async ({ page }, info) => {
     const id = "project-conversation", stamp = new Date().toISOString();
     let items: AgentSessionSummary["items"] = [];
     let sent = "";
@@ -68,8 +68,9 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
       await page.reload();
       await expect(page.locator(".agent-console-session")).toHaveCount(1);
       const keys = linked.map(item => item.key).join("、");
-      await expect(page.locator(".agent-console-session-heading strong")).toHaveText(`${keys} · 这是什么问题？`);
-      await expect(page.locator(".agent-console-heading h2")).toContainText(`${keys} · 这是什么问题？`);
+      // Claiming items renames the conversation after the work it does (AND-445).
+      await expect(page.locator(".agent-console-session-heading strong")).toHaveText(`${keys} · 首个处理条目`);
+      await expect(page.locator(".agent-console-heading h2")).toContainText(`${keys} · 首个处理条目`);
       await expect(page.locator('[data-session-category="unlinked"]')).toHaveCount(0);
       await expect(page.locator('.agent-console-session [data-session-category="linked"]')).toHaveText("条目会话");
       await expect(page.locator('.agent-console-heading h2 [data-session-category="linked"]')).toHaveText("条目会话");
@@ -79,7 +80,7 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
       for (const width of [320, 520, 768, 1440]) for (const scale of ["small", "medium", "large"]) {
         await page.setViewportSize({ width, height: 900 });
         await page.evaluate(value => { document.documentElement.dataset.fontScale = value; }, scale);
-        await expect(page.locator(".agent-console-heading h2")).toContainText(`${keys} · 这是什么问题？`);
+        await expect(page.locator(".agent-console-heading h2")).toContainText(`${keys} · 首个处理条目`);
         await expect(page.locator(".agent-console-reply textarea")).toBeVisible();
         expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
       }
