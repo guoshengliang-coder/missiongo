@@ -261,6 +261,7 @@ final class AppUpdaterInstallTests: XCTestCase {
         let zip = try Data(contentsOf: archive)
 
         let calls = Locked<[String]>([])
+        let stages = Locked<[UpdateActivity.Stage]>([])
         let result = try await AppUpdater.install(
             zip: zip,
             manifest: try manifest(version: "0.4.0"),
@@ -272,9 +273,11 @@ final class AppUpdaterInstallTests: XCTestCase {
                 calls.withLock { $0.append(path) }
                 if args.first == "-d" { return (0, signature) }
                 return (0, "")
-            }
+            },
+            stage: { stage in stages.withLock { $0.append(stage) } }
         )
 
+        XCTAssertEqual(stages.current, [.unpacking, .security, .installing])
         XCTAssertEqual(result, installed)
         var expected = ["/usr/bin/codesign"]
         if allowAdHoc { expected.append("/usr/bin/codesign") }
