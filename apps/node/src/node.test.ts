@@ -272,6 +272,30 @@ describe("Claude native control", () => {
   });
 });
 describe("OpenCode shared-service control", () => {
+  it.each(["批准","取消"])("binds an empty confirmation's %s to its exact native form without prompting",async selected=>{
+    const writes:{method:string;path:string;body?:Wire}[]=[];
+    class EmptyAPI extends OpenCodeAPI {
+      override async call(method:string,path:string,body?:Wire):Promise<Wire> {
+        if(method!=="GET") writes.push({method,path,body});
+        if(path==="/api/info") return {version:"2.1.0"};
+        if(path.startsWith("/api/mcp?")) return {data:[{name:"missiongo",status:{status:"connected"}}]};
+        if(path==="/api/session"&&method==="POST") return {data:{id:"empty-session"}};
+        if(path==="/api/session/empty-session") return {data:{agent:"plan"}};
+        if(path.endsWith("/form")&&method==="GET") return {data:[{id:"empty-form",title:"Exact reviewed scope",fields:[]}]};
+        return {data:[]};
+      }
+    }
+    const adapter=new OpenCodeAdapter(job(temporary(),"opencode"),new EmptyAPI());adapters.push(adapter);
+    await adapter.start("Fixture");writes.length=0;
+    const snapshot=await adapter.snapshot();
+    expect(snapshot.messages.find(m=>m.sourceId==="form-empty-form")?.questions?.[0]).toMatchObject({key:"确认请求 empty-form",options:["批准","取消"]});
+    await expect(adapter.deliver({id:"unbound",status:"delivering",text:"批准"})).rejects.toThrow(/确认请求/);
+    await expect(adapter.deliver({id:"stale",status:"delivering",text:"确认请求 another: 批准"})).rejects.toThrow(/确认请求/);
+    expect(writes).toHaveLength(0);
+    await adapter.deliver({id:"bound",status:"delivering",text:`确认请求 empty-form: ${selected}`});
+    expect(writes).toEqual([selected==="批准"?{method:"POST",path:"/api/session/empty-session/form/empty-form/reply",body:{answer:{}}}:{method:"DELETE",path:"/api/session/empty-session/form/empty-form",body:undefined}]);
+  });
+
   it("keeps the latest answers when a long source exceeds the snapshot window", async () => {
     const pages: URLSearchParams[] = [];
     class HistoryAPI extends OpenCodeAPI {
@@ -297,9 +321,16 @@ describe("OpenCode shared-service control", () => {
     const snapshot = await adapter.snapshot();
     expect(snapshot.messages.at(-1)?.sourceId).toBe("message-5000");
     expect(snapshot.messages).toHaveLength(1900);
-    expect(snapshot.error).toContain("agent_history_limited:");
+    expect(snapshot.error).toBeUndefined();
+    expect(snapshot.history).toMatchObject({complete:false,cursor:expect.any(String)});
     expect(pages[0]?.get("order")).toBe("desc");
     expect(pages.slice(1).every(query => !query.has("order"))).toBe(true);
+    const older=await adapter.historyPage(snapshot.history!.cursor!);
+    expect(older.messages.at(-1)?.sourceId).toBe("message-3100");
+    expect(older.nextCursor).toBe("20");
+    expect(pages.at(-1)?.get("cursor")).toBe("19");
+    expect(pages.at(-1)?.has("order")).toBe(false);
+
   });
   it.each([false,true].flatMap(free=>["build", "plan"].map(mode=>({free,mode}))))("OpenCode $mode preserves permissions from launch (free=$free)",async ({free,mode})=>{
     let actual="", initial="";
@@ -427,4 +458,11 @@ it("does not mirror Claude child tasks or internal user frames as conversation",
     { type: "thinking", text: "private" }, { type: "tool_use", text: "private" }, { type: "text", text: "Visible reply" },
   ] } });
   expect((await adapter.snapshot()).messages.map(message => message.text)).toEqual(["  JSON {}  ", "Visible reply"]);
+});
+
+it("keeps a long Claude native confirmation complete and rejects oversized or unkeyed acceptance",()=>{
+  const request={subtype:"elicitation",requestId:"long-form",mode:"form",message:"完整边界".repeat(10000),requested_schema:{type:"object",properties:{},required:[],additionalProperties:false}};
+  expect(claudeAnswer(request,"授权请求 long-form: 批准")).toEqual({action:"accept",content:{}});
+  expect(()=>claudeAnswer(request,"批准")).toThrow();
+  expect(claudeAnswer({...request,message:"x".repeat(512001)},"授权请求 long-form: 批准")).toEqual({action:"cancel"});
 });

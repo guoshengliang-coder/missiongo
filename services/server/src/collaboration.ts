@@ -583,6 +583,20 @@ export class Collaborations {
       return { id: draftId, version: (old?.version ?? 0) + 1, ...payload };
     });
   }
+  /** Exact native/Web review source, still governed by the original Builder role. */
+  reviewDraft(accountId: string, draftId: string, version: number) {
+    const d=this.draft(draftId),source=this.item(d.source_item_id);
+    this.sourceBuilder(this.account(accountId),source);
+    if(d.invalidated_at||d.version!==version) throw conflict("collaboration_stale","草稿版本已失效，请重新审阅。");
+    const payload=JSON.parse(d.payload_json) as Payload;
+    const grant=this.grant(d.grant_id);
+    const submitted=d.submitted_request_id ? this.row(d.submitted_request_id) : undefined;
+    if(!submitted) { this.assertSourceOpen(source);this.activeGrant(d.grant_id,source); }
+
+    return {sourceKey:source.key,sourceProject:this.store.getProduct(source.productId).name,receivingProject:this.store.getProduct(grant.target_product_id).name,productId:source.productId,sourceContentVersion:source.contentVersion,sourceStatus:source.status,
+      sourceBuilder:source.builderAccountId,grant, draft:{id:d.id,version:d.version,...payload},
+      ...(submitted?{submitted:{id:submitted.id,targetKey:this.item(submitted.target_item_id).key}}:{})};
+  }
   submit(accountId: string, draftId: string, version: number, key: string) {
     const a = this.account(accountId),
       d = this.draft(draftId);

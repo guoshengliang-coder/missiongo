@@ -222,6 +222,7 @@ public struct OpenCodeChoice: Equatable, Sendable {
 
     public enum Answer: Equatable, Sendable {
         case form([String: OpenCodeAnswerValue])
+        case cancelForm
         case permission(decision: String)
     }
 
@@ -252,7 +253,15 @@ public struct OpenCodeChoice: Equatable, Sendable {
             let normalized = (keyed ? String(trimmed.dropFirst(prefix.count)) : trimmed).lowercased()
             guard let decision = Self.permissionDecisions[normalized], decision != "always" || keyed else { return nil }
             return .permission(decision: decision)
-        case let .form(_, fields):
+        case let .form(id, fields):
+            if fields.isEmpty {
+                let prefix = "确认请求 \(id): "
+                guard text.hasPrefix(prefix) else { return nil }
+                let value = String(text.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                if value == "批准" { return .form([:]) }
+                if value == "取消" { return .cancelForm }
+                return nil
+            }
             guard let answer = Self.formAnswer(text: text, fields: fields) else { return nil }
             return .form(answer)
         }
@@ -280,7 +289,7 @@ public struct OpenCodeChoice: Equatable, Sendable {
                 } else { picked = text }
             case let .form(id: _, fields: fields):
                 let label = question.key ?? question.title
-                picked = fields.first(where: { $0.key == label || $0.title == label })
+                picked = fields.isEmpty ? rawLines[label] : fields.first(where: { $0.key == label || $0.title == label })
                     .flatMap { rawLines[$0.key] ?? rawLines[$0.title] }
             }
             guard let picked, !picked.isEmpty else { return question }
@@ -425,6 +434,11 @@ public enum OpenCodeProtocol {
               !title.isEmpty,
               let rawFields = entry["fields"] as? [[String: Any]]
         else { return nil }
+        if rawFields.isEmpty {
+            return OpenCodeChoice(reply: .form(id: id, fields: []), message: AgentSessionMessage(
+                sourceId: "form-\(id)", role: "agent", text: title,
+                questions: [AgentSessionQuestion(title: "确认此请求", options: ["批准", "取消"], key: "确认请求 \(id)")]), action: nil)
+        }
         let fields = rawFields.compactMap(formField)
         guard !fields.isEmpty else { return nil }
         // OpenCode's question tool files its ask as a form whose only title is
@@ -607,7 +621,9 @@ public struct OpenCodeSessionSnapshot: Sendable {
     public let messages: [AgentSessionMessage]
     public let failure: String?
     public let execution: NativeExecutionProgress
-    public init(_ status: String, _ messages: [AgentSessionMessage], _ failure: String?, execution: NativeExecutionProgress = NativeExecutionProgress()) {
+    public let history: AgentHistoryMetadata?
+    public init(_ status: String, _ messages: [AgentSessionMessage], _ failure: String?, execution: NativeExecutionProgress = NativeExecutionProgress(), history: AgentHistoryMetadata? = nil) {
+        self.history = history
         self.status = status; self.messages = messages; self.failure = failure; self.execution = execution
     }
 }
@@ -628,6 +644,7 @@ public protocol OpenCodeControlling: Sendable {
     /// badly at the source — a person-readable reason for that status.
     /// `failed` means the session is over and will not recover by itself.
     func snapshot(id: String) async throws -> OpenCodeSessionSnapshot
+    func historyPage(id: String, cursor: String) async throws -> AgentHistoryResult
     func stopState(id: String) async throws -> OpenCodeStopState
     func initialInputId(id: String) async throws -> String?
     func interrupt(id: String) async throws
@@ -647,11 +664,13 @@ public protocol OpenCodeControlling: Sendable {
     func pendingChoices(id: String) async throws -> [OpenCodeChoice]
     /// Submits a form's answer, which is the reply the form was waiting on.
     func replyForm(id: String, formID: String, answer: [String: OpenCodeAnswerValue]) async throws
+    func cancelForm(id: String, formID: String) async throws
     /// Answers a permission request with once, always or reject.
     func replyPermission(id: String, requestID: String, decision: String) async throws
 }
 
 public extension OpenCodeControlling {
+    func cancelForm(id: String, formID: String) async throws { throw AgentArtifactError.unsupported }
     func stopState(id: String) async throws -> OpenCodeStopState {
         let value = try await snapshot(id: id)
         return OpenCodeStopState(active: value.status == "active", inputId: value.messages.last(where: { $0.role == "user" })?.sourceId)
@@ -778,6 +797,15 @@ public struct OpenCodeHTTPControl: OpenCodeControlling {
         }
     }
 
+    public func historyPage(id: String, cursor: String) async throws -> AgentHistoryResult {
+        let page = try await call("GET", "/api/session/\(encoded(id))/message?limit=100&cursor=\(encoded(cursor))")
+        guard let entries = page["data"] as? [[String: Any]] else { throw LaunchError("OpenCode 历史页内容无效。") }
+        let next = OpenCodeProtocol.nextCursor(page)
+        guard next != cursor else { throw LaunchError("OpenCode 历史游标未推进。") }
+        let messages = try OpenCodeProtocol.messages(["data": Array(entries.reversed())])
+        return AgentHistoryResult(messages: messages, nextCursor: next)
+    }
+
     public func snapshot(id: String) async throws -> OpenCodeSessionSnapshot {
         let details: [String: Any]
         do {
@@ -825,12 +853,13 @@ public struct OpenCodeHTTPControl: OpenCodeControlling {
         let active = try await call("GET", "/api/session/active")
         let running = (active["data"] as? [String: Any])?[id] != nil
         let execution = executionBuilder.snapshot()
-        let historyError = cursor == nil ? nil : "agent_history_limited: only the latest OpenCode messages are synchronized"
-        if running { return OpenCodeSessionSnapshot("active", messages, historyError, execution: execution) }
+        let history = AgentHistoryMetadata(cursor: cursor, complete: cursor == nil)
+        let historyError: String? = nil
+        if running { return OpenCodeSessionSnapshot("active", messages, historyError, execution: execution, history: history) }
         // `interrupted` is a person's own stop, not a failure; only a failed
         // outcome is reported as one.
-        if outcome == "failed" { return OpenCodeSessionSnapshot("failed", messages, "OpenCode 报告该会话以失败结束。", execution: execution) }
-        return OpenCodeSessionSnapshot("idle", messages, historyError, execution: execution)
+        if outcome == "failed" { return OpenCodeSessionSnapshot("failed", messages, "OpenCode 报告该会话以失败结束。", execution: execution, history: history) }
+        return OpenCodeSessionSnapshot("idle", messages, historyError, execution: execution, history: history)
     }
 
     public func stopState(id: String) async throws -> OpenCodeStopState {
@@ -910,6 +939,10 @@ public struct OpenCodeHTTPControl: OpenCodeControlling {
     public func replyForm(id: String, formID: String, answer: [String: OpenCodeAnswerValue]) async throws {
         let body: [String: Any] = ["answer": answer.mapValues(\.jsonValue)]
         _ = try await call("POST", "/api/session/\(encoded(id))/form/\(encoded(formID))/reply", body: body)
+    }
+
+    public func cancelForm(id: String, formID: String) async throws {
+        _ = try await call("DELETE", "/api/session/\(encoded(id))/form/\(encoded(formID))")
     }
 
     public func replyPermission(id: String, requestID: String, decision: String) async throws {
@@ -1048,6 +1081,10 @@ public struct OpenCodeLauncher: AgentAdapter {
             initialTurnId: try? await control.initialInputId(id: id))
     }
 
+    public func historyPage(sessionRef: String, cursor: String) async throws -> AgentHistoryResult {
+        try await control.historyPage(id: sessionRef, cursor: cursor)
+    }
+
     public func artifactMessages(sessionRef: String) async throws -> [AgentSessionMessage] {
         try await control.snapshot(id: sessionRef).messages
     }
@@ -1146,7 +1183,7 @@ public struct OpenCodeLauncher: AgentAdapter {
                 return AgentSessionReport(status: snapshot.status, messages: messages, error: snapshot.failure,
                     commandId: command.id, commandStatus: "failed", commandError: "回复未发送：\(problem) 请重新应用设置后重试。",
                     turnActive: snapshot.status == "active" && choices.isEmpty, waitingForInput: !choices.isEmpty)
-                    .reportingExecution(activities: execution.activities, revision: execution.revision,
+                    .reportingHistory(snapshot.history).reportingExecution(activities: execution.activities, revision: execution.revision,
                         turnStartedAt: execution.turnStartedAt, lastOutputAt: execution.lastOutputAt)
                     .reportingSettings(mode: mode, model: model, effort: effort, settingsRevision: desired.revision, settingsError: problem)
             }
@@ -1163,7 +1200,7 @@ public struct OpenCodeLauncher: AgentAdapter {
             report = AgentSessionReport(status: snapshot.status, messages: messages, error: snapshot.failure,
                                         sourceRestored: session.restoreInSource ? true : nil,
                                         turnActive: turnActive, waitingForInput: waitingForInput)
-            return report.reportingExecution(activities: execution.activities, revision: execution.revision,
+            return report.reportingHistory(snapshot.history).reportingExecution(activities: execution.activities, revision: execution.revision,
             turnStartedAt: execution.turnStartedAt, lastOutputAt: execution.lastOutputAt).reportingSettings(
                 mode: mode, model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
             )
@@ -1172,7 +1209,7 @@ public struct OpenCodeLauncher: AgentAdapter {
             report = AgentSessionReport(status: snapshot.status, messages: messages, error: snapshot.failure,
                                         commandId: command.id, commandStatus: "delivering",
                                         turnActive: turnActive, waitingForInput: waitingForInput)
-            return report.reportingExecution(activities: execution.activities, revision: execution.revision,
+            return report.reportingHistory(snapshot.history).reportingExecution(activities: execution.activities, revision: execution.revision,
                 turnStartedAt: execution.turnStartedAt, lastOutputAt: execution.lastOutputAt).reportingSettings(
                 mode: mode, model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
             )
@@ -1180,7 +1217,7 @@ public struct OpenCodeLauncher: AgentAdapter {
         guard command.status == "delivering" else {
             report = AgentSessionReport(status: snapshot.status, messages: messages, error: snapshot.failure,
                                         turnActive: turnActive, waitingForInput: waitingForInput)
-            return report.reportingExecution(activities: execution.activities, revision: execution.revision,
+            return report.reportingHistory(snapshot.history).reportingExecution(activities: execution.activities, revision: execution.revision,
                 turnStartedAt: execution.turnStartedAt, lastOutputAt: execution.lastOutputAt).reportingSettings(
                 mode: mode, model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
             )
@@ -1188,17 +1225,24 @@ public struct OpenCodeLauncher: AgentAdapter {
         pruneDeliveredPrompts()
         let answerText = command.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let keyedPermission = answerText.hasPrefix("授权请求 ")
+        let keyedConfirmation = answerText.hasPrefix("确认请求 ")
+        let currentConfirmation: OpenCodeChoice? = choices.first.flatMap { choice in
+            if case let .form(_, fields) = choice.reply, fields.isEmpty { return choice }
+            return nil
+        }
+        let needsConfirmation = keyedConfirmation || currentConfirmation != nil
         let currentPermission: OpenCodeChoice? = choices.first.flatMap { choice in
             if case .permission = choice.reply { return choice }
             return nil
         }
         if deliveredPrompts.current[command.id] == nil,
-           (keyedPermission || (currentPermission != nil && ["始终允许", "always"].contains(answerText.lowercased()))),
-           currentPermission?.answer(from: command.text) == nil {
+           (keyedPermission || needsConfirmation || (currentPermission != nil && ["始终允许", "always"].contains(answerText.lowercased()))),
+           ((needsConfirmation && command.attachments?.isEmpty == false) ||
+            (needsConfirmation ? currentConfirmation?.answer(from: command.text) : currentPermission?.answer(from: command.text)) == nil) {
             report = AgentSessionReport(status: snapshot.status, messages: messages, error: snapshot.failure,
-                commandId: command.id, commandStatus: "failed", commandError: "授权请求已变化，请重新选择当前请求的授权范围。",
+                commandId: command.id, commandStatus: "failed", commandError: "授权或确认请求未匹配，请明确选择当前请求。",
                 turnActive: turnActive, waitingForInput: waitingForInput)
-            return report.reportingExecution(activities: execution.activities, revision: execution.revision,
+            return report.reportingHistory(snapshot.history).reportingExecution(activities: execution.activities, revision: execution.revision,
                 turnStartedAt: execution.turnStartedAt, lastOutputAt: execution.lastOutputAt).reportingSettings(mode: mode, model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError)
         }
         // How many copies of this reply's text the session already held before
@@ -1226,7 +1270,7 @@ public struct OpenCodeLauncher: AgentAdapter {
                         commandError: "无法确认 OpenCode 是否收到回复，请在 OpenCode 会话核实后手动确认；不会自动重发。",
                         turnActive: turnActive, waitingForInput: waitingForInput
                     )
-                    return report.reportingExecution(activities: execution.activities, revision: execution.revision,
+                    return report.reportingHistory(snapshot.history).reportingExecution(activities: execution.activities, revision: execution.revision,
                         turnStartedAt: execution.turnStartedAt, lastOutputAt: execution.lastOutputAt).reportingSettings(
                         mode: mode, model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
                     )
@@ -1256,7 +1300,7 @@ public struct OpenCodeLauncher: AgentAdapter {
                                     commandId: command.id, commandStatus: "delivered",
                                     turnActive: deliveredStatus == "active" && !deliveredWaiting,
                                     waitingForInput: deliveredWaiting)
-        return report.reportingExecution(activities: execution.activities, revision: execution.revision,
+        return report.reportingHistory(snapshot.history).reportingExecution(activities: execution.activities, revision: execution.revision,
                 turnStartedAt: execution.turnStartedAt, lastOutputAt: execution.lastOutputAt).reportingSettings(
             mode: mode, model: model, effort: effort, settingsRevision: settingsRevision, settingsError: settingsError
         )
@@ -1335,6 +1379,8 @@ public struct OpenCodeLauncher: AgentAdapter {
             try await control.interrupt(id: session.sessionRef)
             return []
         }
+        if let choice = choices.first, case let .form(_, fields) = choice.reply, fields.isEmpty,
+           choice.answer(from: command.text) == nil { throw LaunchError("请明确答复当前确认请求；普通回复不会批准空表单。") }
         guard command.attachments?.isEmpty != false, let choice = choices.first, let answer = choice.answer(from: command.text) else {
             try await control.prompt(id: session.sessionRef, text: command.promptText)
             return []
@@ -1361,6 +1407,9 @@ public struct OpenCodeLauncher: AgentAdapter {
                 }
             }
             return settled
+        case let (.form(formID, _), .cancelForm):
+            try await control.cancelForm(id: session.sessionRef, formID: formID)
+            return [choice]
         case let (.form(formID, _), .form(values)):
             try await control.replyForm(id: session.sessionRef, formID: formID, answer: values)
             return [choice]
@@ -1392,4 +1441,8 @@ public struct OpenCodeLauncher: AgentAdapter {
             map = map.filter { now.timeIntervalSince($0.value) < Self.deliveredPromptTTL }
         }
     }
+}
+
+public extension OpenCodeControlling {
+    func historyPage(id: String, cursor: String) async throws -> AgentHistoryResult { throw AgentArtifactError.unsupported }
 }

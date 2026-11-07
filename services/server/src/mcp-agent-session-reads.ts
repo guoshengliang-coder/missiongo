@@ -1,3 +1,6 @@
+import { join } from "node:path";
+import { AgentHistory } from "./agent-history.js";
+import { AgentArtifacts } from "./agent-artifacts.js";
 import { createHash } from "node:crypto";
 
 import { AgentApprovalStore, type AgentApproval } from "./agent-approval-store.js";
@@ -284,6 +287,7 @@ function conversationView(summary: AgentSessionListItem, members: readonly Agent
 
 /** Read-only projections over the conversation storage the console already uses. */
 export class McpAgentSessionReads {
+  private readonly history: AgentHistory;
   private readonly dispatch: AgentSessionStore;
   private readonly external: ExternalAgentSessionStore;
   private readonly console: AgentConsoleSessions;
@@ -297,6 +301,7 @@ export class McpAgentSessionReads {
     attachmentsRoot: string,
     private readonly planApprovalService: PlanApprovalService = new PlanApprovalService(),
   ) {
+    this.history = new AgentHistory(store.database,new AgentArtifacts(store.database,join(attachmentsRoot,"agent-artifacts")));
     this.dispatch = new AgentSessionStore(store.database);
     this.external = new ExternalAgentSessionStore(store);
     this.console = new AgentConsoleSessions(store, this.dispatch, this.external);
@@ -321,20 +326,18 @@ export class McpAgentSessionReads {
     const { summary, members } = this.resolveConversation(accountId, sessionId, options.itemKey);
     const orderedMembers = [...members].sort((a, b) => Number(b.id === sessionId) - Number(a.id === sessionId)
       || Number(Boolean(b.agentSessionId)) - Number(Boolean(a.agentSessionId)));
-    const messages = this.mergedMessages(orderedMembers);
+    const messages = this.mergedMessages(orderedMembers,accountId);
     const truncated = messages.length > MAX_CONVERSATION_MESSAGES;
-    const bounded = truncated ? messages.slice(0, MAX_CONVERSATION_MESSAGES) : messages;
-    const consistencyDigest = createHash("sha256").update(JSON.stringify(bounded.map((message) => message.id))).digest("hex");
+    const bounded = truncated ? messages.slice(-MAX_CONVERSATION_MESSAGES) : messages;
+    const consistencyDigest = createHash("sha256").update(JSON.stringify(bounded.map((message) => [message.id,message.text,message.questions]))).digest("hex");
     const page = bounded.slice(offset, offset + limit);
     const nextOffset = offset + page.length < bounded.length ? offset + page.length : undefined;
     const records = members.map(recordView);
     const best = records.reduce((a, b) => (AVAILABILITY_RANK[b.contentAvailability] > AVAILABILITY_RANK[a.contentAvailability] ? b : a));
     const lastSyncedAt = records.flatMap((record) => record.lastSyncedAt ? [record.lastSyncedAt] : []).sort().at(-1);
     const knownGaps = [...new Set(records.flatMap((record) => record.knownGaps))];
-    if (members.some(member => this.store.database.connection.prepare(
-      "SELECT 1 FROM agent_history_sources WHERE account_id=? AND session_id=? AND (next_id IS NOT NULL OR error IS NOT NULL)",
-    ).get(accountId, member.agentSessionId ?? member.id))) {
-      knownGaps.push("This native conversation has a bounded history window or an incomplete source read. Earlier messages may require interactive pagination in MissionGo or reading the original client; this response does not prove the full native history was read.");
+    if (members.some(member => this.history.incomplete(accountId,member.agentSessionId ?? member.id))) {
+      knownGaps.push("This native conversation has a bounded history window or an incomplete source read. Use get_agent_history with an issued continuation to read the source; this response does not prove the full native history was read.");
     }
     if (truncated) knownGaps.push(`Only the newest ${MAX_CONVERSATION_MESSAGES} messages were read; the full native history is longer.`);
     const primary = orderedMembers[0]!;
@@ -394,6 +397,15 @@ export class McpAgentSessionReads {
     }
   }
 
+  allMessages(accountId: string, sessionId: string, itemKey?: string) {
+    return this.mergedMessages(this.resolveForRead(accountId,sessionId,itemKey).members,accountId);
+  }
+
+  reviewPlans(accountId: string, sessionId: string, itemKey?: string) {
+    const {members}=this.resolveForRead(accountId,sessionId,itemKey);
+    return this.implementationPlanRecords(accountId,members);
+  }
+
   /** Plan and approval state for every linked conversation that has a readable record. */
   planApprovalInfos(accountId: string, itemKey: string): readonly PlanApprovalConversationInfo[] {
     return this.console.listForItem(accountId, itemKey).flatMap(({ summary, members }) => {
@@ -408,7 +420,7 @@ export class McpAgentSessionReads {
         : this.dispatch.getForAccount(accountId, readId);
       const orderedMembers = [...members].sort((a, b) => Number(b.id === readId) - Number(a.id === readId)
         || Number(Boolean(b.agentSessionId)) - Number(Boolean(a.agentSessionId)));
-      const messages = this.mergedMessages(orderedMembers);
+      const messages = this.mergedMessages(orderedMembers,accountId);
       const withAttention = this.approvals.withAttention(this.console.getSummary(accountId, readId));
       const pendingReply = members.some((row) => row.command && ["queued", "delivering", "delivery_unknown"].includes(row.command.status));
       let unavailableReason: "connection_unavailable" | "reply_pending" | undefined = pendingReply ? "reply_pending" : undefined;
@@ -557,11 +569,17 @@ export class McpAgentSessionReads {
     return { summary, members };
   }
 
-  private mergedMessages(members: readonly AgentSessionListItem[]): SessionMessageView[] {
+  private mergedMessages(members: readonly AgentSessionListItem[], accountId: string): SessionMessageView[] {
     const db = this.store.database.connection;
     const messages: SessionMessageView[] = [];
     const seen = new Set<string>();
     for (const member of members) {
+      for(const message of this.history.cachedMessages(accountId,member.agentSessionId ?? member.id)) {
+        const key=JSON.stringify([message.role,message.sourceId]);
+        if(seen.has(key)) continue;
+        // Prefer live copies below when a source message has subsequently changed.
+        messages.push({...message,id:message.id,recordId:member.agentSessionId ?? member.id,recordSource:"native_sync"});
+      }
       if (member.source === "external") {
         const reports = db.prepare("SELECT id, item_key, status, text, created_at FROM external_agent_session_reports WHERE session_id = ? ORDER BY created_at, rowid")
           .all(member.id) as unknown as ProgressReportRow[];
@@ -605,7 +623,8 @@ export class McpAgentSessionReads {
         }
       }
     }
-    return messages
+    const unique = [...new Map(messages.map(m=>[JSON.stringify([m.role,m.sourceId ?? m.id]),m])).values()];
+    return unique
       .map((message, index) => ({ message, index }))
       .sort((a, b) => (a.message.occurredAt ?? "").localeCompare(b.message.occurredAt ?? "") || a.index - b.index)
       .map(({ message }) => message);

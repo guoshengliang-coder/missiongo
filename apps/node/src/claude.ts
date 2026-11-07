@@ -1,3 +1,4 @@
+import { transcriptHistory } from "./transcript-history.js";
 import { sessionName } from "./session-name.js";
 import { randomUUID } from "node:crypto";
 import { CLAUDE_CODE_MODES } from "@missiongo/domain";
@@ -53,7 +54,7 @@ export function claudeAnswer(request: Wire, text: string): Wire {
 function elicitationProblem(request: Wire): string | undefined {
   const schema = request.requested_schema;
   const keys = new Set(["type", "properties", "required", "additionalProperties", "title", "description", "$schema"]);
-  if ((request.mode ?? "form") !== "form" || typeof request.message !== "string" || !request.message.length || request.message.length > 16_000
+  if ((request.mode ?? "form") !== "form" || typeof request.message !== "string" || !request.message.length || request.message.length > 512_000
       || !schema || schema.type !== "object" || !schema.properties || Array.isArray(schema.properties) || typeof schema.properties !== "object"
       || Object.keys(schema.properties).length || schema.required !== undefined && (!Array.isArray(schema.required) || schema.required.length)
       || Object.keys(schema).some(key => !keys.has(key))) {
@@ -180,12 +181,18 @@ export class ClaudeAdapter implements Adapter {
       message: { role: "user", content: [{ type: "text", text }] } });
     this.state.status = "active"; this.state.turnActive = true;
   }
+  async historyPage(cursor: string) { return transcriptHistory(this.state.messages,cursor); }
   async snapshot(): Promise<Snapshot> {
-    const messages = [...this.state.messages];
+    const page=transcriptHistory(this.state.messages);
+    const messages = [...page.messages];
     for (const request of this.requests) {
       // Confirmation cards live in history with explicit settled/withdrawn
       // markers, so server-side history cannot resurrect an obsolete question.
-      if (request.subtype === "elicitation") continue;
+      if (request.subtype === "elicitation") {
+        const card=this.state.messages.find(m=>m.sourceId===`permission-${request.requestId}`);
+        if(card&&!messages.some(m=>m.sourceId===card.sourceId)) messages.push(card);
+        continue;
+      }
       const sourceId = `request-${request.requestId}`;
       let questions: Question[];
       if (request.tool_name === "AskUserQuestion") questions = (request.input?.questions ?? []).map((q: Wire) => ({
@@ -199,7 +206,7 @@ export class ClaudeAdapter implements Adapter {
       }
       messages.push({ sourceId, ...(this.activeTurnId ? { turnId: this.activeTurnId } : {}), role: "agent", text: request.tool_name === "ExitPlanMode" ? "计划已准备好，请明确批准或提出修改。" : `Claude Code 请求确认：${request.tool_name}`, questions });
     }
-    return { ...this.state, mode:this.effectiveMode, waitingForInput: this.requests.length > 0, messages };
+    return { ...this.state, mode:this.effectiveMode, waitingForInput: this.requests.length > 0, messages, history:{complete:!page.nextCursor,...(page.nextCursor?{cursor:page.nextCursor}:{})} };
   }
   async stop(command: Command): Promise<Snapshot> {
     const target = command.turnId === "startup" ? this.initialTurnId : command.turnId;

@@ -73,7 +73,7 @@ PR、head、目标分支、产物与执行配置。执行设备须支持项目�
 
 控制台每个批次（包括旧协议及已结束批次）提供「查看对账与恢复」。GET 预览不写库，显示原冻结 head、当前执行 head、执行端登记的实际 Git 结果、每条业务状态与阻碍；服务端不持有 Git 凭据，不把观察当作实时查询。
 
-执行端用 `get_merge_reconciliation` 获取快照，再用 `request_merge_reconciliation` 准备明确动作。人工浏览器会话批准该请求后，原批次派单通过 `apply_merge_reconciliation` 执行。MCP 没有批准工具。每次操作实时核对账号、产品权限、原会话及快照；相同请求键参数变化拒绝，响应丢失重复执行不会重复交接。已结束批次的重新激活受项目互斥、活动会话和待执行命令约束。
+执行端用 `get_merge_reconciliation` 获取快照，再用 `request_merge_reconciliation` 准备明确动作。人工通过浏览器或 `request_merge_reconciliation_approval` 的原生回执批准该请求后，原批次派单通过 `apply_merge_reconciliation` 执行。MCP 不接受 Agent 参数批准；原生工具只等待绑定快照、请求和动作的客户端人工确认。每次操作实时核对账号、产品权限、原会话及快照；相同请求键参数变化拒绝，响应丢失重复执行不会重复交接。已结束批次的重新激活受项目互斥、活动会话和待执行命令约束。
 
 恢复记录追加在原批次 JSON 中，不覆盖冻结确认、旧结果和人工事件。accept_merge 保存外部实际 head/merge commit；原修复预留若由外部合并结清，单独保留到审计历史，不登记成本会话修复。retry_blocked 保存旧结果后恢复执行。Git 合并事实先记录，逐条开发交接使用独立事务；部分失败保留其他成功。retry_handover 经人工确认仅补充缺失且不冲突的依据，绑定当前开发完成事件和处理轮次；新增事件 `delivery_evidence_added` 不改原人工事件。候选清单和发布交接使用同一有效证据解析器。旧记录缺少逐条快照时仅在原整体 scope 仍精确一致时恢复；不通过猜测升级旧授权。
 
@@ -88,3 +88,7 @@ Git 只读入口：`node scripts/merge-delivery.mjs --reconcile <delivery-json>`
 用户授权的当前产品会话可以使用 `supplement_release_evidence` 补齐开发完成条目的集成引用及完整发布范围，无需原合并身份或独立审批。绑定当前 revision、开发完成事件、轮次，并检查内容与 Builder 未改变；只追加缺项，冲突拒绝。原批次的结果、历史审批及冻结 head 不变。发布前刷新候选，正常执行全量覆盖检查。
 
 已发布的完整产物也可通过 `submit_release_batch` 原子补证据并交接；完整 releases 明确声明历史缺失的必需范围，执行端必须独立核实全部产物及部署前置。发布校验失败则整条回滚，重复请求不覆盖人工打回。不能用此入口接纳外部批次结果、解除 blocked、改变发布选择或验收通过。
+
+### 原生恢复确认（AND-443）
+
+原生确认明确声明人工已核实没有未结束或结果不明的外部操作，不能传 noExecutionRemaining=true 冒充核实。批准与来源回执原子保存，拒绝/取消无领域副作用。确认本身不执行恢复、Git 或发布；原派单仍通过 apply_merge_reconciliation 执行，保留快照、项目互斥、人工返工与发布选择限制。网页/原生竞争时复用已有决定，过期范围不能因重试恢复授权。

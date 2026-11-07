@@ -173,6 +173,11 @@ export class MergeDeliveries {
       && d.state !== "merged" && d.state !== "batched" && d.activity === this.activity(d.sessionId))
       .map(d => d.sessionId))];
   }
+  readForAccount(accountId: string, id: string) {
+    const d=this.read<Delivery>("merge_deliveries",id);
+    if(d.accountId!==accountId) throw notFound("Delivery");
+    return this.view(d);
+  }
   product(id: string) { return this.read<Delivery>("merge_deliveries",id).productId; }
   decide(accountId: string, id: string, revision: string, decision: "confirm" | "withdraw") {
     return this.db.transaction(() => {
@@ -438,7 +443,7 @@ export class MergeDeliveries {
       return this.preview(accountId,id);
     });
   }
-  /** Browser-only human decision. MCP cannot mint recovery authorization. */
+  /** Human Web or bound native decision; never an Agent-provided approval fact. */
   decideReconciliation(accountId:string,id:string,requestId:string,snapshot:string,decision:"approved"|"rejected",noExecutionRemaining:boolean) {
     return this.db.transaction(()=>{
       const b=this.read<Batch>("merge_batches",id);this.permit(accountId,b,true);

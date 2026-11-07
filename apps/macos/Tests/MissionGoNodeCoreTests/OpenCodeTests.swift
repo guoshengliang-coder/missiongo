@@ -27,6 +27,11 @@ private actor StubOpenCodeControl: OpenCodeControlling {
     var rejectedPermissionIDs: Set<String> = []
     func rejectPermission(_ id: String) { rejectedPermissionIDs.insert(id) }
     var promptError: Error?
+    var cancelledForms: [String] = []
+    func cancelForm(id: String, formID: String) async throws {
+        cancelledForms.append(formID)
+        choices.removeAll { if case let .form(id, _) = $0.reply { return id == formID }; return false }
+    }
     var promptCount = 0
     var stopStates: [OpenCodeStopState] = []
     var interruptCount = 0
@@ -117,6 +122,35 @@ private actor StubOpenCodeControl: OpenCodeControlling {
 }
 
 final class OpenCodeTests: XCTestCase {
+    func testEmptyConfirmationNeedsItsExactKeyAndCanCancelWithoutPrompting() async throws {
+        let choice = try XCTUnwrap(OpenCodeProtocol.formChoice(["id": "confirm-1", "title": "Exact scope and cost", "fields": [[String: Any]]()]))
+        XCTAssertEqual(choice.message.text, "Exact scope and cost")
+        XCTAssertEqual(choice.message.questions?.first?.options, ["批准", "取消"])
+        XCTAssertNil(choice.answer(from: "批准"))
+        XCTAssertNil(choice.answer(from: "确认请求 another: 批准"))
+        XCTAssertEqual(choice.answer(from: "确认请求 confirm-1: 批准"), .form([:]))
+        XCTAssertEqual(choice.answer(from: "确认请求 confirm-1: 取消"), .cancelForm)
+        let control = StubOpenCodeControl(mcpStatus: "connected", choices: [choice])
+        let launcher = OpenCodeLauncher(control: control)
+        let unbound = try await launcher.synchronize(NodeAgentSession(id: "s", agentKind: "opencode", sessionRef: "native", status: "idle",
+            command: AgentSessionCommand(id: "unbound-empty", kind: "message", text: "批准", status: "delivering")))
+        XCTAssertEqual(unbound.commandStatus, "failed")
+        let attachment = AgentSessionAttachment(id: "file", filename: "note.txt", kind: "document", contentType: "text/plain",
+            sizeBytes: 9, sha256: "fixture", localPath: "/synthetic/note.txt")
+        let attached = try await launcher.synchronize(NodeAgentSession(id: "s", agentKind: "opencode", sessionRef: "native", status: "idle",
+            command: AgentSessionCommand(id: "attached-empty", text: "确认请求 confirm-1: 批准", status: "delivering", attachments: [attachment])))
+        XCTAssertEqual(attached.commandStatus, "failed")
+        let report = try await launcher.synchronize(NodeAgentSession(
+            id: "s", agentKind: "opencode", sessionRef: "native", status: "idle",
+            command: AgentSessionCommand(id: "cancel-empty", kind: "message", text: "确认请求 confirm-1: 取消", status: "delivering")))
+        XCTAssertEqual(report.commandStatus, "delivered")
+        let cancelled = await control.cancelledForms
+        let promptCount = await control.promptCount
+        XCTAssertEqual(cancelled, ["confirm-1"])
+        XCTAssertEqual(promptCount, 0)
+        XCTAssertEqual(report.messages.first(where: { $0.sourceId == "form-confirm-1" })?.questions?.first?.answered, "取消")
+    }
+
     func testLongHistoryStartsAtTheNewestEndAndDoesNotLoseItsLatestAnswer() async throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: home) }
@@ -138,8 +172,18 @@ final class OpenCodeTests: XCTestCase {
         XCTAssertEqual(snapshot.messages.count, 2000)
         XCTAssertEqual(snapshot.messages.first?.sourceId, "msg-3001")
         XCTAssertEqual(snapshot.messages.last?.sourceId, "msg-5000")
-        XCTAssertTrue(snapshot.failure?.hasPrefix("agent_history_limited:") == true)
+        XCTAssertNil(snapshot.failure)
+        XCTAssertEqual(snapshot.history?.cursor, "20")
+        XCTAssertEqual(snapshot.history?.complete, false)
         XCTAssertEqual(StubURLProtocol.recorded.filter { $0.request.url?.path.hasSuffix("/message") == true }.count, 20)
+        let page = try await OpenCodeHTTPControl(home: home.path, session: StubURLProtocol.session()).historyPage(id: "session", cursor: snapshot.history!.cursor!)
+        XCTAssertEqual(page.messages.last?.sourceId, "msg-3000")
+        XCTAssertEqual(page.nextCursor, "21")
+        let request = StubURLProtocol.recorded.last!.request
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertEqual(Self.query(of: request.url)["cursor"], "20")
+        XCTAssertNil(Self.query(of: request.url)["order"])
+
     }
 
     func testFailedAndSettledModeRevisionsCannotSendAnOrdinaryPrompt() async throws {

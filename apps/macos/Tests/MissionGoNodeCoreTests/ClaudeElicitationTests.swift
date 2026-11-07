@@ -9,6 +9,17 @@ final class ClaudeElicitationTests: XCTestCase {
         ]]))
     }
 
+    func testLongConfirmationRemainsCompleteAndHasAnExplicitSizeBound() throws {
+        let schema: [String: Any] = ["type": "object", "properties": [String: Any](), "required": [String](), "additionalProperties": false]
+        for count in [30_000, 512_001] {
+            let message = String(repeating: "界", count: count)
+            let form = try XCTUnwrap(ClaudePermissionRequest(event: ["type": "control_request", "request_id": "long", "request": ["subtype": "elicitation", "mode": "form", "message": message, "requested_schema": schema]]))
+            XCTAssertEqual(form.question.detail, message)
+            if count < 512_000 { XCTAssertNil(form.unsupportedReason) }
+            else { XCTAssertNotNil(form.unsupportedReason) }
+        }
+    }
+
     func testConfirmationUsesItsOwnWireProtocolAndAnExplicitRequestBoundChoice() throws {
         let form = try request()
         XCTAssertNil(form.unsupportedReason)

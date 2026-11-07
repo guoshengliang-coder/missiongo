@@ -8,7 +8,7 @@ AND-232 adds a separate, default-off supervised execution control surface; see [
 
 - 实现、审查、验证是本版唯一可声明的动作：`implement` / `review` / `verify`。
 - 不接受 merge、release、deploy 或 production migration；不会创建 dispatch、stage、attempt 或运行进程，不改变工作条目状态。
-- 不新增 MCP 工具或外部 Agent 写权限。普通 MCP、节点、运维凭据均不能进入这些接口。
+- 原有人类 HTTP 接口继续拒绝普通 MCP、节点与运维凭据。AND-443 新增独立的原生人工确认往返，只有绑定版本的客户端人工回执可调用同一领域批准；不提供 Agent 批准参数，也不开放 Run 创建、内容修改、撤销或执行。
 - Run 仍由受信任的内部 `ManagedRunStore` 创建；本版没有对外 create-run、执行资格消费或调度接口。提出决策须已有同账号的 Run，页面不伪造未存在的 Run。
 - 手动派单保留原有行为，**尚未强制接入此门禁**；不能把本功能的测试结果说成全部派单已受正式批准控制。
 
@@ -68,3 +68,9 @@ UTC 迁移 `202609270131` 增加 `decision_records` 与 `decision_events`，不�
 自动测试：domain 合法动作及内容；持久化/重开；版本及幂等；撤销重放；资格检查；完整条目、跨账号和实时撤权；审计失败回滚；两个 SQLite 连接竞争；迁移失败回滚与锁内 receipt；真实 HTTP 登录、MCP/节点/运维及混合凭据拒绝；CSRF；手机浏览器深链登录、查看不批准、批准/撤销、旧页面冲突、重复点击、写响应丢失后的回查、窄屏/横屏及明暗可读性。
 
 用户手机实测单列待验：发布到获准的环境后，用本人的手机打开真实决策链接，核对原条目、版本、代价及全部允许动作；确认查看/讨论不批准；明确批准并重新打开核对；再撤销并重开核对。自动化浏览器通过不能替代这一步。当前代码交付不代表已上线或人工验收通过。
+
+## 原生人工确认（AND-443）
+
+`request_managed_decision_approval` 绑定账号、OAuth 客户端、决策 ID、version/stateVersion、内容/范围摘要、契约版本和请求键。确认完整展示原始决策、代价、验收和 allowedActions。只接受原生客户端 form 回执，等待期间及事务内重新校验当前权限与版本；撤销、旧版、篡改和重放不能恢复批准。网页已经批准同一当前版本时直接复用，不重复审批。
+
+批准仍写入原 decision_records/decision_events，不创建另一份权威状态；native_human_confirmations 仅保存原生来源和幂等回执，与领域写入原子提交。只保存决定，不产生执行租约或启动动作，既有执行、撤销和 fencing 边界不变。原 Cookie HTTP 的身份、Origin、CSRF 检查不放宽。

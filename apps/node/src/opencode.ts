@@ -97,6 +97,10 @@ export class OpenCodeAdapter implements Adapter {
     for (const p of choices.permissions) messages.push({ sourceId: `permission-${p.id}`, role: "agent", text: p.message || `OpenCode 请求使用 ${p.action}`,
       questions: [{ title: `OpenCode 请求使用 ${p.action}`, key: `授权请求 ${p.id}`, options: ["允许一次", "拒绝"], detail: JSON.stringify(p.resources ?? []).slice(0, 4000) }] });
     for (const form of choices.forms) {
+      if(Array.isArray(form.fields)&&form.fields.length===0) {
+        messages.push({sourceId:`form-${form.id}`,role:"agent",text:form.title || "OpenCode 请求确认",questions:[{title:"确认此请求",key:`确认请求 ${form.id}`,options:["批准","取消"]}]});
+        continue;
+      }
       const questions: Question[] = (form.fields ?? []).filter((f: Wire) => !f.hidden).map((f: Wire) => ({ title: f.title || f.key, key: f.key,
         ...(f.description ? { detail: f.description } : {}), ...(f.options?.length ? { options: f.options.map((o: Wire) => o.label || o.value) } : { kind: ["number", "integer"].includes(f.type) ? "number" : f.type === "boolean" ? "boolean" : "text" }),
         multiSelect: f.type === "multiselect", custom: f.custom === true }));
@@ -106,7 +110,15 @@ export class OpenCodeAdapter implements Adapter {
     const running = active.data?.[this.ref] !== undefined;
     return { status: details.data?.outcome === "failed" ? "failed" : running ? "active" : "idle", messages: messages.slice(-2000),
       ...(typeof details.data?.agent==="string" ? {mode:details.data.agent} : {}), turnActive: running, waitingForInput: choices.permissions.length + choices.forms.length > 0,
-      ...(cursor ? { error: "agent_history_limited: only the latest OpenCode messages are synchronized" } : {}) };
+      history: {complete: !cursor, ...(cursor ? {cursor} : {})} };
+  }
+  async historyPage(cursor: string) {
+    const result=await this.api.call("GET",`${this.path}/message?${new URLSearchParams({limit:"100",cursor})}`);
+    if(!Array.isArray(result.data)) throw new Error("Invalid OpenCode history page");
+    const next=result.nextCursor ?? result.cursor?.next;
+    if(next!==undefined && next!==null && (typeof next!=="string"||!next)) throw new Error("Invalid OpenCode history continuation");
+    if(next===cursor) throw new Error("OpenCode history cursor did not advance");
+    return {messages:openCodeMessages([...(result.data ?? [])].reverse()),...(next?{nextCursor:next}:{})};
   }
   private async stopState(): Promise<{ active: boolean; input?: string }> {
     const active = (await this.api.call("GET", "/api/session/active")).data?.[this.ref] !== undefined;
@@ -143,6 +155,16 @@ export class OpenCodeAdapter implements Adapter {
     }
     const form = choices.forms[0];
     if (form) {
+      if(Array.isArray(form.fields)&&form.fields.length===0) {
+        const prefix=`确认请求 ${form.id}: `;
+        if(!command.text.startsWith(prefix)) throw new InputRejected("请明确答复当前确认请求；普通回复不会批准空表单。");
+        const selected=command.text.slice(prefix.length).trim();
+        if(selected==="批准") await this.api.call("POST",`${this.path}/form/${encodeURIComponent(form.id)}/reply`,{answer:{}});
+        else if(selected==="取消") await this.api.call("DELETE",`${this.path}/form/${encodeURIComponent(form.id)}`);
+        else throw new InputRejected("确认请求选项已变化。");
+        return;
+      }
+      if(command.text.trim().startsWith("确认请求 ")) throw new InputRejected("确认请求已变化。");
       const labels = labelledAnswers(command.text); const answer: Wire = {};
       for (const field of (form.fields ?? []).filter((f: Wire) => !f.hidden)) {
         const raw = labels[field.key] ?? labels[field.title] ?? (form.fields.length === 1 ? command.text : undefined);
@@ -158,6 +180,7 @@ export class OpenCodeAdapter implements Adapter {
       }
       await this.api.call("POST", `${this.path}/form/${encodeURIComponent(form.id)}/reply`, { answer }); return;
     }
+    if(command.text.trim().startsWith("确认请求 ")) throw new InputRejected("确认请求已变化。");
     if (options?.controlOnly) throw new InputRejected("回复未发送：会话设置未确认，请重新应用设置后重试。");
     const previous = new Set((await this.snapshot()).messages.map((message) => message.sourceId));
     await this.prompt(command.text);

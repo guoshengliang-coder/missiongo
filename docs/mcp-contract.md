@@ -1,5 +1,7 @@
 # MCP 契约
 
+MCP 的内容交付遵守 [跨端协作与内容完整性](design-system.md#跨端协作与内容完整性)：相关工具应提供当前任务可审阅的正文或受保护的有界读取方式，并明确内容版本、决定／执行状态及能力缺口，链接只作补充。具体返回字段以各工具契约为准；现有网页专属人工操作保持原权限边界，新增规范不等于这些接口已经支持原生批准。
+
 ## 当前阶段
 
 MissionGo MCP 让经过鉴权的 AI 按用户给出的编号完整读取一个工作条目；开启写入后，还可以追加评论、领取待处理条目、在 PR/MR 合并或本地提交集成核实后标记开发完成、在所有相关产物核实发布后推到待验证、在用户于会话里确认内容后创建条目，上传并关联附件，以及登记外部主动处理的会话与进展。
@@ -33,7 +35,7 @@ MissionGo MCP 让经过鉴权的 AI 按用户给出的编号完整读取一个�
 
 ## 人工批准不是 MCP 工具（AND-231）
 
-托管决策的提出、修订、读取、批准与撤销在独立人类 Cookie HTTP 入口实现，本版不新增 MCP 工具。`missiongo:write`、节点或运维 Bearer、AI 评论和聊天批准不能生成正式人工批准记录；当前工具清单与写入档位保持不变。见 [managed-decisions.md](managed-decisions.md)。
+托管决策的提出、修订、读取、批准与撤销在独立人类 Cookie HTTP 入口实现，人工 HTTP 写入继续拒绝机器凭据；只读正文可通过 `get_review_content(kind: decision)` 获取，原生人工批准通过绑定的 `request_managed_decision_approval` 往返实现。`missiongo:write`、节点或运维 Bearer、AI 评论和聊天批准不能生成正式人工批准记录；当前工具清单与写入档位保持不变。见 [managed-decisions.md](managed-decisions.md)。
 
 ## 已开放工具
 
@@ -284,3 +286,23 @@ AI 写入的评论会成为下一次读取的上下文，所以来源必须可�
 ### 缓存工具目录的合并恢复兼容
 
 旧会话通过原 `get_merge_batch` 读取恢复预览和兼容协议，使用原 `record_merge_integration` 传输受限恢复请求及已批准请求的执行，不要求新增工具已加载。人工审批、原批次身份、快照和发布门禁保持；完整协议及限制见 [恢复兼容入口](merge-recovery-compatibility.md)。
+
+### 跨端完整内容读取（AND-443）
+
+Codex、Claude Code、OpenCode 共用内容完整性契约。`request_plan_approval` 保存原方案和验证（上限 64000/16000 个 UTF-16 字符）；Web 选择及原生确认不可用的文本回执也包含完整正文，链接只是补充导航。登记不声明条目尚未领取，不改变领取状态。
+
+- `get_review_content`：kind 为 plan/delivery/decision/collaboration/recovery，id 为明确指定会话或记录。方案按既有会话读取范围授权，交付与决策按本账号及产品授权。JSON 文本分页采用 Unicode 码点偏移，默认 8000、最大 16000；续页必须带首个 revision，内容或状态变化拒绝拼接。只读连接也可调用，不能批准或修改记录。
+- `get_agent_history`：按会话原权限返回已签发 nextCursor，或请求/查询原游标。使用现有独立历史队列，不创建聊天命令、不启动或恢复会话；节点按 agentKind 读取原生源页。历史问题只读；读取成功的源页合入 MCP 会话正文。未接入、离线、旧节点与来源缺失分别按实际能力报告。
+- `get_agent_artifact`：仅接受原会话中已出现的 sourceId/href，或已保存的 artifactId。存储和文件权限复用现有产物服务，不接受自由路径。已保存文件可独立于原节点读取；未保存需要原节点。文本按 revision 分页、图片与原文件使用嵌入内容；bundle 资源按明确 resourceName 读取。HTML/脚本不执行。
+
+上述三个读取工具不开放人工决定写入；协作、恢复和托管决策批准使用人工 Web 入口或下述可信原生确认，不能从读取或普通工具参数产生批准。旧节点可读已有服务端内容，但新源续页需要支持对应适配器的节点升级。
+
+### 三类可信原生人工确认（AND-443）
+
+写入档位新增 request_collaboration_approval、request_merge_reconciliation_approval、request_managed_decision_approval。参数严格限定原对象、版本/快照及幂等键，不接受 approved、decision 或 noExecutionRemaining。现代 MCP 复用签名 requestState（账号、OAuth 客户端、方法）并将工具、目标、参数和完整审阅内容纳入 revision；humanConfirmation 只接受原生 accept/decline/cancel，accept 的 content 必须是空对象。旧协议只等待同一次 elicitation 的原生结果。无 capability 或表单过大时返回完整内容及明确不可用状态，不授予权限。
+
+每次等待后、同一写事务内重新检查当前权限和领域版本；严格复用原领域操作及已有 Web 决定，不创建第二套批准事实。迁移 202611070503 增加 native_human_confirmations，记录来源、选择、内容摘要及幂等结果；与领域变更同事务提交，拒绝/取消无领域授权，审计失败回滚。新工具不启动 Agent 回合，不执行 Git 或发布，不改变模型或权限模式。已撤销/变化的决定不能通过重放恢复。
+
+客户端复用现有确认/问题组件。Claude 保留空对象确认 schema，并允许 512000 个 UTF-16 字符的完整正文；不开放任意 schema。OpenCode 空表单只接受绑定“确认请求 <id>”的批准或取消，取消通过官方 DELETE form API，拒绝普通回复或过期标识被当作批准。
+
+协议依据：[OpenCode Input requests](https://dev.opencode.ai/docs/mcp-servers/#input-requests)、[OpenCode Form API](https://dev.opencode.ai/docs/api)、[MCP TypeScript SDK elicitation](https://ts.sdk.modelcontextprotocol.io/v2/servers/elicitation)。真实客户端、第三方网关与升级环境的端到端结果单列，模拟协议不冒充实际兼容验收。
