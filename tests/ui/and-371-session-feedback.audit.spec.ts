@@ -50,13 +50,14 @@ for (const width of [320, 768, 1440]) for (const theme of ["light", "dark"] as c
     });
     await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
     const bubble = page.locator(".agent-console-message-outgoing"); const details = page.locator(".agent-run-details");
-    await expect(bubble).toContainText("排队中");
+    await expect(page.locator(".agent-console-outgoing")).toContainText("排队中");
     await expect(bubble).toHaveCSS("padding-top", "12px");
     await expect(bubble).toHaveCSS("padding-left", "16px");
     await expect(bubble.locator(".markdown-text")).toHaveCSS("font-size", "12px");
     await expect(bubble.locator(".markdown-text")).toHaveCSS("line-height", "19.2px");
-    await expect(bubble.locator(".agent-reply-feedback")).toHaveCSS("margin-top", "8px");
-    await expect(bubble.locator(".agent-reply-spin")).toHaveCSS("animation-name", "spin");
+    await expect(bubble.locator(".agent-reply-feedback")).toHaveCount(0);
+    await expect(page.locator(".agent-console-outgoing")).toHaveCSS("gap", "4px");
+    await expect(page.locator(".agent-reply-spin")).toHaveCSS("animation-name", "spin");
     await expect(bubble).not.toContainText("详情");
     await expect(bubble).not.toContainText("送达与开始执行");
     await expect(details).not.toHaveAttribute("open", "");
@@ -65,7 +66,7 @@ for (const width of [320, 768, 1440]) for (const theme of ["light", "dark"] as c
     await details.locator("summary").focus(); await page.keyboard.press("Enter");
     await expect(page.locator(".agent-run-diagnostics")).toContainText("送达与开始执行是两个阶段");
     await details.locator("summary").click();
-    const edit = bubble.getByRole("button", { name: "撤回编辑" });
+    const edit = page.locator(".agent-console-outgoing").getByRole("button", { name: "撤回编辑" });
     await expect(edit).toHaveCSS("border-top-width", "0px");
     if (touch) {
       expect((await edit.boundingBox())!.height).toBeGreaterThanOrEqual(44);

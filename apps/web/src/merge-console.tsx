@@ -79,7 +79,7 @@ export function IntegrationDetails({productId,sessionId}:{productId:string;sessi
   </>;
 }
 
-export function PendingMergeButton({productId,onSession}:{productId:string;onSession:(id:string)=>void}) {
+export function PendingMergeButton({productId,onSession}:{productId:string;onSession:(id:string)=>Promise<void>}) {
   const {t}=useI18n(),query=useDeliveries(productId);
   const [open,setOpen]=useState(false);
   useEffect(()=>setOpen(false),[productId]);
@@ -89,12 +89,15 @@ export function PendingMergeButton({productId,onSession}:{productId:string;onSes
       {t("mergePending")} {query.isSuccess&&<span className="agent-unread-badge">{count}</span>}
     </button>
     {open&&<MergeDialog key={productId} productId={productId} onClose={()=>setOpen(false)}
-      onSession={id=>{setOpen(false);onSession(id);}}/>}
+      onSession={async id=>{await onSession(id);setOpen(false);}}/>}
   </>;
 }
 
-function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=>void;onSession:(id:string)=>void}) {
+function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=>void;onSession:(id:string)=>Promise<void>}) {
   const {t,formatTime}=useI18n(),query=useDeliveries(productId);
+  const client=useQueryClient();
+  const [createdBatch,setCreatedBatch]=useState<Batch>();
+  const openSession=useMutation({mutationFn:onSession});
   const nodes=useQuery({queryKey:["nodes"],queryFn:api.listNodes});
   const defaults=useQuery({queryKey:["dispatch-defaults"],queryFn:api.getDispatchDefaults});
   const [selected,setSelected]=useState<Record<string,string>>({});
@@ -120,21 +123,28 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
     frozen.current??={requestKey:crypto.randomUUID(),selection:Object.entries(selected).map(([id,revision])=>({id,revision})),config,publish};
     const f=frozen.current;
     return post<Batch>(`/api/v1/products/${productId}/merge-batches`,{...f.config,requestKey:f.requestKey,selection:f.selection,publish:f.publish,integrationProtocol:1});
-  },onSuccess:b=>onSession(b.sessionId),onError:error=>{
+  },onSuccess:b=>{
+    setCreatedBatch(b);
+    openSession.mutate(b.sessionId);
+    void client.invalidateQueries({queryKey:["merge-deliveries",productId]});
+  },onError:error=>{
     if(error instanceof ApiError && error.status>=400 && error.status<500) frozen.current=undefined;
     void query.refetch();
   }});
-  const locked=start.isPending||Boolean(frozen.current);
-  const active=query.data?.batches.find(b=>b.state==="active");
+  const locked=start.isPending||openSession.isPending||Boolean(frozen.current);
+  const active=createdBatch??query.data?.batches.find(b=>b.state==="active");
   const candidates=query.data?.deliveries.filter(d=>d.state==="confirmed")??[];
   const selectedValid=Object.entries(selected).every(([id,revision])=>candidates.some(d=>d.id===id&&d.revision===revision&&d.blocker!=="changed"));
   return <Modal title={t("mergePending")} subtitle={t("mergeSelectHelp")} onClose={onClose} wide scrolls
-    dirty={Boolean(Object.keys(selected).length)||publish} pending={start.isPending}>
+    dirty={!createdBatch&&(Boolean(Object.keys(selected).length)||publish)} pending={start.isPending||openSession.isPending}>
     {close=><div className="merge-dialog">
       {query.isPending&&<p role="status">{t("mergeLoading")}</p>}
       {query.isError&&<p role="alert" className="inline-error">{t("mergeLoadError")} <button type="button" className="secondary-button" onClick={()=>void query.refetch()}>{t("retry")}</button></p>}
+      {openSession.isPending&&<p role="status">{t("agentSessionLoading")}</p>}
+      {openSession.isError&&<p role="alert" className="inline-error">{t("mergeSessionOpenError")} <button type="button" className="secondary-button"
+        onClick={()=>openSession.mutate(openSession.variables!)}>{t("retry")}</button></p>}
       {active&&<section className="merge-delivery-card"><strong>{t("mergeActive")}</strong>
-        <p>{t("mergeActiveHelp")}</p><IntegrationProgress batch={active}/><button type="button" className="secondary-button" onClick={()=>onSession(active.sessionId)}>{t("mergeOpenSession")}</button></section>}
+        <p>{t("mergeActiveHelp")}</p><IntegrationProgress batch={active}/><button type="button" className="secondary-button" disabled={openSession.isPending} onClick={()=>openSession.mutate(active.sessionId)}>{t("mergeOpenSession")}</button></section>}
       {query.isSuccess&&!candidates.length&&!active&&<p>{t("mergeEmpty")}</p>}
       <div className="merge-list">{candidates.map(d=><div className="merge-row" key={d.id}>
         <label><input type="checkbox" checked={Boolean(selected[d.id])} disabled={locked||Boolean(active)||(d.blocker==="changed"&&!selected[d.id])}
@@ -143,7 +153,7 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
         <details><summary>{t("mergeDetails")}</summary><p>{d.validation}</p><p><code>{d.head}</code></p>
           <p>{formatTime(d.evidence.checkedAt)} · {d.evidence.source}</p>
           <a href={d.pullRequestUrl} target="_blank" rel="noreferrer">{t("mergeViewPR")}</a>{" · "}
-          <button type="button" className="text-button" onClick={()=>onSession(d.sessionId)}>{t("mergeOpenSource")}</button>
+          <button type="button" className="text-button" disabled={openSession.isPending} onClick={()=>openSession.mutate(d.sessionId)}>{t("mergeOpenSource")}</button>
           {d.blocker&&<p>{t(d.blocker==="changed"?"mergeChanged":"mergeNeedsCheckHelp")}</p>}
         </details>
       </div>)}</div>
@@ -168,7 +178,7 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
       <label className="merge-publish"><input type="checkbox" checked={publish} disabled={locked} onChange={e=>setPublish(e.target.checked)}/><span>{t("mergePublish")}<small>{t("mergePublishHelp")}</small></span></label>
       {start.isError&&<p role="alert" className="inline-error">{start.error instanceof ApiError && start.error.status<500 ? start.error.message : t("mergeStartError")}</p>}
       <div className="form-footer merge-footer"><span>{t("mergeSelected",{count:Object.keys(selected).length})}</span>
-        <button type="button" className="secondary-button" disabled={start.isPending} onClick={close}>{t("cancel")}</button>
+        <button type="button" className="secondary-button" disabled={start.isPending||openSession.isPending} onClick={close}>{t("cancel")}</button>
         <button type="button" className="primary-button" disabled={start.isPending||Boolean(active)||!config||!node?.online||!node.supportsFreeSessions||!Object.keys(selected).length||(!frozen.current&&!selectedValid)}
           onClick={()=>start.mutate()}>{t(start.isError&&frozen.current?"mergeRetry":"mergeStart",{count:Object.keys(selected).length})}</button>
       </div>

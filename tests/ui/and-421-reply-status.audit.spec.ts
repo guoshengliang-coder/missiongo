@@ -7,9 +7,8 @@ import { advanceSessionDetailPoll } from "./polling";
 const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as { productId: string };
 
 /**
- * AND-421: the delivery footer keeps one spinner and one footprint. Switching
- * queued → sending → delivering → delivered only swaps the words and the
- * action; the message bubble must not move or resize.
+ * AND-441: normal receipts sit outside the bubble. Switching delivery states
+ * must not resize the text bubble; no hidden state reserves extra width.
  */
 for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const) {
   test(`reply status keeps its place while words change ${width}px ${theme}`, async ({ browser }, testInfo) => {
@@ -38,15 +37,16 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     });
     await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
     const bubble = page.locator(".agent-console-message-outgoing");
-    const feedback = bubble.locator(".agent-reply-feedback");
-    await expect(bubble).toContainText("排队中");
+    const group = page.locator(".agent-console-outgoing");
+    const feedback = group.locator(".agent-reply-feedback");
+    await expect(page.locator(".agent-console-outgoing")).toContainText("排队中");
 
     // One spinner for every state, and no pencil beside the recall text.
-    await expect(bubble.locator(".agent-reply-current .agent-reply-spin")).toHaveCSS("animation-name", "spin");
-    await expect(bubble.locator(".agent-reply-edit svg")).toHaveCount(0);
+    await expect(page.locator(".agent-reply-current .agent-reply-spin")).toHaveCSS("animation-name", "spin");
+    await expect(page.locator(".agent-reply-edit svg")).toHaveCount(0);
     // The recall action sits right beside the state, underlined and slightly bolder.
-    const edit = bubble.getByRole("button", { name: "撤回编辑" });
-    const state = bubble.locator(".agent-reply-current .agent-reply-state");
+    const edit = page.locator(".agent-console-outgoing").getByRole("button", { name: "撤回编辑" });
+    const state = page.locator(".agent-reply-current .agent-reply-state");
     await expect(edit).toHaveCSS("text-decoration-line", "underline");
     await expect(edit).toHaveCSS("font-weight", "600");
     const stateFont = await state.evaluate((node) => getComputedStyle(node).fontSize);
@@ -55,23 +55,24 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     const editBox = (await edit.boundingBox())!;
     expect(editBox.x - (stateBox.x + stateBox.width)).toBeGreaterThanOrEqual(4);
     expect(editBox.x - (stateBox.x + stateBox.width)).toBeLessThanOrEqual(12);
-    await expect(bubble.locator(".agent-reply-sizer")).toHaveCSS("visibility", "hidden");
+    await expect(page.locator(".agent-reply-sizer")).toHaveCount(0);
+    await expect(bubble.locator(".agent-reply-feedback")).toHaveCount(0);
+    const bubbleBox = (await bubble.boundingBox())!;
+    expect((await feedback.boundingBox())!.y).toBeGreaterThanOrEqual(bubbleBox.y + bubbleBox.height);
     await page.screenshot({ path: testInfo.outputPath(`reply-queued-${width}-${theme}.png`) });
 
     // Every later state keeps the queued footprint exactly.
     const before = (await bubble.boundingBox())!;
-    const feedbackBefore = (await feedback.boundingBox())!;
     for (const status of ["delivering", "delivered"] as const) {
       command = commands[status];
       await advanceSessionDetailPoll(page);
       await expect(page.locator(`.agent-console-message-outgoing-${status}`)).toBeVisible();
-      await expect(bubble.getByRole("button", { name: "撤回编辑" })).toHaveCount(0);
+      await expect(page.locator(".agent-console-outgoing").getByRole("button", { name: "撤回编辑" })).toHaveCount(0);
       expect((await bubble.boundingBox())!.x, `${status} x`).toBeCloseTo(before.x, 0);
       expect((await bubble.boundingBox())!.width, `${status} width`).toBeCloseTo(before.width, 0);
       expect((await bubble.boundingBox())!.height, `${status} height`).toBeCloseTo(before.height, 0);
-      expect((await feedback.boundingBox())!.width, `${status} feedback width`).toBeCloseTo(feedbackBefore.width, 0);
     }
-    await expect(bubble.locator(".agent-reply-current .agent-reply-spin")).toHaveCount(0);
+    await expect(page.locator(".agent-reply-current .agent-reply-spin")).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath(`reply-status-${width}-${theme}.png`) });
     await context.close();
   });
@@ -97,7 +98,7 @@ test("a short message keeps the same footprint when delivery starts", async ({ b
   });
   await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
   const bubble = page.locator(".agent-console-message-outgoing");
-  await expect(bubble).toContainText("排队中");
+  await expect(page.locator(".agent-console-outgoing")).toContainText("排队中");
   const before = (await bubble.boundingBox())!;
   command = { ...command, status: "delivering" };
   await advanceSessionDetailPoll(page);
