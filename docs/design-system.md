@@ -1,6 +1,6 @@
 # MissionGo 设计规范
 
-交付确认与待合并入口（AND-423）：控制台和条目会话面板共用 `DeliveryCards`；项目筛选右侧为“待合并 N”。弹窗复用 `Modal`、`Select`、`AgentSettingsControls`，沿用焦点恢复、草稿保护与主题令牌。只有“开始合并”是弹窗主操作，交付确认不宣称开始合并或发布。交互及恢复契约见 [交付确认与待合并批次](merge-deliveries.md)，回归见 `merge-console.audit.spec.ts`。
+交付确认与待合并入口（AND-423/446）：控制台和条目会话面板共用紧凑 `DeliveryCards`，黄色仅表示待选择；加入后切为浅绿色状态条，使用 `GitMerge` 图标和“已进入待合并状态”，直接说明发送新消息或改动变化会自动移出，不提供“改动与验证”入口。已失效交付隐藏，重新提出有效交付才询问重新添加；暂不添加不恢复本轮通用待处理提示，方案、权限与异常提示保持独立。项目筛选右侧为“待合并 N”，批次弹窗沿用 `Modal`、`Select`、`AgentSettingsControls`。交互见 [交付确认与待合并批次](merge-deliveries.md)，回归见 `merge-console.audit.spec.ts`。
 
 > 文档版本：v0.3（公共交互与持续检查，存量样式债务仍需迁移）
 > 更新日期：2026-11-01

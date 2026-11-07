@@ -103,11 +103,32 @@ describe("AND-423 explicit merge deliveries",()=>{
     const f=await prepared();
     f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
     new AgentSessionStore(f.store.database).enqueue(f.owner.id,f.projectSessionId,"Continue changing this feature",[]);
-    expect(f.merges.list(f.item.productId,f.owner.id)[0]?.blocker).toBe("changed");
+    expect(f.merges.list(f.item.productId,f.owner.id)).toEqual([]);
     expect(()=>f.merges.start(f.owner.id,randomUUID(),[{id:f.d.id,revision:f.d.revision}],f.config,false)).toThrow();
     const g=await prepared();
     g.merges.decide(g.owner.id,g.d.id,g.d.revision,"confirm");
     expect(g.merges.refresh(g.owner.id,"original-client",g.identity,g.d.id,{...g.input.evidence,head:"c".repeat(40)}).state).toBe("withdrawn");
+  });
+  it("AND-446 preserves declined attention only for its input turn and reoffers explicitly",async()=>{
+    const f=await prepared();
+    expect(f.d.reconfirmation).toBe(false);
+    expect(f.merges.attentionSessionIds(f.item.productId,f.owner.id)).toEqual([f.projectSessionId]);
+    expect(f.merges.attentionSessionIds(f.item.productId,f.other.id)).toEqual([]);
+    f.merges.decide(f.owner.id,f.d.id,f.d.revision,"withdraw");
+    expect(f.merges.list(f.item.productId,f.owner.id)).toEqual([]);
+    expect(f.merges.attentionSessionIds(f.item.productId,f.owner.id)).toEqual([f.projectSessionId]);
+    new AgentSessionStore(f.store.database).enqueue(f.owner.id,f.projectSessionId,"Ordinary conversation",[]);
+    expect(f.merges.attentionSessionIds(f.item.productId,f.owner.id)).toEqual([]);
+    const again=f.merges.propose(f.owner.id,"original-client",f.identity,"offer-again",f.input);
+    expect(again).toMatchObject({state:"proposed",reconfirmation:true});
+    expect(f.merges.list(f.item.productId,f.owner.id)).toHaveLength(1);
+    expect(()=>f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm")).toThrow();
+    expect(f.merges.decide(f.owner.id,again.id,again.revision,"confirm").state).toBe("confirmed");
+  });
+  it("AND-446 leaves a confirmed offer intact when a new message is rejected",async()=>{
+    const f=await prepared();f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
+    expect(()=>new AgentSessionStore(f.store.database).enqueue(f.other.id,f.projectSessionId,"Rejected input",[])).toThrow();
+    expect(f.merges.list(f.item.productId,f.owner.id)[0]?.state).toBe("confirmed");
   });
   it("serializes batches, retries the same reservation, and never unlocks missing outcomes",async()=>{
     const f=await prepared();f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
