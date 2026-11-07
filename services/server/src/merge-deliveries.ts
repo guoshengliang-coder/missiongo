@@ -317,7 +317,14 @@ export class MergeDeliveries {
         return this.batch(accountId,dispatchId,id);
       }
       const previous=state.events.find(e=>e.id===key);
-      if(previous){if(previous.digest!==integrationDigest(action))throw changed();return b;}
+      if(previous){
+        // Same key, different body: the caller reused a key across actions. Reporting this
+        // as a content change sends integrators looking at the PR and the work item instead
+        // of the key, which is the only thing that actually differs.
+        if(previous.digest!==integrationDigest(action))
+          throw conflict("merge_integration_idempotency_conflict","这个 idempotencyKey 已记录过内容不同的集成动作。原样重试请复用原参数；新动作请换新的 key（prepare_repair 返回的 repairId 填 action.repairId，不能当 key 用）。");
+        return b;
+      }
       if(b.state!=="active"||state.revision!==expectedRevision)throw changed();
       const affected="deliveryId" in action?[action.deliveryId]:b.deliveries.filter(id=>!b.results[id]);
       for(const id of affected){if(!b.deliveries.includes(id))throw changed();this.sourceValid(this.read<Delivery>("merge_deliveries",id));}

@@ -1,7 +1,7 @@
 ---
 name: missiongo
 description: 通过 MissionGo MCP 查询项目概览、吞吐、交付周期和验收打回率，或完整读取及处理指定条目、评论、创建和上传附件；核实合并与发布后可靠交接。不修改条目正文与字段，不决定验收。
-version: 5.61.0
+version: 5.62.0
 ---
 
 # MissionGo 条目读取与评论
@@ -537,15 +537,15 @@ AI 每小时能建的条目有上限：衍生条目按来源条目计，独立�
 
 所有 `record_merge_integration` 操作携带最新 `expectedRevision` 和稳定 `idempotencyKey`；响应未知原样重试。恢复先读持久计划、进度、修复预留及实际 Git 结果，不重建批次或重复合并。工具有明确动作：
 - `progress`：保存当前调查、等待和下一步，不凭文字声明检查通过。
-- `action.kind="prepare_repair"`：修复前绑定当前 executionHead、实际远端 head 和最新目标 base，记录修复原因；返回的预留 ID 为本次 idempotencyKey。原始确认永不覆盖。
+- `action.kind="prepare_repair"`：修复前绑定当前 executionHead、实际远端 head 和最新目标 base，记录修复原因；返回的 `repairId` 只填进后续 `repair`/`cancel_repair` 的 `action.repairId`，各动作的 `idempotencyKey` 相互独立——`repair` 必须使用新 key，沿用预留动作的 key 会命中旧事件并以 digest 不符被判为内容冲突。原始确认永不覆盖。
 - `repair`：在独立 worktree 追加本会话必要修复，保留原确认提交的祖先关系；推送前核对远端仍是预留 head，正常 push 原 PR 分支，不 force。推送后再次核对远端，通过 `scripts/merge-integration-evidence.mjs` 验证原提交、目标基线及完整修复提交链，随后登记 repairId、expectedHead、新 head、commits 与验证说明。不得把他人的新提交冒充自己的修复。该脚本只读，不自动 push。服务端校验身份、一致性和并发版本，不代替执行端核验 Git 真实性。
 - `cancel_repair`：只在确认未推送、远端仍为预留 head 且无后台执行时，提供 observedHead、repairId、noExecutionRemaining=true、原因和来源，撤销未发生的修复。超时或未知结果不能撤销；已推送则恢复登记真实修复结果。
-- `check`：记录 executionHead、当前目标 base、本地检查、实时 GitHub CI 和冲突证据。CI 运行时保留原批次，状态不变降低轮询；挂上 auto-merge 后不必阻塞等待合并通知，可直接转入下一依赖项；失败先定位，不删除测试、降低断言或绕过保护。疑似 flaky/基础设施超时可有依据地重跑一次。无需因局部缺陷来自原分支就退回原会话，原需求明确的必要修复由集成者承担。
+- `check`：记录 executionHead、当前目标 base、本地检查、实时 GitHub CI 和冲突证据。证据 5 分钟内有效，`report_merge_batch` 会重新校验时效：`check` 通过后应立即挂合并，合并后立刻 `report_merge_batch`，完成评论、发布与交接放到 report 之后，否则需重取证据；合并后 GitHub 不再返回 mergeable，重取时以成功合并的事实说明冲突判定。CI 运行时保留原批次，状态不变降低轮询；挂上 auto-merge 后不必阻塞等待合并通知，可直接转入下一依赖项；失败先定位，不删除测试、降低断言或绕过保护。疑似 flaky/基础设施超时可有依据地重跑一次。无需因局部缺陷来自原分支就退回原会话，原需求明确的必要修复由集成者承担。
 - `final_validation`：全部项结果明确后，在实际目标分支验证已合并组合，记录目标 head、时间、证据与验证说明。未完成组合验证不能结束含成功项的新批次。
 
 每次挂自动合并前重新读批次、核实 source blocker、计划依赖和实时 PR/主线/CI；确认 `mergeReady=true` 后立即用 `executionHead` 执行 `gh pr merge <n> --auto --merge --match-head-commit <head>` 挂 GitHub auto-merge，required checks 全绿由分支保护自动完成合并，不逐项等待 CI 通知或手动合并，会话直接并行推进下一依赖项；合并后回读实际 merge commit 核实并 `report_merge_batch`，检查失败先 `gh pr merge <n> --disable-auto` 再修复。不得 `--admin` 或绕过保护。`scripts/merge-delivery.mjs` 接受批次返回的 executionHead、expectedBase，目标基线变化时要求重新验证。批次内一项合并后其他未完成项的检查失效；主线外部变化也必须在执行端检测并重验。穷尽合理修复仍无法集成才记 blocked，并写清尝试与剩余障碍，不能用它掩盖未知结果。
 
-合并后核对 PR MERGED、实际 head、merge commit 及目标分支祖先关系，完整读源条目和发布范围、追加完成评论，再用 `report_merge_batch` 报告真实 executionHead 与 merge commit，受限交接为开发完成。不要为了兼容旧记录把原 head 冒充实际 head；旧批次需要修复时说明授权限制。相同结果原样重试，已成功项不重复操作。
+合并后核对 PR MERGED、实际 head、merge commit 及目标分支祖先关系，完整读源条目和发布范围，再用 `report_merge_batch` 报告真实 executionHead 与 merge commit，受限交接为开发完成。完成评论需要写在 report 之前时，必须留出 `check` 证据 5 分钟时效的余量；余量不足就先 report、后写评论。不要为了兼容旧记录把原 head 冒充实际 head；旧批次需要修复时说明授权限制。相同结果原样重试，已成功项不重复操作。
 
 未勾选发布时不得发布；勾选时全部项成功且组合验证完成后，按全量候选覆盖门禁发布。存在 blocked 项先报告已合并和受阻结果，等用户决定是否先发已合并部分；该决定不缩小全量候选覆盖范围。发布及交接结束、确认无后台执行且所有结果明确后，才 `finish_merge_batch`。业务验收仍由人工决定。本轮不提供 CI 结果跨提交复用，不跳过现有主线门禁。
 
