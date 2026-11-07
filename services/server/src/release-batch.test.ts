@@ -61,6 +61,37 @@ async function fixture() {
 }
 
 describe("AND-415 release batch", () => {
+  it("appends verified evidence for manual verification without replaying a transition",async()=>{
+    const f=await fixture(),item=await f.add(["web"],true),request=await f.batch();
+    f.store.transitionWorkItem({itemKey:item.key,actor:"human",to:"pending_verification",reason:"release_verified",attribution:{accountId:config.id}});
+    request.items[0].expectedRevision=f.store.getWorkItem(item.key).revision!;
+    const before=f.store.getTimeline(item.key),human=before.at(-1);
+    const result=await f.call("submit_release_batch",request);
+    expect(result.structuredContent.results[0]).toMatchObject({outcome:"submitted",currentStatus:"pending_verification"});
+    const after=f.store.getTimeline(item.key);
+    expect(after.filter(e=>e.eventType==="status_changed")).toEqual(before.filter(e=>e.eventType==="status_changed"));
+    expect(after.find(e=>e.id===human!.id)).toEqual(human);
+    expect(after.at(-1)).toMatchObject({eventType:"release_evidence_added",payload:{receiptDigest,preservedStatus:"pending_verification",developmentEventId:request.items[0].developmentEventId}});
+    expect(f.store.getWorkItem(item.key).builderAccountId).toBe(f.developer.id);
+    expect((await f.call("submit_release_batch",request)).structuredContent.results[0].outcome).toBe("already_submitted");
+    expect(f.store.getTimeline(item.key)).toEqual(after);
+    const replacement={...request,idempotencyKey:randomUUID(),items:[{...request.items[0],expectedRevision:f.store.getWorkItem(item.key).revision!}]};
+    expect((await f.call("submit_release_batch",replacement)).structuredContent.results[0].code).toBe("release_evidence_conflict");
+    f.store.transitionWorkItem({itemKey:item.key,actor:"human",to:"ready",reason:"verification_failed",note:"Rework",attribution:{accountId:config.id}});
+    expect((await f.call("submit_release_batch",request)).structuredContent.results[0]).toMatchObject({outcome:"already_submitted",currentStatus:"ready"});
+    expect(f.store.getWorkItem(item.key).status).toBe("ready");
+  });
+  it("rolls back partial manual-verification proof and rejects stale rounds",async()=>{
+    const f=await fixture(),item=await f.add(["web","macosApp"]),request=await f.batch();
+    f.store.transitionWorkItem({itemKey:item.key,actor:"human",to:"pending_verification",reason:"release_verified",attribution:{accountId:config.id}});
+    request.items[0].expectedRevision=f.store.getWorkItem(item.key).revision!;
+    const before=f.store.getTimeline(item.key);
+    expect((await f.call("submit_release_batch",request)).structuredContent.results[0].outcome).toBe("skipped");
+    expect(f.store.getTimeline(item.key)).toEqual(before);
+    const stale={...request,idempotencyKey:randomUUID(),items:[{...request.items[0],roundKey:randomUUID()}]};
+    expect((await f.call("submit_release_batch",stale)).structuredContent.results[0].code).toBe("release_candidate_changed");
+    expect(f.store.getTimeline(item.key)).toEqual(before);
+  });
   it("publishes multiple developer sessions through a different publisher, with audit and stable replay", async () => {
     const f = await fixture(), a = await f.add(), b = await f.add();
     const request = await f.batch();

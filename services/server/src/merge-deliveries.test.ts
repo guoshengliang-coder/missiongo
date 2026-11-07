@@ -532,6 +532,38 @@ describe("AND-439 batch reconciliation",()=>{
     f.store.transitionWorkItem({itemKey:f.item.key,actor:"human",to:"pending_verification",reason:"manual_override",note:"Human move",attribution:{accountId:config.id}});
     expect(()=>f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id)).toThrow(/发布凭据/);
   });
+  it("does not let later conversation input block an independently published unchanged delivery",async()=>{
+    const f=await recoveryFixture({publish:true});f.merged();
+    const listing=await f.call("list_release_candidates",{productId:f.item.productId,includeUnscoped:true});
+    const row=(listing.structuredContent!.candidates as Record<string,unknown>[])[0]!;
+    const {requiredArtifacts:_scope,...candidate}=row;
+    f.safe(await f.call("submit_release_batch",{productId:f.item.productId,idempotencyKey:"published",deployedCommit:"f".repeat(40),receiptDigest:"a".repeat(64),
+      items:[{...candidate,releases:[{artifact:"web",version:"test",sourceCommit:"f".repeat(40)}]}]}));
+    new AgentSessionStore(f.store.database).enqueue(f.owner.id,f.d.sessionId,"Discuss next work",[]);
+    expect(f.preview().entries[0]?.items[0]?.blocker).toBeUndefined();
+    const before=f.store.getTimeline(f.item.key);
+    expect(f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id).state).toBe("finished");
+    expect(f.store.getTimeline(f.item.key)).toEqual(before);
+    f.store.transitionWorkItem({itemKey:f.item.key,actor:"human",to:"ready",reason:"verification_failed",note:"New rework",attribution:{accountId:config.id}});
+    expect(f.preview().entries[0]?.items[0]?.blocker).toBeTruthy();
+  });
+  it("closes the original external-merge batch after supplementing a manually advanced item",async()=>{
+    const f=await recoveryFixture({publish:true});
+    f.merges.report(f.owner.id,f.b.dispatchId,f.b.id,f.d.id,{status:"blocked",head:f.d.head,detail:"External head differs"});
+    f.store.transitionWorkItem({itemKey:f.item.key,actor:"human",to:"development_complete",reason:"resolution_submitted",attribution:{accountId:config.id}});
+    f.store.transitionWorkItem({itemKey:f.item.key,actor:"human",to:"pending_verification",reason:"release_verified",attribution:{accountId:config.id}});
+    new AgentSessionStore(f.store.database).enqueue(f.owner.id,f.d.sessionId,"Next discussion",[]);
+    const item=f.preview().entries[0]!.items[0]!;
+    expect(item.missingPublicationEvidence).toBe(true);expect(item.blocker).toBeTruthy();
+    const statuses=f.store.getTimeline(f.item.key).filter(e=>e.eventType==="status_changed");
+    f.safe(await f.call("submit_release_batch",{productId:f.item.productId,idempotencyKey:"manual-published",deployedCommit:"f".repeat(40),receiptDigest:"a".repeat(64),
+      items:[{itemKey:f.item.key,expectedRevision:item.revision,developmentEventId:item.developmentEventId,roundKey:item.roundKey,
+        completion:{kind:"github",url:f.d.pullRequestUrl},releases:[{artifact:"web",version:"test",sourceCommit:"f".repeat(40)}]}]}));
+    const r=f.request({kind:"accept_merge",deliveryId:f.d.id,evidence:f.evidence});f.approve(r);f.apply(r.key);f.final();
+    expect(f.preview().entries[0]?.items[0]).toMatchObject({status:"pending_verification",missingPublicationEvidence:false,handoff:{status:"completed"}});
+    expect(f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id).state).toBe("finished");
+    expect(f.store.getTimeline(f.item.key).filter(e=>e.eventType==="status_changed")).toEqual(statuses);
+  });
   it("does not heal a rejected delivery or reuse stale supplement evidence",async()=>{
     const f=await recoveryFixture();f.merged();
     f.store.transitionWorkItem({itemKey:f.item.key,actor:"human",to:"pending_verification",reason:"manual_override",note:"Human move",attribution:{accountId:config.id}});

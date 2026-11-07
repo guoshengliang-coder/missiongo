@@ -30,3 +30,11 @@ request.action 复用现有动作及完整证据结构，包括 accept_merge、r
 恢复后重新核验真实目标分支，使用已有 final_validation 动作保存实际 head、时间、来源和本地组合检查结果；同时登记匹配当前结果的恢复组合验证。最后原 finish_merge_batch 仍检查修复预留、逐条交接和完整发布凭据，不得跳过门禁。
 
 兼容传输不自动接纳外部 head、不缩小发布范围、不改变人工验收，原始确认和历史结果保留。
+
+## 人工待验证但缺少发布凭据
+
+原批次预览逐条返回 revision、developmentEventId、roundKey 和 missingPublicationEvidence。仅对用户明确授权的原批次，独立核实真实 PR、全部公开产物和部署前置后，可通过已有 submit_release_batch 追加缺失证明。此路径只接受仍在 pending_verification、同内容/Builder/处理轮次且没有正式发布凭据的条目；不是扫描历史队列的许可。
+
+成功追加 release_evidence_added，保留人工开发完成/待验证事件、Builder 和业务状态；失败整条回滚。已有正式凭据不替换，部分产物、陈旧版本、冲突交付和打回仍拒绝。相同请求重试只返回当前状态，不恢复人工打回。
+
+完整发布凭据匹配的未变化交付可以完成批次收尾，不再因原开发会话后来的消息误拦；内容、Builder、轮次、返工及依赖校验不变。未发布条目仍受原活动检查保护。
