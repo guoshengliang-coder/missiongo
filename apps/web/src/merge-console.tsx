@@ -1,3 +1,5 @@
+import { GitMerge, Plus } from "lucide-react";
+import { localizedErrorText } from "./error-text";
 import { MergeReconciliation } from "./merge-reconciliation";
 import type { MergeIntegration } from "@missiongo/contracts";
 import { useEffect, useRef, useState } from "react";
@@ -16,13 +18,13 @@ import { deriveMergeProgress, type MergeProgress } from "./merge-progress";
 interface Delivery {
   id:string;productId:string;sessionId:string;revision:string;state:string;summary:string;validation:string;
   itemKeys:string[];head:string;requiredArtifacts:string[];noReleaseReason?:string;pullRequestUrl:string;
-  blocker?:string;evidence:{checkedAt:string;source:string};
+  reconfirmation?:boolean;blocker?:string;evidence:{checkedAt:string;source:string};
 }
 interface Batch {integration?:MergeIntegration;id:string;sessionId:string;state:string;deliveries:string[];publish:boolean;results:Record<string,{status:string;detail:string}>}
 const post=<T,>(path:string,body:unknown)=>request<T>(path,{method:"POST",body:JSON.stringify(body)});
 const useDeliveries=(productId:string)=>useQuery({
   queryKey:["merge-deliveries",productId],
-  queryFn:()=>request<{deliveries:Delivery[];batches:Batch[]}>(`/api/v1/products/${encodeURIComponent(productId)}/merge-deliveries`),
+  queryFn:()=>request<{deliveries:Delivery[];batches:Batch[];attentionSessionIds?:string[]}>(`/api/v1/products/${encodeURIComponent(productId)}/merge-deliveries`),
   enabled:Boolean(productId),refetchInterval:15_000,
 });
 
@@ -36,32 +38,55 @@ export function MergeProgressBadge({state}:{state:MergeProgress | undefined}) {
 }
 const checkLabel=(blocker?:string)=>blocker==="changed"?"mergeChanged":blocker==="pending"?"mergeCheckPending":blocker==="failed"?"mergeCheckFailed":blocker==="conflicting"?"mergeCheckConflict":blocker==="dependency"?"mergeCheckDependency":blocker?"mergeNeedsCheck":"mergeChecksPassed";
 
-export function DeliveryCards({productId,sessionId}:{productId:string;sessionId:string}) {
-  const {t,formatTime}=useI18n(),client=useQueryClient(),query=useDeliveries(productId);
+/** Only explicit, current offers replace generic completion attention. Approval and fault UI stays independent. */
+export function useDeliveryAttention(productId:string,sessionId:string) {
+  const query=useDeliveries(productId);
+  return Boolean(query.data?.attentionSessionIds?.includes(sessionId)
+    || query.data?.deliveries.some(d=>d.sessionId===sessionId && d.blocker!=="changed"
+      && ["proposed","confirmed"].includes(d.state)));
+}
+
+/** Accepted sends invalidate the shared offer cache immediately, before polling catches up. */
+export async function invalidateSessionDeliveries(client:ReturnType<typeof useQueryClient>,sessionId:string) {
+  await client.cancelQueries({queryKey:["merge-deliveries"]});
+  client.setQueriesData<{deliveries:Delivery[];attentionSessionIds?:string[]}>({queryKey:["merge-deliveries"]},current=>current?{
+    ...current,attentionSessionIds:current.attentionSessionIds?.filter(id=>id!==sessionId)??[],
+    deliveries:current.deliveries.map(d=>d.sessionId===sessionId && ["proposed","confirmed"].includes(d.state)
+      ? {...d,blocker:"changed"} : d),
+  }:current);
+  return client.invalidateQueries({queryKey:["merge-deliveries"]});
+}
+
+export function DeliveryCards({productId,sessionId,blocked=false}:{productId:string;sessionId:string;blocked?:boolean}) {
+  const {t}=useI18n(),client=useQueryClient(),query=useDeliveries(productId);
+  const locks=useRef(new Set<string>());
   const mutation=useMutation({mutationFn:({d,decision}:{d:Delivery;decision:"confirm"|"withdraw"})=>
     post(`/api/v1/merge-deliveries/${d.id}/decision`,{revision:d.revision,decision}),
-    onSuccess:()=>client.invalidateQueries({queryKey:["merge-deliveries",productId]})});
-  const rows=query.data?.deliveries.filter(d=>d.sessionId===sessionId)??[];
+    onSettled:async(_data,_error,input)=>{
+      await client.invalidateQueries({queryKey:["merge-deliveries",productId]});
+      locks.current.delete(input.d.id);
+    }});
+  const choose=(d:Delivery,decision:"confirm"|"withdraw")=>{
+    if(locks.current.has(d.id))return;
+    locks.current.add(d.id);mutation.mutate({d,decision});
+  };
+  const rows=query.data?.deliveries.filter(d=>d.sessionId===sessionId && d.blocker!=="changed"
+    && ["proposed","confirmed"].includes(d.state))??[];
   if(query.isError) return <p role="alert" className="inline-error">{t("mergeLoadError")} <button type="button" className="secondary-button" onClick={()=>void query.refetch()}>{t("retry")}</button></p>;
   if(!rows.length) return null;
-  return <div className="merge-delivery-cards">{rows.map(d=><section className="merge-delivery-card" key={d.id}>
-    <strong>{t(d.state==="proposed"?"mergeOffer":d.state==="confirmed"?"mergeConfirmed":"mergeInBatch")}</strong>
-    <p>{d.summary}</p><small>{d.itemKeys.join(" · ")} · {d.requiredArtifacts.join(" / ") || d.noReleaseReason}</small>
-    <details><summary>{t("mergeDetails")}</summary><p>{d.validation}</p>
-      <a href={d.pullRequestUrl} target="_blank" rel="noreferrer">{d.pullRequestUrl}</a>
-      <p>{t("mergeCommit")}: <code>{d.head}</code></p>
-      <small>{t("mergeChecked")}: {formatTime(d.evidence.checkedAt)} · {d.evidence.source}</small>
-    </details>
-    {d.blocker && <p role="status">{t(d.blocker==="changed"?"mergeChanged":"mergeNeedsCheck")}</p>}
-    {d.state!=="batched" && <div className="merge-actions">
-      {d.state==="proposed" && <button type="button" className="secondary-button" disabled={mutation.isPending||d.blocker==="changed"}
-        onClick={()=>mutation.mutate({d,decision:"confirm"})}>{t("mergeConfirm")}</button>}
-      <button type="button" className="secondary-button" disabled={mutation.isPending}
-        onClick={()=>mutation.mutate({d,decision:"withdraw"})}>{t("mergeContinue")}</button>
+  return <div className="merge-delivery-notices">{rows.map(d=><section role="status" className={`merge-delivery-notice ${d.state==="confirmed"?"confirmed":"proposed"}`} key={d.id}>
+    <span className="merge-delivery-icon" aria-hidden="true">{d.state==="confirmed"?<GitMerge size={21}/>:<Plus size={18}/>}</span>
+    <div className="merge-delivery-copy"><strong>{t(d.state==="confirmed"?"mergeConfirmed":d.reconfirmation?"mergeReoffer":"mergeOffer")}</strong>
+      {d.state==="confirmed"&&<p>{t("mergeAutoWithdraw")}</p>}
+    </div>
+    {d.state==="proposed"&&<div className="merge-delivery-choices">
+      <button type="button" className="secondary-button" disabled={blocked||mutation.isPending}
+        onClick={()=>choose(d,"withdraw")}>{t("mergeDecline")}</button>
+      <button type="button" className="primary-button" disabled={blocked||mutation.isPending}
+        onClick={()=>choose(d,"confirm")}>{t(d.reconfirmation?"mergeReconfirm":"mergeConfirm")}</button>
     </div>}
-    {d.state!=="batched"&&<small>{t("mergeConfirmHelp")}</small>}
   </section>)}
-  {mutation.isError&&<p role="alert" className="inline-error">{t("mergeChanged")}</p>}</div>;
+  {mutation.isError&&<p role="alert" className="inline-error">{localizedErrorText(mutation.error,t)}</p>}</div>;
 }
 
 /** Batch bookkeeping is deliberately outside the native transcript. */

@@ -46,6 +46,7 @@ interface Delivery extends DeliveryInput {
   createdAt: string; confirmedAt?: string; confirmedBy?: "console" | "session-instruction"; instructionQuote?: string;
   batchId?: string;
   itemScopes?: Record<string,string>;
+  reconfirmation?: boolean;
 }
 interface Batch {
   reconciliation?: ReconciliationState;
@@ -138,11 +139,14 @@ export class MergeDeliveries {
       const sessionId = identity.sessionId ?? (this.db.connection.prepare("SELECT id FROM agent_sessions WHERE dispatch_id=?")
         .get(identity.dispatchId!) as {id:string}|undefined)?.id;
       if (!sessionId) throw changed();
-      const existing = this.listRaw(productId).filter(d => d.itemKeys.some(k => keys.includes(k)) && !["withdrawn","merged"].includes(d.state));
+      const history = this.listRaw(productId);
+      const reconfirmation = history.some(d => d.accountId === accountId && d.sessionId === sessionId
+        && d.state !== "merged" && d.itemKeys.some(key => keys.includes(key)));
+      const existing = history.filter(d => d.itemKeys.some(k => keys.includes(k)) && !["withdrawn","merged"].includes(d.state));
       if (existing.some(d => d.state === "batched")) throw conflict("merge_batch_active", "这些改动已有合并批次，请核实原批次。");
       for (const d of existing) { d.state = "withdrawn"; this.save(d); }
       const d: Delivery = {...input,itemKeys:keys,id:randomUUID(),productId,accountId,clientId,identity,sessionId,
-        itemScopes:Object.fromEntries(keys.map(key=>[key,this.scope([key])])),revision:digest({...input,itemKeys:keys}),scope:this.scope(keys),activity:this.activity(sessionId),state:"proposed",createdAt:new Date().toISOString()};
+        itemScopes:Object.fromEntries(keys.map(key=>[key,this.scope([key])])),reconfirmation,revision:digest({...input,itemKeys:keys}),scope:this.scope(keys),activity:this.activity(sessionId),state:"proposed",createdAt:new Date().toISOString()};
       this.db.connection.prepare("INSERT INTO merge_deliveries(id,product_id,account_id,client_id,request_key,state,data_json) VALUES (?,?,?,?,?,?,?)")
         .run(d.id,productId,accountId,clientId,requestKey,d.state,JSON.stringify(d));
       if (quote) this.confirm(d, "session-instruction", quote);
@@ -159,7 +163,13 @@ export class MergeDeliveries {
       pullRequestUrl:`${d.repository}/pull/${d.pullRequest}`};
   }
   list(productId: string, accountId: string) {
-    return this.listRaw(productId).filter(d => d.accountId === accountId && !["withdrawn","merged"].includes(d.state)).map(d => this.view(d));
+    return this.listRaw(productId).filter(d => d.accountId === accountId && !["withdrawn","merged"].includes(d.state)).map(d => this.view(d)).filter(d => d.state === "batched" || d.blocker !== "changed");
+  }
+  /** A declined offer also handles this turn's generic attention; later input never inherits that choice. */
+  attentionSessionIds(productId: string, accountId: string) {
+    return [...new Set(this.listRaw(productId).filter(d => d.accountId === accountId
+      && d.state !== "merged" && d.state !== "batched" && d.activity === this.activity(d.sessionId))
+      .map(d => d.sessionId))];
   }
   product(id: string) { return this.read<Delivery>("merge_deliveries",id).productId; }
   decide(accountId: string, id: string, revision: string, decision: "confirm" | "withdraw") {

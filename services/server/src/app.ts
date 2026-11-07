@@ -2490,7 +2490,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const {productId}=request.params as {productId:string};
     requireProductPermission(request,productId,"view");
     const accountId=requireAccountId(request);
-    return {deliveries:merges.list(productId,accountId),batches:merges.batches(productId,accountId)};
+    return {deliveries:merges.list(productId,accountId),batches:merges.batches(productId,accountId),attentionSessionIds:merges.attentionSessionIds(productId,accountId)};
   });
   app.post("/api/v1/merge-deliveries/:id/decision",async request=>{
     const {id}=request.params as {id:string},body=objectBody(request.body);

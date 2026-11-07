@@ -1,6 +1,6 @@
 import { AgentProgressReports } from "./agent-progress-reports";
 import { permissionReplyText } from "./permission-presentation";
-import { DeliveryCards, IntegrationDetails, MergeProgressBadge, useMergeProgress } from "./merge-console";
+import { DeliveryCards, IntegrationDetails, MergeProgressBadge, useMergeProgress, useDeliveryAttention, invalidateSessionDeliveries } from "./merge-console";
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
 import { InlinePlanApproval, inlinePlanTranscript, currentPlan, planContinuationObserved } from "./agent-plan-content";
@@ -421,6 +421,7 @@ export function AgentSessionConsole({
       }
     },
     onSuccess: (created, input) => {
+      if (!input.planApprovalRevision) void invalidateSessionDeliveries(queryClient,input.sessionId);
       feedback.clear(input.sessionId);
       if (!input.planApprovalRevision) {
         setReplyFor(input.sessionId, "");
@@ -656,6 +657,10 @@ export function AgentSessionConsole({
     || (approval.kind === "manual" && approval.status === "pending")));
   const planApproved = sessionQuery.data?.planApprovalState;
   const planContinued = planContinuationObserved(sessionQuery.data);
+  const deliveryAttention = useDeliveryAttention(selected?.productId ?? selected?.items[0]?.productId ?? productId, selected?.agentSessionId ?? selected?.id ?? "");
+  const suppressDeliveryAttention = deliveryAttention && Boolean(selected?.attention.revision)
+    && selected?.status !== "stalled" && selected?.status !== "failed"
+    && selected?.attention.kind !== "answer";
   const stalePlanAttention = Boolean(planApproved && planContinued && selected?.attention.kind === "approval");
   const showPlanApproval = !planContinued && (Boolean(planApproved || sessionQuery.data?.planApproval
       || sessionQuery.data?.planApprovalStatus?.code === "content_unavailable"));
@@ -1242,7 +1247,7 @@ export function AgentSessionConsole({
                     </article>
                   );
                 })}
-                {(!currentPlan(sessionQuery.data)?.plan || !showPlanApproval && selected.attention.kind !== "approval") && !showPermissionApproval && (showPlanApproval || !stalePlanAttention && (selected.needsAttention || selected.attention.dismissed) && selected.attention.reason) && (
+                {(!currentPlan(sessionQuery.data)?.plan || !showPlanApproval && selected.attention.kind !== "approval") && !showPermissionApproval && (!suppressDeliveryAttention || showPlanApproval) && (showPlanApproval || !stalePlanAttention && (selected.needsAttention || selected.attention.dismissed) && selected.attention.reason) && (
                   <div className={`agent-console-attention-banner ${selected.attention.dismissed ? "dismissed" : ""}${showPlanApproval ? " agent-console-attention-banner--approval" : ""}`} role="status">
                     <BellRing size={16} />
                     <details open={planContentMissing || undefined}>
@@ -1424,7 +1429,7 @@ export function AgentSessionConsole({
                     )}
                   </section>
                 )}
-                {conversationReady && selected && <DeliveryCards productId={selected.productId ?? selected.items[0]?.productId ?? productId} sessionId={selected.agentSessionId ?? selected.id} />}
+                {conversationReady && selected && <DeliveryCards productId={selected.productId ?? selected.items[0]?.productId ?? productId} sessionId={selected.agentSessionId ?? selected.id} blocked={pending || sendingSelected} />}
                 <div className="agent-run-status" aria-label={t("agentRunFeedback")}>
                   <AgentOperationFeedback failures={feedback.failures} sessionId={operationSessionId} command={command} />
                   <AgentStopFeedback stop={stopCommand}
