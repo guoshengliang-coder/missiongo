@@ -196,6 +196,7 @@ export class ClaudeAdapter implements Adapter {
       const sourceId = `request-${request.requestId}`;
       let questions: Question[];
       if (request.tool_name === "AskUserQuestion") questions = (request.input?.questions ?? []).map((q: Wire) => ({
+        detail: (q.options ?? []).filter((o: Wire) => o.description).map((o: Wire) => `${o.label}: ${o.description}`).join("\n"),
         title: q.question, ...(q.header ? { header: q.header } : {}), options: (q.options ?? []).map((o: Wire) => o.label), multiSelect: q.multiSelect === true,
       }));
       else questions = [{ title: `Claude Code 请求使用 ${request.tool_name}`, key: `授权请求 ${request.requestId}`,

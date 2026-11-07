@@ -88,9 +88,14 @@ export class CodexAdapter implements Adapter {
     const p = object(event.params);
     const results = new Map<string, unknown>();
     const options: NonNullable<Approval["options"]> = [];
+    let incompleteOptions = false;
     let requestKind: "question" | "permission" | "confirmation" | undefined;
-    const add = (choice: string, kind: string, result: unknown, label?: string) => {
-      options.push({ id: choice, kind, ...(label ? { label } : {}) }); results.set(choice, result);
+    const add = (choice: string, kind: string, result: unknown, label?: string, detail?: string) => {
+      if (detail && detail.length > 4000) {
+        incompleteOptions = true;
+        detail = "选项说明超出当前入口展示上限，请在原生端阅读并回答。";
+      }
+      options.push({ id: choice, kind, ...(label ? { label } : {}), ...(detail ? { detail } : {}) }); results.set(choice, result);
     };
     if (event.method === "item/commandExecution/requestApproval" || event.method === "item/fileChange/requestApproval") {
       requestKind = "permission";
@@ -109,7 +114,7 @@ export class CodexAdapter implements Adapter {
       const question = p.questions?.[0];
       if (p.questions?.length === 1 && !question.isSecret && question.id) {
         for (const [i, choice] of (question.options ?? []).entries()) {
-          if (typeof choice.label === "string") add(`choice-${i}`, "choice", { answers: { [question.id]: { answers: [choice.label] } } }, choice.label);
+          if (typeof choice.label === "string") add(`choice-${i}`, "choice", { answers: { [question.id]: { answers: [choice.label] } } }, choice.label, typeof choice.description === "string" ? choice.description : undefined);
         }
       }
     } else if (event.method === "mcpServer/elicitation/request") {
@@ -125,7 +130,7 @@ export class CodexAdapter implements Adapter {
     const approvalId = randomUUID();
     const action = p.command ?? p.grantRoot ?? p.questions?.[0]?.question ?? p.message ?? JSON.stringify(p.permissions ?? {});
     this.pending.set(approvalId, { rpcId: event.id, results,
-      snapshot: { id: approvalId, kind: "manual", status: options.length && String(action).length <= 4000 ? "pending" : "unavailable",
+      snapshot: { id: approvalId, kind: "manual", status: options.length && !incompleteOptions && String(action).length <= 4000 ? "pending" : "unavailable",
         action: String(action).slice(0, 4000), turnId: p.turnId ?? "thread-scoped", startedAtMs: Date.now(),
         ...(requestKind ? { requestKind } : {}), options } });
   }

@@ -514,7 +514,12 @@ public enum OpenCodeProtocol {
               (entry["hidden"] as? Bool) != true
         else { return nil }
         let title = (entry["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? key
-        let detail = (entry["description"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let optionDetails = (entry["options"] as? [[String: Any]] ?? []).compactMap { option -> String? in
+            guard let label = option["label"] as? String ?? option["value"] as? String,
+                  let description = option["description"] as? String else { return nil }
+            return "\(label): \(description)"
+        }
+        let detail = ([entry["description"] as? String].compactMap { $0 } + optionDetails).joined(separator: "\n")
         let placeholder = entry["placeholder"] as? String
         let required = (entry["required"] as? Bool) ?? false
         let custom = (entry["custom"] as? Bool) ?? false
@@ -525,7 +530,7 @@ public enum OpenCodeProtocol {
         }
         let field = { (kind: AgentSessionQuestion.Kind?, multi: Bool) in
             OpenCodeFormField(
-                key: key, title: title, detail: detail.flatMap { $0.isEmpty ? nil : $0 }, kind: kind,
+                key: key, title: title, detail: detail.isEmpty ? nil : detail, kind: kind,
                 options: multi || !options.isEmpty ? options : [],
                 multiSelect: multi, placeholder: placeholder, required: required, custom: custom
             )

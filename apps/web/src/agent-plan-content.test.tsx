@@ -80,3 +80,20 @@ it("binds a fixed document through prefix, split delivery and revisions without 
   expect(complete.planMessageId).toBe("source");
   expect(inlinePlanTranscript(messages,{...session,implementationPlan:{...session.implementationPlan!,documentId:"new"}}).planMessageId).toBeUndefined();
 });
+
+it("keeps approval on the final answer when a later progress message repeats its document link", async () => {
+  const { inlinePlanTranscript } = await import("./agent-plan-content");
+  const documentId = "11111111-1111-4111-8111-111111111111";
+  const link = `[Plan](/?planDocument=${documentId})`;
+  const session = {implementationPlan:{revision:"v1",documentId,plan:`Decision\n${link}`}} as AgentSession;
+  const messages = [
+    {id:"early",role:"agent",phase:"commentary",text:`Decision\n${link}`},
+    {id:"final",role:"agent",phase:"final_answer",text:`Decision\n${link}`},
+    {id:"later",role:"agent",phase:"commentary",text:`Waiting: ${link}`},
+  ] as AgentSessionMessage[];
+  const result = inlinePlanTranscript(messages, session);
+  expect(result.messages).toBe(messages);
+  expect(result.planMessageId).toBe("final");
+  expect(inlinePlanTranscript([messages[0]!],session).planMessageId).toBe("early");
+  expect(inlinePlanTranscript(messages,{implementationPlan:{revision:"v2",documentId:"different",plan:"New"}} as AgentSession).planMessageId).toBeUndefined();
+});
