@@ -349,12 +349,12 @@ describe("planned integration batches",()=>{
 });
 
 describe("AND-439 batch reconciliation",()=>{
-  async function recoveryFixture(options:{mixed?:boolean;publish?:boolean;protocol?:1}={}) {
+  async function recoveryFixture(options:{mixed?:boolean;publish?:boolean;protocol?:1;artifacts?:string[]}={}) {
     const f=await fixture(),launched=f.launch("opencode"),merges=new MergeDeliveries(f.store);
     const keys=[f.item.key];
     if(options.mixed)keys.push(f.store.createWorkItem({productId:f.item.productId,title:"Other row",description:"Synthetic",type:"task",priority:"normal",status:"ready",environment:{platform:"web"}}).key);
     for(const itemKey of keys)f.safe(await f.call("claim_item",{...f.claimInput,session:undefined,dispatchId:launched.dispatch.id,itemKey,idempotencyKey:`claim-${itemKey}`}));
-    const d=merges.propose(f.owner.id,"original-client",{dispatchId:launched.dispatch.id},"offer",{...proposal(f.item.key),itemKeys:keys});
+    const d=merges.propose(f.owner.id,"original-client",{dispatchId:launched.dispatch.id},"offer",{...proposal(f.item.key),itemKeys:keys,...(options.artifacts?{requiredArtifacts:options.artifacts}:{})});
     merges.decide(f.owner.id,d.id,d.revision,"confirm");
     const b=merges.start(f.owner.id,randomUUID(),[{id:d.id,revision:d.revision}],{productId:f.item.productId,nodeId:launched.node.nodeId,agentKind:"opencode",mode:"default"},options.publish??false,options.protocol);
     const ds=new DispatchStore(f.store.database);ds.claimNextDispatch(launched.node.nodeId);ds.recordDispatchResult({nodeId:launched.node.nodeId,dispatchId:b.dispatchId,status:"launched"});
@@ -548,7 +548,7 @@ describe("AND-439 batch reconciliation",()=>{
     expect(f.preview().entries[0]?.items[0]?.blocker).toBeTruthy();
   });
   it("closes the original external-merge batch after supplementing a manually advanced item",async()=>{
-    const f=await recoveryFixture({publish:true});
+    const f=await recoveryFixture({publish:true,artifacts:["web","androidApp"]});
     f.merges.report(f.owner.id,f.b.dispatchId,f.b.id,f.d.id,{status:"blocked",head:f.d.head,detail:"External head differs"});
     f.store.transitionWorkItem({itemKey:f.item.key,actor:"human",to:"development_complete",reason:"resolution_submitted",attribution:{accountId:config.id}});
     f.store.transitionWorkItem({itemKey:f.item.key,actor:"human",to:"pending_verification",reason:"release_verified",attribution:{accountId:config.id}});

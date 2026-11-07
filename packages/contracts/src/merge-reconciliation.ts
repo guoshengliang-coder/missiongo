@@ -27,6 +27,7 @@ export interface MergeReconciliationPreview {
     repair?:{id:string;fromHead:string;base:string;reason:string} | undefined;
     items:{itemKey:string;status:WorkItemStatus;revision:number | undefined;blocker?:string | undefined;missingEvidence:boolean;next:string;
       developmentEventId?:string|undefined;roundKey?:string|undefined;missingPublicationEvidence?:boolean;
+      requiredArtifacts?:readonly string[]|null;
       handoff?:{status:"completed"|"blocked";detail:string;at:string} | undefined}[];
   }[];
 }

@@ -318,7 +318,10 @@ export class MergeDeliveries {
   batchProduct(id:string) {return this.read<Batch>("merge_batches",id).productId;}
   private publishedHandoff(d:Delivery,key:string) {
     const item=this.store.getWorkItem(key),e=this.store.getDevelopmentEvidence(key);
-    if(!["pending_verification","done"].includes(item.status)||!e.handover||!e.roundKey||!d.requiredArtifacts.length)return false;
+    // A delivery lists the PR's artifact union. Each independently completed
+    // item keeps its own authoritative scope; do not require sibling artifacts.
+    const required=this.store.getDevelopmentReleaseScope(key)??d.requiredArtifacts;
+    if(!["pending_verification","done"].includes(item.status)||!e.handover||!e.roundKey||!required.length)return false;
     const timeline=this.store.getTimeline(key).filter(event=>!event.historySourceKey);
     const release=[...timeline].reverse().find(event=>event.eventType==="release_evidence_added"||event.eventType==="status_changed"&&event.toStatus==="pending_verification");
     const p=release?.payload,artifacts=p?.releases as {artifact:string;sourceCommit:string;version:string}[]|undefined;
@@ -327,7 +330,7 @@ export class MergeDeliveries {
       &&(p?.developmentEventId===undefined||p.developmentEventId===e.handover.id)&&p?.roundKey===e.roundKey
       &&typeof p?.receiptDigest==="string"&&/^[a-f0-9]{64}$/.test(p.receiptDigest)
       &&typeof p?.deployedCommit==="string"&&sha.safeParse(p.deployedCommit).success
-      &&Array.isArray(artifacts)&&d.requiredArtifacts.every(a=>artifacts.some(r=>r.artifact===a&&sha.safeParse(r.sourceCommit).success&&r.version)));
+      &&Array.isArray(artifacts)&&required.every(a=>artifacts.some(r=>r.artifact===a&&sha.safeParse(r.sourceCommit).success&&r.version)));
   }
   private itemBlocker(d:Delivery,key:string):string|undefined {
     try {
@@ -364,7 +367,7 @@ export class MergeDeliveries {
           repair:b.integration?.entries[deliveryId]?.repair,
           items:d.itemKeys.map(itemKey=>{const item=this.store.getWorkItem(itemKey),e=this.store.getDevelopmentEvidence(itemKey),scope=this.store.getDevelopmentReleaseDecision(itemKey);
             const blocker=this.itemBlocker(d,itemKey);
-            return {itemKey,status:item.status,revision:item.revision,blocker,developmentEventId:e.handover?.id,roundKey:e.roundKey??undefined,
+            return {itemKey,status:item.status,revision:item.revision,blocker,developmentEventId:e.handover?.id,roundKey:e.roundKey??undefined,requiredArtifacts:scope.requiredArtifacts,
               missingPublicationEvidence:item.status==="pending_verification"&&!this.publishedHandoff(d,itemKey),
               missingEvidence:["development_complete","pending_verification"].includes(item.status)&&(!e.completion||scope.requiredArtifacts===null),
               handoff:b.reconciliation?.handoffs[itemKey],
