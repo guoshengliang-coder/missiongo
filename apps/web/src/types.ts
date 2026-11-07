@@ -672,6 +672,7 @@ export interface AgentSessionSummary {
 }
 
 export interface ExternalNativeConnection {
+  readonly waitingSince?: string;
   readonly automatic?: boolean;
   readonly state: "pending" | "connected" | "unavailable" | "disconnected";
   readonly nodeId?: string;

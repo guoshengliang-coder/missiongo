@@ -259,6 +259,8 @@ it.each(["codex", "opencode", "claude_code"] as const)("automatically binds %s o
   const probe = { generation: 0, autoConnect: true, nativeSessionRef: f.identity.sessionRef };
   f.report({ ...probe, status: "unavailable", error: "not this node", messages: [] });
   expect(f.native.overlay("owner", f.id).nativeConnection?.nodeId).toBeUndefined();
+  expect(f.native.overlay("owner", f.id).lastError).toContain("节点未能读取原生会话");
+  expect(f.native.overlay("owner", f.id).nativeMessages).toEqual([]);
   expect(() => f.report({ ...probe, nativeSessionRef: "different-thread" })).toThrow(/not found/);
   f.report(probe); f.report(probe); // Lost response is retry-safe.
   expect(f.native.overlay("owner", f.id)).toMatchObject({ nativeConnection: { state: "connected", nodeId: "node" }, replyable: true });
@@ -492,4 +494,18 @@ it("hides cached native execution records and rejects them from old-node snapsho
   f.store.database.connection.prepare("UPDATE external_native_messages SET payload_json=json_set(payload_json,'$.phase','execution') WHERE session_id=?").run(f.id);
   expect(f.native.overlay("owner", f.id).nativeMessages).toEqual([]);
   expect(f.native.overlay("owner", f.id, false).nativeMessages).toEqual([]);
+});
+
+
+it("syncs unloaded Codex history read-only and enables replies only after a loaded observation", () => {
+  const f = fixture();
+  f.progress.register({accountId:"owner",clientId:"client"}, {...f.identity,autoConnect:true}, f.item.key);
+  const probe = {generation:0,autoConnect:true,nativeSessionRef:f.identity.sessionRef};
+  f.report({...probe,status:"unavailable",error:"Runtime not loaded"});
+  expect(f.native.overlay("owner",f.id)).toMatchObject({replyable:false,nativeConnection:{state:"unavailable",nodeId:"node"}});
+  expect(f.native.overlay("owner",f.id).nativeMessages).toHaveLength(2);
+  expect(() => f.native.enqueue("owner",f.id,"Do not send")).toThrow();
+  f.report();
+  expect(f.native.overlay("owner",f.id).replyable).toBe(true);
+  expect(f.native.overlay("owner",f.id).nativeMessages).toHaveLength(2);
 });

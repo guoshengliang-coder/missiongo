@@ -1165,6 +1165,9 @@ export function AgentSessionConsole({
                         : selected.nativeConnection.state === "pending" ? "agentExternalNativePending"
                           : selected.nativeConnection.state === "disconnected" ? "agentExternalNativeDisconnected" : "agentExternalNativeUnavailable",
                       { node: selected.nativeConnection.nodeName ?? "" }) : t("agentExternalDetail")}</span>
+                      {selected.nativeConnection?.waitingSince && <span>{t("agentExternalWaitingSince", { time: formatAgentMessageTime(selected.nativeConnection.waitingSince, locale), minutes: Math.max(0, Math.floor((Date.now() - Date.parse(selected.nativeConnection.waitingSince)) / 60000)) })}</span>}
+                      {sessionQuery.data?.lastError && <span>{sessionQuery.data.lastError}</span>}
+                      {selected.nativeConnection?.lastSyncedAt && <span>{t("agentExternalLastReport", { time: formatAgentMessageTime(selected.nativeConnection.lastSyncedAt, locale) })}</span>}
                       {selected.refKind === "tracking" && <span>{t("agentExternalTracking")}</span>}
                       {selected.lastReportedAt && <span>{t("agentExternalLastReport", { time: formatAgentMessageTime(selected.lastReportedAt, locale) })}</span>}
                       <ExternalNativeConnectionPanel key={selected.id} session={selected} />
@@ -1203,7 +1206,7 @@ export function AgentSessionConsole({
                   Hermes · {sessionQuery.data.managedExecution.role} · Run {sessionQuery.data.managedExecution.runId}
                   {" · "}{sessionQuery.data.managedExecution.stageId} / {sessionQuery.data.managedExecution.generation}
                 </p>}
-                {sessionQuery.data && visibleMessages.length === 0 && !outgoing && <p className="agent-session-muted">{t("agentSessionNoMessages")}</p>}
+                {sessionQuery.data && visibleMessages.length === 0 && !sessionQuery.data.progressReports?.length && !outgoing && <p className="agent-session-muted">{t("agentSessionNoMessages")}</p>}
                 {!selected.agentSessionId && (
                   <div className="agent-console-dispatch-state">
                     <Bot size={20} />
@@ -1336,7 +1339,7 @@ export function AgentSessionConsole({
                   <AgentSessionFailureNotice status={sessionStatus}
                     failure={sessionQuery.data ? sessionQuery.data.failure : selected.failure}
                     legacyError={sessionQuery.data ? sessionQuery.data.lastError : selected.lastError} />
-                ) : (selected.agentKind !== "codex" || (sessionStatus !== "idle" && sessionStatus !== "active"))
+                ) : selected.source !== "external" && (selected.agentKind !== "codex" || (sessionStatus !== "idle" && sessionStatus !== "active"))
                   && inlineError
                   && !isHistoryLimited(inlineError) ? (
                   <AgentSessionError error={inlineError} onRetry={()=>void sessionQuery.refetch()} />
