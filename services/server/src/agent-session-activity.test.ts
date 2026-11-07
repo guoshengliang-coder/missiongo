@@ -36,6 +36,29 @@ afterEach(() => {
   for (const database of databases.splice(0)) database.close();
 });
 
+it("old execution/history backfill after reconnect preserves read state, while offline replies stay unread", () => {
+  const f = fixture();
+  const first = f.store.listForAccount("owner")[0]!.unreadAt!;
+  f.store.markRead("owner", "dispatch", first);
+  vi.setSystemTime(time(10));
+  f.snapshot({ status: "unavailable", messages: [] });
+  f.snapshot({ status: "idle", messages: [message,
+    { sourceId: "old-tool", role: "agent", phase: "execution", text: "synthetic tool record", occurredAt: time(0) },
+    { sourceId: "old-answer", role: "agent", text: "historical answer", occurredAt: time(0) },
+  ] });
+  expect(f.store.listForAccount("owner")[0]!.unread).toBe(false);
+  expect(f.db.prepare("SELECT count(*) AS count FROM agent_session_messages WHERE session_id=?").get(f.sessionId)).toEqual({ count: 3 });
+  f.snapshot({ status: "idle", messages: [{ ...message, sourceId: "offline-reply", occurredAt: time(9) }] });
+  const second = f.store.listForAccount("owner")[0]!;
+  expect(second.unread).toBe(true);
+  f.store.markRead("owner", "dispatch", first);
+  expect(f.store.listForAccount("owner")[0]!.unread).toBe(true);
+  f.store.markRead("owner", "dispatch", second.unreadAt!);
+  f.snapshot({ status: "unavailable", messages: [] });
+  f.snapshot({ status: "idle", messages: [{ ...message, sourceId: "offline-reply", occurredAt: time(9) }] });
+  expect(f.store.listForAccount("owner")[0]!.unread).toBe(false);
+});
+
 it("limited history retains mirrored messages and runtime state without inventing activity", () => {
   const { db, sessionId, snapshot, row } = fixture();
   vi.setSystemTime(time(10));

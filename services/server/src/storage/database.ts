@@ -2453,5 +2453,20 @@ export class MissionGoDatabase {
       });
     }
 
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611070205").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611070205").get()) return;
+        this.connection.exec(`CREATE TABLE session_unread_state (
+          session_key TEXT PRIMARY KEY, source_at TEXT, read_source_at TEXT, healthy_status TEXT, cycle INTEGER NOT NULL DEFAULT 0
+        ) STRICT;
+        CREATE TABLE session_unread_events (
+          session_key TEXT NOT NULL, event_key TEXT NOT NULL, reason TEXT NOT NULL,
+          source_at TEXT, received_at TEXT NOT NULL, PRIMARY KEY(session_key,event_key)
+        ) STRICT;`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611070205,new Date().toISOString());
+      });
+    }
+
   }
 }

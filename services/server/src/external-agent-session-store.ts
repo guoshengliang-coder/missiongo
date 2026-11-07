@@ -1,3 +1,4 @@
+import { acknowledgeSessionUnread } from "./session-unread.js";
 import { assertItemExecutionIdentity } from "./item-execution-blockers.js";
 import { assertBuilderExecution, assertExternalExecution } from "./builder-authority.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -297,6 +298,7 @@ export class ExternalAgentSessionStore {
     if (!Number.isFinite(Date.parse(through)) || new Date(through).toISOString() !== through || !row.unread_at || through > row.unread_at) throw invalidInput("through must name an observed unread timestamp.");
     this.db.prepare("UPDATE external_agent_sessions SET read_at = ? WHERE id = ? AND (read_at IS NULL OR read_at < ?)")
       .run(through, sessionId, through);
+    acknowledgeSessionUnread(this.store.database, `external:${sessionId}`, through);
   }
 
   dismissAttention(accountId: string, sessionId: string, revision: string): void {

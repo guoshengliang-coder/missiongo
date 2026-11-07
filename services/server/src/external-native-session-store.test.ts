@@ -31,6 +31,23 @@ function fixture(kind: "codex" | "opencode" | "claude_code" = "codex", refKind: 
 }
 afterEach(() => { vi.useRealTimers(); stores.splice(0).forEach((store) => store.close()); });
 
+it("external snapshot backfill, settings and transport recovery do not recreate unread", () => {
+  const f = fixture(); f.native.connect("owner", f.id, "node"); f.report();
+  const first = f.progress.listForAccount("owner")[0]!.unreadAt!;
+  f.progress.markRead("owner", f.id, first);
+  vi.setSystemTime("2026-10-09T08:00:00Z");
+  f.report({ status: "unavailable", messages: [], error: "Transport" });
+  f.report({ messages: [
+    { sourceId: "old-tool", role: "agent", phase: "execution", text: "synthetic", occurredAt: "2026-10-09T06:00:00Z" },
+    { sourceId: "old-answer", role: "agent", text: "synthetic", occurredAt: "2026-10-09T06:00:00Z" },
+  ], settingsSupport: ["model"] });
+  expect(f.progress.listForAccount("owner")[0]!.unread).toBe(false);
+  f.report({ messages: [{ sourceId: "new-answer", role: "agent", text: "new", occurredAt: "2026-10-09T07:30:00Z" }] });
+  expect(f.progress.listForAccount("owner")[0]!.unread).toBe(true);
+  f.progress.markRead("owner", f.id, first);
+  expect(f.progress.listForAccount("owner")[0]!.unread).toBe(true);
+});
+
 it.each(["delivered", "failed"] as const)("archives a finished external record when its last reply is %s, without archiving the source", (status) => {
   const f = fixture();
   f.native.connect("owner", f.id, "node"); f.report();
@@ -156,7 +173,7 @@ it("fences disconnected and reconnected snapshots and rechecks every product on 
   expect(f.native.overlay("owner", f.id).nativeConnection?.state).toBe("connected");
 });
 
-it("deduplicates changing transcripts, preserves omitted history and advances unread only for changed messages", () => {
+it("deduplicates changing transcripts, preserves omitted history without treating streamed edits as new unread output", () => {
   const f = fixture(); f.native.connect("owner", f.id, "node"); f.report();
   const first = f.progress.listForAccount("owner")[0]!.unreadAt!;
   f.progress.markRead("owner", f.id, first); f.report();
@@ -165,7 +182,7 @@ it("deduplicates changing transcripts, preserves omitted history and advances un
   f.report({ messages: [{ sourceId: "agent-1", role: "agent", text: "Fixed and checked" }] });
   const detail = f.progress.getForAccount("owner", f.id);
   expect(detail.messages).toHaveLength(2); expect(detail.messages.at(-1)!.id).toBe(original);
-  expect(f.progress.listForAccount("owner")[0]!.unread).toBe(true);
+  expect(f.progress.listForAccount("owner")[0]!.unread).toBe(false);
   f.report({ status: "unavailable", messages: [], error: "Transport unavailable" });
   expect(f.progress.getForAccount("owner", f.id).messages).toHaveLength(2);
   expect(f.native.overlay("owner", f.id).replyable).toBe(false);
