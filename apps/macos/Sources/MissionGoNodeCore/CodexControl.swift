@@ -870,7 +870,8 @@ public struct CodexAppServerControl: CodexControl {
         try await readThread(socketPath: socketPath, threadId: threadId, includeExecutionItems: false, checkArchiveList: false)
     }
     public func readExternalThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
-        try await readThread(socketPath: socketPath, threadId: threadId, includeExecutionItems: false, checkArchiveList: false, requireLoaded: true)
+        // Exact identity is checked by readThread. Reading history does not grant input.
+        try await readThread(socketPath: socketPath, threadId: threadId, includeExecutionItems: false, checkArchiveList: false)
     }
     public func readThreadStatus(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
         try await readThread(socketPath: socketPath, threadId: threadId, includeExecutionItems: false,

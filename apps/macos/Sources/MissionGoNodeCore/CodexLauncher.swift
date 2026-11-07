@@ -857,6 +857,13 @@ public struct CodexLauncher: AgentAdapter {
 
     private func synchronize(_ session: NodeAgentSession, snapshot: CodexThreadSnapshot) async throws -> AgentSessionReport {
         var snapshot = snapshot
+        if session.externalBindingGeneration != nil, snapshot.runtimeStatus == "notLoaded" {
+            return AgentSessionReport(status: "unavailable", messages: snapshot.messages,
+                error: "原生历史已同步；当前控制通道未加载此会话，请在原 Codex 客户端打开后重试。",
+                commandId: session.command?.id, commandStatus: session.command == nil ? nil : "failed",
+                commandError: session.command == nil ? nil : "原运行时不可用，未发送回复。",
+                activityAt: snapshot.activityAt, turnActive: false).reportingHistory(snapshot.history)
+        }
         if let managed = session.managedExecution {
             _ = try ManagedExecutionPolicy(role: managed.role)
             if managed.stopRequested {

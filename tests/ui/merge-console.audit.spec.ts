@@ -27,10 +27,11 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     await entry.click();
     const dialog=page.getByRole("dialog");
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByRole("button",{name:"开始合并（0 项）"})).toBeDisabled();
+    await expect(dialog.getByRole("button",{name:"下一步：配置 Agent"})).toBeDisabled();
     await dialog.locator(".merge-row input").check();
+    await dialog.getByRole("button",{name:"下一步：配置 Agent"}).click();
     await expect(dialog.getByRole("checkbox",{name:/合并后发布/})).not.toBeChecked();
-    await expect(dialog.getByRole("button",{name:"开始合并（1 项）"})).toBeEnabled();
+    await expect(dialog.getByRole("button",{name:"开始处理"})).toBeEnabled();
     for (const scale of ["small","medium","large"]) {
       await page.evaluate(value=>{document.documentElement.dataset.fontScale=value;},scale);
       expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
@@ -44,7 +45,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     await expect(dialog.locator(".merge-row input")).toBeChecked();
     await page.screenshot({path:testInfo.outputPath(`merge-${width}-${theme}.png`),fullPage:true});
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
-    await dialog.getByRole("button",{name:"开始合并（1 项）"}).click();
+    await dialog.getByRole("button",{name:"开始处理"}).click();
     await expect(dialog.getByRole("alert")).toBeVisible();
     await dialog.getByRole("button",{name:"重试原批次"}).click();
     await expect.poll(()=>bodies.length).toBe(2);
@@ -219,4 +220,79 @@ for(const width of [320,375,1440]) for(const theme of ["light","dark"] as const)
   await expect(region).toContainText("已批准，请原批次会话继续");await expect(draft).toHaveValue("保留恢复审阅草稿");
   await page.reload();await page.getByRole("button",{name:"集成详情",exact:true}).click();await page.getByText("查看对账与恢复",{exact:true}).click();await expect(region).toContainText("已批准，请原批次会话继续");
   await expect(region.getByRole("button",{name:"批准本次恢复"})).toHaveCount(0);
+});
+
+test.describe("AND-447 touch",()=>{
+  test.use({hasTouch:true});
+for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const) test(`AND-447 grouped selection, detail return and active restriction ${width} ${theme}`, async ({page,request},testInfo)=>{
+  await page.setViewportSize({width,height:width===320?640:900});await page.emulateMedia({colorScheme:theme});
+  const product=await(await request.post("/api/v1/products",{data:{name:"AND-447 wizard",keyPrefix:`WZ${width}${theme[0]!.toUpperCase()}`}})).json();
+  const at=new Date().toISOString();
+  const deliveries=[0,1,2].map(i=>({id:`wizard-${i}`,productId:product.id,sessionId:`dev-${i}`,revision:`rev-${i}`,state:"confirmed",blocker:i===2?"changed":i===0?"pending":"stale",
+    itemKeys:i===1?["WZ-2","WZ-3"]:[`WZ-${i===0?1:4}`],head:"a".repeat(40),summary:`独立改动组 ${i}`,validation:`验证详情 ${i}`,requiredArtifacts:["web","macosApp"],
+    pullRequestUrl:`https://github.com/example/project/pull/${i+1}`,evidence:{checkedAt:at,source:"Fixture"}}));
+  let active=false,posts=0;
+  await page.route("**/merge-deliveries",route=>route.fulfill({json:{deliveries,batches:active?[{id:"active",sessionId:"active-session",state:"active",deliveries:[],publish:false,results:{}}]:[]}}));
+  await page.route("**/api/v1/nodes",route=>route.fulfill({json:{nodes:[{id:"wizard-node",name:"Wizard Mac",online:true,supportsFreeSessions:true,
+    agents:[{kind:"codex",ready:true,models:[]}],repos:[{productId:product.id,repoPath:"fixture"}],repoCandidates:[],createdAt:at}]}}));
+  await page.route("**/api/v1/dispatch-defaults",route=>route.fulfill({json:{nodeId:"wizard-node",agentKind:"codex",agents:{codex:{mode:"auto"}}}}));
+  await page.route("**/merge-batches",route=>{posts++;return route.fulfill({status:409,json:{title:"Fixture conflict"}});});
+  await page.goto(`/?product=${product.id}&console=agent`);await page.getByRole("button",{name:"待合并 2",exact:true}).click();
+  const dialog=page.getByRole("dialog").first();
+  await expect(dialog.locator(".merge-config")).toBeHidden();
+  await dialog.getByRole("button",{name:"全选可选内容"}).click();
+  await expect(dialog.locator(".merge-row input:checked")).toHaveCount(2);
+  await expect(dialog.locator(".merge-footer")).toContainText("已选 2 组改动 · 3 个条目");
+  await expect(dialog.locator(".merge-row input").nth(2)).toBeDisabled();
+  await dialog.getByRole("button",{name:"取消全选"}).click();await expect(dialog.locator(".merge-row input:checked")).toHaveCount(0);
+  await dialog.getByRole("button",{name:"全选可选内容"}).click();
+  const detailButton=dialog.getByRole("button",{name:"查看改动与验证详情"}).nth(1);
+  await detailButton.click();
+  const detail=page.getByRole("dialog").last();await expect(detail).toContainText("验证详情 1");
+  await expect(detail.getByRole("button",{name:"返回选择合并内容"})).toBeFocused();
+  await page.keyboard.press("Escape");await expect(page.getByRole("dialog")).toHaveCount(1);await expect(detailButton).toBeFocused();
+  await expect(dialog.locator(".merge-row input:checked")).toHaveCount(2);
+  await dialog.getByRole("button",{name:"下一步：配置 Agent"}).click();
+  await expect(dialog.getByRole("button",{name:"开始处理",exact:true})).toBeEnabled();
+  await dialog.getByRole("checkbox",{name:/合并后发布/}).check();
+  if(width===320){
+    await dialog.locator(".agent-settings-more > button").click();
+    const menu=dialog.locator(".agent-settings-more-panel");await expect(menu).toBeVisible();
+    const box=await menu.boundingBox();expect(box!.x).toBeGreaterThanOrEqual(0);expect(box!.x+box!.width).toBeLessThanOrEqual(width);
+  }
+  await dialog.getByRole("button",{name:"上一步",exact:true}).click();
+  await expect(dialog.locator(".agent-settings-more-panel")).toHaveCount(0);
+  await expect(dialog.locator(".merge-row input:checked")).toHaveCount(2);
+  await dialog.getByRole("button",{name:"下一步：配置 Agent"}).click();
+  await expect(dialog.getByRole("checkbox",{name:/合并后发布/})).toBeChecked();
+  for(const scale of ["small","medium","large"]){
+    await page.evaluate(v=>{document.documentElement.dataset.fontScale=v;},scale);
+    const top=await dialog.locator(".merge-config-fields").boundingBox(),settings=await dialog.locator(".merge-agent-settings").boundingBox();
+    expect(settings!.y-(top!.y+top!.height)).toBeGreaterThanOrEqual(23);
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+    await expect(dialog.locator(".merge-config-fields button.single-select")).toHaveCount(2);
+  }
+  await page.screenshot({path:testInfo.outputPath("and-447-step-two.png"),fullPage:true});
+  expect(posts).toBe(0);
+  active=true;await page.reload();await page.getByRole("button",{name:"待合并 2",exact:true}).click();
+  await expect(dialog.locator(".integration-progress")).toHaveCount(0);await expect(dialog.locator(".merge-active-notice")).toBeVisible();
+  await dialog.getByRole("button",{name:"全选可选内容"}).click();await dialog.getByRole("button",{name:"下一步：配置 Agent"}).click();
+  await expect(dialog.getByRole("button",{name:"开始处理",exact:true})).toBeDisabled();expect(posts).toBe(0);
+});
+
+});
+
+test("AND-447 polling invalidates a removed selection and permits deliberate reselection",async({page,request})=>{
+  const product=await(await request.post("/api/v1/products",{data:{name:"AND-447 stale",keyPrefix:"WZSTALE"}})).json();
+  const now=new Date().toISOString();let removed=false,reads=0;
+  const delivery={id:"stale",productId:product.id,sessionId:"dev",revision:"first",state:"confirmed",itemKeys:["ST-1"],head:"a".repeat(40),summary:"变化中的改动",validation:"回归说明",requiredArtifacts:["web"],pullRequestUrl:"https://github.com/example/project/pull/1",evidence:{checkedAt:now,source:"Fixture"}};
+  await page.route("**/merge-deliveries",route=>{reads++;return route.fulfill({json:{deliveries:removed?[]:[delivery],batches:[]}});});
+  await page.goto(`/?product=${product.id}&console=agent`);await page.getByRole("button",{name:"待合并 1",exact:true}).click();
+  const dialog=page.getByRole("dialog");await dialog.getByRole("button",{name:"全选可选内容"}).click();await dialog.getByRole("button",{name:"下一步：配置 Agent"}).click();
+  removed=true;const before=reads;
+  // Poll the same open dialog; a page reload would lose the selection under test.
+  await expect.poll(()=>reads,{timeout:20000}).toBeGreaterThan(before);
+  await expect(dialog.getByRole("alert")).toContainText("已选改动已变化");await expect(dialog.getByRole("button",{name:"开始处理",exact:true})).toBeDisabled();
+  await dialog.getByRole("button",{name:"重新选择",exact:true}).click();
+  await expect(dialog).toContainText("暂无已确认的待合并改动");await expect(dialog.getByRole("button",{name:"下一步：配置 Agent"})).toBeDisabled();
 });

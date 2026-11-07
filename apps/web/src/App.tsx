@@ -1303,7 +1303,14 @@ export function App() {
               clearItemPage();
             }}
           />
-        {agentConsoleOpen && selectedProductId && <PendingMergeButton productId={selectedProductId} onSession={id=>selectAgentSession(id,true)} />}
+        {agentConsoleOpen && selectedProductId && <PendingMergeButton productId={selectedProductId} onSession={async id=>{
+          // A newly created integration session is absent from the old list.
+          // Read a fresh list before navigation; a failed read leaves the
+          // created batch in its dialog and can never repeat creation.
+          await queryClient.cancelQueries({queryKey:["agent-sessions"]});
+          await queryClient.fetchQuery({queryKey:["agent-sessions"],queryFn:()=>api.listAgentSessions(),staleTime:0,retry:false});
+          afterOverlaysClose(()=>selectAgentSession(id,true));
+        }} />}
         </div>
         {products.length > 0 && !agentConsoleOpen && (
           <button

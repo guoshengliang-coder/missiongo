@@ -107,6 +107,32 @@ it("empty unavailable reports retain tasks, so restoring the same snapshot is no
   expect(row().activity_at).toBe(time(11));
 });
 
+it.each(["codex", "claude_code", "opencode"])("%s connection fallback cannot manufacture activity when the same turn recovers", (kind) => {
+  const f = fixture();
+  f.db.prepare("UPDATE agent_sessions SET agent_kind=? WHERE id=?").run(kind, f.sessionId);
+  f.db.prepare("UPDATE dispatches SET agent_kind=? WHERE id='dispatch'").run(kind);
+  const turn = { turnActive: true, waitingForInput: false, turnStartedAt: time(2) };
+  const activities = [{ id: "task", title: "Check", startedAt: time(2) }];
+  vi.setSystemTime(time(2));
+  f.snapshot({ status: "active", messages: [message], activities, turnState: turn });
+  vi.setSystemTime(time(3));
+  const newer = f.create("newer");
+  const unread = f.db.prepare("SELECT unread_at FROM dispatches WHERE id='dispatch'").get();
+  vi.setSystemTime(time(10));
+  f.snapshot({ status: "unavailable", messages: [], activities: [], error: "Connection lost",
+    turnState: { turnActive: false, waitingForInput: false } });
+  expect(f.row()).toMatchObject({ activity_at: time(2), status: "unavailable" });
+  vi.setSystemTime(time(11));
+  f.snapshot({ status: "active", messages: [message], activities, turnState: turn });
+  expect(f.row()).toMatchObject({ activity_at: time(2), status: "active", last_error: null });
+  expect(f.store.listForAccount("owner").map(row => row.id)).toEqual([newer, f.sessionId]);
+  expect(f.db.prepare("SELECT unread_at FROM dispatches WHERE id='dispatch'").get()).toEqual(unread);
+  vi.setSystemTime(time(12));
+  f.snapshot({ status: "active", messages: [{ ...message, text: "Actual new progress", occurredAt: time(12) }], activities, turnState: turn });
+  expect(f.row().activity_at).toBe(time(12));
+  expect(f.store.listForAccount("owner")[0]!.id).toBe(f.sessionId);
+});
+
 it.each<AgentSessionStatus>(["active", "stalled", "suspended", "failed"])("real task status %s remains activity", (status) => {
   const { snapshot, row } = fixture();
   vi.setSystemTime(time(3));

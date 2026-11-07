@@ -113,7 +113,7 @@ test("stop stays reachable for live waits and startup, and hides for ended failu
   }
 });
 
-test("moving stop out of the header preserves it while detail loading fails", async ({ page }) => {
+test("first detail load and failure do not expose stop from a stale summary", async ({ page }) => {
   await mockSession(page);
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
@@ -123,10 +123,12 @@ test("moving stop out of the header preserves it while detail loading fails", as
   });
   await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
   const row = page.locator(".agent-run-fallback");
-  await expect(row.getByRole("button", { name: "停止当前回合", exact: true })).toBeEnabled();
-  await expect(row.getByRole("status")).toHaveText("正在读取对话…");
+  await expect(page.locator(".agent-console-messages .agent-console-empty .spin")).toBeVisible();
+  await expect(row).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "停止当前回合", exact: true })).toHaveCount(0);
   release();
   await expect(page.locator(".agent-console-messages .inline-error")).toBeVisible();
-  await expect(row.getByRole("button", { name: "停止当前回合", exact: true })).toBeEnabled();
+  await expect(row).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "停止当前回合", exact: true })).toHaveCount(0);
   await expect(page.locator(".agent-console-conversation-head .status-pill")).toHaveCount(0);
 });

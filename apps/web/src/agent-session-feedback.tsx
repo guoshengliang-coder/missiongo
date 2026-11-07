@@ -28,21 +28,13 @@ export function AgentHistoryNotice({ error }: { error: string | undefined }) {
     ? <p className="agent-console-attention-banner" role="status">{t("agentHistoryLimited")}</p> : null;
 }
 
-/** Delivery describes a message, never whether the Agent has started its turn.
- *
- * AND-421: every state keeps the same spinner and the same footprint. The
- * hidden sizer renders the widest state (queued with recall, or the longest
- * label), so switching states only swaps the words and the action — the
- * message bubble never moves or resizes.
- */
+/** Delivery sits outside the message bubble and never implies execution. */
 const replyFeedbackKeys = {
   sending: "agentReplySendingShort",
   queued: "agentReplyQueuedShort",
   delivering: "agentReplyDeliveringShort",
   delivered: "agentReplyDeliveredShort",
 } as const;
-
-const replyFeedbackStates = ["queued", "sending", "delivering", "delivered"] as const;
 
 export function AgentReplyFeedback({ status, cancelling = false, onEdit }: {
   status: OutgoingReply["status"]; cancelling?: boolean; onEdit?: (() => void) | undefined;
@@ -59,17 +51,6 @@ export function AgentReplyFeedback({ status, cancelling = false, onEdit }: {
       {status === "queued" && onEdit && <button type="button" className="agent-reply-edit" disabled={cancelling} onClick={onEdit}>
         {t(cancelling ? "agentSessionCancelling" : "agentReplyEditShort")}
       </button>}
-    </span>
-    <span className="agent-reply-sizer" aria-hidden="true">
-      {replyFeedbackStates.map((candidate) => <span className="agent-reply-variant" key={candidate}>
-        <span className="agent-reply-state">
-          <span className="agent-reply-icon-slot" />
-          {t(replyFeedbackKeys[candidate])}
-        </span>
-        {candidate === "queued" && onEdit && <button type="button" className="agent-reply-edit" tabIndex={-1} disabled>
-          {t("agentReplyEditShort")}
-        </button>}
-      </span>)}
     </span>
   </footer>;
 }
