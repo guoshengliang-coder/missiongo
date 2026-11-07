@@ -20,7 +20,6 @@ public enum AppUpdater {
     public static let manifestPath = "/downloads/missiongo-macos-latest.json"
 
     static let manifestTimeout: TimeInterval = 20
-    static let downloadTimeout: TimeInterval = 600
     static let maxManifestBytes = 64_000
     /// A ceiling, not a size check -- the manifest's `size` is the real one.
     /// This only stops an unbounded body from filling memory.
@@ -195,19 +194,35 @@ public enum AppUpdater {
     public static func download(
         _ manifest: Manifest,
         serverUrl: String,
-        session: URLSession? = nil
+        session: URLSession? = nil,
+        progress: @escaping @Sendable (Int, Int, TimeInterval) -> Void = { _, _, _ in },
+        stage: @escaping @Sendable (UpdateActivity.Stage) async -> Void = { _ in },
+        metrics: @escaping @Sendable (String) -> Void = { _ in },
+        idleTimeout: TimeInterval = 60,
+        resourceTimeout: TimeInterval = 600
     ) async throws -> Data {
         guard let url = URL(string: serverUrl + manifest.downloadPath) else {
             throw UpdateError.download("地址无效")
         }
-        var request = URLRequest(url: url, timeoutInterval: downloadTimeout)
+        guard manifest.size > 0, manifest.size <= maxZipBytes else { throw UpdateError.badManifest("大小不合理") }
+        var request = URLRequest(url: url, timeoutInterval: idleTimeout)
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        let (data, response) = try await send(request, session: session)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw UpdateError.download("HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+        let configuration = session?.configuration ?? ServerConnection.configuration(for: ServerConnection.mode())
+        configuration.timeoutIntervalForResource = resourceTimeout
+        let transfer = UpdateDownload(expected: manifest.size, progress: {
+            progress($0.received, $0.total, $0.elapsed)
+        }, metrics: metrics)
+        let data: Data
+        do { data = try await transfer.run(request: request, configuration: configuration) }
+        catch {
+            if error is CancellationError || Task.isCancelled { throw CancellationError() }
+            if let error = error as? UpdateError { throw error }
+            throw UpdateError.download(ServerConnection.failureDescription(error, url: request.url))
         }
-        guard data.count <= maxZipBytes else { throw UpdateError.download("安装包过大") }
+        try Task.checkCancellation()
+        await stage(.verifying)
         guard digest(of: data) == manifest.sha256 else { throw UpdateError.digestMismatch }
+        try Task.checkCancellation()
         return data
     }
 
@@ -238,7 +253,8 @@ public enum AppUpdater {
         expectedIdentifier: String?,
         allowAdHocUpdates: Bool = Bundle.main.object(forInfoDictionaryKey: "MissionGoAllowsAdHocUpdates") as? Bool ?? false,
         installRoots: [URL]? = nil,
-        run: ToolRunner = systemRunner
+        run: ToolRunner = systemRunner,
+        stage: @escaping @Sendable (UpdateActivity.Stage) async -> Void = { _ in }
     ) async throws -> URL {
         let work = try workDirectory()
         defer { try? FileManager.default.removeItem(at: work) }
@@ -254,12 +270,14 @@ public enum AppUpdater {
         // ditto, matching the ditto -c -k that made the archive: a plain unzip
         // drops the symlinks and extended attributes inside the bundle, and the
         // result is reported to the person as "the app is damaged".
+        await stage(.unpacking)
         let extraction = await run("/usr/bin/ditto", ["-x", "-k", archive.path, unpacked.path])
         guard extraction.code == 0 else { throw UpdateError.unpack(extraction.output) }
 
         let newBundle = try locateBundle(in: unpacked)
         try validate(bundle: newBundle, manifest: manifest, expectedIdentifier: expectedIdentifier)
 
+        await stage(.security)
         let verification = await run("/usr/bin/codesign", ["--verify", "--deep", "--strict", newBundle.path])
         guard verification.code == 0 else { throw UpdateError.badBundle("签名校验失败：\(verification.output)") }
 
@@ -285,6 +303,7 @@ public enum AppUpdater {
         // there is one, is somewhere else. Put the verified build where macOS
         // runs it in place instead; the projection itself is temporary and must
         // be left alone.
+        await stage(.installing)
         if isTranslocated(bundle: bundle) {
             return try await place(
                 newBundle,
