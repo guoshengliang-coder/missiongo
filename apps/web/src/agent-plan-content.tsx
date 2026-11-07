@@ -58,7 +58,7 @@ export function inlinePlanTranscript<T extends AgentSessionMessage>(messages: re
 
 /** Approval is attached to the message; the server still binds the revision,
  * permissions and at-most-once continuation. */
-export function InlinePlanApproval({ session, blocked = false }: { session: AgentSession; blocked?: boolean }) {
+export function InlinePlanApproval({ session, blocked = false, onRequestChanges }: { session: AgentSession; blocked?: boolean; onRequestChanges?: () => void }) {
   const { t } = useI18n();
   const client = useQueryClient();
   const plan = currentPlan(session);
@@ -86,6 +86,7 @@ export function InlinePlanApproval({ session, blocked = false }: { session: Agen
     {approved ? <small>{t("agentPlanApproved")}</small> : invalid ? <small>{t("agentPlanScopeChanged")}</small>
       : <button type="button" className="primary-button" disabled={!enabled || approve.isPending || approve.isSuccess}
         onClick={() => { if (!lock.current) { lock.current = true; approve.mutate(); } }}>{t("agentPlanApprove")}</button>}
+    {!approved && !invalid && onRequestChanges && <button type="button" className="secondary-button" disabled={blocked || !session.canReply || approve.isPending || approve.isSuccess} onClick={onRequestChanges}>{t("agentPlanRequestChanges")}</button>}
     {!approved && !invalid && !enabled && <small>{t(planApprovalStatusKey(session.planApprovalStatus?.code ?? "reply_unavailable"))}</small>}
     {approved && !planContinuationObserved(session) && session.planApprovalState && <small>{t(session.planApprovalState.continuationQueued
       ? "agentPlanApprovedQueued" : session.planApprovalState.continuationPending ? "agentPlanApprovedWaiting" : "agentPlanApprovedNoReply")}</small>}

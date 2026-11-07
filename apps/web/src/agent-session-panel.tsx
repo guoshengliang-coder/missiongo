@@ -170,7 +170,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                         <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
                       </header>
                       {(message.role === "user" ? <MarkdownText>{permissionReplyText(session.data.messages.flatMap(message => message.questions ?? []), message.text)}</MarkdownText> : <AgentArtifactMarkdown text={message.text} sessionId={sessionId} messageId={message.id} />)}
-                      {message.id === planMessages.planMessageId && <InlinePlanApproval key={`${session.data.id}:${currentPlan(session.data)?.revision}`} session={session.data} blocked={questionPermission || pending || send.isPending} />}
+                      {message.id === planMessages.planMessageId && <InlinePlanApproval onRequestChanges={()=>document.querySelector<HTMLTextAreaElement>(".agent-session-reply textarea")?.focus()} key={`${session.data.id}:${currentPlan(session.data)?.revision}`} session={session.data} blocked={questionPermission || pending || send.isPending} />}
                       {message.questions && (
                         <AgentSessionQuestions
                           questions={message.questions}

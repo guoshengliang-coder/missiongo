@@ -101,7 +101,7 @@ export class PlanApprovalService {
   content(session: Session) {
     const proposal = this.registered(session);
     return proposal ? { revision: proposal.revision, itemKeys: proposal.keys,
-      plan: proposal.plan, validation: proposal.validation,
+      plan: proposal.plan, validation: proposal.validation, ...(proposal.documentId ? {documentId:proposal.documentId} : {}),
       submittedAt: proposal.submittedAt, approvedAt: proposal.approvedAt,
       approved: proposal.approved, valid: proposal.valid } : undefined;
   }

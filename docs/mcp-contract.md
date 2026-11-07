@@ -306,3 +306,11 @@ Codex、Claude Code、OpenCode 共用内容完整性契约。`request_plan_appro
 客户端复用现有确认/问题组件。Claude 保留空对象确认 schema，并允许 512000 个 UTF-16 字符的完整正文；不开放任意 schema。OpenCode 空表单只接受绑定“确认请求 <id>”的批准或取消，取消通过官方 DELETE form API，拒绝普通回复或过期标识被当作批准。
 
 协议依据：[OpenCode Input requests](https://dev.opencode.ai/docs/mcp-servers/#input-requests)、[OpenCode Form API](https://dev.opencode.ai/docs/api)、[MCP TypeScript SDK elicitation](https://ts.sdk.modelcontextprotocol.io/v2/servers/elicitation)。真实客户端、第三方网关与升级环境的端到端结果单列，模拟协议不冒充实际兼容验收。
+
+## 固定版本方案文档（AND-452）
+
+支持 supportsPlanDocuments 的服务通过 prepare_plan_document 保存原身份、同产品 itemKeys、summary 与完整 markdown；返回不可变 documentId、版本、真实返工轮次、sha256 和各端原样展示的 plan。markdown 必须以摘要原文和换行开头，最大 512000 UTF-8 字节；新版本使用新幂等键。get_plan_document 在所有覆盖条目权限内按码点分页返回同一 Markdown，读完 nextOffset 才算取得完整上下文。
+
+文档方案 request_plan_approval 带 documentId、完全相同的 plan 和空 validation，详细验证在文档中。原会话批准入口绑定此版本，读取不批准，原生与 Web 复用同一决定。append_comment 的 planDocumentId 将获批原文归档为 Markdown 附件及摘要评论，重试去重；普通 free 评论也支持 attachmentIds。该限定归档属于已批准任务交付，不要求用户再次逐文件授权，不扩大一般附件上传范围。
+
+原范围补修可 prepare_plan_document(parentDocumentId) 生成本轮诊断记录，不产生新批准；实质变更须生成独立方案审阅。跨轮次旧待审文档失效，已批准方案只在现有范围和授权有效时复用。通用 get_review_content 及旧文本审批保持原有完整内容要求；不得把非文档方案静默缩写。

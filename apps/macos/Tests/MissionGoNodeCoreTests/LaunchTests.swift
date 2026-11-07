@@ -20,13 +20,16 @@ final class LaunchPromptTests: XCTestCase {
                     XCTAssertTrue(prompt.contains("单独申请调查授权"))
                     XCTAssertTrue(prompt.contains("方案表达按复杂度组织"))
                     XCTAssertTrue(prompt.contains("向 request_plan_approval 提交的 plan/validation"))
+                    XCTAssertTrue(prompt.contains("prepare_plan_document"))
+                    XCTAssertTrue(prompt.contains("get_plan_document"))
+                    XCTAssertTrue(prompt.contains("批准入口仍在原会话摘要后"))
                     XCTAssertTrue(prompt.contains("特别是与推荐不同的选择"))
                     XCTAssertTrue(prompt.contains("普通进度、澄清和等待提示不是正式方案"))
                     XCTAssertTrue(prompt.contains("有边界的复现或实验计划"))
                     if freeSession { XCTAssertTrue(prompt.contains("不自行开始任务")) }
                     else if mode == "plan" {
                         XCTAssertTrue(prompt.contains("领取记录任务归属，不要求方案批准"))
-                        XCTAssertTrue(prompt.contains("将已批准的计划以结构化评论"))
+                        XCTAssertTrue(prompt.contains("将已批准的固定文档及摘要作为计划评论和附件"))
                     }
                 }
             }

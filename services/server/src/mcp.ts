@@ -1,3 +1,4 @@
+import { PlanDocuments } from "./plan-documents.js";
 import { NativeHumanConfirmations } from "./native-human-confirmation.js";
 import { AccountStore } from "./accounts-store.js";
 import { localArtifactLinks } from "@missiongo/domain";
@@ -136,7 +137,7 @@ function accountAccess(ctx: ServerContext): McpAccountAccess {
  */
 export const WRITE_TOOLS_BY_TIER: Readonly<Record<McpWriteTier, readonly string[]>> = {
   none: [],
-  comments: ["request_collaboration_approval", "request_merge_reconciliation_approval", "request_managed_decision_approval", "request_merge_reconciliation", "apply_merge_reconciliation", "record_merge_combined_validation", "propose_merge_delivery", "refresh_merge_delivery", "report_merge_batch", "finish_merge_batch", "record_merge_integration", "prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "request_plan_approval", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "submit_release_batch", "supplement_release_evidence", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
+  comments: ["request_collaboration_approval", "request_merge_reconciliation_approval", "request_managed_decision_approval", "request_merge_reconciliation", "apply_merge_reconciliation", "record_merge_combined_validation", "propose_merge_delivery", "refresh_merge_delivery", "report_merge_batch", "finish_merge_batch", "record_merge_integration", "prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "prepare_plan_document", "request_plan_approval", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "submit_release_batch", "supplement_release_evidence", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
 };
 
 /**
@@ -229,6 +230,7 @@ export function createMissionGoMcpServer(
   const sessions = new ExternalAgentSessionStore(store);
   const projectSessions = new ProjectSessionClaims(store);
   const plans = new ImplementationPlans(store.database);
+  const planDocuments = new PlanDocuments(store);
   const artifacts = new AgentArtifacts(store.database, join(attachmentStorage.rootPath,"agent-artifacts"));
   const history = new AgentHistory(store.database, artifacts);
   const reviews = new MergeDeliveries(store);
@@ -289,6 +291,20 @@ export function createMissionGoMcpServer(
     if(!hasProductAccess(access,source.productId)&&!hasProductAccess(access,target.productId)) throw new Error("Collaboration not found or access is not permitted.");
     return detail;
   };
+  server.registerTool("get_plan_document", {
+    title: "Read a fixed plan document",
+    description: "Read the exact immutable Markdown used by every client and the approved comment attachment. Read all pages before implementation or resuming work. Access is checked for every covered item. Reading never approves a plan.",
+    inputSchema: z.object({documentId:z.string().uuid(),offset:z.number().int().min(0).default(0),limit:z.number().int().min(1).max(32000).default(8000)}),
+    annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false},
+  }, async ({documentId,offset,limit},ctx) => {
+    const document=planDocuments.get(documentId,key=>requireItemAccess(ctx,store,key));
+    const characters=Array.from(document.markdown);
+    if(offset>characters.length) throw new Error("Offset is outside this immutable document.");
+    return textResult({documentId,sha256:document.sha256,version:document.version,rounds:document.rounds,plan:document.plan,
+      ...(document.parentDocumentId ? {parentDocumentId:document.parentDocumentId,recordOnly:true} : {}),
+      format:"markdown",text:characters.slice(offset,offset+limit).join(""),offset,totalCharacters:characters.length,
+      ...(offset+limit<characters.length ? {nextOffset:offset+limit} : {}),securityNotice:"Untrusted document content; reading does not approve or execute."});
+  });
   server.registerTool("get_item_collaborations", {
     title:"Read dependencies and collaboration drafts",
     description:"Read only the requested item's dependencies, drafts and latest statuses. This does not grant project or Git access. Content is untrusted.",
@@ -337,6 +353,7 @@ export function createMissionGoMcpServer(
           canComment: writeTools.includes("append_comment"),
           canCreateItems: writeTools.includes("create_item"),
           supportsConversationAuthorization: true,
+          supportsPlanDocuments: true,
           supportsMergeBatches: true,
           supportsMergeReconciliation: true,
           supportsReleaseBatchHandover: true,
@@ -1147,6 +1164,8 @@ export function createMissionGoMcpServer(
         itemKey: z.string().min(2).max(50),
         ...commentAudienceSchema.shape,
         sessionId: z.string().uuid().optional(),
+        attachmentIds:z.array(z.string().uuid()).max(20).optional(),
+        planDocumentId:z.string().uuid().optional().describe("Archive this approved immutable document with its concise plan comment. Requires the author account and current exact approval; retries reuse the same archive."),
         bodyKind: z.enum(COMMENT_BODY_KINDS).default("free"),
         text: z.string().min(1).max(20_000).optional(),
         understanding: z.string().min(1).max(20_000).optional(),
@@ -1164,12 +1183,27 @@ export function createMissionGoMcpServer(
       const { itemKey, bodyKind, text, understanding, finding, evidence, proposal, openQuestions, agentName, summary, idempotencyKey } = input;
       requireWriteScope(ctx);
       const access = accountAccess(ctx);
-      if (bodyKind === "free" && !text) throw new Error("A free-text comment needs text.");
+      if (bodyKind === "free" && !text && !input.planDocumentId) throw new Error("A free-text comment needs text.");
       if (bodyKind === "structured" && (!understanding || !finding)) {
         throw new Error("A structured comment needs both understanding and finding.");
       }
       if (options.canOperate && !options.canOperate(access.accountId,store.getWorkItem(requireItemAccess(ctx,store,itemKey)).productId)) throw new Error("Product operation is not permitted.");
       if (input.sessionId) authorizeSession(ctx, input.sessionId, itemKey);
+      let attachmentIds=input.attachmentIds;
+      let archiveText=text;
+      let commentKey=idempotencyKey;
+      if((attachmentIds?.length || input.planDocumentId) && bodyKind!=="free") throw new Error("Attachments require a free comment.");
+      if(input.planDocumentId) {
+        if(attachmentIds?.length) throw new Error("Plan archive uses only the fixed document attachment.");
+        const document=planDocuments.get(input.planDocumentId,key=>requireItemAccess(ctx,store,key));
+        if(document.accountId!==access.accountId || !document.keys.includes(itemKey.toUpperCase()) || !planDocuments.approved(document)) throw new Error("The current exact document must be approved for this account and item.");
+        const attachment=await attachmentStorage.save(store,itemKey,`plan-${document.id}-v${document.version}.md`,"text/markdown",Buffer.from(document.markdown,"utf8"),undefined,access,
+          `plan-document:${document.id}:${itemKey.toUpperCase()}`,undefined,"agent");
+        // Async storage cannot carry stale authorization into the comment write.
+        requireWriteScope(ctx); for(const key of document.keys) requireItemAccess(ctx,store,key);
+        if(options.canOperate&&!options.canOperate(access.accountId,store.getWorkItem(itemKey).productId) || !planDocuments.approved(document)) throw new Error("Plan authorization changed during archive. Retry after reviewing the current scope.");
+        attachmentIds=[attachment.id]; archiveText=document.plan; commentKey=`plan-document-comment:${document.id}:${itemKey.toUpperCase()}`;
+      }
       const comment = store.database.transaction(() => {
         const comment = store.createComment({
           itemKey: requireItemAccess(ctx, store, itemKey),
@@ -1177,7 +1211,7 @@ export function createMissionGoMcpServer(
           actorKind: "agent",
           bodyKind,
           body: bodyKind === "free"
-            ? { text: text! }
+            ? { text: archiveText!, ...(attachmentIds?.length ? {attachmentIds} : {}) }
             : {
               understanding: understanding!,
               finding: finding!,
@@ -1194,7 +1228,7 @@ export function createMissionGoMcpServer(
             accountId: access.accountId,
             ...(access.clientId ? { clientId: access.clientId } : {}),
           },
-          idempotencyKey,
+          idempotencyKey:commentKey,
         });
         if (input.sessionId && sessions.isHandling(input.sessionId,comment.itemKey)) {
           const actualText = comment.bodyKind === "free" ? (comment.body as { text: string }).text : JSON.stringify(comment.body);
@@ -1210,17 +1244,52 @@ export function createMissionGoMcpServer(
   );
 
   server.registerTool(
+    "prepare_plan_document", {
+    title:"Prepare an immutable implementation plan document",
+    description:"After diagnosis prepare one fixed Markdown document starting with the exact concise summary plus a newline. Include detailed evidence, scope, constraints and validation in the Markdown. Return and display the exact plan text unchanged in the conversation, then request approval with documentId. Does not approve, claim, comment or start another conversation. Use a new idempotency key for revisions; retry unchanged inputs with the same key.",
+    inputSchema:z.object({itemKeys:z.array(z.string().min(2).max(50)).min(1).max(20),summary:z.string().trim().min(1).max(6000),
+      markdown:z.string().min(1).max(512000),parentDocumentId:z.string().uuid().optional().describe("Only for a rework diagnostic record within the unchanged approved scope: reference the original current approved document. This record grants no new approval. For a materially changed plan omit this field and request fresh approval."),idempotencyKey:z.string().min(1).max(200),dispatchId:z.string().min(1).max(200).optional(),session:sessionIdentity.optional()})
+      .refine(input=>Boolean(input.dispatchId)!==Boolean(input.session),"Use exactly one original conversation identity."),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },async(input,ctx)=>{
+    requireWriteScope(ctx);
+    const access=accountAccess(ctx);
+    const keys=[...new Set(input.itemKeys.map(key=>requireItemAccess(ctx,store,key)))].sort();
+    for(const key of keys) {
+      const item=store.getWorkItem(key);
+      assertBuilderExecution(store.database,item.id,access.accountId);
+      if(options.canOperate&&!options.canOperate(access.accountId,item.productId)) throw new Error("Product operation is not permitted.");
+    }
+    if(new Set(keys.map(key=>store.getWorkItem(key).productId)).size!==1) throw new Error("A document must remain in one product.");
+    const project=input.session ? projectSessions.resolve(access.accountId,keys[0]!,{session:input.session}) : undefined;
+    const dispatchId=project?.dispatchId ?? input.dispatchId;
+    if(dispatchId) {
+      assertDispatchExecution(store.database,dispatchId);
+      const dispatched=store.database.connection.prepare(`SELECT d.id,f.product_id FROM dispatches d
+        LEFT JOIN free_session_starts f ON f.dispatch_id=d.id WHERE d.id=? AND d.account_id=? AND d.status IN ('launched','delivered')`)
+        .get(dispatchId,access.accountId) as {id:string;product_id:string|null}|undefined;
+      if(!dispatched || keys.some(key=>!plans.dispatchKeys(dispatchId).includes(key)&&dispatched.product_id!==store.getWorkItem(key).productId)) throw new Error("Dispatch scope does not contain these items.");
+    }
+    const document=planDocuments.prepare({accountId:access.accountId,identity:planIdentity(access.clientId,input.session,dispatchId),keys,
+      summary:input.summary,markdown:input.markdown,origin:options.publicOrigin ?? "",requestKey:input.idempotencyKey,...(input.parentDocumentId ? {parentDocumentId:input.parentDocumentId} : {})});
+    return textResult({documentId:document.id,sha256:document.sha256,version:document.version,rounds:document.rounds,plan:document.plan,
+      recordOnly:Boolean(document.parentDocumentId),...(document.parentDocumentId ? {parentDocumentId:document.parentDocumentId} : {}),
+      guidance:document.parentDocumentId ? "Display plan unchanged. Read this bounded rework record in full and archive with append_comment(planDocumentId). Reuse the parent approval; do not submit this record to request_plan_approval or expand the original authorization." : "Display plan unchanged in every conversation. Submit this documentId and exact plan to request_plan_approval with empty validation because its full goals are in the document. This preparation is not approval."});
+  });
+
+  server.registerTool(
     "request_plan_approval", {
     title: "Request human implementation-plan approval",
     description: "After diagnosis and clarification, present this exact plan and validation goals in the conversation. When a plan still needs review, request one explicit human decision for the current item batch. Claiming responsibility is independent; never request a second decision for a plan already approved in the original native conversation or MissionGo. This is separate from tool permissions. Use the original dispatchId or external conversation identity; never register another session. It does not claim, comment or change item status. It prepares an approval-only association for a first external conversation and returns its sessionId and reviewUrl; claiming later reuses this same record. Native confirmation uses the protocol's bound input-required round trip. Registered external plans can be approved on the Web without a native reply connection. Reuse an existing current approval without asking again. Changed scope requires fresh approval; never provide an approval answer as a tool argument.",
     inputSchema: z.object({ itemKeys:z.array(z.string().min(2).max(50)).min(1).max(20),
       approvalMethod:z.enum(["native","web"]).optional(),
+      documentId:z.string().uuid().optional().describe("Fixed document returned by prepare_plan_document. The plan must equal its returned plan text; details and validation remain in that document."),
       plan:z.string().trim().min(1).max(MAX_PLAN_CHARACTERS).describe("Exact reviewed Markdown plan: lead with recommendation and approval scope; use short prose for simple work, optional 2-4 column tables for changes, conditions or choices. Keep risks, constraints, user decisions and revision changes visible; move detailed evidence after them. Preserve the structure shown in conversation, never flatten into a dense summary or silently truncate an approved plan."),
-      validation:z.string().trim().min(1).max(MAX_VALIDATION_CHARACTERS).describe("Exact reviewed validation goals: concrete scenarios, expected outcomes and methods, using short prose or a compact Markdown table. Distinguish verified facts from pending reproduction and implementation-time checks; do not repeat the plan."),
+      validation:z.string().trim().max(MAX_VALIDATION_CHARACTERS).describe("Exact reviewed validation goals: concrete scenarios, expected outcomes and methods, using short prose or a compact Markdown table. Distinguish verified facts from pending reproduction and implementation-time checks; do not repeat the plan."),
       dispatchId:z.string().min(1).max(200).optional(), session:sessionIdentity.optional(),
-    }).refine(input => Boolean(input.dispatchId) !== Boolean(input.session), "Use exactly one conversation identity."),
+    }).refine(input => Boolean(input.dispatchId) !== Boolean(input.session), "Use exactly one conversation identity.").refine(input=>Boolean(input.documentId)||Boolean(input.validation),"Legacy plans require validation goals."),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({itemKeys,plan,validation,dispatchId,session,approvalMethod},ctx) => {
+  }, async ({itemKeys,plan,validation,dispatchId,session,approvalMethod,documentId},ctx) => {
     requireWriteScope(ctx);
     const access=accountAccess(ctx);
     const keys=[...new Set(itemKeys.map(key=>requireItemAccess(ctx,store,key)))].sort();
@@ -1240,9 +1309,15 @@ export function createMissionGoMcpServer(
     const originalDispatchId=project?.dispatchId ?? dispatchId;
     if(project && keys.some(key=>store.getWorkItem(key).productId!==project.productId)) throw new Error("Project conversation scope changed.");
     const identity=planIdentity(access.clientId,session,originalDispatchId);
+    const document=documentId ? planDocuments.get(documentId,key=>requireItemAccess(ctx,store,key)) : undefined;
+    if(document) {
+      if(document.parentDocumentId) throw new Error("A rework record is not a new implementation plan; reuse the parent approval, or prepare a new standalone plan for changed scope.");
+      planDocuments.assertCurrent(document,access.accountId,identity,keys,planDocuments.approved(document));
+      if(plan!==document.plan || validation!=="") throw new Error("Display and submit the exact document plan with empty validation; full validation is in the immutable document.");
+    }
     const scope=plans.scope(keys);
     const previous=plans.proposal(access.accountId,identity);
-    const reuseNative=previous?.origin==="native" && previous.approved && previous.valid && previous.plan===plan
+    const reuseNative=!documentId && previous?.origin==="native" && previous.approved && previous.valid && previous.plan===plan
       && JSON.stringify([...previous.keys].sort())===JSON.stringify(keys) && plan.includes(validation);
     const revision=reuseNative ? previous.revision : planDigest([identity,scope,plan,validation]);
     const nativeState = ctx.mcpReq.requestState<{revision:string}>();
@@ -1255,23 +1330,23 @@ export function createMissionGoMcpServer(
         ? (store.database.connection.prepare("SELECT id FROM agent_sessions WHERE dispatch_id=?").get(originalDispatchId) as {id:string}|undefined)?.id
         : sessions.prepareApproval(access,session!,keys,revision);
       if (!originalDispatchId && id) sessions.authorize(access,id,keys[0]!,key => requireItemAccess(ctx,store,key));
-      if (!plans.approved(access.accountId,identity,revision)) plans.request(access.accountId,identity,revision,{keys,plan,validation});
+      if (!plans.approved(access.accountId,identity,revision)) plans.request(access.accountId,identity,revision,{keys,plan,validation,...(documentId ? {documentId} : {})});
       return id;
     });
     const reviewPath = sessionId ? `/?console=agent&session=${encodeURIComponent(sessionId)}` : undefined;
     const reviewUrl = reviewPath ? `${options.publicOrigin ?? ""}${reviewPath}` : undefined;
-    const context = {content: {plan, validation}, contentGuidance: CURRENT_ENTRY_CONTENT_GUIDANCE, ...(sessionId ? {sessionId} : {}),...(reviewUrl ? {reviewUrl} : {})};
+    const context = {...(document ? {documentId:document.id,documentSha256:document.sha256,documentMarkdown:document.markdown} : {}),content: {plan, validation}, contentGuidance: document ? "Display the exact summary and document link. Read the fixed document in full before implementation; after approval archive it with append_comment(planDocumentId)." : CURRENT_ENTRY_CONTENT_GUIDANCE, ...(sessionId ? {sessionId} : {}),...(reviewUrl ? {reviewUrl} : {})};
     if(plans.approved(access.accountId,identity,revision)) {
       plans.nativeContinued(access.accountId,identity,revision);
       return textResult({approved:true,revision,...context},"This exact plan is already approved for this original conversation. Reuse its approval; do not ask again.");
     }
-    if(approvalMethod==="web") return textResult({approved:false,approvalRequired:true,revision,...context},`Plan:\n${plan}\n\nValidation:\n${validation}\n\n${CURRENT_ENTRY_CONTENT_GUIDANCE}\nThe exact plan and scope are ready for human review: ${reviewUrl ?? "open the original conversation"}. This registration does not change claim status. Present the complete plan and validation here; the URL is optional navigation. No native reply connection is required to read the saved plan.`);
-    const confirmation = `MissionGo · 方案批准\n${keys.join("、")}\n${plan}\n验证目标：${validation}\n批准仅覆盖这份方案，不授予 push、merge 或发布权限。`;
+    if(approvalMethod==="web") return textResult({approved:false,approvalRequired:true,revision,...context},`Plan:\n${plan}\n\n${document ? "Full details and validation are in the fixed document; read via get_plan_document." : `Validation:\n${validation}\n\n${CURRENT_ENTRY_CONTENT_GUIDANCE}`}\nThe exact plan and scope are ready for human review: ${reviewUrl ?? "open the original conversation"}. This registration does not change claim status. Display the exact returned plan; document-backed plans keep details in the fixed document readable through get_plan_document. No native reply connection is required to read the saved plan.`);
+    const confirmation = `MissionGo · 方案批准\n${keys.join("、")}\n${plan}${document ? "" : `\n验证目标：${validation}`}\n批准仅覆盖这份方案，不授予 push、merge 或发布权限。`;
     let accepted: boolean;
     if (options.protocolEra === "modern") {
       const capabilities = (ctx.mcpReq.envelope as Record<string,unknown> | undefined)?.["io.modelcontextprotocol/clientCapabilities"] as {elicitation?:{form?:unknown}}|undefined;
       if (!capabilities?.elicitation?.form) return textResult({approved:false,approvalRequired:true,revision,requiresWeb:true,code:"native_approval_unavailable",...context},
-        `Plan:\n${plan}\n\nValidation:\n${validation}\n\n${CURRENT_ENTRY_CONTENT_GUIDANCE}\nThis connection did not advertise native form confirmation. The same proposal is available at ${reviewUrl}. Approval and native reply connectivity are independent; preserve the existing human decision and do not repeat the plan review.`);
+        `Plan:\n${plan}\n\n${document ? "Full details and validation are in the fixed document; read via get_plan_document." : `Validation:\n${validation}\n\n${CURRENT_ENTRY_CONTENT_GUIDANCE}`}\nThis connection did not advertise native form confirmation. The same proposal is available at ${reviewUrl}. Approval and native reply connectivity are independent; preserve the existing human decision and do not repeat the plan review.`);
       const response = inputResponse(ctx.mcpReq.inputResponses,"planApproval");
       if (response.kind === "missing") {
         return inputRequired({requestState:await approvalStateCodec.mint({revision},ctx),inputRequests:{
@@ -1291,7 +1366,7 @@ export function createMissionGoMcpServer(
       }
       if (plans.approved(access.accountId,identity,revision)) return textResult({approved:true,revision,...context},"The human approval was saved during the handoff. Reuse this same plan and conversation; do not ask again.");
       return textResult({approved:false,approvalRequired:true,revision,requiresWeb:true,code:"native_approval_unavailable",...context},
-        `Plan:\n${plan}\n\nValidation:\n${validation}\n\n${CURRENT_ENTRY_CONTENT_GUIDANCE}\nThe native confirmation could not be recorded by MissionGo. This is an approval handoff limitation, not evidence that the human declined. Preserve the original identity and proposal; do not ask them to review the plan again. Use the registered approval handoff at ${reviewUrl ?? "the original conversation"}. A registered external plan can be approved there without connecting a native reply channel.`);
+        `Plan:\n${plan}\n\n${document ? "Full details and validation are in the fixed document; read via get_plan_document." : `Validation:\n${validation}\n\n${CURRENT_ENTRY_CONTENT_GUIDANCE}`}\nThe native confirmation could not be recorded by MissionGo. This is an approval handoff limitation, not evidence that the human declined. Preserve the original identity and proposal; do not ask them to review the plan again. Use the registered approval handoff at ${reviewUrl ?? "the original conversation"}. A registered external plan can be approved there without connecting a native reply channel.`);
     }
     if(plans.approved(access.accountId,identity,revision)) {
       plans.nativeContinued(access.accountId,identity,revision);
