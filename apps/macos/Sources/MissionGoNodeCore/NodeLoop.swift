@@ -807,8 +807,7 @@ public final class NodeLoop: @unchecked Sendable {
                 if session.externalAutoConnect {
                     // An unbound probe has no input capability. Do not publish
                     // unrelated source errors or claim a node on a failed read.
-                    guard ["idle", "active", "stalled"].contains(report.status), report.error == nil,
-                          report.sourceArchived != true, report.commandId == nil else { return }
+                    guard report.commandId == nil, report.sourceArchived != true else { return }
                     try await self.api.reportAutomaticExternalSession(sessionId: session.id, generation: generation, nativeSessionRef: session.sessionRef, report: report)
                 } else {
                     try await self.api.reportExternalAgentSession(sessionId: session.id, generation: generation, report: report)

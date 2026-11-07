@@ -22,6 +22,7 @@ export interface ExternalNativeConnection {
   readonly nodeId?: string;
   readonly nodeName?: string;
   readonly lastSyncedAt?: string;
+  readonly waitingSince?: string;
   readonly automatic?: boolean;
 }
 interface Row {
@@ -31,6 +32,7 @@ interface Row {
   dismissed_revision: string | null;
   native_auto_connect: number;
   native_settings_json: string | null;
+  created_at: string;
 }
 type SettingsField = "mode" | "model" | "effort";
 interface SettingsState {
@@ -144,6 +146,7 @@ export class ExternalNativeSessionStore {
     const nativeConnection: ExternalNativeConnection | undefined = row.native_generation === 0 && !row.native_auto_connect ? undefined : {
       state: !row.native_node_id ? row.native_auto_connect ? "pending" : "disconnected" : !snapshot ? "pending" : connected ? "connected" : "unavailable",
       ...(row.native_auto_connect ? { automatic: true } : {}),
+      ...(!row.native_node_id && row.native_auto_connect ? { waitingSince: row.created_at } : {}),
       ...(row.native_node_id ? { nodeId: row.native_node_id } : {}), ...(node ? { nodeName: node.name } : {}),
       ...(row.native_synced_at ? { lastSyncedAt: row.native_synced_at } : {}),
     };
@@ -318,8 +321,22 @@ export class ExternalNativeSessionStore {
         if (this.items(row.id).every((item) => item.status === "done")) throw conflict("agent_session_work_finished", "The linked work is done.");
         if (row.native_node_id === null && row.native_generation === input.generation) {
           // Probes cannot start a CLI or send input. Only the exact source's
-          // healthy read admits one node; failed probes never steal a binding.
-          if (!["active", "idle", "stalled"].includes(input.status) || input.error || input.sourceArchived) return;
+          // verified history can admit a read-only node; failed probes never steal a binding.
+          const historyOnly = row.agent_kind === "codex" && input.status === "unavailable" && input.messages.length > 0 && !input.sourceArchived;
+          if (!historyOnly && (!["active", "idle", "stalled"].includes(input.status) || input.error || input.sourceArchived)) {
+            // A failed probe cannot claim a node or publish unrelated source text.
+            const node = this.db.prepare("SELECT agents_json FROM nodes WHERE id=? AND account_id=? AND revoked_at IS NULL").get(input.nodeId, input.accountId) as { agents_json: string } | undefined;
+            if (!node || !(JSON.parse(node.agents_json) as { kind: string }[]).some(agent => agent.kind === row.agent_kind)) throw notFound("Node");
+            const detail = input.error ?? "";
+            const reason = /超时|timed? ?out/i.test(detail) ? "读取原生会话超时"
+              : /未.*加载|notLoaded/i.test(detail) ? "原生会话未在节点运行时加载"
+              : /identity|身份/i.test(detail) ? "原生会话身份核对失败"
+              : /通道|socket|connect|握手/i.test(detail) ? "节点无法连接原生控制通道"
+              : "节点未能读取原生会话";
+            this.db.prepare("UPDATE external_agent_sessions SET native_snapshot_json=?, native_synced_at=? WHERE id=?")
+              .run(JSON.stringify({status:"unavailable",turnState:{},error:`${reason}。请确认来源客户端和节点控制通道可用，或选择节点重新同步。`}), new Date().toISOString(), row.id);
+            return;
+          }
           this.connect(input.accountId, input.sessionId, input.nodeId);
           row = this.row(input.accountId, input.sessionId);
         }

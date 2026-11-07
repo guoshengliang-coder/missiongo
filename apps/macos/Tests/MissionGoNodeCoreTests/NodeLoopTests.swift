@@ -910,7 +910,7 @@ final class NodeLoopTests: XCTestCase {
         XCTAssertTrue(loop.currentState.lastError?.contains("Unexpected conflict") == true)
     }
 
-    func testAutomaticProbeDoesNotClaimAnUnavailableNativeSource() async throws {
+    func testAutomaticProbeReportsUnavailableSourceWithoutInput() async throws {
         let api = FakeAPI(claims: [])
         api.sessionList.withLock { $0 = [NodeAgentSession(id: "auto", agentKind: "codex", sessionRef: "not-local", status: "unavailable", occupiesExecutionSlot: false, externalBindingGeneration: 0, externalAutoConnect: true)] }
         let adapter = SnapshotAdapter(reports: [AgentSessionReport(status: "unavailable", messages: [], error: "Source not available")], kind: "codex")
@@ -918,8 +918,9 @@ final class NodeLoopTests: XCTestCase {
         let task = Task { try await loop.run() }
         try await Task.sleep(nanoseconds: 150_000_000)
         task.cancel(); try await task.value
-        XCTAssertTrue(api.automaticRefs.current.isEmpty)
-        XCTAssertTrue(api.sessionReports.current.isEmpty)
+        XCTAssertEqual(api.automaticRefs.current, ["not-local"])
+        XCTAssertEqual(api.sessionReports.current.first?.1.status, "unavailable")
+        XCTAssertNil(api.sessionReports.current.first?.1.commandId)
     }
 
     func testExternalReconnectUploadsTheSameSnapshotForItsNewBindingGeneration() async throws {
