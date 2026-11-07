@@ -103,7 +103,7 @@ for(const width of [320,1440]) for(const theme of ["light","dark"] as const) tes
     nodeName:"Fixture",nodeId:"fixture",nodeConnectionState:"online",mode:"auto",dispatchStatus:"launched",activities:[],settings:{},unread:false,
     canReply:true,canRetry:false,canStop:false,canArchive:true,attention:{state:"none"},needsAttention:false,items:[]};
   const entry=(key:string,progress:string)=>({itemKeys:[key],originalHead:"a".repeat(40),head:"b".repeat(40),progress,detail:"根据已确认需求核实接口兼容与回归，不扩大功能范围",repairs:[]});
-  const batch={id:"integration",sessionId:id,state:"active",deliveries:["a","b","c"],publish:true,results:{a:{status:"merged",detail:"基础改动已合并"},c:{status:"blocked",detail:"外部提交需要核对"}},
+  const batch={presentation:{entries:Object.fromEntries(["a","b","c"].map((key,i)=>[key,{title:["基础接口","会话控制台修复","外部合并核验"][i],summary:"原始交付说明，含旧的未发布记录",pullRequestUrl:"https://github.com/example/project/pull/1",requiredArtifacts:["web"],publication:i===0?"published":"pending",releases:[]}]))},id:"integration",sessionId:id,state:"active",deliveries:["a","b","c"],publish:true,results:{a:{status:"merged",detail:"基础改动已合并"},c:{status:"blocked",detail:"外部提交需要核对"}},
     integration:{protocol:1,revision:7,plans:[{base:"c".repeat(40),summary:"先合基础接口，再核实依赖功能；独立改动单独处理",validation:"最终主线组合行为与仓库检查",at,
       entries:["a","b","c"].map((deliveryId,i)=>({deliveryId,head:"b".repeat(40),dependsOn:i===1?["a"]:[],group:i<2?"接口兼容":"独立变更",reason:"读取相互影响后确定顺序",validation:"保留已有行为并验证新增功能"}))}],
       entries:{a:entry("IP-1","ready"),b:{...entry("IP-2","waiting_ci"),repairs:[{id:"repair",fromHead:"a".repeat(40),head:"b".repeat(40),base:"c".repeat(40),reason:"修复重复渲染",commits:["b".repeat(40)],validation:"回归测试已通过，远程 CI 排队中",source:"Fixture",at}]},c:entry("IP-3","investigating")},events:[{id:"event",digest:"digest",action:"plan",at,detail:"整批计划已保存，断线恢复沿用原批次"}]}};
@@ -116,8 +116,16 @@ for(const width of [320,1440]) for(const theme of ["light","dark"] as const) tes
   await expect(page.locator(".agent-console-messages .integration-progress")).toHaveCount(0);
   await expect(page.locator(".agent-console-message").last()).toContainText("原生会话的最新回复");
   await page.getByRole("button",{name:"集成详情",exact:true}).click();await expect(progress).toBeVisible();
-  await expect(progress).toContainText("先合基础接口");await expect(progress).toContainText("等待 CI");await expect(progress).toContainText("发布等待你决定");
-  await progress.locator("li").filter({hasText:"IP-2"}).getByText("查看修复与验证详情",{exact:true}).click();
+  await expect(progress).toContainText("合并受阻");await expect(progress).toContainText("部分已发布");await expect(progress).toContainText("等待自动检查");await expect(progress).toContainText("发布等待你决定");
+  await expect(progress.locator("code").filter({visible:true})).toHaveCount(0);
+  await progress.getByRole("button",{name:/会话控制台修复/}).click();
+  await expect(progress.getByRole("button",{name:"返回集成总览"})).toBeFocused();
+  await expect(progress.getByRole("button",{name:/基础接口/})).toBeHidden();
+  await progress.getByRole("button",{name:"处理经过",exact:true}).click();
+  await expect(progress.getByRole("heading",{name:"处理经过",exact:true})).toBeVisible();
+  await page.goBack();
+  await expect(progress.getByRole("button",{name:"处理经过",exact:true})).toBeFocused();
+  await progress.getByRole("button",{name:"技术依据",exact:true}).click();
   await expect(progress).toContainText("修复重复渲染");
   for(const scale of ["small","medium","large"]) {
     await page.evaluate(value=>{document.documentElement.dataset.fontScale=value;},scale);
@@ -127,9 +135,38 @@ for(const width of [320,1440]) for(const theme of ["light","dark"] as const) tes
     expect(audit.text.filter(r=>r.contrast<(r.fontSize>=24||(r.fontWeight>=700&&r.fontSize>=18.66)?3:4.5))).toEqual([]);
   }
   await expect(draft).toHaveValue("保留此草稿");await page.screenshot({path:testInfo.outputPath("integration-progress.png"),fullPage:true});
+  await page.keyboard.press("Escape");await expect(progress.getByRole("button",{name:"技术依据",exact:true})).toBeFocused();
+  await progress.getByRole("button",{name:"返回集成总览",exact:true}).click();
+  await expect(progress.getByRole("button",{name:/会话控制台修复/})).toBeFocused();
   await page.keyboard.press("Escape");await expect(progress).toHaveCount(0);await expect(draft).toHaveValue("保留此草稿");
   batch.state="finished";
-  await page.reload();await expect(progress).toHaveCount(0);await page.getByRole("button",{name:"集成详情",exact:true}).click();await expect(progress).toContainText("先合基础接口");await expect(progress).toContainText("IP-2");
+  await page.reload();await expect(progress).toHaveCount(0);await page.getByRole("button",{name:"集成详情",exact:true}).click();await expect(progress).toContainText("会话控制台修复");await expect(progress).toContainText("IP-2");
+  await expect(progress).toContainText("合并受阻");
+  Object.assign(batch.results,{b:{status:"merged",detail:"检查通过后已合并"},c:{status:"merged",detail:"恢复后已合并"}});
+  for(const record of Object.values(batch.presentation.entries))record.publication="published";
+  await page.reload();await page.getByRole("button",{name:"集成详情",exact:true}).click();
+  await expect(progress).toContainText("全部合并完成");await expect(progress).toContainText("全部发布完成");
+  await expect(progress.locator('[data-screen="overview"]')).not.toContainText("未发布记录");
+  await page.screenshot({path:testInfo.outputPath("integration-completed.png"),fullPage:true});
+  for(const [publication,label] of [["not_required","无需发布"],["unknown","发布待核实"],["pending","待发布"]]) {
+    for(const record of Object.values(batch.presentation.entries))record.publication=publication!;
+    await page.reload();await page.getByRole("button",{name:"集成详情",exact:true}).click();
+    await expect(progress.locator(".integration-outcomes")).toContainText(label!);
+  }
+  for(let i=3;i<20;i++) {
+    const key=`extra-${i}`;batch.deliveries.push(key);
+    Object.assign(batch.presentation.entries,{[key]:{...batch.presentation.entries.a,title:`独立会话改动 ${i}`}});
+    Object.assign(batch.integration.entries,{[key]:entry(`IP-${i}`,"queued")});
+  }
+  await page.reload();await page.getByRole("button",{name:"集成详情",exact:true}).click();
+  const overview=progress.locator('[data-screen="overview"]'),last=progress.getByRole("button",{name:/独立会话改动 19/});
+  await last.scrollIntoViewIfNeeded();
+  const scroll=await overview.evaluate(el=>el.scrollTop),bounds=await page.getByRole("dialog").locator(".modal").boundingBox();
+  expect(scroll).toBeGreaterThan(0);await last.click();
+  const detailBounds=await page.getByRole("dialog").locator(".modal").boundingBox();
+  expect(detailBounds!.height).toBeCloseTo(bounds!.height,0);
+  await progress.getByRole("button",{name:"返回集成总览",exact:true}).click();
+  await expect(last).toBeFocused();expect(await overview.evaluate(el=>el.scrollTop)).toBeCloseTo(scroll,0);
 });
 
 for(const width of [320,375,1440]) for(const theme of ["light","dark"] as const) test(`reconciliation approval and reload ${width} ${theme}`,async({page,request},testInfo)=>{

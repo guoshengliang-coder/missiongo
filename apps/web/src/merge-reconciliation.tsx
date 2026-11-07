@@ -4,8 +4,8 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { request } from "./api";
 import { useI18n } from "./i18n";
 
-export function MergeReconciliation({batchId}:{batchId:string}) {
-  const {t,formatTime,statusLabel}=useI18n(),[open,setOpen]=useState(false),[confirmed,setConfirmed]=useState(false);
+export function MergeReconciliation({batchId,initiallyOpen=false}:{batchId:string;initiallyOpen?:boolean}) {
+  const {t,formatTime,statusLabel}=useI18n(),[open,setOpen]=useState(initiallyOpen),[confirmed,setConfirmed]=useState(false);
   const query=useQuery({queryKey:["merge-reconciliation",batchId],enabled:open,
     queryFn:()=>request<MergeReconciliationPreview>(`/api/v1/merge-batches/${encodeURIComponent(batchId)}/reconciliation`)});
   const decide=useMutation({mutationFn:({id,snapshot,decision}:{id:string;snapshot:string;decision:"approved"|"rejected"})=>
@@ -14,7 +14,7 @@ export function MergeReconciliation({batchId}:{batchId:string}) {
     onSettled:()=>{setConfirmed(false);void query.refetch();}});
   const labels={accept_merge:"recoveryAcceptMerge",retry_handover:"recoveryRetryHandover",retry_blocked:"recoveryRetryBlocked",
     defer_publication:"recoveryDefer",allow_partial_publication:"recoveryPartial"} as const;
-  return <details className="merge-reconciliation" onToggle={e=>setOpen(e.currentTarget.open)}>
+  return <details className="merge-reconciliation" open={open} onToggle={e=>setOpen(e.currentTarget.open)}>
     <summary>{t("recoveryOpen")}</summary>
     {open&&<section aria-label={t("recoveryTitle")}>
       <p>{t("recoveryHelp")}</p>
