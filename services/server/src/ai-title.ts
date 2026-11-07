@@ -10,6 +10,7 @@ export const AGENT_ATTENTION_KINDS = ["answer", "approval", "action", "instructi
 export type AgentAttentionKind = typeof AGENT_ATTENTION_KINDS[number];
 
 export interface AgentAttentionClassification {
+  readonly deliveryOnly?: boolean;
   readonly needsAttention: boolean;
   readonly kind: AgentAttentionKind;
   readonly reason: string;
@@ -159,6 +160,8 @@ export class AiTitleService {
                 "只输出一个 JSON 对象，不要 Markdown：",
                 '{"needsAttention":true|false,"kind":"answer|approval|action|instruction|none","reason":"不超过80字的中文理由"}',
                 "needsAttention 为 false 时 kind 必须是 none；为 true 时 kind 不能是 none。",
+                "可增加 deliveryOnly 布尔字段：仅在 kind=instruction，且最新回复所需的全部下一步仅是添加到待合并、发起合并或继续既定交付流程时为 true。",
+                "独立选择、资料补充、风险接受、其他指令，以及无法确定时，deliveryOnly 必须为 false；同一回复包含交付和独立指令也为 false。",
               ].join("\n"),
             },
             { role: "user", content: source },
@@ -186,7 +189,7 @@ export class AiTitleService {
     } catch {
       throw new MissionGoError("ai_invalid_response", "DeepSeek returned an invalid attention classification.", 502);
     }
-    const result = parsed as { needsAttention?: unknown; kind?: unknown; reason?: unknown } | null;
+    const result = parsed as { needsAttention?: unknown; kind?: unknown; reason?: unknown; deliveryOnly?: unknown } | null;
     const kind = typeof result?.kind === "string" && AGENT_ATTENTION_KINDS.includes(result.kind as AgentAttentionKind)
       ? result.kind as AgentAttentionKind
       : undefined;
@@ -195,7 +198,8 @@ export class AiTitleService {
     if (typeof result?.needsAttention !== "boolean" || !kind || !validPair || !reason || reason.length > 80) {
       throw new MissionGoError("ai_invalid_response", "DeepSeek returned an invalid attention classification.", 502);
     }
-    return { needsAttention: result.needsAttention, kind, reason, model: MODEL };
+    return { needsAttention: result.needsAttention, kind, reason, model: MODEL,
+      deliveryOnly: result.deliveryOnly === true && kind === "instruction" };
   }
 
 }

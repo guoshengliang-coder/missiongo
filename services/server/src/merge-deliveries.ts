@@ -171,6 +171,7 @@ export class MergeDeliveries {
   attentionSessionIds(productId: string, accountId: string) {
     return [...new Set(this.listRaw(productId).filter(d => d.accountId === accountId
       && d.state !== "merged" && d.state !== "batched" && d.activity === this.activity(d.sessionId))
+      .filter(d => { try { this.sourceValid(d); return true; } catch { return false; } })
       .map(d => d.sessionId))];
   }
   readForAccount(accountId: string, id: string) {

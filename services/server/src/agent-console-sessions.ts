@@ -5,6 +5,8 @@ import { conflict, invalidInput, notFound } from "./errors.js";
 import type { MissionGoStore } from "./store.js";
 import { conversationIdentityGroups } from "./conversation-identity.js";
 
+interface Preference { favorite: number; sequence: number }
+
 interface IdentityRow { id: string; agent: string; ref: string | null; node: string | null }
 
 /** A read-time projection: original records, OAuth ownership and control channels stay intact. */
@@ -47,11 +49,12 @@ export class AgentConsoleSessions {
   }
 
   getSummary(accountId: string, id: string): AgentSessionListItem {
-    return this.summary(this.members(accountId, id));
+    return this.summary(this.members(accountId, id), this.preferences(accountId));
   }
 
   list(accountId: string): AgentSessionListItem[] {
-    return this.groups(accountId).map((group) => this.summary(group))
+    const preferences = this.preferences(accountId);
+    return this.groups(accountId).map((group) => this.summary(group, preferences))
       .sort((a, b) => b.activityAt.localeCompare(a.activityAt) || b.id.localeCompare(a.id));
   }
 
@@ -62,15 +65,43 @@ export class AgentConsoleSessions {
    */
   listForItem(accountId: string, itemKey: string): Array<{ summary: AgentSessionListItem; members: AgentSessionListItem[] }> {
     const key = itemKey.toUpperCase();
+    const preferences = this.preferences(accountId);
     return this.groups(accountId)
-      .map((group) => ({ group, summary: this.summary(group) }))
+      .map((group) => ({ group, summary: this.summary(group, preferences) }))
       .filter(({ summary }) => summary.items.some((item) => item.key === key))
       .sort((a, b) => b.summary.activityAt.localeCompare(a.summary.activityAt) || b.summary.id.localeCompare(a.summary.id))
       .map(({ group, summary }) => ({ summary, members: group }));
   }
 
-  private summary(group: AgentSessionListItem[]): AgentSessionListItem {
-    const primary = group[0]!;
+  private preferences(accountId: string): Map<string, Preference> {
+    const rows = this.store.database.connection.prepare(
+      "SELECT session_key,favorite,sequence FROM agent_session_preferences WHERE account_id=?",
+    ).all(accountId) as unknown as Array<Preference & { session_key: string }>;
+    return new Map(rows.map(row => [row.session_key, row]));
+  }
+
+  private preferenceKey(row: AgentSessionListItem): string {
+    return row.dispatchId ? `dispatch:${row.dispatchId}` : row.id;
+  }
+
+  setFavorite(accountId: string, id: string, favorite: boolean): AgentSessionListItem {
+    const group = this.members(accountId, id);
+    this.store.database.transaction(() => {
+      const db = this.store.database.connection;
+      const { sequence } = db.prepare("SELECT COALESCE(MAX(sequence),0)+1 AS sequence FROM agent_session_preferences").get() as { sequence: number };
+      const write = db.prepare(`INSERT INTO agent_session_preferences(account_id,session_key,favorite,sequence)
+        VALUES (?,?,?,?) ON CONFLICT(account_id,session_key) DO UPDATE SET favorite=excluded.favorite,sequence=excluded.sequence`);
+      for (const row of group) write.run(accountId, this.preferenceKey(row), Number(favorite), sequence);
+    });
+    return this.getSummary(accountId, id);
+  }
+
+  private summary(group: AgentSessionListItem[], preferences = new Map<string, Preference>()): AgentSessionListItem {
+    const latestPreference = group.flatMap(row => {
+      const preference = preferences.get(this.preferenceKey(row));
+      return preference ? [preference] : [];
+    }).sort((a, b) => b.sequence - a.sequence)[0];
+    const primary = { ...group[0]!, favorite: latestPreference?.favorite === 1 };
     if (group.length === 1) return primary;
     const latest = [...group].sort((a, b) => b.activityAt.localeCompare(a.activityAt))[0]!;
     const attention = [...group].filter((row) => row.needsAttention)

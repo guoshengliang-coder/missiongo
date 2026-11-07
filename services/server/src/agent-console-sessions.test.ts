@@ -204,3 +204,41 @@ it("does not infer integration from names or another account's batch (AND-435)",
   expect(f.console.getSummary("owner",f.sessionId).sessionPurpose).toBeUndefined();
   expect(f.dispatch.getForAccount("owner",f.sessionId).sessionPurpose).toBeUndefined();
 });
+
+
+it("keeps favorites across mirrors, primary changes and archives without touching activity or unread", () => {
+  const f = fixture();
+  const before = f.console.list("owner")[0]!;
+  expect(f.console.setFavorite("owner", f.externalId, true).favorite).toBe(true);
+  expect(f.console.getSummary("owner", f.sessionId)).toMatchObject({ favorite: true, activityAt: before.activityAt, unread: before.unread });
+  f.console.setArchived("owner", f.sessionId, true);
+  expect(f.console.getSummary("owner", f.sessionId)).toMatchObject({ favorite: true, archivedAt: expect.any(String) });
+  const resumed = f.createDispatch("resumed-favorite", "native-thread");
+  expect(f.console.getSummary("owner", resumed).favorite).toBe(true);
+  expect(f.console.setFavorite("owner", resumed, false).favorite).toBe(false);
+  expect(f.console.getSummary("owner", f.externalId).favorite).toBe(false);
+  expect(() => f.console.setFavorite("another-owner", resumed, true)).toThrow(/not found/);
+});
+
+it("retains pre-launch dispatch favorites after native registration and never matches a title", () => {
+  const f = fixture();
+  const now = new Date().toISOString();
+  f.db.prepare(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at)
+    VALUES ('starting','owner','node','codex','default','queued','synthetic',?)`).run(now);
+  f.db.prepare("INSERT INTO dispatch_items(dispatch_id,item_id,position) VALUES ('starting',?,0)").run(f.item.id);
+  expect(f.console.setFavorite("owner", "dispatch:starting", true).favorite).toBe(true);
+  const started = f.dispatch.createForDispatch({ dispatchId: "starting", nodeId: "node", sessionRef: "different-favorite-thread" });
+  expect(f.console.getSummary("owner", started).favorite).toBe(true);
+  expect(f.console.getSummary("owner", f.sessionId).favorite).toBe(false);
+  expect(new AgentConsoleSessions(f.store, f.dispatch, f.external).getSummary("owner", started).favorite).toBe(true);
+});
+
+it("uses the most recent explicit preference when previously separate mirrors are proven equivalent", () => {
+  const f = fixture();
+  f.createDispatch("ambiguous-favorite", "native-thread", "other-node");
+  f.console.setFavorite("owner", f.sessionId, true);
+  // An explicit removal on the still independent external record must win when bound later.
+  f.console.setFavorite("owner", f.externalId, false);
+  f.db.prepare("UPDATE external_agent_sessions SET native_node_id='node' WHERE id=?").run(f.externalId);
+  expect(f.console.getSummary("owner", f.sessionId).favorite).toBe(false);
+});

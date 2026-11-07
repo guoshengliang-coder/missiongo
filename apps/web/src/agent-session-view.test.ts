@@ -194,6 +194,17 @@ describe("agent session message view", () => {
     expect(agentSessionMatches(session, "attention", "claude_code", "")).toBe(false);
   });
 
+  it("includes archived favorites while keeping regular archive and search filters independent", () => {
+    const favorite = { id: "favorite", agentKind: "codex", status: "idle", favorite: true, archivedAt: "2026-11-07", nodeName: "Fixture",
+      sessionName: "Key conversation", items: [], unread: false, needsAttention: false } as unknown as AgentSessionSummary;
+    expect(agentSessionMatches(favorite, "favorites", "all", "key")).toBe(true);
+    expect(agentSessionMatches(favorite, "favorites", "all", "missing")).toBe(false);
+    expect(agentSessionMatches(favorite, "favorites", "claude_code", "")).toBe(false);
+    expect(agentSessionMatches({ ...favorite, favorite: false }, "favorites", "all", "")).toBe(false);
+    expect(agentSessionMatches(favorite, "all", "all", "")).toBe(false);
+    expect(agentSessionMatches(favorite, "archived", "all", "")).toBe(true);
+  });
+
   it("keeps abnormal conversations out of all while retaining them in failed", () => {
     const base = {
       id: "session-1", agentKind: "codex", needsAttention: false, unread: true,

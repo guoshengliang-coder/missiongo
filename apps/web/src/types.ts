@@ -596,6 +596,7 @@ export interface AgentHistoryPage {
 }
 
 export interface AgentSessionSummary {
+  readonly favorite?: boolean;
   readonly sessionPurpose?: "integration";
   readonly waitingForPermission?: boolean;
   readonly productId?: string;
@@ -655,6 +656,8 @@ export interface AgentSessionSummary {
     readonly model?: string;
     readonly revision?: string;
     readonly dismissed?: boolean;
+    readonly deliveryOnly?: boolean;
+    readonly handledByDelivery?: boolean;
   };
   readonly planApprovalPending?: boolean;
   readonly needsAttention: boolean;

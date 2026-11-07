@@ -109,7 +109,7 @@ export function formatAgentMessageTime(value: string, locale: string, now = new 
   return `${calendarDate} ${time}`;
 }
 
-export type AgentSessionFilter = "unread" | "attention" | "active" | "all" | "failed" | "archived";
+export type AgentSessionFilter = "unread" | "attention" | "active" | "all" | "failed" | "archived" | "favorites";
 
 export type AgentAssociationFilter = "all" | "unlinked" | "linked" | "integration";
 export type AgentKindFilter = "all" | AgentKind;
@@ -199,6 +199,7 @@ type FilterableAgentSession = Pick<
   | "id"
   | "agentKind"
   | "archivedAt"
+  | "favorite"
   | "status"
   | "command"
   | "needsAttention"
@@ -299,7 +300,8 @@ export function agentSessionMatches(
   if (association !== "all" && agentSessionCategory(session) !== association) return false;
   if (filter === "archived") {
     if (!session.archivedAt) return false;
-  } else if (session.archivedAt) return false;
+  } else if (filter !== "favorites" && session.archivedAt) return false;
+  if (filter === "favorites" && !session.favorite) return false;
   if (agentFilter !== "all" && session.agentKind !== agentFilter) return false;
   if (filter === "attention" && !session.needsAttention) return false;
   if (filter === "unread" && !sessionCountsAsUnread(session)) return false;

@@ -607,7 +607,10 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-console-bulk-result { margin: 0 12px 10px; padding: 8px 10px; color: var(--accent-text); background: var(--accent-bg); border-radius: var(--radius-md); font-size: var(--text-xs); line-height: 1.45; }
 .agent-console-session-list { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; border-top: 1px solid var(--line-soft); }
 .agent-console-session-list > .inline-error { margin: 12px; }
-.agent-console-session-row { position: relative; display: flex; border-bottom: 1px solid var(--line-soft); transition: background 140ms ease, box-shadow 140ms ease; }
+.agent-console-session-row { position: relative; display: flex; flex-wrap: wrap; border-bottom: 1px solid var(--line-soft); transition: background 140ms ease, box-shadow 140ms ease; }
+.agent-console-favorite-control { flex: 0 0 44px; display: flex; flex-direction: column; align-items: center; padding-top: 8px; }
+.agent-console-favorite-error { flex: 0 0 100%; margin: 0; padding: 8px 12px; font-size: var(--text-xs); }
+.agent-session-favorite[aria-pressed="true"] { color: var(--accent-text); background: var(--accent-bg); }
 .agent-console-session-row.bulk-selecting.selected { background: var(--accent-bg); box-shadow: inset 3px 0 0 var(--mint-dark); }
 .agent-console-session-select { width: 40px; flex: 0 0 40px; display: grid; place-items: start center; padding-top: 16px; background: transparent; cursor: pointer; }
 .agent-console-session-row.bulk-selecting .agent-console-session { cursor: pointer; }

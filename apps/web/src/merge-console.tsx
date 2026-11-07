@@ -63,7 +63,8 @@ export function DeliveryCards({productId,sessionId,blocked=false}:{productId:str
   const mutation=useMutation({mutationFn:({d,decision}:{d:Delivery;decision:"confirm"|"withdraw"})=>
     post(`/api/v1/merge-deliveries/${d.id}/decision`,{revision:d.revision,decision}),
     onSettled:async(_data,_error,input)=>{
-      await client.invalidateQueries({queryKey:["merge-deliveries",productId]});
+      await Promise.all([client.invalidateQueries({queryKey:["merge-deliveries",productId]}),
+        client.invalidateQueries({queryKey:["agent-sessions"]})]);
       locks.current.delete(input.d.id);
     }});
   const choose=(d:Delivery,decision:"confirm"|"withdraw")=>{

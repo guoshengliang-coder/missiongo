@@ -63,7 +63,7 @@ for (const width of [320,1440]) for (const theme of ["light","dark"] as const) f
   const id="delivery-session",stamp=new Date().toISOString();let state="proposed",decisions=0,blocker:string|undefined,reconfirmation=false,rejectSend=true;
   const summary={id,agentSessionId:id,dispatchId:"delivery-dispatch",agentKind:"codex",status:"idle",updatedAt:stamp,createdAt:stamp,
     nodeName:"Fixture",nodeId:"fixture-node",nodeConnectionState:"online",mode:"auto",dispatchStatus:"launched",activities:[],settings:{},unread:false,
-    canReply:true,canRetry:false,canStop:false,canArchive:true,attention:{state:"needed",kind:width===320?"action":"approval",reason:"Review completed delivery",revision:"attention-turn"},needsAttention:true,items:[{key:item.key,title:item.title,productId:product.id}]};
+    canReply:true,canRetry:false,canStop:false,canArchive:true,attention:{state:"needed",kind:"instruction",reason:"Review completed delivery",revision:"attention-turn",handledByDelivery:true},needsAttention:false,items:[{key:item.key,title:item.title,productId:product.id}]};
   await page.route("**/api/v1/agent-sessions**",route=>{
     if(route.request().method()==="POST" && new URL(route.request().url()).pathname.endsWith("/commands")) {
       if(rejectSend)return route.fulfill({status:503,json:{title:"Synthetic rejected send"}});
@@ -120,10 +120,10 @@ for (const width of [320,1440]) for (const theme of ["light","dark"] as const) f
   if(surface==="console") {
     await page.reload();await expect(card).toHaveCount(0);
     await expect(page.locator(".agent-console-attention-banner")).toHaveCount(0);
-    summary.attention.kind="answer";await page.reload();
+    summary.attention.kind="answer";summary.attention.handledByDelivery=false;summary.needsAttention=true;await page.reload();
     await expect(page.locator(".agent-console-attention-banner")).toBeVisible();
     await expect(card).toHaveCount(0);
-    summary.attention.kind="action";
+    summary.attention.kind="instruction";summary.attention.handledByDelivery=true;summary.needsAttention=false;
   }
   state="confirmed";
   const listUrl=`/?product=${product.id}${surface==="console"?"&console=agent":""}`;

@@ -47,6 +47,7 @@ describe("Agent console navigation", () => {
     expect(agentConsoleFilterFromUrl(new URL("https://example.test/?console=agent&consoleFilter=bogus"))).toBeNull();
     expect(agentConsoleFilterFromUrl(new URL("https://example.test/?consoleFilter=attention"))).toBeNull();
     expect(agentConsoleFilterFromUrl(new URL("https://example.test/?console=agent&consoleFilter=unread"))).toBe("unread");
+    expect(agentConsoleFilterFromUrl(new URL("https://example.test/?console=agent&consoleFilter=favorites"))).toBe("favorites");
   });
 
   it("ignores a session parameter outside the console", () => {
