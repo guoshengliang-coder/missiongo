@@ -137,5 +137,6 @@ test("pending replies keep archiving available; read-only failures show the reas
   await page.reload();
   await expect(recovery).toContainText("原 Agent 客户端");
   await expect(recovery).toContainText("权限");
-  await expect(recovery.getByRole("button")).toHaveCount(0);
+  await expect(recovery.getByRole("button", { name: "归档", exact: true })).toHaveCount(0);
+  await expect(recovery.getByRole("button", { name: "收藏", exact: true })).toBeVisible();
 });
