@@ -103,6 +103,9 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
   const [selected,setSelected]=useState<Record<string,string>>({});
   const [config,setConfig]=useState<FreeSessionConfig>();
   const [publish,setPublish]=useState(false);
+  const [step,setStep]=useState<1|2>(1);
+  const [detail,setDetail]=useState<Delivery>();
+  const initialConfig=useRef<string | undefined>(undefined);
   const frozen=useRef<{requestKey:string;selection:{id:string;revision:string}[];config:FreeSessionConfig;publish:boolean} | undefined>(undefined);
   const initialized=useRef(false);
   useEffect(()=>{
@@ -118,6 +121,7 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
   },[nodes.data,defaults.data,productId]);
   const node=nodes.data?.nodes.find(n=>n.id===config?.nodeId);
   const models=config?agentModels(node,config.agentKind):undefined;
+  useEffect(()=>{if(config&&initialConfig.current===undefined)initialConfig.current=JSON.stringify(config);},[config]);
   const start=useMutation({mutationFn:async()=>{
     if(!config)throw new Error("Missing configuration");
     frozen.current??={requestKey:crypto.randomUUID(),selection:Object.entries(selected).map(([id,revision])=>({id,revision})),config,publish};
@@ -134,29 +138,35 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
   const locked=start.isPending||openSession.isPending||Boolean(frozen.current);
   const active=createdBatch??query.data?.batches.find(b=>b.state==="active");
   const candidates=query.data?.deliveries.filter(d=>d.state==="confirmed")??[];
+  const selectable=candidates.filter(d=>d.blocker!=="changed");
+  const allSelected=selectable.length>0&&selectable.every(d=>selected[d.id]===d.revision);
+  const selectedCount=Object.keys(selected).length;
+  const itemCount=new Set(candidates.filter(d=>selected[d.id]).flatMap(d=>d.itemKeys)).size;
   const selectedValid=Object.entries(selected).every(([id,revision])=>candidates.some(d=>d.id===id&&d.revision===revision&&d.blocker!=="changed"));
-  return <Modal title={t("mergePending")} subtitle={t("mergeSelectHelp")} onClose={onClose} wide scrolls
-    dirty={!createdBatch&&(Boolean(Object.keys(selected).length)||publish)} pending={start.isPending||openSession.isPending}>
+  const detailCurrent=detail?query.data?.deliveries.find(d=>d.id===detail.id):undefined;
+  const configValid=Boolean(config&&node?.online&&node.supportsFreeSessions&&node.repos.some(r=>r.productId===productId)&&node.agents.some(a=>a.kind===config.agentKind&&a.ready!==false));
+  return <><Modal title={t("mergePending")} subtitle={t("mergeSelectHelp")} onClose={onClose} wide scrolls
+    dirty={!createdBatch&&(Boolean(selectedCount)||publish||Boolean(initialConfig.current&&JSON.stringify(config)!==initialConfig.current))} pending={start.isPending||openSession.isPending}>
     {close=><div className="merge-dialog">
+      <ol className="merge-steps" aria-label={t("mergeSteps")}><li aria-current={step===1?"step":undefined}>{t("mergeStepSelect")}</li><li aria-current={step===2?"step":undefined}>{t("mergeStepConfigure")}</li></ol>
       {query.isPending&&<p role="status">{t("mergeLoading")}</p>}
       {query.isError&&<p role="alert" className="inline-error">{t("mergeLoadError")} <button type="button" className="secondary-button" onClick={()=>void query.refetch()}>{t("retry")}</button></p>}
       {openSession.isPending&&<p role="status">{t("agentSessionLoading")}</p>}
-      {openSession.isError&&<p role="alert" className="inline-error">{t("mergeSessionOpenError")} <button type="button" className="secondary-button"
-        onClick={()=>openSession.mutate(openSession.variables!)}>{t("retry")}</button></p>}
-      {active&&<section className="merge-delivery-card"><strong>{t("mergeActive")}</strong>
-        <p>{t("mergeActiveHelp")}</p><IntegrationProgress batch={active}/><button type="button" className="secondary-button" disabled={openSession.isPending} onClick={()=>openSession.mutate(active.sessionId)}>{t("mergeOpenSession")}</button></section>}
-      {query.isSuccess&&!candidates.length&&!active&&<p>{t("mergeEmpty")}</p>}
+      {openSession.isError&&<p role="alert" className="inline-error">{t("mergeSessionOpenError")} <button type="button" className="secondary-button" onClick={()=>openSession.mutate(openSession.variables!)}>{t("retry")}</button></p>}
+      {active&&<p role="status" className="merge-active-notice">{t("mergeActive")} · {t("mergeActiveHelp")} <button type="button" className="text-button" disabled={openSession.isPending} onClick={()=>openSession.mutate(active.sessionId)}>{t("mergeOpenSession")}</button></p>}
+      <div hidden={step!==1} className="merge-selection-step">
+      {query.isSuccess&&!candidates.length&&<p>{t("mergeEmpty")}</p>}
+      {candidates.length>0&&<div className="merge-selection-toolbar"><button type="button" className="secondary-button" disabled={locked||!selectable.length} onClick={()=>setSelected(allSelected?{}:Object.fromEntries(selectable.map(d=>[d.id,d.revision])))}>{t(allSelected?"mergeDeselectAll":"mergeSelectAll")}</button><span>{t("mergeSelectionHelp")}</span></div>}
       <div className="merge-list">{candidates.map(d=><div className="merge-row" key={d.id}>
-        <label><input type="checkbox" checked={Boolean(selected[d.id])} disabled={locked||Boolean(active)||(d.blocker==="changed"&&!selected[d.id])}
+        <label><input type="checkbox" checked={Boolean(selected[d.id])} disabled={locked||(d.blocker==="changed"&&!selected[d.id])}
           onChange={e=>setSelected(prev=>{const next={...prev};if(e.target.checked)next[d.id]=d.revision;else delete next[d.id];return next;})}/>
-          <span><strong>{d.itemKeys.join(" · ")} · {d.summary}</strong><small>{d.requiredArtifacts.join(" / ") || d.noReleaseReason} · {t(checkLabel(d.blocker))}</small></span></label>
-        <details><summary>{t("mergeDetails")}</summary><p>{d.validation}</p><p><code>{d.head}</code></p>
-          <p>{formatTime(d.evidence.checkedAt)} · {d.evidence.source}</p>
-          <a href={d.pullRequestUrl} target="_blank" rel="noreferrer">{t("mergeViewPR")}</a>{" · "}
-          <button type="button" className="text-button" disabled={openSession.isPending} onClick={()=>openSession.mutate(d.sessionId)}>{t("mergeOpenSource")}</button>
-          {d.blocker&&<p>{t(d.blocker==="changed"?"mergeChanged":"mergeNeedsCheckHelp")}</p>}
-        </details>
+          <span><strong>{d.summary}</strong><small>{d.itemKeys.join(" · ")}</small><small>{t("mergeAffected")}: {d.requiredArtifacts.map(a=>a==="web"?"Web":a==="macosApp"?"macOS":a==="androidApp"?"Android":a).join(" / ") || d.noReleaseReason} · {t(checkLabel(d.blocker))}</small></span></label>
+        <button type="button" className="text-button merge-detail-button" onClick={()=>setDetail(d)}>{t("mergeDetails")}</button>
       </div>)}</div>
+      </div>
+      {!createdBatch&&!selectedValid&&<div role="alert" className="inline-error">{t("mergeSelectionChanged")} <button type="button" className="secondary-button" disabled={locked} onClick={()=>{setSelected(prev=>Object.fromEntries(Object.entries(prev).filter(([id,revision])=>selectable.some(d=>d.id===id&&d.revision===revision))));setStep(1);}}>{t("mergeReviewSelection")}</button></div>}
+      {step===2&&<div className="merge-configuration-step">
+      <p>{t("mergeSelected",{count:selectedCount,items:itemCount})}</p>
       <p>{t("integrationAuthorization")}</p>
       <section className="merge-config"><strong>{t("mergeExecutor")}</strong><p>{t("mergeExecutorHelp")}</p>
         <div className="merge-config-fields">
@@ -171,19 +181,38 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
             setConfig({productId,nodeId:config.nodeId,agentKind:kind,mode:defaultAgentMode(kind,defaults.data?.agents[kind]?.mode,a?.modes)});
           }}><option value="">{t("mergeChoose")}</option>{node?.agents.map(a=><option key={a.kind} value={a.kind} disabled={a.ready===false}>{a.kind}</option>)}</Select></label>
         </div>
-        {config&&<AgentSettingsControls agentKind={config.agentKind} modes={node?.agents.find(a=>a.kind===config.agentKind)?.modes} models={models}
+        {config&&<div className="merge-agent-settings agent-session-quick-settings"><AgentSettingsControls agentKind={config.agentKind} modes={node?.agents.find(a=>a.kind===config.agentKind)?.modes} models={models}
           mode={config.mode} model={config.model??""} effort={config.effort??""} allowLocalDefaults busy={locked} canChange={()=>!locked}
-          onChange={change=>{const next={...config,...change};const reconciled=reconcileEffort(models,next);const {model:_m,effort:_e,...base}=next;setConfig({...base,...reconciled});}}/>}
+          onChange={change=>{const next={...config,...change};const reconciled=reconcileEffort(models,next);const {model:_m,effort:_e,...base}=next;setConfig({...base,...reconciled});}}/></div>}
       </section>
       <label className="merge-publish"><input type="checkbox" checked={publish} disabled={locked} onChange={e=>setPublish(e.target.checked)}/><span>{t("mergePublish")}<small>{t("mergePublishHelp")}</small></span></label>
+      </div>}
       {start.isError&&<p role="alert" className="inline-error">{start.error instanceof ApiError && start.error.status<500 ? start.error.message : t("mergeStartError")}</p>}
-      <div className="form-footer merge-footer"><span>{t("mergeSelected",{count:Object.keys(selected).length})}</span>
+      <div className="form-footer merge-footer"><span>{t("mergeSelected",{count:selectedCount,items:itemCount})}</span>
         <button type="button" className="secondary-button" disabled={start.isPending||openSession.isPending} onClick={close}>{t("cancel")}</button>
-        <button type="button" className="primary-button" disabled={start.isPending||Boolean(active)||!config||!node?.online||!node.supportsFreeSessions||!Object.keys(selected).length||(!frozen.current&&!selectedValid)}
-          onClick={()=>start.mutate()}>{t(start.isError&&frozen.current?"mergeRetry":"mergeStart",{count:Object.keys(selected).length})}</button>
+        {step===2&&<button type="button" className="secondary-button" disabled={locked} onClick={()=>setStep(1)}>{t("mergePrevious")}</button>}
+        {step===1?<button type="button" className="primary-button" disabled={locked||!selectedCount||!selectedValid||query.isError} onClick={()=>setStep(2)}>{t("mergeNext")}</button>:
+        <button type="button" className="primary-button" disabled={start.isPending||openSession.isPending||Boolean(active)||(!frozen.current&&(!configValid||!selectedCount||!selectedValid||query.isError))}
+          onClick={()=>start.mutate()}>{t(start.isError&&frozen.current?"mergeRetry":"mergeStart",{count:selectedCount})}</button>}
+
       </div>
     </div>}
-  </Modal>;
+  </Modal>
+    {detail&&<Modal title={t("mergeDetails")} subtitle={detail.itemKeys.join(" · ")} onClose={()=>setDetail(undefined)} pending={openSession.isPending} wide scrolls>
+      <div className="merge-delivery-detail">
+        <button type="button" className="secondary-button" data-initial-focus onClick={()=>setDetail(undefined)}>{t("mergeBackToSelection")}</button>
+        <h3>{(detailCurrent??detail).summary}</h3>
+        {openSession.isError&&<p role="alert" className="inline-error">{t("mergeSessionOpenError")} <button type="button" className="secondary-button" onClick={()=>openSession.mutate(openSession.variables!)}>{t("retry")}</button></p>}
+        {(!detailCurrent||detailCurrent.revision!==detail.revision)&&<p role="alert" className="inline-error">{t("mergeSelectionChanged")}</p>}
+        <p>{(detailCurrent??detail).validation}</p>
+        <p>{t(checkLabel((detailCurrent??detail).blocker))}</p><p>{t("mergeNeedsCheckHelp")}</p>
+        <p>{t("mergeCommit")}: <code>{(detailCurrent??detail).head}</code></p>
+        <p>{t("mergeChecked")}: {formatTime((detailCurrent??detail).evidence.checkedAt)} · {(detailCurrent??detail).evidence.source}</p>
+        <a href={(detailCurrent??detail).pullRequestUrl} target="_blank" rel="noreferrer">{t("mergeViewPR")}</a>
+        <button type="button" className="secondary-button" disabled={openSession.isPending} onClick={()=>openSession.mutate(detail.sessionId)}>{t("mergeOpenSource")}</button>
+      </div>
+    </Modal>}
+  </>;
 }
 
 function IntegrationProgress({batch}:{batch:Batch}) {
