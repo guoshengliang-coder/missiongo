@@ -1738,7 +1738,11 @@ export class AgentSessionStore {
     // on every list poll. A failed empty snapshot retains the last known state.
     const permissionState = ["claude_code", "opencode"].includes(session.agent_kind) && (!input.error || input.messages.length)
       ? { waitingForPermission: hasPendingPermissionQuestion(session.agent_kind, input.messages) } : {};
-    const turnStateJson = JSON.stringify({ ...storedTurnState, ...incomingTurnState, ...permissionState });
+    // A failed source read may synthesize turnActive=false. Keep the last
+    // trustworthy execution state so recovery of the same turn is not progress
+    // (AND-438). The unavailable status still reports the connection failure.
+    const turnStateJson = JSON.stringify(input.status === "unavailable" ? storedTurnState
+      : { ...storedTurnState, ...incomingTurnState, ...permissionState });
     const sourceActivityAt = normalizedSourceTimestamp(input.activityAt, now, "activityAt");
     const error = storedSessionError(input.error, input.status === "failed" ? input.failure : undefined);
     const sessionUrl = input.sessionUrl?.trim();

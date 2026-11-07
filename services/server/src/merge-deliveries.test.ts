@@ -103,11 +103,32 @@ describe("AND-423 explicit merge deliveries",()=>{
     const f=await prepared();
     f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
     new AgentSessionStore(f.store.database).enqueue(f.owner.id,f.projectSessionId,"Continue changing this feature",[]);
-    expect(f.merges.list(f.item.productId,f.owner.id)[0]?.blocker).toBe("changed");
+    expect(f.merges.list(f.item.productId,f.owner.id)).toEqual([]);
     expect(()=>f.merges.start(f.owner.id,randomUUID(),[{id:f.d.id,revision:f.d.revision}],f.config,false)).toThrow();
     const g=await prepared();
     g.merges.decide(g.owner.id,g.d.id,g.d.revision,"confirm");
     expect(g.merges.refresh(g.owner.id,"original-client",g.identity,g.d.id,{...g.input.evidence,head:"c".repeat(40)}).state).toBe("withdrawn");
+  });
+  it("AND-446 preserves declined attention only for its input turn and reoffers explicitly",async()=>{
+    const f=await prepared();
+    expect(f.d.reconfirmation).toBe(false);
+    expect(f.merges.attentionSessionIds(f.item.productId,f.owner.id)).toEqual([f.projectSessionId]);
+    expect(f.merges.attentionSessionIds(f.item.productId,f.other.id)).toEqual([]);
+    f.merges.decide(f.owner.id,f.d.id,f.d.revision,"withdraw");
+    expect(f.merges.list(f.item.productId,f.owner.id)).toEqual([]);
+    expect(f.merges.attentionSessionIds(f.item.productId,f.owner.id)).toEqual([f.projectSessionId]);
+    new AgentSessionStore(f.store.database).enqueue(f.owner.id,f.projectSessionId,"Ordinary conversation",[]);
+    expect(f.merges.attentionSessionIds(f.item.productId,f.owner.id)).toEqual([]);
+    const again=f.merges.propose(f.owner.id,"original-client",f.identity,"offer-again",f.input);
+    expect(again).toMatchObject({state:"proposed",reconfirmation:true});
+    expect(f.merges.list(f.item.productId,f.owner.id)).toHaveLength(1);
+    expect(()=>f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm")).toThrow();
+    expect(f.merges.decide(f.owner.id,again.id,again.revision,"confirm").state).toBe("confirmed");
+  });
+  it("AND-446 leaves a confirmed offer intact when a new message is rejected",async()=>{
+    const f=await prepared();f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
+    expect(()=>new AgentSessionStore(f.store.database).enqueue(f.other.id,f.projectSessionId,"Rejected input",[])).toThrow();
+    expect(f.merges.list(f.item.productId,f.owner.id)[0]?.state).toBe("confirmed");
   });
   it("serializes batches, retries the same reservation, and never unlocks missing outcomes",async()=>{
     const f=await prepared();f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
@@ -557,6 +578,7 @@ describe("AND-439 batch reconciliation",()=>{
     const f=await recoveryFixture({publish:true});f.merged();
     f.store.transitionWorkItem({itemKey:f.item.key,actor:"human",to:"pending_verification",reason:"manual_override",note:"Human move",attribution:{accountId:config.id}});
     expect(()=>f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id)).toThrow(/发布凭据/);
+    expect(f.merges.batches(f.item.productId,f.owner.id)[0]!.presentation.entries[f.d.id]!.publication).not.toBe("published");
   });
   it("does not let later conversation input block an independently published unchanged delivery",async()=>{
     const f=await recoveryFixture({publish:true});f.merged();
@@ -572,6 +594,9 @@ describe("AND-439 batch reconciliation",()=>{
     expect(f.store.getTimeline(f.item.key)).toEqual(before);
     f.store.transitionWorkItem({itemKey:f.item.key,actor:"human",to:"ready",reason:"verification_failed",note:"New rework",attribution:{accountId:config.id}});
     expect(f.preview().entries[0]?.items[0]?.blocker).toBeTruthy();
+    const display=f.merges.batches(f.item.productId,f.owner.id).find(b=>b.id===f.b.id)!.presentation.entries[f.d.id]!;
+    expect(display.publication).toBe("published");
+    expect(display.releases).toMatchObject([{artifact:"web",version:"test",sourceCommit:"f".repeat(40)}]);
   });
   it("closes the original external-merge batch after supplementing a manually advanced item",async()=>{
     const f=await recoveryFixture({publish:true,artifacts:["web","androidApp"]});

@@ -1,5 +1,5 @@
 .merge-entry { min-height: 44px; flex-shrink: 0; }
-.merge-delivery-cards, .merge-dialog { display: grid; gap: 16px; }
+.merge-dialog { display: grid; gap: 16px; }
 .merge-delivery-card { background: var(--surface-strong); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 16px; font-size: var(--text-base); overflow-wrap: anywhere; }
 .merge-delivery-card p { margin: 8px 0; }
 .merge-delivery-card small, .merge-row small, .merge-publish small { display: block; color: var(--muted); font-size: var(--text-sm); }
@@ -23,4 +23,84 @@
 }
 
 .merge-row input[type="checkbox"], .merge-publish input[type="checkbox"] { width: 18px; min-width: 18px; height: 18px; margin: 0; accent-color: var(--mint-dark); }
-.merge-config > .agent-settings-controls { margin-top: 12px; }
+.integration-modal .modal.wide.scrolls { width: min(760px, 100%); height: min(760px, calc(100vh - 36px)); height: min(760px, calc(100dvh - 36px)); overflow: hidden; display: flex; flex-direction: column; }
+.integration-modal .modal-content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.integration-modal .modal > header { flex-shrink: 0; }
+.integration-modal .modal-fields { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+.integration-modal .integration-progress { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.integration-modal .integration-screen { flex: 1; min-height: 0; max-height: none; }
+.integration-progress { min-width: 0; font-size: var(--text-base); overflow-wrap: anywhere; container-type: inline-size; }
+.integration-screen { max-height: 65vh; overflow-y: auto; overscroll-behavior: contain; padding: 0 2px 12px; }
+.integration-screen[hidden] { display: none; }
+.integration-outcomes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+.integration-outcomes > div { display: grid; gap: 6px; padding: 16px; background: var(--surface-sunken); border-radius: var(--radius-md); }
+.integration-outcomes strong { font-size: var(--text-xl); }
+.integration-progress [data-outcome="merge"][data-complete="true"] { background: var(--integration-merged-bg); color: var(--integration-merged-fg); }
+.integration-progress [data-outcome="publication"][data-complete="true"] { background: var(--integration-published-bg); color: var(--integration-published-fg); }
+.integration-outcome-label { display: inline-flex; align-items: center; gap: 6px; }
+.integration-outcome-label svg { flex-shrink: 0; }
+.integration-note { color: var(--muted); font-size: var(--text-sm); }
+.integration-screen > h3 { margin: 24px 0 12px; font-size: var(--text-lg); }
+.integration-groups { border-top: 1px solid var(--line); }
+.integration-group, .integration-drill { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 44px; border: 0; border-bottom: 1px solid var(--line); padding: 16px 4px; background: var(--surface-strong); color: var(--ink); text-align: left; cursor: pointer; font-size: var(--text-base); }
+.integration-group-copy { min-width: 0; flex: 1; }
+.integration-group-copy strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.integration-group small, .integration-events small { display: block; font-size: var(--text-sm); color: var(--muted); margin-top: 4px; }
+.integration-group-state { display: grid; gap: 4px; flex-shrink: 0; font-size: var(--text-sm); }
+.integration-group-state span, .integration-statuses span { padding: 3px 6px; border-radius: var(--radius-xs); }
+.integration-group > svg, .integration-drill > svg { flex-shrink: 0; }
+.integration-drill { justify-content: space-between; }
+.integration-back { position: sticky; top: 0; z-index: 1; background: var(--surface-strong); display: flex; align-items: center; gap: 8px; min-height: 44px; margin-bottom: 16px; }
+.integration-statuses { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; font-size: var(--text-sm); }
+.integration-facts { display: grid; grid-template-columns: minmax(64px, auto) minmax(0, 1fr); gap: 16px; margin: 24px 0; }
+.integration-facts dt { color: var(--muted); }
+.integration-facts dd { margin: 0; }
+.integration-facts ul { margin: 0; padding-inline-start: 18px; }
+.integration-attention { padding: 12px; border-radius: var(--radius-md); background: var(--warn-bg); color: var(--warn-text); }
+.integration-events { padding-inline-start: 24px; }
+.integration-events li { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.integration-event-summary { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.integration-group-title { position: sticky; top: 60px; z-index: 1; background: var(--surface-strong); }
+.integration-screen > section { margin: 20px 0; }
+.integration-screen h4 { font-size: var(--text-base); margin: 12px 0 8px; }
+.integration-screen p { white-space: pre-wrap; }
+.integration-screen code { overflow-wrap: anywhere; }
+@media (hover: hover) {
+  .integration-group:hover, .integration-drill:hover { background: var(--row-hover); }
+}
+@container (max-width: 420px) {
+  .integration-outcomes { grid-template-columns: minmax(0, 1fr); }
+  .integration-outcomes > div { display: flex; align-items: center; justify-content: space-between; padding: 12px; gap: 12px; }
+  .integration-outcomes strong { font-size: var(--text-lg); }
+}
+
+/* AND-446: one compact decision/status surface, shared by both chat entries. */
+.merge-delivery-notices { display: grid; gap: 10px; }
+.merge-delivery-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 16px; border: 1px solid var(--warn-line); border-left: 3px solid var(--warn-text); border-radius: var(--radius-md); background: var(--warn-bg); color: var(--warn-text); font-size: var(--text-base); overflow-wrap: anywhere; }
+.merge-delivery-notice.confirmed { background: var(--accent-bg); border-color: var(--accent-line); border-left-color: var(--accent-text); color: var(--accent-text); }
+.merge-delivery-icon { display: flex; align-items: center; justify-content: center; flex: 0 0 32px; min-height: 32px; border-radius: var(--radius-sm); background: var(--warn-line); }
+.merge-delivery-notice.confirmed .merge-delivery-icon { background: var(--accent-line); }
+.merge-delivery-copy { flex: 1; min-width: 0; }
+.merge-delivery-copy strong { font-weight: 700; }
+.merge-delivery-copy p { margin: 4px 0 0; font-size: var(--text-sm); }
+.merge-delivery-choices { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+@media (max-width: 520px) {
+  .merge-delivery-notice { padding: 12px; }
+  .merge-delivery-choices { flex-basis: 100%; justify-content: flex-end; }
+}
+
+/* Settings remain the shared AgentSettingsControls / Select, with a real layout gap. */
+.merge-config { display: grid; gap: 12px; }
+.merge-agent-settings { margin-top: 12px; }
+.merge-selection-step, .merge-configuration-step, .merge-delivery-detail { display: grid; gap: 16px; }
+.merge-selection-step[hidden], .merge-configuration-step[hidden] { display: none; }
+.merge-steps { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 0; padding: 0 0 16px; list-style: none; border-bottom: 1px solid var(--line); color: var(--muted); font-size: var(--text-base); }
+.merge-steps [aria-current="step"] { color: var(--ink); font-weight: 600; }
+.merge-selection-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; font-size: var(--text-sm); color: var(--muted); }
+.merge-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; }
+.merge-row label { flex: 1 1 260px; min-width: 0; }
+.merge-detail-button { min-height: 44px; flex-shrink: 0; }
+.merge-config-fields label { display: grid; gap: 8px; min-width: 0; }
+.merge-delivery-detail { overflow-wrap: anywhere; }
+.merge-delivery-detail > button { justify-self: start; }
+.merge-active-notice { font-size: var(--text-md); }

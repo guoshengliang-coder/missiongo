@@ -68,6 +68,9 @@
   --status-hold-fg: #8a5b11; --status-hold-bg: #fff0cf;
   --status-verify-fg: #7a3d9d; --status-verify-bg: #f2e4fb;
   --status-done-fg: #377248; --status-done-bg: #e3f4e7;
+  /* Integration outcomes: the approved blue merge / purple publication palette. */
+  --integration-merged-fg: #3454a5; --integration-merged-bg: #edf2ff;
+  --integration-published-fg: #6947a0; --integration-published-bg: #f1edfc;
   --status-cancelled-fg: #8a4548; --status-cancelled-bg: #f9e3e4;
   --type-idea-fg: #8f5d0b; --type-idea-bg: #fff1cd;
   --type-requirement-fg: #4e5bc7; --type-requirement-bg: #e9ebff;
@@ -215,6 +218,8 @@
   --status-hold-fg: #ecc072; --status-hold-bg: #33280f;
   --status-verify-fg: #cfa6e8; --status-verify-bg: #2c1f3a;
   --status-done-fg: #86c896; --status-done-bg: #17301e;
+  --integration-merged-fg: #aec1ff; --integration-merged-bg: #1f2943;
+  --integration-published-fg: #d4b4f4; --integration-published-bg: #2e2342;
   --status-cancelled-fg: #ef9a9d; --status-cancelled-bg: #331e20;
   --type-idea-fg: #e8b866; --type-idea-bg: #33280f;
   --type-requirement-fg: #a3aef5; --type-requirement-bg: #222a45;
@@ -698,8 +703,10 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-console-message { max-width: min(780px, 88%); padding: 12px 16px; background: var(--surface-strong); border: 1px solid var(--line); border-radius: var(--radius-lg); box-shadow: 0 2px 8px rgba(23,32,51,.03); }
 .agent-console-message-agent, .agent-console-message-plan { align-self: flex-start; border-top-left-radius: var(--radius-xs); }
 .agent-console-message-user { align-self: flex-end; background: var(--accent-bg); border-color: var(--accent-line); border-top-right-radius: var(--radius-xs); }
-.agent-console-message-outgoing-failed .agent-console-message-delivery,
-.agent-console-message-outgoing-delivery_unknown .agent-console-message-delivery { color: var(--danger); }
+.agent-console-outgoing { align-self: flex-end; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; min-width: 0; max-width: min(780px, 88%); }
+.agent-console-outgoing > .agent-console-message { max-width: 100%; }
+.agent-console-outgoing-failed .agent-console-message-delivery,
+.agent-console-outgoing-delivery_unknown .agent-console-message-delivery { color: var(--danger); }
 .agent-console-message-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: var(--text-xs); }
 .agent-console-message-meta small { font-size: inherit; font-weight: 750; }
 .agent-console-message-meta time { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -3342,15 +3349,10 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .agent-console-topbar-actions.has-bulk > .agent-console-topbar-more { display: block; }
 }
 
-/* AND-371/AND-421: one delivery footer for every console. Its hidden sizer
-   renders the widest state, so switching queued → sending → delivering only
-   swaps the words and the action; the message bubble never moves or resizes. */
-.agent-reply-feedback { display: inline-grid; margin-top: 8px; color: var(--muted); font-size: var(--text-xs); line-height: 1.6; }
-.agent-reply-feedback > * { grid-area: 1 / 1; }
-.agent-reply-current, .agent-reply-variant { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+/* AND-441: receipts size themselves below the bubble, without hidden controls. */
+.agent-reply-feedback { max-width: 100%; color: var(--muted); font-size: var(--text-xs); line-height: 1.6; }
+.agent-reply-current { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 .agent-reply-state { display: inline-flex; align-items: center; gap: 4px; }
-.agent-reply-sizer { display: inline-grid; visibility: hidden; pointer-events: none; user-select: none; }
-.agent-reply-icon-slot { flex: 0 0 12px; width: 12px; height: 12px; }
 .agent-reply-edit { min-height: 28px; padding: 4px; margin: -4px; border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--accent-text-strong); font-size: var(--text-xs); font-weight: 600; line-height: 1.6; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .agent-reply-edit:disabled { cursor: wait; }
 .agent-reply-edit:active { background: var(--row-hover); }
@@ -3378,7 +3380,8 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .agent-run-details > summary:hover { border-color: var(--accent-line); }
 }
 @media (pointer: coarse) {
-  .agent-reply-edit { min-width: 44px; min-height: 44px; margin: 0; }
+  .agent-reply-current { align-items: flex-start; }
+  .agent-reply-edit { display: inline-flex; align-items: flex-start; min-width: 44px; min-height: 44px; padding-block: 0; margin: 0; }
   .agent-run-details > summary { min-height: 44px; }
   .agent-output-image-state .artifact-link { min-width: 44px; min-height: 44px; }
 }

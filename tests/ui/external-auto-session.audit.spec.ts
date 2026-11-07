@@ -23,7 +23,7 @@ for (const width of [375, 1440]) {
         ...(connection?.state !== "connected" ? { replyBlockedReason: connection ? "external_native_unavailable" : "external_progress_only" } : {}),
         settings: { mode: "external", adjustable: false }, attention: { state: "not_needed" }, needsAttention: false, waitingForReply: false, unread: false,
       });
-      const detail = (): AgentSession => ({ ...summary(), canAttach: false, messages: [{ id: "progress", sourceId: "progress", role: "agent", text: "原有处理进展保留", occurredAt: stamp }] });
+      const detail = (): AgentSession => ({ ...summary(), ...(connection?.state === "pending" ? {lastError:"节点无法连接原生控制通道，请重试。"} : {}), canAttach: false, messages: [], progressReports: [{ id: "progress", text: "原有处理进展保留", occurredAt: stamp }] });
       await page.route(/\/api\/v1\/agent-sessions(?:\/[^?]*)?(?:\?.*)?$/, async (route) => {
         const path = new URL(route.request().url()).pathname;
         if (path.endsWith("/commands")) {
@@ -44,10 +44,14 @@ for (const width of [375, 1440]) {
       await expect.poll(() => copied).toContain(summary().id);
       await expect(page.locator(".agent-console-reply textarea")).toHaveCount(0);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-      refKind = "native"; connection = { state: "pending", automatic: true };
+      refKind = "native"; connection = { state: "pending", automatic: true, waitingSince: stamp, lastSyncedAt: stamp };
       await page.reload();
       await expect(page.getByText("正在自动等待已启用的本机节点确认这条会话。连接成功后，可在这里回复原 Agent。")).toBeVisible();
       await expect(page.getByText("原有处理进展保留")).toBeVisible();
+      await expect(page.getByText("节点无法连接原生控制通道，请重试。")).toBeVisible();
+      await expect(page.getByText(/已等待 .* 分钟/)).toBeVisible();
+      await expect(page.getByTestId("agent-progress-reports")).toHaveAttribute("open", "");
+      await expect(page.getByText("暂时还没有可显示的消息。")).toHaveCount(0);
       await expect(page.locator(".agent-console-reply textarea")).toHaveCount(0);
       await page.screenshot({ path: test.info().outputPath(`auto-pending-${kind}-${width}.png`) });
       connection = { state: "connected", automatic: true, nodeId: "node", nodeName: "本机" };

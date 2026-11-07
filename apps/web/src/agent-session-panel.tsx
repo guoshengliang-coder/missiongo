@@ -1,6 +1,6 @@
 import { AgentProgressReports } from "./agent-progress-reports";
 import { permissionReplyText } from "./permission-presentation";
-import { DeliveryCards, IntegrationDetails } from "./merge-console";
+import { DeliveryCards, IntegrationDetails, invalidateSessionDeliveries } from "./merge-console";
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
 import { InlinePlanApproval, inlinePlanTranscript, currentPlan } from "./agent-plan-content";
@@ -12,7 +12,7 @@ import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, SessionStatusI
 import { MarkdownText } from "./markdown-text";
 import { AgentArtifactMarkdown } from "./agent-artifact-viewer";
 import { api } from "./api";
-import { activityLabelKey, agentSessionDetailRefetchInterval, formatAgentMessageTime, isWithdrawnCard, replyBlockedLabelKey, runWaitingLabelKey, sessionInlineError, sessionStatusDetail } from "./agent-session-view";
+import { activityLabelKey, agentSessionDetailRefetchInterval, formatAgentMessageTime, isWithdrawnCard, replyMirrorArrived, replyBlockedLabelKey, runWaitingLabelKey, sessionInlineError, sessionStatusDetail } from "./agent-session-view";
 import { hasPendingPermissionQuestion } from "@missiongo/domain";
 import { AgentSessionQuestions } from "./agent-session-questions";
 import { useI18n } from "./i18n";
@@ -83,6 +83,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
     onError: (error, _input, operation) => feedback.fail(error, operation),
     onSuccess: async (_command, _input, operation) => {
       if (!operation) return;
+      void invalidateSessionDeliveries(queryClient,operation.sessionId);
       feedback.clear(operation.sessionId);
       if (currentSessionId.current === operation.sessionId) setReply("");
       await queryClient.invalidateQueries({ queryKey: ["agent-session", operation.sessionId] });
@@ -152,7 +153,6 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                 <strong>{t("agentSessionTitle")}</strong>
                 <IntegrationDetails productId={productId} sessionId={sessionId} />
               </header>
-              <DeliveryCards productId={productId} sessionId={sessionId} />
               {history.messages.length === 0 && (
                 <p className="agent-session-muted">{t("agentSessionNoMessages")}</p>
               )}
@@ -215,7 +215,8 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
               </div>
               <AgentHistoryNotice error={session.data.lastError} />
               {inlineError && !isHistoryLimited(inlineError) && <AgentSessionError error={inlineError} onRetry={()=>void session.refetch()} />}
-              {command?.kind === "message" && (
+              {command?.kind === "message" && !(command.status === "delivered"
+                && replyMirrorArrived(command, history.messages, session.data.attachmentMessages ?? [])) && (
                 <div className={`agent-session-command agent-session-command-${command.status}`}>
                   <span>
                     {command.status === "delivery_unknown" && t("agentSessionReplyDeliveryUnknown", { agent: agentName })}
@@ -239,6 +240,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                   )}
                 </div>
               )}
+              <DeliveryCards productId={productId} sessionId={sessionId} blocked={pending || send.isPending} />
               {canReply ? (
                 <>
                   <form className="agent-session-reply" onSubmit={submit}>

@@ -58,6 +58,8 @@ for (const viewport of [
       });
       await page.goto(url());
       await expect(page.locator(".agent-console-messages .spin")).toBeVisible();
+      await expect(page.locator(".agent-run-fallback")).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "停止当前回合", exact: true })).toHaveCount(0);
       await expect(page.locator(contentCards)).toHaveCount(0);
       await expect(page.locator(".agent-console-message")).toHaveCount(0);
       await expect(page.locator(".agent-console-messages")).toHaveAttribute("aria-busy", "true");
@@ -124,6 +126,8 @@ test("first-load failure hides summary cards and offers retry", async ({ page })
   await page.goto(url());
   const error = page.locator(".agent-console-messages .inline-error");
   await expect(error).toBeVisible();
+  await expect(page.locator(".agent-run-fallback")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "停止当前回合", exact: true })).toHaveCount(0);
   await expect(page.locator(contentCards)).toHaveCount(0);
   fail = false;
   await error.getByRole("button", { name: "重试", exact: true }).click();

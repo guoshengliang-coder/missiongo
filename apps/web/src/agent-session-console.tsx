@@ -1,6 +1,6 @@
 import { AgentProgressReports } from "./agent-progress-reports";
 import { permissionReplyText } from "./permission-presentation";
-import { DeliveryCards, IntegrationDetails, MergeProgressBadge, useMergeProgress } from "./merge-console";
+import { DeliveryCards, IntegrationDetails, MergeProgressBadge, useMergeProgress, useDeliveryAttention, invalidateSessionDeliveries } from "./merge-console";
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
 import { InlinePlanApproval, inlinePlanTranscript, currentPlan, planContinuationObserved } from "./agent-plan-content";
@@ -421,6 +421,7 @@ export function AgentSessionConsole({
       }
     },
     onSuccess: (created, input) => {
+      if (!input.planApprovalRevision) void invalidateSessionDeliveries(queryClient,input.sessionId);
       feedback.clear(input.sessionId);
       if (!input.planApprovalRevision) {
         setReplyFor(input.sessionId, "");
@@ -656,6 +657,10 @@ export function AgentSessionConsole({
     || (approval.kind === "manual" && approval.status === "pending")));
   const planApproved = sessionQuery.data?.planApprovalState;
   const planContinued = planContinuationObserved(sessionQuery.data);
+  const deliveryAttention = useDeliveryAttention(selected?.productId ?? selected?.items[0]?.productId ?? productId, selected?.agentSessionId ?? selected?.id ?? "");
+  const suppressDeliveryAttention = deliveryAttention && Boolean(selected?.attention.revision)
+    && selected?.status !== "stalled" && selected?.status !== "failed"
+    && selected?.attention.kind !== "answer";
   const stalePlanAttention = Boolean(planApproved && planContinued && selected?.attention.kind === "approval");
   const showPlanApproval = !planContinued && (Boolean(planApproved || sessionQuery.data?.planApproval
       || sessionQuery.data?.planApprovalStatus?.code === "content_unavailable"));
@@ -842,7 +847,7 @@ export function AgentSessionConsole({
   const showFailureCard = conversationReady && selected?.source !== "external" && selected?.agentKind === "codex" && sessionStatus === "failed";
   const showRunDetails = Boolean(selected?.agentSessionId && sessionQuery.data
     && !(selected.source !== "external" && selected.agentKind === "codex" && sessionStatus === "failed"));
-  const stopAction = canStopCurrentTurn && (
+  const stopAction = conversationReady && canStopCurrentTurn && (
     <button
       type="button"
       className="secondary-button agent-run-stop"
@@ -1165,6 +1170,9 @@ export function AgentSessionConsole({
                         : selected.nativeConnection.state === "pending" ? "agentExternalNativePending"
                           : selected.nativeConnection.state === "disconnected" ? "agentExternalNativeDisconnected" : "agentExternalNativeUnavailable",
                       { node: selected.nativeConnection.nodeName ?? "" }) : t("agentExternalDetail")}</span>
+                      {selected.nativeConnection?.waitingSince && <span>{t("agentExternalWaitingSince", { time: formatAgentMessageTime(selected.nativeConnection.waitingSince, locale), minutes: Math.max(0, Math.floor((Date.now() - Date.parse(selected.nativeConnection.waitingSince)) / 60000)) })}</span>}
+                      {sessionQuery.data?.lastError && <span>{sessionQuery.data.lastError}</span>}
+                      {selected.nativeConnection?.lastSyncedAt && <span>{t("agentExternalLastReport", { time: formatAgentMessageTime(selected.nativeConnection.lastSyncedAt, locale) })}</span>}
                       {selected.refKind === "tracking" && <span>{t("agentExternalTracking")}</span>}
                       {selected.lastReportedAt && <span>{t("agentExternalLastReport", { time: formatAgentMessageTime(selected.lastReportedAt, locale) })}</span>}
                       <ExternalNativeConnectionPanel key={selected.id} session={selected} />
@@ -1203,7 +1211,7 @@ export function AgentSessionConsole({
                   Hermes · {sessionQuery.data.managedExecution.role} · Run {sessionQuery.data.managedExecution.runId}
                   {" · "}{sessionQuery.data.managedExecution.stageId} / {sessionQuery.data.managedExecution.generation}
                 </p>}
-                {sessionQuery.data && visibleMessages.length === 0 && !outgoing && <p className="agent-session-muted">{t("agentSessionNoMessages")}</p>}
+                {sessionQuery.data && visibleMessages.length === 0 && !sessionQuery.data.progressReports?.length && !outgoing && <p className="agent-session-muted">{t("agentSessionNoMessages")}</p>}
                 {!selected.agentSessionId && (
                   <div className="agent-console-dispatch-state">
                     <Bot size={20} />
@@ -1239,7 +1247,7 @@ export function AgentSessionConsole({
                     </article>
                   );
                 })}
-                {(!currentPlan(sessionQuery.data)?.plan || !showPlanApproval && selected.attention.kind !== "approval") && !showPermissionApproval && (showPlanApproval || !stalePlanAttention && (selected.needsAttention || selected.attention.dismissed) && selected.attention.reason) && (
+                {(!currentPlan(sessionQuery.data)?.plan || !showPlanApproval && selected.attention.kind !== "approval") && !showPermissionApproval && (!suppressDeliveryAttention || showPlanApproval) && (showPlanApproval || !stalePlanAttention && (selected.needsAttention || selected.attention.dismissed) && selected.attention.reason) && (
                   <div className={`agent-console-attention-banner ${selected.attention.dismissed ? "dismissed" : ""}${showPlanApproval ? " agent-console-attention-banner--approval" : ""}`} role="status">
                     <BellRing size={16} />
                     <details open={planContentMissing || undefined}>
@@ -1283,6 +1291,7 @@ export function AgentSessionConsole({
                   </div>
                 )}
                 {outgoing && (
+                  <div className={`agent-console-outgoing agent-console-outgoing-${outgoing.status}`}>
                   <article className={`agent-console-message agent-console-message-user agent-console-message-outgoing agent-console-message-outgoing-${outgoing.status}`}>
                     <header className="agent-console-message-meta">
                       <time dateTime={outgoing.occurredAt}>{formatAgentMessageTime(outgoing.occurredAt, locale)}</time>
@@ -1293,6 +1302,7 @@ export function AgentSessionConsole({
                     {sendingSelected && send.variables?.files.length ? <div className="agent-chat-draft-files">
                       {send.variables.files.map((file, index) => <DraftChatFile key={`${file.name}-${index}`} file={file} disabled />)}
                     </div> : null}
+                  </article>
                     <AgentReplyFeedback status={outgoing.status} cancelling={cancellingSelected}
                       onEdit={outgoing.commandId && selected.canReply ? () => cancel.mutate({ sessionId: selected.agentSessionId!, commandId: outgoing.commandId!, text: outgoing.text }) : undefined} />
                     {(outgoing.status === "failed" || outgoing.status === "delivery_unknown") && (
@@ -1329,14 +1339,14 @@ export function AgentSessionConsole({
                       )}
                     </footer>
                     )}
-                  </article>
+                  </div>
                 )}
                 <AgentHistoryNotice error={sessionQuery.data ? sessionQuery.data.lastError : selected.lastError} />
                 {showFailureCard ? (
                   <AgentSessionFailureNotice status={sessionStatus}
                     failure={sessionQuery.data ? sessionQuery.data.failure : selected.failure}
                     legacyError={sessionQuery.data ? sessionQuery.data.lastError : selected.lastError} />
-                ) : (selected.agentKind !== "codex" || (sessionStatus !== "idle" && sessionStatus !== "active"))
+                ) : selected.source !== "external" && (selected.agentKind !== "codex" || (sessionStatus !== "idle" && sessionStatus !== "active"))
                   && inlineError
                   && !isHistoryLimited(inlineError) ? (
                   <AgentSessionError error={inlineError} onRetry={()=>void sessionQuery.refetch()} />
@@ -1419,7 +1429,7 @@ export function AgentSessionConsole({
                     )}
                   </section>
                 )}
-                {conversationReady && selected && <DeliveryCards productId={selected.productId ?? selected.items[0]?.productId ?? productId} sessionId={selected.agentSessionId ?? selected.id} />}
+                {conversationReady && selected && <DeliveryCards productId={selected.productId ?? selected.items[0]?.productId ?? productId} sessionId={selected.agentSessionId ?? selected.id} blocked={pending || sendingSelected} />}
                 <div className="agent-run-status" aria-label={t("agentRunFeedback")}>
                   <AgentOperationFeedback failures={feedback.failures} sessionId={operationSessionId} command={command} />
                   <AgentStopFeedback stop={stopCommand}
@@ -1469,10 +1479,10 @@ export function AgentSessionConsole({
                 </>)}
                 </div>
                 </>}
-                {!showRunDetails && (!showFailureCard || stopAction) && <div className="agent-run-controls agent-run-fallback">
+                {conversationReady && !showRunDetails && (!showFailureCard || stopAction) && <div className="agent-run-controls agent-run-fallback">
                   {!showFailureCard && <p className={`agent-console-activity agent-console-activity-${visualStatus}`} role="status">
                     <SessionStatusIcon status={visualStatus} />
-                    {!conversationReady ? t("agentSessionLoading") : selected.archivedAt ? t("archived")
+                    {selected.archivedAt ? t("archived")
                       : !selected.agentSessionId ? t(dispatchActivityLabelKey(selected)) : statusLabel(sessionStatus, t)}
                   </p>}
                   {stopAction}

@@ -925,19 +925,17 @@ final class CodexAppServerControlTests: XCTestCase {
         XCTAssertEqual(server.params(of: "thread/read")?["threadId"] as? String, "artifact-exact")
     }
 
-    func testExternalReadRejectsUnloadedHistoryWithoutResumingIt() async throws {
+    func testExternalReadAllowsUnloadedHistoryWithoutResumingIt() async throws {
         let server = try FakeAppServer { message in
             guard let id = message["id"] else { return [] }
             let result: [String: Any] = message["method"] as? String == "thread/read"
                 ? ["thread": ["id": "external-exact", "status": ["type": "notLoaded"], "turns": []]] : [:]
             return [["jsonrpc": "2.0", "id": id, "result": result]]
         }
-        do {
-            _ = try await CodexAppServerControl(timeout: 5).readExternalThread(socketPath: server.path, threadId: "external-exact")
-            XCTFail("Reading history cannot prove the original runtime owns the session")
-        } catch { XCTAssertTrue(error.localizedDescription.contains("未在当前 Codex")) }
+        let snapshot = try await CodexAppServerControl(timeout: 5).readExternalThread(socketPath: server.path, threadId: "external-exact")
+        XCTAssertEqual(snapshot.runtimeStatus, "notLoaded")
         server.waitUntilDone()
-        XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/read"])
+        XCTAssertEqual(server.methods, ["initialize", "initialized", "thread/read", "thread/turns/list"])
     }
 
     func testExternalReplyStartsInTheLoadedRuntimeWithoutResumeOrConfigurationOverrides() async throws {
@@ -1933,6 +1931,16 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
 }
 
 final class CodexLauncherTests: XCTestCase {
+    func testUnloadedExternalHistoryIsReportedWithoutSendingAQueuedReply() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = CodexThreadSnapshot(status: "idle", messages: [AgentSessionMessage(sourceId: "answer", role: "agent", text: "History")], runtimeStatus: "notLoaded")
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(), location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        let report = try await launcher.synchronize(NodeAgentSession(id: "s", sessionRef: "thread-1", status: "idle", command: AgentSessionCommand(id: "reply", text: "Continue"), externalBindingGeneration: 1))
+        XCTAssertEqual(report.status, "unavailable")
+        XCTAssertEqual(report.messages.first?.text, "History")
+        XCTAssertEqual(report.commandStatus, "failed")
+    }
+
     func testRestartNeverReplaysAJournaledExactTurnStop() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

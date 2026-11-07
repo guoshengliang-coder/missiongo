@@ -60,7 +60,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     // Start with a fresh loaded window, then check receipt → actual mirror.
     withinWindow = true;
     await page.reload();
-    await expect(outgoing).toContainText("已送达，待执行");
+    await expect(page.locator(".agent-console-outgoing")).toContainText("已送达，待执行");
     await reply.fill("Preserve while polling");
     mirror = true;
     await advanceSessionDetailPoll(page);
