@@ -1,6 +1,6 @@
 import { AgentProgressReports } from "./agent-progress-reports";
 import { permissionReplyText } from "./permission-presentation";
-import { DeliveryCards, MergeProgressBadge, useMergeProgress } from "./merge-console";
+import { DeliveryCards, IntegrationDetails, MergeProgressBadge, useMergeProgress } from "./merge-console";
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
 import { InlinePlanApproval, inlinePlanTranscript, currentPlan, planContinuationObserved } from "./agent-plan-content";
@@ -1130,6 +1130,7 @@ export function AgentSessionConsole({
                 </div>}
               </div>
               <div className="agent-console-toolbar">
+                <IntegrationDetails productId={selected.productId ?? selected.items[0]?.productId ?? productId} sessionId={selected.agentSessionId ?? selected.id} />
                 {!showRecovery && sessionActions}
               </div>
             </header>

@@ -1,6 +1,6 @@
 import { AgentProgressReports } from "./agent-progress-reports";
 import { permissionReplyText } from "./permission-presentation";
-import { DeliveryCards } from "./merge-console";
+import { DeliveryCards, IntegrationDetails } from "./merge-console";
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
 import { InlinePlanApproval, inlinePlanTranscript, currentPlan } from "./agent-plan-content";
@@ -150,6 +150,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
             <>
               <header className="agent-session-head">
                 <strong>{t("agentSessionTitle")}</strong>
+                <IntegrationDetails productId={productId} sessionId={sessionId} />
               </header>
               <DeliveryCards productId={productId} sessionId={sessionId} />
               {history.messages.length === 0 && (
