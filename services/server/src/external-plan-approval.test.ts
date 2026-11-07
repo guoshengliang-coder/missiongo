@@ -273,3 +273,33 @@ it("publishes readable-plan guidance and preserves exact Markdown in the review 
   expect(detail.implementationPlan).toMatchObject({ plan, validation, approved: false });
   expect(detail.planApproval).toMatchObject({ plan, validation });
 });
+
+it.each(["codex","claude_code","opencode"])("keeps full %s content in text-only handoffs and version-bound read-only pages", async agentKind => {
+  const f=await fixture();
+  const plan="## 当前入口完整方案\n\n"+"方案边界 🧑‍💻\n".repeat(600)+"结束";
+  const validation="验证 ".repeat(300)+"结束";
+  const session={...f.session,agentKind};
+  const proposal={...f.proposal,session,plan,validation};
+  const response=await f.call("request_plan_approval",proposal);
+  expect(response.isError,JSON.stringify(response)).not.toBe(true);
+  expect(response.content[0].text).toContain(plan);
+  expect(response.content[0].text).toContain(validation);
+  const saved=response.structuredContent;
+  const reader=f.tokenFor("readonly-client",["missiongo:read"]);
+  const args={kind:"plan",id:saved.sessionId,itemKey:f.item.key,limit:400};
+  let page=(await f.call("get_review_content",args,reader)).structuredContent;
+  let text=page.text;
+  while(page.nextOffset!==undefined) {
+    const result=await f.call("get_review_content",{...args,offset:page.nextOffset,expectedRevision:page.revision},reader);
+    expect(result.isError,JSON.stringify(result)).not.toBe(true);page=result.structuredContent;text+=page.text;
+  }
+  expect(text).toContain(JSON.stringify(plan).slice(1,-1));
+  expect(text).toContain(JSON.stringify(validation).slice(1,-1));
+  const revision=page.revision;
+  await f.call("request_plan_approval",{...proposal,plan:plan+"New boundary"});
+  expect((await f.call("get_review_content",{...args,offset:400,expectedRevision:revision},reader)).isError).toBe(true);
+  expect((await f.call("get_review_content",{...args,offset:400},reader)).isError).toBe(true);
+  expect((await f.call("get_review_content",{...args,itemKey:"EXT-999"},reader)).isError).toBe(true);
+  expect(f.store.database.connection.prepare("SELECT COUNT(*) AS n FROM agent_session_commands").get()).toMatchObject({n:0});
+  expect(f.store.getWorkItem(f.item.key).status).toBe("ready");
+});

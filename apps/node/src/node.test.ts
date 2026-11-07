@@ -297,9 +297,16 @@ describe("OpenCode shared-service control", () => {
     const snapshot = await adapter.snapshot();
     expect(snapshot.messages.at(-1)?.sourceId).toBe("message-5000");
     expect(snapshot.messages).toHaveLength(1900);
-    expect(snapshot.error).toContain("agent_history_limited:");
+    expect(snapshot.error).toBeUndefined();
+    expect(snapshot.history).toMatchObject({complete:false,cursor:expect.any(String)});
     expect(pages[0]?.get("order")).toBe("desc");
     expect(pages.slice(1).every(query => !query.has("order"))).toBe(true);
+    const older=await adapter.historyPage(snapshot.history!.cursor!);
+    expect(older.messages.at(-1)?.sourceId).toBe("message-3100");
+    expect(older.nextCursor).toBe("20");
+    expect(pages.at(-1)?.get("cursor")).toBe("19");
+    expect(pages.at(-1)?.has("order")).toBe(false);
+
   });
   it.each([false,true].flatMap(free=>["build", "plan"].map(mode=>({free,mode}))))("OpenCode $mode preserves permissions from launch (free=$free)",async ({free,mode})=>{
     let actual="", initial="";

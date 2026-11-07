@@ -1,3 +1,5 @@
+import { AgentHistory } from "./agent-history.js";
+import { AgentArtifacts } from "./agent-artifacts.js";
 import { createHash, randomUUID, scryptSync } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -144,6 +146,10 @@ it("pages with a stable digest and requires a restart when messages arrive mid-r
   f.dispatchMessage(dispatchSession, "m-4", "agent", "Message 4", "2026-11-05T03:04:00Z");
   const afterAppend = f.reads.readConversation("owner", dispatchSession, { itemKey: f.item.key, offset: 0, limit: 2 });
   expect(afterAppend.completeness.consistencyDigest).not.toBe(firstPage.completeness.consistencyDigest);
+  f.db.prepare("UPDATE agent_session_messages SET text='Updated same ID' WHERE session_id=? AND source_id='m-1'").run(dispatchSession);
+  const afterEdit=f.reads.readConversation("owner",dispatchSession,{itemKey:f.item.key});
+  expect(afterEdit.completeness.consistencyDigest).not.toBe(afterAppend.completeness.consistencyDigest);
+
 });
 
 it("requires the linked item key, except for explicitly specified project conversations", async () => {
@@ -281,7 +287,7 @@ it("serves the three read tools on a read-only connection and enforces product s
 
   const tools = await call("tools/list", {});
   const names = (tools.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name);
-  for (const tool of ["list_item_agent_sessions", "get_agent_session", "get_item_plan_approvals"]) {
+  for (const tool of ["list_item_agent_sessions", "get_agent_session", "get_item_plan_approvals", "get_review_content", "get_agent_history", "get_agent_artifact"]) {
     expect(names).toContain(tool);
   }
 
@@ -289,6 +295,15 @@ it("serves the three read tools on a read-only connection and enforces product s
   // second one, so it disappears from the listing and a direct read is refused --
   // and the already-issued token picks the restriction up immediately.
   app.missionGoAccounts.replacePermissions(adminAccount.id, [{ productId: product.id, canView: true, canOperate: true, canUseAi: true }], "selected");
+  for(const [name,args] of [
+    ["get_review_content",{kind:"plan",id:sessionId,itemKey:item.key}],
+    ["get_agent_history",{sessionId,itemKey:item.key}],
+    ["get_agent_artifact",{sessionId,itemKey:item.key,sourceId:"user-1",href:"/tmp/secret.md"}],
+  ] as const) {
+    const denied=await call("tools/call",{name,arguments:args});
+    expect(JSON.stringify(denied)).toMatch(/isError|error/);
+    expect(denied.result?.structuredContent).toBeUndefined();
+  }
   const restrictedListing = await call("tools/call", { name: "list_item_agent_sessions", arguments: { itemKey: item.key } });
   expect((restrictedListing.result?.structuredContent as { conversations?: unknown[] })?.conversations).toEqual([]);
   const restrictedRead = await call("tools/call", { name: "get_agent_session", arguments: { sessionId, itemKey: item.key } });
@@ -305,6 +320,27 @@ it("serves the three read tools on a read-only connection and enforces product s
     .toEqual([expect.objectContaining({ sessionId, items: expect.arrayContaining([expect.objectContaining({ key: item.key }), expect.objectContaining({ key: crossItem.key })]) })]);
   const adminRead = await call("tools/call", { name: "get_agent_session", arguments: { sessionId, itemKey: item.key, limit: 10 } });
   expect((adminRead.result?.structuredContent as { messages?: Array<{ sourceId?: string }> })?.messages).toEqual([expect.objectContaining({ sourceId: "user-1" })]);
+  const artifacts=new AgentArtifacts(store.database,join(directory,"attachments","agent-artifacts"));
+  const history=new AgentHistory(store.database,artifacts);
+  history.observe(adminAccount.id,"node",sessionId,{cursor:"issued-source-anchor",complete:false});
+  const invoke=async(name:string,args:Record<string,unknown>)=>(await call("tools/call",{name,arguments:args})).result?.structuredContent;
+  const available=await invoke("get_agent_history",{sessionId,itemKey:item.key});
+  const cursor=available!.nextCursor as string;
+  expect(await invoke("get_agent_history",{sessionId,itemKey:item.key,cursor})).toMatchObject({status:"pending"});
+  history.complete(adminAccount.id,"node",cursor,{messages:[{sourceId:"older-output",role:"agent",text:"[Report](/tmp/output/report.md)"}]});
+  const source=await invoke("get_agent_history",{sessionId,itemKey:item.key,cursor});
+  expect(source).toMatchObject({status:"ready",messages:[{sourceId:"older-output"}]});
+  const reread=await invoke("get_agent_session",{sessionId,itemKey:item.key});
+  expect((reread!.messages as {sourceId:string}[]).some(m=>m.sourceId==="older-output")).toBe(true);
+  const requested=await invoke("get_agent_artifact",{sessionId,itemKey:item.key,sourceId:"older-output",href:"/tmp/output/report.md"});
+  expect(requested).toMatchObject({status:"pending",contentRead:false});
+  await artifacts.complete(adminAccount.id,"node",requested!.id as string,{bundle:{entry:"report.md",files:[{name:"report.md",contentType:"text/markdown",base64:Buffer.from("# Complete report 🧑‍💻").toString("base64")}]}});
+  const saved=await invoke("get_agent_artifact",{sessionId,itemKey:item.key,artifactId:requested!.id});
+  expect(JSON.parse(saved!.text as string).text).toBe("# Complete report 🧑‍💻");
+  const denied=await invoke("get_agent_artifact",{sessionId,itemKey:item.key,sourceId:"older-output",href:"/tmp/unmentioned-secret.md"});
+  expect(denied).toBeUndefined();
+  expect(store.database.connection.prepare("SELECT COUNT(*) AS n FROM agent_session_commands").get()).toEqual({n:0});
+
 });
 
 it("reports persisted implementation-plan records honestly across revisions, scope drift and external identities", async () => {

@@ -127,7 +127,7 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
       let page;
       try {
         const source = available.find(session => session.id === job.sessionId && session.sessionRef === job.sessionRef
-          && session.agentKind === "codex" && job.agentKind === "codex");
+          && ["codex","opencode","claude_code"].includes(session.agentKind) && session.agentKind === job.agentKind);
         if (!source?.dispatchId) throw new Error("History source unavailable");
         page = await hostHistoryCall(root, source.dispatchId, source.sessionRef, job.cursor);
       } catch { page = { messages: [], error: "node_unavailable" }; }

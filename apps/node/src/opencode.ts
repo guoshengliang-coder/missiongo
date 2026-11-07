@@ -106,7 +106,15 @@ export class OpenCodeAdapter implements Adapter {
     const running = active.data?.[this.ref] !== undefined;
     return { status: details.data?.outcome === "failed" ? "failed" : running ? "active" : "idle", messages: messages.slice(-2000),
       ...(typeof details.data?.agent==="string" ? {mode:details.data.agent} : {}), turnActive: running, waitingForInput: choices.permissions.length + choices.forms.length > 0,
-      ...(cursor ? { error: "agent_history_limited: only the latest OpenCode messages are synchronized" } : {}) };
+      history: {complete: !cursor, ...(cursor ? {cursor} : {})} };
+  }
+  async historyPage(cursor: string) {
+    const result=await this.api.call("GET",`${this.path}/message?${new URLSearchParams({limit:"100",cursor})}`);
+    if(!Array.isArray(result.data)) throw new Error("Invalid OpenCode history page");
+    const next=result.nextCursor ?? result.cursor?.next;
+    if(next!==undefined && next!==null && (typeof next!=="string"||!next)) throw new Error("Invalid OpenCode history continuation");
+    if(next===cursor) throw new Error("OpenCode history cursor did not advance");
+    return {messages:openCodeMessages([...(result.data ?? [])].reverse()),...(next?{nextCursor:next}:{})};
   }
   private async stopState(): Promise<{ active: boolean; input?: string }> {
     const active = (await this.api.call("GET", "/api/session/active")).data?.[this.ref] !== undefined;

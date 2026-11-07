@@ -171,3 +171,21 @@ it("does not accept machine bearers, mixed auth, spoofed actors or cross-origin 
   expect(read.json().decision).toEqual(d);
   expect(app.missionGoStore.database.connection.prepare("SELECT * FROM decision_events").all()).toHaveLength(1);
 });
+
+it("exposes complete managed-decision content over read-only MCP without opening human writes",async()=>{
+  const decision=(await create()).json() as ManagedDecision;
+  const account=app.missionGoAccounts.getAccount(config.id);
+  const token=createAiAccessToken(config,{id:account.id,username:account.email,role:account.role},app.missionGoAccounts.credentialsStamp(account),"read-only-review",["missiongo:read"]).token;
+  const call=async(name:string,args:Record<string,unknown>)=>{
+    const r=await app.inject({method:"POST",url:"/mcp",headers:{authorization:`Bearer ${token}`,accept:"application/json, text/event-stream"},payload:{jsonrpc:"2.0",id:1,method:"tools/call",params:{name,arguments:args}}});
+    const raw=r.headers["content-type"]?.includes("text/event-stream")?r.body.split("\n").find(l=>l.startsWith("data: "))!.slice(6):r.body;
+    return JSON.parse(raw);
+  };
+  const result=await call("get_review_content",{kind:"decision",id:decision.id});
+  expect(result.result.isError,JSON.stringify(result)).not.toBe(true);
+  expect(JSON.parse(result.result.structuredContent.text)).toMatchObject({content,status:"pending",approval:null});
+  const write=await app.inject({method:"POST",url:`/api/v1/managed-decisions/${decision.id}/approve`,headers:{authorization:`Bearer ${token}`,origin},payload:guard(decision,"machine-must-not-approve")});
+  expect([401,403]).toContain(write.statusCode);
+  const current=(await app.inject({method:"GET",url:`/api/v1/managed-decisions/${decision.id}`,headers:headers()})).json();
+  expect(current.decision).toMatchObject({status:"pending",approval:null});
+});

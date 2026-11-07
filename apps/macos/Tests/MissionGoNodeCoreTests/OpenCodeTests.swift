@@ -138,8 +138,18 @@ final class OpenCodeTests: XCTestCase {
         XCTAssertEqual(snapshot.messages.count, 2000)
         XCTAssertEqual(snapshot.messages.first?.sourceId, "msg-3001")
         XCTAssertEqual(snapshot.messages.last?.sourceId, "msg-5000")
-        XCTAssertTrue(snapshot.failure?.hasPrefix("agent_history_limited:") == true)
+        XCTAssertNil(snapshot.failure)
+        XCTAssertEqual(snapshot.history?.cursor, "20")
+        XCTAssertEqual(snapshot.history?.complete, false)
         XCTAssertEqual(StubURLProtocol.recorded.filter { $0.request.url?.path.hasSuffix("/message") == true }.count, 20)
+        let page = try await OpenCodeHTTPControl(home: home.path, session: StubURLProtocol.session()).historyPage(id: "session", cursor: snapshot.history!.cursor!)
+        XCTAssertEqual(page.messages.last?.sourceId, "msg-3000")
+        XCTAssertEqual(page.nextCursor, "21")
+        let request = StubURLProtocol.recorded.last!.request
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertEqual(Self.query(of: request.url)["cursor"], "20")
+        XCTAssertNil(Self.query(of: request.url)["order"])
+
     }
 
     func testFailedAndSettledModeRevisionsCannotSendAnOrdinaryPrompt() async throws {

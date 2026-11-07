@@ -14,6 +14,9 @@ export interface McpToolDefinition {
 }
 
 export const MCP_TOOL_DEFINITIONS = [
+  { name: "get_agent_artifact", access: "read", purpose: "Read only explicitly referenced conversation artifacts via protected storage." },
+  { name: "get_review_content", access: "read", purpose: "Read complete version-bound plan, delivery, collaboration, recovery or managed-decision content without approval." },
+  { name: "get_agent_history", access: "read", purpose: "Read one issued conversation-history page without input or execution." },
   { name: "get_merge_reconciliation", access: "read", purpose: "Preview original-batch Git facts, per-item handoffs and recovery blockers without mutation." },
   { name: "request_merge_reconciliation", access: "write", purpose: "Stage a snapshot-bound recovery action for human console approval; never grant authority." },
   { name: "apply_merge_reconciliation", access: "write", purpose: "Apply an approved recovery through the original batch conversation, retaining history." },

@@ -7,11 +7,11 @@ import type { MissionGoDatabase } from "./storage/database.js";
 import { invalidInput, notFound } from "./errors.js";
 
 const metadataSchema = z.object({ cursor: z.string().min(1).max(4096).nullable().optional(),
-  complete: z.boolean(), error: z.enum(["unavailable", "unsupported"]).nullable().optional() }).strict();
+  complete: z.boolean(), error: z.enum(["unavailable", "unsupported", "node_unavailable", "too_large"]).nullable().optional() }).strict();
 const messageSchema = z.object({ sourceId: z.string().min(1).max(200), turnId: z.string().max(200).nullable().optional(),
   role: z.enum(["user", "agent", "plan"]), phase: z.string().max(50).nullable().optional(), text: z.string().min(1).max(4_000_000),
   occurredAt: z.string().datetime().nullable().optional(), questions: z.array(z.object({ title: z.string().max(4000),
-    header: z.string().max(4000).optional(), detail: z.string().max(20_000).optional(),
+    header: z.string().max(4000).optional(), detail: z.string().max(100_000).optional(),
     options: z.array(z.string().max(4000)).optional(), multiSelect: z.boolean().optional(), key: z.string().max(4000).optional(),
     kind: z.enum(["text", "number", "boolean"]).optional(), placeholder: z.string().max(4000).optional(),
     custom: z.boolean().optional(), answered: z.string().max(4_000_000).optional(), withdrawn: z.boolean().optional(),
@@ -32,9 +32,9 @@ export class AgentHistory {
 
   private binding(accountId: string, sessionId: string) {
     const binding = this.artifacts.binding(accountId, sessionId);
-    if (!binding || binding.agent_kind !== "codex"
+    if (!binding || !["codex","opencode","claude_code"].includes(binding.agent_kind)
       || this.db.prepare("SELECT 1 FROM agent_sessions s JOIN managed_execution_intents m ON m.id=s.dispatch_id WHERE s.id=?").get(sessionId)) {
-      throw notFound("Codex history binding");
+      throw notFound("Agent history binding");
     }
     return binding;
   }
@@ -53,7 +53,7 @@ export class AgentHistory {
     if (!parsed.success || parsed.data.complete && (parsed.data.cursor || parsed.data.error)
       || !parsed.data.complete && !parsed.data.cursor && !parsed.data.error) throw invalidInput("Invalid history metadata.");
     const binding = this.binding(accountId, sessionId);
-    if (binding.node_id !== nodeId) throw notFound("Codex history binding");
+    if (binding.node_id !== nodeId) throw notFound("Agent history binding");
     const nextId = parsed.data.cursor ? this.seed(accountId, sessionId, parsed.data.cursor) : null;
     this.db.prepare(`INSERT INTO agent_history_sources(account_id,session_id,node_id,session_ref,next_id,error)
       VALUES (?,?,?,?,?,?) ON CONFLICT(account_id,session_id) DO UPDATE SET node_id=excluded.node_id,
@@ -88,10 +88,35 @@ export class AgentHistory {
     return { messages: page, history: { ...(nextCursor ? { nextCursor } : {}), ...(source?.error ? { error: source.error } : {}) } };
   }
 
+  available(accountId: string, sessionId: string) {
+    const source=this.source(accountId,sessionId);
+    if(!source) return {status:"unavailable",error:"unsupported_or_not_synchronized",cursors:[] as string[]};
+    return {status:source.error ? "failed" : source.next_id ? "ready" : "complete",
+      cursors:source.next_id ? [source.next_id] : [], ...(source.next_id?{nextCursor:source.next_id}:{}),
+      ...(source.error?{error:source.error}:{})};
+  }
+
+  incomplete(accountId: string, sessionId: string): boolean {
+    const source=this.source(accountId,sessionId);
+    if(!source) return false;
+    if(source.error) return true;
+    let id=source.next_id;
+    const seen=new Set<string>();
+    while(id) {
+      if(seen.has(id)) return true;
+      seen.add(id);
+      const row=this.page(accountId,sessionId,id);
+      if(row.status!=="ready"||row.error) return true;
+      id=row.next_id;
+    }
+    return false;
+  }
+
   get(accountId: string, sessionId: string, id: string): HistoryPage {
     const row = this.page(accountId, sessionId, id);
     return { status: row.status === "idle" ? "pending" : row.status,
-      messages: row.result_json ? (JSON.parse(row.result_json) as Message[]).filter(isConversationMessage) : [],
+      messages: row.result_json ? (JSON.parse(row.result_json) as Message[]).filter(isConversationMessage).map(message=>({...message,
+        ...(message.questions?{questions:message.questions.map(question=>({...question,withdrawn:true}))}:{})})) : [],
       ...(row.next_id ? { nextCursor: row.next_id } : {}), ...(row.error ? { error: row.error } : {}) };
   }
 
@@ -106,7 +131,7 @@ export class AgentHistory {
     const row = this.db.prepare("SELECT * FROM agent_history_pages WHERE id=? AND account_id=? AND session_id=?")
       .get(id, accountId, sessionId) as PageRow | undefined;
     const binding = this.binding(accountId, sessionId);
-    if (!row || binding.node_id !== row.node_id || binding.session_ref !== row.session_ref) throw notFound("Codex history page");
+    if (!row || binding.node_id !== row.node_id || binding.session_ref !== row.session_ref) throw notFound("Agent history page");
     return row;
   }
 
@@ -116,14 +141,14 @@ export class AgentHistory {
     return rows.flatMap(row => {
       try { this.page(accountId, row.session_id, row.id); }
       catch { this.reject(row.id); return []; }
-      return [{ id: row.id, sessionId: row.session_id, sessionRef: row.session_ref, agentKind: "codex", cursor: row.cursor }];
+      return [{ id: row.id, sessionId: row.session_id, sessionRef: row.session_ref, agentKind: this.binding(accountId,row.session_id).agent_kind, cursor: row.cursor }];
     });
   }
 
   authorizeJob(accountId: string, nodeId: string, id: string): PageRow {
     const row = this.db.prepare("SELECT * FROM agent_history_pages WHERE id=? AND account_id=? AND node_id=?")
       .get(id, accountId, nodeId) as PageRow | undefined;
-    if (!row) throw notFound("Codex history job");
+    if (!row) throw notFound("Agent history job");
     this.page(accountId, row.session_id, id);
     return row;
   }

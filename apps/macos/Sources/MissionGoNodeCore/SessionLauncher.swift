@@ -679,6 +679,10 @@ public struct SessionLauncher: AgentAdapter {
         return host
     }
 
+    public func historyPage(sessionRef: String, cursor: String) async throws -> AgentHistoryResult {
+        try TranscriptHistory.page(try await artifactMessages(sessionRef: sessionRef), cursor: cursor)
+    }
+
     public func artifactMessages(sessionRef: String) async throws -> [AgentSessionMessage] {
         let ref = try ClaudeExternalBridge.normalizedRef(sessionRef)
         for root in [sessionsDirectory, sessionsDirectory + "/external"] {
@@ -700,7 +704,13 @@ public struct SessionLauncher: AgentAdapter {
         let statePath = ClaudeHostStore.statePath(root: sessionsDirectory, sessionRef: session.sessionRef)
         let state = try ClaudeHostFiles.readState(statePath)
         let report = try await synchronize(session, state: state, statePath: statePath)
-        return report.reportingSettings(
+        let history = try TranscriptHistory.page(state.messages)
+        let storedIds = Set(state.messages.map(\.sourceId))
+        let visibleIds = Set(history.messages.map(\.sourceId))
+        // Keep the report's settled/withdrawn transformations and any current input cards.
+        return report.replacingMessages(report.messages.filter { visibleIds.contains($0.sourceId) || !storedIds.contains($0.sourceId)
+            || state.waitingForInput && ($0.role == "plan" || $0.questions?.contains(where: { $0.answered == nil && $0.withdrawn != true }) == true) })
+            .reportingHistory(TranscriptHistory.metadata(history)).reportingSettings(
             model: state.model,
             effort: state.effort,
             modelEndpoint: SessionLauncher.customModelEndpoint(environment.environment),
@@ -728,14 +738,19 @@ public struct SessionLauncher: AgentAdapter {
               config.statePath == statePath, config.commandsDirectory == directory + "/commands" else {
             throw LaunchError("本机桥接身份不匹配；未连接或发送。")
         }
+        let history = try TranscriptHistory.page(state.messages)
         let running = state.hostPid.map { pid in
             ClaudeHostProcess.isRunning(pid) && (ClaudeHostProcess.processArguments(pid)?.contains(configPath) == true)
         } ?? false
         func report(_ status: String? = nil, _ error: String? = nil, commandStatus: String? = nil, commandError: String? = nil) -> AgentSessionReport {
-            AgentSessionReport(status: status ?? state.status, messages: Array(state.messages.suffix(2000)),
+            AgentSessionReport(status: status ?? state.status, messages: AgentSessionAnswerTrace.markingAnswered(state.messages).filter { message in
+                history.messages.contains(where: { $0.sourceId == message.sourceId })
+                    || state.waitingForInput && (message.role == "plan" || message.questions?.contains(where: { $0.answered == nil && $0.withdrawn != true }) == true)
+            },
                 error: error ?? state.error, commandId: commandStatus == nil ? nil : session.command?.id,
                 commandStatus: commandStatus, commandError: commandError,
                 turnActive: state.turnActive, waitingForInput: state.waitingForInput)
+                .reportingHistory(TranscriptHistory.metadata(history))
                 .reportingSettings(mode: state.mode, model: state.model, effort: state.effort, settingsRevision: nil, settingsError: nil)
         }
         if let command = session.command, let result = state.commandResults[command.id] {

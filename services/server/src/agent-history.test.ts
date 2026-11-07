@@ -134,3 +134,19 @@ it("filters execution in both new and previously cached pages while retaining th
   f.db.prepare("UPDATE agent_history_pages SET result_json=? WHERE id=?").run(JSON.stringify([{ id: "tool", sourceId: "tool", role: "agent", phase: "execution", text: "private" }]), page);
   expect(f.history.get("owner", f.id, page).messages).toEqual([]);
 });
+
+it.each(["opencode","claude_code"])("queues %s source reads without execution and settles historical questions", agentKind => {
+  const f=fixture();
+  f.db.prepare("UPDATE agent_sessions SET agent_kind=? WHERE id=?").run(agentKind,f.id);
+  f.history.observe("owner","node",f.id,{cursor:"exact-native-anchor",complete:false});
+  const cursor=f.history.available("owner",f.id).cursors[0]!;
+  expect(f.history.incomplete("owner",f.id)).toBe(true);
+  expect(f.history.request("owner",f.id,cursor).status).toBe("pending");
+  expect(f.history.jobs("owner","node")[0]).toMatchObject({agentKind,sessionRef:"exact-thread"});
+  f.history.complete("owner","node",cursor,{messages:[{sourceId:"old",role:"agent",text:"Old question",questions:[{title:"Approve?",key:"old-request"}]}]});
+  expect(f.history.get("owner",f.id,cursor).messages[0]?.questions?.[0]?.withdrawn).toBe(true);
+  expect(f.history.incomplete("owner",f.id)).toBe(false);
+  expect(()=>f.history.request("another-account",f.id,cursor)).toThrow();
+  expect(()=>f.history.request("owner",f.id,"unissued")).toThrow();
+  expect(f.db.prepare("SELECT COUNT(*) AS n FROM agent_session_commands").get()).toEqual({n:0});
+});

@@ -372,6 +372,11 @@ describe("AND-439 batch reconciliation",()=>{
   it("reads without mutation and requires human authorization bound to the exact snapshot",async()=>{
     const f=await recoveryFixture(),before=f.db.prepare("SELECT data_json FROM merge_batches WHERE id=?").get(f.b.id);
     expect(f.preview().entries[0]).toMatchObject({originalHead:f.d.head,executionHead:f.d.head});
+    const read=await f.call("get_review_content",{kind:"recovery",id:f.b.id},{scopes:["missiongo:read"]});
+    expect(read.isError,JSON.stringify(read)).not.toBe(true);
+    expect(JSON.parse(read.structuredContent!.text as string)).toMatchObject({snapshot:f.preview().snapshot});
+    expect((await f.call("get_review_content",{kind:"recovery",id:f.b.id},{accountId:f.other.id,scopes:["missiongo:read"]})).isError).toBe(true);
+
     expect(f.db.prepare("SELECT data_json FROM merge_batches WHERE id=?").get(f.b.id)).toEqual(before);
     const action={kind:"accept_merge" as const,deliveryId:f.d.id,evidence:f.evidence},r=f.request(action);
     expect(()=>f.apply(r.key)).toThrow(/人工/);
@@ -577,4 +582,17 @@ describe("AND-439 batch reconciliation",()=>{
     expect(()=>f.apply(r.key)).toThrow();expect(f.preview().entries[0]?.result).toBeUndefined();
   });
 
+});
+
+it("reads delivery content on read-only scope without confirming, and denies another account or revoked scope",async()=>{
+  const f=await prepared();
+  const args={kind:"delivery",id:f.d.id};
+  const read=await f.call("get_review_content",args,{scopes:["missiongo:read"]});
+  expect(read.isError,JSON.stringify(read)).not.toBe(true);
+  expect(JSON.parse(read.structuredContent!.text as string)).toMatchObject({summary:f.input.summary,validation:f.input.validation,state:"proposed"});
+  expect((await f.call("get_review_content",args,{accountId:f.other.id,scopes:["missiongo:read"]})).isError).toBe(true);
+  f.grant(true,false);
+  const denied=await f.call("get_review_content",args,{scopes:["missiongo:read"]});
+  expect(denied.isError ?? Boolean(denied.error)).toBe(true);
+  expect(f.merges.readForAccount(f.owner.id,f.d.id).state).toBe("proposed");
 });

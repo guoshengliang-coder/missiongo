@@ -161,6 +161,11 @@ export class MergeDeliveries {
   list(productId: string, accountId: string) {
     return this.listRaw(productId).filter(d => d.accountId === accountId && !["withdrawn","merged"].includes(d.state)).map(d => this.view(d));
   }
+  readForAccount(accountId: string, id: string) {
+    const d=this.read<Delivery>("merge_deliveries",id);
+    if(d.accountId!==accountId) throw notFound("Delivery");
+    return this.view(d);
+  }
   product(id: string) { return this.read<Delivery>("merge_deliveries",id).productId; }
   decide(accountId: string, id: string, revision: string, decision: "confirm" | "withdraw") {
     return this.db.transaction(() => {
