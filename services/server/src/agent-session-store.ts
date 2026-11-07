@@ -1,3 +1,4 @@
+import { isConversationMessage } from "@missiongo/domain";
 import { ImplementationPlans } from "./implementation-plans.js";
 import { handoffDispatchIsCurrent } from "./agent-handoffs.js";
 import { assertDispatchExecution, dispatchExecutionRevoked } from "./builder-authority.js";
@@ -750,7 +751,7 @@ export class AgentSessionStore {
     const messages = this.database.connection
       .prepare(
         `SELECT id, source_id, turn_id, role, phase, text, questions_json, occurred_at
-         FROM agent_session_messages WHERE session_id = ? ORDER BY position, observed_at, rowid`,
+         FROM agent_session_messages WHERE session_id = ? AND (phase IS NULL OR phase <> 'execution') ORDER BY position, observed_at, rowid`,
       )
       .all(sessionId) as unknown as Array<{
         id: string; source_id: string; turn_id: string | null; role: AgentMessageRole;
@@ -869,7 +870,7 @@ export class AgentSessionStore {
       // into an index seek, which is an order of magnitude cheaper at a few
       // hundred sessions.
       const latestMessage = db.prepare(`SELECT id, source_id, role, phase, text, questions_json FROM agent_session_messages
-        WHERE session_id = ? ORDER BY position DESC, observed_at DESC, rowid DESC LIMIT 1`);
+        WHERE session_id = ? AND (phase IS NULL OR phase <> 'execution') ORDER BY position DESC, observed_at DESC, rowid DESC LIMIT 1`);
       for (const sessionId of sessionIds) {
         const message = latestMessage.get(sessionId) as unknown as
           { id: string; source_id: string; role: AgentMessageRole; phase: string | null; text: string; questions_json: string | null } | undefined;
@@ -1244,7 +1245,7 @@ export class AgentSessionStore {
     }
     const message = this.database.connection.prepare(
       `SELECT source_id, role, phase, text, questions_json FROM agent_session_messages
-       WHERE session_id = ? ORDER BY position DESC, observed_at DESC, rowid DESC LIMIT 1`,
+       WHERE session_id = ? AND (phase IS NULL OR phase <> 'execution') ORDER BY position DESC, observed_at DESC, rowid DESC LIMIT 1`,
     ).get(sessionId) as unknown as {
       source_id: string; role: AgentMessageRole; phase: string | null; text: string; questions_json: string | null;
     } | undefined;
@@ -1703,7 +1704,7 @@ export class AgentSessionStore {
       ...(input.turnState?.thinkingTokens !== undefined ? { thinkingTokens: input.turnState.thinkingTokens } : {}),
       ...(input.turnState?.thinkingDurationSeconds !== undefined ? { thinkingDurationSeconds: input.turnState.thinkingDurationSeconds } : {}),
     };
-    const messages = input.messages.map((message, position) => ({
+    const messages = input.messages.filter(isConversationMessage).map((message, position) => ({
       sourceId: requiredText(message.sourceId, "sourceId", 200),
       turnId: message.turnId?.slice(0, 200) || null,
       role: message.role,

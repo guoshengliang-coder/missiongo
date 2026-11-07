@@ -20,3 +20,5 @@ export * from "./comment-discussion.js";
 export * from "./personal-notifications.js";
 
 export * from "./agent-permission-question.js";
+
+export * from "./agent-transcript.js";

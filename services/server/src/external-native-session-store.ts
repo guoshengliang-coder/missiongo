@@ -1,3 +1,4 @@
+import { isConversationMessage } from "@missiongo/domain";
 import { ImplementationPlans } from "./implementation-plans.js";
 import { AgentSessionAttachments, type AgentSessionAttachment } from "./agent-session-attachments.js";
 import { assertExternalExecution } from "./builder-authority.js";
@@ -146,8 +147,8 @@ export class ExternalNativeSessionStore {
       ...(row.native_synced_at ? { lastSyncedAt: row.native_synced_at } : {}),
     };
     const nativeMessages = (this.db.prepare(includeMessages
-      ? "SELECT id,payload_json FROM external_native_messages WHERE session_id=? ORDER BY position,rowid"
-      : "SELECT id,payload_json FROM external_native_messages WHERE session_id=? ORDER BY position DESC,rowid DESC LIMIT 1").all(id) as { id: string; payload_json: string }[])
+      ? "SELECT id,payload_json FROM external_native_messages WHERE session_id=? AND COALESCE(json_extract(payload_json,'$.phase'),'') <> 'execution' ORDER BY position,rowid"
+      : "SELECT id,payload_json FROM external_native_messages WHERE session_id=? AND COALESCE(json_extract(payload_json,'$.phase'),'') <> 'execution' ORDER BY position DESC,rowid DESC LIMIT 1").all(id) as { id: string; payload_json: string }[])
       .map((message) => ({ ...JSON.parse(message.payload_json) as AgentSessionMessageInput, id: message.id }));
     const command = this.command(id);
     const revision = snapshot && row.native_node_id ? createHash("sha256").update(JSON.stringify([nativeMessages.at(-1), snapshot.status, snapshot.turnState.waitingForInput, snapshot.error])).digest("hex") : undefined;
@@ -331,7 +332,7 @@ export class ExternalNativeSessionStore {
       if (input.messages.length > 2000) throw invalidInput("Too many native messages.");
       const now = new Date().toISOString(); let changed = false;
       let position = (this.db.prepare("SELECT COALESCE(MAX(position),-1) AS position FROM external_native_messages WHERE session_id=?").get(row.id) as { position: number }).position;
-      for (const message of input.messages) {
+      for (const message of input.messages.filter(isConversationMessage)) {
         if (!message.sourceId || message.sourceId.length > 200 || message.text.length > 4_000_000) throw invalidInput("Invalid native message.");
         const old = this.db.prepare("SELECT payload_json FROM external_native_messages WHERE session_id=? AND source_id=?").get(row.id, message.sourceId) as { payload_json: string } | undefined;
         const previous = old ? JSON.parse(old.payload_json) as AgentSessionMessageInput : undefined;

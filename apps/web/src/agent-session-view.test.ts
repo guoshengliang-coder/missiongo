@@ -696,3 +696,9 @@ it("keeps integration, development and unlinked categories exclusive with legacy
     expect(agentSessionMatches({...session,archivedAt:"2026-11-06T01:00:00Z"},"archived","all","",category)).toBe(true);
   }
 });
+
+it("excludes tagged execution records without hiding original JSON messages", () => {
+  const text = '{"command":"user example"}';
+  const base = { id: "message", sourceId: "message", role: "agent" as const, occurredAt: "2026-11-07T00:00:00Z" };
+  expect(agentChatMessages([{ ...base, phase: "execution", text: "private" }, { ...base, id: "reply", sourceId: "reply", text }], []).map(message => message.text)).toEqual([text]);
+});

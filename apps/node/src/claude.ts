@@ -75,6 +75,7 @@ export class ClaudeAdapter implements Adapter {
   private expectedModes=new Map<string,string>();
   private state: Snapshot = { status: "idle", messages: [], turnActive: false };
   private requests: Wire[] = [];
+  private visibleUserMessageIds = new Set<string>();
   private waits = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   constructor(job: Dispatch, executable: string, env = process.env) {
     this.effectiveMode = job.mode;
@@ -143,6 +144,9 @@ export class ClaudeAdapter implements Adapter {
       this.state.turnActive = false; this.state.waitingForInput = false; this.requests = [];
     }
     if (["assistant", "user"].includes(event.type)) {
+      if (event.parent_tool_use_id != null) return;
+      if (event.type === "user" && event.origin?.kind !== "human"
+        && !this.visibleUserMessageIds.has(event.uuid)) return;
       const message = event.message ?? {};
       const content: Wire[] = Array.isArray(message.content) ? message.content : [{ type: "text", text: message.content }];
       const text = content.filter((c) => c.type === "text" && typeof c.text === "string").map((c) => c.text).join("\n");
@@ -170,6 +174,7 @@ export class ClaudeAdapter implements Adapter {
   }
   private send(uuid: string, text: string): void {
     this.activeTurnId = uuid;
+    this.visibleUserMessageIds.add(uuid);
     this.process.write({ type: "user", uuid, session_id: "", parent_tool_use_id: null,
       message: { role: "user", content: [{ type: "text", text }] } });
     this.state.status = "active"; this.state.turnActive = true;

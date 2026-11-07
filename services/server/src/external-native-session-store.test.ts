@@ -467,3 +467,12 @@ it("preserves long native text and keeps progress reports out of the transcript"
   expect(detail.progressReports?.length).toBeGreaterThan(0);
   expect(detail.messages.every(message => !detail.progressReports?.some(report => report.id === message.id))).toBe(true);
 });
+
+it("hides cached native execution records and rejects them from old-node snapshots", () => {
+  const f = fixture(); f.native.connect("owner", f.id, "node");
+  f.report({ messages: [{ sourceId: "text", role: "agent", text: "Visible" }, { sourceId: "tool", role: "agent", phase: "execution", text: "private" }] });
+  expect(f.native.overlay("owner", f.id).nativeMessages.map(message => message.text)).toEqual(["Visible"]);
+  f.store.database.connection.prepare("UPDATE external_native_messages SET payload_json=json_set(payload_json,'$.phase','execution') WHERE session_id=?").run(f.id);
+  expect(f.native.overlay("owner", f.id).nativeMessages).toEqual([]);
+  expect(f.native.overlay("owner", f.id, false).nativeMessages).toEqual([]);
+});
