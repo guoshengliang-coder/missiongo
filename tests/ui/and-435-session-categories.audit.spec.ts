@@ -25,16 +25,39 @@ for (const width of [320,1440]) for (const theme of ["light","dark"] as const) {
       await page.goto(`/?product=${product.id}&console=agent`);
       const list=page.locator(".agent-console-session"),filter=page.getByRole("combobox",{name:"关联条目筛选",exact:true});
       await expect(list).toHaveCount(3);
-      for(const [category,label] of [["unlinked","无关联会话"],["linked","研发会话"],["integration","集成会话"]]) {
+      for(const [category,label] of [["unlinked","无关联会话"],["linked","条目会话"],["integration","集成会话"]]) {
         await expect(list.locator(`.agent-console-session-meta [data-session-category="${category}"]`)).toHaveText(label!);
       }
       await expect(list.locator(".agent-console-session-heading [data-session-category]")).toHaveCount(0);
+      // Purpose must remain distinguishable by both text and color, including
+      // inactive and selected rows, without borrowing the run-status meaning.
+      const colors = await list.locator("[data-session-category]").evaluateAll(badges => badges.map(badge => {
+        const style = getComputedStyle(badge);
+        return { category: badge.getAttribute("data-session-category"), color: style.color, background: style.backgroundColor };
+      }));
+      expect(new Set(colors.map(badge => badge.color)).size).toBe(3);
+      expect(new Set(colors.map(badge => badge.background)).size).toBe(3);
+      const assertHeaderPalette = async (category: string) => {
+        const badge = page.locator(`.agent-console-heading [data-session-category="${category}"]`);
+        const palette = colors.find(badge => badge.category === category)!;
+        await expect(badge).toHaveCSS("color", palette.color);
+        await expect(badge).toHaveCSS("background-color", palette.background);
+      };
+      for (const scale of ["small", "medium", "large"]) {
+        await page.evaluate(value => { document.documentElement.dataset.fontScale = value; }, scale);
+        const audit = await page.evaluate(AUDIT_SOURCE) as { text: Array<{ fontSize: number; contrast: number; fontWeight: number }> };
+        expect(audit.text.filter(row => row.fontSize > 0 && row.fontSize < 11)).toEqual([]);
+        expect(audit.text.filter(row => row.contrast < (row.fontSize >= 24 || (row.fontWeight >= 700 && row.fontSize >= 18.66) ? 3 : 4.5))).toEqual([]);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      }
+      await page.screenshot({ path: testInfo.outputPath("all-categories.png"), fullPage: true });
       await filter.click();
       await expect(page.getByRole("option",{name:/^全部/})).toContainText("共 3");
       const integrationOption=page.getByRole("option",{name:/^集成会话/});
       await expect(integrationOption).toContainText("共 1");await expect(integrationOption).toContainText("1 运行中");
       await integrationOption.click();await expect(list).toHaveCount(1);await expect(list).toContainText("批次任务");
       await list.click();await expect(page.locator(".agent-console-heading [data-session-category]")).toHaveText("集成会话");
+      await assertHeaderPalette("integration");
       const reply=page.locator(".agent-console-reply textarea");await reply.fill("集成草稿");
       for(const scale of ["small","medium","large"]) {
         await page.evaluate(value=>{document.documentElement.dataset.fontScale=value;},scale);
@@ -46,11 +69,13 @@ for (const width of [320,1440]) for (const theme of ["light","dark"] as const) {
       await page.screenshot({path:testInfo.outputPath("integration-category.png"),fullPage:true});
       const back=page.getByRole("button",{name:"返回会话列表",exact:true});
       if(width===320)await back.click();
-      await filter.click();await page.getByRole("option",{name:/^研发会话/}).click();
-      await expect(list).toHaveCount(1);await list.click();await expect(reply).toHaveValue("");await reply.fill("研发草稿");
+      await filter.click();await page.getByRole("option",{name:/^条目会话/}).click();
+      await expect(list).toHaveCount(1);await list.click();await expect(page.locator('.agent-console-heading [data-session-category="linked"]')).toHaveText("条目会话");await assertHeaderPalette("linked");await expect(reply).toHaveValue("");await reply.fill("研发草稿");
       if(width===320)await back.click();
       await filter.click();await page.getByRole("option",{name:/^无关联会话/}).click();await expect(list).toHaveCount(1);
       await expect(list).toContainText("集成会话同名普通讨论");
+      await list.click();await assertHeaderPalette("unlinked");
+      if(width===320)await back.click();
       await filter.click();await page.getByRole("option",{name:/^集成会话/}).click();await list.click();await expect(reply).toHaveValue("集成草稿");
       if(width===320)await back.click();
       await page.getByRole("button",{name:/已归档/}).first().click();
