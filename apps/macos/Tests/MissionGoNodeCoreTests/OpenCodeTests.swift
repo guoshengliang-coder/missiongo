@@ -392,7 +392,7 @@ final class OpenCodeTests: XCTestCase {
             "id": "frm_1", "sessionID": "ses_test", "title": "发布确认",
             "fields": [
                 ["key": "scope", "title": "范围", "type": "string",
-                 "options": [["value": "small", "label": "小"], ["value": "full", "label": "完整"]]],
+                 "options": [["value": "small", "label": "小", "description": "只包含选中内容"], ["value": "full", "label": "完整"]]],
                 ["key": "note", "title": "备注", "type": "string", "required": true],
                 ["key": "confirm", "title": "确认", "type": "boolean", "required": true],
             ],
@@ -403,6 +403,7 @@ final class OpenCodeTests: XCTestCase {
         let questions = try XCTUnwrap(choice.message.questions)
         XCTAssertEqual(questions.map(\.key), ["scope", "note", "confirm"])
         XCTAssertEqual(questions[0].options, ["小", "完整"])
+        XCTAssertEqual(questions[0].detail, "小: 只包含选中内容")
         XCTAssertEqual(questions[1].kind, .text)
         XCTAssertEqual(questions[2].kind, .boolean)
 

@@ -45,7 +45,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         params: { threadId: ref, turnId: turn.id, command: "echo test", availableDecisions: ["accept", "decline"] } });
       if (message.params.input[0].text.includes("question")) emit({ id: "native-question", method: "item/tool/requestUserInput",
         params: { threadId: ref, turnId: turn.id, questions: [{ id: "q-1", question: "选择产品偏好",
-          options: [{ label: "方案 A" }, { label: "方案 B" }] }] } });
+          options: [{ label: "方案 A", description: "保留原有行为" }, { label: "方案 B" }] }] } });
     } else if (message.id === "native-approval" && message.result) {
       turn.items.push({ id: "decision", type: "agentMessage", text: message.result.decision });
     } else if (message.id === "native-question" && message.result) {

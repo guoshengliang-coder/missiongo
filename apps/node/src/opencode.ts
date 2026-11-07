@@ -95,14 +95,14 @@ export class OpenCodeAdapter implements Adapter {
     }
     const choices = await this.choices();
     for (const p of choices.permissions) messages.push({ sourceId: `permission-${p.id}`, role: "agent", text: p.message || `OpenCode 请求使用 ${p.action}`,
-      questions: [{ title: `OpenCode 请求使用 ${p.action}`, key: `授权请求 ${p.id}`, options: ["允许一次", "拒绝"], detail: JSON.stringify(p.resources ?? []).slice(0, 4000) }] });
+      questions: [{ title: `OpenCode 请求使用 ${p.action}`, key: `授权请求 ${p.id}`, options: JSON.stringify(p.resources ?? []).length <= 512_000 ? ["允许一次", "拒绝"] : ["拒绝"], detail: JSON.stringify(p.resources ?? []).length <= 512_000 ? JSON.stringify(p.resources ?? []) : "资源范围超出当前入口展示上限，不能在此批准。请在原生端查看完整请求。" }] });
     for (const form of choices.forms) {
       if(Array.isArray(form.fields)&&form.fields.length===0) {
         messages.push({sourceId:`form-${form.id}`,role:"agent",text:form.title || "OpenCode 请求确认",questions:[{title:"确认此请求",key:`确认请求 ${form.id}`,options:["批准","取消"]}]});
         continue;
       }
       const questions: Question[] = (form.fields ?? []).filter((f: Wire) => !f.hidden).map((f: Wire) => ({ title: f.title || f.key, key: f.key,
-        ...(f.description ? { detail: f.description } : {}), ...(f.options?.length ? { options: f.options.map((o: Wire) => o.label || o.value) } : { kind: ["number", "integer"].includes(f.type) ? "number" : f.type === "boolean" ? "boolean" : "text" }),
+        detail: [f.description, ...(f.options ?? []).filter((o: Wire) => o.description).map((o: Wire) => `${o.label || o.value}: ${o.description}`)].filter(Boolean).join("\n"), ...(f.options?.length ? { options: f.options.map((o: Wire) => o.label || o.value) } : { kind: ["number", "integer"].includes(f.type) ? "number" : f.type === "boolean" ? "boolean" : "text" }),
         multiSelect: f.type === "multiselect", custom: f.custom === true }));
       if (questions.length) messages.push({ sourceId: `form-${form.id}`, role: "agent", text: form.title || "OpenCode 请求确认", questions });
     }
@@ -150,6 +150,7 @@ export class OpenCodeAdapter implements Adapter {
       const answer = command.text.slice(key.length).trim();
       const decision = answer === "允许一次" ? "once" : answer === "拒绝" ? "reject" : undefined;
       if (!decision) throw new Error("Unsupported permission answer");
+      if (decision === "once" && JSON.stringify(permission.resources ?? []).length > 512_000) throw new InputRejected("资源范围超出当前入口展示上限，批准未发送。");
       await this.api.call("POST", `${this.path}/permission/${encodeURIComponent(permission.id)}/reply`, { decision });
       return;
     }

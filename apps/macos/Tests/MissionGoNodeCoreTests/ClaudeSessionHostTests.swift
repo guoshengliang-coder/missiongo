@@ -103,10 +103,11 @@ final class ClaudeStreamSnapshotTests: XCTestCase {
         var snapshot = ClaudeStreamSnapshot(sessionRef: "session-1")
         snapshot.consume(["type": "assistant", "parent_tool_use_id": NSNull(),
             "message": ["id": "q1", "content": [["type": "tool_use", "name": "AskUserQuestion",
-                "input": ["questions": [["question": "Ship?", "options": [["label": "Yes"], ["label": "No"]]]]]]]]])
+                "input": ["questions": [["question": "Ship?", "options": [["label": "Yes", "description": "Ships changes"], ["label": "No", "description": "Keeps draft"]]]]]]]]])
         snapshot.consume(["type": "user", "uuid": "a1", "origin": ["kind": "human"],
             "parent_tool_use_id": NSNull(),
             "message": ["role": "user", "content": [["type": "text", "text": "No"]]]])
+        XCTAssertEqual(snapshot.state.messages[0].questions?.first?.detail, "Yes: Ships changes\nNo: Keeps draft")
         XCTAssertEqual(snapshot.state.messages[0].questions?.first?.answered, "No")
     }
 
