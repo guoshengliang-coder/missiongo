@@ -270,8 +270,8 @@ export function AgentSessionConsole({
   };
   // AND-426: an option shows the count the list would hold when picked -- the
   // same promise the sidebar numbers make. Running reuses the sidebar's active
-  // rule; the active filter already lists only running sessions, so there the
-  // running badge would repeat the total and stays hidden.
+  // rule. All categories use the same running / total presentation, including
+  // zero counts and the active filter.
   const optionCounts = useMemo(() => {
     const stats = (agent: AgentKindFilter, associationOption: AgentAssociationFilter) => {
       const rows = productSessions.filter(session => agentSessionMatches(session, filter, agent, search, associationOption));
@@ -287,10 +287,10 @@ export function AgentSessionConsole({
   }, [association, agentFilter, filter, search, productSessions]);
   const renderOptionCounts = (stats: { total: number; running: number }) => sessionsLoaded && (
     <span className="agent-console-option-counts">
-      {filter !== "active" && stats.running > 0 && (
-        <span className="agent-console-option-running">{t("agentConsoleOptionRunning", { count: stats.running })}</span>
-      )}
-      <span>{t("agentConsoleOptionTotal", { count: stats.total })}</span>
+      <span className="sr-only">{t("agentConsoleOptionSummary", { running: stats.running, total: stats.total })}</span>
+      <span aria-hidden="true" className={stats.running > 0 ? "agent-console-option-running" : undefined}>{t("agentConsoleOptionRunning", { count: stats.running })}</span>
+      <span aria-hidden="true">/</span>
+      <span aria-hidden="true">{stats.total}</span>
     </span>
   );
   const otherProjectCounts = useMemo(
@@ -943,7 +943,7 @@ export function AgentSessionConsole({
           {navigation}
         </div>
         <div className="agent-console-list-controls">
-          <Select aria-label={t("agentConsoleAssociationFilter")} value={association}
+          <Select aria-label={t("agentConsoleAssociationFilter")} value={association} fitContent
             renderValue={value => t(ASSOCIATION_OPTION_LABELS[value as AgentAssociationFilter])}
             renderOption={value => <span className="agent-console-option">
               <span>{t(ASSOCIATION_OPTION_LABELS[value as AgentAssociationFilter])}</span>
@@ -963,6 +963,7 @@ export function AgentSessionConsole({
           <label className="agent-console-agent-filter">
             <span>{t("agentConsoleAgentFilter")}</span>
             <Select
+              fitContent
               aria-label={t("agentConsoleAgentFilter")}
               value={agentFilter}
               renderValue={value => t(AGENT_OPTION_LABELS[value as ConsoleAgentOption])}

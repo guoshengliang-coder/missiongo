@@ -48,13 +48,12 @@ for (const width of [320, 768, 1023, 1024, 1440]) for (const theme of ["light", 
     // AND-426: options carry the count the list will hold when picked.
     await association.click();
     const allOption = page.getByRole("option", { name: /^全部/ });
-    await expect(allOption).toContainText("共 2");
-    await expect(allOption).toContainText("2 运行中");
-    await expect(page.getByRole("option", { name: /^无关联会话/ })).toContainText("共 1");
+    await expect(allOption).toHaveAccessibleName(/2 个运行中，共 2 个会话/);
+    await expect(page.getByRole("option", { name: /^无关联会话/ })).toHaveAccessibleName(/1 个运行中，共 1 个会话/);
     await allOption.click();
     const agentFilterBox = page.getByRole("combobox", { name: "Agent 筛选", exact: true });
     await agentFilterBox.click();
-    await expect(page.getByRole("option", { name: /^Codex/ })).toContainText("共 2");
+    await expect(page.getByRole("option", { name: /^Codex/ })).toHaveAccessibleName(/2 个运行中，共 2 个会话/);
     await page.keyboard.press("Escape");
     await expect(agentFilterBox).toHaveText("全部 Agent");
     await association.click();
