@@ -47,7 +47,7 @@ it("old execution/history backfill after reconnect preserves read state, while o
     { sourceId: "old-answer", role: "agent", text: "historical answer", occurredAt: time(0) },
   ] });
   expect(f.store.listForAccount("owner")[0]!.unread).toBe(false);
-  expect(f.db.prepare("SELECT count(*) AS count FROM agent_session_messages WHERE session_id=?").get(f.sessionId)).toEqual({ count: 3 });
+  expect(f.db.prepare("SELECT count(*) AS count FROM agent_session_messages WHERE session_id=?").get(f.sessionId)).toEqual({ count: 2 });
   f.snapshot({ status: "idle", messages: [{ ...message, sourceId: "offline-reply", occurredAt: time(9) }] });
   const second = f.store.listForAccount("owner")[0]!;
   expect(second.unread).toBe(true);
@@ -265,4 +265,14 @@ it("permission summaries share request identity without changing notification at
   expect(store.listForAccount("owner").find(row => row.id === sessionId)).toMatchObject({ waitingForPermission: true });
   snapshot({ status: "idle", messages: [{ ...permission, questions: [{ ...question, answered: "批准" }] }, laterForm] });
   expect(store.listForAccount("owner").find(row => row.id === sessionId)).toMatchObject({ waitingForPermission: false });
+});
+
+it("hides legacy execution records from conversation and preview and ignores old-node uploads", () => {
+  const f = fixture();
+  f.snapshot({ status: "idle", messages: [message, { sourceId: "tool", role: "agent", phase: "execution", text: "private" }] });
+  expect(f.store.getForAccount("owner", f.sessionId).messages.map(message => message.text)).toEqual(["Result"]);
+  // Simulate records already stored by the previous server.
+  f.db.prepare("UPDATE agent_session_messages SET phase='execution',text='private' WHERE session_id=?").run(f.sessionId);
+  expect(f.store.getForAccount("owner", f.sessionId).messages).toEqual([]);
+  expect(f.store.listForAccount("owner")[0]?.latestMessage).toBeUndefined();
 });

@@ -6,7 +6,8 @@ external-native mirrors use `observeSessionUnread` in their storage transaction.
 
 The server retains a source-message frontier and the last healthy execution
 status across unavailable/suspended reports. New source IDs older than the
-frontier are historical backfill; `execution` records never create unread.
+frontier are historical backfill; `execution` records never create unread. The shared domain transcript boundary
+filters these from incoming conversation mirrors and hides legacy cached records.
 Existing message edits, settings and polling metadata do not create unread.
 New open-question revisions and execution completion/failure still do. Stable
 event keys deduplicate retries. Event rows record reason, identity, source time

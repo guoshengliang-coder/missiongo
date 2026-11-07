@@ -370,3 +370,12 @@ it("keeps reads side-effect free on item and session state", async () => {
     reports: (f.db.prepare("SELECT COUNT(*) AS n FROM external_agent_session_reports").get() as { n: number }).n,
   }).toEqual(before);
 });
+
+it("does not expose cached execution records through the conversation read API", async () => {
+  const f = await fixture(); const id = f.createDispatchSession("dispatch", "native-thread");
+  f.dispatchMessage(id, "tool", "agent", "private output", f.now);
+  f.db.prepare("UPDATE agent_session_messages SET phase='execution' WHERE session_id=?").run(id);
+  f.dispatchMessage(id, "reply", "agent", "Visible reply", f.now);
+  const result = f.reads.readConversation("owner", id, { itemKey: f.item.key, offset: 0, limit: 10 });
+  expect(result.messages.map(message => message.text)).toEqual(["Visible reply"]);
+});

@@ -1,3 +1,4 @@
+import { isConversationMessage } from "@missiongo/domain";
 import { createHash } from "node:crypto";
 import type { MissionGoDatabase } from "./storage/database.js";
 
@@ -12,7 +13,7 @@ interface State { source_at: string | null; healthy_status: string | null; cycle
 const healthy = (status: string) => status !== "unavailable" && status !== "suspended";
 const pending = (message: UnreadMessage) => message.questions?.some(q => q.answered === undefined && !q.withdrawn) === true;
 const timestamp = (value?: string | null) => value && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : undefined;
-const visible = (message: UnreadMessage) => message.role !== "user" && message.phase !== "execution";
+const visible = (message: UnreadMessage) => message.role !== "user" && isConversationMessage(message);
 
 /** Snapshot storage is not a notification event. Keep a durable source frontier
  * and last healthy status across transport failures and node restarts. The

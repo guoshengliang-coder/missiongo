@@ -1,3 +1,4 @@
+import { isConversationMessage } from "@missiongo/domain";
 import type { AgentKind } from "@missiongo/domain";
 
 import type { MessageKey } from "./i18n";
@@ -49,7 +50,7 @@ export function agentChatMessages(
 ): AgentChatMessage[] {
   const hidden = new Set(attachmentMessages.map((message) => message.commandId));
   return [
-    ...messages.filter((message) => !isWithdrawnCard(message)
+    ...messages.filter((message) => isConversationMessage(message) && !isWithdrawnCard(message)
       && (message.role !== "user" || ![...hidden].some((id) =>
         message.sourceId === id || message.text.includes(`[MissionGo attachment command ${id}]`)))),
     ...attachmentMessages.filter((message) => message.commandId !== outgoingCommandId)

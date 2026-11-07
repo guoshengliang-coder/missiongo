@@ -15,8 +15,8 @@ it("reads commentary and plans omitted by a turn summary, including tool-only pa
       { turnId: "turn", item: { type: "userMessage", id: "user", content: [{ type: "text", text: "Start" }] } },
     ], nextCursor: null };
   }, "exact-thread");
-  expect(result.messages.map(message => message.role)).toEqual(["user", ...Array(6).fill("agent"), "plan", "agent"]);
-  expect(result.messages.at(-2)?.sourceId).toBe("turn:plan");
+  expect(result.messages.map(message => message.role)).toEqual(["user", ...Array(6).fill("agent"), "plan"]);
+  expect(result.messages.at(-1)?.sourceId).toBe("turn:plan");
   expect(result.nextCursor).toBeUndefined();
   expect(calls.map(call => call.method)).toEqual(["thread/items/list", "thread/items/list"]);
 });

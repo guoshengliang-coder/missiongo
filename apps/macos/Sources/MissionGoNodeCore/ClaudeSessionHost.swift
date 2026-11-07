@@ -735,6 +735,7 @@ public struct ClaudeStreamSnapshot: Sendable {
     }
 
     private func isVisibleUserMessage(_ value: [String: Any]) -> Bool {
+        if value["isMeta"] as? Bool == true || value["isCompactSummary"] as? Bool == true { return false }
         if let origin = value["origin"] as? [String: Any], origin["kind"] as? String == "human" { return true }
         guard let id = value["uuid"] as? String else { return false }
         return visibleUserMessageIds.contains(id)

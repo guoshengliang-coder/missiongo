@@ -1,3 +1,4 @@
+import { isConversationMessage } from "@missiongo/domain";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { AgentSessionSnapshot } from "./agent-session-store.js";
@@ -90,7 +91,7 @@ export class AgentHistory {
   get(accountId: string, sessionId: string, id: string): HistoryPage {
     const row = this.page(accountId, sessionId, id);
     return { status: row.status === "idle" ? "pending" : row.status,
-      messages: row.result_json ? JSON.parse(row.result_json) : [],
+      messages: row.result_json ? (JSON.parse(row.result_json) as Message[]).filter(isConversationMessage) : [],
       ...(row.next_id ? { nextCursor: row.next_id } : {}), ...(row.error ? { error: row.error } : {}) };
   }
 
@@ -140,7 +141,7 @@ export class AgentHistory {
     const data = parsed.data;
     if (data.nextCursor === row.cursor) throw invalidInput("History cursor did not advance.");
     if (data.error && (data.messages.length || data.nextCursor)) throw invalidInput("History error cannot contain a page.");
-    const messages = data.messages.map(message => ({ ...message, id: `history:${message.sourceId}`,
+    const messages = data.messages.filter(isConversationMessage).map(message => ({ ...message, id: `history:${message.sourceId}`,
       occurredAt: message.occurredAt ?? "" }));
     const payload = JSON.stringify(messages);
     if (Buffer.byteLength(payload) > 30 * 1024 * 1024) throw invalidInput("History page is too large.");

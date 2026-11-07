@@ -25,10 +25,10 @@
     "path": "apps/node",
     "npmPackage": "@missiongo/node",
     "command": "missiongo-node",
-    "version": "0.1.13"
+    "version": "0.1.14"
   },
   "web": {
-    "version": "1.1.36"
+    "version": "1.1.37"
   },
   "iconSource": "assets/brand/icon.svg",
   "taglines": {
