@@ -44,7 +44,9 @@ test("registered plan presents its exact scope and validation without classifier
  await page.route("**/api/v1/agent-sessions**",route=>route.fulfill({json:new URL(route.request().url()).pathname==="/api/v1/agent-sessions" ? {sessions:[session]} : session}));
  await page.goto(`/?product=${productId}&console=agent&session=${id}`);
  const banner=page.locator(".agent-plan-inline-approval");await expect(banner).toBeVisible();
- const plan=page.locator("article[data-agent-message-id]").filter({ has: page.locator(".agent-plan-inline-approval") });
+ await expect(page.locator("article[data-agent-message-id]")).toHaveCount(0);
+ const plan=page.getByRole("region",{name:"方案记录",exact:true});
+ await plan.getByText("查看已登记的历史方案",{exact:true}).click();
  await expect(plan).toBeVisible();await expect(plan).toContainText(session.planApproval.plan);await expect(plan).toContainText(session.planApproval.validation);await expect(plan).toContainText("AND-400");
  await expect(banner.getByRole("button",{name:"批准",exact:true})).toBeEnabled();
 });

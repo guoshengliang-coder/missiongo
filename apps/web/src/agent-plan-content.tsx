@@ -65,7 +65,7 @@ export function UnlinkedPlanRecord({session, blocked = false}: {session: AgentSe
   const {t} = useI18n();
   const plan = currentPlan(session);
   if (!plan?.plan?.trim()) return null;
-  return <section className="agent-console-attention-banner" aria-label={t("agentPlanRecord")}>
+  return <section className="agent-console-attention-banner agent-plan-record" aria-label={t("agentPlanRecord")}>
     <div>
       <p role="status">{t("agentPlanSourcePending")}</p>
       {plan.documentId
