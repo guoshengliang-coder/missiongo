@@ -40,6 +40,14 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     await expect(page.locator(".agent-console-conversation textarea")).toHaveCount(0);
     failed = false; await star.click(); await expect(activeRow.getByRole("button", { name: "取消收藏", exact: true })).toHaveAttribute("aria-pressed", "true");
     expect(writes).toBe(2);
+    const listStar = activeRow.getByRole("button", { name: "取消收藏", exact: true });
+    const timeBox = await activeRow.locator("time").boundingBox();
+    const listStarBox = await listStar.boundingBox();
+    expect(listStarBox!.y).toBeGreaterThanOrEqual(timeBox!.y + timeBox!.height);
+    expect(Math.abs((listStarBox!.x + listStarBox!.width / 2) - (timeBox!.x + timeBox!.width / 2))).toBeLessThanOrEqual(4);
+    const rowBox = await activeRow.boundingBox(), openBox = await activeRow.locator(".agent-console-session").boundingBox();
+    expect(openBox!.width).toBeGreaterThanOrEqual(rowBox!.width - 2);
+    await page.screenshot({ path: testInfo.outputPath("favorite-list-states.png"), fullPage: true });
     await activeRow.locator(".agent-console-session").click();
     const draft = page.locator(".agent-console-reply textarea"); await draft.fill("Keep favorite draft");
     await expect(page.locator(".agent-console-attention-banner")).toHaveCount(0);
@@ -53,7 +61,10 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
       const box = await detailStar.boundingBox(); expect(box!.height).toBeGreaterThanOrEqual(44);
     }
     await page.screenshot({ path: testInfo.outputPath("favorite-detail.png"), fullPage: true });
+    if (width === 1440) await page.screenshot({ path: testInfo.outputPath("favorite-selected.png"), clip: { x: 0, y: 0, width: 1440, height: 360 } });
     await detailStar.click(); await expect(draft).toHaveValue("Keep favorite draft");
+    await expect(page.locator(".agent-console-actions").getByRole("button", { name: "收藏会话", exact: true })).toHaveAttribute("aria-pressed", "false");
+    if (width === 1440) await page.screenshot({ path: testInfo.outputPath("favorite-unselected.png"), clip: { x: 0, y: 0, width: 1440, height: 360 } });
     await page.reload();
     // The filter deep link must include archived favorites and keep their details read-only.
     await page.goto(`/?product=${fixture.productId}&console=agent&consoleFilter=favorites&session=archived-chat`);
