@@ -43,9 +43,8 @@ export function DeliveryCards({productId,sessionId}:{productId:string;sessionId:
     onSuccess:()=>client.invalidateQueries({queryKey:["merge-deliveries",productId]})});
   const rows=query.data?.deliveries.filter(d=>d.sessionId===sessionId)??[];
   if(query.isError) return <p role="alert" className="inline-error">{t("mergeLoadError")} <button type="button" className="secondary-button" onClick={()=>void query.refetch()}>{t("retry")}</button></p>;
-  const batches=query.data?.batches.filter(b=>b.sessionId===sessionId)??[];
-  if(!rows.length&&!batches.length) return null;
-  return <div className="merge-delivery-cards">{batches.map(b=><IntegrationProgress key={b.id} batch={b}/>)}{rows.map(d=><section className="merge-delivery-card" key={d.id}>
+  if(!rows.length) return null;
+  return <div className="merge-delivery-cards">{rows.map(d=><section className="merge-delivery-card" key={d.id}>
     <strong>{t(d.state==="proposed"?"mergeOffer":d.state==="confirmed"?"mergeConfirmed":"mergeInBatch")}</strong>
     <p>{d.summary}</p><small>{d.itemKeys.join(" · ")} · {d.requiredArtifacts.join(" / ") || d.noReleaseReason}</small>
     <details><summary>{t("mergeDetails")}</summary><p>{d.validation}</p>
@@ -63,6 +62,21 @@ export function DeliveryCards({productId,sessionId}:{productId:string;sessionId:
     {d.state!=="batched"&&<small>{t("mergeConfirmHelp")}</small>}
   </section>)}
   {mutation.isError&&<p role="alert" className="inline-error">{t("mergeChanged")}</p>}</div>;
+}
+
+/** Batch bookkeeping is deliberately outside the native transcript. */
+export function IntegrationDetails({productId,sessionId}:{productId:string;sessionId:string}) {
+  const {t}=useI18n(),query=useDeliveries(productId);
+  const [open,setOpen]=useState(false);
+  useEffect(()=>setOpen(false),[productId,sessionId]);
+  const batches=query.data?.batches.filter(batch=>batch.sessionId===sessionId)??[];
+  if(!batches.length)return null;
+  return <>
+    <button type="button" className="secondary-button" onClick={()=>setOpen(true)}>{t("integrationDetails")}</button>
+    {open&&<Modal title={t("integrationDetails")} subtitle="" onClose={()=>setOpen(false)} wide scrolls>
+      {batches.map(batch=><IntegrationProgress key={batch.id} batch={batch}/>)}
+    </Modal>}
+  </>;
 }
 
 export function PendingMergeButton({productId,onSession}:{productId:string;onSession:(id:string)=>void}) {
