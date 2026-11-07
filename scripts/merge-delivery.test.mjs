@@ -55,9 +55,11 @@ test("verifies two actual isolated branch integrations and rejects an unintegrat
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
- test("rejects stale PR base even when expectedBase matches it", () => {
-   const run = (command, args) => command === "git" ? `${"c".repeat(40)}\trefs/heads/main` : mock()(command, args);
-   assert.throws(() => inspectDelivery({...delivery, expectedBase: pr.baseRefOid}, run), /actual target/);
+ test("tolerates a lagging GraphQL baseRefOid while the ls-remote head guard still rejects a moved base", () => {
+   const movedHead = "d".repeat(40);
+   const run = (command, args) => command === "git" && args[0] === "ls-remote" ? `${movedHead}\trefs/heads/main` : mock()(command, args);
+   assert.equal(inspectDelivery({ ...delivery, expectedBase: movedHead }, run).ready, true);
+   assert.throws(() => inspectDelivery({ ...delivery, expectedBase: pr.baseRefOid }, run), /Target base changed/);
  });
 
 test("external reconciliation proves original-head and target ancestry using real Git", async () => {
