@@ -149,6 +149,14 @@ for(const width of [320,1440]) for(const theme of ["light","dark"] as const) tes
   for(const record of Object.values(batch.presentation.entries))record.publication="published";
   await page.reload();await page.getByRole("button",{name:"集成详情",exact:true}).click();
   await expect(progress).toContainText("全部合并完成");await expect(progress).toContainText("全部发布完成");
+  const mergedBadge=progress.locator('.integration-group-state').first().getByText("已合并",{exact:true});
+  const publishedBadge=progress.locator('.integration-group-state').first().getByText("已发布",{exact:true});
+  const badgeStyle=(el:Element)=>({background:getComputedStyle(el).backgroundColor,color:getComputedStyle(el).color,borderRadius:getComputedStyle(el).borderRadius});
+  expect(await publishedBadge.evaluate(badgeStyle)).toEqual(await mergedBadge.evaluate(badgeStyle));
+  await progress.getByRole("button",{name:/会话控制台修复/}).click();
+  const statuses=progress.locator(".integration-statuses");
+  expect(await statuses.getByText("已发布",{exact:true}).evaluate(badgeStyle)).toEqual(await statuses.getByText("已合并",{exact:true}).evaluate(badgeStyle));
+  await progress.getByRole("button",{name:"返回集成总览",exact:true}).click();
   await expect(progress.locator('[data-screen="overview"]')).not.toContainText("未发布记录");
   await page.screenshot({path:testInfo.outputPath("integration-completed.png"),fullPage:true});
   for(const [publication,label] of [["not_required","无需发布"],["unknown","发布待核实"],["pending","待发布"]]) {

@@ -56,7 +56,7 @@ export function IntegrationProgress({batch}:{batch:Batch}) {
         const e=state?.entries[id],p=batch.presentation?.entries[id],phase=integrationStage(batch,id),pub=integrationPublication(batch,id);
         return <button type="button" className="integration-group" key={id} onClick={()=>enter("detail",id)}>
           <span className="integration-group-copy"><strong>{p?.title||e?.itemKeys.join(" · ")||t("integrationUnknownGroup")}</strong><small>{(e?.itemKeys??p?.itemKeys)?.join(" · ")}</small></span>
-          <span className="integration-group-state"><span data-complete={phase==="merged"}>{t(integrationStageLabels[phase])}</span><span>{t(integrationPublicationLabels[pub])}</span></span><ChevronRight size={18} aria-hidden="true"/>
+          <span className="integration-group-state"><span data-complete={phase==="merged"}>{t(integrationStageLabels[phase])}</span><span data-complete={pub==="published"}>{t(integrationPublicationLabels[pub])}</span></span><ChevronRight size={18} aria-hidden="true"/>
         </button>;
       })}</div>
       {!order.length&&<p>{t("integrationPlanning")}</p>}
@@ -65,7 +65,7 @@ export function IntegrationProgress({batch}:{batch:Batch}) {
     <div className="integration-screen" data-screen="detail" hidden={screen!=="detail"}>
       <button type="button" className="secondary-button integration-back" onClick={back}><ArrowLeft size={16}/>{t("integrationBackOverview")}</button>
       <h3 className="integration-group-title">{step?.group||t("integrationGroup")}</h3><p className="integration-note">{(entry?.itemKeys??presentation?.itemKeys)?.join(" · ")}</p>
-      <div className="integration-statuses"><span data-complete={stage==="merged"}>{t(integrationStageLabels[stage])}</span><span>{t(integrationPublicationLabels[integrationPublication(batch,selected)])}</span></div>
+      <div className="integration-statuses"><span data-complete={stage==="merged"}>{t(integrationStageLabels[stage])}</span><span data-complete={integrationPublication(batch,selected)==="published"}>{t(integrationPublicationLabels[integrationPublication(batch,selected)])}</span></div>
       <section><h4>{t("integrationChangeDescription")}</h4><p>{title}</p></section>
       <dl className="integration-facts">
         <dt>{t("integrationRepairOutcome")}</dt><dd>{t(entry?.repair?"integrationRepairPending":entry?.repairs.length?"integrationRepairsRecorded":"integrationNoRepairs")}</dd>
