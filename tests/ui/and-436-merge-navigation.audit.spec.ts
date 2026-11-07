@@ -58,6 +58,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     await page.getByRole("button", { name: "待合并 1", exact: true }).click();
     const dialog = page.getByRole("dialog");
     await dialog.locator(".merge-row input").check();
+    await dialog.getByRole("button", { name: "下一步：配置 Agent" }).click();
     if (stalePoll) {
       await page.clock.runFor(5_000);
       await expect.poll(() => beforeReads).toBeGreaterThan(1);
@@ -68,10 +69,10 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
       new MutationObserver(() => { if (document.body.textContent?.includes("该会话已失效")) state.unavailableSeen = true; })
         .observe(document.body, { childList: true, subtree: true });
     });
-    await dialog.getByRole("button", { name: "开始合并（1 项）" }).click();
+    await dialog.getByRole("button", { name: "开始处理" }).click();
     await expect.poll(() => freshReads).toBeGreaterThan(0);
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByRole("status")).toHaveText("正在读取对话…");
+    await expect(dialog.getByRole("status").filter({hasText:"正在读取对话…"})).toHaveText("正在读取对话…");
     await expect(page.locator(".agent-console-heading")).toHaveCount(0);
     release();
     if (failure) {

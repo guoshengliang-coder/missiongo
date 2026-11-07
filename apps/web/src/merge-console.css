@@ -1,5 +1,5 @@
 .merge-entry { min-height: 44px; flex-shrink: 0; }
-.merge-delivery-cards, .merge-dialog { display: grid; gap: 16px; }
+.merge-dialog { display: grid; gap: 16px; }
 .merge-delivery-card { background: var(--surface-strong); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 16px; font-size: var(--text-base); overflow-wrap: anywhere; }
 .merge-delivery-card p { margin: 8px 0; }
 .merge-delivery-card small, .merge-row small, .merge-publish small { display: block; color: var(--muted); font-size: var(--text-sm); }
@@ -23,8 +23,6 @@
 }
 
 .merge-row input[type="checkbox"], .merge-publish input[type="checkbox"] { width: 18px; min-width: 18px; height: 18px; margin: 0; accent-color: var(--mint-dark); }
-.merge-config > .agent-settings-controls { margin-top: 12px; }
-
 .integration-modal .modal.wide.scrolls { width: min(760px, 100%); height: min(760px, calc(100vh - 36px)); height: min(760px, calc(100dvh - 36px)); overflow: hidden; display: flex; flex-direction: column; }
 .integration-modal .modal-content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .integration-modal .modal > header { flex-shrink: 0; }
@@ -75,3 +73,34 @@
   .integration-outcomes > div { display: flex; align-items: center; justify-content: space-between; padding: 12px; gap: 12px; }
   .integration-outcomes strong { font-size: var(--text-lg); }
 }
+
+/* AND-446: one compact decision/status surface, shared by both chat entries. */
+.merge-delivery-notices { display: grid; gap: 10px; }
+.merge-delivery-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 16px; border: 1px solid var(--warn-line); border-left: 3px solid var(--warn-text); border-radius: var(--radius-md); background: var(--warn-bg); color: var(--warn-text); font-size: var(--text-base); overflow-wrap: anywhere; }
+.merge-delivery-notice.confirmed { background: var(--accent-bg); border-color: var(--accent-line); border-left-color: var(--accent-text); color: var(--accent-text); }
+.merge-delivery-icon { display: flex; align-items: center; justify-content: center; flex: 0 0 32px; min-height: 32px; border-radius: var(--radius-sm); background: var(--warn-line); }
+.merge-delivery-notice.confirmed .merge-delivery-icon { background: var(--accent-line); }
+.merge-delivery-copy { flex: 1; min-width: 0; }
+.merge-delivery-copy strong { font-weight: 700; }
+.merge-delivery-copy p { margin: 4px 0 0; font-size: var(--text-sm); }
+.merge-delivery-choices { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+@media (max-width: 520px) {
+  .merge-delivery-notice { padding: 12px; }
+  .merge-delivery-choices { flex-basis: 100%; justify-content: flex-end; }
+}
+
+/* Settings remain the shared AgentSettingsControls / Select, with a real layout gap. */
+.merge-config { display: grid; gap: 12px; }
+.merge-agent-settings { margin-top: 12px; }
+.merge-selection-step, .merge-configuration-step, .merge-delivery-detail { display: grid; gap: 16px; }
+.merge-selection-step[hidden], .merge-configuration-step[hidden] { display: none; }
+.merge-steps { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 0; padding: 0 0 16px; list-style: none; border-bottom: 1px solid var(--line); color: var(--muted); font-size: var(--text-base); }
+.merge-steps [aria-current="step"] { color: var(--ink); font-weight: 600; }
+.merge-selection-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; font-size: var(--text-sm); color: var(--muted); }
+.merge-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; }
+.merge-row label { flex: 1 1 260px; min-width: 0; }
+.merge-detail-button { min-height: 44px; flex-shrink: 0; }
+.merge-config-fields label { display: grid; gap: 8px; min-width: 0; }
+.merge-delivery-detail { overflow-wrap: anywhere; }
+.merge-delivery-detail > button { justify-self: start; }
+.merge-active-notice { font-size: var(--text-md); }
