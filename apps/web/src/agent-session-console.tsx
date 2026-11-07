@@ -1231,7 +1231,7 @@ export function AgentSessionConsole({
                         ? <AgentArtifactMarkdown text={message.text} sessionId={selected.agentSessionId} messageId={message.id} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />
                         : <MarkdownText>{permissionReplyText(sessionQuery.data?.messages.flatMap(message => message.questions ?? []) ?? [], message.text)}</MarkdownText>)}
                       {message.attachmentData && selected.agentSessionId && <ChatAttachments sessionId={selected.agentSessionId} attachments={message.attachmentData} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />}
-                      {message.id === planMessages.planMessageId && sessionQuery.data && <InlinePlanApproval key={`${sessionQuery.data.id}:${currentPlan(sessionQuery.data)?.revision}`} session={sessionQuery.data} blocked={showPermissionApproval || pending || sendingSelected || cancellingSelected} />}
+                      {message.id === planMessages.planMessageId && sessionQuery.data && <InlinePlanApproval onRequestChanges={()=>document.querySelector<HTMLTextAreaElement>(".agent-console-reply textarea")?.focus()} key={`${sessionQuery.data.id}:${currentPlan(sessionQuery.data)?.revision}`} session={sessionQuery.data} blocked={showPermissionApproval || pending || sendingSelected || cancellingSelected} />}
                       {message.questions && (
                         <AgentSessionQuestions
                           questions={message.questions}

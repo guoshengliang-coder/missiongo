@@ -1,3 +1,4 @@
+import { PlanDocumentPage } from "./plan-document-page";
 import { PendingMergeButton, MergeProgressBadge, useMergeProgress } from "./merge-console";
 import { PRODUCT_ICON_URL } from "./branding.generated";
 import { MediaLightbox } from "./media-lightbox";
@@ -1228,6 +1229,9 @@ export function App() {
       </main>
     );
   }
+
+  const planDocumentId = new URLSearchParams(window.location.search).get("planDocument");
+  if (planDocumentId) return <PlanDocumentPage documentId={planDocumentId} />;
 
   if (settings.route) {
     if (!bootstrapQuery.data) return <BootSkeleton />;

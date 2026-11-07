@@ -141,6 +141,7 @@ export interface PlanApprovalRecordView {
   readonly keys: readonly string[];
   readonly plan: string;
   readonly validation: string;
+  readonly documentId?: string;
   /** Latest approval written for this identity, when one exists. */
   readonly approval?: {
     readonly revision: string;
@@ -500,7 +501,7 @@ export class McpAgentSessionReads {
         revision: string; plan_hash: string; scope_json: string; plan_text: string; validation_text: string;
         source: "web" | "native"; command_id: string | null; approved_at: string;
       } | undefined;
-      const proposal = request.proposal_json ? JSON.parse(request.proposal_json) as { keys: string[]; plan: string; validation: string } | null : null;
+      const proposal = request.proposal_json ? JSON.parse(request.proposal_json) as { keys: string[]; plan: string; validation: string; documentId?: string } | null : null;
       const recovery = db.prepare(`SELECT previous_revision AS previousRevision,session_id AS sessionId,
         plan_source_id AS planSourceId,acceptance_source_id AS acceptanceSourceId,
         native_accepted_at AS nativeAcceptedAt,recovered_at AS recoveredAt FROM implementation_plan_recoveries
@@ -512,7 +513,7 @@ export class McpAgentSessionReads {
       const scopeJson = request.scope_json ?? approval?.scope_json ?? "[]";
       const keys = (JSON.parse(scopeJson) as Array<{ key: string }>).map((entry) => entry.key);
       let scopeValid = false;
-      try { scopeValid = this.plans.scope(keys) === scopeJson; } catch { /* A scoped item disappearing invalidates the frozen scope. */ }
+      try { scopeValid = this.plans.proposal(accountId, request.identity_key)?.valid ?? this.plans.scope(keys) === scopeJson; } catch { /* A scoped item disappearing invalidates the frozen scope. */ }
       let approved = false;
       if (scopeValid) {
         try { approved = this.plans.approved(accountId, request.identity_key, request.revision); } catch { approved = false; }
@@ -523,6 +524,7 @@ export class McpAgentSessionReads {
         keys,
         plan: proposal?.plan ?? approval?.plan_text ?? "",
         validation: proposal?.validation ?? approval?.validation_text ?? "",
+        ...(proposal?.documentId ? { documentId: proposal.documentId } : {}),
         ...(approval ? { approval: {
           revision: approval.revision,
           current: approval.revision === request.revision,

@@ -289,6 +289,7 @@ function insightSearch(input: InsightQuery & {productIds?: string[]} & Partial<I
 }
 
 export const api = {
+  getPlanDocument: (id:string) => request<{id:string;version:number;rounds:{key:string;number:number}[];markdown:string;sha256:string}>(`/api/v1/plan-documents/${encodeURIComponent(id)}`),
   personalAttentionCount: () => request<PersonalAttentionCount>("/api/v1/attention/count"),
   personalTodos: (filter:{productId?:string;beforeSequence?:number}={}) => {
     const query=new URLSearchParams();for(const [key,value] of Object.entries(filter))if(value!==undefined)query.set(key,String(value));
