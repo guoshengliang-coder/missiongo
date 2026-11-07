@@ -71,8 +71,8 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
       await expect(page.locator(".agent-console-session-heading strong")).toHaveText(`${keys} · 这是什么问题？`);
       await expect(page.locator(".agent-console-heading h2")).toContainText(`${keys} · 这是什么问题？`);
       await expect(page.locator('[data-session-category="unlinked"]')).toHaveCount(0);
-      await expect(page.locator('.agent-console-session [data-session-category="linked"]')).toHaveText("研发会话");
-      await expect(page.locator('.agent-console-heading h2 [data-session-category="linked"]')).toHaveText("研发会话");
+      await expect(page.locator('.agent-console-session [data-session-category="linked"]')).toHaveText("条目会话");
+      await expect(page.locator('.agent-console-heading h2 [data-session-category="linked"]')).toHaveText("条目会话");
       await expect(page.getByRole("button", { name: /^运行中 \d+$/ }).locator("small")).toHaveText("1");
       await expect(page.locator(".agent-console-dispatch-head button")).toHaveCount(items.length);
       await expect(page.getByText("原项目会话的消息历史", { exact: true })).toBeVisible();
