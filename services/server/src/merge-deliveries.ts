@@ -4,7 +4,7 @@ import { normalizeCompletion, sameCompletion } from "./completion.js";
 import { reconciliationActionSchema, combinedValidationSchema, type ReconciliationAction, type ReconciliationState } from "./merge-reconciliation.js";
 import { legacyIntegratorPrompt } from "./legacy-merge-authorization.js";
 import { readRecoveryTransport } from "./merge-recovery-transport.js";
-import type { MergeIntegration, MergeReconciliationPreview } from "@missiongo/contracts";
+import type { MergeIntegration, MergeReconciliationPreview, MergeBatchPresentation } from "@missiongo/contracts";
 import { integrationActionSchema, integrationDigest, applyIntegrationAction, assertIntegrationMerge, freshIntegrationCheck, integrationDenied, type IntegrationAction } from "./merge-integration.js";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -40,6 +40,7 @@ export type DeliveryInput = z.infer<typeof deliverySchema>;
 type Evidence = z.infer<typeof mergeEvidenceSchema>;
 type Identity = { dispatchId?: string; sessionId?: string };
 interface Delivery extends DeliveryInput {
+  displayTitle?: string;
   id: string; productId: string; accountId: string; clientId: string; identity: Identity;
   sessionId: string; revision: string; scope: string; activity: string;
   state: "proposed" | "confirmed" | "withdrawn" | "batched" | "merged";
@@ -146,6 +147,7 @@ export class MergeDeliveries {
       if (existing.some(d => d.state === "batched")) throw conflict("merge_batch_active", "这些改动已有合并批次，请核实原批次。");
       for (const d of existing) { d.state = "withdrawn"; this.save(d); }
       const d: Delivery = {...input,itemKeys:keys,id:randomUUID(),productId,accountId,clientId,identity,sessionId,
+        displayTitle:keys.map(key=>this.store.getWorkItem(key).title).join(" / "),
         itemScopes:Object.fromEntries(keys.map(key=>[key,this.scope([key])])),reconfirmation,revision:digest({...input,itemKeys:keys}),scope:this.scope(keys),activity:this.activity(sessionId),state:"proposed",createdAt:new Date().toISOString()};
       this.db.connection.prepare("INSERT INTO merge_deliveries(id,product_id,account_id,client_id,request_key,state,data_json) VALUES (?,?,?,?,?,?,?)")
         .run(d.id,productId,accountId,clientId,requestKey,d.state,JSON.stringify(d));
@@ -191,7 +193,39 @@ export class MergeDeliveries {
   }
   batches(productId: string, accountId: string) {
     return (this.db.connection.prepare("SELECT data_json FROM merge_batches WHERE product_id=? AND account_id=? ORDER BY rowid DESC LIMIT 20")
-      .all(productId,accountId) as {data_json:string}[]).map(row => JSON.parse(row.data_json) as Batch);
+      .all(productId,accountId) as {data_json:string}[]).map(row => {
+        const batch=JSON.parse(row.data_json) as Batch;
+        return {...batch,presentation:this.presentation(batch)};
+      });
+  }
+  /** Historical publication is read from formal receipts for this PR, not current
+   * item status, free-form progress, or the fact that a batch was finished. */
+  private presentation(b:Batch):MergeBatchPresentation {
+    return {entries:Object.fromEntries(b.deliveries.map(id=>{
+      const d=this.read<Delivery>("merge_deliveries",id),url=`${d.repository}/pull/${d.pullRequest}`;
+      const releases:MergeBatchPresentation["entries"][string]["releases"]=[];
+      let publishedItems=0,knownItems=0;
+      for(const key of d.itemKeys) {
+        const timeline=this.store.getTimeline(key).filter(e=>!e.historySourceKey);
+        // Each receipt covers its own item's complete scope, not the PR union.
+        const receipt=[...timeline].reverse().find(e=>{
+          if(e.eventType!=="release_evidence_added"&&!(e.eventType==="status_changed"&&e.toStatus==="pending_verification"))return false;
+          const p=e.payload;
+          try {if(!sameCompletion(normalizeCompletion(p),{kind:"github",url}))return false;}catch{return false;}
+          return typeof p.receiptDigest==="string"&&/^[a-f0-9]{64}$/.test(p.receiptDigest)
+            &&sha.safeParse(p.deployedCommit).success&&Array.isArray(p.releases)&&p.releases.length>0
+            &&p.releases.every((r:unknown)=>z.object({artifact:z.string().min(1),version:z.string().min(1),sourceCommit:sha}).safeParse(r).success);
+        });
+        if(receipt) {
+          publishedItems++;knownItems++;
+          for(const r of receipt.payload.releases as {artifact:string;version:string;sourceCommit:string}[])
+            if(!releases.some(previous=>previous.artifact===r.artifact&&previous.sourceCommit===r.sourceCommit))releases.push({...r,checkedAt:receipt.createdAt});
+        } else if(!this.itemBlocker(d,key))knownItems++;
+      }
+      const publication=!d.requiredArtifacts.length&&d.noReleaseReason?"not_required":publishedItems===d.itemKeys.length?"published":publishedItems?"partial":knownItems===d.itemKeys.length?"pending":"unknown";
+      return [id,{itemKeys:d.itemKeys,title:d.displayTitle??d.itemKeys.map(key=>this.store.getWorkItem(key).title).join(" / "),summary:d.summary,pullRequestUrl:url,
+        requiredArtifacts:d.requiredArtifacts,noReleaseReason:d.noReleaseReason,publication,releases}];
+    }))};
   }
   start(accountId: string, requestKey: string, selection: {id:string;revision:string}[], config: FreeSessionConfig, publish: boolean, integrationProtocol?: 1) {
     return this.db.transaction(() => {

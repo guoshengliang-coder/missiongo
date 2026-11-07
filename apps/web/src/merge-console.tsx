@@ -1,7 +1,7 @@
 import { GitMerge, Plus } from "lucide-react";
+import { IntegrationProgress } from "./integration-details";
 import { localizedErrorText } from "./error-text";
-import { MergeReconciliation } from "./merge-reconciliation";
-import type { MergeIntegration } from "@missiongo/contracts";
+import type { MergeIntegration, MergeBatchPresentation } from "@missiongo/contracts";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { defaultAgentMode, type AgentKind } from "@missiongo/domain";
@@ -20,7 +20,7 @@ interface Delivery {
   itemKeys:string[];head:string;requiredArtifacts:string[];noReleaseReason?:string;pullRequestUrl:string;
   reconfirmation?:boolean;blocker?:string;evidence:{checkedAt:string;source:string};
 }
-interface Batch {integration?:MergeIntegration;id:string;sessionId:string;state:string;deliveries:string[];publish:boolean;results:Record<string,{status:string;detail:string}>}
+export interface Batch {presentation?:MergeBatchPresentation;integration?:MergeIntegration;id:string;sessionId:string;state:string;deliveries:string[];publish:boolean;results:Record<string,{status:string;detail:string}>}
 const post=<T,>(path:string,body:unknown)=>request<T>(path,{method:"POST",body:JSON.stringify(body)});
 const useDeliveries=(productId:string)=>useQuery({
   queryKey:["merge-deliveries",productId],
@@ -98,7 +98,7 @@ export function IntegrationDetails({productId,sessionId}:{productId:string;sessi
   if(!batches.length)return null;
   return <>
     <button type="button" className="secondary-button" onClick={()=>setOpen(true)}>{t("integrationDetails")}</button>
-    {open&&<Modal title={t("integrationDetails")} subtitle="" onClose={()=>setOpen(false)} wide scrolls>
+    {open&&<Modal title={t("integrationDetails")} subtitle="" onClose={()=>setOpen(false)} wide scrolls className="integration-modal">
       {batches.map(batch=><IntegrationProgress key={batch.id} batch={batch}/>)}
     </Modal>}
   </>;
@@ -238,37 +238,4 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
       </div>
     </Modal>}
   </>;
-}
-
-function IntegrationProgress({batch}:{batch:Batch}) {
-  const {t,formatTime}=useI18n(),state=batch.integration;
-  if(!state)return <section className="merge-delivery-card"><p>{t("integrationLegacy")}</p><MergeReconciliation batchId={batch.id}/></section>;
-  const plan=state.plans.at(-1);
-  const order=plan?.entries.map(e=>e.deliveryId)??Object.keys(state.entries);
-  const labels={queued:"integrationQueued",investigating:"integrationInvestigating",repairing:"integrationRepairing",waiting_ci:"integrationWaiting",ready:"integrationReady",merged:"integrationMerged",blocked:"integrationBlocked"} as const;
-  return <section className="merge-delivery-card integration-progress" aria-label={t("integrationTitle")}>
-    <MergeReconciliation batchId={batch.id}/>
-    <strong>{t(batch.state==="finished"?"integrationFinished":"integrationTitle")}</strong>
-    {plan?<><p>{plan.summary}</p><p>{t("integrationValidation")}: {plan.validation}</p></>:<p>{t("integrationPlanning")}</p>}
-    <ol>{order.map(id=>{const e=state.entries[id];if(!e)return null;const result=batch.results[id],step=plan?.entries.find(row=>row.deliveryId===id);
-      const status=result?.status==="merged"?"merged":result?.status==="blocked"?"blocked":e.progress;
-      return <li key={id}><strong>{e.itemKeys.join(" · ")}</strong>{" · "}<span>{t(labels[status])}</span>
-        <p>{result?.detail||e.detail||step?.reason||t("integrationPlanning")}</p>
-        {step&&<small>{t("integrationGroup")}: {step.group}{step.dependsOn.length?` · ${t("integrationDependencies")}: ${step.dependsOn.map(dep=>state.entries[dep]?.itemKeys.join(" / ")).join(" · ")}`:""}</small>}
-        <details><summary>{t("integrationEvidence")}</summary>
-          <p>{t("integrationOriginal")}: <code>{e.originalHead}</code></p><p>{t("integrationCurrent")}: <code>{e.head}</code></p>
-          {e.repair&&<p>{t("integrationRepairPending")}: {e.repair.reason}</p>}
-          {e.repairs.map(r=><div key={r.id}><p>{r.reason}</p><p><code>{r.fromHead}</code> → <code>{r.head}</code></p><p>{r.validation}</p><small>{formatTime(r.at)}</small></div>)}
-          {e.check&&<p>{e.check.validation} · {formatTime(e.check.checkedAt)}</p>}
-          {step&&<p>{t("integrationValidation")}: {step.validation}</p>}
-        </details>
-      </li>;
-    })}</ol>
-    {state.finalValidation&&<p>{t("integrationCombined")}: {state.finalValidation.validation}</p>}
-    {batch.publish&&Object.values(batch.results).some(r=>r.status==="blocked")&&<p role="status">{t("integrationPublishHeld")}</p>}
-    <details><summary>{t("integrationHistory")}</summary>
-      {state.plans.map((p,i)=><p key={i}>{i+1}. {p.summary} · {formatTime(p.at)}</p>)}
-      {state.events.map(e=><p key={e.id}>{e.detail} · {formatTime(e.at)}</p>)}
-    </details>
-  </section>;
 }

@@ -552,6 +552,7 @@ describe("AND-439 batch reconciliation",()=>{
     const f=await recoveryFixture({publish:true});f.merged();
     f.store.transitionWorkItem({itemKey:f.item.key,actor:"human",to:"pending_verification",reason:"manual_override",note:"Human move",attribution:{accountId:config.id}});
     expect(()=>f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id)).toThrow(/发布凭据/);
+    expect(f.merges.batches(f.item.productId,f.owner.id)[0]!.presentation.entries[f.d.id]!.publication).not.toBe("published");
   });
   it("does not let later conversation input block an independently published unchanged delivery",async()=>{
     const f=await recoveryFixture({publish:true});f.merged();
@@ -567,6 +568,9 @@ describe("AND-439 batch reconciliation",()=>{
     expect(f.store.getTimeline(f.item.key)).toEqual(before);
     f.store.transitionWorkItem({itemKey:f.item.key,actor:"human",to:"ready",reason:"verification_failed",note:"New rework",attribution:{accountId:config.id}});
     expect(f.preview().entries[0]?.items[0]?.blocker).toBeTruthy();
+    const display=f.merges.batches(f.item.productId,f.owner.id).find(b=>b.id===f.b.id)!.presentation.entries[f.d.id]!;
+    expect(display.publication).toBe("published");
+    expect(display.releases).toMatchObject([{artifact:"web",version:"test",sourceCommit:"f".repeat(40)}]);
   });
   it("closes the original external-merge batch after supplementing a manually advanced item",async()=>{
     const f=await recoveryFixture({publish:true,artifacts:["web","androidApp"]});

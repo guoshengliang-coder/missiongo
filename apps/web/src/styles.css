@@ -68,6 +68,9 @@
   --status-hold-fg: #8a5b11; --status-hold-bg: #fff0cf;
   --status-verify-fg: #7a3d9d; --status-verify-bg: #f2e4fb;
   --status-done-fg: #377248; --status-done-bg: #e3f4e7;
+  /* Integration outcomes: the approved blue merge / purple publication palette. */
+  --integration-merged-fg: #3454a5; --integration-merged-bg: #edf2ff;
+  --integration-published-fg: #6947a0; --integration-published-bg: #f1edfc;
   --status-cancelled-fg: #8a4548; --status-cancelled-bg: #f9e3e4;
   --type-idea-fg: #8f5d0b; --type-idea-bg: #fff1cd;
   --type-requirement-fg: #4e5bc7; --type-requirement-bg: #e9ebff;
@@ -215,6 +218,8 @@
   --status-hold-fg: #ecc072; --status-hold-bg: #33280f;
   --status-verify-fg: #cfa6e8; --status-verify-bg: #2c1f3a;
   --status-done-fg: #86c896; --status-done-bg: #17301e;
+  --integration-merged-fg: #aec1ff; --integration-merged-bg: #1f2943;
+  --integration-published-fg: #d4b4f4; --integration-published-bg: #2e2342;
   --status-cancelled-fg: #ef9a9d; --status-cancelled-bg: #331e20;
   --type-idea-fg: #e8b866; --type-idea-bg: #33280f;
   --type-requirement-fg: #a3aef5; --type-requirement-bg: #222a45;
