@@ -31,7 +31,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     await page.route("**/merge-deliveries", route => route.fulfill({ json: { deliveries: [], batches: [], attentionSessionIds: ["active-chat", "independent-chat"] } }));
     await page.goto(`/?product=${fixture.productId}&console=agent`);
     const activeRow = page.locator(".agent-console-session-row").filter({ hasText: "active-chat" });
-    const star = activeRow.getByRole("button", { name: "收藏会话", exact: true });
+    const star = activeRow.getByRole("button", { name: "收藏", exact: true });
     await expect(star).toBeVisible();
     const starBox = await star.boundingBox(); expect(starBox!.width).toBeGreaterThanOrEqual(44); expect(starBox!.height).toBeGreaterThanOrEqual(44);
     await star.click();
@@ -63,7 +63,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     await page.screenshot({ path: testInfo.outputPath("favorite-detail.png"), fullPage: true });
     if (width === 1440) await page.screenshot({ path: testInfo.outputPath("favorite-selected.png"), clip: { x: 0, y: 0, width: 1440, height: 360 } });
     await detailStar.click(); await expect(draft).toHaveValue("Keep favorite draft");
-    await expect(page.locator(".agent-console-actions").getByRole("button", { name: "收藏会话", exact: true })).toHaveAttribute("aria-pressed", "false");
+    await expect(page.locator(".agent-console-actions").getByRole("button", { name: "收藏", exact: true })).toHaveAttribute("aria-pressed", "false");
     if (width === 1440) await page.screenshot({ path: testInfo.outputPath("favorite-unselected.png"), clip: { x: 0, y: 0, width: 1440, height: 360 } });
     await page.reload();
     // The filter deep link must include archived favorites and keep their details read-only.
