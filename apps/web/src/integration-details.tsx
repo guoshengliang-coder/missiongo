@@ -20,7 +20,14 @@ export function IntegrationProgress({batch}:{batch:Batch}) {
     if(previous.current===screen)return;
     const goingBack=screen==="overview"||(screen==="detail"&&(previous.current==="history"||previous.current==="evidence"));
     const target=goingBack?focusReturn.current.pop():root.current?.querySelector<HTMLButtonElement>(`[data-screen="${screen}"] button`);
-    target?.focus({preventScroll:true});previous.current=screen;
+    target?.focus({preventScroll:true});
+    // Hidden overflow containers can still be scrolled by browser focus/scroll
+    // anchoring. Reading position belongs to each screen, never the modal chrome.
+    for(let parent=root.current?.parentElement;parent;parent=parent.parentElement) {
+      if(parent.matches(".modal-fields, .modal-content, .modal"))parent.scrollTop=0;
+      if(parent.matches(".modal"))break;
+    }
+    previous.current=screen;
   },[screen]);
   function enter(next:Screen,id?:string) {
     if(document.activeElement instanceof HTMLElement)focusReturn.current.push(document.activeElement);

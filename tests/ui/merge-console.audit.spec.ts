@@ -120,6 +120,9 @@ for(const width of [320,1440]) for(const theme of ["light","dark"] as const) tes
   await expect(progress.locator("code").filter({visible:true})).toHaveCount(0);
   await progress.getByRole("button",{name:/会话控制台修复/}).click();
   await expect(progress.getByRole("button",{name:"返回集成总览"})).toBeFocused();
+  const chrome=page.getByRole("dialog").locator(".modal");
+  await expect(chrome.locator(":scope > header")).toBeInViewport();
+  expect(await chrome.evaluate(el=>el.scrollTop)).toBe(0);
   await expect(progress.getByRole("button",{name:/基础接口/})).toBeHidden();
   await progress.getByRole("button",{name:"处理经过",exact:true}).click();
   await expect(progress.getByRole("heading",{name:"处理经过",exact:true})).toBeVisible();
