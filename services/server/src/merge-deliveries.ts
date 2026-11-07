@@ -3,6 +3,7 @@ import { MissionGoError } from "./errors.js";
 import { normalizeCompletion, sameCompletion } from "./completion.js";
 import { reconciliationActionSchema, combinedValidationSchema, type ReconciliationAction, type ReconciliationState } from "./merge-reconciliation.js";
 import { legacyIntegratorPrompt } from "./legacy-merge-authorization.js";
+import { readRecoveryTransport } from "./merge-recovery-transport.js";
 import type { MergeIntegration, MergeReconciliationPreview } from "@missiongo/contracts";
 import { integrationActionSchema, integrationDigest, applyIntegrationAction, assertIntegrationMerge, freshIntegrationCheck, integrationDenied, type IntegrationAction } from "./merge-integration.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -244,12 +245,38 @@ export class MergeDeliveries {
     return this.db.transaction(()=>{
       const b=this.batch(accountId,dispatchId,id),state=b.integration;this.permit(accountId,b,true);
       if(!state)integrationDenied("未找到可核实的原始集成修复授权，请保留原批次授权边界。");
+      const recovery=action.kind==="progress"?readRecoveryTransport(action.detail):undefined;
+      if(!recovery&&b.reconciliation?.transportReceipts?.[key])throw changed();
+      if(recovery&&action.kind==="progress") {
+        if(state.events.some(e=>e.id===key))throw changed();
+        const receipt=b.reconciliation?.transportReceipts?.[key];
+        if(receipt){if(receipt.digest!==integrationDigest(action))throw changed();return b;}
+        if(Object.keys(b.reconciliation?.transportReceipts??{}).length>=1000)throw conflict("recovery_limit","兼容恢复记录已达上限，请核对历史记录。");
+        const entry=state.entries[action.deliveryId];
+        const prior=b.reconciliation?.requests.find(r=>r.id===(recovery.operation==="request"?key:recovery.requestId));
+        if(action.phase!=="investigating"||!entry||!b.deliveries.includes(action.deliveryId))throw changed();
+        if(recovery.operation==="request"&&"deliveryId" in recovery.action&&recovery.action.deliveryId!==action.deliveryId)throw changed();
+        if(recovery.operation==="apply"&&prior&&"deliveryId" in prior.action&&prior.action.deliveryId!==action.deliveryId)throw changed();
+        if(state.revision!==expectedRevision||entry.head!==action.expectedHead)throw changed();
+        if(recovery.operation==="request")this.requestReconciliation(accountId,dispatchId,id,key,recovery.snapshot,recovery.action);
+        else this.applyReconciliation(accountId,dispatchId,id,recovery.requestId);
+        // Read the mutation's current state; saving the old view would undo it.
+        const current=this.batch(accountId,dispatchId,id);
+        const receipts=this.reconciliation(current).transportReceipts??={};
+        receipts[key]={digest:integrationDigest(action)};
+        this.saveBatch(current);
+        return this.batch(accountId,dispatchId,id);
+      }
       const previous=state.events.find(e=>e.id===key);
       if(previous){if(previous.digest!==integrationDigest(action))throw changed();return b;}
       if(b.state!=="active"||state.revision!==expectedRevision)throw changed();
       const affected="deliveryId" in action?[action.deliveryId]:b.deliveries.filter(id=>!b.results[id]);
       for(const id of affected){if(!b.deliveries.includes(id))throw changed();this.sourceValid(this.read<Delivery>("merge_deliveries",id));}
-      applyIntegrationAction(state,action,key,b.results);this.saveBatch(b);return this.batch(accountId,dispatchId,id);
+      applyIntegrationAction(state,action,key,b.results);
+      // The legacy final_validation transport also fulfils the recovery close
+      // gate; both records bind the same complete current results and target.
+      if(action.kind==="final_validation")this.reconciliation(b).finalValidation={head:action.head,checkedAt:action.checkedAt,source:action.source,validation:action.validation,resultsDigest:digest(b.results)};
+      this.saveBatch(b);return this.batch(accountId,dispatchId,id);
     });
   }
   report(accountId: string, dispatchId: string, id: string, deliveryId: string,

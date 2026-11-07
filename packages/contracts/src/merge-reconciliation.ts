@@ -10,6 +10,7 @@ export type MergeRecoveryAction =
   | {kind:"retry_blocked";deliveryId:string;reason:string}
   | {kind:"defer_publication"|"allow_partial_publication";reason:string};
 export interface MergeReconciliationState {
+  transportReceipts?:Record<string,{digest:string}>;
   requests:{id:string;digest:string;snapshot:string;action:MergeRecoveryAction;at:string;
     decision?:"approved"|"rejected";decidedAt?:string;decidedBy?:string;appliedAt?:string}[];
   history:{at:string;action:string;requestId?:string;deliveryId?:string;previous?:unknown;detail:string}[];

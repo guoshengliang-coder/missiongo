@@ -1,4 +1,5 @@
 import { legacyIntegratorPrompt } from "./legacy-merge-authorization.js";
+import { recoveryDetailPrefix } from "./merge-recovery-transport.js";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "./app.js";
@@ -464,6 +465,43 @@ describe("AND-439 batch reconciliation",()=>{
     const login=await f.app.inject({method:"POST",url:"/api/v1/auth/login",payload:{username:f.owner.email,password:"synthetic password"}}),cookie=login.headers["set-cookie"]!.toString().split(";")[0]!;
     const approved=await f.app.inject({method:"POST",url:`/api/v1/merge-batches/${f.b.id}/reconciliation/${input.idempotencyKey}/decision`,headers:{cookie},payload:{snapshot,decision:"approved",noExecutionRemaining:true}});
     expect(approved.statusCode,approved.body).toBe(200);f.safe(await f.call("apply_merge_reconciliation",{batchId:f.b.id,dispatchId:f.b.dispatchId,requestId:input.idempotencyKey}));
+  });
+  it("recovers through the old tool catalogue without minting approval or changing ordinary progress",async()=>{
+    const f=await recoveryFixture({protocol:1});
+    f.merges.integrate(f.owner.id,f.b.dispatchId,f.b.id,0,"plan",{kind:"plan",base:"b".repeat(40),summary:"Plan",validation:"Combined",entries:[{deliveryId:f.d.id,head:f.d.head,dependsOn:[],group:"one",reason:"Fixture",validation:"Regression"}]});
+    f.merges.integrate(f.owner.id,f.b.dispatchId,f.b.id,1,"ordinary",{kind:"progress",deliveryId:f.d.id,expectedHead:f.d.head,phase:"investigating",detail:"request recovery after investigation"});
+    expect(f.preview().reconciliation?.requests).toBeUndefined();
+    f.merges.report(f.owner.id,f.b.dispatchId,f.b.id,f.d.id,{status:"blocked",head:f.d.head,detail:"External merged head differs"});
+    const snapshot=f.preview().snapshot;
+    const transport=(key:string,payload:unknown,head=f.d.head,revision=3)=>({batchId:f.b.id,dispatchId:f.b.dispatchId,expectedRevision:revision,idempotencyKey:key,
+      action:{kind:"progress",deliveryId:f.d.id,expectedHead:head,phase:"investigating",detail:recoveryDetailPrefix+JSON.stringify(payload)}});
+    const input=transport("old-request",{operation:"request",snapshot,action:{kind:"accept_merge",deliveryId:f.d.id,evidence:f.evidence}});
+    const loaded=await f.call("get_merge_batch",{batchId:f.b.id,dispatchId:f.b.dispatchId});f.safe(loaded);
+    expect(loaded.structuredContent!.recovery).toMatchObject({snapshot});expect(loaded.structuredContent!.recoveryTransport).toMatchObject({tool:"record_merge_integration"});
+    for(const options of [{scopes:["missiongo:read"]},{accountId:f.other.id}])expect((await f.call("record_merge_integration",input,options)).isError).toBe(true);
+    expect((await f.call("record_merge_integration",{...input,dispatchId:randomUUID()})).isError).toBe(true);
+    expect((await f.call("record_merge_integration",{...input,expectedRevision:1})).isError).toBe(true);
+    expect((await f.call("record_merge_integration",transport("stale",{operation:"request",snapshot:"0".repeat(64),action:{kind:"accept_merge",deliveryId:f.d.id,evidence:f.evidence}}))).isError).toBe(true);
+    expect((await f.call("record_merge_integration",transport("other-delivery",{operation:"request",snapshot,action:{kind:"accept_merge",deliveryId:randomUUID(),evidence:f.evidence}}))).isError).toBe(true);
+    expect((await f.call("record_merge_integration",{...input,idempotencyKey:"ordinary"})).isError).toBe(true);
+    f.safe(await f.call("record_merge_integration",input));f.safe(await f.call("record_merge_integration",input));
+    expect(f.preview().snapshot).toBe(snapshot);expect(f.preview().reconciliation?.requests).toHaveLength(1);
+    const applying=transport("old-apply",{operation:"apply",requestId:"old-request"});
+    expect((await f.call("record_merge_integration",applying)).isError).toBe(true);
+    expect((await f.call("record_merge_integration",transport("approve",{operation:"approve",requestId:"old-request"}))).isError).toBe(true);
+    expect((await f.call("record_merge_integration",transport("bad-json",{operation:"apply",requestId:"old-request",decision:"approved"}))).isError).toBe(true);
+    expect(f.preview().entries[0]?.result?.status).toBe("blocked");
+    f.approve({key:"old-request",snapshot});f.safe(await f.call("record_merge_integration",applying));
+    const after=f.preview(),timeline=f.store.getTimeline(f.item.key);
+    f.safe(await f.call("record_merge_integration",applying));
+    expect(f.preview()).toEqual(after);expect(f.store.getTimeline(f.item.key)).toEqual(timeline);
+    expect((await f.call("record_merge_integration",{...applying,action:{...applying.action,expectedHead:"0".repeat(40)}})).isError).toBe(true);
+    f.grant(false);expect((await f.call("record_merge_integration",applying)).isError).toBe(true);f.grant();
+    expect(after.entries[0]).toMatchObject({originalHead:f.d.head,executionHead:f.evidence.head,result:{status:"merged"}});
+    expect(()=>f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id)).toThrow();
+    f.safe(await f.call("record_merge_integration",{batchId:f.b.id,dispatchId:f.b.dispatchId,expectedRevision:4,idempotencyKey:"old-final",
+      action:{kind:"final_validation",head:f.evidence.targetHead,checkedAt:new Date().toISOString(),source:"Synthetic target checks",validation:"Combined check passed"}}));
+    expect(f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id).state).toBe("finished");
   });
   it("settles an existing reservation through external evidence without claiming it as a repair",async()=>{
     const f=await recoveryFixture({protocol:1});
