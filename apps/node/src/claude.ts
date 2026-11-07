@@ -54,7 +54,7 @@ export function claudeAnswer(request: Wire, text: string): Wire {
 function elicitationProblem(request: Wire): string | undefined {
   const schema = request.requested_schema;
   const keys = new Set(["type", "properties", "required", "additionalProperties", "title", "description", "$schema"]);
-  if ((request.mode ?? "form") !== "form" || typeof request.message !== "string" || !request.message.length || request.message.length > 16_000
+  if ((request.mode ?? "form") !== "form" || typeof request.message !== "string" || !request.message.length || request.message.length > 512_000
       || !schema || schema.type !== "object" || !schema.properties || Array.isArray(schema.properties) || typeof schema.properties !== "object"
       || Object.keys(schema.properties).length || schema.required !== undefined && (!Array.isArray(schema.required) || schema.required.length)
       || Object.keys(schema).some(key => !keys.has(key))) {

@@ -2468,5 +2468,21 @@ export class MissionGoDatabase {
       });
     }
 
+    // AND-443: native-human decisions are auditable and atomic with their domain write.
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611070503").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611070503").get()) return;
+        this.connection.exec(`CREATE TABLE native_human_confirmations (
+          account_id TEXT NOT NULL, client_id TEXT NOT NULL, tool_name TEXT NOT NULL, target_id TEXT NOT NULL,
+          request_key TEXT NOT NULL, intent_digest TEXT NOT NULL, revision TEXT NOT NULL,
+          choice TEXT NOT NULL CHECK(choice IN ('accept','decline','cancel')),
+          result_json TEXT NOT NULL CHECK(json_valid(result_json)), created_at TEXT NOT NULL,
+          PRIMARY KEY(account_id,client_id,tool_name,request_key)
+        ) STRICT;`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611070503,new Date().toISOString());
+      });
+    }
+
   }
 }

@@ -405,3 +405,32 @@ test("AND-408 keeps legacy prompts without requestKind on neutral copy", async (
   await expect(panel.locator("strong")).toHaveText("Codex 请求");
   await expect(page.locator("i.agent-console-attention").first()).toHaveText("待处理");
 });
+
+for (const choice of ["批准", "取消"]) test(`AND-443 OpenCode empty confirmation binds ${choice} to its source request`, async ({ page }) => {
+  const sent: unknown[] = [];
+  const detail = "协作请求 · 当前版本 3\n仅提交本次草稿；不启动接收方 Agent，不授权合并或发布。";
+  const question = { title: "确认此请求", key: "确认请求 form-443", options: ["批准", "取消"] };
+  const session = { ...summary, agentKind: "opencode", status: "idle", waitingForReply: true,
+    messages: [{ id: "native-form", sourceId: "form-443", role: "agent", text: detail, questions: [question] }] };
+  await page.route("**/api/v1/agent-sessions**", async route => {
+    if (route.request().method() === "POST") {
+      sent.push(route.request().postDataJSON());
+      return route.fulfill({ json: { command: { id: "answer", status: "delivered" } } });
+    }
+    return route.fulfill({ json: new URL(route.request().url()).pathname === "/api/v1/agent-sessions" ? { sessions: [session] } : session });
+  });
+  await page.setViewportSize({ width: 320, height: 700 });
+  await page.goto('/?product=' + fixture.productId + '&console=agent&session=' + id);
+  const card = page.locator(".agent-session-question");
+  await expect(page.locator("body")).toContainText(detail);
+  await expect(card).toContainText("确认此请求");
+  expect(sent).toEqual([]);
+  await card.getByRole("button", { name: choice, exact: true }).click();
+  const reply = page.locator(".agent-console-reply");
+  await expect(reply.locator("textarea")).toHaveValue(`确认请求 form-443: ${choice}`);
+  expect(sent).toEqual([]);
+  await reply.locator('button[type="submit"]').click();
+  await expect.poll(() => sent.length).toBe(1);
+  expect(sent[0]).toMatchObject({ text: `确认请求 form-443: ${choice}` });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});

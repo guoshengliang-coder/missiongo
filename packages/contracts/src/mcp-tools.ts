@@ -14,6 +14,9 @@ export interface McpToolDefinition {
 }
 
 export const MCP_TOOL_DEFINITIONS = [
+  { name:"request_collaboration_approval",access:"write",purpose:"Request a bound native-human approval to submit one exact collaboration draft." },
+  { name:"request_merge_reconciliation_approval",access:"write",purpose:"Request a bound native-human decision for one exact prepared recovery, without executing it." },
+  { name:"request_managed_decision_approval",access:"write",purpose:"Request a bound native-human approval of one existing managed decision version." },
   { name: "get_agent_artifact", access: "read", purpose: "Read only explicitly referenced conversation artifacts via protected storage." },
   { name: "get_review_content", access: "read", purpose: "Read complete version-bound plan, delivery, collaboration, recovery or managed-decision content without approval." },
   { name: "get_agent_history", access: "read", purpose: "Read one issued conversation-history page without input or execution." },

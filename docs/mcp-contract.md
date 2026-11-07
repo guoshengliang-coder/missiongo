@@ -35,7 +35,7 @@ MissionGo MCP 让经过鉴权的 AI 按用户给出的编号完整读取一个�
 
 ## 人工批准不是 MCP 工具（AND-231）
 
-托管决策的提出、修订、读取、批准与撤销在独立人类 Cookie HTTP 入口实现，人工写入仍不提供 MCP 工具；只读正文可通过 `get_review_content(kind: decision)` 获取。`missiongo:write`、节点或运维 Bearer、AI 评论和聊天批准不能生成正式人工批准记录；当前工具清单与写入档位保持不变。见 [managed-decisions.md](managed-decisions.md)。
+托管决策的提出、修订、读取、批准与撤销在独立人类 Cookie HTTP 入口实现，人工 HTTP 写入继续拒绝机器凭据；只读正文可通过 `get_review_content(kind: decision)` 获取，原生人工批准通过绑定的 `request_managed_decision_approval` 往返实现。`missiongo:write`、节点或运维 Bearer、AI 评论和聊天批准不能生成正式人工批准记录；当前工具清单与写入档位保持不变。见 [managed-decisions.md](managed-decisions.md)。
 
 ## 已开放工具
 
@@ -295,4 +295,14 @@ Codex、Claude Code、OpenCode 共用内容完整性契约。`request_plan_appro
 - `get_agent_history`：按会话原权限返回已签发 nextCursor，或请求/查询原游标。使用现有独立历史队列，不创建聊天命令、不启动或恢复会话；节点按 agentKind 读取原生源页。历史问题只读；读取成功的源页合入 MCP 会话正文。未接入、离线、旧节点与来源缺失分别按实际能力报告。
 - `get_agent_artifact`：仅接受原会话中已出现的 sourceId/href，或已保存的 artifactId。存储和文件权限复用现有产物服务，不接受自由路径。已保存文件可独立于原节点读取；未保存需要原节点。文本按 revision 分页、图片与原文件使用嵌入内容；bundle 资源按明确 resourceName 读取。HTML/脚本不执行。
 
-新增工具均不开放人工决定写入；协作、恢复和托管决策的人工批准仍遵守现有入口。旧节点可读已有服务端内容，但新源续页需要支持对应适配器的节点升级。
+上述三个读取工具不开放人工决定写入；协作、恢复和托管决策批准使用人工 Web 入口或下述可信原生确认，不能从读取或普通工具参数产生批准。旧节点可读已有服务端内容，但新源续页需要支持对应适配器的节点升级。
+
+### 三类可信原生人工确认（AND-443）
+
+写入档位新增 request_collaboration_approval、request_merge_reconciliation_approval、request_managed_decision_approval。参数严格限定原对象、版本/快照及幂等键，不接受 approved、decision 或 noExecutionRemaining。现代 MCP 复用签名 requestState（账号、OAuth 客户端、方法）并将工具、目标、参数和完整审阅内容纳入 revision；humanConfirmation 只接受原生 accept/decline/cancel，accept 的 content 必须是空对象。旧协议只等待同一次 elicitation 的原生结果。无 capability 或表单过大时返回完整内容及明确不可用状态，不授予权限。
+
+每次等待后、同一写事务内重新检查当前权限和领域版本；严格复用原领域操作及已有 Web 决定，不创建第二套批准事实。迁移 202611070503 增加 native_human_confirmations，记录来源、选择、内容摘要及幂等结果；与领域变更同事务提交，拒绝/取消无领域授权，审计失败回滚。新工具不启动 Agent 回合，不执行 Git 或发布，不改变模型或权限模式。已撤销/变化的决定不能通过重放恢复。
+
+客户端复用现有确认/问题组件。Claude 保留空对象确认 schema，并允许 512000 个 UTF-16 字符的完整正文；不开放任意 schema。OpenCode 空表单只接受绑定“确认请求 <id>”的批准或取消，取消通过官方 DELETE form API，拒绝普通回复或过期标识被当作批准。
+
+协议依据：[OpenCode Input requests](https://dev.opencode.ai/docs/mcp-servers/#input-requests)、[OpenCode Form API](https://dev.opencode.ai/docs/api)、[MCP TypeScript SDK elicitation](https://ts.sdk.modelcontextprotocol.io/v2/servers/elicitation)。真实客户端、第三方网关与升级环境的端到端结果单列，模拟协议不冒充实际兼容验收。

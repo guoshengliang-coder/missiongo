@@ -228,7 +228,7 @@ public struct ClaudePermissionRequest {
     public var unsupportedReason: String? {
         guard isElicitation else { return nil }
         guard (input["mode"] as? String ?? "form") == "form",
-              let message = input["message"] as? String, !message.isEmpty, message.count <= 16_000,
+              let message = input["message"] as? String, !message.isEmpty, message.utf16.count <= 512_000,
               let schema = input["requested_schema"] as? [String: Any], schema["type"] as? String == "object",
               let properties = schema["properties"] as? [String: Any], properties.isEmpty,
               schema["required"] == nil || (schema["required"] as? [String])?.isEmpty == true,

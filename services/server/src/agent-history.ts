@@ -11,7 +11,7 @@ const metadataSchema = z.object({ cursor: z.string().min(1).max(4096).nullable()
 const messageSchema = z.object({ sourceId: z.string().min(1).max(200), turnId: z.string().max(200).nullable().optional(),
   role: z.enum(["user", "agent", "plan"]), phase: z.string().max(50).nullable().optional(), text: z.string().min(1).max(4_000_000),
   occurredAt: z.string().datetime().nullable().optional(), questions: z.array(z.object({ title: z.string().max(4000),
-    header: z.string().max(4000).optional(), detail: z.string().max(100_000).optional(),
+    header: z.string().max(4000).optional(), detail: z.string().max(512_000).optional(),
     options: z.array(z.string().max(4000)).optional(), multiSelect: z.boolean().optional(), key: z.string().max(4000).optional(),
     kind: z.enum(["text", "number", "boolean"]).optional(), placeholder: z.string().max(4000).optional(),
     custom: z.boolean().optional(), answered: z.string().max(4_000_000).optional(), withdrawn: z.boolean().optional(),

@@ -510,6 +510,17 @@ describe("agent session message view", () => {
     expect(questionAnswerText("", field, "小", 1)).toBe("scope: 小");
   });
 
+  it("keeps native OpenCode confirmation answers bound to their request", () => {
+    const question = { title: "确认协作草稿当前版本", key: "确认请求 form-443" };
+    for (const choice of ["批准", "取消"]) {
+      const answer = questionAnswerText("", question, choice, 1);
+      expect(answer).toBe(`确认请求 form-443: ${choice}`);
+      expect(questionAnswerValue(answer, question, 1)).toBe(choice);
+    }
+    expect(questionAnswerValue("批准", question, 1)).toBe("");
+    expect(questionAnswerValue("确认请求 old-form: 批准", question, 1)).toBe("");
+  });
+
   it("reads exactly the same single or labelled answer format that it writes (AND-347)", () => {
     const question = { header: "范围", title: "本次做什么？" };
     const option = "纳入本次：人工评论、MCP 都支持";

@@ -399,7 +399,7 @@ export class MergeDeliveries {
       return this.preview(accountId,id);
     });
   }
-  /** Browser-only human decision. MCP cannot mint recovery authorization. */
+  /** Human Web or bound native decision; never an Agent-provided approval fact. */
   decideReconciliation(accountId:string,id:string,requestId:string,snapshot:string,decision:"approved"|"rejected",noExecutionRemaining:boolean) {
     return this.db.transaction(()=>{
       const b=this.read<Batch>("merge_batches",id);this.permit(accountId,b,true);

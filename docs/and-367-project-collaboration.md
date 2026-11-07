@@ -57,7 +57,7 @@
 
 `collaborationTransitionDenial` 接入统一状态策略及最终写入路径，覆盖普通按钮、手动调整、批量请求、MCP 和系统交接。通知事件和业务变化在同一事务中持久化；消息按业务事件和收件人去重。状态仍以条目为准，不另造依赖状态机。
 
-MCP 新增读取 `get_item_collaborations`、`list_collaboration_targets`、`get_collaboration`、`get_collaboration_attachment`；新增写入 `prepare_collaboration_request`、`append_collaboration_discussion`。没有审批、取消、验收或任意字段写工具。草稿返回审核路径，供 Agent 引导 Builder 查看；读取范围同时受当前 AI 授权和专用共享权限限制。Skill 升级到 5.32.0 并更新内容摘要。
+MCP 新增读取 `get_item_collaborations`、`list_collaboration_targets`、`get_collaboration`、`get_collaboration_attachment`；新增写入 `prepare_collaboration_request`、`append_collaboration_discussion`。AND-443 补充 `request_collaboration_approval`，仅通过绑定草稿版本的客户端人工回执提交；没有 Agent 参数审批、取消、验收或任意字段写工具。草稿及原生确认保留完整正文，审核路径只作补充；读取范围同时受当前 AI 授权和专用共享权限限制。Skill 升级到 5.32.0 并更新内容摘要。
 
 ## 验收与验证
 

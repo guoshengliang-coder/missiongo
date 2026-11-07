@@ -15,7 +15,7 @@ const apps: ReturnType<typeof buildApp>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map(app => app.close())); });
 
 type Identity = { dispatchId?: string; sessionId?: string; session?: { agentKind: string; refKind: string; sessionRef: string } };
-type Result = { isError?: boolean; error?: unknown; content?: { type: string; text?: string }[];
+type Result = { resultType?:string; requestState?:string; inputRequests?:unknown; isError?: boolean; error?: unknown; content?: { type: string; text?: string }[];
   structuredContent?: { executionAuthorization?: string; executionIdentity?: Identity; sessionId?: string; [key: string]: unknown } };
 const completion = { kind: "commit", commit: "a".repeat(40), targetBranch: "main" };
 
@@ -33,14 +33,14 @@ async function fixture() {
   const item = store.createWorkItem({ productId: product.id, title: "Synthetic handover", description: "Protocol regression only",
     type: "task", priority: "normal", status: "ready", environment: { platform: "shared" } });
   const session = { agentKind: "opencode", refKind: "native", sessionRef: randomUUID() };
-  const call = async (name: string, input: Record<string, unknown>, options: { accountId?: string; clientId?: string; scopes?: string[] } = {}): Promise<Result> => {
+  const call = async (name: string, input: Record<string, unknown>, options: { accountId?: string; clientId?: string; scopes?: string[]; native?:Record<string,unknown> } = {}): Promise<Result> => {
     const account = accounts.getAccount(options.accountId ?? owner.id);
     const token = createAiAccessToken(config, { id: account.id, username: account.email, role: account.role },
       accounts.credentialsStamp(account), options.clientId ?? "original-client", options.scopes ?? ["missiongo:read", "missiongo:write"]).token;
     // No automatic credential injection and no seeded plan decision.
     const response = await app.inject({ method: "POST", url: "/mcp",
-      headers: { authorization: `Bearer ${token}`, accept: "application/json, text/event-stream" },
-      payload: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: input } } });
+      headers: { authorization: `Bearer ${token}`, accept: "application/json, text/event-stream",...(options.native?{"mcp-method":"tools/call","mcp-name":name}:{}) },
+      payload: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: input,...options.native } } });
     const raw = response.headers["content-type"]?.includes("text/event-stream")
       ? response.body.split("\n").find(line => line.startsWith("data: "))!.slice(6) : response.body;
     const parsed = JSON.parse(raw);
@@ -369,6 +369,27 @@ describe("AND-439 batch reconciliation",()=>{
     const final=()=>merges.recordCombinedValidation(f.owner.id,b.dispatchId,b.id,{head:"f".repeat(40),checkedAt:new Date().toISOString(),source:"Synthetic actual target",validation:"Combined regression passed"});
     return {...f,...launched,merges,d,b,keys,preview,request,approve,apply,merged,evidence,final};
   }
+  it("records one bound native recovery decision without performing recovery or trusting an Agent attestation",async()=>{
+    const f=await recoveryFixture();
+    const r=f.request({kind:"accept_merge",deliveryId:f.d.id,evidence:f.evidence});
+    const name="request_merge_reconciliation_approval";
+    const input={batchId:f.b.id,requestId:r.key,snapshot:r.snapshot,idempotencyKey:"native-recovery-approval"};
+    const nativeMeta={"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{name:"opencode",version:"fixture"},"io.modelcontextprotocol/clientCapabilities":{elicitation:{form:{}}}};
+    const first=await f.call(name,input,{native:{_meta:nativeMeta}});
+    expect(first,JSON.stringify(first)).toMatchObject({resultType:"input_required",requestState:expect.any(String)});
+    expect(JSON.stringify(first.inputRequests)).toContain("人工核实没有未结束");
+    expect(f.preview().entries[0]?.result).toBeUndefined();
+    const native={_meta:nativeMeta,requestState:first.requestState,inputResponses:{humanConfirmation:{action:"accept",content:{}}}};
+    expect((await f.call(name,{...input,noExecutionRemaining:true},{native})).isError).toBe(true);
+    expect(await f.call(name,input,{native})).toMatchObject({structuredContent:{approved:true,source:"native"}});
+    expect(f.preview().reconciliation?.requests.find(x=>x.id===r.key)?.decision).toBe("approved");
+    expect(f.preview().entries[0]?.result).toBeUndefined();
+    expect(f.store.getWorkItem(f.item.key).status).toBe("in_progress");
+    expect(await f.call(name,input,{native:{_meta:nativeMeta}})).toMatchObject({structuredContent:{approved:true,source:"existing"}});
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM native_human_confirmations").get()).toEqual({n:1});
+    f.apply(r.key);const before=f.store.getTimeline(f.item.key);f.apply(r.key);
+    expect(f.store.getTimeline(f.item.key)).toEqual(before);
+  });
   it("reads without mutation and requires human authorization bound to the exact snapshot",async()=>{
     const f=await recoveryFixture(),before=f.db.prepare("SELECT data_json FROM merge_batches WHERE id=?").get(f.b.id);
     expect(f.preview().entries[0]).toMatchObject({originalHead:f.d.head,executionHead:f.d.head});

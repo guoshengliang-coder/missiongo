@@ -1,3 +1,5 @@
+import { NativeHumanConfirmations } from "./native-human-confirmation.js";
+import { AccountStore } from "./accounts-store.js";
 import { localArtifactLinks } from "@missiongo/domain";
 import { CURRENT_ENTRY_CONTENT_GUIDANCE, MAX_PLAN_CHARACTERS, MAX_VALIDATION_CHARACTERS, reviewContentPage } from "./review-content.js";
 import { AgentHistory } from "./agent-history.js";
@@ -134,7 +136,7 @@ function accountAccess(ctx: ServerContext): McpAccountAccess {
  */
 export const WRITE_TOOLS_BY_TIER: Readonly<Record<McpWriteTier, readonly string[]>> = {
   none: [],
-  comments: ["request_merge_reconciliation", "apply_merge_reconciliation", "record_merge_combined_validation", "propose_merge_delivery", "refresh_merge_delivery", "report_merge_batch", "finish_merge_batch", "record_merge_integration", "prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "request_plan_approval", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "submit_release_batch", "supplement_release_evidence", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
+  comments: ["request_collaboration_approval", "request_merge_reconciliation_approval", "request_managed_decision_approval", "request_merge_reconciliation", "apply_merge_reconciliation", "record_merge_combined_validation", "propose_merge_delivery", "refresh_merge_delivery", "report_merge_batch", "finish_merge_batch", "record_merge_integration", "prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "request_plan_approval", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_for_verification", "submit_release_batch", "supplement_release_evidence", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
 };
 
 /**
@@ -230,6 +232,8 @@ export function createMissionGoMcpServer(
   const artifacts = new AgentArtifacts(store.database, join(attachmentStorage.rootPath,"agent-artifacts"));
   const history = new AgentHistory(store.database, artifacts);
   const reviews = new MergeDeliveries(store);
+  const nativeConfirmations = new NativeHumanConfirmations(store.database);
+  const nativeAccounts = new AccountStore(store.database);
   const planIdentity = (clientId: string | undefined, session: {agentKind:string;refKind:string;sessionRef:string}|undefined, dispatchId?: string) =>
     dispatchId ? `dispatch:${dispatchId}` : session ? `native:${clientId ?? ""}:${session.agentKind}:${session.refKind}:${session.sessionRef}` : "";
   const sessionIdentity = z.object({
@@ -940,6 +944,76 @@ export function createMissionGoMcpServer(
   // execution, so each one must authorize the caller itself. The guard in
   // mcp-authorization.test.ts anchors on this marker.
   // MCP_WRITE_TIER: comments
+  const nativeAuthority = (ctx:ServerContext,productId:string) => {
+    requireWriteScope(ctx);requireProductAccess(ctx,productId);
+    const access=accountAccess(ctx),account=nativeAccounts.findActive(access.accountId);
+    if(!account || !nativeAccounts.allows(account,productId,"view") || !nativeAccounts.allows(account,productId,"operate")
+      || !nativeAccounts.allows(account,productId,"ai") || store.getProduct(productId).archivedAt
+      || options.canOperate && !options.canOperate(access.accountId,productId)) throw new Error("Native human confirmation is not permitted for this account and product.");
+    return account.id;
+  };
+  server.registerTool(
+    "request_collaboration_approval", {
+    title:"Ask the human to submit one exact collaboration draft",
+    description:"Show the complete current draft and sharing scope here, then request a bound native human confirmation. Only the original Builder or project administrator may submit. No approved argument is accepted. Native accept creates the same target item/dependency as Web approval; decline/cancel does neither. Current domain versions, grants, attachments and permissions are rechecked. Reuses an already submitted version without creating another request. Does not claim the target or start another Agent.",
+    inputSchema:z.object({draftId:z.string().min(1).max(200),version:z.number().int().positive(),idempotencyKey:z.string().min(1).max(200)}).strict(),
+    annotations:{readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
+  },async(input,ctx)=>{
+    requireWriteScope(ctx);
+    const access=accountAccess(ctx);
+    const inspect=()=>{
+      const content=collaborations.reviewDraft(access.accountId,input.draftId,input.version);
+      nativeAuthority(ctx,requireAccessibleProduct(ctx,content.productId));
+      return {content,...(content.submitted?{completed:{approved:true,result:content.submitted}}:{})};
+    };
+    return nativeConfirmations.request({ctx,codec:approvalStateCodec,modern:options.protocolEra==="modern",accountId:access.accountId,clientId:access.clientId??"",
+      tool:"request_collaboration_approval",targetId:input.draftId,requestKey:input.idempotencyKey,parameters:input,
+      description:"批准将提交这一版本的协作请求，创建接收项目条目及依赖，并按原规则记录批准人与验收归属。共享范围以完整草稿及既有源条目只读规则为准。",
+      inspect,apply:()=>collaborations.submit(access.accountId,input.draftId,input.version,input.idempotencyKey)});
+  });
+  server.registerTool(
+    "request_merge_reconciliation_approval", {
+    title:"Ask the human to approve one snapshot-bound recovery",
+    description:"Request native human approval for an already prepared original-batch recovery request. This never re-merges Git, publishes, changes the publication selection or executes recovery. The human acceptance explicitly attests that no external merge/publication operation remains unfinished; no tool argument can supply that attestation. Bind requestId and exact snapshot. apply_merge_reconciliation remains a separate original-dispatch operation. Existing Web/native decisions are reused once.",
+    inputSchema:z.object({batchId:z.string().min(1).max(200),requestId:z.string().min(1).max(200),snapshot:z.string().length(64),idempotencyKey:z.string().min(1).max(200)}).strict(),
+    annotations:{readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
+  },async(input,ctx)=>{
+    requireWriteScope(ctx);const access=accountAccess(ctx);
+    const inspect=()=>{
+      nativeAuthority(ctx,requireAccessibleProduct(ctx,merges.batchProduct(input.batchId)));
+      const preview=merges.preview(access.accountId,input.batchId);
+      const request=preview.reconciliation?.requests.find(r=>r.id===input.requestId);
+      if(!request || request.snapshot!==input.snapshot || (!request.appliedAt && request.decision!=="rejected" && preview.snapshot!==input.snapshot)) throw new Error("The exact recovery request or snapshot changed.");
+      const content={batchId:preview.batchId,state:preview.state,publish:preview.publish,snapshot:preview.snapshot,
+        requestId:request.id,action:request.action,entries:preview.entries};
+      return {content,...(request.decision?{completed:{approved:request.decision==="approved",result:preview}}:{})};
+    };
+    return nativeConfirmations.request({ctx,codec:approvalStateCodec,modern:options.protocolEra==="modern",accountId:access.accountId,clientId:access.clientId??"",
+      tool:"request_merge_reconciliation_approval",targetId:input.batchId,requestKey:input.idempotencyKey,parameters:input,
+      description:"批准同时声明：我已人工核实没有未结束或结果不明的外部合并、推送或发布操作。仅批准下列快照和恢复动作，不授权重新合并 Git 或开始发布；实际恢复仍由原会话按既有门禁执行。",
+      inspect,apply:()=>({...merges.decideReconciliation(access.accountId,input.batchId,input.requestId,input.snapshot,"approved",true)})});
+  });
+  server.registerTool(
+    "request_managed_decision_approval", {
+    title:"Ask the human to approve one exact managed decision",
+    description:"Request native human approval for an existing managed decision's exact version, stateVersion, content/scope digests and allowed actions. Only the bound elicitation response grants approval. Recheck current account/product permissions inside the domain transaction. This does not create a run, change content, revoke an approval, authorize merge/publication or start execution. Existing same-version current human approval is reused without asking again; a revoked or changed decision cannot be restored.",
+    inputSchema:z.object({decisionId:z.string().min(1).max(200),version:z.number().int().positive(),stateVersion:z.number().int().positive(),contentDigest:z.string().length(64),scopeDigest:z.string().length(64),contractRevision:z.number().int().positive(),idempotencyKey:z.string().min(1).max(200)}).strict(),
+    annotations:{readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
+  },async(input,ctx)=>{
+    requireWriteScope(ctx);const access=accountAccess(ctx),decisions=new ManagedDecisionStore(store.database);
+    const authorize=(productId:string)=>nativeAuthority(ctx,requireAccessibleProduct(ctx,productId));
+    const inspect=()=>{
+      const content=decisions.get(authorize,input.decisionId);
+      if(content.version!==input.version || content.contentDigest!==input.contentDigest || content.scopeDigest!==input.scopeDigest || content.scope.contractRevision!==input.contractRevision
+        || content.status==="revoked" || !(content.stateVersion===input.stateVersion || content.status==="approved"&&content.stateVersion===input.stateVersion+1)) throw new Error("Managed decision content, scope or authorization state changed.");
+      return {content,...(content.status==="approved"?{completed:{approved:true,result:content}}:{})};
+    };
+    const {decisionId,...guard}=input;
+    return nativeConfirmations.request({ctx,codec:approvalStateCodec,modern:options.protocolEra==="modern",accountId:access.accountId,clientId:access.clientId??"",
+      tool:"request_managed_decision_approval",targetId:decisionId,requestKey:input.idempotencyKey,parameters:input,
+      description:"仅批准这一版本的托管决策、冻结范围及 allowedActions。只保存人工决定，不启动执行；合并、发布、部署和生产操作仍不在托管决策允许动作中。",
+      inspect,apply:()=>({...decisions.change(authorize,decisionId,"approve",guard)})});
+  });
   server.registerTool(
     "request_merge_reconciliation", {
     annotations:{readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
@@ -953,7 +1027,7 @@ export function createMissionGoMcpServer(
   server.registerTool(
     "apply_merge_reconciliation", {
     annotations:{readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
-    description:"Apply one console-approved recovery request through the original merge dispatch. Rechecks the exact snapshot and current permissions; preserves history and reports per-item results. Retry the same request after a lost response. Never create another batch, re-merge Git, borrow developer credentials or override human rework. Changed snapshots need a new reviewed request, not an altered retry.",
+    description:"Apply one Web- or native-human-approved recovery request through the original merge dispatch. Rechecks the exact snapshot and current permissions; preserves history and reports per-item results. Retry the same request after a lost response. Never create another batch, re-merge Git, borrow developer credentials or override human rework. Changed snapshots need a new reviewed request, not an altered retry.",
     inputSchema:z.object({batchId:z.string().min(1),dispatchId:z.string().min(1),requestId:z.string().min(1)}),
   },async(input,ctx)=>{
     requireWriteScope(ctx);requireAccessibleProduct(ctx,merges.batchProduct(input.batchId));
@@ -1035,7 +1109,7 @@ export function createMissionGoMcpServer(
   server.registerTool(
     "prepare_collaboration_request", {
     title:"Prepare a collaboration draft for human approval",
-    description:"Prepare or revise a versioned draft. A signed-in human must review and approve it in MissionGo before a target item or dependency is created. Never claim this tool submitted a request. Changed content needs fresh approval.",
+    description:"Prepare or revise a versioned draft. An authorized human must review and approve the exact version through MissionGo Web or request_collaboration_approval before a target item or dependency is created. Never claim this tool submitted a request. Changed content needs fresh approval.",
     inputSchema:collaborationDraftSchema.extend({idempotencyKey:z.string().min(1).max(200),itemKey:z.string().min(2).max(50),draftId:z.string().uuid().optional(),expectedVersion:z.number().int().positive().optional(),agentName:z.string().trim().min(1).max(100)}),
     annotations:{readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
   },async(input,ctx)=>{requireWriteScope(ctx);const key=requireItemAccess(ctx,store,input.itemKey),access=accountAccess(ctx);
