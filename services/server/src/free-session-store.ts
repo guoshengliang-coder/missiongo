@@ -27,7 +27,8 @@ export class FreeSessionStore {
   constructor(private readonly db: MissionGoDatabase, private readonly dispatches: DispatchStore,
     private readonly sessions: AgentSessionStore) {}
 
-  prepare(accountId: string, requestKey: string, config: FreeSessionConfig, text: string, attachmentCount = 0): DispatchSnapshot {
+  /** `title` names a conversation whose first message is machinery, not the subject (AND-449). */
+  prepare(accountId: string, requestKey: string, config: FreeSessionConfig, text: string, attachmentCount = 0, title?: string): DispatchSnapshot {
     if (!/^[a-zA-Z0-9-]{16,100}$/.test(requestKey)) throw invalidInput("A stable requestKey is required.");
     text = text.trim();
     if (!Number.isInteger(attachmentCount) || attachmentCount < 0 || attachmentCount > 10) throw invalidInput("attachmentCount must be from 0 to 10.");
@@ -47,7 +48,8 @@ export class FreeSessionStore {
       const dispatch = this.dispatches.createDispatch({ ...config, accountId, itemKeys: [] }, true);
       this.db.connection.prepare(`INSERT INTO free_session_starts
         (dispatch_id,account_id,request_key,product_id,initial_text,config_json,attachment_count,session_title) VALUES (?,?,?,?,?,?,?,?)`)
-        .run(dispatch.id, accountId, requestKey, config.productId, text, configJson, attachmentCount, projectSessionTitle(text, dispatch.id));
+        .run(dispatch.id, accountId, requestKey, config.productId, text, configJson, attachmentCount,
+          title?.trim() || projectSessionTitle(text, dispatch.id));
       // This reference is never sent to a node. Launch replaces it with the verified native ID.
       this.sessions.createForDispatch({ dispatchId: dispatch.id, nodeId: config.nodeId, sessionRef: `pending:${dispatch.id}` });
       this.db.connection.prepare("UPDATE agent_sessions SET status='idle' WHERE dispatch_id=?").run(dispatch.id);

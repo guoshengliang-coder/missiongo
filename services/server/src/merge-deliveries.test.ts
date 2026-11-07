@@ -136,6 +136,9 @@ describe("AND-423 explicit merge deliveries",()=>{
     const b=f.merges.start(f.owner.id,key,selection,f.config,false);
     expect(new AgentSessionStore(f.store.database).getForAccount(f.owner.id,b.sessionId).sessionPurpose).toBe("integration");
     expect(new AgentSessionStore(f.store.database).listForAccount(f.owner.id).find(row=>row.id===b.sessionId)?.sessionPurpose).toBe("integration");
+    // The conversation is named after the integrated work, not its instructions (AND-449).
+    expect(f.db.prepare("SELECT session_title FROM free_session_starts WHERE dispatch_id=?").get(b.dispatchId))
+      .toMatchObject({session_title:`集成 · ${f.item.key}`});
     expect(f.merges.start(f.owner.id,key,selection,f.config,false).id).toBe(b.id);
     expect(()=>f.merges.start(f.owner.id,key,[{id:f.d.id,revision:"wrong"}],f.config,false)).toThrow();
     expect(()=>f.merges.start(f.owner.id,randomUUID(),selection,f.config,false)).toThrow();
