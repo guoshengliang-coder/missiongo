@@ -52,6 +52,8 @@ export const MCP_TOOL_DEFINITIONS = [
   { name: "get_agent_session", access: "read", purpose: "Page one linked conversation's merged transcript, execution records and attachments with explicit completeness limits." },
   { name: "get_item_plan_approvals", access: "read", purpose: "Read plan-message references and live approval assessments for linked conversations without ever proving an approval." },
   { name: "append_comment", access: "write", purpose: "Add one comment to a work item without changing anything a person wrote." },
+  { name: "get_plan_document", access: "read", purpose: "Read the exact fixed Markdown and version with all covered item permissions." },
+  { name: "prepare_plan_document", access: "write", purpose: "Save immutable plan Markdown and return the same summary and link for every client." },
   { name: "request_plan_approval", access: "write", purpose: "Request native human approval for the exact current implementation plan and validation scope; never an Agent-supplied approval fact." },
   { name: "claim_item", access: "write", purpose: "Claim ready work or consume an explicit human handoff to this original conversation after current plan approval; historical recovery may schedule one same-session continuation while native mode confirmation is pending, without claiming." },
   { name: "recover_execution_authorization", access: "write", purpose: "Recover only this original conversation's unrevoked claim credential in the current round, without claiming or changing status." },

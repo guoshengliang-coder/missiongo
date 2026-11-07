@@ -1,3 +1,4 @@
+import { PlanDocuments } from "./plan-documents.js";
 import { MergeDeliveries } from "./merge-deliveries.js";
 import { FreeSessionStore } from "./free-session-store.js";
 import { registerCollaborationRoutes } from "./collaboration-routes.js";
@@ -2365,6 +2366,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // and needs a session; the node half below authenticates with the machine's
   // own credential.
   const requireAccountId = (request: FastifyRequest): string => requireAccount(request).id;
+  app.get("/api/v1/plan-documents/:documentId", async (request,reply) => {
+    requireAccountId(request);
+    const {documentId}=request.params as {documentId:string};
+    const document=new PlanDocuments(store).get(documentId,key=>requireItemPermission(request,key));
+    reply.header("Cache-Control","private, no-store");
+    const {download} = request.query as {download?:string};
+    if(download==="1") return reply.type("text/markdown; charset=utf-8")
+      .header("Content-Disposition",`attachment; filename="plan-${document.id}-v${document.version}.md"`).send(document.markdown);
+    return {id:document.id,keys:document.keys,rounds:document.rounds,version:document.version,
+      summary:document.summary,plan:document.plan,markdown:document.markdown,sha256:document.sha256,createdAt:document.createdAt};
+  });
+
 
   // Mappings are shown and replaced only for products the signed-in account can
   // still see; one it has lost stays on the machine untouched rather than

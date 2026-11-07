@@ -2484,5 +2484,22 @@ export class MissionGoDatabase {
       });
     }
 
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611070840").get()) {
+      this.transaction(() => {
+        this.connection.exec(`CREATE TABLE plan_documents (
+          id TEXT PRIMARY KEY, account_id TEXT NOT NULL, identity_key TEXT NOT NULL, request_key TEXT NOT NULL,
+          scope_key TEXT NOT NULL, version INTEGER NOT NULL, fingerprint TEXT NOT NULL,
+          document_json TEXT NOT NULL CHECK(json_valid(document_json)),
+          UNIQUE(account_id,identity_key,request_key), UNIQUE(account_id,identity_key,scope_key,version)
+        ) STRICT;
+        CREATE TRIGGER plan_documents_immutable BEFORE UPDATE ON plan_documents
+          BEGIN SELECT RAISE(ABORT, 'plan documents are immutable'); END;
+        CREATE TRIGGER plan_documents_no_delete BEFORE DELETE ON plan_documents
+          BEGIN SELECT RAISE(ABORT, 'plan documents are immutable'); END;`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611070840,new Date().toISOString());
+      });
+    }
+
   }
 }

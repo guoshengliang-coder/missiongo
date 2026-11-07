@@ -122,6 +122,7 @@ export class AttachmentStorage {
     attribution?: EventAttribution,
     requestKey?: string,
     creation?: { readonly creationUploadId?: string; readonly createdWithItem?: boolean },
+    actorKind?: "human" | "agent",
   ): Promise<AttachmentRecord> {
     store.assertWorkItemWritable(itemKey);
     const { filename, extension, rule, contentType } = validateUpload(encodedFilename, suppliedContentType, bytes);
@@ -153,6 +154,7 @@ export class AttachmentStorage {
     try {
       const attachment = store.createAttachmentMetadata({
         ...creation,
+        ...(actorKind ? {actorKind} : {}),
         itemKey,
         kind: rule.kind,
         filename,

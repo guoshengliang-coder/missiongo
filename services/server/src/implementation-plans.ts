@@ -17,7 +17,7 @@ export class ImplementationPlans {
       const item = this.db.connection.prepare(`SELECT id,content_version FROM work_items WHERE item_key=?`).get(key) as {id:string;content_version:number}|undefined;
       if (!item) throw conflict("implementation_plan_changed", "The approved item no longer exists.");
       const boundary = this.db.connection.prepare(`SELECT id FROM work_item_events WHERE item_id=? AND history_source_key IS NULL
-        AND (event_type='builder_changed' AND json_extract(payload_json,'$.handoverId') IS NOT NULL OR event_type='status_changed' AND to_status IN ('ready','cancelled','done'))
+        AND (event_type='builder_changed' AND json_extract(payload_json,'$.handoverId') IS NOT NULL OR event_type='status_changed' AND (to_status IN ('cancelled','done') OR to_status='ready' AND COALESCE(json_extract(payload_json,'$.reason'),'')!='verification_failed'))
         ORDER BY timeline_seq DESC LIMIT 1`).get(item.id) as {id:string}|undefined;
       return { key, contentVersion: item.content_version, boundary: boundary?.id ?? null };
     }));
@@ -28,7 +28,7 @@ export class ImplementationPlans {
       WHERE d.dispatch_id=? ORDER BY w.item_key`).all(dispatchId) as {key:string}[]).map(row => row.key);
   }
 
-  request(accountId: string, identity: string, revision: string, proposal?: {keys: readonly string[];plan:string;validation:string;origin?:"native"|"attention"}): void {
+  request(accountId: string, identity: string, revision: string, proposal?: {keys: readonly string[];plan:string;validation:string;documentId?:string;origin?:"native"|"attention"}): void {
     this.db.transaction(() => {
     const previous=this.db.connection.prepare("SELECT revision FROM implementation_plan_requests WHERE account_id=? AND identity_key=?").get(accountId,identity) as {revision:string}|undefined;
     if(previous?.revision===revision) return;
@@ -38,14 +38,21 @@ export class ImplementationPlans {
     });
   }
 
-  proposal(accountId:string,identity:string): {revision:string;keys:string[];plan:string;validation:string;origin?:"native"|"attention";submittedAt?:string;approvedAt?:string;requestedAt?:string;nativeSourceId?:string;approved:boolean;valid:boolean}|undefined {
+  proposal(accountId:string,identity:string): {revision:string;keys:string[];plan:string;validation:string;documentId?:string;origin?:"native"|"attention";submittedAt?:string;approvedAt?:string;requestedAt?:string;nativeSourceId?:string;approved:boolean;valid:boolean}|undefined {
     const row=this.db.connection.prepare("SELECT revision,proposal_json,scope_json FROM implementation_plan_requests WHERE account_id=? AND identity_key=?")
       .get(accountId,identity) as {revision:string;proposal_json:string|null;scope_json:string|null}|undefined;
     if(!row?.proposal_json) return undefined;
-    const proposal=JSON.parse(row.proposal_json) as {keys:string[];plan:string;validation:string;submittedAt?:string};
+    const proposal=JSON.parse(row.proposal_json) as {keys:string[];plan:string;validation:string;documentId?:string;submittedAt?:string};
     const approval=this.db.connection.prepare("SELECT approved_at FROM implementation_plan_approvals WHERE account_id=? AND identity_key=? AND revision=?")
       .get(accountId,identity,row.revision) as {approved_at:string}|undefined;
-    return {...proposal,...(approval ? {approvedAt:approval.approved_at} : {}),revision:row.revision,approved:this.approved(accountId,identity,row.revision),valid:this.scope(proposal.keys)===row.scope_json};
+    const documentRow = proposal.documentId ? this.db.connection.prepare("SELECT document_json FROM plan_documents WHERE id=?").get(proposal.documentId) as {document_json:string}|undefined : undefined;
+    const roundsMatch = !proposal.documentId || Boolean(documentRow && (JSON.parse(documentRow.document_json) as {rounds:{key:string;eventId:string|null}[]}).rounds.every(round=>{
+      const latest=this.db.connection.prepare(`SELECT e.id FROM work_item_events e JOIN work_items w ON w.id=e.item_id
+        WHERE w.item_key=? AND e.history_source_key IS NULL AND e.event_type='status_changed'
+        AND json_extract(e.payload_json,'$.reason')='verification_failed' ORDER BY e.timeline_seq DESC LIMIT 1`).get(round.key) as {id:string}|undefined;
+      return (latest?.id ?? null)===round.eventId;
+    }));
+    return {...proposal,...(approval ? {approvedAt:approval.approved_at} : {}),revision:row.revision,approved:this.approved(accountId,identity,row.revision),valid:this.scope(proposal.keys)===row.scope_json && (Boolean(approval)||roundsMatch)};
   }
 
   assertRequest(accountId:string,identity:string,revision:string): void {
