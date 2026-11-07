@@ -150,6 +150,18 @@ describe("AND-423 explicit merge deliveries",()=>{
     expect(new AgentSessionStore(f.store.database).getForAccount(f.owner.id,b.sessionId).sessionPurpose).toBe("integration");
     expect(f.db.prepare("SELECT COUNT(*) AS n FROM dispatch_items WHERE dispatch_id=?").get(b.dispatchId)).toMatchObject({n:0});
   });
+  it("AND-455 dispatches auto-merge as the batch default and keeps the merge gate intact",async()=>{
+    const f=await prepared();f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
+    const b=f.merges.start(f.owner.id,randomUUID(),[{id:f.d.id,revision:f.d.revision}],f.config,false,1);
+    const prompt=(f.db.prepare("SELECT initial_text FROM free_session_starts WHERE dispatch_id=?").get(b.dispatchId) as {initial_text:string}).initial_text;
+    // Arming auto-merge replaces per-item waiting for a merge notification.
+    expect(prompt).toContain("gh pr merge --auto --merge --match-head-commit");
+    expect(prompt).toContain("--disable-auto");
+    // The gate is not relaxed: exact head binding, protected checks and no --admin.
+    expect(prompt).toContain("--match-head-commit");
+    expect(prompt).toContain("禁止 --admin");
+    expect(prompt).toContain("required checks 全绿");
+  });
   it("preserves confirmation when only same-head evidence refreshes",async()=>{
     const f=await prepared();f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
     f.merges.refresh(f.owner.id,"original-client",f.identity,f.d.id,{...f.input.evidence,checkedAt:new Date(Date.now()-360_000).toISOString()});
