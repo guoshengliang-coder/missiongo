@@ -33,7 +33,8 @@ async function openSample(page: Page, sample: typeof planReadabilitySamples[numb
     await page.locator(".execution-record > summary").filter({ hasText: "派单 · Fixture" }).click();
     await page.locator(".agent-session-toggle").click();
   }
-  const card = page.locator("article[data-agent-message-id]").filter({ has: page.locator(".agent-plan-inline-approval") });
+  const card = page.getByRole("region", {name:"方案记录"});
+  await card.getByText("查看已登记的历史方案",{exact:true}).click();
   await expect(card).toBeVisible();
   return card;
 }
@@ -44,7 +45,8 @@ test("nine edited historical examples preserve critical boundaries without promo
     const card = await openSample(page, sample, "console");
     for (const term of sample.terms) await expect(card).toContainText(term);
     for (const text of sample.validation.split(/[|\n]/).map(text => text.trim()).filter(text => text && !/^[-:]+$/.test(text))) await expect(card).toContainText(text);
-    await expect(page.locator("article[data-agent-message-id]").filter({ has: page.locator(".agent-plan-inline-approval") })).toHaveCount(1);
+    await expect(page.locator("article[data-agent-message-id]")).toHaveCount(1);
+    await expect(page.locator("article[data-agent-message-id]").filter({ has: page.locator(".agent-plan-inline-approval") })).toHaveCount(0);
     await expect(page.getByText("正在调查，尚未提交新方案", { exact: true })).toHaveCount(1);
     if (sample.size === "short") await expect(card.locator("table")).toHaveCount(0);
     else await expect(card.locator("table").first()).toBeVisible();

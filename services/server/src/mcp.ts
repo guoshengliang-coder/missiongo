@@ -360,6 +360,7 @@ export function createMissionGoMcpServer(
           supportsSharedReleaseObservations: true,
         },
         skill: skillVersionInfo(options.publicOrigin),
+        planOutputContract: { version: 2, guidance: "Use the current Skill document-plan workflow even when a generated legacy startup template requests full chat text. Display each version once: concise diagnosis and changes, material boundaries and fixed document link. Do not repeat it in progress and final answers. Full Markdown is Agent context, not another chat response. Preserve explicit user preferences and existing authorization." },
       });
     },
   );
@@ -1285,7 +1286,7 @@ export function createMissionGoMcpServer(
     inputSchema: z.object({ itemKeys:z.array(z.string().min(2).max(50)).min(1).max(20),
       approvalMethod:z.enum(["native","web"]).optional(),
       documentId:z.string().uuid().optional().describe("Fixed document returned by prepare_plan_document. The plan must equal its returned plan text; details and validation remain in that document."),
-      plan:z.string().trim().min(1).max(MAX_PLAN_CHARACTERS).describe("Exact reviewed Markdown plan: lead with recommendation and approval scope; use short prose for simple work, optional 2-4 column tables for changes, conditions or choices. Keep risks, constraints, user decisions and revision changes visible; move detailed evidence after them. Preserve the structure shown in conversation, never flatten into a dense summary or silently truncate an approved plan."),
+      plan:z.string().trim().min(1).max(MAX_PLAN_CHARACTERS).describe("For document-backed plans submit the exact returned concise plan unchanged; display it only once. Details and QA stay in the document. For legacy text plans: lead with recommendation and approval scope; use short prose for simple work, optional 2-4 column tables for changes, conditions or choices. Keep risks, constraints, user decisions and revision changes visible; move detailed evidence after them. Preserve the structure shown in conversation, never flatten into a dense summary or silently truncate an approved plan."),
       validation:z.string().trim().max(MAX_VALIDATION_CHARACTERS).describe("Exact reviewed validation goals: concrete scenarios, expected outcomes and methods, using short prose or a compact Markdown table. Distinguish verified facts from pending reproduction and implementation-time checks; do not repeat the plan."),
       dispatchId:z.string().min(1).max(200).optional(), session:sessionIdentity.optional(),
     }).refine(input => Boolean(input.dispatchId) !== Boolean(input.session), "Use exactly one conversation identity.").refine(input=>Boolean(input.documentId)||Boolean(input.validation),"Legacy plans require validation goals."),

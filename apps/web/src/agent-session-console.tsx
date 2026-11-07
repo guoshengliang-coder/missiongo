@@ -3,7 +3,7 @@ import { permissionReplyText } from "./permission-presentation";
 import { DeliveryCards, IntegrationDetails, MergeProgressBadge, useMergeProgress, useDeliveryAttention, invalidateSessionDeliveries } from "./merge-console";
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
-import { InlinePlanApproval, inlinePlanTranscript, currentPlan, planContinuationObserved } from "./agent-plan-content";
+import { UnlinkedPlanRecord, InlinePlanApproval, inlinePlanTranscript, currentPlan, planContinuationObserved } from "./agent-plan-content";
 import { AgentStopFeedback } from "./agent-stop-feedback.js";
 import { hasStoppableAgentTurn } from "@missiongo/domain";
 import { ChatAttachments } from "./chat-attachments";
@@ -1247,6 +1247,7 @@ export function AgentSessionConsole({
                     </article>
                   );
                 })}
+                {!planMessages.planMessageId && sessionQuery.data && <UnlinkedPlanRecord session={sessionQuery.data} blocked={showPermissionApproval || pending || sendingSelected || cancellingSelected} />}
                 {(!currentPlan(sessionQuery.data)?.plan || !showPlanApproval && selected.attention.kind !== "approval") && !showPermissionApproval && (!suppressDeliveryAttention || showPlanApproval) && (showPlanApproval || !stalePlanAttention && (selected.needsAttention || selected.attention.dismissed) && selected.attention.reason) && (
                   <div className={`agent-console-attention-banner ${selected.attention.dismissed ? "dismissed" : ""}${showPlanApproval ? " agent-console-attention-banner--approval" : ""}`} role="status">
                     <BellRing size={16} />

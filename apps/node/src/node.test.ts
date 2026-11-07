@@ -86,6 +86,8 @@ describe("headless configuration and scope", () => {
           expect(prompt).toContain("20 MiB、整份 32 MiB、最多 64 个资源");
           expect(prompt).toContain("旧 Linux 节点仅支持图片");
           expect(prompt).toContain("文件需要源节点在线");
+          expect(prompt).toContain("方案输出规范 v2");
+          expect(prompt).toContain("不重贴摘要或全文");
           expect(prompt).toContain("向 request_plan_approval 提交的 plan/validation");
           expect(prompt).toContain("特别是与推荐不同的选择");
           expect(prompt).toContain("普通进度、澄清和等待提示不是正式方案");
@@ -93,7 +95,7 @@ describe("headless configuration and scope", () => {
           if (freeSession) expect(prompt).toContain("不自行开始任务");
           else if (mode === "plan") {
             expect(prompt).toContain("领取记录任务归属，不要求方案批准");
-            expect(prompt).toContain("批准后将已批准的计划以结构化评论写入各条");
+            expect(prompt).toContain("批准后用 append_comment(planDocumentId) 将固定文档及摘要归档到各条");
           }
         }
       });
