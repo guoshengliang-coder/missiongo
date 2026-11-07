@@ -19,7 +19,7 @@ for(const width of [320,1440]) for(const theme of ["light","dark"] as const) {
     const path=new URL(route.request().url()).pathname;
     if(path.endsWith("/plan-approval")){ posts++;return route.fulfill({status:201,json:{approved:true,revision:"r1",continuationQueued:false}}); }
     return route.fulfill({json:path==="/api/v1/agent-sessions" ? {sessions:[session]} : {...session,
-      messages:[{id:"plan",sourceId:"plan",role:"agent",text:plan,occurredAt:stamp}],
+      messages:[{id:"plan",sourceId:"plan",role:"agent",text:"本次修订仅澄清授权。\n\n"+plan,occurredAt:stamp}],
       implementationPlan:{revision:"r1",plan,validation:"",documentId,approved:false,valid:true,submittedAt:stamp},
       planApproval:{revision:"r1",plan,validation:""},planApprovalStatus:{code:"ready"}}});
   });
@@ -27,6 +27,7 @@ for(const width of [320,1440]) for(const theme of ["light","dark"] as const) {
   const reply=page.locator(".agent-console-reply textarea");await reply.fill("保留我的修改建议");
   const article=page.locator("article[data-agent-message-id]").filter({has:page.locator(".agent-plan-inline-approval")});
   await expect(article).toContainText("真实进展仍更新时间");
+  await expect(page.locator("article[data-agent-message-id]")).toHaveCount(1);
   await expect(article).not.toContainText("模拟节点");
   const popupPromise=page.waitForEvent("popup");await article.getByRole("link",{name:/查看完整诊断/}).click();const popup=await popupPromise;await popup.setViewportSize({width,height:900});await popup.emulateMedia({colorScheme:theme});
   await expect(popup.getByRole("heading",{name:"完整验证"})).toBeVisible();expect(posts).toBe(0);

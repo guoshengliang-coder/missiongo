@@ -3446,3 +3446,6 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 
 /* Approval controls remain beneath the original proposal on both surfaces. */
 .agent-plan-inline-approval { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+.agent-plan-inline-approval button { min-height: 44px; }
+
+.agent-plan-record > div { min-width: 0; flex: 1; }

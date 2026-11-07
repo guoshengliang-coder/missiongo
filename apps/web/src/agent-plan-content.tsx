@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { MarkdownText } from "./markdown-text";
 import { api } from "./api";
 import { localizedErrorText } from "./error-text";
 import { planApprovalStatusKey } from "./agent-session-view";
@@ -30,30 +31,49 @@ export function planContinuationObserved(session: AgentSession | undefined): boo
     || session.turnState?.turnActive === true && Date.parse(session.turnState.turnStartedAt ?? "") >= boundary;
 }
 
-/** Match the complete frozen body and validation, never a similar summary.
- * Extra prose remains visible on the original message. */
+/** Associate controls with the immutable document reference, never synthesize chat.
+ * Legacy records may match their exact complete body; unmatched records remain
+ * separately readable without inventing a source message. */
 export function inlinePlanTranscript<T extends AgentSessionMessage>(messages: readonly T[], session: AgentSession | undefined): {
-  messages: readonly (T | (AgentSessionMessage & { readonly attachmentData?: undefined }))[]; planMessageId?: string;
+  messages: readonly T[]; planMessageId?: string;
 } {
   const plan = currentPlan(session);
   if (!plan?.plan?.trim()) return { messages };
   const body = plan.plan.trim();
   const validation = plan.validation?.trim();
-  const matches = messages.filter(message => ["agent", "plan"].includes(message.role)
-    && (message.text.trim() === body || message.text.trim().startsWith(body + "\n") && (!validation || message.text.includes(validation))));
-  // Multiple source messages are genuine history. Attach to the latest complete
-  // proposal, without deleting earlier messages or unrelated explanations.
+  const matches = messages.filter(message => {
+    if (!["agent", "plan"].includes(message.role)) return false;
+    if (plan.documentId) {
+      // The document id is the frozen version identifier. Prefix commentary,
+      // split messages and translated link labels do not change the reference.
+      return [...message.text.matchAll(/\[[^\]]*\]\(<?([^\s)>]+)>?\)/g)].some(match => {
+        try {
+          const url = new URL(match[1]!, "https://plan.invalid");
+          return url.pathname === "/" && url.searchParams.get("planDocument") === plan.documentId;
+        } catch { return false; }
+      });
+    }
+    return (message.text.trim() === body || message.text.trim().startsWith(body + "\n"))
+      && (!validation || message.text.includes(validation));
+  });
   const original = matches.at(-1);
-  if (original) return { messages: validation && !original.text.includes(validation)
-    ? messages.map(message => message.id === original.id ? { ...message, text: message.text + "\n\n" + validation } : message)
-    : messages, planMessageId: original.id };
-  const id = `submitted-plan:${plan.revision}`;
-  const fallback: AgentSessionMessage & { readonly attachmentData?: undefined } = { id, sourceId: id, role: "agent",
-    text: [body, validation].filter(Boolean).join("\n\n"),
-    occurredAt: session?.implementationPlan?.submittedAt ?? session?.implementationPlan?.approvedAt ?? messages[0]?.occurredAt ?? "" };
-  const index = messages.findIndex(message => message.occurredAt >= fallback.occurredAt);
-  const at = index < 0 ? messages.length : index;
-  return { messages: [...messages.slice(0, at), fallback, ...messages.slice(at)], planMessageId: id };
+  return { messages, ...(original ? {planMessageId: original.id} : {}) };
+}
+
+/** Domain record, not an Agent message. No duplicate body is inserted on delay. */
+export function UnlinkedPlanRecord({session, blocked = false}: {session: AgentSession; blocked?: boolean}) {
+  const {t} = useI18n();
+  const plan = currentPlan(session);
+  if (!plan?.plan?.trim()) return null;
+  return <section className="agent-console-attention-banner agent-plan-record" aria-label={t("agentPlanRecord")}>
+    <div>
+      <p role="status">{t("agentPlanSourcePending")}</p>
+      {plan.documentId
+        ? <a href={`/?planDocument=${encodeURIComponent(plan.documentId)}`} target="_blank" rel="noopener noreferrer">{t("agentPlanViewDocument")}</a>
+        : <details><summary>{t("agentPlanViewRecord")}</summary><MarkdownText>{[plan.plan, plan.validation].filter(Boolean).join("\n\n")}</MarkdownText></details>}
+      <InlinePlanApproval session={session} blocked={blocked || Boolean(plan.documentId)} />
+    </div>
+  </section>;
 }
 
 /** Approval is attached to the message; the server still binds the revision,
