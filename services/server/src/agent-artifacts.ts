@@ -1,23 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { localArtifactPath, type AgentArtifactBundle, type AgentArtifactState } from "@missiongo/domain";
+import { localArtifactPath, ARTIFACT_CONTENT_TYPES, artifactResourceName, type AgentArtifactBundle, type AgentArtifactState } from "@missiongo/domain";
 import { z } from "zod";
 
 import type { MissionGoDatabase } from "./storage/database.js";
 import { invalidInput, notFound } from "./errors.js";
 
-const TYPES: Record<string, string> = {
-  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml",
-  html: "text/html", htm: "text/html", md: "text/markdown", txt: "text/plain", log: "text/plain", csv: "text/csv",
-  json: "application/json", pdf: "application/pdf", css: "text/css", js: "text/javascript", mjs: "text/javascript",
-  woff: "font/woff", woff2: "font/woff2", ttf: "font/ttf",
-};
+const TYPES = ARTIFACT_CONTENT_TYPES;
+const resourceSchema = z.string().min(1).max(1024).refine(artifactResourceName);
 const fileSchema = z.object({ name: z.string().min(1).max(1024), contentType: z.string().max(100), base64: z.string().max(28 * 1024 * 1024) }).strict();
-const bundleSchema = z.object({ entry: z.string().min(1).max(1024), files: z.array(fileSchema).min(1).max(64) }).strict();
+const bundleSchema = z.object({ entry: z.string().min(1).max(1024), files: z.array(fileSchema).min(1).max(64), skippedResources: z.array(resourceSchema).max(64).optional() }).strict();
 interface Row {
   id: string; session_id: string; account_id: string; node_id: string | null; binding_session_id: string | null; session_ref: string | null; agent_kind: string | null;
-  source_id: string; href: string; status: AgentArtifactState["status"]; error: string | null;
+  source_id: string; href: string; status: AgentArtifactState["status"]; error: string | null; error_resource: string | null;
 }
 interface Binding { binding_session_id: string; node_id: string; session_ref: string; agent_kind: string }
 
@@ -39,7 +35,10 @@ export function validateArtifactBundle(value: unknown): AgentArtifactBundle {
   }
   if (total > 32 * 1024 * 1024 || !names.has(bundle.entry)
     || /\.(?:css|m?js|woff2?|ttf)$/i.test(bundle.entry)) throw invalidInput("Invalid artifact entry or bundle size.");
-  return bundle;
+  const skipped = bundle.skippedResources ?? [];
+  if (skipped.length + bundle.files.length > 64 || new Set(skipped).size !== skipped.length
+    || skipped.some(name => names.has(name) || TYPES[name.split(".").at(-1)!.toLowerCase()])) throw invalidInput("Invalid skipped artifact resource.");
+  return { entry: bundle.entry, files: bundle.files, ...(bundle.skippedResources ? { skippedResources: bundle.skippedResources } : {}) };
 }
 
 /** Durable, account/session-scoped copies. The API never accepts a free-form node file request. */
@@ -71,7 +70,7 @@ export class AgentArtifacts {
     const now = new Date().toISOString();
     const id = previous?.id ?? randomUUID();
     this.db.prepare(`INSERT INTO agent_artifacts(id,session_id,account_id,node_id,binding_session_id,session_ref,agent_kind,source_id,href,status,error,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,error=excluded.error,
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,error=excluded.error,error_resource=NULL,
       node_id=excluded.node_id,binding_session_id=excluded.binding_session_id,session_ref=excluded.session_ref,agent_kind=excluded.agent_kind,updated_at=excluded.updated_at`)
       .run(id, sessionId, accountId, binding?.node_id ?? null, binding?.binding_session_id ?? null, binding?.session_ref ?? null, binding?.agent_kind ?? null,
         sourceId, href, binding ? "pending" : "failed", binding ? null : "node_unavailable", now, now);
@@ -85,7 +84,7 @@ export class AgentArtifacts {
   }
 
   private state(row: Row): AgentArtifactState {
-    return { id: row.id, status: row.status, filename: basename(localArtifactPath(row.href)!), ...(row.error ? { error: row.error } : {}) };
+    return { id: row.id, status: row.status, filename: basename(localArtifactPath(row.href)!), ...(row.error ? { error: row.error } : {}), ...(row.error_resource ? { errorResource: row.error_resource } : {}) };
   }
 
   jobs(accountId: string, nodeId: string) {
@@ -97,7 +96,7 @@ export class AgentArtifacts {
         this.db.prepare("UPDATE agent_artifacts SET status='failed',error='node_unavailable' WHERE id=?").run(row.id);
         return [];
       }
-      return [{ id: row.id, sessionId: row.session_id, sessionRef: row.session_ref!, agentKind: row.agent_kind!, sourceId: row.source_id, href: row.href }];
+      return [{ id: row.id, sessionId: row.session_id, sessionRef: row.session_ref!, agentKind: row.agent_kind!, sourceId: row.source_id, href: row.href, diagnosticsProtocol: 1 }];
     });
   }
 
@@ -114,8 +113,8 @@ export class AgentArtifacts {
 
   async complete(accountId: string, nodeId: string, id: string, value: unknown): Promise<void> {
     this.authorizeJob(accountId, nodeId, id);
-    const body = z.object({ error: z.enum(["file_missing", "unsupported", "reference_missing", "file_denied", "too_large", "resource_missing", "node_unavailable"]).optional(), bundle: bundleSchema.optional() }).strict().safeParse(value);
-    if (!body.success || Boolean(body.data.error) === Boolean(body.data.bundle)) throw invalidInput("Report one artifact result.");
+    const body = z.object({ error: z.enum(["file_missing", "unsupported", "reference_missing", "file_denied", "too_large", "resource_missing", "node_unavailable"]).optional(), bundle: bundleSchema.optional(), errorResource: resourceSchema.optional() }).strict().safeParse(value);
+    if (!body.success || Boolean(body.data.error) === Boolean(body.data.bundle) || Boolean(body.data.errorResource && !body.data.error)) throw invalidInput("Report one artifact result.");
     if (body.data.bundle) {
       const bundle = validateArtifactBundle(body.data.bundle);
       await mkdir(this.root, { recursive: true, mode: 0o700 });
@@ -127,8 +126,8 @@ export class AgentArtifacts {
         await rename(temp, join(this.root, `${id}.json`));
       } finally { await unlink(temp).catch(() => undefined); }
     }
-    this.db.prepare("UPDATE agent_artifacts SET status=?,error=?,updated_at=? WHERE id=?")
-      .run(body.data.bundle ? "ready" : "failed", body.data.error ?? null, new Date().toISOString(), id);
+    this.db.prepare("UPDATE agent_artifacts SET status=?,error=?,error_resource=?,updated_at=? WHERE id=?")
+      .run(body.data.bundle ? "ready" : "failed", body.data.error ?? null, body.data.errorResource ?? null, new Date().toISOString(), id);
   }
 
   async bundle(accountId: string, sessionId: string, id: string): Promise<AgentArtifactBundle> {

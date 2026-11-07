@@ -334,9 +334,13 @@ it("serves the three read tools on a read-only connection and enforces product s
   expect((reread!.messages as {sourceId:string}[]).some(m=>m.sourceId==="older-output")).toBe(true);
   const requested=await invoke("get_agent_artifact",{sessionId,itemKey:item.key,sourceId:"older-output",href:"/tmp/output/report.md"});
   expect(requested).toMatchObject({status:"pending",contentRead:false});
-  await artifacts.complete(adminAccount.id,"node",requested!.id as string,{bundle:{entry:"report.md",files:[{name:"report.md",contentType:"text/markdown",base64:Buffer.from("# Complete report 🧑‍💻").toString("base64")}]}});
+  await artifacts.complete(adminAccount.id,"node",requested!.id as string,{error:"resource_missing",errorResource:"images/chart.png"});
+  expect(await invoke("get_agent_artifact",{sessionId,itemKey:item.key,artifactId:requested!.id})).toMatchObject({status:"failed",errorResource:"images/chart.png"});
+  await invoke("get_agent_artifact",{sessionId,itemKey:item.key,sourceId:"older-output",href:"/tmp/output/report.md"});
+  await artifacts.complete(adminAccount.id,"node",requested!.id as string,{bundle:{entry:"report.md",skippedResources:["evidence.jsonl"],files:[{name:"report.md",contentType:"text/markdown",base64:Buffer.from("# Complete report 🧑‍💻").toString("base64")}]}});
   const saved=await invoke("get_agent_artifact",{sessionId,itemKey:item.key,artifactId:requested!.id});
   expect(JSON.parse(saved!.text as string).text).toBe("# Complete report 🧑‍💻");
+  expect(saved).toMatchObject({skippedResources:["evidence.jsonl"]});
   const denied=await invoke("get_agent_artifact",{sessionId,itemKey:item.key,sourceId:"older-output",href:"/tmp/unmentioned-secret.md"});
   expect(denied).toBeUndefined();
   expect(store.database.connection.prepare("SELECT COUNT(*) AS n FROM agent_session_commands").get()).toEqual({n:0});

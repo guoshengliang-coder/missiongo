@@ -25,7 +25,7 @@ export function MarkdownText({ children, className, onLocalArtifactOpen, resolve
   // preserving the trigger that the shared modal returns focus to.
   const components = useMemo<Components>(() => ({
           table: ({ children }) => <MarkdownTable>{children}</MarkdownTable>,
-          a: ({ href, children }) => href && localArtifactPath(href)
+          a: ({ href, children }) => href === "about:blank" ? <span aria-disabled="true">{children}</span> : href && localArtifactPath(href)
             ? onLocalArtifactOpen
               ? <button type="button" className="artifact-link" onClick={() => onLocalArtifactOpen(href)}>{children}</button>
               : <span>{children}</span>
