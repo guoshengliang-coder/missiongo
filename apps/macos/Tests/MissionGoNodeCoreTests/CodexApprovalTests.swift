@@ -309,7 +309,10 @@ final class CodexApprovalTests: XCTestCase {
         let server = try FakeAppServer { message in
             guard let id = message["id"], let method = message["method"] as? String else { return [] }
             let response: [String: Any] = ["id": id, "result": [:]]
-            return method == "thread/resume" ? [response, prompt] : [response]
+            // Establish the pending request before resume completes. With the
+            // deliberate 10 ms idle limit, response-first ordering can expire
+            // the watch before the request frame is read on a busy CI runner.
+            return method == "thread/resume" ? [prompt, response] : [response]
         }
         let monitor = CodexApprovalMonitor(idleTimeout: 0.01)
         defer { monitor.stop(threadId: "thread-1"); server.waitUntilDone() }

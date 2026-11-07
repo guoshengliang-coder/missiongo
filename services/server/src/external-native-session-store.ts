@@ -1,3 +1,4 @@
+import { observeSessionUnread } from "./session-unread.js";
 import { isConversationMessage } from "@missiongo/domain";
 import { ImplementationPlans } from "./implementation-plans.js";
 import { AgentSessionAttachments, type AgentSessionAttachment } from "./agent-session-attachments.js";
@@ -331,6 +332,15 @@ export class ExternalNativeSessionStore {
       if (input.commandStatus === "delivering" && this.items(row.id).every((item) => item.status === "done")) throw conflict("agent_session_work_finished", "The linked work is done.");
       if (input.messages.length > 2000) throw invalidInput("Too many native messages.");
       const now = new Date().toISOString(); let changed = false;
+      const clocks = this.db.prepare("SELECT activity_at,unread_at FROM external_agent_sessions WHERE id=?").get(row.id) as { activity_at: string; unread_at: string | null };
+      const clock = new Date(Math.max(Date.now(), Date.parse(clocks.activity_at) + 1, clocks.unread_at ? Date.parse(clocks.unread_at) + 1 : 0)).toISOString();
+      const storedUnreadMessages = (this.db.prepare("SELECT payload_json FROM external_native_messages WHERE session_id=?").all(row.id) as { payload_json: string }[])
+        .map(message => JSON.parse(message.payload_json) as AgentSessionMessageInput);
+      const previousSnapshot = row.native_snapshot_json ? JSON.parse(row.native_snapshot_json) as { status?: string } : undefined;
+      const unreadEvent = observeSessionUnread(this.store.database, {
+        key: `external:${row.id}`, previousStatus: previousSnapshot?.status ?? "unavailable", status: input.status,
+        now: clock, stored: storedUnreadMessages, messages: input.messages,
+      });
       let position = (this.db.prepare("SELECT COALESCE(MAX(position),-1) AS position FROM external_native_messages WHERE session_id=?").get(row.id) as { position: number }).position;
       for (const message of input.messages.filter(isConversationMessage)) {
         if (!message.sourceId || message.sourceId.length > 200 || message.text.length > 4_000_000) throw invalidInput("Invalid native message.");
@@ -389,11 +399,10 @@ export class ExternalNativeSessionStore {
       }
       const snapshot = JSON.stringify({ ...(input.settingsSupport ? { settingsSupport: input.settingsSupport } : {}),
         ...(input.mode ? { mode: input.mode } : {}), ...(input.model ? { model: input.model } : {}), ...(input.effort ? { effort: input.effort } : {}), supportsAttachments: input.supportsAttachments === true, status: input.status, turnState: input.turnState, activities, ...(input.error ? { error: input.error } : {}), ...(input.sourceArchived ? { sourceArchived: true } : {}) });
-      const clocks = this.db.prepare("SELECT activity_at,unread_at FROM external_agent_sessions WHERE id=?").get(row.id) as { activity_at: string; unread_at: string | null };
-      const clock = new Date(Math.max(Date.now(), Date.parse(clocks.activity_at) + 1, clocks.unread_at ? Date.parse(clocks.unread_at) + 1 : 0)).toISOString();
+
       this.db.prepare(`UPDATE external_agent_sessions SET native_snapshot_json=?,native_synced_at=?,
         activity_at=CASE WHEN ? THEN ? ELSE activity_at END, unread_at=CASE WHEN ? THEN ? ELSE unread_at END WHERE id=?`)
-        .run(snapshot, now, changed ? 1 : 0, clock, changed ? 1 : 0, clock, row.id);
+        .run(snapshot, now, changed ? 1 : 0, clock, unreadEvent ? 1 : 0, clock, row.id);
       if (input.commandId && input.commandStatus) {
         const command = this.db.prepare("SELECT * FROM external_native_commands WHERE id=? AND session_id=?").get(input.commandId, row.id) as CommandRow | undefined;
         if (!command) throw notFound("Native reply");

@@ -1,3 +1,4 @@
+import { acknowledgeSessionUnread, observeSessionUnread } from "./session-unread.js";
 import { isConversationMessage } from "@missiongo/domain";
 import { ImplementationPlans } from "./implementation-plans.js";
 import { handoffDispatchIsCurrent } from "./agent-handoffs.js";
@@ -641,32 +642,6 @@ function boundedAttentionText(text: string): string {
   return `${text.slice(0, 2_000)}\n\n[中间内容已省略]\n\n${text.slice(-17_950)}`;
 }
 
-/**
- * Whether a node snapshot contains something a person should come back for:
- * a new Agent or plan message, questions newly attached to one, a turn that
- * finished, or a session that failed or stalled. Everything else the node
- * reports -- connectivity, sync errors and their recovery, a re-read of the
- * same transcript, streamed text growing, the person's own delivered reply --
- * changes the mirror without making the conversation unread (AND-135).
- */
-export function snapshotMakesUnread(
-  previousStatus: AgentSessionStatus,
-  nextStatus: AgentSessionStatus,
-  messages: readonly { sourceId: string; role: AgentMessageRole; questionsJson: string | null }[],
-  stored: ReadonlyMap<string, { questions_json: string | null }>,
-): boolean {
-  const newOutput = messages.some((message) => {
-    if (message.role === "user") return false;
-    const previous = stored.get(message.sourceId);
-    return !previous || (!hasQuestions(previous.questions_json) && hasQuestions(message.questionsJson));
-  });
-  if (newOutput) return true;
-  if (previousStatus === nextStatus) return false;
-  return nextStatus === "failed"
-    || nextStatus === "stalled"
-    || (previousStatus === "active" && nextStatus === "idle");
-}
-
 export class AgentSessionStore {
   constructor(private readonly database: MissionGoDatabase, private readonly attachments?: AgentSessionAttachments) {}
 
@@ -1172,6 +1147,7 @@ export class AgentSessionStore {
         .get(dispatchId, accountId);
       if (!exists) throw notFound("Dispatch");
     }
+    acknowledgeSessionUnread(this.database, `dispatch:${dispatchId}`, through);
   }
 
   /**
@@ -1865,8 +1841,18 @@ export class AgentSessionStore {
         repairPending = 0;
       }
     }
-    const unreadEvent = snapshotMakesUnread(session.status, input.status, messages, storedBySource);
     this.database.transaction(() => {
+      const previousUnread = this.database.connection.prepare("SELECT unread_at FROM dispatches WHERE id=?")
+        .get(session.dispatch_id) as { unread_at: string | null };
+      const unreadAt = new Date(Math.max(Date.parse(now), previousUnread.unread_at ? Date.parse(previousUnread.unread_at) + 1 : 0)).toISOString();
+      const unreadEvent = observeSessionUnread(this.database, {
+        key: `dispatch:${session.dispatch_id}`, previousStatus: session.status, status: input.status, now: unreadAt,
+        messages: messages.map(message => ({ ...message, occurredAt: message.sourceOccurredAt,
+          questions: message.questionsJson ? JSON.parse(message.questionsJson) : undefined })),
+        stored: storedMessages.map(message => ({ sourceId: message.source_id, role: message.role,
+          phase: message.phase, occurredAt: message.occurred_at,
+          questions: message.questions_json ? JSON.parse(message.questions_json) : undefined })),
+      });
       const first = messages.find(message => message.role === "user");
       this.bindStartupStop(input.sessionId, session.agent_kind === "opencode" ? first?.sourceId : first?.turnId ?? undefined);
       this.database.connection
@@ -1878,9 +1864,8 @@ export class AgentSessionStore {
         )
         .run(input.status, error, nextActivitiesJson, turnStateJson, now, nextActivityAt, repairPending, input.sessionId);
       if (unreadEvent) {
-        this.database.connection
-          .prepare("UPDATE dispatches SET unread_at = ? WHERE id = ?")
-          .run(now, session.dispatch_id);
+        this.database.connection.prepare("UPDATE dispatches SET unread_at = ? WHERE id = ?")
+          .run(unreadAt, session.dispatch_id);
       }
       if (input.sourceRestored) {
         this.database.connection
