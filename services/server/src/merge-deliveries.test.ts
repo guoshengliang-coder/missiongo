@@ -663,3 +663,30 @@ it("reads delivery content on read-only scope without confirming, and denies ano
   expect(denied.isError ?? Boolean(denied.error)).toBe(true);
   expect(f.merges.readForAccount(f.owner.id,f.d.id).state).toBe("proposed");
 });
+
+it("AND-460 projects delivery-only attention consistently and keeps later independent instructions", async () => {
+  const f = await prepared(), sessions = new AgentSessionStore(f.store.database);
+  const login = await f.app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { username: f.owner.email, password: "synthetic password" } });
+  const headers = { cookie: String(login.headers["set-cookie"]).split(";")[0]! };
+  const list = async () => (await f.app.inject({ method: "GET", url: "/api/v1/agent-sessions", headers })).json().sessions[0];
+  const snapshot = (sourceId: string, text: string) => sessions.recordSnapshot({ nodeId: f.node.nodeId, sessionId: f.projectSessionId,
+    status: "idle", messages: [{ sourceId, role: "agent", phase: "final_answer", text }] });
+  snapshot("delivery", "代码与检查已完成，请发起合并。");
+  const first = sessions.pendingAttention(f.projectSessionId)!;
+  expect(sessions.completeAttention(f.projectSessionId, first.messageHash, { needsAttention: true, kind: "instruction", reason: "等待发起合并", model: "synthetic", deliveryOnly: true })).toBe(true);
+  expect(await list()).toMatchObject({ needsAttention: false, attention: { state: "needed", handledByDelivery: true, reason: "等待发起合并" } });
+  f.merges.decide(f.owner.id, f.d.id, f.d.revision, "confirm");
+  expect((await list()).needsAttention).toBe(false);
+  f.merges.decide(f.owner.id, f.d.id, f.d.revision, "withdraw");
+  expect((await list()).needsAttention).toBe(false);
+  snapshot("independent", "请决定另一项独立安排。");
+  const second = sessions.pendingAttention(f.projectSessionId)!;
+  expect(sessions.completeAttention(f.projectSessionId, second.messageHash, { needsAttention: true, kind: "instruction", reason: "独立安排", model: "synthetic", deliveryOnly: false })).toBe(true);
+  expect(await list()).toMatchObject({ needsAttention: true, attention: { reason: "独立安排" } });
+  expect((await list()).attention.handledByDelivery).toBeUndefined();
+  // A legacy cached verdict has no delivery attribution and remains visible.
+  f.db.prepare("UPDATE agent_session_attention SET delivery_only=NULL WHERE session_id=?").run(f.projectSessionId);
+  expect((await list()).needsAttention).toBe(true);
+  f.db.prepare("UPDATE work_items SET content_version=content_version+1 WHERE id=?").run(f.item.id);
+  expect(f.merges.attentionSessionIds(f.item.productId, f.owner.id)).toEqual([]);
+});

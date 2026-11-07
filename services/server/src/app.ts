@@ -81,6 +81,7 @@ import { AgentApprovalStore, type AgentApproval } from "./agent-approval-store.j
 import { PlanApprovalService, type PlanApprovalBlockReason } from "./plan-approval.js";
 import { BROWSER_UNREADABLE_IMAGE_TYPES, heicToJpeg } from "./image-decode.js";
 import { AiTitleService } from "./ai-title.js";
+import { withDeliveryAttention } from "./delivery-attention.js";
 import { ExternalAgentSessionStore } from "./external-agent-session-store.js";
 import { AgentConsoleSessions } from "./agent-console-sessions.js";
 import { ExternalNativeSessionStore } from "./external-native-session-store.js";
@@ -603,7 +604,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const consoleSessions = new AgentConsoleSessions(store, agentSessionStore, externalSessionStore);
   const agentApprovalStore = new AgentApprovalStore(store.database);
   const planApprovals = new PlanApprovalService(store.database);
-  const listConsoleSessions = (accountId: string) => consoleSessions.list(accountId).map((session) => planApprovals.withAttention(agentApprovalStore.withAttention(session)));
+  const merges = new MergeDeliveries(store);
+  const listConsoleSessions = (accountId: string) => {
+    const rows = consoleSessions.list(accountId).map(session => planApprovals.withAttention(agentApprovalStore.withAttention(session)));
+    const handled = new Set(rows.flatMap(sessionProducts).filter((id, index, ids) => ids.indexOf(id) === index)
+      .flatMap(productId => merges.attentionSessionIds(productId, accountId)));
+    return rows.map(session => withDeliveryAttention(session, [session.id, ...(session.relatedSessionIds ?? [])].some(id => handled.has(id))));
+  };
   const accountStore = new AccountStore(store.database);
   const deviceAuthorizations = new DeviceAuthorizationStore(store.database);
   const aiTitle = new AiTitleService(
@@ -666,7 +673,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (!candidate) return;
     const task = aiTitle.classifyAttention(candidate.text)
       .then((classification) => {
-        if (agentSessionStore.completeAttention(sessionId, candidate.messageHash, classification)) {
+        if (agentSessionStore.completeAttention(sessionId, candidate.messageHash, { ...classification, deliveryOnly: classification.deliveryOnly === true && !candidate.truncated })) {
           // The verdict landed outside any request; the widget's push side still
           // has to hear that "needs attention" may have changed.
           widgetPush.noteChanged();
@@ -2498,7 +2505,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return reply.status(201).send(dispatch);
   });
 
-  const merges = new MergeDeliveries(store);
   app.get("/api/v1/products/:productId/merge-deliveries",async request=>{
     const {productId}=request.params as {productId:string};
     requireProductPermission(request,productId,"view");
@@ -2991,6 +2997,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.put("/api/v1/dispatch-defaults", async (request) => {
     return dispatchStore.setDispatchDefaults(requireAccountId(request), objectBody(request.body));
+  });
+
+  // A personal preference needs view access, never permission to execute AI.
+  app.put("/api/v1/agent-sessions/:sessionId/favorite", async request => {
+    const { sessionId } = request.params as { sessionId: string };
+    const account = requireAccount(request);
+    const members = consoleSessions.members(account.id, sessionId);
+    for (const member of members) for (const productId of sessionProducts(member)) {
+      requireProductPermission(request, productId, "view");
+    }
+    return consoleSessions.setFavorite(account.id, sessionId, booleanField(objectBody(request.body), "favorite"));
   });
 
   app.post("/api/v1/agent-sessions/:sessionId/read", async (request, reply) => {

@@ -32,6 +32,8 @@ export interface AgentSessionAttention {
   /** Opaque fingerprint of the latest visible content, used for race-safe dismissal. */
   readonly revision?: string;
   readonly dismissed?: boolean;
+  readonly deliveryOnly?: boolean;
+  readonly handledByDelivery?: boolean;
 }
 
 export interface AgentSessionMessageInput {
@@ -144,6 +146,7 @@ export interface AgentSessionSnapshot {
 }
 
 export interface AgentSessionListItem {
+  readonly favorite?: boolean;
   readonly sessionPurpose?: "integration";
   readonly waitingForPermission?: boolean;
   readonly productId?: string;
@@ -397,6 +400,7 @@ interface CommandRow {
 
 interface AttentionRow {
   message_hash: string;
+  delivery_only: number | null;
   state: AgentAttentionState;
   kind: AgentAttentionKind | null;
   reason: string | null;
@@ -870,7 +874,7 @@ export class AgentSessionStore {
     }
     const attentionBySession = new Map<string, AttentionRow>();
     if (sessionIds.length) {
-      const batch = db.prepare(`SELECT session_id, message_hash, state, kind, reason, model,
+      const batch = db.prepare(`SELECT session_id, message_hash, state, kind, reason, model, delivery_only,
           dismissed_message_hash, dismissed_at, dismissed_by_account_id
         FROM agent_session_attention WHERE session_id IN ${holes(sessionIds)}`)
         .all(...sessionIds) as unknown as Array<{ session_id: string } & AttentionRow>;
@@ -992,6 +996,7 @@ export class AgentSessionStore {
                       ...(cachedAttention.kind ? { kind: cachedAttention.kind } : {}),
                       ...(cachedAttention.reason ? { reason: cachedAttention.reason } : {}),
                       ...(cachedAttention.model ? { model: cachedAttention.model } : {}),
+                      ...(cachedAttention.delivery_only === 1 ? { deliveryOnly: true } : {}),
                       revision: contentHash,
                     }
                   : { ...initialAttention(status, message), revision: contentHash };
@@ -2014,6 +2019,7 @@ export class AgentSessionStore {
            kind = excluded.kind,
            reason = excluded.reason,
            model = NULL,
+           delivery_only = NULL,
            updated_at = excluded.updated_at
          WHERE agent_session_attention.message_hash <> excluded.message_hash`,
       ).run(
@@ -2111,7 +2117,7 @@ export class AgentSessionStore {
     });
   }
 
-  pendingAttention(sessionId: string): { readonly messageHash: string; readonly text: string } | undefined {
+  pendingAttention(sessionId: string): { readonly messageHash: string; readonly text: string; readonly truncated?: boolean } | undefined {
     const session = this.database.connection.prepare(
       `SELECT s.status, a.message_hash, a.state
        FROM agent_sessions s JOIN agent_session_attention a ON a.session_id = s.id
@@ -2135,7 +2141,7 @@ export class AgentSessionStore {
     } | undefined;
     if (!message || message.role !== "agent"
       || attentionMessageHash(session.status, message) !== session.message_hash) return undefined;
-    return { messageHash: session.message_hash, text: boundedAttentionText(message.text) };
+    return { messageHash: session.message_hash, text: boundedAttentionText(message.text), ...(message.text.length > 20_000 ? { truncated: true } : {}) };
   }
 
   completeAttention(
@@ -2145,7 +2151,7 @@ export class AgentSessionStore {
   ): boolean {
     const changed = this.database.connection.prepare(
       `UPDATE agent_session_attention
-       SET state = ?, kind = ?, reason = ?, model = ?, updated_at = ?
+       SET state = ?, kind = ?, reason = ?, model = ?, updated_at = ?, delivery_only = ?
        WHERE session_id = ? AND message_hash = ? AND state = 'pending'`,
     ).run(
       classification.needsAttention ? "needed" : "not_needed",
@@ -2153,6 +2159,7 @@ export class AgentSessionStore {
       classification.reason,
       classification.model,
       new Date().toISOString(),
+      Number(classification.deliveryOnly === true && classification.kind === "instruction"),
       sessionId,
       messageHash,
     );

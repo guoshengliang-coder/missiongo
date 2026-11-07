@@ -2510,5 +2510,19 @@ export class MissionGoDatabase {
       });
     }
 
+    // Personal organization never changes session activity, unread or execution.
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611071456").get()) {
+      this.transaction(() => {
+        this.connection.exec(`CREATE TABLE agent_session_preferences (
+          account_id TEXT NOT NULL, session_key TEXT NOT NULL,
+          favorite INTEGER NOT NULL CHECK(favorite IN (0,1)), sequence INTEGER NOT NULL,
+          PRIMARY KEY(account_id,session_key)
+        ) STRICT;
+        ALTER TABLE agent_session_attention ADD COLUMN delivery_only INTEGER CHECK(delivery_only IN (0,1));`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611071456,new Date().toISOString());
+      });
+    }
+
   }
 }

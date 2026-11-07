@@ -1,6 +1,6 @@
 import { AgentProgressReports } from "./agent-progress-reports";
 import { permissionReplyText } from "./permission-presentation";
-import { DeliveryCards, IntegrationDetails, MergeProgressBadge, useMergeProgress, useDeliveryAttention, invalidateSessionDeliveries } from "./merge-console";
+import { DeliveryCards, IntegrationDetails, MergeProgressBadge, useMergeProgress, invalidateSessionDeliveries } from "./merge-console";
 import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-operation-feedback";
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
 import { UnlinkedPlanRecord, InlinePlanApproval, inlinePlanTranscript, currentPlan, planContinuationObserved } from "./agent-plan-content";
@@ -28,6 +28,7 @@ import {
   RotateCcw,
   Send,
   Square,
+  Star,
   Video,
   WifiOff,
   X,
@@ -265,6 +266,7 @@ export function AgentSessionConsole({
     all: countMatches(productSessions, "all").length,
     failed: countMatches(productSessions, "failed").length,
     archived: countMatches(productSessions, "archived").length,
+    favorites: countMatches(productSessions, "favorites").length,
     productUnread: countMatches(productSessions, "all").filter(sessionCountsAsUnread).length,
     failedUnread: countMatches(productSessions, "failed").filter(sessionCountsAsUnread).length,
   };
@@ -468,6 +470,33 @@ export function AgentSessionConsole({
       ]);
     },
   });
+  const favoriteLocks = useRef(new Set<string>());
+  const [favoritePending, setFavoritePending] = useState<ReadonlySet<string>>(new Set());
+  const [favoriteErrors, setFavoriteErrors] = useState<ReadonlySet<string>>(new Set());
+  const favoriteSession = useMutation({
+    mutationFn: (input: { id: string; favorite: boolean }) => api.setAgentSessionFavorite(input.id, input.favorite),
+    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }); },
+    onError: (_error, input) => setFavoriteErrors(current => new Set(current).add(input.id)),
+    onSettled: (_data, _error, input) => {
+      favoriteLocks.current.delete(input.id);
+      setFavoritePending(current => { const next = new Set(current); next.delete(input.id); return next; });
+    },
+  });
+  const toggleFavorite = (session: AgentSessionSummary) => {
+    if (favoriteLocks.current.has(session.id)) return;
+    favoriteLocks.current.add(session.id);
+    setFavoritePending(current => new Set(current).add(session.id));
+    setFavoriteErrors(current => { const next = new Set(current); next.delete(session.id); return next; });
+    favoriteSession.mutate({ id: session.id, favorite: !session.favorite });
+  };
+  const favoriteButton = (session: AgentSessionSummary, detail = false) => <button
+    type="button" className={detail ? "secondary-button agent-session-favorite" : "icon-button agent-session-favorite"}
+    aria-label={t(session.favorite ? "agentSessionUnfavorite" : "agentSessionFavorite")}
+    aria-pressed={Boolean(session.favorite)} disabled={favoritePending.has(session.id)}
+    onClick={() => toggleFavorite(session)}>
+    {favoritePending.has(session.id) ? <LoaderCircle className="spin" size={16} /> : <Star size={16} fill={session.favorite ? "currentColor" : "none"} />}
+    {detail && t(session.favorite ? "agentSessionUnfavorite" : "agentSessionFavorite")}
+  </button>;
   const archiveSession = useMutation({
     mutationFn: async (input: { sessionId: string; agentSessionId?: string | undefined; dispatchId?: string | undefined; archived: boolean }) => {
       if (input.agentSessionId) await api.setAgentSessionArchived(input.agentSessionId, input.archived);
@@ -663,10 +692,7 @@ export function AgentSessionConsole({
     || (approval.kind === "manual" && approval.status === "pending")));
   const planApproved = sessionQuery.data?.planApprovalState;
   const planContinued = planContinuationObserved(sessionQuery.data);
-  const deliveryAttention = useDeliveryAttention(selected?.productId ?? selected?.items[0]?.productId ?? productId, selected?.agentSessionId ?? selected?.id ?? "");
-  const suppressDeliveryAttention = deliveryAttention && Boolean(selected?.attention.revision)
-    && selected?.status !== "stalled" && selected?.status !== "failed"
-    && selected?.attention.kind !== "answer";
+  const suppressDeliveryAttention = selected?.attention.handledByDelivery === true;
   const stalePlanAttention = Boolean(planApproved && planContinued && selected?.attention.kind === "approval");
   const showPlanApproval = !planContinued && (Boolean(planApproved || sessionQuery.data?.planApproval
       || sessionQuery.data?.planApprovalStatus?.code === "content_unavailable"));
@@ -865,6 +891,7 @@ export function AgentSessionConsole({
   );
   const sessionActions = selected && (
     <div className="agent-console-actions">
+      {favoriteButton(selected, true)}
       {selected.canRetry && (
         <button
           type="button"
@@ -908,6 +935,7 @@ export function AgentSessionConsole({
     { key: "active", icon: LoaderCircle, count: counts.active, label: t("agentConsoleActive") },
     { key: "all", icon: MessageSquare, count: counts.all, unread: counts.productUnread, label: t("agentConsoleAll") },
     { key: "failed", icon: CircleAlert, count: counts.failed, unread: counts.failedUnread, label: t("agentConsoleFailed") },
+    { key: "favorites", icon: Star, count: counts.favorites, label: t("agentConsoleFavorites") },
     { key: "archived", icon: Archive, count: counts.archived, label: t("agentConsoleArchived") },
   ];
 
@@ -1109,6 +1137,7 @@ export function AgentSessionConsole({
                       <small>{session.source === "external" ? t("agentExternalSource") : session.nodeName} · {agentLabel(session, t)}</small>
                       <SessionCategoryBadge session={session} />
                     </span>
+                    {session.archivedAt && <span className="agent-console-unlinked-badge">{t("archived")}</span>}
                     <MergeProgressBadge state={mergeProgress.sessions.get(session.agentSessionId ?? session.id)} />
                     {attentionLabel(session, t) && (
                       <i className="agent-console-attention" title={session.attention.reason}>
@@ -1117,6 +1146,10 @@ export function AgentSessionConsole({
                     )}
                   </span>
                 </button>
+                <div className="agent-console-favorite-control">
+                  {favoriteButton(session)}
+                </div>
+                {favoriteErrors.has(session.id) && <p className="inline-error agent-console-favorite-error" role="alert">{t("agentSessionFavoriteFailed")}</p>}
               </div>
             );
           })}
@@ -1125,6 +1158,7 @@ export function AgentSessionConsole({
 
       <section className="agent-console-conversation" aria-live="polite">
         {draftView}
+        {selected && favoriteErrors.has(selected.id) && <p className="inline-error" role="alert">{t("agentSessionFavoriteFailed")}</p>}
         {!draftView && !selected && <div className="agent-console-empty agent-console-empty-conversation"><MessageSquare size={24} /><p>{t("agentConsoleChoose")}</p></div>}
         {selected && (
           <>

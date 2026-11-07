@@ -690,6 +690,10 @@ export const api = {
     `/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}/content`,
   agentSessionAttachmentPreviewUrl: (sessionId: string, attachmentId: string) =>
     `/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}/preview`,
+  setAgentSessionFavorite: (sessionId: string, favorite: boolean) =>
+    request<AgentSessionSummary>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/favorite`, {
+      method: "PUT", body: JSON.stringify({ favorite }),
+    }),
   setAgentSessionArchived: (sessionId: string, archived: boolean) =>
     request<AgentSession>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}`, {
       method: "PATCH",
