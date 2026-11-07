@@ -2501,6 +2501,15 @@ export class MissionGoDatabase {
       });
     }
 
+    // AND-458: bounded relative resource diagnostics; old rows remain readable.
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611071231").get()) {
+      this.transaction(() => {
+        this.connection.exec("ALTER TABLE agent_artifacts ADD COLUMN error_resource TEXT;");
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611071231,new Date().toISOString());
+      });
+    }
+
     // Personal organization never changes session activity, unread or execution.
     if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611071456").get()) {
       this.transaction(() => {

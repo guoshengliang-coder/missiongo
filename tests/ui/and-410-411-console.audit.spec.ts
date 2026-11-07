@@ -27,7 +27,7 @@ for (const dark of [false, true]) for (const scale of ["small", "medium", "large
     const current = summary("当前会话", fixture.productId, false);
     const currentAttention = summary("当前待处理", fixture.productId, true);
     const shared = { ...summary("多项目问题", other.id), items: [
-      { key: "X-1", title: "shared", productId: fixture.productId },
+      { key: "X-1", title: "共享会话", productId: fixture.productId },
       { key: "X-2", title: "shared", productId: fixture.productId },
     ] };
     const otherAttention = { ...summary("其他项目待处理", other.id), unread: false };
@@ -73,12 +73,12 @@ for (const dark of [false, true]) for (const scale of ["small", "medium", "large
 
     // The shared session reaches the current project through an item, so it stays
     // in this list; its draft is still isolated from the other project's sessions.
-    await page.locator(".agent-console-session").filter({ hasText: "多项目问题" }).click();
+    await page.locator(".agent-console-session").filter({ hasText: "共享会话" }).click();
     await expect(page.locator(".agent-console-reply textarea")).toBeVisible();
     await page.locator(".agent-console-reply textarea").fill("另一个项目的草稿");
     await page.locator(".agent-console-session").filter({ hasText: "当前会话" }).click();
     await expect(page.locator(".agent-console-reply textarea")).toHaveValue("");
-    await page.locator(".agent-console-session").filter({ hasText: "多项目问题" }).click();
+    await page.locator(".agent-console-session").filter({ hasText: "共享会话" }).click();
     await expect(page.locator(".agent-console-reply textarea")).toHaveValue("另一个项目的草稿");
     await chooseOption(page.getByRole("combobox", { name: "当前产品", exact: true }), other.id);
     expect(await page.evaluate(() => localStorage.getItem("missiongo.product"))).toBe(other.id);

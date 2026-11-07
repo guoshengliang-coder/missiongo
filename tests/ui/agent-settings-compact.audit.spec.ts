@@ -39,6 +39,12 @@ async function openConversation(page: Page) {
       } });
     }
   });
+  await page.addInitScript(() => {
+    (window as unknown as { backDepths: number[] }).backDepths = [];
+    (window as unknown as { MissionGoAndroid: { setBackDepth: (depth: number) => void } }).MissionGoAndroid = {
+      setBackDepth: depth => (window as unknown as { backDepths: number[] }).backDepths.push(depth),
+    };
+  });
   await page.goto(`/?product=${productId}&console=agent&session=${sessionId}`);
   await expect(page.locator(".agent-console-reply textarea")).toBeVisible();
   return { changes, sent };
@@ -62,6 +68,7 @@ for (const width of [320, 353, 390]) for (const theme of ["light", "dark"] as co
     test.use({ viewport: { width, height: 757 }, hasTouch: true, isMobile: true, colorScheme: theme });
     test("model stays readable, More changes settings, and reply actions fit", async ({ page }) => {
       const { changes, sent } = await openConversation(page);
+      await page.locator(".agent-console-reply textarea").fill("设置浮层关闭后保留的草稿");
       const row = page.locator(".agent-session-quick-settings-row");
       await expect(row.locator("button.agent-settings-mode")).toBeHidden();
       await expect(row.locator("button.agent-settings-effort")).toBeHidden();
@@ -88,9 +95,25 @@ for (const width of [320, 353, 390]) for (const theme of ["light", "dark"] as co
       await expect(panel.getByRole("combobox", { name: "权限模式", exact: true })).toBeVisible();
       await expect(panel.getByRole("combobox", { name: "强度", exact: true })).toBeVisible();
       if (width === 353) await page.screenshot({ path: test.info().outputPath(`more-panel-${theme}.png`) });
+      const openDepth = await page.evaluate(() => (window as unknown as { backDepths: number[] }).backDepths.at(-1)!);
+      // The child Select lives in a portal. Closing it must preserve the parent.
+      await panel.getByRole("combobox", { name: "权限模式", exact: true }).click();
+      await expect(page.getByRole("listbox")).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(page.getByRole("listbox")).toBeHidden();
+      await expect(panel).toBeVisible();
       await page.goBack();
       await expect(panel).toBeHidden();
+      await expect.poll(() => page.evaluate(() => (window as unknown as { backDepths: number[] }).backDepths.at(-1))).toBe(openDepth - 1);
+      await more.click();
+      await page.mouse.click(width - 1, 200);
+      await expect(panel).toBeHidden();
       await expect(page.locator(".agent-console-reply textarea")).toBeVisible();
+      await more.click();
+      await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+      await expect(panel).toBeHidden();
+      await expect(page.locator(".agent-console-reply textarea")).toBeVisible();
+      await expect(page.locator(".agent-console-reply textarea")).toHaveValue("设置浮层关闭后保留的草稿");
       await more.click();
       await page.keyboard.press("Escape");
       await expect(panel).toBeHidden();

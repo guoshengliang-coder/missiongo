@@ -5,6 +5,7 @@ import { reconciliationActionSchema, combinedValidationSchema, type Reconciliati
 import { legacyIntegratorPrompt } from "./legacy-merge-authorization.js";
 import { readRecoveryTransport } from "./merge-recovery-transport.js";
 import type { MergeIntegration, MergeReconciliationPreview, MergeBatchPresentation } from "@missiongo/contracts";
+import { compactItemKeys } from "@missiongo/domain";
 import { integrationActionSchema, integrationDigest, applyIntegrationAction, assertIntegrationMerge, freshIntegrationCheck, integrationDenied, type IntegrationAction } from "./merge-integration.js";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -256,7 +257,10 @@ export class MergeDeliveries {
       const dispatches=new DispatchStore(this.db);
       const free=new FreeSessionStore(this.db,dispatches,new AgentSessionStore(this.db));
       const integrationInstructions=integrationProtocol===1 ? `本批已授权集成所必需的修复与验证，但不扩大需求或绕过原生权限。先读取全批 PR、条目与主线，梳理依赖、文件/接口/迁移重叠、分组、顺序及组合验证目标，通过 record_merge_integration 的 plan 动作持久化计划；这是执行说明，不重复索取方案批准。可并行只读调查，重叠代码修改和合并按计划协调。修复前用 prepare_repair 绑定当前远端 head 和主线；原 worktree 内先确认远端仍为该 head，仅追加本会话所做提交，不 force、不混入外部提交。推送前后核对远端 head，使用 scripts/merge-integration-evidence.mjs 验证提交链；repair 动作登记真实修复提交，原确认保持不变。修复或基线变化后重新核验，不复用旧提交检查。使用 check 动作保存最终 head、当前目标分支 base、本地检查与实时 CI 证据；get_merge_batch 的 executionHead 才是实际允许合并的 head，mergeReady 为 true 且实时 Git 核验通过后立即对 executionHead 执行 gh pr merge --auto --merge --match-head-commit 挂自动合并，不等待 CI 通知即转入下一依赖项；合并后回读实际 merge commit 核实并 report，检查失败先 gh pr merge --disable-auto 再修复。使用 progress 动作保存阶段和下一步，恢复时先读计划、修复预留、历史与结果，不重推、不重复合并。每次调用携带当前 expectedRevision 和稳定 idempotencyKey；响应未知原样重试。确认没有推送、远端仍为预留 head 且无后台执行时，可用 cancel_repair 结束未发生的修复；未知结果不能撤销预留。他人提交必须停下核对，不能登记为自己的修复。合并必须满足计划依赖，report_merge_batch 后继续独立项。批次结果全部明确后在实际目标分支验证已合并组合，final_validation 记录真实目标 head 和证据，再执行已授权发布与交接。不得删除测试或降低断言来冒充修复。` : `本批来自旧版入口，未授权集成修复；只合并冻结 head，需改代码则停止并说明，不能套用新版修复授权。`;
-      const dispatch=free.prepare(accountId,id,config,`${text}\n\n${integrationInstructions}`);
+      // The first message is instructions, so the conversation is named after
+      // the work it integrates instead of an excerpt of that prompt (AND-449).
+      const integrationTitle=`集成 · ${compactItemKeys([...new Set(deliveries.flatMap(d=>d.itemKeys))])}`;
+      const dispatch=free.prepare(accountId,id,config,`${text}\n\n${integrationInstructions}`,0,integrationTitle);
       const b: Batch={id,productId:config.productId,accountId,requestKey,dispatchId:dispatch.id,sessionId:dispatch.agentSessionId!,
         config,publish,selection,deliveries:deliveries.map(d=>d.id),state:"active",createdAt:new Date().toISOString(),results:{},
         ...(integrationProtocol===1?{integration:{protocol:1 as const,revision:0,plans:[],events:[],entries:Object.fromEntries(deliveries.map(d=>[d.id,{itemKeys:d.itemKeys,originalHead:d.head,head:d.head,progress:"queued" as const,detail:"",repairs:[]}]))}}:{})};
@@ -318,7 +322,14 @@ export class MergeDeliveries {
         return this.batch(accountId,dispatchId,id);
       }
       const previous=state.events.find(e=>e.id===key);
-      if(previous){if(previous.digest!==integrationDigest(action))throw changed();return b;}
+      if(previous){
+        // Same key, different body: the caller reused a key across actions. Reporting this
+        // as a content change sends integrators looking at the PR and the work item instead
+        // of the key, which is the only thing that actually differs.
+        if(previous.digest!==integrationDigest(action))
+          throw conflict("merge_integration_idempotency_conflict","这个 idempotencyKey 已记录过内容不同的集成动作。原样重试请复用原参数；新动作请换新的 key（prepare_repair 返回的 repairId 填 action.repairId，不能当 key 用）。");
+        return b;
+      }
       if(b.state!=="active"||state.revision!==expectedRevision)throw changed();
       const affected="deliveryId" in action?[action.deliveryId]:b.deliveries.filter(id=>!b.results[id]);
       for(const id of affected){if(!b.deliveries.includes(id))throw changed();this.sourceValid(this.read<Delivery>("merge_deliveries",id));}

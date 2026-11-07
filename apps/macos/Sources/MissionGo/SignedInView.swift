@@ -391,6 +391,30 @@ private struct VersionStatusSection: View {
                         .foregroundStyle(MenuPalette.secondaryText)
                 }
                 .frame(minHeight: 32)
+                if let activity = model.updateActivity {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        Text(activity.detail(now: context.date))
+                            .font(.caption)
+                            .foregroundStyle(MenuPalette.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if activity.stage == .downloading {
+                        ProgressView(value: activity.fraction)
+                            .accessibilityLabel("更新下载进度")
+                    }
+                    if activity.stage.canCancel && model.updateState.isBusy {
+                        Button("取消下载") { model.cancelUpdate() }
+                            .font(.caption)
+                    }
+                    DisclosureGroup("本次更新诊断") {
+                        Text(activity.diagnostics)
+                            .font(.caption)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Button("复制诊断") { model.copyToClipboard(activity.diagnostics) }
+                            .font(.caption)
+                    }
+                }
                 if case let .available(update) = model.updateState {
                     Button("查看 \(update.version) 的更新内容") { model.showAvailableUpdate() }
                         .font(.caption)
@@ -414,9 +438,9 @@ private struct VersionStatusSection: View {
         case .current: return "已是最新"
         case .checking: return "检查中"
         case .available: return "发现更新"
-        case .downloading: return "下载中"
-        case .installing: return "安装中"
-        case .failed: return "检查失败"
+        case .downloading: return model.updateActivity?.stage.rawValue ?? "下载中"
+        case .installing: return model.updateActivity?.stage.rawValue ?? "安装中"
+        case .failed: return model.updateActivity?.stage.rawValue ?? "检查失败"
         }
     }
 

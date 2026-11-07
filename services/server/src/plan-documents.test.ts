@@ -39,12 +39,13 @@ async function fixture() {
 
 it("keeps one document across MCP, Web, offline approval and idempotent comment attachment", async()=>{
   const f=await fixture();
-  const summary="**判断：属实。**\n\n建议修复恢复路径，保留原授权边界。";
+  const summary="**建议：修复导出进度与取消恢复。**\n\n| 问题 | 诊断结论 | 修改建议 |\n|---|---|---|\n| 无进度 | 已确认 | 分阶段显示 |\n| 无法取消 | 已确认 | 安全取消与重试 |\n| 完成仍等待 | 尚未复现 | 补充恢复验证 |\n\n**范围：** 仅客户端，保留完整性检查。\n\n**验证：** 取消不破坏已有文件；完成状态需实测。";
   const markdown=summary+"\n\n## 验证\n\n模拟断线恢复；真实新消息应继续更新时间。\n";
   const args={itemKeys:[f.item.key],session:f.session,summary,markdown,idempotencyKey:"doc-one"};
   const prepared=await f.call("prepare_plan_document",args);
   expect(prepared.isError,JSON.stringify(prepared)).not.toBe(true);
   const doc=prepared.structuredContent;
+  expect(doc.plan.startsWith(summary+"\n")).toBe(true);
   expect((await f.call("prepare_plan_document",args)).structuredContent).toEqual(doc);
   expect((await f.call("prepare_plan_document",{...args,markdown:markdown+"changed"})).isError).toBe(true);
   expect((await f.call("get_plan_document",{documentId:doc.documentId})).structuredContent.text).toBe(markdown);

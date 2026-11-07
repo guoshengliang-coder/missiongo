@@ -137,9 +137,10 @@ export function AgentSettingsControls({ agentKind, modes, models, mode: modeValu
   const [moreOpen, setMoreOpen] = useState(false);
   const [showEffortNote, setShowEffortNote] = useState(false);
   const moreRef = useRef<HTMLButtonElement>(null);
+  const morePanelRef = useRef<HTMLDivElement>(null);
   const closeMore = () => setMoreOpen(false);
   const openMore = () => setMoreOpen(true);
-  useOverlay(moreOpen, () => { closeMore(); moreRef.current?.focus({ preventScroll: true }); });
+  useOverlay(moreOpen, () => { closeMore(); moreRef.current?.focus({ preventScroll: true }); }, { ref: morePanelRef, close: closeMore });
   useEffect(() => {
     if (!showEffortNote) return;
     const timer = window.setTimeout(() => setShowEffortNote(false), 5000);
@@ -228,7 +229,7 @@ export function AgentSettingsControls({ agentKind, modes, models, mode: modeValu
             <option key={value} value={value}>{effortLabel(value)}</option>
           ))}
         </Select>
-        <div className="agent-settings-more">
+        <div className="agent-settings-more" ref={morePanelRef}>
           <button ref={moreRef} type="button" className="secondary-button" aria-label={t("moreActions")} aria-expanded={moreOpen} onClick={() => (moreOpen ? closeMore() : openMore())}><MoreHorizontal size={18} /></button>
           {moreOpen && <div className="agent-settings-more-panel">
             <label>{t("dispatchMode")}

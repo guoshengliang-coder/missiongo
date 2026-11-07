@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ChevronDown, CircleAlert, CircleCheck, CircleDot, LoaderCircle } from "lucide-react";
+import { ChevronDown, CircleAlert, CircleCheck, CircleDot, CirclePause, LoaderCircle } from "lucide-react";
 import { useI18n } from "./i18n";
 import type { AgentSessionStatus } from "./types";
 import type { OutgoingReply } from "./agent-session-view";
@@ -55,9 +55,14 @@ export function AgentReplyFeedback({ status, cancelling = false, onEdit }: {
   </footer>;
 }
 
-/** Foreground and background activity both run; waiting for input is passed as idle. */
-export function SessionStatusIcon({ status }: { status: AgentSessionStatus }) {
+/**
+ * Foreground and background activity both run; waiting for input is its own
+ * state (AND-448): the turn has ended, so a spinner would misreport it, but a
+ * check mark reads as finished work. A paused icon says "your move".
+ */
+export function SessionStatusIcon({ status }: { status: AgentSessionStatus | "waiting" }) {
   if (status === "active") return <LoaderCircle className="spin agent-session-running" size={14} />;
+  if (status === "waiting") return <CirclePause className="agent-session-waiting" size={14} />;
   if (status === "idle") return <CircleCheck size={14} />;
   if (status === "failed" || status === "stalled") return <CircleAlert size={14} />;
   return <CircleDot size={14} />;

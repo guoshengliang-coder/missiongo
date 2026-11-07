@@ -136,6 +136,9 @@ describe("AND-423 explicit merge deliveries",()=>{
     const b=f.merges.start(f.owner.id,key,selection,f.config,false);
     expect(new AgentSessionStore(f.store.database).getForAccount(f.owner.id,b.sessionId).sessionPurpose).toBe("integration");
     expect(new AgentSessionStore(f.store.database).listForAccount(f.owner.id).find(row=>row.id===b.sessionId)?.sessionPurpose).toBe("integration");
+    // The conversation is named after the integrated work, not its instructions (AND-449).
+    expect(f.db.prepare("SELECT session_title FROM free_session_starts WHERE dispatch_id=?").get(b.dispatchId))
+      .toMatchObject({session_title:`集成 · ${f.item.key}`});
     expect(f.merges.start(f.owner.id,key,selection,f.config,false).id).toBe(b.id);
     expect(()=>f.merges.start(f.owner.id,key,[{id:f.d.id,revision:"wrong"}],f.config,false)).toThrow();
     expect(()=>f.merges.start(f.owner.id,randomUUID(),selection,f.config,false)).toThrow();
@@ -307,8 +310,14 @@ describe("planned integration batches",()=>{
   });
   it("rejects stale writes, changed source scope, cross-session calls and altered retries",async()=>{
     const f=await batchFixture();f.act(f.plan,"plan");
-    expect(()=>f.act({...f.plan,summary:"Different"},"plan",0)).toThrow();
-    expect(()=>f.act(f.plan,"stale",0)).toThrow();
+    // Reusing a key for a different body is reported as a key conflict, not as a
+    // changed delivery: the generic code sent integrators to the PR and the item.
+    let keyConflict: unknown;
+    try { f.act({...f.plan,summary:"Different"},"plan",0); } catch (error) { keyConflict = error; }
+    expect((keyConflict as {code?:string})?.code).toBe("merge_integration_idempotency_conflict");
+    let staleWrite: unknown;
+    try { f.act(f.plan,"stale",0); } catch (error) { staleWrite = error; }
+    expect((staleWrite as {code?:string})?.code).toBe("merge_delivery_changed");
     expect(()=>f.merges.integrate(f.other.id,f.b.dispatchId,f.b.id,1,"other",f.plan)).toThrow();
     expect(()=>f.merges.integrate(f.owner.id,f.dispatch.id,f.b.id,1,"source-session",f.plan)).toThrow();
     for(const options of [{scopes:["missiongo:read"]},{accountId:f.other.id}]) {

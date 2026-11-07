@@ -4,8 +4,8 @@ import { ARTIFACT_PREVIEW_POLICY, ARTIFACT_PREVIEW_SHELL } from "../../services/
 
 const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as { productId: string; detailKey: string };
 const file = (name: string, contentType: string, text: string) => ({ name, contentType, base64: Buffer.from(text).toString("base64") });
-const htmlBundle = { entry: "prototype.html", files: [
-  file("prototype.html", "text/html", `<link rel="stylesheet" href="style.css"><h1>可点击原型</h1><button id="action">切换状态</button><output id="result">初始</output><script src="app.js"></script>`),
+const htmlBundle = { skippedResources: ["evidence.jsonl"], entry: "prototype.html", files: [
+  file("prototype.html", "text/html", `<link rel="stylesheet" href="style.css"><h1>可点击原型</h1><a href="evidence.jsonl" download>下载证据</a><button id="action">切换状态</button><output id="result">初始</output><script src="app.js"></script>`),
   file("style.css", "text/css", "h1 { color: rgb(12, 120, 60); }"),
   file("app.js", "text/javascript", `document.getElementById('action').onclick = () => { document.getElementById('result').textContent = '已切换'; }; try { parent.document.body.dataset.escaped='yes'; } catch { document.body.dataset.isolated='yes'; } fetch('https://blocked.example.test/leak').catch(() => { document.body.dataset.network='blocked'; });`),
 ] };
@@ -38,9 +38,9 @@ for (const width of [375, 1440]) test(`historical artifacts preview, isolation, 
       const href = route.request().postDataJSON().href as string;
       requests.push(href);
       const kind = href.endsWith(".md") ? "md" : href.endsWith(".pdf") ? "pdf" : href.endsWith(".png") ? "png" : "html";
-      return route.fulfill({ json: { id: `${missing ? "missing" : "saved"}-${kind}`, status: missing ? "failed" : saved ? "ready" : "pending", filename: `output.${kind}`, ...(missing ? { error: "file_missing" } : {}) } });
+      return route.fulfill({ json: { id: `${missing ? "missing" : "saved"}-${kind}`, status: missing ? "failed" : saved ? "ready" : "pending", filename: `output.${kind}`, ...(missing ? { error: "resource_missing", errorResource: "assets/missing.css" } : {}) } });
     }
-    if (path.includes("/artifacts/")) { saved = true; return route.fulfill({ json: { id: `${missing ? "missing" : "saved"}-${kind}`, status: missing ? "failed" : "ready", filename: `output.${kind}`, ...(missing ? { error: "file_missing" } : {}) } }); }
+    if (path.includes("/artifacts/")) { saved = true; return route.fulfill({ json: { id: `${missing ? "missing" : "saved"}-${kind}`, status: missing ? "failed" : "ready", filename: `output.${kind}`, ...(missing ? { error: "resource_missing", errorResource: "assets/missing.css" } : {}) } }); }
     if (path.endsWith("/artifact-session")) return route.fulfill({ json: detail });
     if (path.endsWith("/read")) return route.fulfill({ status: 204 });
     return route.fulfill({ json: { sessions: [summary] } });
@@ -51,6 +51,9 @@ for (const width of [375, 1440]) test(`historical artifacts preview, isolation, 
   await expect(dialog).toBeVisible();
   const frame = page.frameLocator('iframe[title="prototype.html"]');
   await expect(frame.getByRole("heading", { name: "可点击原型" })).toBeVisible();
+  await expect(dialog.getByRole("status")).toContainText("evidence.jsonl");
+  await expect(frame.getByText("下载证据")).toHaveAttribute("aria-disabled", "true");
+  await expect(frame.getByText("下载证据")).not.toHaveAttribute("href");
   await expect(frame.getByRole("heading")).toHaveCSS("color", "rgb(12, 120, 60)");
   await frame.getByRole("button", { name: "切换状态" }).click();
   await expect(frame.locator("#result")).toHaveText("已切换");
@@ -89,7 +92,7 @@ for (const width of [375, 1440]) test(`historical artifacts preview, isolation, 
   missing = true;
   detail.messages[0]!.text += "\n[缺失原型](/tmp/fixture-output/missing.html)";
   await page.getByRole("button", { name: "缺失原型", exact: true }).click();
-  await expect(dialog.getByRole("alert")).toContainText("原文件已删除或移动");
+  await expect(dialog.getByRole("alert")).toContainText("assets/missing.css");
   expect(new URL(page.url()).pathname).toBe("/");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });

@@ -272,8 +272,8 @@ export function AgentSessionConsole({
   };
   // AND-426: an option shows the count the list would hold when picked -- the
   // same promise the sidebar numbers make. Running reuses the sidebar's active
-  // rule; the active filter already lists only running sessions, so there the
-  // running badge would repeat the total and stays hidden.
+  // rule. All categories use the same running / total presentation, including
+  // zero counts and the active filter.
   const optionCounts = useMemo(() => {
     const stats = (agent: AgentKindFilter, associationOption: AgentAssociationFilter) => {
       const rows = productSessions.filter(session => agentSessionMatches(session, filter, agent, search, associationOption));
@@ -289,10 +289,10 @@ export function AgentSessionConsole({
   }, [association, agentFilter, filter, search, productSessions]);
   const renderOptionCounts = (stats: { total: number; running: number }) => sessionsLoaded && (
     <span className="agent-console-option-counts">
-      {filter !== "active" && stats.running > 0 && (
-        <span className="agent-console-option-running">{t("agentConsoleOptionRunning", { count: stats.running })}</span>
-      )}
-      <span>{t("agentConsoleOptionTotal", { count: stats.total })}</span>
+      <span className="sr-only">{t("agentConsoleOptionSummary", { running: stats.running, total: stats.total })}</span>
+      <span aria-hidden="true" className={stats.running > 0 ? "agent-console-option-running" : undefined}>{t("agentConsoleOptionRunning", { count: stats.running })}</span>
+      <span aria-hidden="true">/</span>
+      <span aria-hidden="true">{stats.total}</span>
     </span>
   );
   const otherProjectCounts = useMemo(
@@ -356,6 +356,12 @@ export function AgentSessionConsole({
   }, [conversationOpen, draftView, onSelectSession, selectedId, selectedSessionId]);
 
   const selected = draftView ? undefined : allSessions.find((session) => session.id === selectedId);
+  // A claimed session names its items; an integration session has none of its
+  // own and lists the batch it runs instead (AND-449).
+  const integrationItemKeys = selected?.sessionPurpose === "integration"
+    ? mergeProgress.sessionItems.get(selected.agentSessionId ?? selected.id) ?? []
+    : [];
+  const headItemKeys = selected ? (selected.items.length > 0 ? selected.items.map((item) => item.key) : integrationItemKeys) : [];
   // The reply box belongs to the conversation it is written for: its draft is
   // kept under that session's agentSessionId, so an answer picked here never
   // follows you into another session or another product (AND-252). The key is
@@ -971,7 +977,7 @@ export function AgentSessionConsole({
           {navigation}
         </div>
         <div className="agent-console-list-controls">
-          <Select aria-label={t("agentConsoleAssociationFilter")} value={association}
+          <Select aria-label={t("agentConsoleAssociationFilter")} value={association} fitContent
             renderValue={value => t(ASSOCIATION_OPTION_LABELS[value as AgentAssociationFilter])}
             renderOption={value => <span className="agent-console-option">
               <span>{t(ASSOCIATION_OPTION_LABELS[value as AgentAssociationFilter])}</span>
@@ -991,6 +997,7 @@ export function AgentSessionConsole({
           <label className="agent-console-agent-filter">
             <span>{t("agentConsoleAgentFilter")}</span>
             <Select
+              fitContent
               aria-label={t("agentConsoleAgentFilter")}
               value={agentFilter}
               renderValue={value => t(AGENT_OPTION_LABELS[value as ConsoleAgentOption])}
@@ -1112,11 +1119,11 @@ export function AgentSessionConsole({
                 >
                   <span className="agent-console-session-indicators">
                     <span
-                      className={`agent-console-status-icon agent-console-status-${rowWaiting ? "idle" : rowStatus} agent-console-node-${session.nodeConnectionState}`}
+                      className={`agent-console-status-icon agent-console-status-${rowWaiting ? "waiting" : rowStatus} agent-console-node-${session.nodeConnectionState}`}
                       role="img"
                       aria-label={`${nodeConnectionLabel(session, t)} · ${session.archivedAt ? t("archived") : rowLabel}`}
                     >
-                      {session.nodeConnectionState === "offline" ? <WifiOff size={14} /> : <SessionStatusIcon status={rowWaiting ? "idle" : rowStatus} />}
+                      {session.nodeConnectionState === "offline" ? <WifiOff size={14} /> : <SessionStatusIcon status={rowWaiting ? "waiting" : rowStatus} />}
                     </span>
                     {session.unread && <i className="agent-console-unread-dot" role="img" aria-label={t("agentConsoleUnreadOne")} />}
                   </span>
@@ -1161,10 +1168,13 @@ export function AgentSessionConsole({
               <div className="agent-console-heading">
                 <h2>{sessionTitle(selected, roundLabel)}<SessionCategoryBadge session={selected} /></h2>
                 {/* The items this session is working on stay in the head, where
-                    scrolling the conversation cannot lose them (AND-159). */}
-                {selected.items.length > 0 && <div className="agent-console-dispatch agent-console-dispatch-head">
-                  <div>{selected.items.map((item) => (
-                    <button key={item.key} type="button" onClick={() => setPreviewItemKey(item.key)}>{item.key}</button>
+                    scrolling the conversation cannot lose them (AND-159). An
+                    integration session works on a whole batch instead of
+                    claiming items, so it lists the batch's keys the same way
+                    (AND-449). */}
+                {headItemKeys.length > 0 && <div className="agent-console-dispatch agent-console-dispatch-head">
+                  <div>{headItemKeys.map((key) => (
+                    <button key={key} type="button" onClick={() => setPreviewItemKey(key)}>{key}</button>
                   ))}</div>
                 </div>}
               </div>
@@ -1472,7 +1482,7 @@ export function AgentSessionConsole({
                     backgroundRunning={(sessionQuery.data?.activities.length ?? 0) > 0} />
                 {showRunDetails && (<>
                     {["stalled", "unavailable", "failed"].includes(sessionStatus) && <p className="agent-run-warning" role="alert">{activityText}</p>}
-                    <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={visualStatus} />} actions={stopAction}
+                    <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={agentWaiting ? "waiting" : visualStatus} />} actions={stopAction}
                       label={selected.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected))
                         : agentWaiting ? t(questionPermission ? "agentRunApproval" : runWaitingLabelKey({ agentKind: selected.agentKind, approval }), { agent: agentName })
                           : claudeBackgroundOnly ? t("agentRunBackground") : sessionStatus === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(sessionStatus, t)}>
@@ -1516,7 +1526,7 @@ export function AgentSessionConsole({
                 </>}
                 {conversationReady && !showRunDetails && (!showFailureCard || stopAction) && <div className="agent-run-controls agent-run-fallback">
                   {!showFailureCard && <p className={`agent-console-activity agent-console-activity-${visualStatus}`} role="status">
-                    <SessionStatusIcon status={visualStatus} />
+                    <SessionStatusIcon status={agentWaiting ? "waiting" : visualStatus} />
                     {selected.archivedAt ? t("archived")
                       : !selected.agentSessionId ? t(dispatchActivityLabelKey(selected)) : statusLabel(sessionStatus, t)}
                   </p>}

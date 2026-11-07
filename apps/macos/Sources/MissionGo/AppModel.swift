@@ -142,6 +142,10 @@ final class AppModel: ObservableObject {
     /// The client's own version, and whether a newer one is published.
     @Published private(set) var updateState: UpdateState = .unavailable
     @Published private(set) var updateNotice: String?
+    @Published private(set) var updateActivity: UpdateActivity?
+    private var updateService: any ClientUpdateService = LiveClientUpdateService()
+    private var updateTask: Task<Void, Never>?
+    private var updateGeneration = 0
     /// This build's version, for the menu to name; nil when run without a bundle.
     let appVersion: String? = AppUpdater.currentVersion()
 
@@ -204,11 +208,20 @@ final class AppModel: ObservableObject {
     /// A read-only UI fixture. It never starts the node loop, reads credentials,
     /// or refreshes an integration; release builds do not include this path.
     init(previewCredential: NodeCredential, unread: UnreadSessionsSnapshot, agentVersions: [String: String],
-         connectionDiagnosis: ServerConnection.Diagnosis? = nil) {
+         connectionDiagnosis: ServerConnection.Diagnosis? = nil,
+         update: AppUpdater.Available? = nil, updateActivity: UpdateActivity? = nil,
+         updateService: any ClientUpdateService = LiveClientUpdateService()) {
         isPreview = true
         showsRevokedNotice = false
         serverOverride = nil
         self.connectionDiagnosis = connectionDiagnosis
+        self.updateService = updateService
+        self.updateActivity = updateActivity
+        if let update {
+            if let updateActivity {
+                updateState = updateActivity.stage.canCancel ? .downloading(update) : .installing(update)
+            } else { updateState = .available(update) }
+        }
         phase = .signedIn(previewCredential)
         unreadCount = unread.totalUnread
         unreadSessions = unread.sessions
@@ -360,6 +373,7 @@ final class AppModel: ObservableObject {
     }
 
     private func leaveSignedIn(revoked: Bool, reason: String? = nil) {
+        cancelUpdate()
         loginGeneration += 1
         loginTask?.cancel()
         loginTask = nil
@@ -410,7 +424,9 @@ final class AppModel: ObservableObject {
         updateNotice = nil
         // The version is a property of this build, not of the session, so it
         // stays; anything in flight does not.
-        updateState = AppUpdater.currentVersion().map { .current($0) } ?? .unavailable
+        if !updateState.isBusy {
+            updateState = AppUpdater.currentVersion().map { .current($0) } ?? .unavailable
+        }
     }
 
     private func handleCredentialRevoked(_ error: Error?) {
@@ -1185,6 +1201,7 @@ final class AppModel: ObservableObject {
         // A download or an install already under way owns this state.
         guard !updateState.isBusy else { return }
         updateNotice = nil
+        updateActivity = nil
         updateState = .checking(current)
         do {
             let found = try await AppUpdater.check(serverUrl: credential.serverUrl, currentVersion: current)
@@ -1205,44 +1222,104 @@ final class AppModel: ObservableObject {
     /// Called from the menu. Downloading is automatic; this part is not, because
     /// it ends with the app quitting and coming back.
     func installUpdate() {
-        guard case let .available(update) = updateState, let credential else { return }
+        guard case let .available(update) = updateState, let credential, updateTask == nil else { return }
+        updateGeneration += 1
+        let generation = updateGeneration
+        updateNotice = nil
+        updateActivity = UpdateActivity(version: update.version, size: update.manifest.size)
         updateState = .downloading(update)
-        Task {
+        updateTask = Task {
+            defer { if updateGeneration == generation { updateTask = nil } }
             do {
-                // The confirmation may have been open for a while. Re-fetch so
-                // a superseding release cannot be installed under stale notes.
-                guard let latest = try await AppUpdater.check(
-                    serverUrl: credential.serverUrl,
-                    currentVersion: update.current
+                guard let latest = try await updateService.check(
+                    serverUrl: credential.serverUrl, currentVersion: update.current
                 ) else {
+                    try Task.checkCancellation()
+                    guard updateGeneration == generation else { return }
                     updateState = .current(update.current)
+                    updateActivity = nil
                     updateNotice = "更新信息已变化，请重新检查。"
                     return
                 }
+                try Task.checkCancellation()
+                guard updateGeneration == generation else { return }
                 guard latest.manifest == update.manifest else {
                     updateState = .available(latest)
+                    updateActivity = nil
+                    updateTask = nil
                     presentUpdate(latest, force: true)
                     return
                 }
-                let zip = try await AppUpdater.download(latest.manifest, serverUrl: credential.serverUrl)
-                updateState = .installing(latest)
-                let bundle = try await AppUpdater.install(
-                    zip: zip,
-                    manifest: latest.manifest,
-                    replacing: Bundle.main.bundleURL,
-                    expectedIdentifier: Bundle.main.bundleIdentifier
+                updateActivity?.move(to: .downloading)
+                let zip = try await updateService.download(
+                    latest.manifest, serverUrl: credential.serverUrl,
+                    progress: { [weak self] received, total, elapsed in
+                        Task { @MainActor in
+                            guard let self, self.updateGeneration == generation else { return }
+                            self.updateActivity?.downloadProgress(received: received, total: total, elapsed: elapsed)
+                        }
+                    },
+                    stage: { [weak self] stage in
+                        await self?.setUpdateStage(stage, generation: generation)
+                    },
+                    metrics: { [weak self] text in
+                        Task { @MainActor in
+                            guard let self, self.updateGeneration == generation else { return }
+                            self.updateActivity?.record(text)
+                        }
+                    }
                 )
+                try Task.checkCancellation()
+                guard updateGeneration == generation, self.credential == credential else { return }
+                // Cancellation ends here: never interrupt a bundle replacement.
+                updateState = .installing(latest)
+                updateActivity?.move(to: .unpacking)
+                let bundle = try await updateService.install(
+                    zip: zip, manifest: latest.manifest,
+                    stage: { [weak self] stage in await self?.setUpdateStage(stage, generation: generation) }
+                )
+                updateActivity?.move(to: .waiting)
                 await drainLoopForRelaunch()
+                updateActivity?.move(to: .relaunching)
                 relaunch(bundle)
             } catch {
-                updateState = .failed(current: update.current, reason: error.localizedDescription)
+                guard updateGeneration == generation else { return }
+                let stage = updateActivity?.stage.rawValue ?? "更新"
+                if error is CancellationError {
+                    updateActivity?.move(to: .cancelled)
+                    updateState = .available(update)
+                    updateNotice = "下载已取消，当前版本未改变，可重新更新。"
+                } else {
+                    updateActivity?.failed(error)
+                    updateState = .failed(current: update.current, reason: "\(stage)失败：\(error.localizedDescription)")
+                }
             }
         }
+    }
+
+    private func setUpdateStage(_ stage: UpdateActivity.Stage, generation: Int) {
+        guard generation == updateGeneration else { return }
+        updateActivity?.move(to: stage)
+    }
+
+    func cancelUpdate() {
+        guard updateActivity?.stage.canCancel == true, case let .downloading(update) = updateState else { return }
+        updateGeneration += 1
+        updateTask?.cancel()
+        updateTask = nil
+        updateActivity?.move(to: .cancelled)
+        updateState = .available(update)
+        updateNotice = "下载已取消，当前版本未改变，可重新更新。"
     }
 
     private func presentUpdate(_ update: AppUpdater.Available, force: Bool) {
         guard force || lastPresentedUpdateVersion != update.version else { return }
         lastPresentedUpdateVersion = update.version
+        #if DEBUG
+        // Offline fixtures may exercise a superseding manifest without opening
+        // a modal dialog or allowing a real update on the test machine.
+        if isPreview { return }
+        #endif
         let alert = NSAlert()
         alert.messageText = "发现 MissionGo \(update.version)"
         var details = "当前版本：\(update.current)"
@@ -1285,22 +1362,15 @@ final class AppModel: ObservableObject {
     /// started are in their own process groups and keep running throughout --
     /// see SessionLauncher, which relies on the same thing for quit and logout.
     private func relaunch(_ bundle: URL) {
-        let command = AppUpdater.relaunchCommand(bundle: bundle, pid: ProcessInfo.processInfo.processIdentifier)
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: command.file)
-        process.arguments = command.args
-        process.standardInput = FileHandle.nullDevice
         do {
-            try process.run()
+            try updateService.relaunch(bundle)
         } catch {
-            // Installed but not restarted: saying so beats quitting into silence.
+            updateActivity?.move(to: .restartFailed)
             updateState = .failed(
                 current: updateState.current ?? "",
                 reason: "新版本已装好，但没能自动重启，请手动打开 MissionGo。"
             )
-            return
         }
-        quit()
     }
 
     func refreshProfile() {
