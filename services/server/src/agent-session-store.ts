@@ -2135,7 +2135,7 @@ export class AgentSessionStore {
     if (!session || session.state !== "pending") return undefined;
     const message = this.database.connection.prepare(
       `SELECT source_id, role, phase, text, questions_json
-       FROM agent_session_messages WHERE session_id = ?
+       FROM agent_session_messages WHERE session_id = ? AND (phase IS NULL OR phase <> 'execution')
        ORDER BY position DESC, observed_at DESC, rowid DESC LIMIT 1`,
     ).get(sessionId) as unknown as {
       source_id: string;

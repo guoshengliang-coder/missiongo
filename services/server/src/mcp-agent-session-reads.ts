@@ -572,7 +572,7 @@ export class McpAgentSessionReads {
             progressStatus: report.status, progressItemKey: report.item_key,
           });
         }
-        const native = db.prepare("SELECT id, source_id, payload_json FROM external_native_messages WHERE session_id = ? ORDER BY position, rowid")
+        const native = db.prepare("SELECT id, source_id, payload_json FROM external_native_messages WHERE session_id = ? AND COALESCE(json_extract(payload_json,'$.phase'),'') <> 'execution' ORDER BY position, rowid")
           .all(member.id) as unknown as NativeMessageRow[];
         for (const row of native) {
           const payload = JSON.parse(row.payload_json) as {
@@ -590,7 +590,7 @@ export class McpAgentSessionReads {
         }
       } else if (member.agentSessionId) {
         const rows = db.prepare(`SELECT id, source_id, turn_id, role, phase, text, questions_json, occurred_at
-          FROM agent_session_messages WHERE session_id = ? ORDER BY position, observed_at, rowid`)
+          FROM agent_session_messages WHERE session_id = ? AND (phase IS NULL OR phase <> 'execution') ORDER BY position, observed_at, rowid`)
           .all(member.agentSessionId) as unknown as DispatchMessageRow[];
         for (const row of rows) {
           const key = JSON.stringify([row.role, row.source_id]);
