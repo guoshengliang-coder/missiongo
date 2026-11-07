@@ -107,14 +107,18 @@ for(const width of [320,1440]) for(const theme of ["light","dark"] as const) tes
     integration:{protocol:1,revision:7,plans:[{base:"c".repeat(40),summary:"先合基础接口，再核实依赖功能；独立改动单独处理",validation:"最终主线组合行为与仓库检查",at,
       entries:["a","b","c"].map((deliveryId,i)=>({deliveryId,head:"b".repeat(40),dependsOn:i===1?["a"]:[],group:i<2?"接口兼容":"独立变更",reason:"读取相互影响后确定顺序",validation:"保留已有行为并验证新增功能"}))}],
       entries:{a:entry("IP-1","ready"),b:{...entry("IP-2","waiting_ci"),repairs:[{id:"repair",fromHead:"a".repeat(40),head:"b".repeat(40),base:"c".repeat(40),reason:"修复重复渲染",commits:["b".repeat(40)],validation:"回归测试已通过，远程 CI 排队中",source:"Fixture",at}]},c:entry("IP-3","investigating")},events:[{id:"event",digest:"digest",action:"plan",at,detail:"整批计划已保存，断线恢复沿用原批次"}]}};
-  await page.route("**/api/v1/agent-sessions**",route=>route.fulfill({json:new URL(route.request().url()).pathname==="/api/v1/agent-sessions"?{sessions:[session]}:{...session,messages:[]}}));
+  await page.route("**/api/v1/agent-sessions**",route=>route.fulfill({json:new URL(route.request().url()).pathname==="/api/v1/agent-sessions"?{sessions:[session]}:{...session,messages:[{id:"native-latest",sourceId:"native-latest",role:"agent",text:"原生会话的最新回复",occurredAt:at}]}}));
   await page.route("**/merge-deliveries",route=>route.fulfill({json:{deliveries:[],batches:[batch]}}));
   await page.goto(`/?product=${product.id}&console=agent&session=${id}`);
-  const progress=page.getByRole("region",{name:"集成进度"});await expect(progress).toBeVisible();
+  const draft=page.locator(".agent-console-reply textarea");await draft.fill("保留此草稿");
+  const progress=page.getByRole("region",{name:"集成进度"});
+  await expect(progress).toHaveCount(0);
+  await expect(page.locator(".agent-console-messages .integration-progress")).toHaveCount(0);
+  await expect(page.locator(".agent-console-message").last()).toContainText("原生会话的最新回复");
+  await page.getByRole("button",{name:"集成详情",exact:true}).click();await expect(progress).toBeVisible();
   await expect(progress).toContainText("先合基础接口");await expect(progress).toContainText("等待 CI");await expect(progress).toContainText("发布等待你决定");
   await progress.locator("li").filter({hasText:"IP-2"}).getByText("查看修复与验证详情",{exact:true}).click();
   await expect(progress).toContainText("修复重复渲染");
-  const draft=page.locator(".agent-console-reply textarea");await draft.fill("保留此草稿");
   for(const scale of ["small","medium","large"]) {
     await page.evaluate(value=>{document.documentElement.dataset.fontScale=value;},scale);
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
@@ -123,7 +127,9 @@ for(const width of [320,1440]) for(const theme of ["light","dark"] as const) tes
     expect(audit.text.filter(r=>r.contrast<(r.fontSize>=24||(r.fontWeight>=700&&r.fontSize>=18.66)?3:4.5))).toEqual([]);
   }
   await expect(draft).toHaveValue("保留此草稿");await page.screenshot({path:testInfo.outputPath("integration-progress.png"),fullPage:true});
-  await page.reload();await expect(progress).toContainText("先合基础接口");await expect(progress).toContainText("IP-2");
+  await page.keyboard.press("Escape");await expect(progress).toHaveCount(0);await expect(draft).toHaveValue("保留此草稿");
+  batch.state="finished";
+  await page.reload();await expect(progress).toHaveCount(0);await page.getByRole("button",{name:"集成详情",exact:true}).click();await expect(progress).toContainText("先合基础接口");await expect(progress).toContainText("IP-2");
 });
 
 for(const width of [320,375,1440]) for(const theme of ["light","dark"] as const) test(`reconciliation approval and reload ${width} ${theme}`,async({page,request},testInfo)=>{
@@ -148,12 +154,13 @@ for(const width of [320,375,1440]) for(const theme of ["light","dark"] as const)
     return route.fulfill({status:503,json:{title:"Synthetic lost response"}});
   });
   await page.goto(`/?product=${product.id}&console=agent&session=${id}`);
+  const draft=page.locator(".agent-console-reply textarea");await draft.fill("保留恢复审阅草稿");
+  await page.getByRole("button",{name:"集成详情",exact:true}).click();
   await expect(page.getByText("查看对账与恢复",{exact:true})).toBeVisible();expect(reads).toBe(0);
   await page.getByText("查看对账与恢复",{exact:true}).click();
   const region=page.getByRole("region",{name:"批次对账"});await expect(region).toContainText("条目已暂缓");
   await expect(region).toContainText("交付证据尚不完整");
   await expect(region.getByRole("button",{name:"批准本次恢复"})).toBeDisabled();
-  const draft=page.locator(".agent-console-reply textarea");await draft.fill("保留恢复审阅草稿");
   for(const scale of ["small","medium","large"]) {
     await page.evaluate(value=>{document.documentElement.dataset.fontScale=value;},scale);
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
@@ -165,6 +172,6 @@ for(const width of [320,375,1440]) for(const theme of ["light","dark"] as const)
   await page.screenshot({path:testInfo.outputPath(`reconciliation-${width}-${theme}.png`),fullPage:true});
   await region.getByRole("checkbox").check();await region.getByRole("button",{name:"批准本次恢复"}).click();
   await expect(region).toContainText("已批准，请原批次会话继续");await expect(draft).toHaveValue("保留恢复审阅草稿");
-  await page.reload();await page.getByText("查看对账与恢复",{exact:true}).click();await expect(region).toContainText("已批准，请原批次会话继续");
+  await page.reload();await page.getByRole("button",{name:"集成详情",exact:true}).click();await page.getByText("查看对账与恢复",{exact:true}).click();await expect(region).toContainText("已批准，请原批次会话继续");
   await expect(region.getByRole("button",{name:"批准本次恢复"})).toHaveCount(0);
 });
