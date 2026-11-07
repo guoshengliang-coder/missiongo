@@ -4,6 +4,7 @@ import { advanceSessionDetailPoll } from "./polling";
 
 const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as { productId: string; detailKey: string };
 const stamp = "2026-11-05T00:00:00.000Z";
+const execution = { id: "legacy-tool", sourceId: "legacy-tool", role: "agent", phase: "execution", occurredAt: stamp, text: '{"aggregatedOutput":"INTERNAL_TOOL_PAYLOAD"}' };
 function message(n: number) {
   return { id: `message-${n}`, sourceId: `source-${n}`, role: "agent", occurredAt: stamp,
     text: `Conversation message ${n}\n\n${"Historical conversation context. ".repeat(8)}` };
@@ -89,7 +90,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
           if (request.method() === "POST") pages.push(cursor);
           if (cursor === "stored:message-50") {
             await gate;
-            return route.fulfill({ json: { status: "ready", messages: Array.from({ length: 50 }, (_, n) => message(n)), nextCursor: "source-page" } });
+            return route.fulfill({ json: { status: "ready", messages: [execution, ...Array.from({ length: 50 }, (_, n) => message(n))], nextCursor: "source-page" } });
           }
           if (request.method() === "POST") return route.fulfill({ json: { status: "pending", messages: [] } });
           if (sourceFailed) return route.fulfill({ status: 503, json: { error: { code: "unavailable", message: "Fixture unavailable" } } });
@@ -102,7 +103,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
         }
         if (url.searchParams.get("history") === "recent") recentReads++;
         return route.fulfill({ json: url.pathname === "/api/v1/agent-sessions" ? { sessions: [summary] } : {
-          ...summary, messages: Array.from({ length: 50 }, (_, n) => message(n + 50)), history: { nextCursor: "stored:message-50" },
+          ...summary, messages: [execution, ...Array.from({ length: 50 }, (_, n) => message(n + 50))], history: { nextCursor: "stored:message-50" },
         } });
       });
       await page.route("**/api/v1/items/*/dispatches", route => route.fulfill({ json: { dispatches: [{
@@ -149,6 +150,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
       await expect(area.getByRole("button", { name: "加载更早消息" })).toHaveCount(0);
       await expect(reply).toHaveValue("Keep this draft");
       await expect(area.getByRole("button", { name: "Historical option", exact: true })).toBeDisabled();
+      await expect(area).not.toContainText("INTERNAL_TOOL_PAYLOAD");
       expect(sends).toBe(0);
       for (const scale of ["small", "medium", "large"]) {
         await page.evaluate(scale => { document.documentElement.dataset.fontScale = scale; }, scale);

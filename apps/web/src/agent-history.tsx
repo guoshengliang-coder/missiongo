@@ -1,3 +1,4 @@
+import { isConversationMessage } from "@missiongo/domain";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { api } from "./api";
 import { useI18n } from "./i18n";
@@ -6,7 +7,7 @@ import type { AgentSession, AgentSessionMessage } from "./types";
 
 function mergeMessages(older: readonly AgentSessionMessage[], latest: readonly AgentSessionMessage[]) {
   const messages = new Map<string, AgentSessionMessage>();
-  for (const message of [...older, ...latest]) messages.set(`${message.role}:${message.sourceId || message.id}`, message);
+  for (const message of [...older, ...latest].filter(isConversationMessage)) messages.set(`${message.role}:${message.sourceId || message.id}`, message);
   return [...messages.values()];
 }
 

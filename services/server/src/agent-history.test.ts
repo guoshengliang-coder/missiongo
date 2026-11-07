@@ -123,3 +123,14 @@ it("supports external native Codex history and invalidates it when the node bind
   f.db.prepare("UPDATE external_agent_sessions SET native_node_id=NULL WHERE id='external'").run();
   expect(() => f.history.get("owner", "external", cursor)).toThrow();
 });
+
+it("filters execution in both new and previously cached pages while retaining the next cursor", () => {
+  const f = fixture();
+  f.history.observe("owner", "node", f.id, { cursor: "items-v1:first", complete: false });
+  const page = f.head(); f.history.request("owner", f.id, page);
+  f.history.complete("owner", "node", page, { messages: [{ sourceId: "tool", role: "agent", phase: "execution", text: "private" }], nextCursor: "items-v1:next" });
+  expect(f.history.get("owner", f.id, page).messages).toEqual([]);
+  expect(f.history.get("owner", f.id, page).nextCursor).toBeDefined();
+  f.db.prepare("UPDATE agent_history_pages SET result_json=? WHERE id=?").run(JSON.stringify([{ id: "tool", sourceId: "tool", role: "agent", phase: "execution", text: "private" }]), page);
+  expect(f.history.get("owner", f.id, page).messages).toEqual([]);
+});

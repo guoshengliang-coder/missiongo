@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { CodexAdapter, codexPolicy, codexMessages } from "./codex.js";
 import { ClaudeAdapter, claudeAnswer, claudeArguments } from "./claude.js";
-import { OpenCodeAdapter, OpenCodeAPI } from "./opencode.js";
+import { OpenCodeAdapter, OpenCodeAPI, openCodeMessages } from "./opencode.js";
 import { DISPATCH_MODES_BY_AGENT } from "@missiongo/domain";
 import { sessionName } from "./session-name.js";
 import { launchPrompt } from "./prompt.js";
@@ -402,4 +402,29 @@ it("preserves long snapshot text and never substitutes a shortened message", () 
   const result = boundedSnapshot({ status: "idle", history: { complete: true }, messages: [{ sourceId: "huge", role: "agent", text: "x".repeat(4_000_001) }] });
   expect(result.messages).toEqual([]);
   expect(result.history).toMatchObject({ complete: false, error: "too_large" });
+});
+
+ it("keeps tools and private blocks out of Codex and OpenCode conversation text", () => {
+  const text = '  {"aggregatedOutput":"user supplied JSON"}  ';
+  expect(codexMessages({ turns: [{ id: "turn", items: [
+    ...["commandExecution", "mcpToolCall", "dynamicToolCall", "fileChange", "webSearch", "reasoning"].map(type => ({ id: type, type, text: "private" })),
+    { id: "reply", type: "agentMessage", phase: "commentary", text },
+  ] }] }).map(message => message.text)).toEqual([text]);
+  expect(openCodeMessages([{ id: "reply", type: "assistant", content: [
+    { type: "tool", text: "private" }, { type: "reasoning", text: "private" }, { type: "text", text },
+  ] }]).map(message => message.text)).toEqual([text]);
+});
+
+it("does not mirror Claude child tasks or internal user frames as conversation", async () => {
+  const adapter = new ClaudeAdapter(job(temporary(), "claude_code"), fixture); adapters.push(adapter);
+  const consume = (value: Wire) => (adapter as unknown as { event(value: Wire): void }).event(value);
+  consume({ type: "assistant", uuid: "child", parent_tool_use_id: "task", message: { content: [{ type: "text", text: "internal child" }] } });
+  consume({ type: "user", uuid: "injected", message: { content: "internal context" } });
+  consume({ type: "user", uuid: "meta", origin: { kind: "human" }, isMeta: true, message: { content: "internal metadata" } });
+  consume({ type: "user", uuid: "summary", origin: { kind: "human" }, isCompactSummary: true, message: { content: "internal summary" } });
+  consume({ type: "user", uuid: "human", origin: { kind: "human" }, message: { content: "  JSON {}  " } });
+  consume({ type: "assistant", uuid: "reply", message: { content: [
+    { type: "thinking", text: "private" }, { type: "tool_use", text: "private" }, { type: "text", text: "Visible reply" },
+  ] } });
+  expect((await adapter.snapshot()).messages.map(message => message.text)).toEqual(["  JSON {}  ", "Visible reply"]);
 });

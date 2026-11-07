@@ -491,6 +491,16 @@ final class WebSocketFrameTests: XCTestCase {
 }
 
 final class CodexAppServerControlTests: XCTestCase {
+    func testConversationExcludesToolPayloadsButKeepsOriginalText() throws {
+        let tools = ["commandExecution", "mcpToolCall", "dynamicToolCall", "webSearch", "fileChange", "reasoning"]
+        let items: [[String: Any]] = tools.map { ["id": $0, "type": $0, "text": "private"] } + [
+            ["id": "reply", "type": "agentMessage", "text": "  {\"result\": true}  ", "phase": "commentary"]
+        ]
+        let input: [String: Any] = ["thread": ["status": ["type": "idle"], "turns": [["id": "turn", "items": items]]]]
+        XCTAssertEqual(try CodexProtocol.threadSnapshot(fromRead: input).messages.map(\.text), ["  {\"result\": true}  "])
+        XCTAssertEqual(try CodexProtocol.threadSnapshot(fromRead: input, includeExecutionItems: true).messages.count, 7)
+    }
+
     func testExplicitLiveSourceRestoresVisibleMessagesWithoutNativeInput() async throws {
         let env = ProcessInfo.processInfo.environment
         guard let socket = env["MISSIONGO_TEST_CODEX_SOCKET"], let thread = env["MISSIONGO_TEST_CODEX_THREAD"] else {

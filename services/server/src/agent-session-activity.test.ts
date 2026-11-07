@@ -243,3 +243,13 @@ it("permission summaries share request identity without changing notification at
   snapshot({ status: "idle", messages: [{ ...permission, questions: [{ ...question, answered: "批准" }] }, laterForm] });
   expect(store.listForAccount("owner").find(row => row.id === sessionId)).toMatchObject({ waitingForPermission: false });
 });
+
+it("hides legacy execution records from conversation and preview and ignores old-node uploads", () => {
+  const f = fixture();
+  f.snapshot({ status: "idle", messages: [message, { sourceId: "tool", role: "agent", phase: "execution", text: "private" }] });
+  expect(f.store.getForAccount("owner", f.sessionId).messages.map(message => message.text)).toEqual(["Result"]);
+  // Simulate records already stored by the previous server.
+  f.db.prepare("UPDATE agent_session_messages SET phase='execution',text='private' WHERE session_id=?").run(f.sessionId);
+  expect(f.store.getForAccount("owner", f.sessionId).messages).toEqual([]);
+  expect(f.store.listForAccount("owner")[0]?.latestMessage).toBeUndefined();
+});

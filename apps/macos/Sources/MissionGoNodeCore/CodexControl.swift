@@ -693,7 +693,7 @@ public enum CodexProtocol {
                         ))
                     }
                 default:
-                    if includeExecutionItems || ["commandExecution", "mcpToolCall", "dynamicToolCall", "webSearch", "fileChange"].contains(itemType) {
+                    if includeExecutionItems {
                         // Keep visible native tool/event records; never mirror encrypted reasoning payloads.
                         var visible = item
                         visible.removeValue(forKey: "encryptedContent")
