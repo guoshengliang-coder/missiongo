@@ -20,18 +20,22 @@ export function repairSessionUnread({ database, baseline, nodeId, from, until, a
       ) STRICT`);
       db.exec("BEGIN IMMEDIATE");
     }
-    const rows = db.prepare(`SELECT d.id,d.read_at,d.unread_at,s.id session_id,s.status,s.turn_state_json
+    const rows = db.prepare(`SELECT d.id,d.read_at,d.unread_at,d.status dispatch_status,d.error dispatch_error,
+      s.id session_id,s.status,s.last_error,s.turn_state_json
       FROM dispatches d JOIN agent_sessions s ON s.dispatch_id=d.id
       WHERE d.node_id=? AND d.unread_at>=? AND d.unread_at<=? AND d.unread_at>d.read_at`).all(nodeId, from, until);
     const messages = (connection, id) => connection.prepare(`SELECT source_id,role,phase,text,questions_json,occurred_at
       FROM agent_session_messages WHERE session_id=?`).all(id);
     for (const row of rows) {
-      const previous = old.prepare(`SELECT d.read_at,d.unread_at,s.id session_id,s.status
+      const previous = old.prepare(`SELECT d.read_at,d.unread_at,d.status dispatch_status,d.error dispatch_error,
+        s.id session_id,s.status,s.last_error
         FROM dispatches d JOIN agent_sessions s ON s.dispatch_id=d.id WHERE d.id=? AND d.node_id=?`).get(row.id,nodeId);
       let reason;
       if (!previous || !previous.read_at || previous.read_at !== row.read_at
         || (previous.unread_at && previous.unread_at > previous.read_at)) reason = "baseline_not_read_or_ack_changed";
       else if (row.status !== "idle" || previous.status !== "idle") reason = "not_stable_idle";
+      else if (row.dispatch_status !== "launched" || previous.dispatch_status !== "launched"
+        || row.dispatch_error || previous.dispatch_error || row.last_error !== previous.last_error) reason = "execution_or_diagnostic_changed";
       else {
         const before = new Map(messages(old,previous.session_id).map(m => [m.source_id,m]));
         const current = messages(db,row.session_id);

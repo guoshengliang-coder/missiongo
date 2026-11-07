@@ -13,13 +13,14 @@ test("repair uses a read baseline, preserves real output, defaults to dry-run an
   try {
     for (const [path, current] of [[baseline,false],[database,true]]) {
       const db = new DatabaseSync(path);
-      db.exec(`CREATE TABLE dispatches(id TEXT, node_id TEXT, read_at TEXT, unread_at TEXT);
-        CREATE TABLE agent_sessions(id TEXT, dispatch_id TEXT, status TEXT, turn_state_json TEXT);
+      db.exec(`CREATE TABLE dispatches(id TEXT, node_id TEXT, read_at TEXT, unread_at TEXT,status TEXT,error TEXT);
+        CREATE TABLE agent_sessions(id TEXT, dispatch_id TEXT, status TEXT, turn_state_json TEXT,last_error TEXT);
         CREATE TABLE agent_session_messages(session_id TEXT,source_id TEXT,role TEXT,phase TEXT,text TEXT,questions_json TEXT,occurred_at TEXT);
         CREATE TABLE agent_session_commands(session_id TEXT,created_at TEXT);`);
-      for (const id of ["safe","real-reply","changed-ack","pending"]) {
-        db.prepare("INSERT INTO dispatches VALUES (?,?,?,?)").run(id,"node",current && id === "changed-ack" ? "2026-11-07T00:10:00.000Z" : read,current ? polluted : read);
-        db.prepare("INSERT INTO agent_sessions VALUES (?,?,'idle','{}')").run(id,id);
+      for (const id of ["safe","real-reply","changed-ack","pending","dispatch-failure"]) {
+        db.prepare("INSERT INTO dispatches VALUES (?,?,?,?,?,?)").run(id,"node",current && id === "changed-ack" ? "2026-11-07T00:10:00.000Z" : read,current ? polluted : read,
+          current && id === "dispatch-failure" ? "failed" : "launched",current && id === "dispatch-failure" ? "synthetic failure" : null);
+        db.prepare("INSERT INTO agent_sessions VALUES (?,?,'idle','{}',NULL)").run(id,id);
         db.prepare("INSERT INTO agent_session_messages VALUES (?,?,'agent','final_answer','original',NULL,?)").run(id,"answer",read);
         if (current) db.prepare("INSERT INTO agent_session_messages VALUES (?,?,'agent',?,'synthetic',?,?)")
           .run(id,"extra",id === "real-reply" ? "final_answer" : "execution",id === "pending" ? '[{"title":"Choose"}]' : null,"2026-11-06T23:00:00.000Z");
