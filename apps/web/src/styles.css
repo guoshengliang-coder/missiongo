@@ -3364,7 +3364,8 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .agent-run-details > summary:hover { border-color: var(--accent-line); }
 }
 @media (pointer: coarse) {
-  .agent-reply-edit { min-width: 44px; min-height: 44px; margin: 0; }
+  .agent-reply-current { align-items: flex-start; }
+  .agent-reply-edit { display: inline-flex; align-items: flex-start; min-width: 44px; min-height: 44px; padding-block: 0; margin: 0; }
   .agent-run-details > summary { min-height: 44px; }
   .agent-output-image-state .artifact-link { min-width: 44px; min-height: 44px; }
 }

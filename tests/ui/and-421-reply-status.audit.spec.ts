@@ -59,6 +59,13 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     await expect(bubble.locator(".agent-reply-feedback")).toHaveCount(0);
     const bubbleBox = (await bubble.boundingBox())!;
     expect((await feedback.boundingBox())!.y).toBeGreaterThanOrEqual(bubbleBox.y + bubbleBox.height);
+    if (touch) {
+      // The 44px touch target must not vertically center the visible receipt
+      // and manufacture a large blank band below the bubble.
+      expect(stateBox.y - bubbleBox.y - bubbleBox.height).toBeLessThanOrEqual(6);
+      expect(editBox.height).toBeGreaterThanOrEqual(44);
+      expect(Math.abs(stateBox.y - editBox.y)).toBeLessThanOrEqual(1);
+    }
     await page.screenshot({ path: testInfo.outputPath(`reply-queued-${width}-${theme}.png`) });
 
     // Every later state keeps the queued footprint exactly.
