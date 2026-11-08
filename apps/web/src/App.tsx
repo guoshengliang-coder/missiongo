@@ -2852,7 +2852,7 @@ function DetailPane({
           )}
           <div className="adaptive-toolbar-secondary" data-toolbar-secondary aria-hidden={toolbarOverflow} inert={toolbarOverflow}>
             <RefreshButton refreshing={itemQuery.isFetching || timelineQuery.isFetching} onRefresh={refreshItem} />
-            {!readOnlySource && item.status === "in_progress" && deliveryQuery.data?.canHandoffToAgent && <button className="secondary-button" onClick={() => onTakeOver(item)}>{t("dispatchSubmit")}</button>}
+            {!readOnlySource && item.status === "in_progress" && deliveryQuery.data?.canHandoffToAgent && <button className="secondary-button toolbar-dispatch-button" onClick={() => onTakeOver(item)}>{t("dispatchSubmit")}</button>}
             {!readOnlySource && <button className="secondary-button" disabled={item.transferred || item.access?.canOperate === false} onClick={() => setEditing(true)}>{t("edit")}</button>}
           </div>
           {!readOnlySource && <OverlayMenu className="detail-more-menu" ref={moreActionsRef} onToggle={(event) => { if (!event.currentTarget.open) event.currentTarget.querySelector(".detail-move-menu")?.removeAttribute("open"); }}>
@@ -2880,8 +2880,8 @@ function DetailPane({
               </div>}
               <div className="detail-action-group">
                 <p className="detail-action-heading">{t("actionGroupTools")}</p>
+                {item.status === "in_progress" && deliveryQuery.data?.canHandoffToAgent && <button type="button" onClick={() => {moreActionsRef.current?.removeAttribute("open");onTakeOver(item);}}>{t("dispatchSubmit")}</button>}
                 {toolbarOverflow && <>
-                  {item.status === "in_progress" && deliveryQuery.data?.canHandoffToAgent && <button type="button" onClick={() => {moreActionsRef.current?.removeAttribute("open");onTakeOver(item);}}>{t("dispatchSubmit")}</button>}
                   <button type="button" onClick={() => { moreActionsRef.current?.removeAttribute("open"); refreshItem(); }}><RefreshCw size={17} aria-hidden="true" />{t("refresh")}</button>
                   <button type="button" disabled={item.transferred || item.access?.canOperate === false} onClick={() => { moreActionsRef.current?.removeAttribute("open"); setEditing(true); }}><Pencil size={17} aria-hidden="true" />{t("edit")}</button>
                 </>}

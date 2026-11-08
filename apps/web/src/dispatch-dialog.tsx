@@ -213,9 +213,8 @@ export function DispatchDialog({
       ...(effort ? { effort } : {}),
       itemKeys,
       saveAsDefault,
-      ...(redispatchConfirmed ? { force: true } : {}),
       idempotencyKey: (() => {
-        const signature=JSON.stringify([nodeId,agentKind,mode,model,effort,itemKeys,saveAsDefault,redispatchConfirmed]);
+        const signature=JSON.stringify([nodeId,agentKind,mode,model,effort,itemKeys,saveAsDefault]);
         if(!requestKeys.has(signature)) requestKeys.set(signature,crypto.randomUUID());
         return requestKeys.get(signature)!;
       })(),
