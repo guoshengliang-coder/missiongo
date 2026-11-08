@@ -52,6 +52,7 @@ interface Delivery extends DeliveryInput {
   reconfirmation?: boolean;
 }
 interface Batch {
+  saveAsDefault?: boolean;
   displayBoundaries?: Record<string, { at: string; settings: string; humanStamp: string | null }>;
   reconciliation?: ReconciliationState;
   integration?: MergeIntegration;
@@ -332,12 +333,13 @@ export class MergeDeliveries {
         requiredArtifacts:d.requiredArtifacts,noReleaseReason:d.noReleaseReason,publication,releases}];
     }))};
   }
-  start(accountId: string, requestKey: string, selection: {id:string;revision:string}[], config: FreeSessionConfig, publish: boolean, integrationProtocol?: 1) {
+  start(accountId: string, requestKey: string, selection: {id:string;revision:string}[], config: FreeSessionConfig, publish: boolean, integrationProtocol?: 1, saveAsDefault = false) {
     return this.db.transaction(() => {
       const prev = this.db.connection.prepare("SELECT id FROM merge_batches WHERE account_id=? AND request_key=?").get(accountId,requestKey) as {id:string}|undefined;
       if (prev) {
         const b = this.read<Batch>("merge_batches",prev.id);
         if ((b.integration?.recoveredAuthorization?undefined:b.integration?.protocol)!==integrationProtocol) throw changed();
+        if (Boolean(b.saveAsDefault)!==saveAsDefault) throw changed();
         if (digest(b.config)!==digest(config) || b.publish!==publish || digest(b.selection)!==digest(selection)) throw changed();
         return b;
       }
@@ -358,14 +360,20 @@ export class MergeDeliveries {
       // The first message is instructions, so the conversation is named after
       // the work it integrates instead of an excerpt of that prompt (AND-449).
       const integrationTitle=`集成 · ${compactItemKeys([...new Set(deliveries.flatMap(d=>d.itemKeys))])}`;
-      const dispatch=free.prepare(accountId,id,config,`${text}\n\n${integrationInstructions}`,0,integrationTitle);
+      const dispatch=free.prepare(accountId,id,{...config,saveAsDefault:false},`${text}\n\n${integrationInstructions}`,0,integrationTitle);
       const b: Batch={id,productId:config.productId,accountId,requestKey,dispatchId:dispatch.id,sessionId:dispatch.agentSessionId!,
-        config,publish,selection,deliveries:deliveries.map(d=>d.id),state:"active",createdAt:new Date().toISOString(),results:{},
+        config,publish,saveAsDefault,selection,deliveries:deliveries.map(d=>d.id),state:"active",createdAt:new Date().toISOString(),results:{},
         ...(integrationProtocol===1?{integration:{protocol:1 as const,revision:0,plans:[],events:[],entries:Object.fromEntries(deliveries.map(d=>[d.id,{itemKeys:d.itemKeys,originalHead:d.head,head:d.head,progress:"queued" as const,detail:"",repairs:[]}]))}}:{})};
       this.db.connection.prepare("INSERT INTO merge_batches(id,product_id,account_id,request_key,state,data_json) VALUES (?,?,?,?,?,?)")
         .run(id,b.productId,accountId,requestKey,b.state,JSON.stringify(b));
       for(const d of deliveries){d.state="batched";d.batchId=id;this.save(d);}
       free.finish(accountId,dispatch.id,[]);
+      if (saveAsDefault) dispatches.setDispatchDefaults(accountId, {
+        nodeId: config.nodeId, agentKind: config.agentKind,
+        agents: { ...dispatches.getDispatchDefaults(accountId, "integration").agents, [config.agentKind]: {
+          mode: config.mode, ...(config.model ? {model:config.model} : {}), ...(config.effort ? {effort:config.effort} : {}),
+        } },
+      }, "integration");
       return b;
     });
   }

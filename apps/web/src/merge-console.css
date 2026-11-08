@@ -109,3 +109,24 @@
 .item-handler-badge[data-merge-progress="published"], .merge-delivery-notice[data-session-delivery="published"] { background: var(--integration-published-bg); color: var(--integration-published-fg); border-color: var(--integration-published-fg); }
 .merge-delivery-notice[data-session-delivery="merged"] .merge-delivery-icon,
 .merge-delivery-notice[data-session-delivery="published"] .merge-delivery-icon { background: transparent; }
+
+/* AND-476: current blockers stay visible; background rules use click help. */
+.merge-active-notice { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 12px; padding: 16px; margin: 0; border: 1px solid var(--warn-line); border-radius: var(--radius-md); background: var(--warn-bg); color: var(--warn-text); }
+.merge-active-notice > div { flex: 1 1 260px; }
+.merge-active-notice > svg { flex-shrink: 0; }
+.merge-active-notice p { margin: 6px 0; }
+.merge-active-notice small { font-size: var(--text-sm); }
+.merge-selection-toolbar { justify-content: space-between; }
+.merge-empty { display: grid; justify-items: center; gap: 12px; padding: 24px 16px; text-align: center; color: var(--muted); }
+.merge-empty p { margin: 0; }
+.merge-empty strong { color: var(--ink); }
+.merge-row .merge-check { display: block; margin-top: 8px; }
+.merge-check > strong { display: inline-block; padding: 3px 6px; border-radius: var(--radius-xs); background: var(--warn-bg); color: var(--warn-text); font-size: var(--text-sm); }
+.merge-check[data-check="passed"] > strong { background: var(--accent-bg); color: var(--accent-text); }
+.merge-check[data-check="failed"] > strong { background: var(--danger-bg); color: var(--danger); }
+.merge-next-blocked { color: var(--warn-text); font-size: var(--text-md); margin: 0; }
+
+.merge-configuration-step > p { margin: 0; }
+.merge-footer .primary-button:disabled { background: var(--surface-sunken); color: var(--muted); border: 1px solid var(--line); opacity: 1; }
+/* State changes switch the foreground/background pair together for readable contrast. */
+.merge-footer .primary-button { transition: transform 140ms ease; }

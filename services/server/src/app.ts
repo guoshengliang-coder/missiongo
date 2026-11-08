@@ -2550,16 +2550,20 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if(body.noExecutionRemaining!==true)throw invalidInput("请先核实没有未结束的外部合并或发布操作。");
     return merges.decideReconciliation(requireAccountId(request),id,requestId,stringField(body,"snapshot")!,decision,true);
   });
+  app.get("/api/v1/integration-defaults", async request => {
+    return dispatchStore.getDispatchDefaults(requireAccountId(request), "integration");
+  });
   app.post("/api/v1/products/:productId/merge-batches",async request=>{
     const {productId}=request.params as {productId:string},body=objectBody(request.body);
     requireProductPermission(request,productId,"operate");requireProductPermission(request,productId,"ai");
     if(!Array.isArray(body.selection) || typeof body.publish!=="boolean") throw invalidInput("Select a batch and its publication scope.");
+    if(body.saveAsDefault!==undefined && typeof body.saveAsDefault!=="boolean") throw invalidInput("saveAsDefault must be boolean.");
     if(body.integrationProtocol!==undefined&&body.integrationProtocol!==1)throw invalidInput("Unsupported integration protocol.");
     const selection=body.selection.map(value=>{const row=objectBody(value);return {id:stringField(row,"id")!,revision:stringField(row,"revision")!};});
     return merges.start(requireAccountId(request),stringField(body,"requestKey")!,selection,{
       productId,nodeId:stringField(body,"nodeId")!,agentKind:stringField(body,"agentKind")! as AgentKind,mode:stringField(body,"mode")!,
       ...(optionalName(body,"model")?{model:optionalName(body,"model")!}:{}),...(optionalName(body,"effort")?{effort:optionalName(body,"effort")!}:{})
-    },body.publish,body.integrationProtocol===1?1:undefined);
+    },body.publish,body.integrationProtocol===1?1:undefined,body.saveAsDefault===true);
   });
 
   app.post("/api/v1/project-conversations", async (request, reply) => {

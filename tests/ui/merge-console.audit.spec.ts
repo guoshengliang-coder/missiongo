@@ -1,12 +1,18 @@
 import { expect, test } from "@playwright/test";
 import { AUDIT_SOURCE } from "./audit-page.mjs";
 
+test.beforeEach(async({page},info)=>{
+  if(info.title.includes("polling invalidates"))await page.clock.install({time:new Date("2026-11-08T08:00:00Z")});
+  else await page.clock.setFixedTime(new Date("2026-11-08T08:00:00Z"));
+});
+
 for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const) {
   test(`merge selection and uncertain retry at ${width}px ${theme}`, async ({ page, request }, testInfo) => {
     await page.setViewportSize({width,height:900});
     await page.emulateMedia({colorScheme:theme});
     const product=await (await request.post("/api/v1/products",{data:{name:`Merge ${width} ${theme}`,keyPrefix:`MG${width}${theme[0]!.toUpperCase()}`}})).json();
-    const now=new Date().toISOString();
+    await page.clock.setFixedTime(new Date("2026-11-08T08:00:00Z"));
+    const now="2026-11-08T08:00:00Z";
     const delivery={id:"delivery-one",productId:product.id,sessionId:"development-session",revision:"revision-one",state:"confirmed",blocker:width===320?"pending":"stale",
       itemKeys:["MG-1"],head:"a".repeat(40),summary:"会话交付确认与待合并清单",validation:"服务端回归测试通过",requiredArtifacts:["web"],
       pullRequestUrl:"https://github.com/example/project/pull/12",evidence:{checkedAt:now,source:"GitHub"}};
@@ -60,7 +66,7 @@ for (const width of [320,1440]) for (const theme of ["light","dark"] as const) f
   await page.setViewportSize({width,height:900});await page.emulateMedia({colorScheme:theme});
   const product=await(await request.post("/api/v1/products",{data:{name:`Delivery ${surface}`,keyPrefix:`D${surface[0]!.toUpperCase()}${width}${theme[0]!.toUpperCase()}`}})).json();
   const item=await(await request.post("/api/v1/items",{data:{productId:product.id,type:"task",priority:"normal",status:"ready",title:"Delivery fixture",description:"Synthetic",environment:{platform:"web"}}})).json();
-  const id="delivery-session",stamp=new Date().toISOString();let state="proposed",decisions=0,blocker:string|undefined,reconfirmation=false,rejectSend=true;
+  const id="delivery-session",stamp="2026-11-08T08:00:00Z";let state="proposed",decisions=0,blocker:string|undefined,reconfirmation=false,rejectSend=true;
   const summary={id,agentSessionId:id,dispatchId:"delivery-dispatch",agentKind:"codex",status:"idle",updatedAt:stamp,createdAt:stamp,
     nodeName:"Fixture",nodeId:"fixture-node",nodeConnectionState:"online",mode:"auto",dispatchStatus:"launched",activities:[],settings:{},unread:false,
     canReply:true,canRetry:false,canStop:false,canArchive:true,attention:{state:"needed",kind:"instruction",reason:"Review completed delivery",revision:"attention-turn",handledByDelivery:true},needsAttention:false,items:[{key:item.key,title:item.title,productId:product.id}]};
@@ -144,7 +150,7 @@ for (const width of [320,1440]) for (const theme of ["light","dark"] as const) f
 for(const width of [320,1440]) for(const theme of ["light","dark"] as const) test(`integration plan and recovery ${width} ${theme}`,async({page,request},testInfo)=>{
   await page.setViewportSize({width,height:900});await page.emulateMedia({colorScheme:theme});
   const product=await(await request.post("/api/v1/products",{data:{name:"Integration",keyPrefix:`IP${width}${theme[0]!.toUpperCase()}`}})).json();
-  const id="integration-session",at=new Date().toISOString();
+  const id="integration-session",at="2026-11-08T08:00:00Z";
   const session={id,agentSessionId:id,dispatchId:"integration-dispatch",productId:product.id,agentKind:"codex",status:"idle",updatedAt:at,createdAt:at,
     nodeName:"Fixture",nodeId:"fixture",nodeConnectionState:"online",mode:"auto",dispatchStatus:"launched",activities:[],settings:{},unread:false,
     canReply:true,canRetry:false,canStop:false,canArchive:true,attention:{state:"none"},needsAttention:false,items:[]};
@@ -238,7 +244,7 @@ for(const width of [320,1440]) for(const theme of ["light","dark"] as const) tes
 for(const width of [320,375,1440]) for(const theme of ["light","dark"] as const) test(`reconciliation approval and reload ${width} ${theme}`,async({page,request},testInfo)=>{
   await page.setViewportSize({width,height:width===375?812:900});await page.emulateMedia({colorScheme:theme});
   const product=await(await request.post("/api/v1/products",{data:{name:"Recovery",keyPrefix:`RC${width}${theme[0]!.toUpperCase()}`}})).json();
-  const id="recovery-session",at=new Date().toISOString(),snapshot="a".repeat(64);
+  const id="recovery-session",at="2026-11-08T08:00:00Z",snapshot="a".repeat(64);
   const session={id,agentSessionId:id,dispatchId:"recovery-dispatch",productId:product.id,agentKind:"codex",status:"idle",updatedAt:at,createdAt:at,
     nodeName:"Fixture",nodeId:"fixture",nodeConnectionState:"online",mode:"auto",dispatchStatus:"launched",activities:[],settings:{},unread:false,
     canReply:true,canRetry:false,canStop:false,canArchive:true,attention:{state:"none"},needsAttention:false,items:[]};
@@ -284,7 +290,8 @@ test.describe("AND-447 touch",()=>{
 for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const) test(`AND-447 grouped selection, detail return and active restriction ${width} ${theme}`, async ({page,request},testInfo)=>{
   await page.setViewportSize({width,height:width===320?640:900});await page.emulateMedia({colorScheme:theme});
   const product=await(await request.post("/api/v1/products",{data:{name:"AND-447 wizard",keyPrefix:`WZ${width}${theme[0]!.toUpperCase()}`}})).json();
-  const at=new Date().toISOString();
+  await page.clock.setFixedTime(new Date("2026-11-08T08:00:00Z"));
+  const at="2026-11-08T08:00:00Z";
   const deliveries=[0,1,2].map(i=>({id:`wizard-${i}`,productId:product.id,sessionId:`dev-${i}`,revision:`rev-${i}`,state:"confirmed",blocker:i===2?"changed":i===0?"pending":"stale",
     itemKeys:i===1?["WZ-2","WZ-3"]:[`WZ-${i===0?1:4}`],head:"a".repeat(40),summary:`独立改动组 ${i}`,validation:`验证详情 ${i}`,requiredArtifacts:["web","macosApp"],
     pullRequestUrl:`https://github.com/example/project/pull/${i+1}`,evidence:{checkedAt:at,source:"Fixture"}}));
@@ -333,21 +340,23 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
   expect(posts).toBe(0);
   active=true;await page.reload();await page.getByRole("button",{name:"待合并 2",exact:true}).click();
   await expect(dialog.locator(".integration-progress")).toHaveCount(0);await expect(dialog.locator(".merge-active-notice")).toBeVisible();
-  await dialog.getByRole("button",{name:"全选可选内容"}).click();await dialog.getByRole("button",{name:"下一步：配置 Agent"}).click();
-  await expect(dialog.getByRole("button",{name:"开始处理",exact:true})).toBeDisabled();expect(posts).toBe(0);
+  await dialog.getByRole("button",{name:"全选可选内容"}).click();
+  await expect(dialog.getByRole("button",{name:"下一步：配置 Agent"})).toBeDisabled();
+  await expect(dialog.locator(".merge-row")).toHaveCount(3);expect(posts).toBe(0);
 });
 
 });
 
 test("AND-447 polling invalidates a removed selection and permits deliberate reselection",async({page,request})=>{
   const product=await(await request.post("/api/v1/products",{data:{name:"AND-447 stale",keyPrefix:"WZSTALE"}})).json();
-  const now=new Date().toISOString();let removed=false,reads=0;
+  const now="2026-11-08T08:00:00Z";let removed=false,reads=0;
   const delivery={id:"stale",productId:product.id,sessionId:"dev",revision:"first",state:"confirmed",itemKeys:["ST-1"],head:"a".repeat(40),summary:"变化中的改动",validation:"回归说明",requiredArtifacts:["web"],pullRequestUrl:"https://github.com/example/project/pull/1",evidence:{checkedAt:now,source:"Fixture"}};
   await page.route("**/merge-deliveries",route=>{reads++;return route.fulfill({json:{deliveries:removed?[]:[delivery],batches:[]}});});
   await page.goto(`/?product=${product.id}&console=agent`);await page.getByRole("button",{name:"待合并 1",exact:true}).click();
   const dialog=page.getByRole("dialog");await dialog.getByRole("button",{name:"全选可选内容"}).click();await dialog.getByRole("button",{name:"下一步：配置 Agent"}).click();
   removed=true;const before=reads;
-  // Poll the same open dialog; a page reload would lose the selection under test.
+  // Advance the controlled timer; reloading would lose the selected revision.
+  await page.clock.fastForward(16_000);
   await expect.poll(()=>reads,{timeout:20000}).toBeGreaterThan(before);
   await expect(dialog.getByRole("alert")).toContainText("已选改动已变化");await expect(dialog.getByRole("button",{name:"开始处理",exact:true})).toBeDisabled();
   await dialog.getByRole("button",{name:"重新选择",exact:true}).click();

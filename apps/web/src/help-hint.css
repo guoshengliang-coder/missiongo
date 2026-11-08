@@ -1,0 +1,12 @@
+.help-label { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.help-hint-trigger { display: inline-flex; align-items: center; justify-content: flex-start; flex: 0 0 24px; width: 24px; height: 24px; padding: 0 0 0 2px; border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--muted); cursor: pointer; vertical-align: middle; }
+.help-hint-trigger svg { display: block; flex-shrink: 0; transform: translateY(1px); }
+.help-hint-trigger[aria-expanded="true"] { background: var(--row-hover); color: var(--ink); }
+.help-hint-panel { position: fixed; z-index: 20; box-sizing: border-box; overflow: auto; overscroll-behavior: contain; padding: 12px 16px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-strong); color: var(--ink); box-shadow: var(--shadow); font-size: var(--text-base); line-height: 1.6; overflow-wrap: anywhere; }
+.help-hint-panel header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.help-hint-panel p { margin: 8px 0; }
+.help-option { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; min-height: 44px; }
+.help-option > label { display: inline-flex; flex-direction: row; align-items: center; font-size: var(--text-base); font-weight: 500; color: var(--ink); gap: 12px; min-height: 44px; margin: 0; cursor: pointer; }
+.help-option input[type="checkbox"] { width: 18px; height: 18px; margin: 0; accent-color: var(--mint-dark); }
+@media (hover: hover) { .help-hint-trigger:hover { background: var(--row-hover); color: var(--ink); } }
+@media (pointer: coarse) { .help-hint-trigger { flex-basis: 44px; width: 44px; height: 44px; } }

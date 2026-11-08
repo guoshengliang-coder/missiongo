@@ -1,3 +1,4 @@
+import { HelpHint } from "./help-hint";
 import { modeChoices, modeProblem, modeReasonKey } from "./agent-mode-options";
 import { Select } from "./select";
 import { useDialogDraft } from "./dialog-state";
@@ -287,7 +288,7 @@ export function DispatchDialog({
         </div>
         {created.error && <div className="inline-error"><CirclePause size={16} /><span>{created.error}</span></div>}
         <p className="dispatch-note">{t("dispatchSessionPending")}</p>
-        <p className="dispatch-note">{t(newSession ? "newSessionDraftHint" : "dispatchDoesNotClaim")}</p>
+        <div className="dispatch-note help-label"><span>{t(newSession ? "newSessionDraftHint" : "dispatchScopeShort")}</span><HelpHint title={t(newSession ? "newSession" : "dispatchSubmit")}><p>{t(newSession ? "newSessionDraftHint" : "dispatchDoesNotClaim")}</p></HelpHint></div>
         <div className="form-footer">
           <button type="button" className="primary-button" onClick={onClose}>{t("close")}</button>
         </div>
@@ -454,7 +455,7 @@ export function DispatchDialog({
       </div>
       {effortResetFor === choiceKey && <p className="dispatch-note" role="status">{t("dispatchEffortReset", { model: models?.find(entry => entry.id === model)?.label ?? (model || t("dispatchModelLocal")) })}</p>}
       {nodeId && !models && nodesQuery.isFetched && <p className="dispatch-note">{t("dispatchModelUnsupported")}</p>}
-      <p className="dispatch-note">{t(newSession ? "newSessionDraftHint" : "dispatchDoesNotClaim")}</p>
+      <div className="dispatch-note help-label"><span>{t(newSession ? "newSessionDraftHint" : "dispatchScopeShort")}</span><HelpHint title={t(newSession ? "newSession" : "dispatchSubmit")}><p>{t(newSession ? "newSessionDraftHint" : "dispatchDoesNotClaim")}</p></HelpHint></div>
 
       {mutation.isError && (
         <div className="inline-error"><CirclePause size={16} /><span>{dispatchErrorMessage(mutation.error, t, agentLabel(agentKind))}</span></div>
@@ -463,11 +464,11 @@ export function DispatchDialog({
       {defaultsQuery.isError && <p className="inline-error" role="alert">{t("dispatchDefaultsUnavailable")}
         <button type="button" className="secondary-button" onClick={() => void defaultsQuery.refetch()}>{t("retry")}</button>
       </p>}
-      {differsFromDefaults && <label className="dispatch-conflict-confirm">
+      {differsFromDefaults && <div className="help-option"><label className="dispatch-conflict-confirm">
         <input type="checkbox" checked={saveAsDefault} disabled={mutation.isPending}
           onChange={event => setSaveDefaultsFor(event.target.checked ? defaultsKey : null)} />
         <span>{t("dispatchSetDefaults")}</span>
-      </label>}
+      </label><HelpHint title={t("dispatchSetDefaults")}><p>{t("dispatchDefaultHelp")}</p></HelpHint></div>}
       <div className="form-footer">
         <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={onClose}>{t(handoff ? "agentHandoffBack" : "cancel")}</button>
         <button type="submit" className="primary-button" disabled={Boolean(modeIssue) || modelUnavailable || catalogUnavailable || blocked || !defaultsApplied || mutation.isPending}>

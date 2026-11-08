@@ -1552,9 +1552,9 @@ export class DispatchStore {
     };
   }
 
-  getDispatchDefaults(accountId: string): DispatchDefaults {
+  getDispatchDefaults(accountId: string, scope: "dispatch" | "integration" = "dispatch"): DispatchDefaults {
     const row = this.database.connection
-      .prepare("SELECT settings_json FROM account_dispatch_defaults WHERE account_id = ?")
+      .prepare(`SELECT settings_json FROM ${scope === "integration" ? "account_integration_defaults" : "account_dispatch_defaults"} WHERE account_id = ?`)
       .get(accountId) as unknown as { settings_json: string } | undefined;
     // New accounts start Claude Code dispatches in the explicitly chosen
     // MissionGo-only bypass mode. Existing saved choices are intentionally
@@ -1569,7 +1569,7 @@ export class DispatchStore {
    * machine may be asleep, and the dialog already falls back when a saved model
    * is no longer offered.
    */
-  setDispatchDefaults(accountId: string, body: Record<string, unknown>): DispatchDefaults {
+  setDispatchDefaults(accountId: string, body: Record<string, unknown>, scope: "dispatch" | "integration" = "dispatch"): DispatchDefaults {
     const name = (value: unknown, field: string): string | undefined => {
       if (value === undefined || value === null || value === "") return undefined;
       if (typeof value !== "string" || value.length > 200) throw invalidInput(`${field} must be a short string.`);
@@ -1601,7 +1601,7 @@ export class DispatchStore {
     };
     this.database.connection
       .prepare(
-        `INSERT INTO account_dispatch_defaults (account_id, settings_json, updated_at) VALUES (?, ?, ?)
+        `INSERT INTO ${scope === "integration" ? "account_integration_defaults" : "account_dispatch_defaults"} (account_id, settings_json, updated_at) VALUES (?, ?, ?)
          ON CONFLICT(account_id) DO UPDATE SET settings_json = excluded.settings_json, updated_at = excluded.updated_at`,
       )
       .run(accountId, JSON.stringify(defaults), new Date().toISOString());
