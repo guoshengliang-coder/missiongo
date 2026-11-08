@@ -28,7 +28,7 @@ export const TRANSITIONS: Record<WorkItemStatus, readonly TransitionAction[]> = 
     CANCEL_ACTION,
   ],
   development_complete: [
-    { label: "Submit published work for verification", to: "pending_verification", reason: "release_verified", tone: "primary" },
+    { label: "Submit work for verification", to: "pending_verification", reason: "release_verified", tone: "primary" },
     { label: "Needs more work", to: "ready", reason: "released" },
     CANCEL_ACTION,
   ],
@@ -70,7 +70,8 @@ export function itemTransitionActions(item: WorkItem) {
     && (item.transitionDecisions
       ? item.transitionDecisions.some(d => d.to === action.to && d.reason === action.reason && d.allowed)
       : action.to === "done" ? item.access?.canVerify === true : item.access?.canOperate !== false);
-  const offered = item.status === "on_hold" ? TRANSITIONS.on_hold.filter(a=>a.to === "cancelled" || a.to === item.heldFrom) : TRANSITIONS[item.status];
+  const offered = item.status === "on_hold" ? TRANSITIONS.on_hold.filter(a=>a.to === "cancelled" || a.to === item.heldFrom) : TRANSITIONS[item.status].map(action => item.status === "development_complete" && item.deliveryBasis === "no_release" && action.to === "pending_verification"
+    ? {...action,reason:"non_release_submitted" as const} : action);
   const primaryAction = offered[0] && allowed(offered[0]) ? offered[0] : undefined;
   return {
     primaryAction,

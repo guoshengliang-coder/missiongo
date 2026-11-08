@@ -1,3 +1,4 @@
+import { DeliveryEvidence } from "./delivery-evidence";
 import { PlanDocumentPage } from "./plan-document-page";
 import { PendingMergeButton, MergeProgressBadge, useMergeProgress } from "./merge-console";
 import { PRODUCT_ICON_URL } from "./branding.generated";
@@ -3064,6 +3065,7 @@ function DetailPane({
                           the case this is here for; a handover carries the agent's
                           summary in the same field and is worth reading too. */}
                       {event.eventType === "status_changed" && <StatusNoteLine payload={event.payload} item={item} />}
+                      <DeliveryEvidence payload={event.payload} />
                       {["item_transferred_in", "item_transferred_out"].includes(event.eventType) && Array.isArray(event.payload.clearedComponents) && event.payload.clearedComponents.length > 0 && (
                         <p>{t("transferClearedComponents", { names: event.payload.clearedComponents.flatMap((c: unknown) => c && typeof c === "object" && "name" in c && typeof c.name === "string" ? [c.name] : []).join("、") })}</p>
                       )}

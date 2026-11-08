@@ -151,3 +151,13 @@ describe("acceptance controls (AND-356)", () => {
     expect(itemTransitionActions(transferred)).toEqual({ primaryAction: undefined, secondaryActions: [], manualTargets: [] });
   });
 });
+
+
+describe("no-release human action audit",()=>{
+ it("uses the separate reason only for an explicitly recorded no-release basis",()=>{
+  for(const basis of ["no_release","release_required","unknown",undefined] as const) {
+   const item={status:"development_complete",deliveryBasis:basis,access:{canOperate:true}} as WorkItem;
+   expect(itemTransitionActions(item).primaryAction?.reason).toBe(basis === "no_release" ? "non_release_submitted" : "release_verified");
+  }
+ });
+});

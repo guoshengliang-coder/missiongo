@@ -216,3 +216,82 @@ describe("AND-413 conversation-based handover", () => {
     expect(f.snapshot()).toEqual(before);
   });
 });
+
+
+const validation = {checks:[{name:"Applied configuration",method:"Compare digest and run the tool",result:"passed" as const,evidence:"Synthetic digest and output verified"}],
+  remainingVerification:["A person reviews the result"],limitations:["Not applied to other devices"]};
+const localCompletion = {kind:"local_change" as const,evidence:{version:1 as const,target:"Synthetic node shared tools",summary:"Update local tool",rollback:"Restore the verified backup",
+  files:[{name:"release-tool.mjs",beforeSha256:"a".repeat(64),afterSha256:"b".repeat(64),sizeBytes:23}],validation}};
+async function nonReleaseInput(f:Awaited<ReturnType<typeof fixture>>,identity:Identity,ref:unknown=completion) {
+  const context=await f.call("get_item_context",{itemKey:f.item.key});
+  const evidence=context.structuredContent?.developmentEvidence as Record<string,unknown>;
+  return {itemKey:f.item.key,...identity,completion:ref,expectedRevision:evidence.expectedRevision,
+    developmentEventId:evidence.developmentEventId,roundKey:evidence.roundKey,evidenceDigest:evidence.evidenceDigest,
+    validation,idempotencyKey:"non-release-submit"};
+}
+describe("AND-466/467 evidence-bound no-release handover",()=>{
+  it.each([completion,localCompletion])("submits Git or local work once, records human checks, and cannot accept work",async ref=>{
+    const f=await fixture();
+    const claimed=await f.call("claim_item",f.claimInput),identity=textIdentity(claimed);
+    f.safe(await f.call("submit_development_complete",{itemKey:f.item.key,...identity,completion:ref,requiredArtifacts:[],noReleaseReason:"Synthetic local/CI tool; no distributed artifact",idempotencyKey:"dev"}));
+    expect(f.store.getWorkItem(f.item.key)).toMatchObject({status:"development_complete",deliveryBasis:"no_release"});
+    const input=await nonReleaseInput(f,identity,ref);
+    f.safe(await f.call("submit_non_release_for_verification",input));
+    expect(f.store.getWorkItem(f.item.key).status).toBe("pending_verification");
+    const events=f.store.getTimeline(f.item.key).filter(e=>e.toStatus === "pending_verification");
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({actorKind:"agent",payload:{reason:"non_release_submitted",validation,requiredArtifacts:[]}});
+    expect(events[0]!.payload).not.toHaveProperty("deployedCommit");
+    expect(events[0]!.payload).not.toHaveProperty("releases");
+    f.safe(await f.call("submit_non_release_for_verification",input));
+    expect(f.store.getTimeline(f.item.key).filter(e=>e.toStatus === "pending_verification")).toHaveLength(1);
+    expect((await f.call("submit_non_release_for_verification",{...input,validation:{...validation,limitations:["changed"]}})).isError).toBe(true);
+    expect(f.store.getWorkItem(f.item.key).status).toBe("pending_verification");
+  });
+  it("rejects wrong identity, revoked rights, stale revision/event/round, wrong digest and changed completion",async()=>{
+    const f=await fixture(),identity=textIdentity(await f.call("claim_item",f.claimInput));
+    f.safe(await f.call("submit_development_complete",{itemKey:f.item.key,...identity,completion,requiredArtifacts:[],noReleaseReason:"Only internal tools",idempotencyKey:"dev"}));
+    const input=await nonReleaseInput(f,identity);
+    for(const patch of [{expectedRevision:0},{developmentEventId:randomUUID()},{roundKey:randomUUID()},{evidenceDigest:"0".repeat(64)},
+      {completion:{...completion,commit:"c".repeat(40)}},{sessionId:randomUUID(),session:undefined},{validation:{checks:[],remainingVerification:[],limitations:[]}}]) {
+      expect((await f.call("submit_non_release_for_verification",{...input,...patch})).isError).toBe(true);
+    }
+    for(const options of [{accountId:f.other.id},{clientId:"different-client"},{scopes:["missiongo:read"]}]) {
+      const response=await f.call("submit_non_release_for_verification",input,options);
+      expect(response.isError||response.error).toBeTruthy();
+    }
+    f.grant(false);
+    expect((await f.call("submit_non_release_for_verification",input)).isError).toBe(true);
+    expect(f.store.getWorkItem(f.item.key).status).toBe("development_complete");
+  });
+  it("does not let release-required or unknown work bypass publication; local evidence cannot declare artifacts",async()=>{
+    for(const requiredArtifacts of [["web"],undefined]) {
+      const f=await fixture(),identity=textIdentity(await f.call("claim_item",f.claimInput));
+      f.safe(await f.call("submit_development_complete",{itemKey:f.item.key,...identity,completion,requiredArtifacts,idempotencyKey:"dev"}));
+      expect((await f.call("submit_non_release_for_verification",await nonReleaseInput(f,identity))).isError).toBe(true);
+      expect(f.store.getWorkItem(f.item.key).status).toBe("development_complete");
+    }
+    const f=await fixture(),identity=textIdentity(await f.call("claim_item",f.claimInput));
+    for(const requiredArtifacts of [["web"],undefined])expect((await f.call("submit_development_complete",{
+      itemKey:f.item.key,...identity,completion:localCompletion,requiredArtifacts,idempotencyKey:"local-dev"})).isError).toBe(true);
+    expect(f.store.getWorkItem(f.item.key).status).toBe("in_progress");
+  });
+  it("preserves known failed checks in review evidence without claiming they passed",async()=>{
+    const f=await fixture(),identity=textIdentity(await f.call("claim_item",f.claimInput));
+    f.safe(await f.call("submit_development_complete",{itemKey:f.item.key,...identity,completion,requiredArtifacts:[],noReleaseReason:"Internal data only",idempotencyKey:"dev"}));
+    const input=await nonReleaseInput(f,identity);
+    const actual={...validation,checks:[{...validation.checks[0]!,result:"failed",evidence:"Metric exceeds the original target; requires human decision"}]};
+    f.safe(await f.call("submit_non_release_for_verification",{...input,validation:actual}));
+    expect(f.store.getTimeline(f.item.key).at(-1)?.payload.validation).toEqual(actual);
+    expect(f.store.getWorkItem(f.item.key).status).toBe("pending_verification");
+  });
+  it("retries do not restore a human-rejected item, and old evidence cannot enter a new round",async()=>{
+    const f=await fixture(),identity=textIdentity(await f.call("claim_item",f.claimInput));
+    f.safe(await f.call("submit_development_complete",{itemKey:f.item.key,...identity,completion,requiredArtifacts:[],noReleaseReason:"Only internal tools",idempotencyKey:"dev"}));
+    const input=await nonReleaseInput(f,identity);
+    f.safe(await f.call("submit_non_release_for_verification",input));
+    f.store.transitionWorkItem({itemKey:f.item.key,to:"ready",actor:"human",reason:"verification_failed",note:"Needs further work",attribution:{accountId:config.id}});
+    expect((await f.call("submit_non_release_for_verification",input)).isError).toBe(true);
+    expect(f.store.getWorkItem(f.item.key).status).toBe("ready");
+  });
+});

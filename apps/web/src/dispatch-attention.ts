@@ -15,9 +15,10 @@ export function dispatchIssueLabelKey(issue: NonNullable<ItemDispatchSummary["is
     : issue.kind === "synchronization" ? "synchronizationIssueBadge" as const : "failedDispatchBadge" as const;
 }
 
-export function itemProgressKeys(item: Pick<WorkItem,"status"|"deliveryProgress">, current?: ItemDispatchSummary) {
+export function itemProgressKeys(item: Pick<WorkItem,"status"|"deliveryProgress"|"deliveryBasis">, current?: ItemDispatchSummary) {
   const keys: MessageKey[] = [];
   if (current?.waitingForInput) keys.push("itemWaitingAnswer" as const);
+  if ("deliveryBasis" in item && item.deliveryBasis === "no_release") keys.push("deliveryNoRelease");
   if (item.deliveryProgress) {
     keys.push(({
       waiting_merge:"itemWaitingMerge",waiting_release:"itemWaitingRelease",needs_scope:"itemReleaseScopeNeeded",

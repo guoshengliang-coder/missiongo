@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { CompletionReference } from "@missiongo/contracts";
+import { localChangeEvidenceSchema } from "./non-release-evidence.js";
 import { invalidInput } from "./errors.js";
 
 const sha = z.string().regex(/^[a-f0-9]{40}$/);
@@ -12,6 +13,7 @@ function hostedUrl(value: string, kind: "github" | "gitlab"): boolean {
   } catch { return false; }
 }
 export const completionSchema = z.discriminatedUnion("kind", [
+  z.object({ kind:z.literal("local_change"), evidence:localChangeEvidenceSchema }).strict(),
   z.object({ kind: z.literal("github"), url: z.string().max(500).refine(v => hostedUrl(v, "github"), "Use an HTTPS GitHub PR URL.") }).strict(),
   z.object({ kind: z.literal("gitlab"), url: z.string().max(500).refine(v => hostedUrl(v, "gitlab"), "Use an HTTPS GitLab MR URL.") }).strict(),
   z.object({ kind: z.literal("commit"), commit: sha, targetBranch: z.string().max(200)

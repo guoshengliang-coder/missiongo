@@ -58,6 +58,7 @@ export const MCP_TOOL_DEFINITIONS = [
   { name: "claim_item", access: "write", purpose: "Claim ready work or consume an explicit human handoff to this original conversation after current plan approval; historical recovery may schedule one same-session continuation while native mode confirmation is pending, without claiming." },
   { name: "recover_execution_authorization", access: "write", purpose: "Recover only this original conversation's unrevoked claim credential in the current round, without claiming or changing status." },
   { name: "submit_development_complete", access: "write", purpose: "Record verified GitHub/GitLab or local Git integration and its release requirements, or an explicit reason no release is needed." },
+  { name: "submit_non_release_for_verification", access: "write", purpose: "Submit explicitly no-release Git or local-change evidence for human verification using the original execution identity." },
   { name: "submit_for_verification", access: "write", purpose: "Hand published work over for a person to verify, recording evidence for every required artifact." },
   { name: "submit_release_batch", access: "write", purpose: "Hand a verified product release batch to verification with frozen candidate revisions and rounds, independently of developer sessions." },
   { name: "supplement_release_evidence", access: "write", purpose: "Append missing verified integration and complete release scope through the current authorized product conversation, preserving human events and frozen candidate checks." },

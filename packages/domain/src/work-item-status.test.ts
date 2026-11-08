@@ -68,7 +68,7 @@ describe("work item state machine", () => {
     ).toMatchObject({ allowed: true });
   });
 
-  it("leaves the agent exactly three paths through the whole table", () => {
+  it("leaves the agent exactly four evidence-specific paths through the whole table", () => {
     const edges: Array<[string, string, string]> = [];
     for (const from of WORK_ITEM_STATUSES) {
       for (const to of WORK_ITEM_STATUSES) {
@@ -86,6 +86,7 @@ describe("work item state machine", () => {
       ["ready", "in_progress", "claim"],
       ["in_progress", "development_complete", "resolution_submitted"],
       ["development_complete", "pending_verification", "release_verified"],
+      ["development_complete", "pending_verification", "non_release_submitted"],
     ]);
   });
 

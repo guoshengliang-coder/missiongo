@@ -124,6 +124,7 @@ export interface WorkItem {
     /** Present when the item is readable only through an active collaboration request. */
     readonly readOnlySource?: { readonly productName: string } };
   readonly hasProcessingRound?: boolean;
+  readonly deliveryBasis?: "no_release" | "release_required" | "unknown";
   readonly deliveryProgress?: import("@missiongo/domain").WorkItemSnapshot["deliveryProgress"];
   /** A migrated original is permanently read-only. */
   readonly transferred?: boolean;
@@ -255,6 +256,7 @@ export interface TransitionAction {
     | "resume"
     | "resolution_submitted"
     | "release_verified"
+    | "non_release_submitted"
     | "verification_passed"
     | "verification_failed"
     | "released"

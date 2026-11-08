@@ -3458,6 +3458,11 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 
 .agent-plan-record > div { min-width: 0; flex: 1; }
 
+/* Long evidence hashes wrap inside the existing timeline at every font scale. */
+.timeline-handover-evidence { overflow-wrap: anywhere; }
+.timeline-handover-evidence summary { cursor: pointer; min-height: 44px; padding-block: 12px; }
+.timeline-handover-evidence p { white-space: pre-wrap; }
+
 /* Operation feedback is shared by the console, embedded conversation and settings. */
 .agent-operation-feedback { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px; max-width: 100%; font-size: var(--text-sm); }
 .agent-operation-feedback > span { min-width: 0; overflow-wrap: anywhere; }
