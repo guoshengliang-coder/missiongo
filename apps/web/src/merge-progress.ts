@@ -1,6 +1,7 @@
-export type MergeProgress = "pending" | "merging";
+import type { SessionDeliveryStage } from "@missiongo/contracts";
+export type MergeProgress = SessionDeliveryStage;
 interface ProgressDelivery {id:string;productId:string;sessionId:string;itemKeys:string[];state:string;blocker?:string | undefined}
-interface ProgressBatch {state:string;deliveries:string[];results:Record<string,{status:string}>}
+interface ProgressBatch {sessionId?:string;state:string;deliveries:string[];results:Record<string,{status:string}>}
 /** Confirmation expresses intent; old CI evidence does not revoke it. */
 export function deriveMergeProgress(productId:string, deliveries:ProgressDelivery[], batches:ProgressBatch[]) {
   const items=new Map<string,MergeProgress>(),sessions=new Map<string,MergeProgress>();
@@ -30,6 +31,7 @@ export function deriveSessionItemKeys(productId:string, deliveries:ProgressDeliv
     const keys=result.get(delivery.sessionId)??[];
     for(const key of delivery.itemKeys)if(!keys.includes(key))keys.push(key);
     result.set(delivery.sessionId,keys);
+    if(batch.sessionId)result.set(batch.sessionId,[...new Set([...(result.get(batch.sessionId)??[]),...delivery.itemKeys])]);
   }
   return result;
 }

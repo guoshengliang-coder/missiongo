@@ -177,7 +177,7 @@ export function registerItemDeliveryRoutes(app: FastifyInstance, {store, account
     if(selected.kind!=="dispatch") throw invalidInput("Unsupported handoff target.");
     const dispatches=new DispatchStore(store.database);
     const dispatch=dispatches.createDispatch({accountId:account.id,nodeId:text(selected.nodeId,"Node ID",200),
-      agentKind:text(selected.agentKind,"Agent kind",50) as AgentKind,mode:text(selected.mode,"Agent mode",100),itemKeys:[itemKey],handoffItemId:item.id,
+      agentKind:text(selected.agentKind,"Agent kind",50) as AgentKind,mode:text(selected.mode,"Agent mode",100),itemKeys:[itemKey],handoffItemId:item.id,saveAsDefault:selected.saveAsDefault===true,
       ...(selected.model?{model:text(selected.model,"Model",200)}:{}),...(selected.effort?{effort:text(selected.effort,"Effort",100)}:{})},true);
     const result=agentHandoffs.create({key:itemKey,accountId:account.id,createdBy:account.id,identity:`dispatch:${dispatch.id}`,dispatchId:dispatch.id,
       note,idempotencyKey,digest,result:{dispatch}});

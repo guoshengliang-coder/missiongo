@@ -12,3 +12,6 @@ export interface MergeBatchPresentation {
     releases: { artifact: string; version: string; sourceCommit: string; checkedAt: string }[];
   }>;
 }
+
+/** Current conversation display only; historical receipts and item states stay independent. */
+export type SessionDeliveryStage = "pending" | "merging" | "publishing" | "publication_unknown" | "publication_partial" | "merged" | "published" | "partial" | "blocked";
