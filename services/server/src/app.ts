@@ -1,3 +1,4 @@
+import { PlanRecords } from "./plan-records.js";
 import { PlanDocuments } from "./plan-documents.js";
 import { MergeDeliveries } from "./merge-deliveries.js";
 import { FreeSessionStore } from "./free-session-store.js";
@@ -2825,6 +2826,24 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ? externalNativeStore.enqueue(accountId,sessionId,"批准") : agentSessionStore.enqueue(accountId,sessionId,"批准"));
   };
 
+  app.get("/api/v1/agent-sessions/:sessionId/plan-records", async (request,reply) => {
+    const {sessionId}=request.params as {sessionId:string};
+    planApprovalContext(request,sessionId);
+    const records=new PlanRecords(store);
+    const accountId=requireAccountId(request);
+    const identities=records.identities(accountId,consoleSessions.members(accountId,sessionId));
+    const query=request.query as {before?:string;recordId?:string};
+    const integer=(value:string|undefined)=>{
+      if(value===undefined) return undefined;
+      const parsed=Number(value);
+      if(!Number.isSafeInteger(parsed)||parsed<1) throw invalidInput("Invalid plan record cursor.");
+      return parsed;
+    };
+    reply.header("Cache-Control","private, no-store");
+    return records.read(accountId,identities,key=>requireItemPermission(request,key),
+      {before:integer(query.before),recordId:integer(query.recordId)});
+  });
+
   app.get("/api/v1/agent-sessions/:sessionId", async (request) => {
     const { sessionId } = request.params as { sessionId: string };
     const { session, unavailableReason } = planApprovalContext(request, sessionId);
@@ -2833,7 +2852,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ? agentHistory.window(requireAccountId(request), sessionId, session.messages) : undefined;
     const planApprovalState = planApprovals.approvalState(session);
     const implementationPlan = planApprovals.content(session);
-    return { ...session, ...(window ? window : {}), canApprovePlan: assessment.status.code === "ready" && session.canApprovePlan,
+    const records=new PlanRecords(store);
+    const hasPlanRecords=records.has(requireAccountId(request),records.identities(requireAccountId(request),consoleSessions.members(requireAccountId(request),sessionId)),key=>requireItemPermission(request,key));
+    return { ...session, hasPlanRecords, ...(window ? window : {}), canApprovePlan: assessment.status.code === "ready" && session.canApprovePlan,
       planApprovalStatus: assessment.status, ...(assessment.offer ? { planApproval: assessment.offer } : {}), ...(planApprovalState ? {planApprovalState} : {}),
       ...(implementationPlan ? { implementationPlan } : {}) };
   });

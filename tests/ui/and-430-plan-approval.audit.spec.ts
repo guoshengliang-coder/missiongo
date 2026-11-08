@@ -63,7 +63,8 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     state = "formal";
     await page.locator(".agent-console-attention-banner").getByRole("button", { name: "重试", exact: true }).click();
     await expect(page.locator("article[data-agent-message-id]").filter({ has: page.locator(".agent-plan-inline-approval") })).toHaveCount(0);
-    await page.getByText("查看已登记的历史方案",{exact:true}).click();
+    await page.clock.fastForward(5100);
+    await page.getByText("查看已登记方案",{exact:true}).click();
     await expect(page.getByRole("region",{name:"方案记录"})).toContainText("验证目标");
     await expect(approve).toBeEnabled();
     await expect(reply).toHaveValue("保留草稿");

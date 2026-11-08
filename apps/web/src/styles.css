@@ -3456,4 +3456,12 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .agent-plan-inline-approval { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
 .agent-plan-inline-approval button { min-height: 44px; }
 
-.agent-plan-record > div { min-width: 0; flex: 1; }
+
+/* AND-463: source messages remain untouched; formal records share one reading surface. */
+.agent-plan-details { min-width: 0; }
+.agent-plan-screen { max-height: 60dvh; overflow: auto; overflow-wrap: anywhere; }
+.agent-plan-version { padding-block: 16px; border-bottom: 1px solid var(--line); }
+.agent-plan-details .account-note { overflow-wrap: anywhere; }
+.agent-session-head { flex-wrap: wrap; }
+.agent-plan-record > a, .agent-plan-record > details > summary { min-height: 44px; align-content: center; }
+.agent-plan-record > a { display: inline-flex; align-items: center; }

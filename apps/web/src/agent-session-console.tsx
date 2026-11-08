@@ -1,3 +1,4 @@
+import { AgentPlanRecords } from "./agent-plan-records";
 import { mergePreparationEvidence } from "./merge-preparation";
 import { MergePreparationNotice } from "./merge-preparation-notice";
 import { AgentProgressReports } from "./agent-progress-reports";
@@ -1182,6 +1183,7 @@ export function AgentSessionConsole({
                 </div>}
               </div>
               <div className="agent-console-toolbar">
+                {sessionQuery.data && <AgentPlanRecords key={selected.id} session={sessionQuery.data} />}
                 <IntegrationDetails productId={selected.productId ?? selected.items[0]?.productId ?? productId} sessionId={selected.agentSessionId ?? selected.id} />
                 {!showRecovery && sessionActions}
               </div>

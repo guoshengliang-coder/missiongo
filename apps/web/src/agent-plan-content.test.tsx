@@ -97,3 +97,16 @@ it("keeps approval on the final answer when a later progress message repeats its
   expect(inlinePlanTranscript([messages[0]!],session).planMessageId).toBe("early");
   expect(inlinePlanTranscript(messages,{implementationPlan:{revision:"v2",documentId:"different",plan:"New"}} as AgentSession).planMessageId).toBeUndefined();
 });
+
+it("only offers an unlinked waiting state for the live current pending revision",async()=>{
+  const {isUnlinkedPlanPending}=await import("./agent-plan-content");
+  const base={id:"session",planApprovalStatus:{code:"ready"},implementationPlan:{revision:"v2",plan:"Exact",approved:false,valid:true}} as AgentSession;
+  expect(isUnlinkedPlanPending(base)).toBe(true);
+  expect(isUnlinkedPlanPending({...base,archivedAt:"2026-11-08T00:00:00Z"})).toBe(false);
+  expect(isUnlinkedPlanPending({...base,implementationPlan:{...base.implementationPlan!,approved:true}})).toBe(false);
+  expect(isUnlinkedPlanPending({...base,implementationPlan:{...base.implementationPlan!,valid:false}})).toBe(false);
+  for(const code of ["approved","not_approval","dismissed","running"]) expect(isUnlinkedPlanPending({...base,planApprovalStatus:{code}})).toBe(false);
+  // Approval of the previous version cannot approve the newly offered one.
+  expect(isUnlinkedPlanPending({...base,planApprovalState:{approved:true,revision:"v1",continuationQueued:false}})).toBe(true);
+  expect(isUnlinkedPlanPending({...base,planApprovalState:{approved:true,revision:"v2",continuationQueued:false}})).toBe(false);
+});

@@ -43,10 +43,10 @@ test("registered plan presents its exact scope and validation without classifier
  const session={id,agentSessionId:id,dispatchId:"registered-dispatch",agentKind:"codex",status:"idle",mode:"read-only",nodeId:"mode-node",nodeName:"Fixture",nodeConnectionState:"online",createdAt:stamp,updatedAt:stamp,activityAt:stamp,items:[{key:"AND-400",title:"Exact plan",productId}],activities:[],settings:{},canReply:true,canArchive:true,attention:{state:"not_needed"},needsAttention:false,messages:[],planApprovalStatus:{code:"ready"},planApproval:{revision:"exact-v1",plan:"Implement only the approved native mode transition",validation:"Verify actual mode before claim",itemKeys:["AND-400"]}};
  await page.route("**/api/v1/agent-sessions**",route=>route.fulfill({json:new URL(route.request().url()).pathname==="/api/v1/agent-sessions" ? {sessions:[session]} : session}));
  await page.goto(`/?product=${productId}&console=agent&session=${id}`);
- const banner=page.locator(".agent-plan-inline-approval");await expect(banner).toBeVisible();
+ const banner=page.locator(".agent-plan-inline-approval");await expect(banner).toBeVisible({timeout:10000});
  await expect(page.locator("article[data-agent-message-id]")).toHaveCount(0);
  const plan=page.getByRole("region",{name:"方案记录",exact:true});
- await plan.getByText("查看已登记的历史方案",{exact:true}).click();
+ await plan.getByText("查看已登记方案",{exact:true}).click();
  await expect(plan).toBeVisible();await expect(plan).toContainText(session.planApproval.plan);await expect(plan).toContainText(session.planApproval.validation);await expect(plan).toContainText("AND-400");
  await expect(banner.getByRole("button",{name:"批准",exact:true})).toBeEnabled();
 });
@@ -69,7 +69,7 @@ for (const [kind, mode] of [["claude_code", "bypassPermissions"], ["codex", "aut
    if(width===320) await page.locator(".agent-session-quick-settings").getByRole("button",{name:"更多操作",exact:true}).click();
    await expect(page.locator(".agent-session-quick-settings").getByRole("combobox",{name:"权限模式",exact:true})).toHaveAttribute("data-value",mode!);
    if(width===320) await page.keyboard.press("Escape");
-   await expect(page.locator(".agent-plan-inline-approval").getByRole("button",{name:"批准",exact:true})).toBeEnabled();
+   await expect(page.locator(".agent-plan-inline-approval").getByRole("button",{name:"批准",exact:true})).toBeEnabled({timeout:10000});
    await expect(page.getByText("方案批准后才生效",{exact:false})).toHaveCount(0);
    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
   });

@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { MarkdownText } from "./markdown-text";
 import { api } from "./api";
@@ -62,19 +62,41 @@ export function inlinePlanTranscript<T extends AgentSessionMessage>(messages: re
   return { messages, ...(original ? {planMessageId: original.id} : {}) };
 }
 
-/** Domain record, not an Agent message. No duplicate body is inserted on delay. */
+/** A saved record is not a source message. Settled records belong in details. */
+export function isUnlinkedPlanPending(session:AgentSession):boolean {
+  const plan=currentPlan(session);
+  const code=session.planApprovalStatus?.code;
+  return Boolean(plan?.plan?.trim() && !session.archivedAt
+    && session.planApprovalState?.revision!==plan.revision
+    && !(session.implementationPlan?.revision===plan.revision && (session.implementationPlan.approved || !session.implementationPlan.valid))
+    && code && ["ready","awaiting_source","connection_unavailable","reply_unavailable","permission_required","reply_pending"].includes(code));
+}
+
 export function UnlinkedPlanRecord({session, blocked = false}: {session: AgentSession; blocked?: boolean}) {
-  const {t} = useI18n();
-  const plan = currentPlan(session);
-  if (!plan?.plan?.trim()) return null;
-  return <section className="agent-console-attention-banner agent-plan-record" aria-label={t("agentPlanRecord")}>
-    <div>
-      <p role="status">{t("agentPlanSourcePending")}</p>
+  const {t}=useI18n();
+  const plan=currentPlan(session);
+  const state=session.planApprovalState;
+  if(!session.archivedAt && plan && state?.revision===plan.revision && !planContinuationObserved(session)
+    && (state.continuationPending || state.continuationQueued)) {
+    // Unsent/uncertain continuation is operational feedback, not a historical plan card.
+    return <p className="agent-session-muted" role="status">{t(state.continuationQueued ? "agentPlanApprovedQueued" : "agentPlanApprovedWaiting")}</p>;
+  }
+  return isUnlinkedPlanPending(session) && plan ? <PendingPlanRecord key={`${session.id}:${plan.revision}`} session={session} blocked={blocked} /> : null;
+}
+
+function PendingPlanRecord({session,blocked}:{session:AgentSession;blocked:boolean}) {
+  const {t}=useI18n();
+  const [elapsed,setElapsed]=useState(false);
+  useEffect(()=>{const timer=setTimeout(()=>setElapsed(true),5000);return ()=>clearTimeout(timer);},[]);
+  const plan=currentPlan(session)!;
+  return <section className="agent-plan-record" aria-label={t("agentPlanRecord")}>
+    <p className="agent-session-muted">{t(elapsed ? "agentPlanUnlinked" : "agentPlanSyncing")}</p>
+    {elapsed && <>
       {plan.documentId
-        ? <a href={`/?planDocument=${encodeURIComponent(plan.documentId)}`} target="_blank" rel="noopener noreferrer">{t("agentPlanViewDocument")}</a>
-        : <details><summary>{t("agentPlanViewRecord")}</summary><MarkdownText>{[plan.plan, plan.validation].filter(Boolean).join("\n\n")}</MarkdownText></details>}
-      <InlinePlanApproval session={session} blocked={blocked || Boolean(plan.documentId)} />
-    </div>
+        ? <a href={`/?planDocument=${encodeURIComponent(plan.documentId)}`} target="_blank" rel="noopener noreferrer">{t("agentPlanViewSaved")}</a>
+        : <details><summary>{t("agentPlanViewSaved")}</summary><MarkdownText>{[plan.plan,plan.validation].filter(Boolean).join("\n\n")}</MarkdownText></details>}
+      {!plan.documentId && <InlinePlanApproval session={session} blocked={blocked} />}
+    </>}
   </section>;
 }
 
