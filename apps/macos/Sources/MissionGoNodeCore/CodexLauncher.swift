@@ -733,11 +733,9 @@ public struct CodexLauncher: AgentAdapter {
         if session.externalBindingGeneration != nil {
             report = report.reportingExternalSettings(supportedFields: ["model", "effort"])
         }
-        var retryId: String?
         var retryStatus: String?
         var retryError: String?
         if let retry = session.approvalRetry, session.command == nil {
-            retryId = retry.id
             if retry.status == "queued", approval?.kind == "auto",
                approval?.status == "denied", approval?.id == retry.reviewId {
                 // Reserve before turn/start, as with an ordinary reply.
@@ -782,6 +780,7 @@ public struct CodexLauncher: AgentAdapter {
                             threadId: session.sessionRef, overrides: CodexTurnOverrides(settings: settings))
                         retryStatus = "restored"
                     } catch {
+                        retryStatus = "delivered"
                         retryError = CodexFailure.explain(error)
                     }
                 } else {
@@ -790,7 +789,7 @@ public struct CodexLauncher: AgentAdapter {
             }
         }
         if snapshot.history?.error != nil { report = report.reportingHistoryLimit() }
-        return report.reportingApproval(approval, retryId: retryId,
+        return report.reportingApproval(approval, retryId: retryStatus == nil ? nil : session.approvalRetry?.id,
             retryStatus: retryStatus, retryError: retryError).reportingFailure(report.status == "failed" ? snapshot.failure : nil).reportingHistory(snapshot.history)
     }
 
