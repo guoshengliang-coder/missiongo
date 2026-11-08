@@ -2,6 +2,7 @@ import { scryptSync } from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
+import { AgentConsoleSessions } from "./agent-console-sessions.js";
 import { AgentSessionStore, type AgentSessionMessageInput } from "./agent-session-store.js";
 import { ExternalAgentSessionStore } from "./external-agent-session-store.js";
 import { ExternalNativeSessionStore } from "./external-native-session-store.js";
@@ -73,6 +74,24 @@ async function fixture(external = false, initialMessages?: AgentSessionMessageIn
   const approve = (revision: string) => app.inject({ method: "POST", url: `/api/v1/agent-sessions/${id}/plan-approval`, headers, payload: { revision, text: "must be ignored" } });
   return { app, headers, store, db, product, dispatch, id, get, offer, approve, provider, messages };
 }
+
+it.each([false, true])("reads the session group once per detail or plan records request (external=%s)", async (external) => {
+  const f = await fixture(external);
+  const groups = vi.spyOn(AgentConsoleSessions.prototype, "groups");
+  try {
+    const detail = await f.get();
+    expect(detail.statusCode, detail.body).toBe(200);
+    expect(detail.json().hasPlanRecords).toBe(external);
+    expect(groups).toHaveBeenCalledTimes(1);
+
+    groups.mockClear();
+    const records = await f.app.inject({ url: `/api/v1/agent-sessions/${f.id}/plan-records`, headers: f.headers });
+    expect(records.statusCode, records.body).toBe(200);
+    expect(groups).toHaveBeenCalledTimes(1);
+  } finally {
+    groups.mockRestore();
+  }
+});
 
 it.each([false, true])("queues exactly one fixed reply on the existing channel (external=%s)", async (external) => {
   const f = await fixture(external);
