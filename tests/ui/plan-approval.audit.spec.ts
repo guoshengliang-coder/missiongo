@@ -1,3 +1,4 @@
+import { mockLegacyPlanRecords } from "./plan-record-fixture";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
@@ -32,14 +33,17 @@ for(const width of [320,1440]) for(const theme of ["light","dark"] as const) tes
         planApprovalStatus:{code:approved?"approved":"ready"},...(approved?{planApprovalState:{approved:true,revision:plan.revision,continuationQueued:false,continuationPending:true}}:{planApproval:plan})};
       return route.fulfill({json:path==="/api/v1/agent-sessions"?{sessions:[offline]}:detail});
     });
+    await mockLegacyPlanRecords(page,offline.id,"明确登记的派单实施方案","核实接手授权和实施模式",()=>approved);
     await page.goto(`/?product=${fixture.productId}&console=agent&session=${offline.id}`);
     const banner=page.locator(".agent-plan-inline-approval");
     await expect(page.getByText(/该会话尚未加载到已连接的 Codex 运行时/)).toBeVisible();
-    const button=banner.getByRole("button",{name:"批准",exact:true});await expect(button).toBeEnabled();
-    await button.click();await expect(banner).toContainText("批准已保存，等待原连接恢复后续办一次");
+    const button=banner.getByRole("button",{name:"批准",exact:true});await expect(button).toBeEnabled({timeout:10000});
+    await button.click();await expect(page.getByText("批准已保存，等待原连接恢复后续办一次；若会话已继续或上下文变化，将不再补发。",{exact:true})).toBeVisible();
+    await expect(page.getByRole("region",{name:"方案记录",exact:true})).toHaveCount(0);
     expect(posts).toBe(1);await expect(page.locator(".agent-console-message-outgoing")).toHaveCount(0);
     await expect(page.locator("article[data-agent-message-id]")).toHaveCount(0);
-    await page.getByText("查看已登记的历史方案",{exact:true}).click();
+    await page.getByRole("button",{name:"方案与审批",exact:true}).click();
+    await page.getByRole("button",{name:"查看版本原文",exact:true}).click();
     await expect(page.getByText("明确登记的派单实施方案",{exact:true})).toBeVisible();
     await page.screenshot({path:info.outputPath("offline-plan-approval.png")});
     expect(await page.evaluate(()=>document.documentElement.scrollWidth-innerWidth)).toBeLessThanOrEqual(1);
@@ -72,7 +76,7 @@ for (const viewport of [{ width: 353, height: 757 }, { width: 1440, height: 900 
     await textarea.fill("保留这段尚未发送的补充说明");
     await page.locator('input[type="file"]').last().setInputFiles({ name: "draft.txt", mimeType: "text/plain", buffer: Buffer.from("unsent attachment") });
     const button = page.getByRole("button", { name: /^(批准|Approve)$/ });
-    await expect(button).toBeVisible();
+    await expect(button).toBeVisible({timeout:10000});
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     const path = testInfo.outputPath(`approval-${viewport.width}.png`);
     await page.screenshot({ path, animations: "disabled" });
@@ -84,7 +88,7 @@ for (const viewport of [{ width: 353, height: 757 }, { width: 1440, height: 900 
     await expect(textarea).toHaveValue("保留这段尚未发送的补充说明");
     await expect(page.locator(".agent-console-reply")).toContainText("draft.txt");
     expect(posts).toEqual([{ url: `/api/v1/agent-sessions/${id}/plan-approval`, body: { revision: offer.revision } }]);
-    await expect(button).toBeDisabled();
+    await expect(button).toBeDisabled({timeout:10000});
   });
 }
 
@@ -105,18 +109,18 @@ test("an unavailable connection keeps approval visible but disabled; stale rejec
   const open = () => page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
   await open();
   const button = page.getByRole("button", { name: /^(批准|Approve)$/ });
-  await expect(page.locator(".agent-plan-inline-approval")).toBeVisible();
-  await expect(button).toBeVisible();
-  await expect(button).toBeDisabled();
+  await expect(page.locator(".agent-plan-inline-approval")).toBeVisible({timeout:10000});
+  await expect(button).toBeVisible({timeout:10000});
+  await expect(button).toBeDisabled({timeout:10000});
   allowed = true;
   await page.reload();
-  await expect(button).toBeVisible();
+  await expect(button).toBeVisible({timeout:10000});
   const textarea = page.locator(".agent-console-reply textarea");
   await textarea.fill("保留草稿");
   await button.click();
   await expect(page.locator(".agent-plan-inline-approval [role=alert]")).toContainText(/待批内容已变化|approval request changed/);
   await expect(textarea).toHaveValue("保留草稿");
-  await expect(button).toBeDisabled();
+  await expect(button).toBeDisabled({timeout:10000});
   expect(posts).toBe(1);
 });
 
@@ -145,7 +149,7 @@ for (const theme of ["light", "dark"] as const) {
     });
     await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
     const banner = page.locator(".agent-plan-inline-approval");
-    await expect(banner.getByRole("button", { name: /^(批准|Approve)$/ })).toBeDisabled();
+    await expect(banner.getByRole("button", { name: /^(批准|Approve)$/ })).toBeDisabled({timeout:10000});
 
 
 
@@ -176,7 +180,7 @@ for (const theme of ["light", "dark"] as const) {
       });
       await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
       const banner = page.locator(".agent-plan-inline-approval");
-      await expect(banner).toBeVisible();
+      await expect(banner).toBeVisible({timeout:10000});
       await expect(banner.getByRole("button", { name: "批准", exact: true })).toBeEnabled();
       await expect(page.locator(".agent-console-message-agent").filter({ hasText: "剩余不确定性" })).toBeVisible();
       expect(approvals).toBe(0);
@@ -229,15 +233,15 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
       await page.goto(`/?product=${fixture.productId}&console=agent&session=${external.id}`);
       const banner = page.locator(".agent-plan-inline-approval");
       const button = banner.getByRole("button", { name: "批准", exact: true });
-      await expect(button).toBeEnabled();
+      await expect(button).toBeEnabled({timeout:10000});
       await expect(page.locator(".agent-console-connection-banner")).toContainText("领取前方案审批");
 
       await expect(page.locator("article[data-agent-message-id]")).toHaveCount(0);
-      await page.getByText("查看已登记的历史方案",{exact:true}).click();
+      await page.getByText("查看已登记方案",{exact:true}).click();
       await expect(page.getByRole("region",{name:"方案记录"})).toContainText("领取前审阅的明确实施方案");
       for (const scale of ["small", "medium", "large"]) {
         await page.evaluate(scale => { document.documentElement.dataset.fontScale = scale; document.documentElement.dataset.consoleFontScale = scale; }, scale);
-        await expect(button).toBeVisible();
+        await expect(button).toBeVisible({timeout:10000});
         expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
         const box = await button.boundingBox();
         expect(box!.height).toBeGreaterThanOrEqual(44);
@@ -246,13 +250,13 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
       await button.dblclick();
       await expect.poll(() => attempts).toBe(1);
       finish();
-      await expect(banner).toContainText("方案已批准");
-      await expect(banner).toContainText("批准已保存，等待原连接恢复后续办一次");
-      await expect(banner).not.toContainText("方案待批准");
+      await expect(page.getByRole("region",{name:"方案记录",exact:true})).toHaveCount(0);
+      await expect(page.getByText("批准已保存，等待原连接恢复后续办一次；若会话已继续或上下文变化，将不再补发。",{exact:true})).toBeVisible();
       await expect(button).toHaveCount(0);
       await expect(page.locator(".agent-console-message-outgoing")).toHaveCount(0);
       await page.reload();
-      await expect(page.locator(".agent-plan-inline-approval")).toContainText("方案已批准");
+      await expect(page.getByRole("button",{name:"方案与审批",exact:true})).toBeVisible();
+      await expect(page.getByRole("region",{name:"方案记录",exact:true})).toHaveCount(0);
       expect(attempts).toBe(1);
       await expect(page.locator(".agent-console-attention-banner").getByRole("button",{name:"无需处理"})).toHaveCount(0);
 

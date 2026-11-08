@@ -1,3 +1,6 @@
+import { AgentPlanRecords } from "./agent-plan-records";
+import { mergePreparationEvidence } from "./merge-preparation";
+import { MergePreparationNotice } from "./merge-preparation-notice";
 import { AgentProgressReports } from "./agent-progress-reports";
 import { permissionReplyText } from "./permission-presentation";
 import { DeliveryCards, IntegrationDetails, invalidateSessionDeliveries } from "./merge-console";
@@ -81,14 +84,14 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
     if (open && box && followLatest.current && !prepended) box.scrollTop = box.scrollHeight;
   }, [open, sessionId, history.messages, history.revision, session.data?.implementationPlan]);
   const send = useMutation({
-    mutationFn: (input: { sessionId: string; text: string }) => api.sendAgentSessionCommand(input.sessionId, input.text),
+    mutationFn: (input: { sessionId: string; text: string; preserveDraft?: true }) => api.sendAgentSessionCommand(input.sessionId, input.text),
     onMutate: input => feedback.begin(input.sessionId, "send"),
     onError: (error, _input, operation) => feedback.fail(error, operation),
     onSuccess: async (_command, _input, operation) => {
       if (!operation) return;
       feedback.finish(operation);
       void invalidateSessionDeliveries(queryClient,operation.sessionId);
-      if (currentSessionId.current === operation.sessionId) setReply("");
+      if (currentSessionId.current === operation.sessionId && !_input.preserveDraft) setReply("");
       await queryClient.invalidateQueries({ queryKey: ["agent-session", operation.sessionId] });
     },
   });
@@ -122,6 +125,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
   const questionPermission = Boolean(session.data && hasPendingPermissionQuestion(session.data.agentKind, history.messages.filter(message => !message.id.startsWith("history:"))));
   const command = session.data?.command;
   const canReply = session.data?.canReply === true;
+  const mergePreparation = !questionPermission ? mergePreparationEvidence(session.data) : undefined;
   // A reply can go to any agent the console runs, so the delivery lines name
   // this session's own one instead of saying Codex (AND-253).
   const agentName = session.data ? messageLabel("agent", session.data.agentKind, t) : "";
@@ -156,6 +160,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
             <>
               <header className="agent-session-head">
                 <strong>{t("agentSessionTitle")}</strong>
+                <AgentPlanRecords key={sessionId} session={session.data} />
                 <IntegrationDetails productId={productId} sessionId={sessionId} />
               </header>
               {history.messages.length === 0 && (
@@ -246,6 +251,9 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                   )}
                 </div>
               )}
+              {mergePreparation && <MergePreparationNotice key={mergePreparation.key} productId={productId}
+                session={session.data} evidence={mergePreparation} blocked={pending || send.isPending}
+                send={text => send.mutateAsync({ sessionId, text, preserveDraft: true })} />}
               <DeliveryCards productId={productId} sessionId={sessionId} blocked={pending || send.isPending} />
               {canReply ? (
                 <>
