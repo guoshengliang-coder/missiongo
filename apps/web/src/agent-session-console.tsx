@@ -1,4 +1,6 @@
 import { AgentPlanRecords } from "./agent-plan-records";
+import { mergePreparationEvidence } from "./merge-preparation";
+import { MergePreparationNotice } from "./merge-preparation-notice";
 import { AgentProgressReports } from "./agent-progress-reports";
 import { permissionReplyText } from "./permission-presentation";
 import { DeliveryCards, IntegrationDetails, MergeProgressBadge, useMergeProgress, invalidateSessionDeliveries } from "./merge-console";
@@ -418,7 +420,7 @@ export function AgentSessionConsole({
   const operationSessionId = selected?.agentSessionId ?? selected?.id ?? "";
   const planApprovalLocks = useRef(new Set<string>());
   const send = useMutation({
-    mutationFn: async ({ sessionId, text, files, planApprovalRevision }: { sessionId: string; text: string; files: readonly File[]; occurredAt: string; planApprovalRevision?: string }) => {
+    mutationFn: async ({ sessionId, text, files, planApprovalRevision }: { sessionId: string; text: string; files: readonly File[]; occurredAt: string; planApprovalRevision?: string; preserveDraft?: boolean }) => {
       if (planApprovalRevision) return api.approveAgentSessionPlan(sessionId, planApprovalRevision);
       const uploaded: AgentSessionAttachment[] = [];
       try {
@@ -432,7 +434,7 @@ export function AgentSessionConsole({
     onSuccess: (created, input) => {
       if (!input.planApprovalRevision) void invalidateSessionDeliveries(queryClient,input.sessionId);
       feedback.clear(input.sessionId);
-      if (!input.planApprovalRevision) {
+      if (!input.planApprovalRevision && !input.preserveDraft) {
         setReplyFor(input.sessionId, "");
         setReplyFilesFor(input.sessionId, []);
         setReplyFileErrorFor(input.sessionId, null);
@@ -693,6 +695,7 @@ export function AgentSessionConsole({
     || (approval.kind === "manual" && approval.status === "pending")));
   const planApproved = sessionQuery.data?.planApprovalState;
   const planContinued = planContinuationObserved(sessionQuery.data);
+  const mergePreparation = selected?.items.length && !showPermissionApproval ? mergePreparationEvidence(sessionQuery.data) : undefined;
   const suppressDeliveryAttention = selected?.attention.handledByDelivery === true;
   const stalePlanAttention = Boolean(planApproved && planContinued && selected?.attention.kind === "approval");
   const showPlanApproval = !planContinued && (Boolean(planApproved || sessionQuery.data?.planApproval
@@ -1294,7 +1297,7 @@ export function AgentSessionConsole({
                   );
                 })}
                 {!planMessages.planMessageId && sessionQuery.data && <UnlinkedPlanRecord session={sessionQuery.data} blocked={showPermissionApproval || pending || sendingSelected || cancellingSelected} />}
-                {(!currentPlan(sessionQuery.data)?.plan || !showPlanApproval && selected.attention.kind !== "approval") && !showPermissionApproval && (!suppressDeliveryAttention || showPlanApproval) && (showPlanApproval || !stalePlanAttention && (selected.needsAttention || selected.attention.dismissed) && selected.attention.reason) && (
+                {!mergePreparation && (!currentPlan(sessionQuery.data)?.plan || !showPlanApproval && selected.attention.kind !== "approval") && !showPermissionApproval && (!suppressDeliveryAttention || showPlanApproval) && (showPlanApproval || !stalePlanAttention && (selected.needsAttention || selected.attention.dismissed) && selected.attention.reason) && (
                   <div className={`agent-console-attention-banner ${selected.attention.dismissed ? "dismissed" : ""}${showPlanApproval ? " agent-console-attention-banner--approval" : ""}`} role="status">
                     <BellRing size={16} />
                     <details open={planContentMissing || undefined}>
@@ -1476,6 +1479,10 @@ export function AgentSessionConsole({
                     )}
                   </section>
                 )}
+                {conversationReady && mergePreparation && sessionQuery.data && selected && <MergePreparationNotice
+                  key={mergePreparation.key} productId={selected.productId ?? selected.items[0]?.productId ?? productId}
+                  session={sessionQuery.data} evidence={mergePreparation} blocked={pending || sendingSelected || cancellingSelected}
+                  send={text => send.mutateAsync({ sessionId: sessionQuery.data!.id, text, files: [], occurredAt: new Date().toISOString(), preserveDraft: true })} />}
                 {conversationReady && selected && <DeliveryCards productId={selected.productId ?? selected.items[0]?.productId ?? productId} sessionId={selected.agentSessionId ?? selected.id} blocked={pending || sendingSelected} />}
                 <div className="agent-run-status" aria-label={t("agentRunFeedback")}>
                   <AgentOperationFeedback failures={feedback.failures} sessionId={operationSessionId} command={command} />
