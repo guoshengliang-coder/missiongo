@@ -64,9 +64,8 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
   const failure = feedback.failures.find(candidate => candidate.sessionId === sessionId && candidate.target.id === settingsIdentity && !candidate.superseded);
   const applyError = failure?.error;
   const sourceError = settings.error && dismissedSettingsErrors[sessionId] !== settingsIdentity
-    ? <div className="agent-operation-feedback agent-session-settings-note error" role="alert"><span>{t("agentSettingsApplyFailed")}</span>
+    ? <div className="agent-operation-feedback agent-session-settings-note error" role="alert"><span>{t("agentSettingsError", { error: settings.error })}</span>
       <button type="button" className="secondary-button" onClick={() => setDismissedSettingsErrors(current => ({ ...current, [sessionId]: settingsIdentity }))}>{t("close")}</button>
-      <details className="agent-operation-diagnostic"><summary>{t("executionStopDiagnostic")}</summary><p>{settings.error}</p></details>
     </div> : null;
   const modeLabel = (value: string) => {
     const key = dispatchModeLabelKey(session.agentKind, value);
