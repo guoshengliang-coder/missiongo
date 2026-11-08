@@ -112,9 +112,10 @@ const AGENT_OPTION_LABELS = { all: "agentConsoleAllAgents", codex: "agentCodex",
 // appear under "all" (AND-426 keeps the counts tied to these options).
 type ConsoleAgentOption = keyof typeof AGENT_OPTION_LABELS;
 
-function SessionCategoryBadge({ session }: { session: AgentSessionSummary }) {
+function SessionCategoryBadge({ session, list = false }: { session: AgentSessionSummary; list?: boolean }) {
   const { t } = useI18n();
   const category = agentSessionCategory(session);
+  if (list && category === "linked") return null;
   return <span className="agent-console-unlinked-badge" data-session-category={category}>{t(ASSOCIATION_OPTION_LABELS[category])}</span>;
 }
 
@@ -1171,7 +1172,7 @@ export function AgentSessionConsole({
                     </span>
                     <span className="agent-console-session-meta">
                       <small>{session.source === "external" ? t("agentExternalSource") : session.nodeName} · {agentLabel(session, t)}</small>
-                      <SessionCategoryBadge session={session} />
+                      <SessionCategoryBadge session={session} list />
                     </span>
                     {session.archivedAt && <span className="agent-console-unlinked-badge">{t("archived")}</span>}
                     <MergeProgressBadge state={mergeProgress.sessions.get(session.agentSessionId ?? session.id)} />
