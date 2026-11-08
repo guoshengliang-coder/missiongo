@@ -71,10 +71,12 @@ private final class TestUpdateService: ClientUpdateService, @unchecked Sendable 
 }
 
 final class UpdateLifecycleTests: XCTestCase {
-    @MainActor private func model(_ service: TestUpdateService, activity: UpdateActivity? = nil) throws -> AppModel {
+    @MainActor private func model(_ service: TestUpdateService, activity: UpdateActivity? = nil,
+                                  loopTask: Task<Void, Never>? = nil) throws -> AppModel {
         let snapshot = try JSONDecoder().decode(UnreadSessionsSnapshot.self, from: Data(#"{"totalUnread":0,"sessions":[]}"#.utf8))
         return AppModel(previewCredential: NodeCredential(serverUrl: "https://example.invalid", nodeId: "fixture", name: "fixture", token: "unused"),
-            unread: snapshot, agentVersions: [:], update: service.update, updateActivity: activity, updateService: service)
+            unread: snapshot, agentVersions: [:], update: service.update, updateActivity: activity,
+            updateService: service, previewLoopTask: loopTask)
     }
     @MainActor func testDuplicateClickAndSuccessfulFlowKeepInstalledAndRunningVersionsDistinct() async throws {
         let service = try TestUpdateService()
@@ -92,6 +94,39 @@ final class UpdateLifecycleTests: XCTestCase {
         XCTAssertTrue(model.updateActivity?.diagnostics.contains("已安装，等待安全重启") == true)
         XCTAssertTrue(model.updateState.isBusy)
     }
+
+    @MainActor func testImmediateRestartRequiresInstallationAndSkipsPendingLoop() async throws {
+        let service = try TestUpdateService()
+        service.finished.assertForOverFulfill = true
+        let loopGate = UpdateGate()
+        let drainStarted = expectation(description: "node loop was asked to stop")
+        let loopTask = Task {
+            await withTaskCancellationHandler {
+                await loopGate.wait()
+            } onCancel: {
+                drainStarted.fulfill()
+            }
+        }
+        let model = try model(service, loopTask: loopTask)
+        model.installUpdate()
+        await fulfillment(of: [service.began], timeout: 2)
+        model.restartInstalledUpdate(immediately: true)
+        XCTAssertEqual(model.updateActivity?.stage, .downloading)
+
+        await service.gate.release()
+        await fulfillment(of: [drainStarted], timeout: 2)
+        XCTAssertEqual(model.updateActivity?.stage, .waiting)
+        model.restartInstalledUpdate(immediately: true)
+        model.restartInstalledUpdate(immediately: true)
+        await fulfillment(of: [service.finished], timeout: 2)
+        XCTAssertEqual(service.installs.current, 1)
+        XCTAssertEqual(model.updateActivity?.stage, .relaunching)
+        XCTAssertTrue(model.updateActivity?.diagnostics.contains("用户选择立即重启") == true)
+
+        await loopGate.release()
+        await loopTask.value
+    }
+
     @MainActor func testCancelledDownloadCannotInstallOrOverwriteStateAfterLateCompletion() async throws {
         let service = try TestUpdateService()
         let model = try model(service)

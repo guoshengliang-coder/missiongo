@@ -1,3 +1,4 @@
+import { messageTimestamp } from "./message-time.js";
 import { sessionName } from "./session-name.js";
 import { readFileSync, lstatSync } from "node:fs";
 import { homedir } from "node:os";
@@ -34,7 +35,8 @@ export function openCodeMessages(entries: Wire[]): Message[] {
   return entries.flatMap((entry): Message[] => {
     const text = entry.type === "user" ? entry.text : (entry.content ?? []).filter((part: Wire) => part.type === "text").map((part: Wire) => part.text).join("\n\n");
     if (!entry.id || typeof text !== "string" || !text.trim() || !["user", "assistant"].includes(entry.type)) return [];
-    return [{ sourceId: entry.id, role: entry.type === "user" ? "user" : entry.agent === "plan" ? "plan" : "agent", text }];
+    const occurredAt = messageTimestamp(entry.time?.created ?? entry.createdAt);
+    return [{ ...(occurredAt ? { occurredAt } : {}), sourceId: entry.id, role: entry.type === "user" ? "user" : entry.agent === "plan" ? "plan" : "agent", text }];
   });
 }
 export class OpenCodeAdapter implements Adapter {

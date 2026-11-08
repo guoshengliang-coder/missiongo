@@ -1,3 +1,4 @@
+import { messageTimestamp } from "./message-time.js";
 import { sessionName } from "./session-name.js";
 import { codexHistory } from "./codex-history.js";
 import { randomUUID } from "node:crypto";
@@ -29,15 +30,17 @@ export function codexMessages(thread: Wire): Message[] {
   const messages: Message[] = [];
   for (const turn of thread.turns ?? []) for (const item of turn.items ?? []) {
     const sourceId = `${turn.id}:${item.id}`;
+    const occurredAt = messageTimestamp(item.createdAt ?? item.created_at ?? item.timestamp ?? turn.startedAt);
+    const dated = occurredAt ? { occurredAt } : {};
     if (item.type === "userMessage") {
       const text = (item.content ?? []).filter((c: Wire) => c.type === "text").map((c: Wire) => c.text).join("\n");
-      if (text.trim()) messages.push({ sourceId, turnId: turn.id, role: "user", text });
+      if (text.trim()) messages.push({ sourceId, turnId: turn.id, role: "user", text, ...dated });
     } else if (item.type === "imageGeneration" && item.status === "completed" && !item.failure
       && typeof item.savedPath === "string" && localArtifactPath(item.savedPath)
       && /\.(?:png|jpe?g|gif|webp|svg)$/i.test(item.savedPath)) {
-      messages.push({ sourceId, turnId: turn.id, role: "agent", text: `![image](<${pathToFileURL(item.savedPath).href}>)` });
+      messages.push({ sourceId, turnId: turn.id, role: "agent", text: `![image](<${pathToFileURL(item.savedPath).href}>)`, ...dated });
     } else if (["agentMessage", "plan"].includes(item.type) && item.text?.trim()) {
-      messages.push({ sourceId, turnId: turn.id, role: item.type === "plan" ? "plan" : "agent", text: item.text, ...(item.phase ? { phase: item.phase } : {}) });
+      messages.push({ sourceId, turnId: turn.id, role: item.type === "plan" ? "plan" : "agent", text: item.text, ...(item.phase ? { phase: item.phase } : {}), ...dated });
     }
   }
   return messages;

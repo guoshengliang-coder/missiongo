@@ -1,3 +1,4 @@
+import { observeMessageTimes, recordMessageTime } from "./session-message-clock.js";
 import { observeSessionUnread } from "./session-unread.js";
 import { isConversationMessage } from "@missiongo/domain";
 import { ImplementationPlans } from "./implementation-plans.js";
@@ -234,6 +235,7 @@ export class ExternalNativeSessionStore {
       const commandId = randomUUID(); const now = new Date().toISOString();
       this.db.prepare("INSERT INTO external_native_commands(id,session_id,text,status,created_at) VALUES (?,?,?,'queued',?)").run(commandId, id, text, now);
       this.attachments.bind(id, accountId, commandId, attachmentIds);
+      recordMessageTime(this.db, `external:${id}`, `command:${commandId}`, now);
       this.db.prepare("UPDATE external_agent_sessions SET activity_at=? WHERE id=?").run(now, id);
       return this.command(id)!;
     });
@@ -349,6 +351,7 @@ export class ExternalNativeSessionStore {
       if (input.commandStatus === "delivering" && this.items(row.id).every((item) => item.status === "done")) throw conflict("agent_session_work_finished", "The linked work is done.");
       if (input.messages.length > 2000) throw invalidInput("Too many native messages.");
       const now = new Date().toISOString(); let changed = false;
+      observeMessageTimes(this.db, `external:${row.id}`, input.messages, now);
       const clocks = this.db.prepare("SELECT activity_at,unread_at FROM external_agent_sessions WHERE id=?").get(row.id) as { activity_at: string; unread_at: string | null };
       const clock = new Date(Math.max(Date.now(), Date.parse(clocks.activity_at) + 1, clocks.unread_at ? Date.parse(clocks.unread_at) + 1 : 0)).toISOString();
       const storedUnreadMessages = (this.db.prepare("SELECT payload_json FROM external_native_messages WHERE session_id=?").all(row.id) as { payload_json: string }[])

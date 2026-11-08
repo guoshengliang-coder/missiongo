@@ -1168,7 +1168,7 @@ export function AgentSessionConsole({
                     <span className="agent-console-session-heading">
                       <strong>{sessionTitle(session, roundLabel)}</strong>
 
-                      <time>{formatAgentMessageTime(session.activityAt ?? session.updatedAt, locale)}</time>
+                      <time>{formatAgentMessageTime(session.activityAt ?? session.createdAt, locale)}</time>
                     </span>
                     <span className="agent-console-session-meta">
                       <small>{session.source === "external" ? t("agentExternalSource") : session.nodeName} · {agentLabel(session, t)}</small>

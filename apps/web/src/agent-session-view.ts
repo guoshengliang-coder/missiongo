@@ -323,8 +323,8 @@ export function byLatestActivity<T extends Pick<AgentSessionSummary, "id" | "act
   sessions: readonly T[],
 ): readonly T[] {
   return [...sessions].sort((left, right) => {
-    const leftTime = Date.parse(left.activityAt ?? left.updatedAt ?? left.createdAt);
-    const rightTime = Date.parse(right.activityAt ?? right.updatedAt ?? right.createdAt);
+    const leftTime = Date.parse(left.activityAt ?? left.createdAt);
+    const rightTime = Date.parse(right.activityAt ?? right.createdAt);
     const compared = (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
     return compared || left.id.localeCompare(right.id);
   });

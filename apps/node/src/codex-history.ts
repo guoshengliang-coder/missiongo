@@ -24,7 +24,7 @@ export async function codexHistory(call: (method: string, params: Wire) => Promi
       if (next) seen.add(next);
       for (const entry of result.data) {
         if (typeof entry.turnId !== "string" || !entry.item || typeof entry.item.id !== "string") throw new InvalidHistoryPage("Invalid Codex history item");
-        messages.push(...codexMessages({ turns: [{ id: entry.turnId, items: [entry.item] }] }));
+        messages.push(...codexMessages({ turns: [{ id: entry.turnId, items: [{ ...entry.item, createdAt: entry.item.createdAt ?? entry.startedAtMs ?? entry.completedAtMs }] }] }));
       }
       bytes += Buffer.byteLength(JSON.stringify(result));
       cursor = next ?? undefined;
