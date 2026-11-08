@@ -46,6 +46,8 @@ public protocol CodexControl: Sendable {
     func hasLoadedThreads(socketPath: String) async throws -> Bool
     /// A dedicated subscription keeps approval requests visible to MissionGo.
     func approvalSnapshot(socketPath: String, threadId: String) -> CodexApprovalSnapshot?
+    func existingApprovalSnapshot(socketPath: String, threadId: String) -> CodexApprovalSnapshot?
+    func stopObservingApprovals(threadId: String)
     func answerApproval(threadId: String, approvalId: String, decision: String) throws
     func cancelApprovals(threadId: String, turnId: String)
 }
@@ -59,6 +61,10 @@ public extension CodexControl {
         try await readThread(socketPath: socketPath, threadId: threadId)
     }
     func approvalSnapshot(socketPath: String, threadId: String) -> CodexApprovalSnapshot? { nil }
+    func existingApprovalSnapshot(socketPath: String, threadId: String) -> CodexApprovalSnapshot? {
+        approvalSnapshot(socketPath: socketPath, threadId: threadId)
+    }
+    func stopObservingApprovals(threadId: String) {}
     func answerApproval(threadId: String, approvalId: String, decision: String) throws {
         throw CodexControlError.rpc(method: "approval", message: "这个 Codex 控制器不支持控制台授权。")
     }
@@ -712,7 +718,7 @@ public enum CodexProtocol {
             status: status,
             activeTurnId: activeTurnId,
             messages: AgentSessionAnswerTrace.markingAnswered(messages),
-            activityAt: sourceActivityTimestamp(thread["updatedAt"] ?? thread["updated_at"]),
+            activityAt: messages.compactMap(\.occurredAt).max(),
             model: thread["model"] as? String,
             reasoningEffort: thread["reasoningEffort"] as? String,
             failure: failure,
@@ -849,6 +855,14 @@ public struct CodexAppServerControl: CodexControl {
     public func approvalSnapshot(socketPath: String, threadId: String) -> CodexApprovalSnapshot? {
         approvalMonitor.watch(socketPath: socketPath, threadId: threadId)
         return approvalMonitor.snapshot(threadId: threadId)
+    }
+
+    public func existingApprovalSnapshot(socketPath: String, threadId: String) -> CodexApprovalSnapshot? {
+        approvalMonitor.snapshot(threadId: threadId)
+    }
+
+    public func stopObservingApprovals(threadId: String) {
+        approvalMonitor.stop(threadId: threadId)
     }
 
     public func answerApproval(threadId: String, approvalId: String, decision: String) throws {

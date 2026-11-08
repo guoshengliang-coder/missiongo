@@ -2774,7 +2774,7 @@ describe("Claiming a dispatch on the node", () => {
       url: `/api/v1/agent-sessions?productId=${mission.productId}`,
       headers: { cookie },
     })).json<{ sessions: Array<{ updatedAt: string; activityAt: string }> }>().sessions[0]!;
-    expect(unchanged.activityAt).toBe(fixedActivityAt);
+    expect(unchanged.activityAt).toBe("2026-09-19T01:29:00.000Z");
     expect(unchanged.updatedAt).not.toBe(fixedActivityAt);
     const unchangedDetail = (await app.inject({
       method: "GET",
@@ -2804,7 +2804,7 @@ describe("Claiming a dispatch on the node", () => {
       url: `/api/v1/agent-sessions?productId=${mission.productId}`,
       headers: { cookie },
     })).json<{ sessions: Array<{ activityAt: string }> }>().sessions[0]!;
-    expect(changed.activityAt).toBe("2026-09-19T01:30:00.000Z");
+    expect(changed.activityAt).toBe("2026-09-19T01:29:00.000Z");
 
     const reply = await app.inject({
       method: "POST",

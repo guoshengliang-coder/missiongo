@@ -639,11 +639,14 @@ public struct CodexLauncher: AgentAdapter {
         return try await control.readThread(socketPath: location.controlSocketPath, threadId: session.sessionRef)
     }
 
-    private func approvalSnapshot(_ session: NodeAgentSession) -> CodexApprovalSnapshot? {
+    private func approvalSnapshot(_ session: NodeAgentSession, observing: Bool = false) -> CodexApprovalSnapshot? {
         // The observer resumes a thread to subscribe. External conversations
         // retain the original client's approval channel, including read-only probes.
         guard session.externalBindingGeneration == nil else { return nil }
-        return control.approvalSnapshot(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+        if observing || ["active", "stalled"].contains(session.status) || session.command != nil || session.approvalDecision != nil {
+            return control.approvalSnapshot(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+        }
+        return control.existingApprovalSnapshot(socketPath: location.controlSocketPath, threadId: session.sessionRef)
     }
 
     public func historyPage(sessionRef: String, cursor: String) async throws -> AgentHistoryResult {
@@ -681,7 +684,7 @@ public struct CodexLauncher: AgentAdapter {
         }
         // Approval answers use the observer's original socket, independently
         // of transcript reads. A slow history must not prevent a human answer.
-        let approval = approvalSnapshot(session)
+        var approval = approvalSnapshot(session)
         if let decision = session.approvalDecision, approval?.id == decision.id,
            approval?.status == "pending" {
             try? control.answerApproval(threadId: session.sessionRef, approvalId: decision.id,
@@ -700,6 +703,13 @@ public struct CodexLauncher: AgentAdapter {
                 commandError: command?.status == "queued"
                     ? "回复未发送：无法读取原 Codex 会话，请检查 Mac 连接或在来源客户端恢复。" : nil
             ).reportingApproval(approvalSnapshot(session))
+        }
+        // A completed, idle conversation is a read-only mirror. Subscribing
+        // resumes Codex and may persist settings even without a user action.
+        let observing = snapshot.status == "active" || snapshot.waitingOnApproval || snapshot.waitingOnUserInput
+        if observing { approval = approvalSnapshot(session, observing: true) }
+        else if !["pending", "inProgress", "reconnecting"].contains(approval?.status ?? "") {
+            control.stopObservingApprovals(threadId: session.sessionRef)
         }
         var model = snapshot.model
         var effort = snapshot.reasoningEffort

@@ -66,3 +66,10 @@ it("reports an oversized source message instead of sending a page the server wil
   const adapter = { historyPage: async () => ({ messages: [{ sourceId: "large", role: "plan", text: "x".repeat(4_000_001) }] }) } as unknown as Adapter;
   await expect(readHostHistory(adapter, "thread", { sessionRef: "thread", cursor: "items-v1:old" })).resolves.toEqual({ messages: [], error: "too_large" });
 });
+
+
+it("keeps item occurrence time and never substitutes a newer thread metadata clock", async () => {
+  const result=await codexHistory(async()=>({data:[{turnId:"turn",startedAtMs:1794022791894,
+    item:{id:"answer",type:"agentMessage",text:"Yesterday"}}],nextCursor:null}),"thread");
+  expect(result.messages[0]?.occurredAt).toBe("2026-11-07T03:39:51.894Z");
+});

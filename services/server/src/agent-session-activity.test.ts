@@ -128,7 +128,7 @@ it.each(["codex", "claude_code", "opencode"])("%s connection fallback cannot man
   expect(f.store.listForAccount("owner").map(row => row.id)).toEqual([newer, f.sessionId]);
   expect(f.db.prepare("SELECT unread_at FROM dispatches WHERE id='dispatch'").get()).toEqual(unread);
   vi.setSystemTime(time(12));
-  f.snapshot({ status: "active", messages: [{ ...message, text: "Actual new progress", occurredAt: time(12) }], activities, turnState: turn });
+  f.snapshot({ status: "active", messages: [{ ...message, sourceId: "new-progress", text: "Actual new progress", occurredAt: time(12) }], activities, turnState: turn });
   expect(f.row().activity_at).toBe(time(12));
   expect(f.store.listForAccount("owner")[0]!.id).toBe(f.sessionId);
 });
