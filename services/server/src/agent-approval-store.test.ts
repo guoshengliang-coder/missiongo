@@ -42,6 +42,15 @@ it("keeps a human retry attached to its denied review while a new approval arriv
     approvals.record("node", "session", { id: "review-2", kind: "auto", status: "denied",
       turnId: "turn-3", action: "second command", startedAtMs: 3 });
     expect(approvals.requestRetry("session", "review-2").retryId).not.toBe(retry.retryId);
+
+    // Failure can mean unknown delivery. Repeating the same review must not
+    // enqueue another turn or manufacture a fresh retry identity (AND-464).
+    const second = approvals.requestRetry("session", "review-2");
+    approvals.recordRetry("node", "session", second.retryId!, "failed", "Delivery unconfirmed");
+    expect(approvals.requestRetry("session", "review-2")).toMatchObject({
+      retryId: second.retryId, retryStatus: "failed", retryError: "Delivery unconfirmed",
+    });
+    expect(approvals.pendingForNode("session").approvalRetry).toBeUndefined();
   } finally {
     database.close();
   }

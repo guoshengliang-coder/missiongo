@@ -8,6 +8,25 @@ import { ITEM_STATUSES, type WorkItemPriority, type WorkItemStatus, type WorkIte
 export type Locale = "zh-CN" | "en";
 
 const EN_MESSAGES = {
+  operationSettings: "Change settings",
+  operationSend: "Send message",
+  operationRetry: "Resume session",
+  operationStop: "Stop turn",
+  operationArchive: "Archive / restore conversation",
+  operationDismiss: "Dismiss attention",
+  operationCancel: "Recall message",
+  operationResolve: "Confirm delivery",
+  operationApproval: "Submit approval decision",
+  operationApprovalRetry: "Request manual review",
+  operationSuperseded: "The target has changed or was handled. This earlier result no longer applies; check its current status.",
+  operationFailed: "The action failed. Check the connection and retry from its original control.",
+  operationClose: "Dismiss feedback: {action}",
+  errorApprovalChanged: "This approval request changed or was already handled. Review the current request.",
+  errorApprovalRetryUnavailable: "This denial is no longer current. Review the latest approval state before retrying.",
+  errorApprovalRetryPending: "A manual review retry is already in progress. Do not submit it again.",
+  agentApprovalRetryUnconfirmed: "Retry delivery could not be confirmed. Verify it in the original Codex conversation; it will not be sent again automatically.",
+  agentSettingsApplyFailed: "The settings change failed. Confirm the current values before trying again.",
+
   releaseTitle: "Service update",
   releaseUpdating: "A new version is being deployed",
   releaseWait: "Please wait a few minutes. The page will reconnect automatically.",
@@ -1702,6 +1721,25 @@ const EN_MESSAGES = {
 export type MessageKey = keyof typeof EN_MESSAGES;
 
 const ZH_MESSAGES: Record<MessageKey, string> = {
+  operationSettings: "修改设置",
+  operationSend: "发送消息",
+  operationRetry: "恢复会话",
+  operationStop: "停止回合",
+  operationArchive: "归档／恢复会话",
+  operationDismiss: "忽略提醒",
+  operationCancel: "撤回消息",
+  operationResolve: "确认送达",
+  operationApproval: "提交审批决定",
+  operationApprovalRetry: "发起人工审批重试",
+  operationSuperseded: "操作对象已更新或已处理，这次旧结果已不适用，请查看当前状态。",
+  operationFailed: "操作失败，请检查连接后从原入口重试。",
+  operationClose: "关闭反馈：{action}",
+  errorApprovalChanged: "审批请求已变化或已处理，请查看当前请求。",
+  errorApprovalRetryUnavailable: "这次拒绝已不是当前有效请求，请查看最新审批状态后再操作。",
+  errorApprovalRetryPending: "人工审批重试正在处理中，请勿重复提交。",
+  agentApprovalRetryUnconfirmed: "重试的送达结果无法确认，请在原 Codex 会话核实；不会自动重发。",
+  agentSettingsApplyFailed: "设置修改失败，请核对当前生效值后再重试。",
+
   permissionSubmitting: "正在提交决定…",
   permissionQueued: "决定已排队，等待原请求处理。",
   releaseTitle: "服务更新",

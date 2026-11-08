@@ -607,6 +607,14 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 
 回归：`UpdateDownloadTests` 使用本地 HTTP 字节流覆盖分块、长度、超限、取消及超时；`UpdateActivityTests` 验证诊断边界和阶段；`UpdateLifecycleTests` 用注入 I/O 验证重复点击、迟到回调、已安装重启失败及明暗/窄窗布局，原 `AppUpdaterTests` 保留签名与安装回退检查。真实客户端跨版本安装、系统安全评估及节点等待后的重启需发布后验证，测试不替换本机 App。
 
+### 会话操作反馈生命周期（AND-464）
+
+控制台与条目内会话复用 `useAgentOperationFeedback` / `AgentOperationFeedback`，失败绑定原会话、动作、目标与尝试序号。同轮输出、新一轮或发送成功不能清掉独立操作失败；成功仅结算对应尝试。仅在更新的成功读取确认目标变化或已处理时，旧失败降为可关闭的非阻塞说明；读取失败、缺少命令和送达未知不冒充成功。关闭只隐藏该提示，不改变服务端结果、权限、消息及草稿；迟到响应不复活已关闭或已取代的提示。
+
+提示说明具体动作，经过 i18n；原始诊断只放在纯文本 details 中。关闭与展开均可触控、键盘访问，主题令牌与字号保持公共契约。快捷设置按会话隔离请求、进行中与错误，来源设置失败独立展示；旧请求不能改变另一会话的草稿或控件。
+
+审批重试的 failed 可能代表送达不明：解释须回原 Codex 会话核实，保留现有幂等与禁止自动重发保护，不直接生成新投递。验证见 `agent-operation-feedback.test.tsx`、`error-text.test.ts`、`and-464-operation-feedback.audit.spec.ts` 及原审批、设置、撤回与停止回归。真实节点及线上复测边界见 [AND-464 记录](and-464-operation-feedback.md)。
+
 ### 本地完成后的待合并引导
 
 控制台与条目内会话共用 `MergePreparationNotice`，沿用 `merge-delivery-notice`、`merge-delivery-copy` 和 `merge-delivery-choices` 的颜色、间距、字号与按钮层级，不新增样式豁免。提示本地修改完成，主操作“提交到待合并”、次操作“暂不提交”；直接说明确认仅授权推送、创建 PR 和登记交付，不合并或发布。发送成功与正式加入清单分开表达，失败可重试且保留草稿；已有正式交付卡片接替引导。候选条件与权限边界见 [交付契约](merge-deliveries.md#本地完成后的提交引导)，验证覆盖两个入口、320px／桌面、明暗及三档字号。

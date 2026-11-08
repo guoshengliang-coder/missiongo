@@ -68,7 +68,10 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
       ? agentSessionDetailRefetchInterval(documentVisible, query.state.fetchFailureCount)
       : false,
   });
-  const feedback = useAgentOperationFeedback(sessionId, session.data?.turnState?.turnStartedAt);
+  const feedback = useAgentOperationFeedback(session.data && !session.isError ? {
+    sessionId: session.data.id, checkedAt: session.dataUpdatedAt, detail: true, command: session.data.command,
+    approval: session.data.approval, archivedAt: session.data.archivedAt,
+  } : undefined);
   const messagesRef = useRef<HTMLDivElement>(null);
   const history = useAgentHistory(sessionId, session.data, messagesRef);
   const followLatest = useRef(true);
@@ -81,38 +84,40 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
     if (open && box && followLatest.current && !prepended) box.scrollTop = box.scrollHeight;
   }, [open, sessionId, history.messages, history.revision, session.data?.implementationPlan]);
   const send = useMutation({
-    mutationFn: (input: string | { text: string; preserveDraft: true }) => api.sendAgentSessionCommand(sessionId, typeof input === "string" ? input : input.text),
-    onMutate: () => feedback.begin(sessionId, "send"),
+    mutationFn: (input: { sessionId: string; text: string; preserveDraft?: true }) => api.sendAgentSessionCommand(input.sessionId, input.text),
+    onMutate: input => feedback.begin(input.sessionId, "send"),
     onError: (error, _input, operation) => feedback.fail(error, operation),
     onSuccess: async (_command, _input, operation) => {
       if (!operation) return;
+      feedback.finish(operation);
       void invalidateSessionDeliveries(queryClient,operation.sessionId);
-      feedback.clear(operation.sessionId);
-      if (currentSessionId.current === operation.sessionId && typeof _input === "string") setReply("");
+      if (currentSessionId.current === operation.sessionId && !_input.preserveDraft) setReply("");
       await queryClient.invalidateQueries({ queryKey: ["agent-session", operation.sessionId] });
     },
   });
   const cancel = useMutation({
-    mutationFn: ({ commandId }: { commandId: string; text: string }) =>
-      api.cancelAgentSessionCommand(sessionId, commandId),
-    onMutate: input => feedback.begin(sessionId, "cancel", input.commandId),
+    mutationFn: ({ sessionId: originalSessionId, commandId }: { sessionId: string; commandId: string; text: string }) =>
+      api.cancelAgentSessionCommand(originalSessionId, commandId),
+    onMutate: input => feedback.begin(input.sessionId, "cancel", { id: input.commandId }),
     onError: (error, _input, operation) => {
       feedback.fail(error, operation);
       if (operation) void queryClient.invalidateQueries({ queryKey: ["agent-session", operation.sessionId] });
     },
     onSuccess: async (_command, input, operation) => {
       if (!operation) return;
+      feedback.finish(operation);
       if (currentSessionId.current === operation.sessionId) setReply(input.text);
       await queryClient.invalidateQueries({ queryKey: ["agent-session", operation.sessionId] });
     },
   });
   const resolveDelivery = useMutation({
-    mutationFn: ({ commandId, outcome }: { commandId: string; outcome: "received" | "not_received" }) =>
-      api.resolveAgentSessionDelivery(sessionId, commandId, outcome),
-    onMutate: input => feedback.begin(sessionId, "resolve", input.commandId),
+    mutationFn: ({ sessionId: originalSessionId, commandId, outcome }: { sessionId: string; commandId: string; outcome: "received" | "not_received" }) =>
+      api.resolveAgentSessionDelivery(originalSessionId, commandId, outcome),
+    onMutate: input => feedback.begin(input.sessionId, "resolve", { id: input.commandId }),
     onError: (error, _input, operation) => feedback.fail(error, operation),
     onSuccess: async (command, input, operation) => {
       if (!operation) return;
+      feedback.finish(operation);
       if (input.outcome === "not_received" && currentSessionId.current === operation.sessionId) setReply(command.text);
       await queryClient.invalidateQueries({ queryKey: ["agent-session", operation.sessionId] });
     },
@@ -138,7 +143,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const text = reply.trim();
-    if (text && !pending && !send.isPending) send.mutate(text);
+    if (text && !pending && !send.isPending) send.mutate({ sessionId, text });
   };
 
   const planMessages = inlinePlanTranscript(history.messages.filter(message => !isWithdrawnCard(message)), session.data);
@@ -193,7 +198,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
               </div>
               {!planMessages.planMessageId && <UnlinkedPlanRecord session={session.data} blocked={questionPermission || pending || send.isPending} />}
               <div className="agent-run-status" aria-label={t("agentRunFeedback")}>
-                <AgentOperationFeedback failures={feedback.failures} sessionId={sessionId} command={command} />
+                <AgentOperationFeedback failures={feedback.failures} sessionId={sessionId} onDismiss={feedback.finish} />
                 <AgentStopFeedback stop={session.data.stopCommand ?? (command?.kind === "interrupt" ? command : undefined)}
                   latestCommand={command} turnActive={session.data.turnState?.turnActive ?? false} backgroundRunning={session.data.activities.length > 0} />
               <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={waiting ? "waiting" : visualStatus} />} label={waiting
@@ -231,15 +236,15 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                     {command.error ? `: ${command.error}` : ""}
                   </span>
                   {command.kind === "message" && command.status !== "cancelled" && <AgentReplyFeedback status={command.status} cancelling={cancel.isPending}
-                    onEdit={canReply ? () => cancel.mutate({ commandId: command.id, text: command.text }) : undefined} />}
+                    onEdit={canReply ? () => cancel.mutate({ sessionId, commandId: command.id, text: command.text }) : undefined} />}
                   {command.status === "delivery_unknown" && session.data.canResolveDelivery && (
                     <>
                       <button type="button" className="text-button" disabled={resolveDelivery.isPending}
-                        onClick={() => resolveDelivery.mutate({ commandId: command.id, outcome: "received" })}>
+                        onClick={() => resolveDelivery.mutate({ sessionId, commandId: command.id, outcome: "received" })}>
                         {t("agentSessionReplyConfirmReceived", { agent: agentName })}
                       </button>
                       <button type="button" className="text-button" disabled={resolveDelivery.isPending}
-                        onClick={() => resolveDelivery.mutate({ commandId: command.id, outcome: "not_received" })}>
+                        onClick={() => resolveDelivery.mutate({ sessionId, commandId: command.id, outcome: "not_received" })}>
                         {t("agentSessionReplyConfirmNotReceived")}
                       </button>
                     </>
@@ -248,7 +253,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
               )}
               {mergePreparation && <MergePreparationNotice key={mergePreparation.key} productId={productId}
                 session={session.data} evidence={mergePreparation} blocked={pending || send.isPending}
-                send={text => send.mutateAsync({ text, preserveDraft: true })} />}
+                send={text => send.mutateAsync({ sessionId, text, preserveDraft: true })} />}
               <DeliveryCards productId={productId} sessionId={sessionId} blocked={pending || send.isPending} />
               {canReply ? (
                 <>

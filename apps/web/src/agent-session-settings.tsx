@@ -1,3 +1,4 @@
+import { useAgentOperationFeedback } from "./agent-operation-feedback";
 import { modeChoices, modeReasonKey } from "./agent-mode-options";
 import { Select } from "./select";
 import { useEffect, useRef, useState } from "react";
@@ -25,6 +26,14 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const settings = session.settings;
+  const sessionId = session.agentSessionId ?? session.id;
+  const [dismissedSettingsErrors, setDismissedSettingsErrors] = useState<Readonly<Record<string, string>>>({});
+  const lastRequestedModel = useRef(new Map<string, string>());
+  const applying = useRef(new Set<string>());
+  const [pendingSessions, setPendingSessions] = useState<ReadonlySet<string>>(new Set());
+  const settingsIdentity = JSON.stringify([settings.pending, settings.mode, settings.model, settings.effort, settings.error]);
+  const feedback = useAgentOperationFeedback({ sessionId,
+    checkedAt: queryClient.getQueryState(["agent-sessions"])?.dataUpdatedAt ?? 0, settingsIdentity });
   const external = session.source === "external";
   const nodeId = session.nodeId ?? session.nativeConnection?.nodeId;
   const replyPending = external && ["queued", "delivering", "delivery_unknown"].includes(session.command?.status ?? "");
@@ -35,13 +44,29 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
   const models = session.agentKind === "other" ? undefined : agentModels(nodesQuery.data?.nodes.find((node) => node.id === nodeId), session.agentKind);
 
   const apply = useMutation({
-    mutationFn: (change: { mode?: string; model?: string; effort?: string }) =>
-      api.setAgentSessionSettings(session.agentSessionId!, change),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
+    mutationFn: (input: { sessionId: string; change: { mode?: string; model?: string; effort?: string }; settingsIdentity: string }) =>
+      api.setAgentSessionSettings(input.sessionId, input.change),
+    onMutate: input => feedback.begin(input.sessionId, "settings", { id: input.settingsIdentity }),
+    onError: (error, _input, operation) => feedback.fail(error, operation),
+    onSettled: (_data, _error, input) => {
+      applying.current.delete(input.sessionId);
+      setPendingSessions(current => { const next = new Set(current); next.delete(input.sessionId); return next; });
+    },
+    onSuccess: async (_settings, input, operation) => {
+      feedback.finish(operation);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }),
+        queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] }),
+      ]);
     },
   });
 
+  const failure = feedback.failures.find(candidate => candidate.sessionId === sessionId && candidate.target.id === settingsIdentity && !candidate.superseded);
+  const applyError = failure?.error;
+  const sourceError = settings.error && dismissedSettingsErrors[sessionId] !== settingsIdentity
+    ? <div className="agent-operation-feedback agent-session-settings-note error" role="alert"><span>{t("agentSettingsError", { error: settings.error })}</span>
+      <button type="button" className="secondary-button" onClick={() => setDismissedSettingsErrors(current => ({ ...current, [sessionId]: settingsIdentity }))}>{t("close")}</button>
+    </div> : null;
   const modeLabel = (value: string) => {
     const key = dispatchModeLabelKey(session.agentKind, value);
     return key ? t(key) : value === "external" ? t("agentSettingsSourceMode") : value;
@@ -89,7 +114,7 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
         </p>
         <p className="agent-session-settings-note" title={selectedModelLabel}>{modelLabel(settings.model ?? settings.requestedModel)}{endpointNote}</p>
         {settings.pending && <p className="agent-session-settings-note" role="status">{t(external && settings.applyOn === "next_reply" ? "agentSettingsNextReply" : "agentSettingsPending", { change: pendingText })}</p>}
-        {settings.error && <p className="agent-session-settings-note error">{t("agentSettingsError", { error: settings.error })}</p>}
+        {sourceError}
       </div>
     );
   }
@@ -97,8 +122,15 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
   return (
     <div className="agent-session-quick-settings">
       <AgentSettingsControls agentKind={session.agentKind} modes={modeCapabilities} models={models} mode={modeValue} model={modelValue}
-        effort={effortValue} effortDisplay={shownEffort} external={external} busy={apply.isPending} canChange={canChange}
-        onChange={change => apply.mutate(change)} />
+        effort={effortValue} effortDisplay={shownEffort} external={external} busy={pendingSessions.has(sessionId)} canChange={canChange}
+        onChange={change => {
+          if (applying.current.has(sessionId) || !session.agentSessionId) return;
+          applying.current.add(sessionId);
+          lastRequestedModel.current.set(sessionId, change.model ?? modelValue);
+          setPendingSessions(current => new Set(current).add(sessionId));
+          setDismissedSettingsErrors(current => { const next = { ...current }; delete next[sessionId]; return next; });
+          apply.mutate({ sessionId: session.agentSessionId, change, settingsIdentity });
+        }} />
       {settings.requiresImplementationMode && <p className="agent-session-settings-note" role="status">{t("agentImplementationModeRequired")}</p>}
       {external && <p className="agent-session-settings-note">{t(!session.canReply && !settings.unavailableReason
         ? "agentSettingsExternalUnavailable"
@@ -109,16 +141,18 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
       {external && settings.adjustable && !settings.supportedFields?.includes("mode") && <p className="agent-session-settings-note">{t("agentSettingsExternalMode")}</p>}
       {endpointNote && <p className="agent-session-settings-note">{t("customModelEndpoint", { host: settings.modelEndpoint! })}</p>}
       {settings.pending && <p className="agent-session-settings-note" role="status">{t(external && settings.applyOn === "next_reply" ? "agentSettingsNextReply" : "agentSettingsPending", { change: pendingText })}</p>}
-      {settings.error && <p className="agent-session-settings-note error">{t("agentSettingsError", { error: settings.error })}</p>}
-      {apply.isError && (
-        <p className="agent-session-settings-note error">
-          {apply.error instanceof ApiError && apply.error.code === "node_upgrade_required"
+      {sourceError}
+      {failure && (
+        <div className="agent-operation-feedback agent-session-settings-note error" role="alert">
+          <span>{applyError instanceof ApiError && applyError.code === "node_upgrade_required"
             ? t("agentSettingsUpgrade")
-            : apply.error instanceof ApiError && apply.error.code === "agent_effort_unavailable"
-            ? t("agentSettingsEffortConflict", { model: modelLabel(apply.variables?.model ?? modelValue) })
-            : errorMessageKey(apply.error) ? localizedErrorText(apply.error, t)
-            : external ? t("agentSettingsExternalFailed") : localizedErrorText(apply.error, t)}
-        </p>
+            : applyError instanceof ApiError && applyError.code === "agent_effort_unavailable"
+            ? t("agentSettingsEffortConflict", { model: modelLabel(lastRequestedModel.current.get(sessionId) ?? modelValue) })
+            : errorMessageKey(applyError) ? localizedErrorText(applyError, t)
+            : t("agentSettingsApplyFailed")}</span>
+          <button type="button" className="secondary-button" onClick={() => feedback.finish(failure)}>{t("close")}</button>
+          {!errorMessageKey(applyError) && applyError instanceof Error && <details className="agent-operation-diagnostic"><summary>{t("executionStopDiagnostic")}</summary><p>{applyError.message}</p></details>}
+        </div>
       )}
     </div>
   );

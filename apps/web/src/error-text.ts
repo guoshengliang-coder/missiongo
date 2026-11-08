@@ -40,6 +40,11 @@ export function errorMessageKey(error: unknown): MessageKey | null {
     // server's English titles are written for logs and used to land in a
     // Chinese console as-is (AND-224).
     const conflictKeys: Readonly<Record<string, MessageKey>> = {
+      approval_stale: "errorApprovalChanged",
+      approval_decided: "errorApprovalChanged",
+      approval_retry_stale: "errorApprovalChanged",
+      approval_retry_unavailable: "errorApprovalRetryUnavailable",
+      approval_retry_in_progress: "errorApprovalRetryPending",
       discovery_stale: "completionDiscoveryChanged",
       discovery_source_changed: "completionDiscoveryChanged",
       execution_stop_unconfirmed: "executionStopBlocked",
