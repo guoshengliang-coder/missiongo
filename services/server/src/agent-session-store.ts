@@ -2117,6 +2117,17 @@ export class AgentSessionStore {
     });
   }
 
+  /** One bounded upgrade of the current legacy verdict, not a historical reclassification. */
+  requestDeliveryAttribution(sessionId: string): boolean {
+    const result = this.database.connection.prepare(`UPDATE agent_session_attention
+      SET state='pending', delivery_only=0 WHERE session_id=? AND state='needed'
+      AND kind='instruction' AND delivery_only IS NULL AND dismissed_message_hash IS NULL`).run(sessionId);
+    if (!result.changes) return false;
+    if (this.pendingAttention(sessionId)) return true;
+    this.database.connection.prepare("UPDATE agent_session_attention SET state='needed' WHERE session_id=?").run(sessionId);
+    return false;
+  }
+
   pendingAttention(sessionId: string): { readonly messageHash: string; readonly text: string; readonly truncated?: boolean } | undefined {
     const session = this.database.connection.prepare(
       `SELECT s.status, a.message_hash, a.state

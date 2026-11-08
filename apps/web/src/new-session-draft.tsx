@@ -79,7 +79,7 @@ export function NewSessionDraft({ draft, projectName, onChange, onBack, onConfig
   const locked = send.isPending || Boolean(draft.requestKey);
   useEffect(() => {
     if (locked || draft.config.effort === config.effort) return;
-    onChange({ ...draft, config });
+    onChange({ ...draft, config: { ...config, saveAsDefault: false } });
     setEffortAdjusted(true);
   }, [locked, draft, config, onChange]);
   const addFiles = (incoming: readonly File[]) => {
@@ -117,7 +117,7 @@ export function NewSessionDraft({ draft, projectName, onChange, onBack, onConfig
         {modeIssue && <p className="inline-error" role="alert">{t(modeIssue)}</p>}
         {effortAdjusted && <p className="dispatch-note" role="status">{t("dispatchEffortReset", { model: models?.find(entry => entry.id === config.model)?.label ?? (config.model || t("dispatchModelLocal")) })}</p>}
         <div className="agent-console-reply-actions">
-          <DraftSessionQuickSettings config={config} disabled={locked} onChange={next => { setEffortAdjusted(false); onChange({ ...draft, config: next }); }} />
+          <DraftSessionQuickSettings config={config} disabled={locked} onChange={next => { setEffortAdjusted(false); onChange({ ...draft, config: { ...next, saveAsDefault: false } }); }} />
           <div className="agent-chat-send-actions">
             <input ref={picker} type="file" multiple hidden accept=".png,.jpg,.jpeg,.webp,.gif,.heic,.mp4,.mov,.webm,.log,.txt,.json,.md,.csv,.pdf"
               onChange={event => { addFiles(Array.from(event.target.files ?? [])); event.target.value = ""; }} />

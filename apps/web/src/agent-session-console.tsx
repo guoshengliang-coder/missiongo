@@ -1,3 +1,4 @@
+import { useSelectedSessionScroll } from "./selected-session-scroll";
 import { AgentPlanRecords } from "./agent-plan-records";
 import { mergePreparationEvidence } from "./merge-preparation";
 import { MergePreparationNotice } from "./merge-preparation-notice";
@@ -189,6 +190,7 @@ export function AgentSessionConsole({
   productId,
   initialFilter,
   search = "",
+  onSearchChange,
   allSessions,
   sessionsLoaded,
   sessionsError,
@@ -204,6 +206,7 @@ export function AgentSessionConsole({
   productId: string;
   initialFilter: AgentSessionFilter | null;
   search?: string;
+  onSearchChange?: (value: string) => void;
   allSessions: readonly AgentSessionSummary[];
   sessionsLoaded: boolean;
   sessionsError: unknown;
@@ -358,6 +361,8 @@ export function AgentSessionConsole({
     onSelectSession(selectedId, conversationOpen && Boolean(selectedId));
   }, [conversationOpen, draftView, onSelectSession, selectedId, selectedSessionId]);
 
+  const selectedVisible = visibleSessions.some(session => session.id === selectedId);
+  const sessionListRef = useSelectedSessionScroll(selectedId, selectedVisible, conversationOpen);
   const selected = draftView ? undefined : allSessions.find((session) => session.id === selectedId);
   // A claimed session names its items; an integration session has none of its
   // own and lists the batch it runs instead (AND-449).
@@ -1084,7 +1089,10 @@ export function AgentSessionConsole({
           </div>
         )}
         {bulkArchiveMessage && <p className="agent-console-bulk-result" role="status">{bulkArchiveMessage}</p>}
-        <div className="agent-console-session-list">
+        {selected && !selectedVisible && <p className="section-empty" role="status">{t("agentConsoleSelectedHidden")}
+          <button type="button" className="text-button" onClick={() => { setFilter(selected.archivedAt ? "archived" : "all"); setAssociation("all"); setAgentFilter("all"); onSearchChange?.(""); }}>{t("agentConsoleShowSelected")}</button>
+        </p>}
+        <div className="agent-console-session-list" ref={sessionListRef}>
           {!sessionsLoaded && !hasSessionsError && <div className="agent-console-empty"><LoaderCircle className="spin" size={20} /></div>}
           {hasSessionsError && <p className="inline-error">{localizedErrorText(sessionsError, t)}</p>}
           {sessionsLoaded && visibleSessions.length === 0 && (

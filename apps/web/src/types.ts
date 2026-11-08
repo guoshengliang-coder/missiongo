@@ -396,7 +396,7 @@ export interface DispatchNode {
  * the session claims them.
  */
 export interface FreeSessionConfig {
-  productId: string; nodeId: string; agentKind: AgentKind; mode: string; model?: string; effort?: string;
+  productId: string; nodeId: string; agentKind: AgentKind; mode: string; model?: string; effort?: string; saveAsDefault?: boolean;
   nodeName?: string; canAttach?: boolean;
 }
 
@@ -709,6 +709,7 @@ export interface AgentApproval {
 }
 
 export interface CreateDispatchInput {
+  readonly saveAsDefault?: boolean;
   readonly nodeId: string;
   readonly agentKind: AgentKind;
   readonly mode: string;

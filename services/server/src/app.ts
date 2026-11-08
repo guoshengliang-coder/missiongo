@@ -90,6 +90,7 @@ import {
   AgentSessionStore,
   agentSessionCountsAsUnread,
   type AgentMessageRole,
+  type AgentSessionListItem,
   type AgentSessionStatus,
 } from "./agent-session-store.js";
 import { optionalName, parseAgentModes, parseAgentModels } from "./agent-settings.js";
@@ -610,6 +611,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const rows = consoleSessions.list(accountId).map(session => planApprovals.withAttention(agentApprovalStore.withAttention(session)));
     const handled = new Set(rows.flatMap(sessionProducts).filter((id, index, ids) => ids.indexOf(id) === index)
       .flatMap(productId => merges.attentionSessionIds(productId, accountId)));
+    if (aiTitle.attentionEnabled()) for (const id of handled) {
+      if (agentSessionStore.requestDeliveryAttribution(id)) scheduleAttentionClassification(id);
+    }
     return rows.map(session => withDeliveryAttention(session, [session.id, ...(session.relatedSessionIds ?? [])].some(id => handled.has(id))));
   };
   const accountStore = new AccountStore(store.database);
@@ -2499,6 +2503,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         ...(optionalName(body, "effort") ? { effort: optionalName(body, "effort")! } : {}),
         itemKeys: authorizedKeys,
         force: body.force === true,
+        saveAsDefault: body.saveAsDefault === true,
       }, true);
       for (const itemId of dispatchStore.listDispatchItemIds(dispatch.id)) {
         store.appendSystemEvent(itemId, "dispatched", {
@@ -2522,7 +2527,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const {productId}=request.params as {productId:string};
     requireProductPermission(request,productId,"view");
     const accountId=requireAccountId(request);
-    return {deliveries:merges.list(productId,accountId),batches:merges.batches(productId,accountId),attentionSessionIds:merges.attentionSessionIds(productId,accountId)};
+    return {deliveries:merges.list(productId,accountId),batches:merges.batches(productId,accountId),attentionSessionIds:merges.attentionSessionIds(productId,accountId),sessionProgress:merges.sessionProgress(productId,accountId)};
   });
   app.post("/api/v1/merge-deliveries/:id/decision",async request=>{
     const {id}=request.params as {id:string},body=objectBody(request.body);
@@ -2565,6 +2570,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const dispatch = freeSessionStore.prepare(requireAccountId(request), stringField(body,"requestKey")!, {
       productId, nodeId:stringField(body,"nodeId")!, agentKind:stringField(body,"agentKind")! as AgentKind,
       mode:stringField(body,"mode")!,
+      saveAsDefault: body.saveAsDefault === true,
       ...(optionalName(body,"model") ? {model:optionalName(body,"model")!} : {}),
       ...(optionalName(body,"effort") ? {effort:optionalName(body,"effort")!} : {}),
     }, stringField(body,"text",false) ?? "", body.attachmentCount === undefined ? 0 : Number(body.attachmentCount));
@@ -2602,6 +2608,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     sessionId: string,
     operate = false,
     requireAi = operate,
+    members?: AgentSessionListItem[],
   ) => {
     const account = requireAccount(request);
     const session = agentSessionStore.getForAccount(account.id, sessionId);
@@ -2617,7 +2624,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
     // AND-383: one members() scan feeds both the permission loop and the
     // message merge; withMessages used to repeat the full groups() pass.
-    const group = consoleSessions.members(account.id, sessionId);
+    const group = members ?? consoleSessions.members(account.id, sessionId);
     for (const itemKey of new Set(group.flatMap((row) => row.items.map((item) => item.key)))) {
       const key = requireItemPermission(request, itemKey, operate ? "operate" : "view");
       const productId = store.getWorkItem(key).productId;
@@ -2654,12 +2661,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     };
   };
 
-  const loadExternalSession = (request: FastifyRequest, sessionId: string, operate = false, useAi = false) => {
+  const loadExternalSession = (
+    request: FastifyRequest,
+    sessionId: string,
+    operate = false,
+    useAi = false,
+    members?: AgentSessionListItem[],
+  ) => {
     if (operate) assertExternalExecution(store.database,sessionId);
     const account = requireAccount(request);
     // AND-383: reuse the permission scan's group for the merge, mirroring the
     // native detail path's single members() pass.
-    const group = consoleSessions.members(account.id, sessionId);
+    const group = members ?? consoleSessions.members(account.id, sessionId);
     const keys = [...new Set(group.flatMap((row) => row.items.map((item) => item.key)))];
     const items = keys.map((key) => store.getWorkItem(key));
     for (const key of keys) {
@@ -2790,11 +2803,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
 
   const planApprovalContext = (request: FastifyRequest, sessionId: string, operate = false) => {
-    const members = consoleSessions.members(requireAccountId(request), sessionId);
+    const accountId = requireAccountId(request);
+    const members = consoleSessions.members(accountId, sessionId);
     let unavailableReason: PlanApprovalBlockReason | undefined = members.some((row) => row.command && ["queued", "delivering", "delivery_unknown"].includes(row.command.status)) ? "reply_pending" : undefined;
-    const attention = planApprovals.withAttention(agentApprovalStore.withAttention(consoleSessions.getSummary(requireAccountId(request), sessionId))).attention;
+    const attention = planApprovals.withAttention(agentApprovalStore.withAttention(consoleSessions.getSummary(accountId, sessionId, members))).attention;
     if (externalSessionStore.has(sessionId)) {
-      const loaded = loadExternalSession(request, sessionId, operate, operate);
+      const loaded = loadExternalSession(request, sessionId, operate, operate, members);
       const account = requireAccount(request);
       let canApprovePlan = members.every(row => row.items.every(item => accountStore.allows(account,item.productId,"operate") && accountStore.allows(account,item.productId,"ai")));
       try {
@@ -2804,9 +2818,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       if (operate && !canApprovePlan) throw new MissionGoError("ai_not_permitted", "This account may not approve this implementation plan.", 403);
       const session = { ...loaded, attention, canApprovePlan };
       if (!unavailableReason && session.nativeConnection?.state !== "connected") unavailableReason = "connection_unavailable";
-      return { session, unavailableReason };
+      return { session, unavailableReason, members };
     }
-    const loaded = loadAuthorizedAgentSession(request, sessionId, operate);
+    const loaded = loadAuthorizedAgentSession(request, sessionId, operate, operate, members);
     const node = dispatchStore.getNode(loaded.account.id, loaded.dispatch.nodeId);
     let canApprovePlan=loaded.productIds.every(id=>accountStore.allows(loaded.account,id,"operate") && accountStore.allows(loaded.account,id,"ai")) && !node.revokedAt;
     try {
@@ -2815,7 +2829,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     } catch {canApprovePlan=false;}
     if (!unavailableReason && (node.revokedAt || nodeConnectionState(node.lastSeenAt) !== "online")) unavailableReason = "connection_unavailable";
     if (operate && !canApprovePlan) throw new MissionGoError("ai_not_permitted","This account may not approve this implementation plan.",403);
-    return { session: { ...agentSessionResponse(loaded), attention, canApprovePlan }, unavailableReason };
+    return { session: { ...agentSessionResponse(loaded), attention, canApprovePlan }, unavailableReason, members };
   };
 
   const resumeApprovedPlan = (accountId:string,sessionId:string) => {
@@ -2840,10 +2854,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.get("/api/v1/agent-sessions/:sessionId/plan-records", async (request,reply) => {
     const {sessionId}=request.params as {sessionId:string};
-    planApprovalContext(request,sessionId);
+    const { members } = planApprovalContext(request, sessionId);
     const records=new PlanRecords(store);
     const accountId=requireAccountId(request);
-    const identities=records.identities(accountId,consoleSessions.members(accountId,sessionId));
+    const identities=records.identities(accountId,members);
     const query=request.query as {before?:string;recordId?:string};
     const integer=(value:string|undefined)=>{
       if(value===undefined) return undefined;
@@ -2858,14 +2872,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.get("/api/v1/agent-sessions/:sessionId", async (request) => {
     const { sessionId } = request.params as { sessionId: string };
-    const { session, unavailableReason } = planApprovalContext(request, sessionId);
+    const { session, unavailableReason, members } = planApprovalContext(request, sessionId);
     const assessment = planApprovals.assess(session, unavailableReason);
     const window = (request.query as { history?: string }).history === "recent"
       ? agentHistory.window(requireAccountId(request), sessionId, session.messages) : undefined;
     const planApprovalState = planApprovals.approvalState(session);
     const implementationPlan = planApprovals.content(session);
     const records=new PlanRecords(store);
-    const hasPlanRecords=records.has(requireAccountId(request),records.identities(requireAccountId(request),consoleSessions.members(requireAccountId(request),sessionId)),key=>requireItemPermission(request,key));
+    const accountId = requireAccountId(request);
+    const hasPlanRecords = records.has(accountId, records.identities(accountId, members), key => requireItemPermission(request, key));
     return { ...session, hasPlanRecords, ...(window ? window : {}), canApprovePlan: assessment.status.code === "ready" && session.canApprovePlan,
       planApprovalStatus: assessment.status, ...(assessment.offer ? { planApproval: assessment.offer } : {}), ...(planApprovalState ? {planApprovalState} : {}),
       ...(implementationPlan ? { implementationPlan } : {}) };

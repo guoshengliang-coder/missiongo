@@ -21,6 +21,7 @@ export interface IntegrationEntry {
 }
 export interface MergeIntegration {
   protocol: 1; revision: number;
+  publication?: { state: "publishing" | "failed" | "ended"; checkedAt: string; expiresAt: string; resultsDigest: string; detail: string };
   recoveredAuthorization?: { dispatchId: string; promptDigest: string };
   plans: (IntegrationPlan & { at: string })[];
   entries: Record<string, IntegrationEntry>;

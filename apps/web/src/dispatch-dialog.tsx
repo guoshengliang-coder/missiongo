@@ -29,7 +29,7 @@ import {
 } from "./dispatch-eligibility";
 import { agentConsoleUrl } from "./navigation";
 import { useI18n } from "./i18n";
-import type { Dispatch, DispatchDefaults, DispatchNode, FreeSessionConfig, Product, WorkItem } from "./types";
+import type { Dispatch, DispatchNode, FreeSessionConfig, Product, WorkItem } from "./types";
 
 /**
  * Says why a machine cannot take this batch, in words that name the fix.
@@ -185,26 +185,20 @@ export function DispatchDialog({
     setEffortResetFor(choiceKey);
   }, [effort, requestedEffort, choiceKey]);
 
-  const saveDefaults = useMutation({
-    mutationFn: (defaults: DispatchDefaults) => api.setDispatchDefaults(defaults),
-    onSuccess: (defaults) => queryClient.setQueryData(["dispatch-defaults"], defaults),
-  });
-  const currentDefaults: DispatchDefaults = {
-    nodeId,
-    agentKind,
-    agents: {
-      ...defaultsQuery.data?.agents,
-      [agentKind]: { mode, ...(model ? { model } : {}), ...(effort ? { effort } : {}) },
-    },
-  };
-  const savedCurrentDefaults = saveDefaults.isSuccess
-    && JSON.stringify(saveDefaults.variables) === JSON.stringify(currentDefaults);
+  const defaultsKey = JSON.stringify([nodeId, agentKind, mode, model, effort]);
+  const [saveDefaultsFor, setSaveDefaultsFor] = useState<string | null>(null);
+  useEffect(() => setSaveDefaultsFor(null), [defaultsKey]);
+  const saved = defaultsQuery.data;
+  const savedAgent = saved?.agents[agentKind];
+  const differsFromDefaults = Boolean(saved && (saved.nodeId !== nodeId || saved.agentKind !== agentKind
+    || savedAgent?.mode !== mode || (savedAgent?.model ?? "") !== model || (savedAgent?.effort ?? "") !== effort));
+  const saveAsDefault = differsFromDefaults && saveDefaultsFor === defaultsKey;
 
   const mutation = useMutation({
     // `force` only ever follows the tick: without conflicts it is left off, so
     // a dispatch that raced another one is refused instead of silently doubled.
     mutationFn: async () => {
-      const config={nodeId,agentKind,mode,...(model?{model}:{}),...(effort?{effort}:{})};
+      const config={nodeId,agentKind,mode,saveAsDefault,...(model?{model}:{}),...(effort?{effort}:{})};
       if(handoff) {
         const result=await api.createAgentHandoff(handoff.itemKey,{expectedRevision:handoff.expectedRevision,note:handoff.note,
           idempotencyKey:handoff.idempotencyKey,target:{kind:"dispatch",...config}});
@@ -218,8 +212,10 @@ export function DispatchDialog({
       ...(model ? { model } : {}),
       ...(effort ? { effort } : {}),
       itemKeys,
+      saveAsDefault,
+      ...(redispatchConfirmed ? { force: true } : {}),
       idempotencyKey: (() => {
-        const signature=JSON.stringify([nodeId,agentKind,mode,model,effort,itemKeys]);
+        const signature=JSON.stringify([nodeId,agentKind,mode,model,effort,itemKeys,saveAsDefault,redispatchConfirmed]);
         if(!requestKeys.has(signature)) requestKeys.set(signature,crypto.randomUUID());
         return requestKeys.get(signature)!;
       })(),
@@ -247,7 +243,6 @@ export function DispatchDialog({
   const submissionKey = `${nodeId}|${agentKind}|${mode}|${model}|${effort}`;
   useEffect(() => {
     if (mutation.isError) mutation.reset();
-    if (saveDefaults.isError) saveDefaults.reset();
     // Keyed on the values, not the error: resetting clears the error, and
     // depending on it would run the effect again.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -275,7 +270,7 @@ export function DispatchDialog({
     return `${node.name} · ${ineligibilityText(reason, { agentLabel: agentLabel(agentKind), productName }, t)}`;
   };
 
-  useDialogDraft(touched && !created, mutation.isPending || saveDefaults.isPending);
+  useDialogDraft(touched && !created, mutation.isPending);
 
   if (created) {
     const statusKey = dispatchStatusLabelKey(created.status);
@@ -314,7 +309,7 @@ export function DispatchDialog({
         event.preventDefault();
         if (blocked) return;
         if (modeIssue || modelUnavailable || catalogUnavailable) return;
-        if (newSession) newSession.onConfigured({productId:projectId,nodeId,agentKind,mode,
+        if (newSession) newSession.onConfigured({productId:projectId,nodeId,agentKind,mode,saveAsDefault,
           ...(model ? {model} : {}), ...(effort ? {effort} : {}),
           nodeName:nodes.find(node => node.id === nodeId)?.name ?? "",
           canAttach:nodes.find(node => node.id === nodeId)?.supportsChatAttachments === true});
@@ -466,18 +461,17 @@ export function DispatchDialog({
         <div className="inline-error"><CirclePause size={16} /><span>{dispatchErrorMessage(mutation.error, t, agentLabel(agentKind))}</span></div>
       )}
 
-      {saveDefaults.isError && (
-        <div className="inline-error" role="alert"><CirclePause size={16} /><span>{localizedErrorText(saveDefaults.error, t)}</span></div>
-      )}
+      {defaultsQuery.isError && <p className="inline-error" role="alert">{t("dispatchDefaultsUnavailable")}
+        <button type="button" className="secondary-button" onClick={() => void defaultsQuery.refetch()}>{t("retry")}</button>
+      </p>}
+      {differsFromDefaults && <label className="dispatch-conflict-confirm">
+        <input type="checkbox" checked={saveAsDefault} disabled={mutation.isPending}
+          onChange={event => setSaveDefaultsFor(event.target.checked ? defaultsKey : null)} />
+        <span>{t("dispatchSetDefaults")}</span>
+      </label>}
       <div className="form-footer">
-        {savedCurrentDefaults && <span role="status">{t("dispatchDefaultsSaved")}</span>}
-        <button type="button" className="secondary-button"
-          disabled={!nodeId || !defaultsApplied || !defaultsQuery.data || modelUnavailable || catalogUnavailable || saveDefaults.isPending || mutation.isPending}
-          onClick={() => saveDefaults.mutate(currentDefaults)}>
-          {saveDefaults.isPending && <LoaderCircle className="spin" size={16} />}{t("dispatchSetDefaults")}
-        </button>
-        <button type="button" className="secondary-button" disabled={mutation.isPending || saveDefaults.isPending} onClick={onClose}>{t(handoff ? "agentHandoffBack" : "cancel")}</button>
-        <button type="submit" className="primary-button" disabled={Boolean(modeIssue) || modelUnavailable || catalogUnavailable || blocked || !defaultsApplied || mutation.isPending || saveDefaults.isPending}>
+        <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={onClose}>{t(handoff ? "agentHandoffBack" : "cancel")}</button>
+        <button type="submit" className="primary-button" disabled={Boolean(modeIssue) || modelUnavailable || catalogUnavailable || blocked || !defaultsApplied || mutation.isPending}>
           {mutation.isPending ? <LoaderCircle className="spin" size={16} /> : <Rocket size={16} />}
           {t(newSession ? "newSessionEnter" : handoff ? "agentHandoffConfirm" : eligibility.data?.takeoverWarnings?.length ? "executionStartTakeover" : "dispatchSubmit")}
         </button>

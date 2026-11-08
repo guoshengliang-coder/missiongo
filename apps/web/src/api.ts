@@ -472,7 +472,7 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input),
     }),
-  listItems: (productId: string, options: ListItemsOptions = {}) => {
+  listItems: (productId: string, options: ListItemsOptions = {}, signal?: AbortSignal) => {
     const params = new URLSearchParams({ productId });
     appendItemFilters(params, options, true);
     if (options.builder) params.set("builder", options.builder);
@@ -481,7 +481,7 @@ export const api = {
     if (options.search?.trim()) params.set("search", options.search.trim());
     if (options.limit) params.set("limit", String(options.limit));
     if (options.beforeSequence) params.set("beforeSequence", String(options.beforeSequence));
-    return request<WorkItemListPage>(`/api/v1/items?${params}`);
+    return request<WorkItemListPage>(`/api/v1/items?${params}`, signal ? { signal } : {});
   },
   transferItem: (itemKey: string, targetProductId: string, idempotencyKey: string) =>
     request<WorkItem>(`/api/v1/items/${encodeURIComponent(itemKey)}/transfer`, {

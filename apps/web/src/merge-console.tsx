@@ -1,4 +1,4 @@
-import { GitMerge, Plus } from "lucide-react";
+import { CloudUpload, GitMerge, Plus } from "lucide-react";
 import { IntegrationProgress } from "./integration-details";
 import { localizedErrorText } from "./error-text";
 import type { MergeIntegration, MergeBatchPresentation } from "@missiongo/contracts";
@@ -24,17 +24,29 @@ export interface Batch {presentation?:MergeBatchPresentation;integration?:MergeI
 const post=<T,>(path:string,body:unknown)=>request<T>(path,{method:"POST",body:JSON.stringify(body)});
 export const useDeliveries=(productId:string)=>useQuery({
   queryKey:["merge-deliveries",productId],
-  queryFn:()=>request<{deliveries:Delivery[];batches:Batch[];attentionSessionIds?:string[]}>(`/api/v1/products/${encodeURIComponent(productId)}/merge-deliveries`),
+  queryFn:()=>request<{deliveries:Delivery[];batches:Batch[];attentionSessionIds?:string[];sessionProgress?:Record<string,MergeProgress>}>(`/api/v1/products/${encodeURIComponent(productId)}/merge-deliveries`),
   enabled:Boolean(productId),refetchInterval:15_000,
 });
 
 export function useMergeProgress(productId:string) {
   const query=useDeliveries(productId);
-  return deriveMergeProgress(productId,query.data?.deliveries??[],query.data?.batches??[]);
+  const progress = deriveMergeProgress(productId,query.data?.deliveries??[],query.data?.batches??[]);
+  return { ...progress, sessions: query.data?.sessionProgress ? new Map(Object.entries(query.data.sessionProgress)) : progress.sessions };
+}
+const stageLabels = {pending:"mergePending",merging:"mergeRunning",publishing:"sessionPublishing",publication_unknown:"sessionPublicationUnknown",publication_partial:"sessionPublicationPartial",merged:"sessionMerged",published:"sessionPublished",partial:"sessionMergePartial",blocked:"sessionMergeBlocked"} as const;
+export function SessionDeliveryNotice({productId,sessionId}:{productId:string;sessionId:string}) {
+  const {t}=useI18n(), progress=useMergeProgress(productId), state=progress.sessions.get(sessionId);
+  if(!state)return null;
+  return <section role="status" className="merge-delivery-notice confirmed" data-session-delivery={state}>
+    <span className="merge-delivery-icon" aria-hidden="true">{state==="publishing"||state==="published"?<CloudUpload size={21}/>:<GitMerge size={21}/>}</span>
+    <div className="merge-delivery-copy"><strong>{t(state==="pending"?"mergeConfirmed":stageLabels[state])}</strong>
+      <p>{t(state==="pending"?"mergeAutoWithdraw":state==="merged"||state==="published"?"sessionCompletionHint":state==="merging"||state==="publishing"?"sessionIntegrationHint":"sessionDeliveryReviewHint")}</p>
+    </div>
+  </section>;
 }
 export function MergeProgressBadge({state}:{state:MergeProgress | undefined}) {
   const {t}=useI18n();
-  return state?<span className="item-handler-badge" data-merge-progress={state}>{t(state==="pending"?"mergePending":"mergeRunning")}</span>:null;
+  return state?<span className="item-handler-badge" data-merge-progress={state}>{state==="published"||state==="publishing"?<CloudUpload size={12} aria-hidden="true"/>:<GitMerge size={12} aria-hidden="true"/>}{t(stageLabels[state])}</span>:null;
 }
 const checkLabel=(blocker?:string)=>blocker==="changed"?"mergeChanged":blocker==="pending"?"mergeCheckPending":blocker==="failed"?"mergeCheckFailed":blocker==="conflicting"?"mergeCheckConflict":blocker==="dependency"?"mergeCheckDependency":blocker?"mergeNeedsCheck":"mergeChecksPassed";
 
@@ -49,8 +61,8 @@ export function useDeliveryAttention(productId:string,sessionId:string) {
 /** Accepted sends invalidate the shared offer cache immediately, before polling catches up. */
 export async function invalidateSessionDeliveries(client:ReturnType<typeof useQueryClient>,sessionId:string) {
   await client.cancelQueries({queryKey:["merge-deliveries"]});
-  client.setQueriesData<{deliveries:Delivery[];attentionSessionIds?:string[]}>({queryKey:["merge-deliveries"]},current=>current?{
-    ...current,attentionSessionIds:current.attentionSessionIds?.filter(id=>id!==sessionId)??[],
+  client.setQueriesData<{deliveries:Delivery[];attentionSessionIds?:string[];sessionProgress?:Record<string,MergeProgress>}>({queryKey:["merge-deliveries"]},current=>current?{
+    ...current,...(current.sessionProgress?{sessionProgress:Object.fromEntries(Object.entries(current.sessionProgress).filter(([id])=>id!==sessionId))}:{}),attentionSessionIds:current.attentionSessionIds?.filter(id=>id!==sessionId)??[],
     deliveries:current.deliveries.map(d=>d.sessionId===sessionId && ["proposed","confirmed"].includes(d.state)
       ? {...d,blocker:"changed"} : d),
   }:current);
@@ -72,9 +84,9 @@ export function DeliveryCards({productId,sessionId,blocked=false}:{productId:str
     locks.current.add(d.id);mutation.mutate({d,decision});
   };
   const rows=query.data?.deliveries.filter(d=>d.sessionId===sessionId && d.blocker!=="changed"
-    && ["proposed","confirmed"].includes(d.state))??[];
+    && d.state==="proposed")??[];
   if(query.isError) return <p role="alert" className="inline-error">{t("mergeLoadError")} <button type="button" className="secondary-button" onClick={()=>void query.refetch()}>{t("retry")}</button></p>;
-  if(!rows.length) return null;
+  if(!rows.length) return <SessionDeliveryNotice productId={productId} sessionId={sessionId}/>;
   return <div className="merge-delivery-notices">{rows.map(d=><section role="status" className={`merge-delivery-notice ${d.state==="confirmed"?"confirmed":"proposed"}`} key={d.id}>
     <span className="merge-delivery-icon" aria-hidden="true">{d.state==="confirmed"?<GitMerge size={21}/>:<Plus size={18}/>}</span>
     <div className="merge-delivery-copy"><strong>{t(d.state==="confirmed"?"mergeConfirmed":d.reconfirmation?"mergeReoffer":"mergeOffer")}</strong>
@@ -87,6 +99,7 @@ export function DeliveryCards({productId,sessionId,blocked=false}:{productId:str
         onClick={()=>choose(d,"confirm")}>{t(d.reconfirmation?"mergeReconfirm":"mergeConfirm")}</button>
     </div>}
   </section>)}
+  <SessionDeliveryNotice productId={productId} sessionId={sessionId}/>
   {mutation.isError&&<p role="alert" className="inline-error">{localizedErrorText(mutation.error,t)}</p>}</div>;
 }
 

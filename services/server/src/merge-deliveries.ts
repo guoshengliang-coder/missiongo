@@ -5,7 +5,7 @@ import { normalizeCompletion, sameCompletion } from "./completion.js";
 import { reconciliationActionSchema, combinedValidationSchema, type ReconciliationAction, type ReconciliationState } from "./merge-reconciliation.js";
 import { legacyIntegratorPrompt } from "./legacy-merge-authorization.js";
 import { readRecoveryTransport } from "./merge-recovery-transport.js";
-import type { MergeIntegration, MergeReconciliationPreview, MergeBatchPresentation } from "@missiongo/contracts";
+import type { MergeIntegration, MergeReconciliationPreview, MergeBatchPresentation, SessionDeliveryStage } from "@missiongo/contracts";
 import { compactItemKeys } from "@missiongo/domain";
 import { integrationActionSchema, integrationDigest, applyIntegrationAction, assertIntegrationMerge, freshIntegrationCheck, integrationDenied, type IntegrationAction } from "./merge-integration.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -52,6 +52,7 @@ interface Delivery extends DeliveryInput {
   reconfirmation?: boolean;
 }
 interface Batch {
+  displayBoundaries?: Record<string, { at: string; settings: string; humanStamp: string | null }>;
   reconciliation?: ReconciliationState;
   integration?: MergeIntegration;
   id: string; productId: string; accountId: string; requestKey: string;
@@ -75,8 +76,8 @@ export class MergeDeliveries {
     this.db.connection.prepare("UPDATE merge_deliveries SET state=?,data_json=? WHERE id=?")
       .run(d.state, JSON.stringify(d), d.id);
   }
-  private saveBatch(b: Batch & {entries?:unknown}) {
-    const {entries:_entries,...stored}=b;
+  private saveBatch(b: Batch & {entries?:unknown;resultsDigest?:string}) {
+    const {entries:_entries,resultsDigest:_resultsDigest,...stored}=b;
     this.db.connection.prepare("UPDATE merge_batches SET state=?,data_json=? WHERE id=?")
       .run(b.state, JSON.stringify(stored), b.id);
   }
@@ -169,10 +170,99 @@ export class MergeDeliveries {
   list(productId: string, accountId: string) {
     return this.listRaw(productId).filter(d => d.accountId === accountId && !["withdrawn","merged"].includes(d.state)).map(d => this.view(d)).filter(d => d.state === "batched" || d.blocker !== "changed");
   }
+  private displaySettings(sessionId: string): string {
+    return digest([
+      this.db.connection.prepare("SELECT dispatch_id,settings_revision FROM agent_sessions WHERE id=?").get(sessionId),
+      this.db.connection.prepare("SELECT json_extract(native_settings_json,'$.revision') AS revision FROM external_agent_sessions WHERE id=?").get(sessionId),
+      this.db.connection.prepare("SELECT id FROM agent_session_commands WHERE session_id=? AND kind='message' ORDER BY rowid DESC LIMIT 1").get(sessionId),
+      this.db.connection.prepare("SELECT id FROM external_native_commands WHERE session_id=? ORDER BY rowid DESC LIMIT 1").get(sessionId),
+    ]);
+  }
+  private rememberDisplay(b: Batch, d: Delivery) {
+    const boundaries = b.displayBoundaries ??= {};
+    for (const id of [b.sessionId, d.sessionId]) boundaries[id] ??= { at: new Date().toISOString(), settings: this.displaySettings(id), humanStamp: this.latestHumanStamp(id) };
+  }
+  private displayUnchanged(b: Batch, sessionId: string): boolean {
+    const boundary = b.displayBoundaries?.[sessionId];
+    if (!boundary || boundary.settings !== this.displaySettings(sessionId)) return false;
+    const stamp = this.latestHumanStamp(sessionId);
+    return !stamp || Date.parse(stamp) <= Math.max(Date.parse(boundary.at), boundary.humanStamp ? Date.parse(boundary.humanStamp) : 0);
+  }
+  /** Old batches have no snapshot: use matching formal completion times only
+   * when settings still have their initial revision. Unknown history stays unlabelled. */
+  private legacyDisplayUnchanged(sessionId: string, deliveries: Delivery[]): boolean {
+    const local = this.db.connection.prepare("SELECT settings_revision FROM agent_sessions WHERE id=?").get(sessionId) as {settings_revision:number}|undefined;
+    const external = this.db.connection.prepare("SELECT json_extract(native_settings_json,'$.revision') AS revision FROM external_agent_sessions WHERE id=?").get(sessionId) as {revision:number|null}|undefined;
+    if ((local?.settings_revision ?? 0)>1 || (external?.revision ?? 0)>0) return false;
+    const completed: number[] = [];
+    for (const d of deliveries) for (const key of d.itemKeys) {
+      const evidence = this.store.getDevelopmentEvidence(key);
+      if (!evidence.handover || !evidence.completion || !sameCompletion(evidence.completion,{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`})) return false;
+      completed.push(Date.parse(evidence.handover.createdAt));
+    }
+    const stamp=this.latestHumanStamp(sessionId);
+    return completed.length>0 && (!stamp || Date.parse(stamp)<=Math.max(...completed));
+  }
+  private latestHumanStamp(sessionId: string): string | null {
+    const latest = this.db.connection.prepare(`SELECT MAX(stamp) AS stamp FROM (
+      SELECT occurred_at AS stamp FROM agent_session_messages WHERE session_id=? AND role='user'
+      UNION ALL SELECT created_at FROM agent_session_commands WHERE session_id=? AND kind='message'
+      UNION ALL SELECT json_extract(payload_json,'$.occurredAt') FROM external_native_messages WHERE session_id=? AND json_extract(payload_json,'$.role')='user'
+      UNION ALL SELECT created_at FROM external_native_commands WHERE session_id=?
+    )`).get(sessionId,sessionId,sessionId,sessionId) as {stamp:string|null};
+    return latest.stamp;
+  }
+
+  /** Shared list/detail projection. Historical receipts never become mutable conversation state. */
+  sessionProgress(productId: string, accountId: string): Record<string, SessionDeliveryStage> {
+    const rows = this.listRaw(productId).filter(d => d.accountId === accountId);
+    const batches = (this.db.connection.prepare("SELECT data_json FROM merge_batches WHERE product_id=? AND account_id=? ORDER BY rowid DESC")
+      .all(productId,accountId) as {data_json:string}[]).map(row=>JSON.parse(row.data_json) as Batch);
+    const byBatch = new Map(batches.map(b=>[b.id,b]));
+    const result: Record<string, SessionDeliveryStage> = {};
+    const stage = (b:Batch, deliveries:Delivery[], sessionId:string):SessionDeliveryStage|undefined => {
+      if (!deliveries.length || deliveries.some(d=>this.scope(d.itemKeys)!==d.scope)) return;
+      const outcomes = deliveries.map(d=>b.results[d.id]);
+      if (outcomes.some(r=>!r)) return b.state === "active" ? "merging" : undefined;
+      if (outcomes.some(r=>r?.status === "blocked")) return outcomes.some(r=>r?.status === "merged") ? "partial" : "blocked";
+      if (b.displayBoundaries?.[sessionId] ? !this.displayUnchanged(b,sessionId) : !this.legacyDisplayUnchanged(sessionId,deliveries)) return;
+      const presentation = this.presentation(b);
+      const needsPublication = deliveries.some(d=>d.requiredArtifacts.length>0);
+      const publications = deliveries.map(d=>presentation.entries[d.id]?.publication);
+      if (needsPublication && publications.every(value=>value === "published" || value === "not_required")) return "published";
+      const partiallyPublished = publications.some(value=>value === "partial" || value === "published");
+      const publication = b.integration?.publication;
+      if (needsPublication && publication && publication.resultsDigest === digest(b.results)) {
+        if (publication.state === "publishing" && b.state === "active" && Date.parse(publication.expiresAt)>Date.now()) return "publishing";
+        return partiallyPublished ? "publication_partial" : "publication_unknown";
+      }
+      return partiallyPublished ? "publication_partial" : "merged";
+    };
+    const seen = new Set<string>();
+    for (const d of rows) {
+      if (seen.has(d.sessionId)) continue;
+      seen.add(d.sessionId);
+      if (d.state === "confirmed" && this.eligible(d)!=="changed") result[d.sessionId]="pending";
+      else if (d.batchId) {
+        const b = byBatch.get(d.batchId);
+        const group = rows.filter(other=>other.batchId===d.batchId && other.sessionId===d.sessionId);
+        if (!b || group.some(other=>b.results[other.id]?.status!=="merged" && this.activity(other.sessionId)!==other.activity)) continue;
+        const value = stage(b,group,d.sessionId);
+        if (value) result[d.sessionId] = value;
+      }
+    }
+    for (const b of batches) {
+      if (seen.has(b.sessionId)) continue;
+      seen.add(b.sessionId);
+      const value = stage(b,rows.filter(d=>b.deliveries.includes(d.id)),b.sessionId);
+      if (value) result[b.sessionId] = value;
+    }
+    return result;
+  }
   /** A declined offer also handles this turn's generic attention; later input never inherits that choice. */
   attentionSessionIds(productId: string, accountId: string) {
     return [...new Set(this.listRaw(productId).filter(d => d.accountId === accountId
-      && d.state !== "merged" && d.state !== "batched" && d.activity === this.activity(d.sessionId))
+      && d.state !== "merged" && d.activity === this.activity(d.sessionId))
       .filter(d => { try { this.sourceValid(d); return true; } catch { return false; } })
       .map(d => d.sessionId))];
   }
@@ -214,7 +304,12 @@ export class MergeDeliveries {
       const releases:MergeBatchPresentation["entries"][string]["releases"]=[];
       let publishedItems=0,knownItems=0;
       for(const key of d.itemKeys) {
-        const timeline=this.store.getTimeline(key).filter(e=>!e.historySourceKey);
+        // Read receipt facts only: list polling must not load comment/transcript bodies.
+        const timeline=(this.db.connection.prepare(`SELECT event_type AS eventType,to_status AS toStatus,payload_json AS payloadJson,created_at AS createdAt
+          FROM work_item_events WHERE item_id=? AND history_source_key IS NULL
+          AND (event_type='release_evidence_added' OR (event_type='status_changed' AND to_status='pending_verification')) ORDER BY rowid`)
+          .all(this.store.getWorkItem(key).id) as {eventType:string;toStatus:string;payloadJson:string;createdAt:string}[])
+          .map(row=>({...row,payload:JSON.parse(row.payloadJson) as Record<string,unknown>}));
         // Each receipt covers its own item's complete scope, not the PR union.
         const receipt=[...timeline].reverse().find(e=>{
           if(e.eventType!=="release_evidence_added"&&!(e.eventType==="status_changed"&&e.toStatus==="pending_verification"))return false;
@@ -222,6 +317,7 @@ export class MergeDeliveries {
           try {if(!sameCompletion(normalizeCompletion(p),{kind:"github",url}))return false;}catch{return false;}
           return typeof p.receiptDigest==="string"&&/^[a-f0-9]{64}$/.test(p.receiptDigest)
             &&sha.safeParse(p.deployedCommit).success&&Array.isArray(p.releases)&&p.releases.length>0
+            &&d.requiredArtifacts.every(artifact=>(p.releases as {artifact?:string}[]).some(r=>r.artifact===artifact))
             &&p.releases.every((r:unknown)=>z.object({artifact:z.string().min(1),version:z.string().min(1),sourceCommit:sha}).safeParse(r).success);
         });
         const record=this.store.getDeliveryRecords(key).find(row=>row.completion && sameCompletion(row.completion!,{kind:"github",url}));
@@ -258,7 +354,7 @@ export class MergeDeliveries {
       const text = `执行用户已授权的合并批次 ${id}。派单启动后先调用 get_merge_batch，使用本会话原 dispatchId。仅处理批次冻结的 PR；每次执行前重新调用 get_merge_batch，entries 中 blocker 非空必须停止。推送并登记后，达到可合并状态即用 gh pr merge --auto --merge --match-head-commit 绑定实际合并的 head 挂自动合并，由 required checks 全绿自动完成合并，不要逐项等待 CI 通知或手动合并，直接并行推进下一项；合并后回读实际 merge commit 核实再 report；检查失败先 gh pr merge --disable-auto 再修复，禁止 --admin 或绕过保护；不要领取开发条目，不要重新创建批次。每项挂自动合并前重新核实目标仓库、主线、依赖、CI 及预期 head；他人推送的新提交必须停止，不得合并未经本会话核验的 head。清单中的旧检查证据仅供参考，由本合并会话统一读取实时结果；CI 排队或运行中时保留原批次，先查状态且状态未变时降低轮询频率，不将等待标记为失败或另建会话。${integrationProtocol===1 ? "你是集成者，以保障批次全部条目成功集成为目标：负责必要的冲突、兼容与回归修复，按下述协议登记后推送原 PR 分支，不扩大功能范围。" : "本批仅允许合并原确认版本，不授权修改代码。"}疑似 flaky 或超时的检查可有依据地重跑一次核实。修复后的最终 head 必须本地仓库检查通过且无冲突才允许挂 auto-merge，实际合并仍由 required checks 全绿保证；穷尽合理修复仍无法集成的项记 blocked，写明已尝试的修复与剩余障碍，不编造修复结果。使用 report_merge_batch 逐项记录实际结果；未知结果保留原批次。已核实合并且明确无需发布的条目，完整读取 get_item_context.developmentEvidence 并写结果评论后，用 submit_non_release_for_verification 携带原合并 dispatchId、精确 batch/delivery 和当前 integration revision 提交人工验证，不伪造发布凭据或领取源条目；需发布条目仍按正式发布交接。发布授权：${publish ? "批次全部条目合并成功后按项目既有全量候选覆盖门禁发布，批次选择不缩小发布范围；存在 blocked 项时不得自动发布，先逐项报告，等用户明确决定是否先发已合并部分。" : "仅合并，不发布。"} 完成所有操作且核实无后台执行后，才结束批次。遵守仓库权限和发布规则。`;
       const dispatches=new DispatchStore(this.db);
       const free=new FreeSessionStore(this.db,dispatches,new AgentSessionStore(this.db));
-      const integrationInstructions=integrationProtocol===1 ? `本批已授权集成所必需的修复与验证，但不扩大需求或绕过原生权限。先读取全批 PR、条目与主线，梳理依赖、文件/接口/迁移重叠、分组、顺序及组合验证目标，通过 record_merge_integration 的 plan 动作持久化计划；这是执行说明，不重复索取方案批准。可并行只读调查，重叠代码修改和合并按计划协调。修复前用 prepare_repair 绑定当前远端 head 和主线；原 worktree 内先确认远端仍为该 head，仅追加本会话所做提交，不 force、不混入外部提交。推送前后核对远端 head，使用 scripts/merge-integration-evidence.mjs 验证提交链；repair 动作登记真实修复提交，原确认保持不变。修复或基线变化后重新核验，不复用旧提交检查。使用 check 动作保存最终 head、当前目标分支 base、本地检查与实时 CI 证据；get_merge_batch 的 executionHead 才是实际允许合并的 head，mergeReady 为 true 且实时 Git 核验通过后立即对 executionHead 执行 gh pr merge --auto --merge --match-head-commit 挂自动合并，不等待 CI 通知即转入下一依赖项；合并后回读实际 merge commit 核实并 report，检查失败先 gh pr merge --disable-auto 再修复。使用 progress 动作保存阶段和下一步，恢复时先读计划、修复预留、历史与结果，不重推、不重复合并。每次调用携带当前 expectedRevision 和稳定 idempotencyKey；响应未知原样重试。确认没有推送、远端仍为预留 head 且无后台执行时，可用 cancel_repair 结束未发生的修复；未知结果不能撤销预留。他人提交必须停下核对，不能登记为自己的修复。合并必须满足计划依赖，report_merge_batch 后继续独立项。批次结果全部明确后在实际目标分支验证已合并组合，final_validation 记录真实目标 head 和证据，再执行已授权发布与交接。不得删除测试或降低断言来冒充修复。` : `本批来自旧版入口，未授权集成修复；只合并冻结 head，需改代码则停止并说明，不能套用新版修复授权。`;
+      const integrationInstructions=integrationProtocol===1 ? `本批已授权集成所必需的修复与验证，但不扩大需求或绕过原生权限。先读取全批 PR、条目与主线，梳理依赖、文件/接口/迁移重叠、分组、顺序及组合验证目标，通过 record_merge_integration 的 plan 动作持久化计划；这是执行说明，不重复索取方案批准。可并行只读调查，重叠代码修改和合并按计划协调。修复前用 prepare_repair 绑定当前远端 head 和主线；原 worktree 内先确认远端仍为该 head，仅追加本会话所做提交，不 force、不混入外部提交。推送前后核对远端 head，使用 scripts/merge-integration-evidence.mjs 验证提交链；repair 动作登记真实修复提交，原确认保持不变。修复或基线变化后重新核验，不复用旧提交检查。使用 check 动作保存最终 head、当前目标分支 base、本地检查与实时 CI 证据；get_merge_batch 的 executionHead 才是实际允许合并的 head，mergeReady 为 true 且实时 Git 核验通过后立即对 executionHead 执行 gh pr merge --auto --merge --match-head-commit 挂自动合并，不等待 CI 通知即转入下一依赖项；合并后回读实际 merge commit 核实并 report，检查失败先 gh pr merge --disable-auto 再修复。使用 progress 动作保存阶段和下一步，恢复时先读计划、修复预留、历史与结果，不重推、不重复合并。每次调用携带当前 expectedRevision 和稳定 idempotencyKey；响应未知原样重试。确认没有推送、远端仍为预留 head 且无后台执行时，可用 cancel_repair 结束未发生的修复；未知结果不能撤销预留。他人提交必须停下核对，不能登记为自己的修复。合并必须满足计划依赖，report_merge_batch 后继续独立项。批次结果全部明确后在实际目标分支验证已合并组合，final_validation 记录真实目标 head 和证据，再执行已授权发布与交接。发布开始/续期、失败或结束时用 publication_progress 动作，state 为 publishing/failed/ended，checkedAt 为实时 UTC，resultsDigest 原样取 get_merge_batch 返回值；沿用原 batchId/dispatchId、expectedRevision 与新幂等键。publishing 每五分钟内续期；没有可信心跳显示发布待核实，ended 不证明已发布，仍须完整正式凭据及交接。不得删除测试或降低断言来冒充修复。` : `本批来自旧版入口，未授权集成修复；只合并冻结 head，需改代码则停止并说明，不能套用新版修复授权。`;
       // The first message is instructions, so the conversation is named after
       // the work it integrates instead of an excerpt of that prompt (AND-449).
       const integrationTitle=`集成 · ${compactItemKeys([...new Set(deliveries.flatMap(d=>d.itemKeys))])}`;
@@ -289,7 +385,7 @@ export class MergeDeliveries {
           entries:Object.fromEntries(b.deliveries.map(id=>{const d=this.read<Delivery>("merge_deliveries",id);return [id,{itemKeys:d.itemKeys,originalHead:d.head,head:b.results[id]?.head??d.head,progress:"queued" as const,detail:"",repairs:[]}];}))};
       }
     }
-    return {...b, dispatchId, entries:b.deliveries.map(id=>{
+    return {...b, dispatchId, resultsDigest:digest(b.results), entries:b.deliveries.map(id=>{
       const d=this.view(this.read<Delivery>("merge_deliveries",id));
       let mergeReady=!d.blocker&&!b.results[id]&&b.state==="active";
       if(b.integration){try{assertIntegrationMerge(b.integration,id,b.results);}catch{mergeReady=false;}}
@@ -333,6 +429,15 @@ export class MergeDeliveries {
         return b;
       }
       if(b.state!=="active"||state.revision!==expectedRevision)throw changed();
+      if (action.kind === "publication_progress") {
+        const validation = b.reconciliation?.finalValidation;
+        const partial = b.reconciliation?.publication;
+        if (!b.publish || b.deliveries.some(id=>!b.results[id]) || !validation || validation.resultsDigest !== digest(b.results)
+          || !b.deliveries.some(id=>this.read<Delivery>("merge_deliveries",id).requiredArtifacts.length)
+          || (Object.values(b.results).some(r=>r.status==="blocked") && !(partial?.decision==="allow_partial_publication" && partial.resultsDigest===digest(b.results)))
+          || b.deliveries.some(id=>b.results[id]?.status==="merged" && this.read<Delivery>("merge_deliveries",id).itemKeys.some(key=>this.itemBlocker(this.read<Delivery>("merge_deliveries",id),key)))
+          || (partial?.decision==="defer_publication" && partial.resultsDigest===digest(b.results))) throw changed();
+      }
       const affected="deliveryId" in action?[action.deliveryId]:b.deliveries.filter(id=>!b.results[id]);
       for(const id of affected){if(!b.deliveries.includes(id))throw changed();this.sourceValid(this.read<Delivery>("merge_deliveries",id));}
       applyIntegrationAction(state,action,key,b.results);
@@ -362,6 +467,7 @@ export class MergeDeliveries {
         d.state="merged"; this.save(d);
       }
       b.results[deliveryId]=result;
+      if(result.status==="merged")this.rememberDisplay(b,d);
       if(result.status==="merged")this.handoff(b,d);
       if(b.integration){
         b.integration.revision++;delete b.integration.finalValidation;
@@ -548,6 +654,7 @@ export class MergeDeliveries {
             b.integration.entries[d.id]!.head=action.evidence.head;b.integration.revision++;delete b.integration.finalValidation;
             for(const [otherId,other] of Object.entries(b.integration.entries))if(!b.results[otherId]){delete other.check;if(other.progress==="ready")other.progress="queued";}}
           d.state="merged";this.save(d);delete r.finalValidation;delete r.publication;
+          this.rememberDisplay(b,d);
           this.handoff(b,d,requestId);
         } else if(action.kind==="retry_blocked") {
           if(previous?.status!=="blocked")throw changed();this.sourceValid(d);
@@ -598,6 +705,7 @@ export class MergeDeliveries {
         const d=this.read<Delivery>("merge_deliveries",deliveryId);
         if(d.itemKeys.some(key=>b.reconciliation?.handoffs[key]?.status==="blocked"||Boolean(this.itemBlocker(d,key))))throw conflict("merge_handoffs_incomplete","部分开发交接仍受阻，请查看逐条对账结果。");
       }
+      if(b.integration?.publication?.state==="publishing" && Date.parse(b.integration.publication.expiresAt)>Date.now()) throw conflict("merge_publication_running","请先核实发布已停止并结束阶段上报，不能释放仍在发布的批次。");
       if(b.publish)this.assertPublication(b);
       b.state="finished";this.saveBatch(b);
       for(const id of b.deliveries) {const d=this.read<Delivery>("merge_deliveries",id);if(d.state==="batched"){d.state="withdrawn";this.save(d);}}

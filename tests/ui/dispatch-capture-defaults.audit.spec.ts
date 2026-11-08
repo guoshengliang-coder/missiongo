@@ -38,13 +38,14 @@ for (const width of [375, 1440]) {
     await expect(form).toHaveCount(0);
   });
 
-  test(`dispatch explicitly saves current defaults, preserves other agents and reports errors at ${width}px`, async ({ page, request }, testInfo) => {
+  test(`dispatch checkbox saves only with an accepted dispatch and preserves other agents at ${width}px`, async ({ page, request }, testInfo) => {
     await page.setViewportSize({ width, height: 950 });
     const product = await (await request.post("/api/v1/products", { data: { name: `Dispatch defaults ${width}`, keyPrefix: `DD${width}` } })).json();
     const item = await (await request.post("/api/v1/items", { data: { productId: product.id, status: "ready", type: "task", priority: "normal", title: "派单默认配置", description: "Save a choice", environment: { platform: "web" } } })).json();
     let defaults: DispatchDefaults = { agentKind: "codex", agents: { codex: { mode: "auto" }, claude_code: { mode: "default" } } };
     let failSave = true;
     let dispatchCount = 0;
+    let preferenceWrites = 0;
     const node = { id: "fixture-node", name: "Fixture Mac", deviceName: "Fixture Mac", online: true,
       agents: [{ kind: "codex", planApprovalProtocol: 1, ready: true, models: [{ id: "fixture-model", label: "Fixture model", efforts: ["high"] }] }, { kind: "claude_code", planApprovalProtocol: 1, ready: true, models: [] }],
       repos: [{ productId: product.id, repoPath: "fixture-repository" }], repoCandidates: [], createdAt: new Date().toISOString() };
@@ -52,7 +53,7 @@ for (const width of [375, 1440]) {
     await page.route("**/api/v1/dispatches/active", route => route.fulfill({ json: { active: [], latest: [], current: [], handlers: [] } }));
     await page.route("**/api/v1/dispatch-defaults", async route => {
       if (route.request().method() === "PUT") {
-        if (failSave) return route.fulfill({ status: 500, json: { title: "Synthetic save failure" } });
+        preferenceWrites++;
         defaults = route.request().postDataJSON();
       }
       await route.fulfill({ json: defaults });
@@ -60,6 +61,9 @@ for (const width of [375, 1440]) {
     await page.route("**/api/v1/dispatches", async route => {
       dispatchCount++;
       const input = route.request().postDataJSON();
+      if (input.saveAsDefault && failSave) return route.fulfill({ status: 500, json: { title: "Synthetic transactional save failure" } });
+      if (input.saveAsDefault) defaults = { nodeId: input.nodeId, agentKind: input.agentKind,
+        agents: { ...defaults.agents, [input.agentKind]: { mode: input.mode, model: input.model, effort: input.effort } } };
       await route.fulfill({ status: 201, json: { ...input, id: "fixture-dispatch", status: "queued", nodeName: node.name, sessionUrl: "codex://threads/dispatch-result", createdAt: new Date().toISOString() } });
     });
     const openDispatch = async () => {
@@ -72,17 +76,21 @@ for (const width of [375, 1440]) {
     await expect(form.getByRole("combobox", { name: "Agent", exact: true })).toHaveAttribute("data-value", "codex");
     await chooseOption(form.getByRole("combobox", { name: "模型", exact: true }), "fixture-model");
     await chooseOption(form.getByRole("combobox", { name: "强度", exact: true }), "high");
-    const save = form.getByRole("button", { name: "设为默认值", exact: true });
-    await save.click();
-    await expect(form.getByRole("alert")).toContainText("服务端暂时无法完成，请稍后再试。");
-    await expect(form.getByRole("combobox", { name: "模型", exact: true })).toHaveAttribute("data-value", "fixture-model");
-    failSave = false;
-    await save.click();
-    await expect(form.getByRole("status")).toHaveText("已保存");
+    const save = form.getByRole("checkbox", { name: "设为默认值", exact: true });
+    await expect(save).not.toBeChecked();
+    await expect(form.getByRole("button", { name: "设为默认值", exact: true })).toHaveCount(0);
+    await save.check();
     expect(dispatchCount).toBe(0);
-    expect(defaults).toEqual({ nodeId: node.id, agentKind: "codex", agents: { codex: { mode: "auto", model: "fixture-model", effort: "high" }, claude_code: { mode: "default" } } });
+    expect(preferenceWrites).toBe(0);
     await page.screenshot({ path: testInfo.outputPath(`dispatch-defaults-${width}.png`) });
-    expect(await form.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+    await form.getByRole("button", { name: "派单", exact: true }).click();
+    await expect(form.locator(".inline-error")).toContainText("服务端暂时无法完成，请稍后再试。");
+    expect(defaults.agents.codex).toEqual({ mode: "auto" });
+    await expect(save).toBeChecked();
+    failSave = false;
+    await form.getByRole("button", { name: "派单", exact: true }).click();
+    await expect(page.locator(".dispatch-result")).toBeVisible();
+    expect(defaults).toEqual({ nodeId: node.id, agentKind: "codex", agents: { codex: { mode: "auto", model: "fixture-model", effort: "high" }, claude_code: { mode: "default" } } });
     // Reloading closes the dialog without invoking its unsaved-choice guard.
     await page.reload();
     await openDispatch();
@@ -91,6 +99,7 @@ for (const width of [375, 1440]) {
     await form.getByRole("button", { name: "派单", exact: true }).click();
     await expect(page.locator(".dispatch-result")).toBeVisible();
     await expect(page.locator(".dispatch-result a[href^='codex:'], .dispatch-result .dispatch-session-link")).toHaveCount(0);
-    expect(dispatchCount).toBe(1);
+    expect(dispatchCount).toBe(3);
+    expect(preferenceWrites).toBe(0);
   });
 }

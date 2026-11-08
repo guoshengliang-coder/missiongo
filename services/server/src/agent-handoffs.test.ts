@@ -93,13 +93,14 @@ it("creates a bound dispatch atomically, claims independently of plan/mode, and 
   const node=dispatches.registerNode({accountId:config.id,name:"Handoff fixture",installationId:randomUUID()});
   dispatches.recordHeartbeat(node.nodeId,[{kind:"codex",planApprovalProtocol:1,ready:true}]);
   dispatches.replaceOwnRepos(node.nodeId,[{productId:f.itemProduct.id,repoPath:"/synthetic/handoff-repository"}]);
-  const target={kind:"dispatch",nodeId:node.nodeId,agentKind:"codex",mode:"auto"};
+  const target={kind:"dispatch",nodeId:node.nodeId,agentKind:"codex",mode:"auto",saveAsDefault:true};
   const parallel=await f.http("POST","/api/v1/dispatches",{...target,itemKeys:[f.item.key]});
   expect(parallel.statusCode).toBe(201);
   dispatches.cancelQueuedDispatch(config.id,parallel.json().id);
   const input=f.handoffInput(target),granted=await f.http("POST",`${f.url}/agent-handoffs`,input);
   expect(granted.statusCode,granted.body).toBe(201);
   const d=granted.json().dispatch;
+  expect((await f.http("GET","/api/v1/dispatch-defaults")).json()).toEqual({nodeId:node.nodeId,agentKind:"codex",agents:{codex:{mode:"auto"}}});
   expect((await f.http("POST",`${f.url}/agent-handoffs`,input)).json().dispatch.id).toBe(d.id);
   dispatches.claimNextDispatch(node.nodeId);
   expect(sessions.permitDispatchStart(node.nodeId,d.id)).toBe(true);
