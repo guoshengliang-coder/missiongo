@@ -1,3 +1,4 @@
+import { SESSION_MESSAGE_CLOCK_SCHEMA } from "./session-message-clock-schema.js";
 import { COLLABORATION_SCHEMA } from "./collaboration-schema.js";
 import { EXECUTION_STOP_SCHEMA } from "./execution-stop-schema.js";
 import { INTERRUPTED_EXECUTION_STOP_SCHEMA } from "./interrupted-execution-stop-schema.js";
@@ -2582,6 +2583,16 @@ export class MissionGoDatabase {
           BEGIN SELECT RAISE(ABORT,'plan versions are immutable'); END;`);
         this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
           .run(202611080115,new Date().toISOString());
+      });
+    }
+
+    // The conversation clock is based exclusively on real message identity/time.
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611081212").get()) {
+      this.transaction(() => {
+        if (this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611081212").get()) return;
+        this.connection.exec(SESSION_MESSAGE_CLOCK_SCHEMA);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611081212,new Date().toISOString());
       });
     }
 

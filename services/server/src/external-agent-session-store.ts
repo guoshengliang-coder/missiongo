@@ -1,3 +1,4 @@
+import { recordMessageTime } from "./session-message-clock.js";
 import { acknowledgeSessionUnread } from "./session-unread.js";
 import { assertItemExecutionIdentity } from "./item-execution-blockers.js";
 import { assertBuilderExecution, assertExternalExecution } from "./builder-authority.js";
@@ -30,7 +31,7 @@ interface SessionRow {
   id: string; account_id: string; client_id: string; agent_kind: AgentKind | "other";
   session_ref: string; ref_kind: "native" | "tracking"; name: string | null;
   progress_status: ExternalProgressStatus; created_at: string; updated_at: string;
-  activity_at: string; archived_at: string | null; unread_at: string | null;
+  activity_at: string; conversation_at: string; archived_at: string | null; unread_at: string | null;
   read_at: string | null; dismissed_revision: string | null;
 }
 
@@ -97,6 +98,7 @@ export class ExternalAgentSessionStore {
       if (previous?.revision !== revision) {
         const activityAt = new Date(Math.max(Date.now(),Date.parse(row.updated_at)+1)).toISOString();
         this.db.prepare("UPDATE external_agent_sessions SET updated_at=?,activity_at=?,unread_at=? WHERE id=?").run(activityAt,activityAt,activityAt,row.id);
+        recordMessageTime(this.db, `external:${row.id}`, `plan:${revision}`, activityAt);
       }
       for (const key of keys) this.db.prepare(`INSERT OR IGNORE INTO external_agent_session_items(session_id,item_id,link_kind) VALUES (?,?,'approval')`)
         .run(row.id,this.store.getWorkItem(key).id);
@@ -183,6 +185,7 @@ export class ExternalAgentSessionStore {
       const row = this.row(owner.accountId, sessionId);
       // A monotonic server clock keeps arrivals in the same millisecond unread independently.
       const now = new Date(Math.max(Date.now(), Date.parse(row.updated_at) + 1)).toISOString();
+      recordMessageTime(this.db, `external:${sessionId}`, `report:${idempotencyKey}`, now);
       this.db.prepare(`INSERT INTO external_agent_session_reports
         (id, session_id, item_key, status, text, idempotency_key, digest, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(randomUUID(), sessionId, itemKey, status, text ?? null, idempotencyKey, digest, now);
@@ -222,7 +225,7 @@ export class ExternalAgentSessionStore {
   listForAccount(accountId: string, limit = 100): AgentSessionListItem[] {
     const plans = new ImplementationPlans(this.store.database);
     const requestIdentities = new Set((this.db.prepare("SELECT identity_key FROM implementation_plan_requests WHERE account_id=?").all(accountId) as {identity_key:string}[]).map(row=>row.identity_key));
-    const rows = this.db.prepare("SELECT * FROM external_agent_sessions WHERE account_id = ? ORDER BY activity_at DESC, rowid DESC LIMIT ?")
+    const rows = this.db.prepare("SELECT s.*,COALESCE(mc.message_at,s.created_at) AS conversation_at FROM external_agent_sessions s LEFT JOIN session_message_clocks mc ON mc.session_key='external:'||s.id WHERE s.account_id = ? ORDER BY COALESCE(mc.message_at,s.created_at) DESC, s.id DESC LIMIT ?")
       .all(accountId, limit) as unknown as SessionRow[];
     // AND-383: batch the per-row lookups (latest report, linked items) and
     // reuse one native-session store instead of allocating per row.
@@ -263,7 +266,7 @@ export class ExternalAgentSessionStore {
         progressStatus: row.progress_status, refKind: row.ref_kind, approvalOnly: items.every(item=>item.linkKind === "approval"),
         ...(latest ? {lastReportedAt:latest.created_at} : {}),
         updatedAt: row.updated_at, ...(row.archived_at ? { archivedAt: row.archived_at, archivedSource: "missiongo" as const } : {}),
-        activities: [], turnState: {}, agentSessionId: row.id, activityAt: row.activity_at,
+        activities: [], turnState: {}, agentSessionId: row.id, activityAt: row.conversation_at,
         nodeName: row.name ?? row.agent_kind, nodeRevoked: false,
         mode: "external", dispatchStatus: "external", ...(row.name ? { sessionName: row.name } : {}),
         createdAt: row.created_at, items: items.map((item) => ({ key: item.key, title: item.title, productId: item.productId })),

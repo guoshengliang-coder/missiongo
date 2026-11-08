@@ -1,3 +1,4 @@
+import { observeMessageTimes, recordMessageTime } from "./session-message-clock.js";
 import { acknowledgeSessionUnread, observeSessionUnread } from "./session-unread.js";
 import { isConversationMessage } from "@missiongo/domain";
 import { ImplementationPlans } from "./implementation-plans.js";
@@ -794,7 +795,7 @@ export class AgentSessionStore {
       .prepare(
         `SELECT s.id AS session_id, d.id AS dispatch_id, d.agent_kind,
                 s.status AS session_status, s.last_error AS session_last_error,
-                s.updated_at AS session_updated_at, s.activity_at AS session_activity_at,
+                s.updated_at AS session_updated_at, COALESCE(mc.message_at, s.created_at, d.created_at) AS session_activity_at,
                 s.archived_at AS session_archived_at, s.archive_source AS session_archive_source,
                 s.activities_json AS session_activities_json,
                 s.turn_state_json AS session_turn_state_json,
@@ -811,10 +812,11 @@ export class AgentSessionStore {
                 s.settings_error, s.settings_error_revision, n.agents_json AS node_agents_json
          FROM dispatches d
          LEFT JOIN agent_sessions s ON s.dispatch_id = d.id
+         LEFT JOIN session_message_clocks mc ON mc.session_key = 'dispatch:' || d.id
          JOIN nodes n ON n.id = d.node_id
          WHERE d.account_id = ?
            AND (s.id IS NOT NULL OR NOT EXISTS (SELECT 1 FROM free_session_starts f WHERE f.dispatch_id=d.id))
-         ORDER BY COALESCE(s.activity_at, d.archived_at, d.completed_at, d.delivered_at, d.created_at) DESC
+         ORDER BY COALESCE(mc.message_at, s.created_at, d.created_at) DESC, d.id DESC
          LIMIT ?`,
       )
       .all(accountId, limit) as unknown as SessionListSettingsRow[];
@@ -958,8 +960,7 @@ export class AgentSessionStore {
       const status = health.status;
       const updatedAt = row.session_updated_at ?? row.dispatch_archived_at
         ?? row.completed_at ?? row.delivered_at ?? row.created_at;
-      const activityAt = row.session_activity_at ?? row.dispatch_archived_at
-        ?? row.completed_at ?? row.delivered_at ?? row.created_at;
+      const activityAt = row.session_activity_at ?? row.created_at;
       const archivedAt = row.session_archived_at ?? row.dispatch_archived_at;
       const archivedSource = row.session_archive_source ?? (row.dispatch_archived_at ? "missiongo" : null);
       const lastError = health.reason ?? row.session_last_error ?? row.dispatch_error
@@ -1285,6 +1286,7 @@ export class AgentSessionStore {
         )
         .run(id, sessionId, accountId, text, now);
       this.attachments?.bind(sessionId, accountId, id, attachmentIds);
+      recordMessageTime(this.database.connection, `dispatch:${binding!.dispatch_id}`, `command:${id}`, now);
       this.database.connection
         .prepare("UPDATE agent_sessions SET updated_at = ?, activity_at = ?, activity_repair_pending = 0 WHERE id = ?")
         .run(now, now, sessionId);
@@ -1851,6 +1853,7 @@ export class AgentSessionStore {
       }
     }
     this.database.transaction(() => {
+      observeMessageTimes(this.database.connection, `dispatch:${session.dispatch_id}`, input.messages, now);
       const previousUnread = this.database.connection.prepare("SELECT unread_at FROM dispatches WHERE id=?")
         .get(session.dispatch_id) as { unread_at: string | null };
       const unreadAt = new Date(Math.max(Date.parse(now), previousUnread.unread_at ? Date.parse(previousUnread.unread_at) + 1 : 0)).toISOString();

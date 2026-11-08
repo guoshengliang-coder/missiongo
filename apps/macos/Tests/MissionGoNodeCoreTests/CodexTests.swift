@@ -359,7 +359,7 @@ final class CodexProtocolTests: XCTestCase {
         XCTAssertEqual(snapshot.messages[0].occurredAt, "2026-09-22T01:02:03.000Z")
         XCTAssertEqual(snapshot.messages[1].occurredAt, "2026-12-20T23:10:01.000Z")
         XCTAssertEqual(snapshot.messages.last?.questions, [AgentSessionQuestion(title: "Scope", options: ["small", "complete"])])
-        XCTAssertEqual(snapshot.activityAt, "2026-12-20T23:10:00.123Z")
+        XCTAssertEqual(snapshot.activityAt, "2026-12-20T23:10:01.000Z")
     }
 
     func testGeneratedImageBecomesAnExplicitPreviewReferenceWithoutToolPayloads() throws {
@@ -1799,6 +1799,7 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
     func approvalSnapshot(socketPath: String, threadId: String) -> CodexApprovalSnapshot? {
         approvalReads.withLock { $0 += 1 }; return pendingApproval
     }
+    func existingApprovalSnapshot(socketPath: String, threadId: String) -> CodexApprovalSnapshot? { pendingApproval }
     func cancelApprovals(threadId: String, turnId: String) {
         cancelledApprovals.withLock { $0.append(turnId) }
     }
@@ -1931,6 +1932,20 @@ private final class RecordingControl: CodexControl, @unchecked Sendable {
 }
 
 final class CodexLauncherTests: XCTestCase {
+    func testIdleMirrorDoesNotResumeForApprovalObservation() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = CodexThreadSnapshot(status: "idle", messages: [AgentSessionMessage(sourceId: "old", role: "agent", text: "Yesterday")])
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        for _ in 0..<2 {
+            _ = try await launcher.synchronize(NodeAgentSession(id: "s", sessionRef: "thread-1", status: "idle"))
+        }
+        XCTAssertEqual(control.approvalReads.current, 0)
+        control.snapshot = CodexThreadSnapshot(status: "active", messages: [], waitingOnApproval: true)
+        _ = try await launcher.synchronize(NodeAgentSession(id: "s", sessionRef: "thread-1", status: "idle"))
+        XCTAssertGreaterThan(control.approvalReads.current, 0)
+    }
+
     func testUnloadedExternalHistoryIsReportedWithoutSendingAQueuedReply() async throws {
         let control = RecordingControl(threadId: "thread-1")
         control.snapshot = CodexThreadSnapshot(status: "idle", messages: [AgentSessionMessage(sourceId: "answer", role: "agent", text: "History")], runtimeStatus: "notLoaded")

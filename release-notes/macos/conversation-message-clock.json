@@ -1,0 +1,4 @@
+{
+  "items": [],
+  "reason": "Standalone user-authorized repair without a work-item key; behavior and validation are documented in docs/conversation-message-clock.md."
+}

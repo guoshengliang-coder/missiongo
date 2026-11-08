@@ -1,3 +1,4 @@
+import { messageTimestamp } from "./message-time.js";
 import { transcriptHistory } from "./transcript-history.js";
 import { sessionName } from "./session-name.js";
 import { randomUUID } from "node:crypto";
@@ -154,13 +155,14 @@ export class ClaudeAdapter implements Adapter {
       const text = content.filter((c) => c.type === "text" && typeof c.text === "string").map((c) => c.text).join("\n");
       if (event.type === "user" && event.uuid) this.activeTurnId = event.uuid;
       if (text.trim()) this.add({ sourceId: event.uuid ?? randomUUID(), ...(this.activeTurnId ? { turnId: this.activeTurnId } : {}),
-        role: event.type === "user" ? "user" : "agent", text });
+        role: event.type === "user" ? "user" : "agent", text, ...(messageTimestamp(event.timestamp) ? { occurredAt: messageTimestamp(event.timestamp)! } : {}) });
       if (event.type === "user" && event.uuid) this.received(event.uuid);
       if (event.type === "assistant") { this.state.status = "active"; this.state.turnActive = true; }
     }
   }
   private add(message: Message): void {
     const index = this.state.messages.findIndex((m) => m.sourceId === message.sourceId);
+    message = { ...message, occurredAt: this.state.messages[index]?.occurredAt ?? message.occurredAt ?? new Date().toISOString() };
     if (index >= 0) this.state.messages[index] = message; else this.state.messages.push(message);
 
   }
