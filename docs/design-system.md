@@ -606,3 +606,7 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 更新使用独立 URLSession，继承服务器连接模式；保持 600s 总下载预算，60s 无数据超时，不自动切代理、重放安装或跳过 SHA/签名/Gatekeeper。诊断原位展开并可复制，只含有限的版本、阶段、字节、时间和错误码，不保存 URL、请求头、凭据、用户路径或会话内容。整个区域沿用外层滚动，窄窗不缩小字号或裁切说明，无新增样式豁免。
 
 回归：`UpdateDownloadTests` 使用本地 HTTP 字节流覆盖分块、长度、超限、取消及超时；`UpdateActivityTests` 验证诊断边界和阶段；`UpdateLifecycleTests` 用注入 I/O 验证重复点击、迟到回调、已安装重启失败及明暗/窄窗布局，原 `AppUpdaterTests` 保留签名与安装回退检查。真实客户端跨版本安装、系统安全评估及节点等待后的重启需发布后验证，测试不替换本机 App。
+
+### 本地完成后的待合并引导
+
+控制台与条目内会话共用 `MergePreparationNotice`，沿用 `merge-delivery-notice`、`merge-delivery-copy` 和 `merge-delivery-choices` 的颜色、间距、字号与按钮层级，不新增样式豁免。提示本地修改完成，主操作“提交到待合并”、次操作“暂不提交”；直接说明确认仅授权推送、创建 PR 和登记交付，不合并或发布。发送成功与正式加入清单分开表达，失败可重试且保留草稿；已有正式交付卡片接替引导。候选条件与权限边界见 [交付契约](merge-deliveries.md#本地完成后的提交引导)，验证覆盖两个入口、320px／桌面、明暗及三档字号。

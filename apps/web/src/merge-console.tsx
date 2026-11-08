@@ -22,7 +22,7 @@ interface Delivery {
 }
 export interface Batch {presentation?:MergeBatchPresentation;integration?:MergeIntegration;id:string;sessionId:string;state:string;deliveries:string[];publish:boolean;results:Record<string,{status:string;detail:string}>}
 const post=<T,>(path:string,body:unknown)=>request<T>(path,{method:"POST",body:JSON.stringify(body)});
-const useDeliveries=(productId:string)=>useQuery({
+export const useDeliveries=(productId:string)=>useQuery({
   queryKey:["merge-deliveries",productId],
   queryFn:()=>request<{deliveries:Delivery[];batches:Batch[];attentionSessionIds?:string[]}>(`/api/v1/products/${encodeURIComponent(productId)}/merge-deliveries`),
   enabled:Boolean(productId),refetchInterval:15_000,
