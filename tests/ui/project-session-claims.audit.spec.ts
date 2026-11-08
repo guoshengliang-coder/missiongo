@@ -7,7 +7,8 @@ const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.m
 for (const touch of [false, true]) for (const theme of ["light", "dark"] as const) test.describe(`project claims ${theme} ${touch ? "touch" : "mouse"}`, () => {
   test.use({ colorScheme: theme, hasTouch: touch, isMobile: touch });
   test("names the conversation after the items it claimed, keeps one running conversation, history and reply", async ({ page }, info) => {
-    const id = "project-conversation", stamp = new Date().toISOString();
+    await page.clock.setFixedTime(new Date("2026-11-08T10:00:00Z"));
+    const id = "project-conversation", stamp = "2026-11-08T10:00:00Z";
     let items: AgentSessionSummary["items"] = [];
     let sent = "";
     const summary = (): AgentSessionSummary => ({
@@ -37,10 +38,10 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
     await expect(page.locator(".agent-console-heading h2")).toContainText("这是什么问题？");
-    await expect(page.locator(".agent-console-heading h2 [data-session-category=unlinked]")).toHaveText("无关联会话");
+    await expect(page.locator(".agent-console-heading h2 [data-session-category=unlinked]")).toHaveText("非派单会话");
     await expect(page.locator(".agent-console-session-heading [data-session-category]")).toHaveCount(0);
     const meta = page.locator(".agent-console-session-meta");
-    await expect(meta.locator('[data-session-category=unlinked]')).toHaveText("无关联会话");
+    await expect(meta.locator('[data-session-category=unlinked]')).toHaveText("非派单会话");
     for (const width of [320, 520, 521, 1440]) for (const scale of ["small", "medium", "large"]) {
       await page.setViewportSize({ width, height: width === 1440 ? 375 : 900 });
       await page.evaluate(value => { document.documentElement.dataset.fontScale = value; }, scale);
@@ -72,8 +73,8 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
       await expect(page.locator(".agent-console-session-heading strong")).toHaveText(`${keys} · 首个处理条目`);
       await expect(page.locator(".agent-console-heading h2")).toContainText(`${keys} · 首个处理条目`);
       await expect(page.locator('[data-session-category="unlinked"]')).toHaveCount(0);
-      await expect(page.locator('.agent-console-session [data-session-category="linked"]')).toHaveText("条目会话");
-      await expect(page.locator('.agent-console-heading h2 [data-session-category="linked"]')).toHaveText("条目会话");
+      await expect(page.locator('.agent-console-session [data-session-category="linked"]')).toHaveCount(0);
+      await expect(page.locator('.agent-console-heading h2 [data-session-category="linked"]')).toHaveText("派单会话");
       await expect(page.getByRole("button", { name: /^运行中 \d+$/ }).locator("small")).toHaveText("1");
       await expect(page.locator(".agent-console-dispatch-head button")).toHaveCount(items.length);
       await expect(page.getByText("原项目会话的消息历史", { exact: true })).toBeVisible();

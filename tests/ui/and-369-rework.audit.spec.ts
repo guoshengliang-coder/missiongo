@@ -8,7 +8,8 @@ for (const width of [320, 768, 1023, 1024, 1440]) for (const theme of ["light", 
     await page.emulateMedia({ colorScheme: theme });
     const product = (await request.post("/api/v1/products", { data: { name: "Rework project", keyPrefix: `RW${width}${theme[0]}` } })).json();
     const { id: productId } = await product;
-    const stamp = new Date().toISOString();
+    await page.clock.setFixedTime(new Date("2026-11-08T10:00:00Z"));
+    const stamp = "2026-11-08T10:00:00Z";
     const base = {
       agentKind: "codex", status: "active", updatedAt: stamp, activityAt: stamp, createdAt: stamp,
       nodeName: "Fixture Mac", nodeId: "fixture-node", nodeConnectionState: "online", nodeRevoked: false,
@@ -42,14 +43,14 @@ for (const width of [320, 768, 1023, 1024, 1440]) for (const theme of ["light", 
     });
     await page.goto(`/?product=${productId}&console=agent`);
     const rows = page.locator(".agent-console-session");
-    const association = page.getByRole("combobox", { name: "关联条目筛选", exact: true });
+    const association = page.getByRole("combobox", { name: "会话类型筛选", exact: true });
     await expect(association).toHaveAttribute("data-value", "all");
     await expect(rows).toHaveCount(2);
     // AND-426: options carry the count the list will hold when picked.
     await association.click();
     const allOption = page.getByRole("option", { name: /^全部/ });
     await expect(allOption).toHaveAccessibleName(/2 个运行中，共 2 个会话/);
-    await expect(page.getByRole("option", { name: /^无关联会话/ })).toHaveAccessibleName(/1 个运行中，共 1 个会话/);
+    await expect(page.getByRole("option", { name: /^非派单会话/ })).toHaveAccessibleName(/1 个运行中，共 1 个会话/);
     await allOption.click();
     const agentFilterBox = page.getByRole("combobox", { name: "Agent 筛选", exact: true });
     await agentFilterBox.click();
@@ -57,12 +58,12 @@ for (const width of [320, 768, 1023, 1024, 1440]) for (const theme of ["light", 
     await page.keyboard.press("Escape");
     await expect(agentFilterBox).toHaveText("全部 Agent");
     await association.click();
-    await page.getByRole("option", { name: /^无关联会话/ }).click();
+    await page.getByRole("option", { name: /^非派单会话/ }).click();
     await expect(rows).toHaveCount(1);
-    await expect(association).toHaveText("无关联会话");
+    await expect(association).toHaveText("非派单会话");
     await expect(rows).toContainText("项目讨论");
     await association.click();
-    await page.getByRole("option", { name: /^条目会话/ }).click();
+    await page.getByRole("option", { name: /^派单会话/ }).click();
     await expect(rows).toHaveCount(1);
     await expect(rows).toContainText("RW-1");
     await association.click();

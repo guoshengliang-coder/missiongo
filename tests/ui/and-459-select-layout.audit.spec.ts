@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { advanceSessionListPoll } from "./polling";
 
 function sessions(productId: string) {
-  const stamp = new Date().toISOString();
+  const stamp = "2026-11-08T10:00:00Z";
   return Array.from({ length: 44 }, (_, index) => ({
     id: `layout-${index}`, agentSessionId: `layout-${index}`, productId,
     agentKind: ["codex", "opencode", "claude_code"][index % 3],
@@ -44,13 +44,14 @@ for (const width of [320, 520, 521, 1023, 1024, 1440, 1847]) for (const theme of
   test.describe(`${width}px ${theme}`, () => {
     test.use({ viewport: { width, height: 900 }, hasTouch: width <= 520, isMobile: width <= 520, colorScheme: theme });
     test("AND-459 labels, ratios and selected outline fit both menus", async ({ page, request }, testInfo) => {
+      await page.clock.setFixedTime(new Date("2026-11-08T10:00:00Z"));
       const errors: string[] = [];
       page.on("pageerror", error => errors.push(error.message));
       const product = await (await request.post("/api/v1/products", { data: { name: "Select layout", keyPrefix: `SL${width}${theme[0]}` } })).json();
       await page.route("**/api/v1/agent-sessions**", route => route.fulfill({ json: { sessions: sessions(product.id) } }));
       await page.goto(`/?product=${product.id}&console=agent`);
       await expect(page.locator(".agent-console-session")).toHaveCount(44);
-      const association = page.getByRole("combobox", { name: "关联条目筛选", exact: true });
+      const association = page.getByRole("combobox", { name: "会话类型筛选", exact: true });
       const agent = page.getByRole("combobox", { name: "Agent 筛选", exact: true });
       for (const control of [association, agent]) {
         await control.click();
@@ -76,24 +77,24 @@ test("AND-459 zero, active, archived and changing counts retain their list scope
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.clock.install();
+  await page.clock.install({ time: new Date("2026-11-08T10:00:00Z") });
   const product = await (await request.post("/api/v1/products", { data: { name: "Ratio scope", keyPrefix: "RSC" } })).json();
   let rows = sessions(product.id);
-  const stamp = new Date().toISOString();
+  const stamp = "2026-11-08T10:00:00Z";
   await page.route("**/api/v1/agent-sessions**", route => route.fulfill({ json: { sessions: [
     ...rows, { ...rows[0], id: "archived", agentSessionId: "archived", archivedAt: stamp },
     { ...rows[0], id: "failed", agentSessionId: "failed", status: "failed" },
   ] } }));
   await page.goto(`/?product=${product.id}&console=agent`);
-  const association = page.getByRole("combobox", { name: "关联条目筛选", exact: true });
+  const association = page.getByRole("combobox", { name: "会话类型筛选", exact: true });
   const agent = page.getByRole("combobox", { name: "Agent 筛选", exact: true });
   const list = page.locator(".agent-console-session");
   const menu = page.getByRole("listbox");
   const nav = page.locator(".agent-console-filters");
   await expect(list).toHaveCount(44);
   await association.click();
-  await expect(menu.getByRole("option", { name: /^无关联会话/ })).toHaveAccessibleName(/1 个运行中，共 12 个会话/);
-  await menu.getByRole("option", { name: /^无关联会话/ }).click();
+  await expect(menu.getByRole("option", { name: /^非派单会话/ })).toHaveAccessibleName(/1 个运行中，共 12 个会话/);
+  await menu.getByRole("option", { name: /^非派单会话/ }).click();
   await expect(list).toHaveCount(12);
   await agent.click();
   await expect(menu.getByRole("option", { name: /^OpenCode/ })).toHaveAccessibleName(/0 个运行中，共 4 个会话/);
