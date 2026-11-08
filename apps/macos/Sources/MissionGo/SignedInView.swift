@@ -351,6 +351,7 @@ private struct AgentMark: View {
 
 private struct VersionStatusSection: View {
     @EnvironmentObject private var model: AppModel
+    @State private var confirmsImmediateRestart = false
 
     var body: some View {
         MenuGroup(title: "版本与更新", symbol: "shippingbox", trailing: AnyView(
@@ -406,6 +407,10 @@ private struct VersionStatusSection: View {
                         Button("取消下载") { model.cancelUpdate() }
                             .font(.caption)
                     }
+                    if activity.stage == .waiting {
+                        Button("立即重启更新") { confirmsImmediateRestart = true }
+                            .font(.caption)
+                    }
                     DisclosureGroup("本次更新诊断") {
                         Text(activity.diagnostics)
                             .font(.caption)
@@ -429,6 +434,12 @@ private struct VersionStatusSection: View {
             .font(.caption)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
+        }
+        .alert("立即重启 MissionGo？", isPresented: $confirmsImmediateRestart) {
+            Button("继续等待", role: .cancel) {}
+            Button("立即重启") { model.restartInstalledUpdate(immediately: true) }
+        } message: {
+            Text("立即打开已安装的新版本可能中断正在启动的派单或尚未完成的结果回传。已启动的 Agent 会继续运行。")
         }
     }
 

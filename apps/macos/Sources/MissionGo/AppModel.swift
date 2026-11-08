@@ -146,6 +146,7 @@ final class AppModel: ObservableObject {
     private var updateService: any ClientUpdateService = LiveClientUpdateService()
     private var updateTask: Task<Void, Never>?
     private var updateGeneration = 0
+    private var installedUpdateBundle: URL?
     /// This build's version, for the menu to name; nil when run without a bundle.
     let appVersion: String? = AppUpdater.currentVersion()
 
@@ -210,13 +211,15 @@ final class AppModel: ObservableObject {
     init(previewCredential: NodeCredential, unread: UnreadSessionsSnapshot, agentVersions: [String: String],
          connectionDiagnosis: ServerConnection.Diagnosis? = nil,
          update: AppUpdater.Available? = nil, updateActivity: UpdateActivity? = nil,
-         updateService: any ClientUpdateService = LiveClientUpdateService()) {
+         updateService: any ClientUpdateService = LiveClientUpdateService(),
+         previewLoopTask: Task<Void, Never>? = nil) {
         isPreview = true
         showsRevokedNotice = false
         serverOverride = nil
         self.connectionDiagnosis = connectionDiagnosis
         self.updateService = updateService
         self.updateActivity = updateActivity
+        loopTask = previewLoopTask
         if let update {
             if let updateActivity {
                 updateState = updateActivity.stage.canCancel ? .downloading(update) : .installing(update)
@@ -533,6 +536,7 @@ final class AppModel: ObservableObject {
     }
 
     private func startLoop(_ credential: NodeCredential) {
+        guard updateActivity?.stage != .waiting, updateActivity?.stage != .relaunching else { return }
         stopLoop()
         guard let environment else { return }
         loopGeneration += 1
@@ -1278,10 +1282,10 @@ final class AppModel: ObservableObject {
                     zip: zip, manifest: latest.manifest,
                     stage: { [weak self] stage in await self?.setUpdateStage(stage, generation: generation) }
                 )
+                installedUpdateBundle = bundle
                 updateActivity?.move(to: .waiting)
                 await drainLoopForRelaunch()
-                updateActivity?.move(to: .relaunching)
-                relaunch(bundle)
+                restartInstalledUpdate()
             } catch {
                 guard updateGeneration == generation else { return }
                 let stage = updateActivity?.stage.rawValue ?? "更新"
@@ -1349,13 +1353,18 @@ final class AppModel: ObservableObject {
     /// Stop requesting new work, then wait for an already claimed dispatch to
     /// finish its launch/report sequence before this process exits.
     private func drainLoopForRelaunch() async {
-        loopGeneration += 1
         let running = loopTask
-        loopTask?.cancel()
+        stopLoop()
         if let running { await running.value }
-        loopTask = nil
-        loopStatesTask?.cancel()
-        loopStatesTask = nil
+    }
+
+    func restartInstalledUpdate(immediately: Bool = false) {
+        guard updateActivity?.stage == .waiting, let bundle = installedUpdateBundle else { return }
+        // Either the safe wait or the user can take the installed bundle once.
+        installedUpdateBundle = nil
+        if immediately { updateActivity?.record("用户选择立即重启，跳过节点等待。") }
+        updateActivity?.move(to: .relaunching)
+        relaunch(bundle)
     }
 
     /// Hands the relaunch to a detached child and quits. Sessions this app
