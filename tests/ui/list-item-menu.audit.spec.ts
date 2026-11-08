@@ -14,7 +14,7 @@ const cases: Record<Status, { primary: string; secondary?: string[]; moves: Stat
   inbox: { primary: "转为待处理", secondary:["暂缓处理"], moves: ["in_progress", "development_complete", "pending_verification", "done"] },
   ready: { primary: "开始处理", secondary: ["暂缓处理", "移回草稿"], moves: ["development_complete", "pending_verification", "done"] },
   in_progress: { primary: "标记开发完成", secondary: ["暂缓处理", "释放任务"], moves: ["inbox", "pending_verification", "done"] },
-  development_complete: { primary: "发布后提交验证", secondary: ["需要继续处理"], moves: ["inbox", "in_progress", "on_hold", "done"] },
+  development_complete: { primary: "提交验证", secondary: ["需要继续处理"], moves: ["inbox", "in_progress", "on_hold", "done"] },
   on_hold: { primary: "继续处理", moves: ["inbox", "in_progress", "development_complete", "pending_verification", "done"] },
   pending_verification: { primary: "验证通过", secondary: ["验收打回"], moves: ["inbox", "in_progress", "development_complete", "on_hold"] },
   done: { primary: "重新打开", moves: [] },
