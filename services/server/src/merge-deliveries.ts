@@ -1,3 +1,4 @@
+import { assertDispatchExecution, assertExternalExecution } from "./builder-authority.js";
 import type { NonReleaseVerification } from "./non-release-evidence.js";
 import { AccountStore } from "./accounts-store.js";
 import { MissionGoError } from "./errors.js";
@@ -28,21 +29,23 @@ export const mergeEvidenceSchema = z.object({
   source: z.string().trim().min(1).max(500),
 });
 export const deliverySchema = z.object({
-  itemKeys: z.array(z.string().regex(/^[A-Z][A-Z0-9]*-[0-9]+$/)).min(1).max(20),
+  itemKeys: z.array(z.string().regex(/^[A-Z][A-Z0-9]*-[0-9]+$/)).max(20).default([]),
+  productId: z.string().min(1).optional(),
   repository: z.string().regex(/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
   pullRequest: z.number().int().positive(), head: sha,
   targetBranch: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._/-]{0,150}$/),
   summary: z.string().trim().min(1).max(2000),
   validation: z.string().trim().min(1).max(4000),
-  requiredArtifacts: z.array(z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/)).max(20),
+  requiredArtifacts: z.array(z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,39}$/)).max(20).refine(a=>new Set(a).size===a.length,"Repeated artifact scope."),
   noReleaseReason: z.string().trim().min(1).max(4000).optional(),
   evidence: mergeEvidenceSchema,
-}).refine(d => d.requiredArtifacts.length > 0 ? !d.noReleaseReason : Boolean(d.noReleaseReason), "Explicit release scope is required.");
+}).refine(d => d.requiredArtifacts.length > 0 ? !d.noReleaseReason : Boolean(d.noReleaseReason), "Explicit release scope is required.").refine(d=>d.itemKeys.length>0 || Boolean(d.productId), "A project is required for standalone deliveries.");
 export type DeliveryInput = z.infer<typeof deliverySchema>;
 type Evidence = z.infer<typeof mergeEvidenceSchema>;
 type Identity = { dispatchId?: string; sessionId?: string };
 interface Delivery extends DeliveryInput {
   displayTitle?: string;
+  releaseReceipts?: {key:string;digest:string;receiptDigest:string;deployedCommit:string;at:string;releases:{artifact:string;version:string;sourceCommit:string}[]}[];
   id: string; productId: string; accountId: string; clientId: string; identity: Identity;
   sessionId: string; revision: string; scope: string; activity: string;
   state: "proposed" | "confirmed" | "withdrawn" | "batched" | "merged";
@@ -96,12 +99,37 @@ export class MergeDeliveries {
       this.db.connection.prepare("SELECT source_id,payload_json FROM external_native_messages WHERE session_id=? AND json_extract(payload_json,'$.role')='user' ORDER BY position DESC LIMIT 1").get(sessionId),
     ]);
   }
+  /** Account ownership and the persisted project binding replace item claim authority only for standalone work. */
+  private projectSource(accountId:string,clientId:string,identity:Identity,productId:string) {
+    this.store.assertProductWritable(productId);
+    const project=this.db.connection.prepare(`SELECT s.id,s.agent_session_ref AS ref,s.settings_revision AS settings,d.id AS dispatchId,d.status,
+      COALESCE(s.archived_at,d.archived_at) AS archived,n.revoked_at AS revoked,f.product_id AS productId
+      FROM agent_sessions s JOIN dispatches d ON d.id=s.dispatch_id JOIN nodes n ON n.id=d.node_id
+      JOIN free_session_starts f ON f.dispatch_id=d.id WHERE d.account_id=? AND ${identity.dispatchId ? "d.id=?" : "s.id=?"}`)
+      .get(accountId,identity.dispatchId ?? identity.sessionId ?? "") as {id:string;ref:string;settings:number;dispatchId:string;status:string;archived:string|null;revoked:string|null;productId:string}|undefined;
+    if(project) {
+      assertDispatchExecution(this.db,project.dispatchId);
+      if(project.productId!==productId || project.status!=="launched" || project.archived || project.revoked || project.ref.startsWith("pending:")) throw changed();
+      return {sessionId:project.id,scope:digest([productId,project.id,project.ref,project.settings])};
+    }
+    const external=identity.sessionId ? this.db.connection.prepare(`SELECT id,product_id,ref_kind,session_ref,archived_at,native_generation,native_settings_json
+      FROM external_agent_sessions WHERE id=? AND account_id=? AND client_id=?`).get(identity.sessionId,accountId,clientId) as
+      {id:string;product_id:string|null;ref_kind:string;session_ref:string;archived_at:string|null;native_generation:number;native_settings_json:string|null}|undefined : undefined;
+    if(!external || external.product_id!==productId || external.archived_at) throw changed();
+    if(this.db.connection.prepare(`SELECT 1 FROM external_agent_sessions s JOIN nodes n ON n.id=s.native_node_id
+      WHERE s.id=? AND n.revoked_at IS NOT NULL`).get(external.id)) throw changed();
+    assertExternalExecution(this.db,external.id);
+    return {sessionId:external.id,scope:digest([productId,external.id,external.ref_kind,external.session_ref,JSON.parse(external.native_settings_json ?? "{}").revision])};
+  }
+  private deliveryScope(d:Delivery) {
+    return d.itemKeys.length ? this.scope(d.itemKeys) : this.projectSource(d.accountId,d.clientId,d.identity,d.productId).scope;
+  }
   private sourceValid(d: Delivery) {
     for (const itemKey of d.itemKeys) {
       recoverExecutionAuthorization(this.store, d.accountId, d.clientId, {itemKey, ...d.identity});
       if (!["in_progress","development_complete","pending_verification"].includes(this.store.getWorkItem(itemKey).status)) throw changed();
     }
-    if (this.scope(d.itemKeys) !== d.scope || this.activity(d.sessionId) !== d.activity) throw changed();
+    if (this.deliveryScope(d) !== d.scope || this.activity(d.sessionId) !== d.activity) throw changed();
   }
   private fresh(e: Evidence, head: string) {
     const age = Date.now() - Date.parse(e.checkedAt);
@@ -138,20 +166,24 @@ export class MergeDeliveries {
         return this.view(d);
       }
       for (const itemKey of keys) recoverExecutionAuthorization(this.store, accountId, clientId, {itemKey,...identity});
-      const productId = this.store.getWorkItem(keys[0]!).productId;
+      const productId = keys.length ? this.store.getWorkItem(keys[0]!).productId : input.productId!;
+      if(input.productId && input.productId!==productId) throw changed();
+      const project = keys.length ? undefined : this.projectSource(accountId,clientId,identity,productId);
       if (keys.some(key => this.store.getWorkItem(key).productId !== productId || !["in_progress","development_complete","pending_verification"].includes(this.store.getWorkItem(key).status))) throw changed();
-      const sessionId = identity.sessionId ?? (this.db.connection.prepare("SELECT id FROM agent_sessions WHERE dispatch_id=?")
+      const sessionId = project?.sessionId ?? identity.sessionId ?? (this.db.connection.prepare("SELECT id FROM agent_sessions WHERE dispatch_id=?")
         .get(identity.dispatchId!) as {id:string}|undefined)?.id;
       if (!sessionId) throw changed();
       const history = this.listRaw(productId);
+      const overlaps = (d:Delivery) => keys.length ? d.itemKeys.some(key=>keys.includes(key))
+        : !d.itemKeys.length && d.repository===input.repository && d.pullRequest===input.pullRequest;
       const reconfirmation = history.some(d => d.accountId === accountId && d.sessionId === sessionId
-        && d.state !== "merged" && d.itemKeys.some(key => keys.includes(key)));
-      const existing = history.filter(d => d.accountId===accountId && d.clientId===clientId && d.sessionId===sessionId && d.itemKeys.some(k => keys.includes(k)) && !["withdrawn","merged"].includes(d.state));
+        && d.state !== "merged" && overlaps(d));
+      const existing = history.filter(d => d.accountId===accountId && d.clientId===clientId && d.sessionId===sessionId && overlaps(d) && !["withdrawn","merged"].includes(d.state));
       if (existing.some(d => d.state === "batched")) throw conflict("merge_batch_active", "这些改动已有合并批次，请核实原批次。");
       for (const d of existing) { d.state = "withdrawn"; this.save(d); }
       const d: Delivery = {...input,itemKeys:keys,id:randomUUID(),productId,accountId,clientId,identity,sessionId,
-        displayTitle:keys.map(key=>this.store.getWorkItem(key).title).join(" / "),
-        itemScopes:Object.fromEntries(keys.map(key=>[key,this.scope([key])])),reconfirmation,revision:digest({...input,itemKeys:keys}),scope:this.scope(keys),activity:this.activity(sessionId),state:"proposed",createdAt:new Date().toISOString()};
+        displayTitle:keys.length ? keys.map(key=>this.store.getWorkItem(key).title).join(" / ") : input.summary,
+        itemScopes:Object.fromEntries(keys.map(key=>[key,this.scope([key])])),reconfirmation,revision:digest({...input,itemKeys:keys}),scope:project?.scope ?? this.scope(keys),activity:this.activity(sessionId),state:"proposed",createdAt:new Date().toISOString()};
       this.db.connection.prepare("INSERT INTO merge_deliveries(id,product_id,account_id,client_id,request_key,state,data_json) VALUES (?,?,?,?,?,?,?)")
         .run(d.id,productId,accountId,clientId,requestKey,d.state,JSON.stringify(d));
       if (quote) this.confirm(d, "session-instruction", quote);
@@ -221,7 +253,7 @@ export class MergeDeliveries {
     const byBatch = new Map(batches.map(b=>[b.id,b]));
     const result: Record<string, SessionDeliveryStage> = {};
     const stage = (b:Batch, deliveries:Delivery[], sessionId:string):SessionDeliveryStage|undefined => {
-      if (!deliveries.length || deliveries.some(d=>this.scope(d.itemKeys)!==d.scope)) return;
+      if (!deliveries.length || deliveries.some(d=>{try{return this.deliveryScope(d)!==d.scope;}catch{return true;}})) return;
       const outcomes = deliveries.map(d=>b.results[d.id]);
       if (outcomes.some(r=>!r)) return b.state === "active" ? "merging" : undefined;
       if (outcomes.some(r=>r?.status === "blocked")) return outcomes.some(r=>r?.status === "merged") ? "partial" : "blocked";
@@ -296,6 +328,44 @@ export class MergeDeliveries {
         return {...batch,presentation:this.presentation(batch)};
       });
   }
+  /** Stable delivery identities remain in the release ledger after a merge-only batch finishes. */
+  releaseCandidates(productId:string,beforeSequence?:number,limit=100) {
+    return (this.db.connection.prepare(`SELECT rowid AS sequence,data_json FROM merge_deliveries
+      WHERE product_id=? AND state='merged' AND json_array_length(json_extract(data_json,'$.itemKeys'))=0
+      AND (? IS NULL OR rowid*2+1<?) ORDER BY rowid DESC LIMIT ?`)
+      .all(productId,beforeSequence ?? null,beforeSequence ?? null,limit) as {sequence:number;data_json:string}[]).map(row=>{
+        const d=JSON.parse(row.data_json) as Delivery;
+        return {sequence:row.sequence*2+1,delivery:d,candidate:{kind:"delivery" as const,deliveryId:d.id,expectedRevision:d.revision,
+          title:d.summary,pullRequestUrl:`${d.repository}/pull/${d.pullRequest}`,completion:{kind:"github" as const,url:`${d.repository}/pull/${d.pullRequest}`},
+          requiredArtifacts:d.requiredArtifacts}};
+      });
+  }
+  recordRelease(accountId:string,clientId:string,input:{productId:string;idempotencyKey:string;deployedCommit:string;receiptDigest:string;
+    deliveries:{deliveryId:string;expectedRevision:string;releases:{artifact:string;version:string;sourceCommit:string}[]}[]}) {
+    this.store.assertProductWritable(input.productId);
+    const accounts=new AccountStore(this.db),account=accounts.findActive(accountId);
+    if(!account || !accounts.allows(account,input.productId,"operate") || !accounts.allows(account,input.productId,"ai")) throw changed();
+    return this.db.transaction(()=>{
+      const requestId=digest([accountId,clientId,input.productId,input.idempotencyKey]),signature=digest(input);
+      const previousRequest=this.db.connection.prepare("SELECT digest FROM merge_delivery_release_requests WHERE id=?").get(requestId) as {digest:string}|undefined;
+      if(previousRequest && previousRequest.digest!==signature) throw changed();
+      // Reject cross-product or item-backed records before writing any receipt.
+      for(const row of input.deliveries) {const d=this.read<Delivery>("merge_deliveries",row.deliveryId);
+        if(d.productId!==input.productId || d.itemKeys.length) throw changed();}
+      const results=input.deliveries.map(row=>this.db.transaction(()=>{
+        const d=this.read<Delivery>("merge_deliveries",row.deliveryId),key=digest([accountId,clientId,input.idempotencyKey]);
+        const previous=d.releaseReceipts?.find(r=>r.key===key);
+        if(previous) {if(previous.digest!==signature)throw changed();return {deliveryId:d.id,outcome:"already_submitted"};}
+        if(d.state!=="merged" || d.revision!==row.expectedRevision || !d.requiredArtifacts.length || !row.releases.length
+          || new Set(row.releases.map(r=>r.artifact)).size!==row.releases.length || row.releases.some(r=>!d.requiredArtifacts.includes(r.artifact))) throw changed();
+        if((d.releaseReceipts?.length ?? 0)>=1000) throw changed();
+        (d.releaseReceipts ??= []).push({key,digest:signature,receiptDigest:input.receiptDigest,deployedCommit:input.deployedCommit,at:new Date().toISOString(),releases:row.releases});
+        this.save(d);return {deliveryId:d.id,outcome:"submitted"};
+      }));
+      if(!previousRequest)this.db.connection.prepare("INSERT INTO merge_delivery_release_requests(id,digest,created_at) VALUES (?,?,?)").run(requestId,signature,new Date().toISOString());
+      return results;
+    });
+  }
   /** Historical publication is read from formal receipts for this PR, not current
    * item status, free-form progress, or the fact that a batch was finished. */
   private presentation(b:Batch):MergeBatchPresentation {
@@ -327,8 +397,11 @@ export class MergeDeliveries {
             if(!releases.some(previous=>previous.artifact===r.artifact&&previous.sourceCommit===r.sourceCommit))releases.push({...r,checkedAt:receipt.createdAt});
         } else if(!this.itemBlocker(d,key))knownItems++;
       }
-      const publication=!d.requiredArtifacts.length&&d.noReleaseReason?"not_required":publishedItems===d.itemKeys.length?"published":publishedItems?"partial":knownItems===d.itemKeys.length?"pending":"unknown";
-      return [id,{itemKeys:d.itemKeys,title:d.displayTitle??d.itemKeys.map(key=>this.store.getWorkItem(key).title).join(" / "),summary:d.summary,pullRequestUrl:url,
+      if(!d.itemKeys.length) for(const receipt of d.releaseReceipts ?? []) for(const release of receipt.releases)
+        if(!releases.some(r=>r.artifact===release.artifact && r.sourceCommit===release.sourceCommit)) releases.push({...release,checkedAt:receipt.at});
+      const standalonePublished=!d.itemKeys.length && d.requiredArtifacts.every(a=>releases.some(r=>r.artifact===a));
+      const publication=!d.requiredArtifacts.length&&d.noReleaseReason?"not_required":!d.itemKeys.length?(standalonePublished?"published":releases.length?"partial":"pending"):publishedItems===d.itemKeys.length?"published":publishedItems?"partial":knownItems===d.itemKeys.length?"pending":"unknown";
+      return [id,{itemKeys:d.itemKeys,title:d.displayTitle??(d.itemKeys.length?d.itemKeys.map(key=>this.store.getWorkItem(key).title).join(" / "):d.summary),summary:d.summary,pullRequestUrl:url,
         requiredArtifacts:d.requiredArtifacts,noReleaseReason:d.noReleaseReason,publication,releases}];
     }))};
   }
@@ -357,7 +430,7 @@ export class MergeDeliveries {
       const integrationInstructions=integrationProtocol===1 ? `本批已授权集成所必需的修复与验证，但不扩大需求或绕过原生权限。先读取全批 PR、条目与主线，梳理依赖、文件/接口/迁移重叠、分组、顺序及组合验证目标，通过 record_merge_integration 的 plan 动作持久化计划；这是执行说明，不重复索取方案批准。可并行只读调查，重叠代码修改和合并按计划协调。修复前用 prepare_repair 绑定当前远端 head 和主线；原 worktree 内先确认远端仍为该 head，仅追加本会话所做提交，不 force、不混入外部提交。推送前后核对远端 head，使用 scripts/merge-integration-evidence.mjs 验证提交链；repair 动作登记真实修复提交，原确认保持不变。修复或基线变化后重新核验，不复用旧提交检查。使用 check 动作保存最终 head、当前目标分支 base、本地检查与实时 CI 证据；get_merge_batch 的 executionHead 才是实际允许合并的 head，mergeReady 为 true 且实时 Git 核验通过后立即对 executionHead 执行 gh pr merge --auto --merge --match-head-commit 挂自动合并，不等待 CI 通知即转入下一依赖项；合并后回读实际 merge commit 核实并 report，检查失败先 gh pr merge --disable-auto 再修复。使用 progress 动作保存阶段和下一步，恢复时先读计划、修复预留、历史与结果，不重推、不重复合并。每次调用携带当前 expectedRevision 和稳定 idempotencyKey；响应未知原样重试。确认没有推送、远端仍为预留 head 且无后台执行时，可用 cancel_repair 结束未发生的修复；未知结果不能撤销预留。他人提交必须停下核对，不能登记为自己的修复。合并必须满足计划依赖，report_merge_batch 后继续独立项。批次结果全部明确后在实际目标分支验证已合并组合，final_validation 记录真实目标 head 和证据，再执行已授权发布与交接。发布开始/续期、失败或结束时用 publication_progress 动作，state 为 publishing/failed/ended，checkedAt 为实时 UTC，resultsDigest 原样取 get_merge_batch 返回值；沿用原 batchId/dispatchId、expectedRevision 与新幂等键。publishing 每五分钟内续期；没有可信心跳显示发布待核实，ended 不证明已发布，仍须完整正式凭据及交接。不得删除测试或降低断言来冒充修复。` : `本批来自旧版入口，未授权集成修复；只合并冻结 head，需改代码则停止并说明，不能套用新版修复授权。`;
       // The first message is instructions, so the conversation is named after
       // the work it integrates instead of an excerpt of that prompt (AND-449).
-      const integrationTitle=`集成 · ${compactItemKeys([...new Set(deliveries.flatMap(d=>d.itemKeys))])}`;
+      const integrationTitle=`集成 · ${deliveries.every(d=>d.itemKeys.length) ? compactItemKeys([...new Set(deliveries.flatMap(d=>d.itemKeys))]) : deliveries.map(d=>`PR #${d.pullRequest}`).join(" / ")}`;
       const dispatch=free.prepare(accountId,id,config,`${text}\n\n${integrationInstructions}`,0,integrationTitle);
       const b: Batch={id,productId:config.productId,accountId,requestKey,dispatchId:dispatch.id,sessionId:dispatch.agentSessionId!,
         config,publish,selection,deliveries:deliveries.map(d=>d.id),state:"active",createdAt:new Date().toISOString(),results:{},
@@ -604,6 +677,7 @@ export class MergeDeliveries {
   }
   private handoff(b:Batch,d:Delivery,requestId?:string) {
     const r=this.reconciliation(b);
+    if(!d.itemKeys.length) this.store.recordProductReleaseArtifacts(d.productId,d.requiredArtifacts);
     for(const itemKey of d.itemKeys) {
       const at=new Date().toISOString();
       try {
@@ -684,6 +758,8 @@ export class MergeDeliveries {
     for(const id of b.deliveries) {
       if(b.results[id]?.status!=="merged")continue;
       const d=this.read<Delivery>("merge_deliveries",id);
+      if(!d.itemKeys.length && d.requiredArtifacts.length && !d.requiredArtifacts.every(a=>d.releaseReceipts?.some(r=>r.releases.some(release=>release.artifact===a))))
+        throw conflict("merge_publication_incomplete",`PR #${d.pullRequest} 缺少完整产物发布凭据；保留批次。`);
       for(const key of d.itemKeys) {
         if(!d.requiredArtifacts.length)continue;
         if(this.itemBlocker(d,key)||!this.publishedHandoff(d,key))throw conflict("merge_publication_incomplete",`${key} 缺少匹配本轮交付的发布凭据或完整产物交接；保留批次。`);

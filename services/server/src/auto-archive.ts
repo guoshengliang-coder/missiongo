@@ -55,6 +55,9 @@ export function autoArchiveFinishedConversations(
   database: MissionGoDatabase, accountId: string, now = new Date().toISOString(), ids?: readonly string[],
 ): void {
   const db = database.connection;
+  // Older migrations call this backfill before standalone project bindings exist.
+  const externalProject=(db.prepare("PRAGMA table_info(external_agent_sessions)").all() as {name:string}[])
+    .some(column=>column.name==="product_id") ? "product_id IS NOT NULL" : "0";
   database.transaction(() => {
     const identities = db.prepare(`SELECT COALESCE(s.id, 'dispatch:' || d.id) AS id,
       d.agent_kind AS agent, s.agent_session_ref AS ref, d.node_id AS node,
@@ -65,7 +68,7 @@ export function autoArchiveFinishedConversations(
       d.status AS dispatch_status,EXISTS(SELECT 1 FROM free_session_starts f WHERE f.dispatch_id=d.id) AS project
       FROM dispatches d LEFT JOIN agent_sessions s ON s.dispatch_id=d.id WHERE d.account_id=?
       UNION ALL SELECT id,agent_kind,CASE WHEN ref_kind='native' THEN session_ref END,native_node_id,0,
-      'external',NULL,id,archived_at,auto_archive_suppressed,NULL,0
+      'external',NULL,id,archived_at,auto_archive_suppressed,NULL,${externalProject}
       FROM external_agent_sessions WHERE account_id=?`).all(accountId, accountId) as unknown as ArchiveIdentity[];
     const dispatchItems = db.prepare("SELECT w.status FROM dispatch_items i JOIN work_items w ON w.id=i.item_id WHERE i.dispatch_id=?");
     const externalItems = db.prepare("SELECT w.status FROM external_agent_session_items i JOIN work_items w ON w.id=i.item_id WHERE i.session_id=?");
