@@ -1,3 +1,4 @@
+import { mockLegacyPlanRecords } from "./plan-record-fixture";
 import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import { planReadabilitySamples } from "../fixtures/plan-readability";
@@ -26,6 +27,7 @@ async function openSample(page: Page, sample: typeof planReadabilitySamples[numb
   await page.route("**/api/v1/items/*/dispatches", route => route.fulfill({ json: { dispatches: [{
     id: summary.dispatchId, agentSessionId: id, agentKind: sample.agent, mode: "plan", nodeName: "Fixture", status: "launched", createdAt: stamp, itemKeys: [fixture.detailKey],
   }] } }));
+  await mockLegacyPlanRecords(page,id,sample.after + extra,sample.validation);
   if (surface === "console") await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
   else {
     await page.goto(`/?product=${fixture.productId}&item=${fixture.detailKey}`);
@@ -33,8 +35,10 @@ async function openSample(page: Page, sample: typeof planReadabilitySamples[numb
     await page.locator(".execution-record > summary").filter({ hasText: "派单 · Fixture" }).click();
     await page.locator(".agent-session-toggle").click();
   }
-  const card = page.getByRole("region", {name:"方案记录"});
-  await card.getByText("查看已登记的历史方案",{exact:true}).click();
+  await page.locator(surface === "console" ? ".agent-console-reply textarea" : ".agent-session-reply textarea").fill("保留本地草稿");
+  await page.getByRole("button",{name:"方案与审批",exact:true}).click();
+  const card = page.getByRole("dialog", {name:"方案与审批",exact:true});
+  await card.getByRole("button",{name:"查看版本原文",exact:true}).click();
   await expect(card).toBeVisible();
   return card;
 }
@@ -62,7 +66,6 @@ for (const width of [320, 375, 1440]) for (const theme of ["light", "dark"] as c
       const sample = planReadabilitySamples.find(s => s.key === key)!;
       const card = await openSample(page, sample, surface, sample.size === "long" ? stress : "");
       const reply = page.locator(surface === "console" ? ".agent-console-reply textarea" : ".agent-session-reply textarea");
-      await reply.fill("保留本地草稿");
       for (const scale of ["small", "medium", "large"]) {
         await page.evaluate(scale => { document.documentElement.dataset.fontScale = scale; document.documentElement.dataset.consoleFontScale = scale; }, scale);
         await card.scrollIntoViewIfNeeded();

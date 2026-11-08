@@ -1,3 +1,6 @@
+import { AgentPlanRecords } from "./agent-plan-records";
+import { mergePreparationEvidence } from "./merge-preparation";
+import { MergePreparationNotice } from "./merge-preparation-notice";
 import { AgentProgressReports } from "./agent-progress-reports";
 import { permissionReplyText } from "./permission-presentation";
 import { DeliveryCards, IntegrationDetails, MergeProgressBadge, useMergeProgress, invalidateSessionDeliveries } from "./merge-console";
@@ -413,11 +416,20 @@ export function AgentSessionConsole({
   // detail stays visible during polling and refetch errors; dispatches without
   // a native session have no detail request to wait for.
   const conversationReady = !selected?.agentSessionId || Boolean(sessionQuery.data);
-  const feedback = useAgentOperationFeedback(selected?.agentSessionId, sessionQuery.data?.turnState?.turnStartedAt);
+  const feedback = useAgentOperationFeedback(sessionQuery.data && !sessionQuery.isError ? {
+    sessionId: sessionQuery.data.id, checkedAt: sessionQuery.dataUpdatedAt, detail: true, stopCommand: sessionQuery.data.stopCommand,
+    command: sessionQuery.data.command, approval: sessionQuery.data.approval,
+    archivedAt: sessionQuery.data.archivedAt,
+  } : undefined, selected && !sessionsError ? {
+    sessionId: selected.agentSessionId ?? selected.id,
+    checkedAt: queryClient.getQueryState(["agent-sessions"])?.dataUpdatedAt ?? 0,
+    archivedAt: selected.archivedAt, attention: selected.attention,
+    dispatchId: selected.dispatchId, dispatchStatus: selected.dispatchStatus,
+  } : undefined);
   const operationSessionId = selected?.agentSessionId ?? selected?.id ?? "";
   const planApprovalLocks = useRef(new Set<string>());
   const send = useMutation({
-    mutationFn: async ({ sessionId, text, files, planApprovalRevision }: { sessionId: string; text: string; files: readonly File[]; occurredAt: string; planApprovalRevision?: string }) => {
+    mutationFn: async ({ sessionId, text, files, planApprovalRevision }: { sessionId: string; text: string; files: readonly File[]; occurredAt: string; planApprovalRevision?: string; preserveDraft?: boolean }) => {
       if (planApprovalRevision) return api.approveAgentSessionPlan(sessionId, planApprovalRevision);
       const uploaded: AgentSessionAttachment[] = [];
       try {
@@ -430,8 +442,7 @@ export function AgentSessionConsole({
     },
     onSuccess: (created, input) => {
       if (!input.planApprovalRevision) void invalidateSessionDeliveries(queryClient,input.sessionId);
-      feedback.clear(input.sessionId);
-      if (!input.planApprovalRevision) {
+      if (!input.planApprovalRevision && !input.preserveDraft) {
         setReplyFor(input.sessionId, "");
         setReplyFilesFor(input.sessionId, []);
         setReplyFileErrorFor(input.sessionId, null);
@@ -453,17 +464,19 @@ export function AgentSessionConsole({
   });
   const retryDispatch = useMutation({
     mutationFn: ({ dispatchId }: { sessionId: string; dispatchId: string }) => api.retryDispatch(dispatchId),
-    onMutate: input => feedback.begin(input.sessionId, "retry"),
+    onMutate: input => feedback.begin(input.sessionId, "retry", { id: input.dispatchId, dispatchStatus: selected?.dispatchStatus }),
     onError: (error, _input, operation) => feedback.fail(error, operation),
-    onSuccess: async () => {
+    onSuccess: async (_data, _input, operation) => {
+      feedback.finish(operation);
       await queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
     },
   });
   const stopDispatch = useMutation({
     mutationFn: ({ dispatchId }: { sessionId: string; dispatchId: string }) => api.stopDispatch(dispatchId),
-    onMutate: input => feedback.begin(input.sessionId, "stop"),
+    onMutate: input => feedback.begin(input.sessionId, "stop", { id: input.dispatchId, commandId: sessionQuery.data?.stopCommand?.id }),
     onError: (error, _input, operation) => feedback.fail(error, operation),
-    onSuccess: async (_created, input) => {
+    onSuccess: async (_created, input, operation) => {
+      feedback.finish(operation);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] }),
         queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }),
@@ -502,9 +515,10 @@ export function AgentSessionConsole({
       if (input.agentSessionId) await api.setAgentSessionArchived(input.agentSessionId, input.archived);
       else await api.setDispatchArchived(input.dispatchId!, input.archived);
     },
-    onMutate: input => feedback.begin(input.sessionId, "archive"),
+    onMutate: input => feedback.begin(input.sessionId, "archive", { id: input.agentSessionId ?? input.dispatchId, archived: input.archived }),
     onError: (error, _input, operation) => feedback.fail(error, operation),
-    onSuccess: async (_created, input) => {
+    onSuccess: async (_created, input, operation) => {
+      feedback.finish(operation);
       const invalidations = [queryClient.invalidateQueries({ queryKey: ["agent-sessions"] })];
       if (input.agentSessionId) {
         invalidations.push(queryClient.invalidateQueries({ queryKey: ["agent-session", input.agentSessionId] }));
@@ -515,9 +529,10 @@ export function AgentSessionConsole({
   const dismissAttention = useMutation({
     mutationFn: ({ sessionId, revision }: { sessionId: string; revision: string }) =>
       api.dismissAgentSessionAttention(sessionId, revision),
-    onMutate: input => feedback.begin(input.sessionId, "dismiss"),
+    onMutate: input => feedback.begin(input.sessionId, "dismiss", { id: input.revision }),
     onError: (error, _input, operation) => feedback.fail(error, operation),
-    onSuccess: async (_session, input) => {
+    onSuccess: async (_session, input, operation) => {
+      feedback.finish(operation);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] }),
         queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }),
@@ -560,13 +575,14 @@ export function AgentSessionConsole({
   const cancel = useMutation({
     mutationFn: ({ sessionId, commandId }: { sessionId: string; commandId: string; text: string }) =>
       api.cancelAgentSessionCommand(sessionId, commandId),
-    onMutate: input => feedback.begin(input.sessionId, "cancel", input.commandId),
+    onMutate: input => feedback.begin(input.sessionId, "cancel", { id: input.commandId }),
     onError: (error, input, operation) => {
       feedback.fail(error, operation);
       void queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] });
       void queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
     },
-    onSuccess: async (cancelled, input) => {
+    onSuccess: async (cancelled, input, operation) => {
+      feedback.finish(operation);
       setReplyFor(input.sessionId, input.text);
       queryClient.setQueryData<AgentSession>(["agent-session", input.sessionId], (current) => current ? { ...current, command: cancelled } : current);
       const restored = await Promise.allSettled((cancelled.attachments ?? []).map(async (attachment) => {
@@ -599,9 +615,10 @@ export function AgentSessionConsole({
     mutationFn: ({ sessionId, commandId, outcome }: {
       sessionId: string; commandId: string; outcome: "received" | "not_received"; text: string;
     }) => api.resolveAgentSessionDelivery(sessionId, commandId, outcome),
-    onMutate: input => feedback.begin(input.sessionId, "resolve", input.commandId),
+    onMutate: input => feedback.begin(input.sessionId, "resolve", { id: input.commandId }),
     onError: (error, _input, operation) => feedback.fail(error, operation),
-    onSuccess: async (_command, input) => {
+    onSuccess: async (_command, input, operation) => {
+      feedback.finish(operation);
       if (input.outcome === "not_received") {
         setReplyFor(input.sessionId, input.text);
         setDismissedCommandId(input.commandId);
@@ -616,9 +633,10 @@ export function AgentSessionConsole({
   const decideApproval = useMutation({
     mutationFn: ({ sessionId, approvalId, decision }: { sessionId: string; approvalId: string; decision: string }) =>
       api.decideAgentApproval(sessionId, approvalId, decision),
-    onMutate: input => feedback.begin(input.sessionId, "approval"),
+    onMutate: input => feedback.begin(input.sessionId, "approval", { id: input.approvalId }),
     onError: (error, _input, operation) => feedback.fail(error, operation),
-    onSettled: async (_data, _error, input) => {
+    onSettled: async (_data, error, input, operation) => {
+      if (!error) feedback.finish(operation);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] }),
         queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }),
@@ -632,18 +650,27 @@ export function AgentSessionConsole({
     approvalDecisionLocks.current.add(key);
     decideApproval.mutate(input, { onError: () => { approvalDecisionLocks.current.delete(key); } });
   };
+  const approvalRetryLocks = useRef(new Set<string>());
   const retryApproval = useMutation({
     mutationFn: ({ sessionId, approvalId }: { sessionId: string; approvalId: string }) =>
       api.retryAgentApproval(sessionId, approvalId),
-    onMutate: input => feedback.begin(input.sessionId, "approvalRetry"),
+    onMutate: input => feedback.begin(input.sessionId, "approvalRetry", { id: input.approvalId }),
     onError: (error, _input, operation) => feedback.fail(error, operation),
-    onSettled: async (_data, _error, input) => {
+    onSettled: async (_data, error, input, operation) => {
+      approvalRetryLocks.current.delete(`${input.sessionId}:${input.approvalId}`);
+      if (!error) feedback.finish(operation);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] }),
         queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }),
       ]);
     },
   });
+  const chooseApprovalRetry = (sessionId: string, approvalId: string) => {
+    const key = `${sessionId}:${approvalId}`;
+    if (approvalRetryLocks.current.has(key)) return;
+    approvalRetryLocks.current.add(key);
+    retryApproval.mutate({ sessionId, approvalId });
+  };
   const submittedCommand = send.isSuccess && send.variables?.sessionId === selected?.agentSessionId && "id" in send.data
     ? send.data
     : undefined;
@@ -692,6 +719,7 @@ export function AgentSessionConsole({
     || (approval.kind === "manual" && approval.status === "pending")));
   const planApproved = sessionQuery.data?.planApprovalState;
   const planContinued = planContinuationObserved(sessionQuery.data);
+  const mergePreparation = selected?.items.length && !showPermissionApproval ? mergePreparationEvidence(sessionQuery.data) : undefined;
   const suppressDeliveryAttention = selected?.attention.handledByDelivery === true;
   const stalePlanAttention = Boolean(planApproved && planContinued && selected?.attention.kind === "approval");
   const showPlanApproval = !planContinued && (Boolean(planApproved || sessionQuery.data?.planApproval
@@ -1179,6 +1207,7 @@ export function AgentSessionConsole({
                 </div>}
               </div>
               <div className="agent-console-toolbar">
+                {sessionQuery.data && <AgentPlanRecords key={selected.id} session={sessionQuery.data} />}
                 <IntegrationDetails productId={selected.productId ?? selected.items[0]?.productId ?? productId} sessionId={selected.agentSessionId ?? selected.id} />
                 {!showRecovery && sessionActions}
               </div>
@@ -1292,7 +1321,7 @@ export function AgentSessionConsole({
                   );
                 })}
                 {!planMessages.planMessageId && sessionQuery.data && <UnlinkedPlanRecord session={sessionQuery.data} blocked={showPermissionApproval || pending || sendingSelected || cancellingSelected} />}
-                {(!currentPlan(sessionQuery.data)?.plan || !showPlanApproval && selected.attention.kind !== "approval") && !showPermissionApproval && (!suppressDeliveryAttention || showPlanApproval) && (showPlanApproval || !stalePlanAttention && (selected.needsAttention || selected.attention.dismissed) && selected.attention.reason) && (
+                {!mergePreparation && (!currentPlan(sessionQuery.data)?.plan || !showPlanApproval && selected.attention.kind !== "approval") && !showPermissionApproval && (!suppressDeliveryAttention || showPlanApproval) && (showPlanApproval || !stalePlanAttention && (selected.needsAttention || selected.attention.dismissed) && selected.attention.reason) && (
                   <div className={`agent-console-attention-banner ${selected.attention.dismissed ? "dismissed" : ""}${showPlanApproval ? " agent-console-attention-banner--approval" : ""}`} role="status">
                     <BellRing size={16} />
                     <details open={planContentMissing || undefined}>
@@ -1461,7 +1490,7 @@ export function AgentSessionConsole({
                       <div className="agent-console-approval-actions">
                         <button type="button" className="primary-button"
                           disabled={Boolean(approval.retryId) || retryApproval.isPending}
-                          onClick={() => retryApproval.mutate({ sessionId: selected.agentSessionId!, approvalId: approval.id })}>
+                          onClick={() => chooseApprovalRetry(selected.agentSessionId!, approval.id)}>
                           {t("agentApprovalRetryManual")}
                         </button>
                         {approval.retryStatus && <small>{t("agentApprovalRetryStatus")}: {t(({
@@ -1469,14 +1498,19 @@ export function AgentSessionConsole({
                           delivered: "agentApprovalRetryDelivered", restored: "agentApprovalRetryRestored",
                           failed: "agentApprovalRetryFailed",
                         } as const)[approval.retryStatus])}</small>}
-                        {approval.retryError && <small>{approval.retryError}</small>}
+                        {approval.retryStatus === "failed" && <p role="status">{t("agentApprovalRetryUnconfirmed")}</p>}
+                        {approval.retryError && <details className="agent-operation-diagnostic"><summary>{t("executionStopDiagnostic")}</summary><p>{approval.retryError}</p></details>}
                       </div>
                     )}
                   </section>
                 )}
+                {conversationReady && mergePreparation && sessionQuery.data && selected && <MergePreparationNotice
+                  key={mergePreparation.key} productId={selected.productId ?? selected.items[0]?.productId ?? productId}
+                  session={sessionQuery.data} evidence={mergePreparation} blocked={pending || sendingSelected || cancellingSelected}
+                  send={text => send.mutateAsync({ sessionId: sessionQuery.data!.id, text, files: [], occurredAt: new Date().toISOString(), preserveDraft: true })} />}
                 {conversationReady && selected && <DeliveryCards productId={selected.productId ?? selected.items[0]?.productId ?? productId} sessionId={selected.agentSessionId ?? selected.id} blocked={pending || sendingSelected} />}
                 <div className="agent-run-status" aria-label={t("agentRunFeedback")}>
-                  <AgentOperationFeedback failures={feedback.failures} sessionId={operationSessionId} command={command} />
+                  <AgentOperationFeedback failures={feedback.failures} sessionId={operationSessionId} onDismiss={feedback.finish} />
                   <AgentStopFeedback stop={stopCommand}
                     latestCommand={command} turnActive={sessionQuery.data?.turnState?.turnActive ?? false}
                     backgroundRunning={(sessionQuery.data?.activities.length ?? 0) > 0} />

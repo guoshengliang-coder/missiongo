@@ -289,6 +289,7 @@ function insightSearch(input: InsightQuery & {productIds?: string[]} & Partial<I
 }
 
 export const api = {
+  getPlanRecords: (sessionId:string,before?:number,recordId?:number) => request<import("./types").AgentPlanRecordsPage>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/plan-records?${new URLSearchParams({...before?{before:String(before)}:{},...recordId?{recordId:String(recordId)}:{}})}`),
   getPlanDocument: (id:string) => request<{id:string;version:number;rounds:{key:string;number:number}[];markdown:string;sha256:string}>(`/api/v1/plan-documents/${encodeURIComponent(id)}`),
   personalAttentionCount: () => request<PersonalAttentionCount>("/api/v1/attention/count"),
   personalTodos: (filter:{productId?:string;beforeSequence?:number}={}) => {

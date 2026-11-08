@@ -5,6 +5,7 @@ test.use({ hasTouch: true });
 for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const) {
   test(`favorite controls, archives and attention stay independent ${width} ${theme}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 900 }); await page.emulateMedia({ colorScheme: theme });
+    await page.clock.setFixedTime(new Date("2026-11-08T12:00:00.000Z"));
     const stamp = "2026-11-07T00:00:00.000Z";
     const row = (id: string, favorite = false, archived = false) => ({ id, agentSessionId: id, dispatchId: `dispatch-${id}`,
       productId: fixture.productId, agentKind: "codex", status: "idle", mode: "auto", dispatchStatus: "launched", sessionName: id,
@@ -44,6 +45,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     const timeBox = await activeRow.locator("time").boundingBox();
     const listStarBox = await listStar.boundingBox();
     expect(listStarBox!.y).toBeGreaterThanOrEqual(timeBox!.y + timeBox!.height);
+    await expect(activeRow.locator("time")).toContainText("昨天");
     expect(Math.abs((listStarBox!.x + listStarBox!.width / 2) - (timeBox!.x + timeBox!.width / 2))).toBeLessThanOrEqual(4);
     const rowBox = await activeRow.boundingBox(), openBox = await activeRow.locator(".agent-console-session").boundingBox();
     expect(openBox!.width).toBeGreaterThanOrEqual(rowBox!.width - 2);

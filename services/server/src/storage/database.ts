@@ -2524,5 +2524,66 @@ export class MissionGoDatabase {
       });
     }
 
+    // AND-463: keep submitted versions without changing approval authority.
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611080115").get()) {
+      this.transaction(() => {
+        this.connection.exec(`CREATE TABLE implementation_plan_versions (
+          sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id TEXT NOT NULL, identity_key TEXT NOT NULL, revision TEXT NOT NULL,
+          proposal_json TEXT NOT NULL CHECK(json_valid(proposal_json)), scope_json TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK(kind IN ('proposal','rework')),
+          legacy INTEGER NOT NULL DEFAULT 0,
+          UNIQUE(account_id,identity_key,revision)
+        ) STRICT;
+        CREATE INDEX plan_versions_identity ON implementation_plan_versions(account_id,identity_key,sequence);
+        INSERT OR IGNORE INTO implementation_plan_versions(account_id,identity_key,revision,proposal_json,scope_json,kind,legacy)
+          SELECT a.account_id,a.identity_key,a.revision,
+            COALESCE((SELECT r.proposal_json FROM implementation_plan_requests r WHERE r.account_id=a.account_id
+              AND r.identity_key=a.identity_key AND r.revision=a.revision),
+            json_object('keys',json((SELECT json_group_array(json_extract(value,'$.key')) FROM json_each(a.scope_json))),
+              'plan',a.plan_text,'validation',a.validation_text,
+              'documentId',(SELECT d.id FROM plan_documents d WHERE d.account_id=a.account_id AND d.identity_key=a.identity_key
+                AND json_extract(d.document_json,'$.plan')=a.plan_text LIMIT 1))),a.scope_json,'proposal',1
+          FROM implementation_plan_approvals a ORDER BY a.approved_at,a.rowid;
+        CREATE TRIGGER plan_version_request_insert AFTER INSERT ON implementation_plan_requests
+          WHEN NEW.proposal_json IS NOT NULL AND NEW.scope_json IS NOT NULL AND COALESCE(json_extract(NEW.proposal_json,'$.origin'),'')!='attention' BEGIN
+          INSERT OR IGNORE INTO implementation_plan_versions(account_id,identity_key,revision,proposal_json,scope_json,kind)
+            VALUES(NEW.account_id,NEW.identity_key,NEW.revision,NEW.proposal_json,NEW.scope_json,'proposal'); END;
+        CREATE TRIGGER plan_version_request_update AFTER UPDATE ON implementation_plan_requests
+          WHEN NEW.proposal_json IS NOT NULL AND NEW.scope_json IS NOT NULL AND COALESCE(json_extract(NEW.proposal_json,'$.origin'),'')!='attention' BEGIN
+          INSERT OR IGNORE INTO implementation_plan_versions(account_id,identity_key,revision,proposal_json,scope_json,kind)
+            VALUES(NEW.account_id,NEW.identity_key,NEW.revision,NEW.proposal_json,NEW.scope_json,'proposal'); END;
+        CREATE TRIGGER plan_version_approval AFTER INSERT ON implementation_plan_approvals BEGIN
+          INSERT OR IGNORE INTO implementation_plan_versions(account_id,identity_key,revision,proposal_json,scope_json,kind)
+            VALUES(NEW.account_id,NEW.identity_key,NEW.revision,
+              json_object('keys',json((SELECT json_group_array(json_extract(value,'$.key')) FROM json_each(NEW.scope_json))),
+                'plan',NEW.plan_text,'validation',NEW.validation_text),NEW.scope_json,'proposal'); END;
+        CREATE TRIGGER plan_version_rework AFTER INSERT ON plan_documents
+          WHEN json_extract(NEW.document_json,'$.parentDocumentId') IS NOT NULL BEGIN
+          INSERT OR IGNORE INTO implementation_plan_versions(account_id,identity_key,revision,proposal_json,scope_json,kind)
+            VALUES(NEW.account_id,NEW.identity_key,'rework:' || NEW.id,
+              json_object('keys',json_extract(NEW.document_json,'$.keys'),'plan',json_extract(NEW.document_json,'$.plan'),
+                'validation','','documentId',NEW.id,'submittedAt',json_extract(NEW.document_json,'$.createdAt')),
+              json_extract(NEW.document_json,'$.scope'),'rework'); END;
+        INSERT OR IGNORE INTO implementation_plan_versions(account_id,identity_key,revision,proposal_json,scope_json,kind,legacy)
+          SELECT account_id,identity_key,'rework:' || id,
+            json_object('keys',json_extract(document_json,'$.keys'),'plan',json_extract(document_json,'$.plan'),
+              'validation','','documentId',id,'submittedAt',json_extract(document_json,'$.createdAt')),
+            json_extract(document_json,'$.scope'),'rework',1 FROM plan_documents
+            WHERE json_extract(document_json,'$.parentDocumentId') IS NOT NULL;
+        INSERT OR IGNORE INTO implementation_plan_versions(account_id,identity_key,revision,proposal_json,scope_json,kind,legacy)
+          SELECT account_id,identity_key,revision,proposal_json,scope_json,'proposal',1
+          FROM implementation_plan_requests r WHERE proposal_json IS NOT NULL AND scope_json IS NOT NULL
+            AND (COALESCE(json_extract(proposal_json,'$.origin'),'')!='attention' OR EXISTS(
+              SELECT 1 FROM implementation_plan_approvals a WHERE a.account_id=r.account_id AND a.identity_key=r.identity_key AND a.revision=r.revision));
+        CREATE TRIGGER plan_versions_immutable BEFORE UPDATE ON implementation_plan_versions
+          BEGIN SELECT RAISE(ABORT,'plan versions are immutable'); END;
+        CREATE TRIGGER plan_versions_no_delete BEFORE DELETE ON implementation_plan_versions
+          BEGIN SELECT RAISE(ABORT,'plan versions are immutable'); END;`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611080115,new Date().toISOString());
+      });
+    }
+
   }
 }
