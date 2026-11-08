@@ -263,8 +263,8 @@ describe("AND-423 explicit merge deliveries",()=>{
 });
 
 describe("planned integration batches",()=>{
-  async function batchFixture(count=1) {
-    const f=await prepared(),deliveries=[f.d];
+  async function batchFixture(count=1,noRelease=false) {
+    const f=await prepared(),deliveries=[noRelease ? f.merges.propose(f.owner.id,"original-client",f.identity,"no-release-offer",{...f.input,requiredArtifacts:[],noReleaseReason:"Internal merge/CI tools only"}) : f.d];
     for(let i=1;i<count;i++) {
       const item=f.store.createWorkItem({productId:f.item.productId,title:`Related ${i}`,description:"Synthetic integration",type:"task",priority:"normal",status:"ready",environment:{platform:"shared"}});
       const claim=await f.call("claim_item",{...f.claimInput,itemKey:item.key,session:{...f.session,sessionRef:randomUUID()},idempotencyKey:`claim-${i}`});f.safe(claim);
@@ -281,6 +281,37 @@ describe("planned integration batches",()=>{
     const merged=(id:string,head="a".repeat(40))=>f.merges.report(f.owner.id,b.dispatchId,b.id,id,{status:"merged",head,commit:"c".repeat(40),detail:"Verified real merge in synthetic fixture"});
     return {...f,b,deliveries,current,act,plan,check,merged};
   }
+  it("hands only this active batch's unchanged no-release merged item to verification",async()=>{
+    const f=await batchFixture(1,true),d=f.deliveries[0]!;
+    const validation={checks:[{name:"Merged target",method:"Verify integration and run checks",result:"passed" as const,evidence:"Synthetic merged Git fixture"}],remainingVerification:["Human review"],limitations:[]};
+    const input=()=>{
+      const e=f.store.getDevelopmentEvidence(f.item.key),item=f.store.getWorkItem(f.item.key);
+      return {itemKey:item.key,completion:e.completion!,expectedRevision:item.revision,developmentEventId:e.handover!.id,
+        roundKey:e.roundKey!,evidenceDigest:e.handover!.payload.evidenceDigest as string,validation,idempotencyKey:"batch-no-release",
+        attribution:{accountId:f.owner.id,clientId:"original-client"}};
+    };
+    f.act(f.plan);f.check(d.id);f.merged(d.id);
+    const raw=input(),batch={batchId:f.b.id,deliveryId:d.id,expectedRevision:f.current().integration!.revision};
+    // An observed merge does not grant a handover whose own development step is blocked.
+    const persisted=f.db.prepare("SELECT data_json FROM merge_batches WHERE id=?").get(f.b.id) as {data_json:string};
+    const blocked=JSON.parse(persisted.data_json);
+    blocked.reconciliation.handoffs[f.item.key].status="blocked";
+    f.db.prepare("UPDATE merge_batches SET data_json=? WHERE id=?").run(JSON.stringify(blocked),f.b.id);
+    expect(()=>f.merges.submitNonRelease(f.owner.id,f.b.dispatchId,batch,raw)).toThrow();
+    f.db.prepare("UPDATE merge_batches SET data_json=? WHERE id=?").run(persisted.data_json,f.b.id);
+    expect(()=>f.merges.submitNonRelease(f.owner.id,f.dispatch.id,batch,raw)).toThrow();
+    expect(()=>f.merges.submitNonRelease(f.other.id,f.b.dispatchId,batch,raw)).toThrow();
+    expect(()=>f.merges.submitNonRelease(f.owner.id,f.b.dispatchId,{...batch,expectedRevision:0},raw)).toThrow();
+    expect(()=>f.merges.submitNonRelease(f.owner.id,f.b.dispatchId,batch,{...raw,itemKey:"CON-999"})).toThrow();
+    expect(f.merges.submitNonRelease(f.owner.id,f.b.dispatchId,batch,raw).status).toBe("pending_verification");
+    expect(f.merges.submitNonRelease(f.owner.id,f.b.dispatchId,batch,raw).status).toBe("pending_verification");
+    const events=f.store.getTimeline(f.item.key).filter(e=>e.toStatus === "pending_verification");
+    expect(events).toHaveLength(1);
+    expect(events[0]!.payload).toMatchObject({reason:"non_release_submitted",mergeBatchId:f.b.id,deliveryId:d.id,authorizationBasis:"merge_non_release_handover",validation});
+    f.act({kind:"final_validation",head:"c".repeat(40),checkedAt:new Date().toISOString(),source:"Synthetic merged target",validation:"Combination verified"});
+    f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id);
+    expect(()=>f.merges.submitNonRelease(f.owner.id,f.b.dispatchId,{...batch,expectedRevision:f.current().integration!.revision},raw)).toThrow();
+  });
   it("plans dependencies, repairs a regression, waits for CI and reconciles the complete combination",async()=>{
     const f=await batchFixture(3),[a,b,c]=f.deliveries;
     expect(()=>f.check(a!.id)).toThrow();

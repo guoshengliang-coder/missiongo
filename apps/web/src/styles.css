@@ -3457,3 +3457,8 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .agent-plan-inline-approval button { min-height: 44px; }
 
 .agent-plan-record > div { min-width: 0; flex: 1; }
+
+/* Long evidence hashes wrap inside the existing timeline at every font scale. */
+.timeline-handover-evidence { overflow-wrap: anywhere; }
+.timeline-handover-evidence summary { cursor: pointer; min-height: 44px; padding-block: 12px; }
+.timeline-handover-evidence p { white-space: pre-wrap; }

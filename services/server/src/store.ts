@@ -7,6 +7,7 @@ import { assertTransitionPolicy, assertReleaseBatchTransition, itemRoles } from 
 import { resolveCommentAudience, enqueueCommentNotifications } from "./comment-discussions.js";
 import { assertBuilderExecution, assertDispatchExecution, latestBuilderHandover, hasOngoingItemExecution, hasBlockingItemExecution, hasPriorProcessing } from "./builder-authority.js";
 import { completionPayload, normalizeCompletion, sameCompletion } from "./completion.js";
+import { deliveryValidationSchema, evidenceDigest, type NonReleaseVerification } from "./non-release-evidence.js";
 import { deliveryRound } from "./delivery-round.js";
 import { enqueueDecisionNotifications, enqueueVerificationNotification } from "./dingtalk-notifications.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -1675,6 +1676,9 @@ export class MissionGoStore {
     this.assertWorkItemWritable(input.itemKey);
     const completion = normalizeCompletion(input);
     if (completion.kind === "manual") throw invalidInput("Human confirmation requires a signed-in person.");
+    if (completion.kind === "local_change" && (input.requiredArtifacts?.length !== 0 || !input.noReleaseReason?.trim())) {
+      throw invalidInput("Local changes require explicit no-release scope and a reason.");
+    }
     const requiredArtifacts = input.requiredArtifacts ? [...input.requiredArtifacts] : undefined;
     if (requiredArtifacts && (requiredArtifacts.length > MAX_RELEASE_ARTIFACTS
       || new Set(requiredArtifacts).size !== requiredArtifacts.length
@@ -1692,7 +1696,7 @@ export class MissionGoStore {
     const summary = input.summary?.trim();
     if (summary && summary.length > 4_000) throw invalidInput("Summary must be 4,000 characters or fewer.");
     const idempotencyKey = this.validateIdempotencyKey(input.idempotencyKey);
-    const operation = `submit_development_complete:${input.itemKey.toUpperCase()}`;
+    const operation = `submit_development_complete:${input.itemKey.toUpperCase()}${completion.kind === "local_change" ? ":"+evidenceDigest({completion,requiredArtifacts,noReleaseReason,summary}) : ""}`;
 
     return this.database.transaction(() => {
       const repeated = this.getIdempotentResult<WorkItemSnapshot>(idempotencyKey, operation);
@@ -1713,7 +1717,7 @@ export class MissionGoStore {
         summary,
         now,
         input.attribution ?? {},
-        { ...completionPayload(completion), ...(requiredArtifacts ? { requiredArtifacts: [...requiredArtifacts].sort() } : {}),
+        { ...completionPayload(completion), evidenceDigest:evidenceDigest(completion), ...(requiredArtifacts ? { requiredArtifacts: [...requiredArtifacts].sort() } : {}),
           ...(noReleaseReason ? { noReleaseReason } : {}) },
       );
       const result = this.getWorkItem(item.item_key);
@@ -1728,7 +1732,7 @@ export class MissionGoStore {
     const handover = [...timeline].reverse().find(event => event.eventType === "status_changed" && event.toStatus === "development_complete");
     let completion: ReturnType<typeof normalizeCompletion> | undefined;
     try { completion = normalizeCompletion(handover?.payload); } catch { /* Missing evidence is explicit. */ }
-    const round = deliveryRound(this.database, this.getWorkItem(itemKey).id);
+    const round = deliveryRound(this.database, this.getWorkItemRow(itemKey)!.id);
     for (const event of timeline) {
       if (event.eventType !== "delivery_evidence_added" || event.payload.developmentEventId !== handover?.id || event.payload.roundKey !== round) continue;
       completion = normalizeCompletion(event.payload);
@@ -1745,6 +1749,7 @@ export class MissionGoStore {
       || resolved.handover.payload.roundKey !== resolved.roundKey) throw conflict("delivery_evidence_changed", "开发事件或处理轮次已变化，不能补入旧交付证据。");
     const completion = normalizeCompletion({completion:input.completion});
     const scope = this.getDevelopmentReleaseDecision(item.key);
+    if(completion.kind === "local_change" && (input.requiredArtifacts.length !== 0 || !input.noReleaseReason?.trim()))throw invalidInput("Local evidence is only for no-release work.");
     if (resolved.completion && !sameCompletion(resolved.completion, completion)
       || scope.requiredArtifacts !== null && JSON.stringify([...scope.requiredArtifacts].sort()) !== JSON.stringify([...input.requiredArtifacts].sort())
       || scope.noReleaseReason && scope.noReleaseReason !== input.noReleaseReason) throw conflict("delivery_evidence_conflict", "已有交付依据或发布范围冲突，请人工核对。");
@@ -1785,6 +1790,42 @@ export class MissionGoStore {
     return { requiredArtifacts: null };
   }
 
+  /** A separate evidence-bound path; never manufactures a publication receipt. */
+  submitNonReleaseForVerification(raw: NonReleaseVerification, batch?: {batchId:string;deliveryId:string}) {
+    this.assertWorkItemWritable(raw.itemKey);
+    const completion=normalizeCompletion({completion:raw.completion});
+    if(completion.kind === "manual")throw invalidInput("Human confirmation requires a signed-in person.");
+    const validation=deliveryValidationSchema.parse(raw.validation);
+    const key=this.validateIdempotencyKey(raw.idempotencyKey);
+    const operation=`submit_non_release_for_verification:${raw.itemKey.toUpperCase()}:${evidenceDigest({
+      expectedRevision:raw.expectedRevision,developmentEventId:raw.developmentEventId,roundKey:raw.roundKey,
+      completion,evidenceDigest:raw.evidenceDigest,validation,batch:batch??null})}`;
+    return this.database.transaction(()=>{
+      // Idempotent receipt is not an instruction to restore a later human state.
+      if(this.getIdempotentResult(key,operation))return this.getWorkItem(raw.itemKey);
+      const item=this.getWorkItem(raw.itemKey), resolved=this.getDevelopmentEvidence(item.key);
+      const scope=this.getDevelopmentReleaseDecision(item.key);
+      if(item.status !== "development_complete" || item.revision !== raw.expectedRevision
+        || !resolved.handover || resolved.handover.id !== raw.developmentEventId
+        || !resolved.roundKey || resolved.roundKey !== raw.roundKey
+        || resolved.handover.payload.roundKey !== resolved.roundKey
+        || resolved.handover.payload.contentVersion !== item.contentVersion
+        || !resolved.completion || !sameCompletion(resolved.completion,completion)
+        || scope.requiredArtifacts?.length !== 0 || !scope.noReleaseReason?.trim()
+        || raw.evidenceDigest !== evidenceDigest(resolved.completion)) {
+        throw conflict("non_release_evidence_changed","交付依据、轮次、版本或无需发布范围已变化，请重新核对。");
+      }
+      const row=this.getWorkItemRow(item.key)!;
+      this.applyTransition(row,"pending_verification","agent","non_release_submitted",undefined,new Date().toISOString(),raw.attribution??{},
+        {...completionPayload(completion),evidenceDigest:raw.evidenceDigest,validation,requiredArtifacts:[],
+          noReleaseReason:scope.noReleaseReason,developmentEventId:resolved.handover.id,roundKey:resolved.roundKey,
+          ...(batch?{mergeBatchId:batch.batchId,deliveryId:batch.deliveryId}:{} )},batch ? "non_release" : false);
+      const result=this.getWorkItem(item.key);
+      this.saveIdempotentResult(key,operation,result,new Date().toISOString());
+      return result;
+    });
+  }
+
   /** Accept a verified release only when every artifact recorded at merge is present. */
   submitForVerification(input: SubmitForVerificationInput): WorkItemSnapshot {
     return this.submitVerifiedRelease(input);
@@ -1793,7 +1834,7 @@ export class MissionGoStore {
   private submitVerifiedRelease(input: SubmitForVerificationInput, batch?: { id: string; developmentEventId: string; expectedRevision: number }): WorkItemSnapshot {
     this.assertWorkItemWritable(input.itemKey);
     const completion = normalizeCompletion(input);
-    if (completion.kind === "manual") throw invalidInput("Human confirmation requires a signed-in person.");
+    if (completion.kind === "manual" || completion.kind === "local_change") throw invalidInput("Verified Git integration is required for publication.");
     if (!/^[0-9a-f]{40}$/.test(input.deployedCommit) || !/^[0-9a-f]{64}$/.test(input.receiptDigest)) {
       throw invalidInput("A verified release needs a deployed commit and receipt digest.");
     }
@@ -1838,7 +1879,7 @@ export class MissionGoStore {
     if (item.productId !== input.productId) throw invalidInput("Evidence must belong to the authorized product.");
     this.validateIdempotencyKey(input.idempotencyKey);
     const completion = normalizeCompletion(input);
-    if (completion.kind === "manual" || !input.requiredArtifacts.length) throw invalidInput("Verified integration and nonempty release scope required.");
+    if ((completion.kind === "manual" || completion.kind === "local_change") || !input.requiredArtifacts.length) throw invalidInput("Verified integration and nonempty release scope required.");
     const id = createHash("sha256").update(JSON.stringify([input.attribution.accountId, input.attribution.clientId, input.productId, input.idempotencyKey])).digest("hex");
     const digest = createHash("sha256").update(JSON.stringify(input)).digest("hex");
     return this.database.transaction(() => {
@@ -1907,7 +1948,7 @@ export class MissionGoStore {
             // proof to this exact round; never replay a transition or acceptance.
             this.assertWorkItemWritable(itemKey);this.assertReleaseCandidate(row,true);
             const completion=normalizeCompletion(row);
-            if(completion.kind==="manual"||!/^[0-9a-f]{40}$/.test(input.deployedCommit)||!/^[0-9a-f]{64}$/.test(input.receiptDigest))throw invalidInput("Verified publication proof required.");
+            if((completion.kind==="manual"||completion.kind==="local_change")||!/^[0-9a-f]{40}$/.test(input.deployedCommit)||!/^[0-9a-f]{64}$/.test(input.receiptDigest))throw invalidInput("Verified publication proof required.");
             const timeline=this.getTimeline(itemKey).filter(e=>!e.historySourceKey);
             const previous=[...timeline].reverse().find(e=>e.eventType==="release_evidence_added"||e.eventType==="status_changed"&&e.toStatus==="pending_verification");
             if(previous?.payload.receiptDigest)throw conflict("release_evidence_conflict","已有发布凭据，不能替换；请核对原发布记录。");
@@ -2218,7 +2259,7 @@ export class MissionGoStore {
     now: string,
     attribution: EventAttribution = {},
     payloadExtra: Readonly<Record<string, unknown>> = {},
-    releaseBatch = false,
+    releaseBatch: boolean | "non_release" = false,
   ): void {
     // Normalised before the domain sees it, so "is there a reason" and "what gets
     // stored" can never disagree. Newlines survive: a person explaining what
@@ -2233,10 +2274,10 @@ export class MissionGoStore {
     new Collaborations(this).beforeTransition(snapshot,to,actor,attribution.accountId,note,
       payloadExtra.collaborationDisposition as {mode:"withdraw"|"keep";successorAccountId?:string}|undefined);
     const evidenceRefresh = current.status === "development_complete" && to === "development_complete" && Boolean(payloadExtra.handoverId && payloadExtra.evidenceSource);
-    if (releaseBatch && (to !== "pending_verification" || reason !== "release_verified" || actor !== "agent")) {
+    if (releaseBatch && (to !== "pending_verification" || reason !== (releaseBatch === "non_release" ? "non_release_submitted" : "release_verified") || actor !== "agent")) {
       throw invalidInput("Release batches can only hand published work to verification.");
     }
-    const authorization = releaseBatch ? assertReleaseBatchTransition(this.database, snapshot, attribution.accountId) : attribution.accountId
+    const authorization = releaseBatch ? assertReleaseBatchTransition(this.database, snapshot, attribution.accountId,releaseBatch === "non_release" ? "non_release_submitted" : "release_verified") : attribution.accountId
       ? assertTransitionPolicy(this.database,evidenceRefresh ? {...snapshot,status:"in_progress"} : snapshot,attribution.accountId,to,reason,actor)
       : undefined;
     if (current.status === "on_hold" && to !== "cancelled" && reason !== "manual_override" && to !== current.held_from) {
@@ -2841,8 +2882,12 @@ export class MissionGoStore {
     };
   }
 
-  private deliveryProgressOf(row: WorkItemRow): Pick<WorkItemSnapshot,"deliveryProgress"|"hasProcessingRound"> {
-    if (!["inbox","ready","in_progress","development_complete"].includes(row.status)) return {};
+  private deliveryProgressOf(row: WorkItemRow): Pick<WorkItemSnapshot,"deliveryProgress"|"hasProcessingRound"|"deliveryBasis"> {
+    if (row.status === "development_complete" || row.status === "pending_verification") {
+      const scope=this.getDevelopmentReleaseDecision(row.item_key);
+      return {hasProcessingRound:true,deliveryBasis:scope.requiredArtifacts?.length === 0 && scope.noReleaseReason ? "no_release" : scope.requiredArtifacts?.length ? "release_required" : "unknown"};
+    }
+    if (!["inbox","ready","in_progress"].includes(row.status)) return {};
     const currentRound = deliveryRound(this.database,row.id);
     // Retired check records remain audit history and must not add live blockers
     // or progress labels to the current card.

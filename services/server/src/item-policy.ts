@@ -46,7 +46,7 @@ export function transitionPolicy(database: MissionGoDatabase,item: PolicyItem,ac
   if (actor !== "human") {
     if (actor === "system") return result(
       to === "development_complete" && reason === "resolution_submitted" && ["inbox","ready","in_progress","development_complete"].includes(item.status)
-      || to === "pending_verification" && reason === "release_verified" && item.status === "development_complete","system_evidence_required");
+      || to === "pending_verification" && ["release_verified","non_release_submitted"].includes(reason) && item.status === "development_complete","system_evidence_required");
     if (!evaluateWorkItemTransition({from:item.status,to,actor,reason}).allowed) return result(false,"invalid_state_transition");
     return result(roles.operate && ["in_progress","development_complete","pending_verification"].includes(to) && (roles.builder || roles.executor || to === "in_progress" && !item.builderAccountId),"execution_not_permitted");
   }
@@ -70,16 +70,16 @@ export function transitionPolicy(database: MissionGoDatabase,item: PolicyItem,ac
   return result(roles.manager || roles.proposer,"proposer_or_manager_required");
 }
 /** A publication is product-scoped, independently of the developer's execution identity. */
-export function assertReleaseBatchTransition(database: MissionGoDatabase, item: PolicyItem, accountId: string | undefined) {
+export function assertReleaseBatchTransition(database: MissionGoDatabase, item: PolicyItem, accountId: string | undefined, reason: "release_verified" | "non_release_submitted" = "release_verified") {
   const accounts = new AccountStore(database), account = accountId ? accounts.findActive(accountId) : undefined;
   if (!account || !accounts.allows(account, item.productId, "operate") || !accounts.allows(account, item.productId, "ai")) {
     throw new MissionGoError("release_not_permitted", "Product operation and AI permissions are required for release handover.", 403);
   }
   // Reuse archive, transfer, collaboration and exact state-edge guards. This is
   // called only after the batch's immutable candidate and evidence checks.
-  const decision = transitionPolicy(database, item, accountId, "pending_verification", "release_verified", "system");
+  const decision = transitionPolicy(database, item, accountId, "pending_verification", reason, "system");
   if (!decision.allowed) throw new MissionGoError(decision.code, "Release handover is no longer permitted.", 409);
-  return { ...decision, basis: "product_release_batch" };
+  return { ...decision, basis: reason === "non_release_submitted" ? "merge_non_release_handover" : "product_release_batch" };
 }
 
 export function assertTransitionPolicy(database: MissionGoDatabase,item: PolicyItem,accountId: string|undefined,to:WorkItemStatus,reason:TransitionReason,actor:ActorKind = "human") {

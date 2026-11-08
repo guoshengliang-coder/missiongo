@@ -118,6 +118,7 @@ export interface WorkItemSnapshot {
   readonly executionDisposition?: string;
   readonly hasProcessingRound?: boolean;
   /** Delivery evidence for this processing round; independent of session activity. */
+  readonly deliveryBasis?: "no_release" | "release_required" | "unknown";
   readonly deliveryProgress?: "waiting_merge" | "waiting_release" | "needs_scope" | "no_release" | "review_required" | "blocked";
   /** A migrated original is permanently read-only. */
   readonly transferred?: boolean;

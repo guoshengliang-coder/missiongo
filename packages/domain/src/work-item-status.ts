@@ -10,6 +10,7 @@ export const TRANSITION_REASONS = [
   "resume",
   "resolution_submitted",
   "release_verified",
+  "non_release_submitted",
   "verification_passed",
   "verification_failed",
   "lease_expired",
@@ -74,7 +75,7 @@ const TRANSITIONS: Readonly<
     cancelled: rule(["human"], ["cancelled"]),
   },
   development_complete: {
-    pending_verification: rule(["agent", "human", "system"], ["release_verified"]),
+    pending_verification: rule(["agent", "human", "system"], ["release_verified", "non_release_submitted"]),
     ready: rule(["human"], ["released"]),
     cancelled: rule(["human"], ["cancelled"]),
   },
