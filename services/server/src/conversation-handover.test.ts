@@ -112,7 +112,7 @@ describe("AND-413 conversation-based handover", () => {
       const before = f.snapshot();
       expect(await f.call("claim_item", claimInput)).toEqual(claimed);
       expect(f.snapshot()).toEqual(before);
-      expect((await f.call("claim_item", { ...claimInput, idempotencyKey: "second-claim" })).isError).toBe(true);
+      expect((await f.call("claim_item", { ...claimInput, idempotencyKey: "second-claim" })).isError).not.toBe(true);
       const identity = kind === "dispatch-native" || kind === "external-native" ? { session: f.session } : textIdentity(claimed);
       const recovered = await f.call("recover_execution_authorization", { itemKey: f.item.key, ...identity, authorizationMode: "conversation" });
       f.safe(recovered);
@@ -294,4 +294,27 @@ describe("AND-466/467 evidence-bound no-release handover",()=>{
     expect((await f.call("submit_non_release_for_verification",input)).isError).toBe(true);
     expect(f.store.getWorkItem(f.item.key).status).toBe("ready");
   });
+});
+
+it("keeps two client claims independent through verification and lists an appended unpublished delivery",async()=>{
+ const f=await fixture();
+ const first=await f.call("claim_item",f.claimInput);f.safe(first);const firstIdentity=textIdentity(first);
+ const secondSession={...f.session,sessionRef:randomUUID()};
+ const second=await f.call("claim_item",{...f.claimInput,session:secondSession,idempotencyKey:"second-claim"},{clientId:"second-client"});f.safe(second);
+ const secondIdentity=textIdentity(second);
+ expect(secondIdentity).not.toEqual(firstIdentity);
+ expect(f.db.prepare("SELECT revoked FROM builder_execution_authorizations").all()).toEqual([{revoked:0},{revoked:0}]);
+ f.safe(await f.complete(firstIdentity));
+ f.safe(await f.call("submit_for_verification",{itemKey:f.item.key,...firstIdentity,completion,...release,idempotencyKey:"publish-first"}));
+ f.safe(await f.call("recover_execution_authorization",{itemKey:f.item.key,...secondIdentity,authorizationMode:"conversation"},{clientId:"second-client"}));
+ expect((await f.call("recover_execution_authorization",{itemKey:f.item.key,...secondIdentity,authorizationMode:"conversation"})).isError).toBe(true);
+ expect((await f.call("claim_item",{...f.claimInput,session:{...f.session,sessionRef:randomUUID()},idempotencyKey:"too-late"})).isError).toBe(true);
+ const appended=await f.call("submit_development_complete",{itemKey:f.item.key,...secondIdentity,completion:{...completion,commit:"c".repeat(40)},requiredArtifacts:["web"],idempotencyKey:"second-completion"},{clientId:"second-client"});f.safe(appended);
+ expect(appended.structuredContent?.statusChanged).toBe(false);
+ expect(f.store.getWorkItem(f.item.key).status).toBe("pending_verification");
+ const candidates=await f.call("list_release_candidates",{productId:f.item.productId,includeUnscoped:true});
+ expect(candidates.isError,JSON.stringify(candidates)).toBeFalsy();
+ const records=f.store.getDeliveryRecords(f.item.key);
+ expect(candidates.structuredContent?.candidates).toMatchObject([{itemKey:f.item.key,developmentEventId:records[1]!.id}]);
+ expect(f.db.prepare("SELECT COUNT(*) AS n FROM mcp_agent_claim_receipts").get()).toMatchObject({n:2});
 });

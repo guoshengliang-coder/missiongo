@@ -141,3 +141,21 @@ test("explicit evidence supplements preserve service pages, bind snapshots and r
   const receipt={deployedCommit:c,current:{web:{version:"1.0",commit:c,clean:true,ciPassed:true}},publicEvidence:{checks:{web:true}}};
   assert.equal(matchCandidates(receipt,combined,()=>({mergeCommit:b}),()=>true).comments.length,0);
 });
+
+test("keeps two deliveries of one item separate in comments and batch handover",()=>{
+ const receipt={deployedCommit:c,current:{web:{version:c,commit:c,clean:true,ciPassed:true}},publicEvidence:{checks:{web:true}}};
+ const base={itemKey:"AND-471",expectedRevision:10,roundKey:"00000000-0000-4000-8000-000000000001",requiredArtifacts:["web"]};
+ const candidates=[1,2].map(n=>({...base,developmentEventId:`00000000-0000-4000-8000-00000000000${n+1}`,pullRequestUrl:`https://github.com/owner/repo/pull/${n}`}));
+ const matched=matchCandidates(receipt,candidates,()=>({mergeCommit:b}),()=>true);
+ assert.equal(matched.comments.length,2);
+ assert.notEqual(matched.comments[0].idempotencyKey,matched.comments[1].idempotencyKey);
+ assert.deepEqual(releaseBatches("product",candidates,matched).batches[0].items.map(row=>row.developmentEventId),candidates.map(row=>row.developmentEventId));
+});
+
+test("matches a commit delivery only when the public artifact contains its commit",()=>{
+ const receipt={deployedCommit:c,current:{web:{version:c,commit:c,clean:true,ciPassed:true}},publicEvidence:{checks:{web:true}}};
+ const candidate={itemKey:"AND-471",completion:{kind:"commit",commit:b,targetBranch:"main"},requiredArtifacts:["web"]};
+ const resolve=()=>{throw new Error("Commit evidence must not resolve an invented PR");};
+ assert.equal(matchCandidates(receipt,[candidate],resolve,()=>true).comments.length,1);
+ assert.equal(matchCandidates(receipt,[candidate],resolve,()=>false).comments.length,0);
+});

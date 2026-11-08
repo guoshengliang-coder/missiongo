@@ -24,14 +24,14 @@ export function releaseCandidatesFromPages(input, { coverage = false, now = Date
       snapshotAt = Math.min(snapshotAt, generatedAt);
     }
     for (const candidate of page.candidates) {
-      if (seen.has(candidate?.itemKey)) throw new Error("Release candidate pages repeat an item");
-      seen.add(candidate?.itemKey); candidates.push(candidate);
+      if (seen.has(`${candidate?.itemKey}:${candidate?.developmentEventId ?? "legacy"}`)) throw new Error("Release candidate pages repeat an item");
+      seen.add(`${candidate?.itemKey}:${candidate?.developmentEventId ?? "legacy"}`); candidates.push(candidate);
     }
     if (coverage) for (const item of page.noReleaseItems) {
-      if (!/^[A-Z][A-Z0-9]*-[1-9][0-9]*$/.test(item?.itemKey ?? "") || typeof item.noReleaseReason !== "string" || !item.noReleaseReason.trim() || seen.has(item.itemKey)) {
+      if (!/^[A-Z][A-Z0-9]*-[1-9][0-9]*$/.test(item?.itemKey ?? "") || typeof item.noReleaseReason !== "string" || !item.noReleaseReason.trim() || seen.has(`no-release:${item.itemKey}`)) {
         throw new Error("Invalid explicit no-release exclusion");
       }
-      seen.add(item.itemKey); noReleaseItems.push(item);
+      seen.add(`no-release:${item.itemKey}`); noReleaseItems.push(item);
     }
     const next = page.nextBeforeSequence ?? null;
     if (next !== null && (!Number.isSafeInteger(next) || next <= 0 || expectedCursor !== null && next >= expectedCursor)) throw new Error("Release candidate cursor is invalid");

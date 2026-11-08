@@ -86,14 +86,15 @@ function currentRelease(receipt, artifact) {
 export function proposedComment(candidate, releases, receipt) {
   const version = releases.map((release) => `${artifactName(release.artifact)} ${release.version}`).join("、");
   const key = createHash("sha256")
-    .update(`${candidate.itemKey}\n${candidate.pullRequestUrl}\n${JSON.stringify(releases)}`)
+    .update(`${candidate.itemKey}\n${candidate.developmentEventId ?? "legacy"}\n${JSON.stringify(candidate.completion)}\n${candidate.pullRequestUrl}\n${JSON.stringify(releases)}`)
     .digest("hex");
   const receiptDigest = createHash("sha256").update(JSON.stringify(receipt)).digest("hex");
   return {
     itemKey: candidate.itemKey,
+    ...(candidate.developmentEventId ? {developmentEventId:candidate.developmentEventId} : {}),
     bodyKind: "free",
     summary: `${version} 已正式发布，可开始验证`,
-    text: `${version} 已正式发布。关联 PR：${candidate.pullRequestUrl}。各产物来源提交：${releases.map((release) => `${artifactName(release.artifact)} ${release.sourceCommit}`).join("；")}。请在这些版本验证本条目；这条通知不代表验收通过。`,
+    text: `${version} 已正式发布。关联集成：${candidate.pullRequestUrl ?? candidate.completion?.url ?? candidate.completion?.commit ?? "未提供"}。各产物来源提交：${releases.map((release) => `${artifactName(release.artifact)} ${release.sourceCommit}`).join("；")}。请在这些版本验证本条目；这条通知不代表验收通过。`,
     idempotencyKey: `release-notice:${key}`,
     transitionIdempotencyKey: `release-handoff:${key}`,
     pullRequestUrl: candidate.pullRequestUrl,
@@ -107,7 +108,7 @@ export function proposedComment(candidate, releases, receipt) {
 export function releaseBatches(productId, candidates, matched) {
   const batches = [], skipped = [...matched.skipped], items = [];
   for (const comment of matched.comments) {
-    const candidate = candidates.find(row => row.itemKey === comment.itemKey);
+    const candidate = candidates.find(row => row.itemKey === comment.itemKey && (!comment.developmentEventId || row.developmentEventId===comment.developmentEventId));
     if (!Number.isSafeInteger(candidate?.expectedRevision) || candidate.expectedRevision < 1
       || !/^[0-9a-f-]{36}$/.test(candidate.developmentEventId ?? "") || !/^[0-9a-f-]{36}$/.test(candidate.roundKey ?? "")) {
       skipped.push({ itemKey: comment.itemKey, reason: "candidate snapshot missing; refresh from a server supporting release batches" });
@@ -137,8 +138,11 @@ export function matchCandidates(receipt, candidates, resolvePr, ancestor = isAnc
     }
     let pr;
     try {
-      if (!facts.has(candidate.pullRequestUrl)) facts.set(candidate.pullRequestUrl,resolvePr(candidate.pullRequestUrl));
-      pr = facts.get(candidate.pullRequestUrl);
+      if(candidate.completion?.kind==="commit" && /^[0-9a-f]{40}$/.test(candidate.completion.commit ?? "")) pr={mergeCommit:candidate.completion.commit};
+      else {
+        if (!facts.has(candidate.pullRequestUrl)) facts.set(candidate.pullRequestUrl,resolvePr(candidate.pullRequestUrl));
+        pr = facts.get(candidate.pullRequestUrl);
+      }
     }
     catch (error) { skipped.push({ itemKey: candidate.itemKey, reason: `PR lookup failed: ${String(error)}` }); continue; }
     if (!pr) { skipped.push({ itemKey: candidate.itemKey, reason: "PR is not a verified merge in this repository" }); continue; }
@@ -168,10 +172,10 @@ export function matchCandidates(receipt, candidates, resolvePr, ancestor = isAnc
 /** Keep service pages immutable; verified local supplements are explicit and snapshot-bound. */
 export function withVerifiedEvidence(productId, candidates, evidence) {
   if (!evidence || evidence.productId !== productId || !Array.isArray(evidence.items) || !evidence.items.length
-    || evidence.items.length > 100 || new Set(evidence.items.map(row => row.itemKey)).size !== evidence.items.length) throw new Error("Invalid verified evidence product/items");
+    || evidence.items.length > 100 || new Set(evidence.items.map(row => `${row.itemKey}:${row.developmentEventId}`)).size !== evidence.items.length) throw new Error("Invalid verified evidence product/items");
   const result = candidates.map(row => ({...row}));
   for (const row of evidence.items) {
-    const candidate = result.find(c => c.itemKey === row.itemKey);
+    const candidate = result.find(c => c.itemKey === row.itemKey && c.developmentEventId===row.developmentEventId);
     if (!candidate || !Number.isSafeInteger(row.expectedRevision) || row.expectedRevision < 1
       || ["expectedRevision", "developmentEventId", "roundKey"].some(key => !row[key] || candidate[key] !== row[key])) throw new Error("Verified evidence candidate changed");
     if (typeof row.verification !== "string" || !row.verification.trim() || row.verification.length > 4000

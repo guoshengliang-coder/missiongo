@@ -115,6 +115,7 @@ interface CreateAgentWorkItemFields {
 }
 
 export interface ListWorkItemsInput extends ItemFilters {
+  readonly releaseCandidates?: boolean;
   readonly builderAccountId?: string | null;
   readonly productId: string;
   readonly status?: WorkItemStatus;
@@ -358,6 +359,7 @@ export function isReleaseArtifactId(value: string): boolean {
 }
 
 export interface SubmitDevelopmentCompleteInput {
+  readonly sourceIdentity?: string;
   readonly itemKey: string;
   readonly pullRequestUrl?: string;
   readonly completion?: CompletionReference;
@@ -370,6 +372,7 @@ export interface SubmitDevelopmentCompleteInput {
 }
 
 export interface SubmitForVerificationInput {
+  readonly developmentEventId?: string;
   readonly itemKey: string;
   readonly pullRequestUrl?: string;
   readonly completion?: CompletionReference;

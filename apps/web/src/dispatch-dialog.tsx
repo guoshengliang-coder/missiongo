@@ -15,9 +15,6 @@ import {
   ACTIVE_DISPATCHES_QUERY_KEY,
   ACTIVE_DISPATCHES_REFETCH_MS,
   activeDispatchStatusKey,
-  conflictSignature,
-  includesQueued,
-  redispatchReasonKey,
 } from "./dispatch-conflicts";
 import {
   NODE_INELIGIBILITY_KEYS,
@@ -111,7 +108,7 @@ export function DispatchDialog({
   const [created, setCreated] = useState<Dispatch | null>(null);
   // Which set of earlier dispatches the person said were gone, rather than a
   // plain boolean: if a refetch turns up another one, that tick was not about it.
-  const [acknowledgedConflicts, setAcknowledgedConflicts] = useState<string | null>(null);
+  const requestKeys = useState(() => new Map<string,string>())[0];
 
   const nodesQuery = useQuery({
     queryKey: ["nodes"],
@@ -155,8 +152,7 @@ export function DispatchDialog({
   // Eligibility is required before submission; the write repeats the same guard
   // so a dispatch delivered after this check cannot be replaced accidentally.
   const conflicts = handoff ? [] : eligibility.data?.conflicts ?? [];
-  const conflictsKey = conflictSignature(conflicts);
-  const redispatchConfirmed = eligibility.data?.requiresConfirmation === true && acknowledgedConflicts === conflictsKey;
+
   const ineligibility = useMemo(
     () => new Map(nodes.map((node) => [node.id, nodeIneligibility(node, { productIds, agentKind })])),
     [agentKind, nodes, productIds],
@@ -217,7 +213,11 @@ export function DispatchDialog({
       ...(effort ? { effort } : {}),
       itemKeys,
       saveAsDefault,
-      ...(redispatchConfirmed ? { force: true } : {}),
+      idempotencyKey: (() => {
+        const signature=JSON.stringify([nodeId,agentKind,mode,model,effort,itemKeys,saveAsDefault]);
+        if(!requestKeys.has(signature)) requestKeys.set(signature,crypto.randomUUID());
+        return requestKeys.get(signature)!;
+      })(),
       });
     },
     onSuccess: (dispatch) => {
@@ -239,7 +239,7 @@ export function DispatchDialog({
   // eligible machine -- makes it stale, so it must not outlive its cause
   // (AND-151). The conflict tick is in the key because unticking it changes what
   // would be submitted.
-  const submissionKey = `${nodeId}|${agentKind}|${mode}|${model}|${effort}|${redispatchConfirmed}`;
+  const submissionKey = `${nodeId}|${agentKind}|${mode}|${model}|${effort}`;
   useEffect(() => {
     if (mutation.isError) mutation.reset();
     // Keyed on the values, not the error: resetting clears the error, and
@@ -299,7 +299,7 @@ export function DispatchDialog({
   const modes = modeChoices(agentKind,mode,selectedAgent?.modes,model || undefined);
 
   const blocked = !nodeId || Boolean(selectedReason) || (newSession ? !products.some(product => product.id === projectId) || !nodes.some(node => node.id === nodeId)
-    : itemKeys.length === 0 || (!handoff && (!eligibility.isSuccess || !eligibility.data.allowed || (eligibility.data.requiresConfirmation && !redispatchConfirmed))));
+    : itemKeys.length === 0 || (!handoff && (!eligibility.isSuccess || !eligibility.data.allowed)));
 
   return (
     <form
@@ -327,10 +327,11 @@ export function DispatchDialog({
         </ul>
       </div>}
 
+      {eligibility.data?.allowed === false && eligibility.data.reason !== "item_not_dispatchable" && <p className="dispatch-conflict" role="alert">{t("dispatchParallelUpgrade")}</p>}
       {Boolean(eligibility.data?.takeoverWarnings?.length) && <p className="dispatch-conflict" role="status">{t("executionTakeoverHelp")}</p>}
       {!conflicts.length && eligibility.data?.reason === "execution_unconfirmed" && <p className="dispatch-conflict" role="alert">{t("executionStopBlocked")}</p>}
       {conflicts.length > 0 && (
-        <div className="dispatch-conflict" role="alert">
+        <div className="dispatch-conflict" role="status">
           <p className="dispatch-conflict-heading"><TriangleAlert size={15} aria-hidden="true" /> {t("dispatchConflictHeading")}</p>
           <ul>
             {conflicts.map((entry) => {
@@ -348,16 +349,7 @@ export function DispatchDialog({
               );
             })}
           </ul>
-          <p>{t(eligibility.data?.reason ? redispatchReasonKey(eligibility.data.reason) : "dispatchConflictExplain")}</p>
-          {eligibility.data?.requiresConfirmation && includesQueued(conflicts) && <p>{t("dispatchConflictQueuedCancelled")}</p>}
-          {eligibility.data?.requiresConfirmation && <label className="dispatch-conflict-confirm">
-            <input
-              type="checkbox"
-              checked={redispatchConfirmed}
-              onChange={(event) => setAcknowledgedConflicts(event.target.checked ? conflictsKey : null)}
-            />
-            <span>{t("dispatchConflictConfirm")}</span>
-          </label>}
+          <p>{t("dispatchConflictExplain")}</p>
         </div>
       )}
 

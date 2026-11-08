@@ -2,6 +2,9 @@ import { postItemCommand } from "./item-command";
 import { randomBytes } from "node:crypto";
 import { expect, test, type APIRequestContext } from "@playwright/test";
 
+const fixedTime="2026-11-08T03:00:00.000Z";
+test.beforeEach(async({page})=>{await page.clock.setFixedTime(new Date(fixedTime));});
+
 async function createItem(request: APIRequestContext) {
   const product = await (await request.post("/api/v1/products",{data:{name:"Delivery reconciliation",keyPrefix:`DR${randomBytes(3).toString("hex").toUpperCase()}`}})).json();
   const response=await request.post("/api/v1/items",{data:{productId:product.id,title:"核对交付进度",description:"Keep planning and verified delivery distinct",type:"task",priority:"normal",status:"ready",environment:{platform:"web"}}});
@@ -29,7 +32,7 @@ for (const width of [375,1440]) {
   test(`waiting for an answer does not look like a claimed item at ${width}px`,async({page,request},info)=>{
     const {product,item}=await createItem(request);
     await page.setViewportSize({width,height:900}); await page.emulateMedia({colorScheme:width===375 ? "dark" : "light"});
-    const current={dispatchId:"waiting-dispatch",itemKey:item.key,itemStatus:"ready",nodeName:"Example Mac",agentKind:"codex",status:"launched",sessionStatus:"active",waitingForInput:true,claimed:false,createdAt:new Date().toISOString()};
+    const current={dispatchId:"waiting-dispatch",itemKey:item.key,itemStatus:"ready",nodeName:"Example Mac",agentKind:"codex",status:"launched",sessionStatus:"active",waitingForInput:true,claimed:false,createdAt:fixedTime};
     await page.route("**/api/v1/dispatches/active",route=>route.fulfill({json:{active:[current],latest:[current],current:[current],handlers:[]}}));
     await page.goto(`/?product=${product.id}&status=ready`);
     const row=page.locator(".item-row").filter({hasText:item.key});
@@ -63,7 +66,7 @@ for (const width of [375,1440]) {
 
   test(`started dispatches cannot offer an ineffective override at ${width}px`,async({page,request},info)=>{
     const {product,item}=await createItem(request);
-    const stamp=new Date().toISOString();
+    const stamp=fixedTime;
     const node={id:"fixture-node",name:"Example Mac",deviceName:"Example Mac",online:true,agents:[{kind:"codex", planApprovalProtocol: 1,ready:true,models:[]},{kind:"claude_code", planApprovalProtocol: 1,ready:true,models:[]}],repos:[{productId:product.id,repoPath:"fixture-repository"}],repoCandidates:[],createdAt:stamp};
     await page.route("**/api/v1/nodes",route=>route.fulfill({json:{nodes:[node]}}));
     await page.route("**/api/v1/dispatch-defaults",route=>route.fulfill({json:{nodeId:node.id,agentKind:"codex",agents:{codex:{mode:"default"}}}}));
@@ -72,7 +75,7 @@ for (const width of [375,1440]) {
     await page.locator(".item-row").filter({hasText:item.key}).getByRole("checkbox").check();
     await page.getByRole("button",{name:"派单",exact:true}).click();
     const form=page.locator(".dispatch-form");
-    await expect(form).toContainText("旧派单已送达节点");
+    await expect(form).toContainText("当前服务仍使用排他派单规则");
     await expect(form.locator(".dispatch-conflict input[type=checkbox]")).toHaveCount(0);
     await expect(form.getByRole("button",{name:"派单",exact:true})).toBeDisabled();
     await expect(form.getByRole("link",{name:"在控制台查看",exact:true})).toHaveAttribute("href",/owned-session/);

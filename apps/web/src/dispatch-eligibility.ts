@@ -3,14 +3,9 @@ import { defaultAgentMode, type AgentModeCapability, AGENT_KINDS, CLAUDE_CODE_MO
 import type { MessageKey } from "./i18n";
 import type { DispatchNode, Product, WorkItemStatus } from "./types";
 
-/**
- * Only work that is waiting can be dispatched. An item already in progress has
- * a session on it, and one in verification has had its answer; sending either to
- * a second machine gets two sessions writing the same branch. The server rejects
- * the same thing, but the list has to say so before the click rather than after.
- */
+/** New development may run in parallel; verification only permits existing claimed conversations. */
 export function isDispatchable(status: WorkItemStatus): boolean {
-  return status === "ready";
+  return status === "ready" || status === "in_progress";
 }
 
 /** A saved mode belongs to its agent; an unset OpenCode mode starts in Build. */
@@ -198,7 +193,7 @@ const DISPATCH_PROBLEM_KEYS: Readonly<Record<string, MessageKey>> = {
   item_not_dispatchable: "dispatchItemNotDispatchable",
   ai_not_permitted: "dispatchAiNotPermitted",
   // Only reached when the dialog did not know yet -- someone dispatched in the
-  // meantime. The dialog refetches, so the notice and its checkbox appear.
+  // meantime. The dialog refetches, so its compatibility notice appears.
   item_already_dispatched: "dispatchItemAlreadyDispatched",
 };
 

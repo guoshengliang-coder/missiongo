@@ -37,6 +37,7 @@ export function launchPrompt(job: Dispatch): string {
     ].join("\n\n");
   }
   const lines = [
+    "同一条目可有多个独立会话和分支。待处理、处理中可按本会话身份领取；待验证禁止新派单/新认领，但已认领且本轮授权有效的会话可恢复并追加合并与发布证据，不回退状态。不得因并行加入撤销其他会话授权。规划、实施及合并前核对最新主线，合并发布仍需各自授权。",
     `使用 missiongo skill 处理这些工作条目：${job.itemKeys.join("、")}。`,
     `本会话由 MissionGo 派单 ${job.dispatchId} 发起，这些编号等同于用户给出的范围。`,
     `领取时 claim_item 必须带 dispatchId: ${JSON.stringify(job.dispatchId)}，沿用本次派单；不得另行登记主动处理会话。`,

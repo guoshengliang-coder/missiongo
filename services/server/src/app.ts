@@ -2484,6 +2484,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       }
     }
     const dispatch = store.database.transaction(() => {
+      const requestKey = typeof body.idempotencyKey === "string" ? body.idempotencyKey.trim() : undefined;
+      if (requestKey !== undefined && (!requestKey || requestKey.length > 200)) throw invalidInput("Invalid dispatch request key.");
+      const operation = `dispatch:${accountId}:${requestKey}`;
+      const digest = JSON.stringify([[...authorizedKeys].sort(),body.nodeId,body.agentKind,body.mode,body.model ?? null,body.effort ?? null]);
+      const prior = requestKey ? store.database.connection.prepare("SELECT result_json FROM idempotency_keys WHERE key=? AND operation=?").get(operation,"parallel_dispatch") as {result_json:string}|undefined : undefined;
+      if (prior) {
+        const record=JSON.parse(prior.result_json);
+        if(record.digest!==digest) throw conflict("idempotency_conflict","Dispatch request changed; use a new request key.");
+        return dispatchStore.getDispatch(accountId,record.dispatchId);
+      }
       const dispatch = dispatchStore.createDispatch({
         accountId,
         nodeId: stringField(body, "nodeId")!,
@@ -2506,6 +2516,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           itemKeys: dispatch.itemKeys,
         });
       }
+      if(requestKey) store.database.connection.prepare("INSERT INTO idempotency_keys(key,operation,result_json,created_at) VALUES (?,?,?,?)")
+        .run(operation,"parallel_dispatch",JSON.stringify({digest,dispatchId:dispatch.id}),new Date().toISOString());
       return dispatch;
     });
     return reply.status(201).send(dispatch);

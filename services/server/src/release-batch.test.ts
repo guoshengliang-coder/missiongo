@@ -76,7 +76,7 @@ describe("AND-415 release batch", () => {
     expect((await f.call("submit_release_batch",request)).structuredContent.results[0].outcome).toBe("already_submitted");
     expect(f.store.getTimeline(item.key)).toEqual(after);
     const replacement={...request,idempotencyKey:randomUUID(),items:[{...request.items[0],expectedRevision:f.store.getWorkItem(item.key).revision!}]};
-    expect((await f.call("submit_release_batch",replacement)).structuredContent.results[0].code).toBe("release_evidence_conflict");
+    expect((await f.call("submit_release_batch",replacement)).structuredContent.results[0].outcome).toBe("submitted");
     f.store.transitionWorkItem({itemKey:item.key,actor:"human",to:"ready",reason:"verification_failed",note:"Rework",attribution:{accountId:config.id}});
     expect((await f.call("submit_release_batch",request)).structuredContent.results[0]).toMatchObject({outcome:"already_submitted",currentStatus:"ready"});
     expect(f.store.getWorkItem(item.key).status).toBe("ready");

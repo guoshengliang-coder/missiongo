@@ -1167,7 +1167,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .detail-move-chevron { margin-left: auto; }
 .detail-move-popover { position: absolute; top: 0; right: calc(100% + 10px); width: 170px; padding: 5px; background: var(--surface-strong); border: 1px solid var(--line); border-radius: var(--radius-md); box-shadow: var(--shadow-soft); }
 @container detail-pane (max-width: 440px) {
-  .detail-actions-popover { max-height: min(70vh, 520px); overflow-y: auto; }
+  .detail-actions-popover { max-height: min(85vh, 640px); overflow-y: auto; }
   .detail-move-popover { position: static; width: auto; margin: 2px 0 2px 18px; padding: 0; border: 0; box-shadow: none; }
   .detail-move-menu[open] .detail-move-chevron { transform: rotate(90deg); }
   .detail-status-list { gap: 4px; }
@@ -3303,6 +3303,9 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .adaptive-toolbar-secondary[aria-hidden="true"] { position: fixed; visibility: hidden; pointer-events: none; }
 .detail-toolbar[data-overflow="true"] .detail-toolbar-actions { flex: 1; min-width: 0; justify-content: flex-end; }
 .detail-toolbar[data-overflow="true"] .toolbar-primary-action { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+/* The dispatch entry stays reachable on narrow panes through the more menu
+   (AND-471); hiding it here keeps refresh and edit unfolded above 320px. */
+@container detail-pane (max-width: 390px) { .toolbar-dispatch-button { display: none; } }
 .comment-author-name { display: block; width: 100%; min-width: 44px; min-height: 36px; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; background: none; border: 0; font: inherit; text-align: start; cursor: pointer; }
 .comment-author-full { overflow-wrap: anywhere; }
 @media (pointer: coarse) { .comment-author-name { min-height: 44px; } .comment-avatar { margin-top: 8px; } }

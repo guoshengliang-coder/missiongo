@@ -8,7 +8,7 @@ import { seedStoreActors } from "../testing-fixtures.js";
 import { ExternalAgentSessionStore } from "../external-agent-session-store.js";
 import { assertItemExecutionIdentity } from "../item-execution-blockers.js";
 
-it("upgrades without inventing takeovers and persists item-scoped retirement across restarts",()=>{
+it("upgrades without inventing takeovers and preserves parallel history across restarts",()=>{
   const directory=mkdtempSync(join(tmpdir(),"missiongo-takeover-")),path=join(directory,"fixture.sqlite");
   let store=new MissionGoStore(path);
   try {
@@ -27,10 +27,10 @@ it("upgrades without inventing takeovers and persists item-scoped retirement acr
     expect(store.database.connection.prepare("SELECT COUNT(*) AS n FROM item_execution_takeovers").get()).toMatchObject({n:0});
     store.claimWorkItem({itemKey:item.key,agentId:"new",idempotencyKey:randomUUID(),attribution:owner});
     const rows=store.database.connection.prepare("SELECT * FROM item_execution_takeovers ORDER BY source").all();
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(0);
     store.close();store=new MissionGoStore(path);
     expect(store.database.connection.prepare("SELECT * FROM item_execution_takeovers ORDER BY source").all()).toEqual(rows);
-    expect(()=>assertItemExecutionIdentity(store.database,item.id,`native:migration:codex:native:${identity.sessionRef}`)).toThrow();
+    expect(()=>assertItemExecutionIdentity(store.database,item.id,`native:migration:codex:native:${identity.sessionRef}`)).not.toThrow();
     expect(store.database.connection.prepare("SELECT progress_status FROM external_agent_sessions WHERE id=?").get(source)).toMatchObject({progress_status:"working"});
     expect(store.database.connection.prepare("SELECT COUNT(*) AS n FROM item_execution_stop_confirmations").get()).toMatchObject({n:0});
   } finally {store.close();rmSync(directory,{recursive:true,force:true});}

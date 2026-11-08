@@ -1016,7 +1016,7 @@ describe("Commenting over MCP", () => {
       name: "claim_item",
       arguments: { itemKey: "HG-1", agentId: "other", idempotencyKey: "claim-2" },
     });
-    expect(JSON.stringify(again)).toMatch(/人工明确交给本会话接手/);
+    expect(JSON.stringify(again)).toMatch(/conversation.s identity/);
   });
   async function projectClaimFixture(kind: "codex" | "claude_code" | "opencode" = "codex") {
     const f = await commentingApp();
@@ -1130,8 +1130,14 @@ describe("Commenting over MCP", () => {
     }
     const result = await f.call(token,1,"tools/call",{name:"claim_item",arguments:{itemKey:"HG-1",agentId:"codex",idempotencyKey:"rejected-project",
       ...(dispatchId ? {dispatchId} : {session:f.identity})}});
+    if(condition==="already-claimed") {
+      expect(result.result?.isError ?? result.error,JSON.stringify(result)).toBeFalsy();
+      expect(f.app.missionGoStore.getWorkItem("HG-1").status).toBe("in_progress");
+      expect(f.db.prepare("SELECT COUNT(*) AS n FROM external_agent_sessions").get()).toMatchObject({n:0});
+      return;
+    }
     expect(result.result?.isError ?? result.error, JSON.stringify(result)).toBeTruthy();
-    expect(f.app.missionGoStore.getWorkItem("HG-1").status).toBe(condition === "already-claimed" ? "in_progress" : "ready");
+    expect(f.app.missionGoStore.getWorkItem("HG-1").status).toBe("ready");
     for (const table of ["external_agent_sessions","dispatch_items","builder_execution_authorizations","mcp_agent_claim_receipts"]) {
       expect(f.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get(),table).toMatchObject({n:0});
     }
@@ -1435,7 +1441,7 @@ describe("Commenting over MCP", () => {
     expect(app.missionGoStore.database.connection.prepare("SELECT ref_kind, agent_kind FROM external_agent_sessions WHERE id = ?").get(sessionId))
       .toMatchObject({ ref_kind: "tracking", agent_kind: "claude_code" });
     const lost = await call(writeToken, 5, "tools/call", { name: "claim_item", arguments: { ...args, idempotencyKey: "another-claim" } });
-    expect(JSON.stringify(lost)).toContain("人工明确交给本会话接手");
+    expect(lost.result?.isError ?? lost.error).toBeFalsy();
     expect(app.missionGoStore.database.connection.prepare("SELECT COUNT(*) AS n FROM external_agent_sessions").get()).toMatchObject({ n: 1 });
   });
 
@@ -1449,7 +1455,7 @@ describe("Commenting over MCP", () => {
       app.missionGoAccounts.credentialsStamp(account), "other-client", ["missiongo:read", "missiongo:write"]).token;
     const stolenClaim = await call(otherToken, 10, "tools/call", { name: "claim_item", arguments: {
       itemKey: "HG-1", agentId: "opencode", idempotencyKey: "claim" } });
-    expect(JSON.stringify(stolenClaim)).toContain("人工明确交给本会话接手");
+    expect(JSON.stringify(stolenClaim)).toContain("conversation's identity");
     expect(app.missionGoStore.database.connection.prepare("SELECT COUNT(*) AS n FROM external_agent_sessions").get()).toMatchObject({ n: 1 });
     const report = await call(otherToken, 2, "tools/call", { name: "report_agent_session", arguments: {
       itemKey: "HG-1", sessionId, status: "failed", text: "Spoofed failure", idempotencyKey: "spoof" } });
