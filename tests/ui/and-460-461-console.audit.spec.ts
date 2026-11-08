@@ -14,7 +14,10 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
       ...(archived ? { archivedAt: stamp } : {}), canReply: !archived, canRetry: false, canStop: false, canArchive: true,
       unread: false, waitingForReply: false, needsAttention: false,
       attention: { state: "needed", kind: "instruction", revision: id, reason: "等待发起合并", handledByDelivery: true } });
-    const rows = [row("active-chat"), row("archived-chat", true, true), { ...row("independent-chat"), needsAttention: true,
+    const rows = [row("active-chat"), row("archived-chat", true, true),
+      { ...row("today-chat"), sessionName: "当天长标题：允许重复派单与并行分支开发及会话列表排版", activityAt: "2026-11-08T10:00:00.000Z" },
+      { ...row("older-chat"), sessionName: "跨天长标题：恢复会话列表紧凑排版并保留收藏功能", activityAt: "2026-10-28T00:00:00.000Z" },
+      { ...row("independent-chat"), needsAttention: true,
       attention: { state: "needed", kind: "instruction", revision: "independent", reason: "请决定另一项独立安排", handledByDelivery: false } }];
     let failed = true, writes = 0;
     await page.route("**/api/v1/agent-sessions**", async route => {
@@ -34,6 +37,35 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     const activeRow = page.locator(".agent-console-session-row").filter({ hasText: "active-chat" });
     const star = activeRow.getByRole("button", { name: "收藏", exact: true });
     await expect(star).toBeVisible();
+    // Measure actual rendered rows for mixed date lengths and all user font scales.
+    for (const scale of ["small", "medium", "large"]) {
+      await page.evaluate(scale => { document.documentElement.dataset.fontScale = scale; }, scale);
+      for (const name of ["active-chat", "当天长标题", "跨天长标题"]) {
+        const currentRow = page.locator(".agent-console-session-row").filter({ hasText: name });
+        const geometry = await currentRow.evaluate(element => {
+          const rect = (selector: string) => element.querySelector(selector)!.getBoundingClientRect();
+          const title = rect("strong"), time = rect("time"), star = rect(".agent-console-favorite-control button"), row = element.getBoundingClientRect();
+          const overlaps = [...element.querySelectorAll(".agent-console-session-meta > *")].some(node => {
+            const box = node.getBoundingClientRect();
+            return box.left < star.right && box.right > star.left && box.top < star.bottom && box.bottom > star.top;
+          });
+          const timeElement = element.querySelector("time")!;
+          return { titleRight: title.right, timeLeft: time.left, timeRight: time.right, rowRight: row.right,
+            starRight: star.right, starWidth: star.width, starHeight: star.height, overlaps,
+            clippedTime: timeElement.scrollWidth > timeElement.clientWidth };
+        });
+        expect(geometry.titleRight).toBeLessThanOrEqual(geometry.timeLeft);
+        expect(geometry.rowRight - geometry.timeRight).toBeLessThanOrEqual(14);
+        expect(geometry.rowRight - geometry.starRight).toBeLessThanOrEqual(10);
+        expect(geometry.starWidth).toBeGreaterThanOrEqual(44);
+        expect(geometry.starHeight).toBeGreaterThanOrEqual(44);
+        expect(geometry.overlaps).toBe(false);
+        expect(geometry.clippedTime).toBe(false);
+      }
+    }
+    await expect(page.locator(".agent-console-session-row").filter({ hasText: "当天长标题" }).locator("time")).not.toContainText("昨天");
+    await expect(page.locator(".agent-console-session-row").filter({ hasText: "跨天长标题" }).locator("time")).toContainText("10/28");
+    await page.evaluate(() => { document.documentElement.dataset.fontScale = "medium"; });
     const starBox = await star.boundingBox(); expect(starBox!.width).toBeGreaterThanOrEqual(44); expect(starBox!.height).toBeGreaterThanOrEqual(44);
     await star.click();
     await expect(activeRow.getByRole("alert")).toContainText("收藏未能保存");
@@ -46,7 +78,8 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     const listStarBox = await listStar.boundingBox();
     expect(listStarBox!.y).toBeGreaterThanOrEqual(timeBox!.y + timeBox!.height);
     await expect(activeRow.locator("time")).toContainText("昨天");
-    expect(Math.abs((listStarBox!.x + listStarBox!.width / 2) - (timeBox!.x + timeBox!.width / 2))).toBeLessThanOrEqual(4);
+    // AND-473 restores the compact right edge, without centering a star under a long date.
+    expect(Math.abs((listStarBox!.x + listStarBox!.width) - (timeBox!.x + timeBox!.width))).toBeLessThanOrEqual(6);
     const rowBox = await activeRow.boundingBox(), openBox = await activeRow.locator(".agent-console-session").boundingBox();
     expect(openBox!.width).toBeGreaterThanOrEqual(rowBox!.width - 2);
     await page.screenshot({ path: testInfo.outputPath("favorite-list-states.png"), fullPage: true });
