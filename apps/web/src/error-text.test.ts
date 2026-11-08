@@ -63,3 +63,11 @@ it("localizes dispatch and external cancellation races", () => {
     expect(errorMessageKey(new ApiError(409, code, "Only a queued reply can be cancelled."))).toBe("errorAgentReplyNotQueued");
   }
 });
+
+it("localizes stale approvals and retries without treating them as task failures", () => {
+  for (const code of ["approval_stale", "approval_decided", "approval_retry_stale"]) {
+    expect(errorMessageKey(new ApiError(409, code, "Changed."))).toBe("errorApprovalChanged");
+  }
+  expect(errorMessageKey(new ApiError(409, "approval_retry_unavailable", "Only a current denial…"))).toBe("errorApprovalRetryUnavailable");
+  expect(errorMessageKey(new ApiError(409, "approval_retry_in_progress", "Pending."))).toBe("errorApprovalRetryPending");
+});

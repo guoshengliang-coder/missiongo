@@ -3457,3 +3457,11 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .agent-plan-inline-approval button { min-height: 44px; }
 
 .agent-plan-record > div { min-width: 0; flex: 1; }
+
+/* Operation feedback is shared by the console, embedded conversation and settings. */
+.agent-operation-feedback { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px; max-width: 100%; font-size: var(--text-sm); }
+.agent-operation-feedback > span { min-width: 0; overflow-wrap: anywhere; }
+.agent-operation-feedback > button { font-size: inherit; }
+.agent-operation-diagnostic { grid-column: 1 / -1; min-width: 0; max-width: 100%; }
+.agent-operation-diagnostic > summary { display: flex; align-items: center; min-height: 44px; cursor: pointer; }
+.agent-operation-diagnostic p, .agent-operation-diagnostic small { white-space: pre-wrap; overflow-wrap: anywhere; }
