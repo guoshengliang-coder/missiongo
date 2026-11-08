@@ -115,7 +115,7 @@ export function registerItemDeliveryRoutes(app: FastifyInstance, {store, account
     if (item.builderHandover) { handovers.reconcile(item.builderHandover.id); item = store.getWorkItem(itemKey); }
     let canHandoffToAgent=manages(account,item) && accounts.allows(account,item.productId,"ai") && item.status==="in_progress";
     try {assertBuilderExecution(store.database,item.id,account.id);} catch {canHandoffToAgent=false;}
-    return { builderHandover: item.builderHandover,
+    return { deliveries:store.getDeliveryRecords(itemKey), builderHandover: item.builderHandover,
       canTakeOver: Boolean(item.builderHandover?.canTakeOver && item.builderAccountId === account.id && accounts.allows(account,item.productId,"operate") && accounts.allows(account,item.productId,"ai")), builderAccountId: item.builderAccountId ?? null, builderName: item.builderName ?? null,
       builderNeedsReassignment: item.builderNeedsReassignment ?? false, canManage: manages(account,item), canManageBuilder: managesBuilder(account,item), currentAccountId: account.id,
       candidates: candidates(item.productId).map(row => ({id:row.id,name:name(row.id)})),

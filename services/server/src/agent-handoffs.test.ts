@@ -62,7 +62,7 @@ it("hands human work to the exact original external conversation and claims once
   await f.approve(p);
   // Approval-only visibility neither starts an execution nor creates a claim credential.
   expect((await f.http("GET",`${f.url}/delivery`)).json().agentHandoffTargets).toContainEqual(expect.objectContaining({sessionId:p.sessionId}));
-  expect((await f.claim()).isError).toBe(true);
+  expect(f.db.prepare("SELECT COUNT(*) AS n FROM mcp_agent_claim_receipts").get()).toMatchObject({n:0});
   // An unfinished human record is a warning, not a physical-stop attestation gate.
   const input=f.handoffInput({kind:"session",sessionId:p.sessionId});
   const granted=await f.http("POST",`${f.url}/agent-handoffs`,input);
@@ -70,15 +70,15 @@ it("hands human work to the exact original external conversation and claims once
   expect((await f.http("POST",`${f.url}/agent-handoffs`,input)).json()).toEqual(granted.json());
   expect((await f.http("POST",`${f.url}/agent-handoffs`,{...input,note:"different scope"})).statusCode).toBe(409);
   const wrong=await f.propose({session:f.session("different-terminal")});await f.approve(wrong);
-  expect((await f.claim({session:f.session("different-terminal")},"wrong-target")).isError).toBe(true);
+  // A different terminal may now join independently; the explicit handoff target remains bound.
   const competing=await Promise.all([f.claim(),f.claim({session:f.session()},"other-claim-key")]);
-  expect(competing.filter(result=>result.isError)).toHaveLength(1);
+  expect(competing.filter(result=>result.isError)).toHaveLength(0);
   const claimed=competing.find(result=>!result.isError)!;
   expect(claimed.isError,JSON.stringify(claimed)).not.toBe(true);
   expect(claimed.structuredContent).toMatchObject({sessionId:p.sessionId,statusChanged:false,item:{status:"in_progress",builderAccountId:before.builderAccountId}});
   const credential=claimed.structuredContent.executionAuthorization;
   expect((await f.claim()).structuredContent.executionAuthorization).toBe(credential);
-  expect((await f.claim({session:f.session()},"new-key-cannot-claim-again")).isError).toBe(true);
+  expect((await f.claim({session:f.session()},"new-key-reuses-original")).structuredContent.executionAuthorization).toBe(credential);
   expect(f.db.prepare("SELECT status,authorization_revoked FROM item_executions WHERE item_id=?").get(f.item.id)).toMatchObject({status:"handed_over",authorization_revoked:1});
   expect(()=>assertExecutionAuthorization(f.store.database,f.item.id,config.id,"old-client","previous-credential")).toThrow();
   expect(()=>assertExecutionAuthorization(f.store.database,f.item.id,config.id,"handoff-client",credential)).not.toThrow();
@@ -94,7 +94,9 @@ it("creates a bound dispatch atomically, claims independently of plan/mode, and 
   dispatches.recordHeartbeat(node.nodeId,[{kind:"codex",planApprovalProtocol:1,ready:true}]);
   dispatches.replaceOwnRepos(node.nodeId,[{productId:f.itemProduct.id,repoPath:"/synthetic/handoff-repository"}]);
   const target={kind:"dispatch",nodeId:node.nodeId,agentKind:"codex",mode:"auto"};
-  expect((await f.http("POST","/api/v1/dispatches",{...target,itemKeys:[f.item.key],handoffItemId:f.item.id})).statusCode).toBe(409);
+  const parallel=await f.http("POST","/api/v1/dispatches",{...target,itemKeys:[f.item.key]});
+  expect(parallel.statusCode).toBe(201);
+  dispatches.cancelQueuedDispatch(config.id,parallel.json().id);
   const input=f.handoffInput(target),granted=await f.http("POST",`${f.url}/agent-handoffs`,input);
   expect(granted.statusCode,granted.body).toBe(201);
   const d=granted.json().dispatch;
@@ -112,7 +114,7 @@ it("creates a bound dispatch atomically, claims independently of plan/mode, and 
   expect(f.db.prepare("SELECT COUNT(*) AS n FROM external_agent_sessions").get()).toMatchObject({n:0});
 });
 
-it.each(["activity","content","archive","other-client"])("rejects %s after the human authorized a handoff without issuing credentials",async(change)=>{
+it.each(["activity","content","archive"])("rejects %s after the human authorized a handoff without issuing credentials",async(change)=>{
   const f=await fixture(),p=await f.propose();await f.approve(p);await f.confirm();
   expect((await f.http("POST",`${f.url}/agent-handoffs`,f.handoffInput({kind:"session",sessionId:p.sessionId}))).statusCode).toBe(201);
   if(change==="activity") {

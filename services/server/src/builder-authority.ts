@@ -45,6 +45,8 @@ export function assertExternalExecution(database: MissionGoDatabase, sessionId: 
 export function assertExecutionAuthorization(database: MissionGoDatabase, itemId: string, accountId: string, clientId: string,
   authorization?: string): void {
   assertBuilderExecution(database,itemId,accountId);
+  const state=database.connection.prepare("SELECT status FROM work_items WHERE id=?").get(itemId) as {status:string}|undefined;
+  if(!state || !["ready","in_progress","development_complete","pending_verification"].includes(state.status)) throw conflict("builder_execution_revoked","执行凭据不适用于当前状态。");
 
   if (!authorization) {
     throw conflict("builder_execution_missing","缺少执行凭据。请用 recover_execution_authorization 和原会话身份恢复本轮领取授权，不要重新领取。");

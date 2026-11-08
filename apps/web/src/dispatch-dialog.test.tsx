@@ -76,13 +76,13 @@ describe("DispatchDialog machine list (AND-224)", () => {
   const conflict={dispatchId:"existing",itemKey:item.key,nodeName:"M4",agentKind:"codex" as const,status:"launched" as const,createdAt:node.createdAt};
   it("does not offer a misleading force checkbox for a launched conversation",()=>{
     const html=renderWithNodes([node],{allowed:false,reason:"started",requiresConfirmation:false,conflicts:[{...conflict,agentSessionId:"owned-session"}]});
-    expect(html).toContain("旧派单已送达节点");
+    expect(html).toContain("可以另起独立会话并行处理");
     expect(html).not.toContain("取消原排队派单，并重新派单");
     expect(html).toContain("owned-session");
   });
   it("offers the cancellation checkbox for a replaceable queued batch only",()=>{
     const html=renderWithNodes([node],{allowed:true,reason:null,requiresConfirmation:true,conflicts:[{...conflict,status:"queued"}]});
-    expect(html).toContain("取消原排队派单，并重新派单");
+    expect(html).not.toContain("取消原排队派单，并重新派单");
   });
   it("still says no devices when the list loaded empty", () => {
     const html = renderWithNodes([]);

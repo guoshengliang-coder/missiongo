@@ -56,34 +56,24 @@ function activity(sessionId:string,active:boolean) {
 for (const width of [320,1440]) for (const theme of ["light","dark"] as const) {
   test.describe(`execution takeover ${width}px ${theme}`,()=>{
     test.use({viewport:{width,height:812},hasTouch:width===320,isMobile:width===320,colorScheme:theme});
-    test("shows historical records without a stop form and preserves actual activity blocking",async({page,request},info)=>{
+    test("keeps original execution history without blocking independent participation",async({page,request},info)=>{
       const {item,product,sessionId}=setup(true);
       await page.goto(`/?product=${product.id}&status=ready&item=${item.key}`);
       const notice=page.getByRole("region",{name:"原执行情况"});
-      await expect(notice).toContainText("旧执行状态未知，可以接手");
-      await expect(notice).toContainText("接手不会自动停止旧设备上的进程或外部操作");
-      await expect(notice).toContainText(sessionId);
-      await expect(notice).toContainText("人工领取处理");
-      await expect(notice.getByRole("button",{name:"核实停止",exact:true})).toHaveCount(0);
-      await notice.getByText("同步诊断",{exact:true}).click();
-      for(const scale of ["small","medium","large"]) {
-        await page.evaluate(value=>{document.documentElement.dataset.fontScale=value;},scale);
-        expect(await notice.evaluate(el=>el.scrollWidth-el.clientWidth)).toBeLessThanOrEqual(1);
-      }
-      await page.screenshot({path:info.outputPath("takeover-warning.png")});
+      await expect(notice).toHaveCount(0);
       const data=await (await request.get(`/api/v1/items/${item.key}/delivery`)).json();
-      expect(data.executionBlockers.every((row:{blocking:boolean})=>!row.blocking)).toBe(true);
+      expect(data.executions.length).toBeGreaterThan(0);
       activity(sessionId,true);await page.reload();
-      await expect(notice).toContainText("原执行仍有活动或待执行命令");
-      await expect(notice).toContainText("来源仍上报活动");
-      activity(sessionId,false);await page.reload();
-      await expect(notice).toContainText("旧执行状态未知，可以接手");
+      await expect(notice).toHaveCount(0);
+      expect((await (await request.get(`/api/v1/items/${item.key}/delivery`)).json()).executions.length).toBeGreaterThan(0);
+      activity(sessionId,false);
+      await page.screenshot({path:info.outputPath("parallel-history.png")});
     });
   });
 }
 
 
-test("ordinary dispatch warns and submits takeover without a separate attestation",async({page,request})=>{
+test("ordinary dispatch starts independent work without replacing earlier execution",async({page,request})=>{
   const {item,product,nodeId}=setup(true);
   const previousDefaults = await (await request.get("/api/v1/dispatch-defaults")).json();
   try {
@@ -94,8 +84,8 @@ test("ordinary dispatch warns and submits takeover without a separate attestatio
     await page.locator(".item-row").filter({hasText:item.key}).getByRole("checkbox").check();
     await page.getByRole("button",{name:"派单",exact:true}).click();
     const form=page.locator(".dispatch-form");
-    await expect(form).toContainText("接手不会自动停止旧设备上的进程或外部操作");
-    const submit=form.getByRole("button",{name:"启动新执行并接手",exact:true});
+    await expect(form).not.toContainText("启动新执行并接手");
+    const submit=form.getByRole("button",{name:"派单",exact:true});
     await expect(submit).toBeEnabled();
     await submit.click();
     await expect(page.locator(".dispatch-result")).toBeVisible();

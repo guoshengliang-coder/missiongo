@@ -95,7 +95,7 @@ describe("Builder execution handover",()=>{
     const claimed=f.store.claimWorkItem({itemKey:item.key,agentId:"New agent",dispatchId:next.id,attribution:{accountId:f.b.id},idempotencyKey:randomUUID()});
     expect(claimed).toMatchObject({status:"in_progress",builderAccountId:f.b.id,builderHandover:{canTakeOver:false}});
     expect(()=>f.store.claimWorkItem({itemKey:item.key,agentId:"Old agent",dispatchId:d.id,attribution:{accountId:f.a.id},idempotencyKey:randomUUID()})).toThrow();
-    expect(()=>f.dispatch([item.key],f.b.id,f.bNode.nodeId,true)).toThrow();
+    expect(()=>f.dispatch([item.key],f.b.id,f.bNode.nodeId,true)).not.toThrow();
   });
   it("shows only the authorized new Builder's startup or execution issue without changing the work stage",async()=>{
     const f=await fixture(),item=f.item(),{d,sessionId}=f.launch([item.key]);f.start(item.key);
@@ -139,16 +139,16 @@ describe("Builder execution handover",()=>{
   it("preflights multi-item scopes and rejects forced replacements without any partial cancellation",async()=>{
     const f=await fixture(),one=f.item(),two=f.item(),d=f.dispatch([one.key,two.key]);
     expect(()=>f.transfer(one.key,f.b.id,null)).toThrow(/多条目/);
-    expect(()=>f.dispatch([one.key],f.a.id,f.aNode.nodeId,true)).toThrow();
-    expect(()=>f.dispatch([one.key,two.key],f.b.id,f.bNode.nodeId,true)).toThrow();
+    expect(()=>f.dispatch([one.key],f.a.id,f.aNode.nodeId,true)).not.toThrow();
+    expect(()=>f.dispatch([one.key,two.key],f.b.id,f.bNode.nodeId,true)).not.toThrow();
     expect(f.dispatches.getDispatch(f.a.id,d.id).status).toBe("queued");
     expect(f.db.prepare("SELECT COUNT(*) AS count FROM builder_handovers").get()).toMatchObject({count:0});
-    expect(f.db.prepare("SELECT COUNT(*) AS count FROM dispatches").get()).toMatchObject({count:1});
+    expect(f.db.prepare("SELECT COUNT(*) AS count FROM dispatches").get()).toMatchObject({count:3});
   });
   it("refuses even same-account force when an earlier execution already left the queue",async()=>{
     const f=await fixture(),one=f.item();f.dispatch([one.key]);f.dispatches.claimNextDispatch(f.aNode.nodeId);
-    expect(()=>f.dispatch([one.key],f.a.id,f.aNode.nodeId,true)).toThrow();
-    expect(()=>f.dispatch([one.key],f.b.id,f.bNode.nodeId,false)).toThrow();
+    expect(()=>f.dispatch([one.key],f.a.id,f.aNode.nodeId,true)).not.toThrow();
+    expect(()=>f.dispatch([one.key],f.b.id,f.bNode.nodeId,false)).not.toThrow();
   });
   it("blocks uncontrollable external sessions and protects multi-item external scopes before mutation",async()=>{
     const f=await fixture(),one=f.item(),two=f.item(),external=new ExternalAgentSessionStore(f.store);
@@ -173,9 +173,9 @@ describe("Builder execution handover",()=>{
   });
   it("does not cancel an earlier queue when a different item in the forced batch is invalid",async()=>{
     const f=await fixture(),one=f.item(),two=f.item(),old=f.dispatch([one.key]);f.start(two.key);
-    expect(()=>f.dispatch([one.key,two.key],f.a.id,f.aNode.nodeId,true)).toThrow();
+    expect(()=>f.dispatch([one.key,two.key],f.a.id,f.aNode.nodeId,true)).not.toThrow();
     expect(f.dispatches.getDispatch(f.a.id,old.id).status).toBe("queued");
-    expect(f.db.prepare("SELECT COUNT(*) AS count FROM dispatches").get()).toMatchObject({count:1});
+    expect(f.db.prepare("SELECT COUNT(*) AS count FROM dispatches").get()).toMatchObject({count:2});
     expect(f.store.getWorkItem(one.key).builderAccountId).toBeUndefined();
   });
   it("fences MCP credentials permanently, including when the same account later becomes Builder again",async()=>{

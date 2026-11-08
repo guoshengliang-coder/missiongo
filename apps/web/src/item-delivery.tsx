@@ -152,6 +152,7 @@ export function ItemDeliveryPanel({item,summarizedSessionId,dispatches,dispatche
   ]);};
   const assign=useMutation({mutationFn:()=>api.assignExecution(item.key,{...(performer.startsWith("agent:") ? {kind:"agent" as const,sessionId:performer.slice(6)} : {kind:"human" as const,accountId:performer}),scope,...(previousId ? {previousId:previousId.replace(/^followup:/,""),followUp:previousId.startsWith("followup:"),note:executionNote} : {})}),onSuccess:async()=>{setMode(null);setScope("");setExecutionNote("");setPreviousId("");await refresh();}});
   const data=query.data;
+  const latestPublished=data?.deliveries?.slice().reverse().find(record=>record.published);
   // Count the rows we display: a linked session/dispatch is one record;
   // verification notifications are individual records, comments keep their own.
   const executions = data?.executions ?? [];
@@ -165,15 +166,26 @@ export function ItemDeliveryPanel({item,summarizedSessionId,dispatches,dispatche
   for (const notice of notificationsQuery.data?.notifications ?? []) if (notice.kind!=="comment") rows.push({key:`notice:${notice.id}`,createdAt:notice.createdAt,notice});
   rows.sort((a,b) => a.createdAt.localeCompare(b.createdAt));
   const hasExecutions=rows.length>0;
-  if(!hasExecutions && !data?.executionBlockers?.length && !data?.pendingAgentHandoff && !EXECUTION_ASSIGNMENT_ENABLED && !query.isError && !dispatchesFailed && !notificationsQuery.isError) return null;
+  if(!data?.deliveries?.length && !hasExecutions && !data?.executionBlockers?.length && !data?.pendingAgentHandoff && !EXECUTION_ASSIGNMENT_ENABLED && !query.isError && !dispatchesFailed && !notificationsQuery.isError) return null;
   return <section className="delivery-panel" aria-label="执行记录">
     <div className="delivery-heading">{!hasExecutions && <h3>执行记录</h3>}
       {EXECUTION_ASSIGNMENT_ENABLED && data?.canManage && <div className="delivery-actions">
         <button type="button" className="secondary-button" onClick={()=>{setPerformer("");setScope("");setPreviousId("");setExecutionNote("");assign.reset();setMode("execution");}}>安排执行／交接</button>
       </div>}
     </div>
+    {data?.deliveries?.some(record=>!record.published) && <div className="execution-record-body"><p role="status">{t("deliveryVersionAwaiting")}: {data.deliveries.filter(record=>!record.published).length} · {t("deliveryVersionHelp")}</p></div>}
+    {Boolean(data?.deliveries?.length) && <RecordDisclosure className="execution-history" summary={t("deliveryVersions")}>
+      <div className="execution-record-body"><p>{t("deliveryVersionHelp")}</p>
+        {latestPublished && <p className="execution-row" role="status">{t("deliveryVersionCurrent")}: <code>{latestPublished.id}</code></p>}
+      </div>
+      <ol className="execution-list">{data?.deliveries?.map(record=><li key={record.id} className="execution-row">
+        <strong>{t(record.published ? "deliveryVersionPublished" : record.status==="partial" ? "deliveryVersionPartial" : "deliveryVersionAwaiting")}</strong>
+        <small>{record.createdAt} · {record.id}</small>
+        {record.releases.map(release=><p key={release.artifact}>{release.artifact}: {release.version}</p>)}
+      </li>)}</ol>
+    </RecordDisclosure>}
     {data?.pendingAgentHandoff && <p className="account-note" role="status">{t("agentHandoffPending")}</p>}
-    {data && ["ready","inbox"].includes(item.status) && <ExecutionStopNotice itemKey={item.key} blockers={data.executionBlockers ?? []} onRefresh={refresh} />}
+    {data && ["ready","inbox"].includes(item.status) && <ExecutionStopNotice itemKey={item.key} blockers={(data.executionBlockers ?? []).filter(row=>row.superseded && row.blocking)} onRefresh={refresh} />}
     {data && item.status==="in_progress" && <ExecutionStopNotice itemKey={item.key}
       blockers={(data.executionBlockers ?? []).filter(row=>row.superseded && row.blocking)} onRefresh={refresh} />}
     {EXECUTION_ASSIGNMENT_ENABLED && data && mode==="execution" && <Modal title="安排执行／交接" subtitle="交付与执行" onClose={()=>setMode(null)} dirty={Boolean(scope || performer || previousId || executionNote)} pending={assign.isPending}>

@@ -625,6 +625,19 @@ describe("Dispatching the same item twice", () => {
     return id;
   }
 
+  it("reuses a network request but keeps deliberate parallel requests independent", async()=>{
+    const {app,cookie,mission,mini}=await setup();
+    const payload={nodeId:mini.nodeId,agentKind:"claude_code",mode:"plan",itemKeys:[mission.itemKey],idempotencyKey:randomUUID()};
+    const send=(data=payload)=>app.inject({method:"POST",url:"/api/v1/dispatches",headers:{cookie},payload:data});
+    const first=await send(),retry=await send();
+    expect(first.statusCode).toBe(201);expect(retry.json().id).toBe(first.json().id);
+    expect((await send({...payload,mode:"default"})).statusCode).toBe(409);
+    const next=await send({...payload,idempotencyKey:randomUUID()});
+    expect(next.statusCode).toBe(201);expect(next.json().id).not.toBe(first.json().id);
+    const history=await app.inject({method:"GET",url:`/api/v1/items/${mission.itemKey}/dispatches`,headers:{cookie}});
+    expect(history.json().dispatches.filter((d:{status:string})=>d.status==="queued")).toHaveLength(2);
+  });
+
   it("exposes a current startup failure with its own reason, and keeps all history outside active stages", async () => {
     const f = await setup();
     const id = (await dispatchTo(f.app, f.cookie, f.mini.nodeId, [f.mission.itemKey])).json<{ id: string }>().id;
@@ -731,9 +744,8 @@ describe("Dispatching the same item twice", () => {
 
     for (const target of [mini, laptop]) {
       const again = await dispatchTo(app, cookie, target.nodeId, [mission.itemKey]);
-      expect(again.statusCode).toBe(409);
-      expect(again.json()).toMatchObject({ code: "item_already_dispatched" });
-      expect(again.json<{ title: string }>().title).toContain(mission.itemKey);
+      expect(again.statusCode).toBe(201);
+      expect(again.json().itemKeys).toContain(mission.itemKey);
     }
   });
 
@@ -746,13 +758,13 @@ describe("Dispatching the same item twice", () => {
 
     const history = await app.inject({ method: "GET", url: `/api/v1/items/${mission.itemKey}/dispatches`, headers: { cookie } });
     const byId = new Map(history.json<{ dispatches: Array<{ id: string; status: string; error?: string }> }>().dispatches.map((d) => [d.id, d]));
-    // The Mac mini never pulled it, so it must not start a second session when it comes back.
-    expect(byId.get(first.id)).toMatchObject({ status: "cancelled", error: "已被重新派单取代" });
+    // A deliberate parallel request preserves the original queue for its own node.
+    expect(byId.get(first.id)).toMatchObject({ status: "queued" });
     expect((await app.inject({
       method: "POST",
       url: "/api/v1/node/dispatches/claim-next",
       headers: { authorization: `Bearer ${mini.token}` },
-    })).statusCode).toBe(204);
+    })).statusCode).toBe(200);
   });
 
   it("leaves a dispatch already handed to its machine alone, since it cannot be recalled", async () => {
@@ -760,7 +772,7 @@ describe("Dispatching the same item twice", () => {
     const first = (await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).json<{ id: string }>();
     await app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers: { authorization: `Bearer ${mini.token}` } });
 
-    expect((await dispatchTo(app, cookie, laptop.nodeId, [mission.itemKey], true)).statusCode).toBe(409);
+    expect((await dispatchTo(app, cookie, laptop.nodeId, [mission.itemKey], true)).statusCode).toBe(201);
     const history = await app.inject({ method: "GET", url: `/api/v1/items/${mission.itemKey}/dispatches`, headers: { cookie } });
     const earlier = history.json<{ dispatches: Array<{ id: string; status: string }> }>().dispatches.find((d) => d.id === first.id);
     expect(earlier?.status).toBe("delivered");
@@ -1033,7 +1045,7 @@ describe("Dispatching the same item twice", () => {
       latest: [{ itemKey: mission.itemKey, status: "launched" }],
       handlers: [],
     });
-    expect((await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).statusCode).toBe(409);
+    expect((await dispatchTo(app, cookie, mini.nodeId, [mission.itemKey])).statusCode).toBe(201);
     const observed=new AgentSessionStore(app.missionGoStore.database).createForDispatch({dispatchId:first.id,nodeId:mini.nodeId,sessionRef:"source-finished-before-rework"});
     app.missionGoStore.database.connection.prepare("UPDATE agent_sessions SET status='idle',turn_state_json='{}' WHERE id=?").run(observed);
     app.missionGoStore.database.connection.prepare("UPDATE item_executions SET status='completed' WHERE item_id=(SELECT id FROM work_items WHERE item_key=?)").run(mission.itemKey);
@@ -1065,10 +1077,10 @@ describe("Dispatching the same item twice", () => {
     await dispatchTo(app, cookie, laptop.nodeId, [mission.itemKey], true);
     expect((await claim(laptop.token)).json()).toMatchObject({ round: 1, reworkItemKeys: [] });
 
-    // A delivered session needs a verified stop, not a checkbox declaring it gone.
+    // Other delivered work does not block this independent batch.
     const refused = await dispatchTo(app, cookie, mini.nodeId, [fresh, mission.itemKey], true);
-    expect(refused.statusCode).toBe(409);
-    expect((await claim(mini.token)).statusCode).toBe(204);
+    expect(refused.statusCode).toBe(201);
+    expect((await claim(mini.token)).statusCode).toBe(200);
   });
 });
 
@@ -2270,8 +2282,8 @@ describe("Claiming a dispatch on the node", () => {
       url: `/api/v1/dispatches/${dispatchId}/retry`,
       headers: { cookie },
     });
-    expect(duplicateRetry.statusCode).toBe(409);
-    expect(duplicateRetry.json()).toMatchObject({ code: "item_already_dispatched" });
+    expect(duplicateRetry.statusCode).toBe(201);
+    expect(duplicateRetry.json()).toMatchObject({ id: retryId });
 
     const stopped = await app.inject({
       method: "POST",

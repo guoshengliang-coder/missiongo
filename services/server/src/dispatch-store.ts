@@ -1,7 +1,7 @@
 import type { AgentModeCapability } from "@missiongo/domain";
 import { handoffDispatchIsCurrent } from "./agent-handoffs.js";
 import { itemExecutionBlockers, executionBlocksTakeover } from "./item-execution-blockers.js";
-import { assertBuilderExecution, assertDispatchExecution, latestBuilderHandover, hasBlockingItemExecution, requiresExecutionStopCheck } from "./builder-authority.js";
+import { assertBuilderExecution, assertDispatchExecution, latestBuilderHandover } from "./builder-authority.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
@@ -710,7 +710,7 @@ export class DispatchStore {
     itemKeys: readonly string[];
     /** Internal project-scoped conversation; never accepted by the item dispatch endpoint. */
     productId?: string;
-    /** Dispatch again even though an earlier dispatch of these items was never claimed. */
+    /** Legacy compatibility flag. Parallel dispatch never cancels another queue. */
     force?: boolean;
     /** Internal human handoff route only; never read from the ordinary dispatch request. */
     handoffItemId?: string;
@@ -754,32 +754,12 @@ export class DispatchStore {
         if ((this.database.connection.prepare("SELECT archived_at FROM products WHERE id=?").get(row.product_id) as {archived_at:string|null})?.archived_at) throw conflict("project_archived","归档项目只读。");
         if (this.database.connection.prepare("SELECT 1 FROM item_transfers WHERE source_item_id=?").get(row.id)) throw conflict("item_transferred","已迁移条目只读。");
         assertBuilderExecution(this.database,row.id,input.accountId);
-        if (requiresExecutionStopCheck(this.database,row.id) && hasBlockingItemExecution(this.database,row.id)) throw conflict("execution_stop_unconfirmed","原执行仍有实际活动或待执行命令，请先在原会话处理。");
-        const handover = latestBuilderHandover(this.database,row.id);
-        if (row.status !== "ready" && !(row.status === "in_progress" && input.handoffItemId===row.id && keys.length===1) && !(row.status === "in_progress" && handover?.status === "completed"
-          && handover.to_account_id === input.accountId && !handover.claimed_at)) {
-          throw conflict("item_not_dispatchable", `${row.item_key} is not ready, so it cannot be dispatched.`);
+
+        if (!["ready","in_progress"].includes(row.status)) {
+          throw conflict("item_not_dispatchable", `${row.item_key} must be ready or in progress for a new dispatch.`);
         }
         return row;
       });
-
-      // An item stays ready until a session claims it, and in plan mode that is
-      // only after a person approves the plan — minutes or hours after the
-      // dispatch. Without this, the same item could be sent again in that window,
-      // two sessions would plan it, and the one that lost the claim race had been
-      // told to carry on anyway. Only a complete, owned queued batch can be
-      // explicitly cancelled and replaced.
-      const active = this.dispatchesFor(items.map((item) => item.id)).filter(entry=>!this.isHistoricalDispatch(entry));
-      const handoff = items.length===1 && input.handoffItemId===items[0]!.id && items[0]!.status==="in_progress";
-      if (!handoff && active.length > 0 && (!input.force || this.redispatchBlockReason(input.accountId,keys,active))) {
-        const described = active
-          .map((entry) => `${entry.itemKey} → ${entry.nodeName}（${entry.status}）`)
-          .join("、");
-        throw conflict(
-          "item_already_dispatched",
-          `Existing execution must be resolved before dispatching: ${described}. Only an owned, fully selected queued dispatch can be replaced.`,
-        );
-      }
 
       const repos = this.listRepos(node.id);
       const repoPaths = new Set<string>();
@@ -799,16 +779,6 @@ export class DispatchStore {
       const repoPath = [...repoPaths][0]!;
 
       const now = new Date().toISOString();
-      // Dispatching again on purpose: an earlier dispatch the machine has not
-      // picked up yet would otherwise still start a second session the moment
-      // that machine comes back. One already delivered cannot be recalled.
-      if (input.force) {
-        const queuedIds = [...new Set(active.filter((entry) => entry.status === "queued").map((entry) => entry.dispatchId))];
-        const cancel = this.database.connection.prepare(
-          "UPDATE dispatches SET status = 'cancelled', completed_at = ?, error = ? WHERE id = ? AND account_id = ? AND status = 'queued'",
-        );
-        for (const queuedId of queuedIds) cancel.run(now, "已被重新派单取代", queuedId,input.accountId);
-      }
       const dispatchId = randomUUID();
       const diagnosticSnapshot: DispatchDiagnosticSnapshot = {
         ...(node.clientVersion ? { nodeClientVersion: node.clientVersion } : {}),
@@ -828,7 +798,7 @@ export class DispatchStore {
         );
       for (const item of items) {
         const handover = latestBuilderHandover(this.database,item.id);
-        if (handover?.status === "completed") this.database.connection.prepare("UPDATE builder_handovers SET resume_dispatch_id=? WHERE id=? AND claimed_at IS NULL")
+        if (handover?.status === "completed") this.database.connection.prepare("UPDATE builder_handovers SET resume_dispatch_id=? WHERE id=? AND claimed_at IS NULL AND resume_dispatch_id IS NULL")
           .run(dispatchId,handover.id);
       }
       const insertItem = this.database.connection.prepare(
@@ -953,15 +923,15 @@ export class DispatchStore {
       if (!row) throw notFound("Work item"); return row.id;
     });
     const active = this.dispatchesFor(itemIds).filter(entry=>!this.isHistoricalDispatch(entry));
-    const reason = this.redispatchBlockReason(accountId,keys,active)
-      ?? (itemIds.some(id => requiresExecutionStopCheck(this.database,id) && hasBlockingItemExecution(this.database,id)) ? "execution_unconfirmed" as const : null);
-    const conflicts = active.map(({accountId:owner,...entry}) => {
-      const session = owner === accountId ? this.database.connection.prepare("SELECT id FROM agent_sessions WHERE dispatch_id=?").get(entry.dispatchId) as {id:string}|undefined : undefined;
+    const conflicts = active.filter(entry => entry.accountId === accountId).map(({accountId:_,...entry}) => {
+      const session = this.database.connection.prepare("SELECT id FROM agent_sessions WHERE dispatch_id=?").get(entry.dispatchId) as {id:string}|undefined;
       return {...entry,...(session ? {agentSessionId:session.id} : {})};
     });
-    const takeoverWarnings = itemIds.flatMap((id,index) => requiresExecutionStopCheck(this.database,id)
-      ? itemExecutionBlockers(this.database,id).filter(row=>!executionBlocksTakeover(row)).map(row=>({...row,itemKey:keys[index]!})) : []);
-    return {allowed:reason === null,requiresConfirmation:active.length > 0 && reason === null,reason,conflicts,takeoverWarnings};
+    const allowed = itemIds.every(id => {
+      const item=this.database.connection.prepare("SELECT status FROM work_items WHERE id=?").get(id) as {status:string};
+      return ["ready","in_progress"].includes(item.status);
+    });
+    return {allowed,requiresConfirmation:false,reason:allowed ? null : "item_not_dispatchable" as const,conflicts,takeoverWarnings:[]};
   }
 
   private isHistoricalDispatch(entry:{dispatchId:string;itemKey:string;status:string}):boolean {
@@ -972,13 +942,6 @@ export class DispatchStore {
     return Boolean(row && !itemExecutionBlockers(this.database,row.id).some(b=>b.source==="dispatch" && b.executionId===entry.dispatchId && executionBlocksTakeover(b)));
   }
 
-  private redispatchBlockReason(accountId: string, keys: readonly string[], active: ReturnType<DispatchStore["dispatchesFor"]>) {
-    if (active.some(entry => entry.accountId !== accountId)) return "other_account" as const;
-    if (active.some(entry => entry.status !== "queued")) return "started" as const;
-    if (active.some(entry => (this.database.connection.prepare("SELECT COUNT(*) AS count FROM dispatch_items WHERE dispatch_id=?")
-      .get(entry.dispatchId) as {count:number}).count !== keys.filter(key => active.some(other => other.dispatchId === entry.dispatchId && other.itemKey === key)).length)) return "partial_batch" as const;
-    return null;
-  }
 
   /**
    * For the work list: the newest hand-off of each item, whatever status the
@@ -1191,7 +1154,7 @@ export class DispatchStore {
              AND NOT EXISTS (SELECT 1 FROM builder_revoked_dispatches r WHERE r.dispatch_id=d.id)
              AND NOT EXISTS (SELECT 1 FROM dispatch_items i JOIN work_items w ON w.id=i.item_id JOIN products p ON p.id=w.product_id
                WHERE i.dispatch_id=d.id AND (p.archived_at IS NOT NULL OR EXISTS(SELECT 1 FROM item_transfers t WHERE t.source_item_id=w.id)
-                 OR w.status!='ready' AND NOT EXISTS(SELECT 1 FROM builder_handovers h WHERE h.item_id=w.id AND h.status='completed' AND h.resume_dispatch_id=d.id AND w.status='in_progress')
+                 OR w.status NOT IN ('ready','in_progress') AND NOT EXISTS(SELECT 1 FROM builder_handovers h WHERE h.item_id=w.id AND h.status='completed' AND h.resume_dispatch_id=d.id AND w.status='in_progress')
                    AND NOT EXISTS(SELECT 1 FROM agent_handoffs h WHERE h.item_id=w.id AND h.target_dispatch_id=d.id AND h.account_id=d.account_id AND h.consumed_at IS NULL AND h.superseded_at IS NULL AND w.status='in_progress')))
              AND (d.retry_not_before IS NULL OR d.retry_not_before <= ?)${agentFilter}
            ORDER BY d.created_at LIMIT 20`,
@@ -1373,6 +1336,9 @@ export class DispatchStore {
   /** A Mac claimed this dispatch but never reported whether a session started. */
   retryDispatch(accountId: string, dispatchId: string): DispatchSnapshot {
     return this.database.transaction(() => {
+      const retryKey = `dispatch-retry:${accountId}:${dispatchId}`;
+      const prior = this.database.connection.prepare("SELECT result_json FROM idempotency_keys WHERE key=? AND operation='dispatch_retry'").get(retryKey) as {result_json:string}|undefined;
+      if(prior) return this.getDispatch(accountId,JSON.parse(prior.result_json).dispatchId);
       const original = this.getDispatch(accountId, dispatchId);
       if (original.status === "delivered") {
         if (original.agentSessionId || !deliveredDispatchTimedOut(original.deliveredAt)) {
@@ -1390,7 +1356,7 @@ export class DispatchStore {
       } else if (original.status !== "failed" && original.status !== "cancelled") {
         throw conflict("dispatch_not_retryable", "Only failed, cancelled, or timed-out deliveries can be sent again.");
       }
-      return this.createDispatch({
+      const retry = this.createDispatch({
         accountId,
         nodeId: original.nodeId,
         agentKind: original.agentKind,
@@ -1399,6 +1365,8 @@ export class DispatchStore {
         ...(original.effort ? { effort: original.effort } : {}),
         itemKeys: original.itemKeys,
       }, true);
+      this.database.connection.prepare("INSERT INTO idempotency_keys(key,operation,result_json,created_at) VALUES (?,?,?,?)").run(retryKey,"dispatch_retry",JSON.stringify({dispatchId:retry.id}),new Date().toISOString());
+      return retry;
     });
   }
 

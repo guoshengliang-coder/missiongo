@@ -620,11 +620,13 @@ describe("AND-439 batch reconciliation",()=>{
     const r=f.request({kind:"accept_merge",deliveryId:f.d.id,evidence:f.evidence});f.approve(r);f.apply(r.key);f.final();
     expect(f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id).state).toBe("finished");
   });
-  it("refuses incompatible existing completion metadata instead of overwriting a human event",async()=>{
+  it("appends another verified integration without overwriting the earlier completion metadata",async()=>{
     const f=await recoveryFixture();
     f.store.submitDevelopmentComplete({itemKey:f.item.key,completion:{kind:"github",url:"https://github.com/example/project/pull/99"},requiredArtifacts:["androidApp"],idempotencyKey:"different-completion",attribution:{accountId:f.owner.id}});
     f.merged();const r=f.request({kind:"retry_handover",deliveryId:f.d.id});f.approve(r);const before=f.store.getTimeline(f.item.key);f.apply(r.key);
-    expect(f.store.getTimeline(f.item.key)).toEqual(before);expect(f.preview().reconciliation?.handoffs[f.item.key]?.detail).toMatch(/冲突/);
+    expect(f.store.getTimeline(f.item.key).slice(0,before.length)).toEqual(before);
+    expect(f.store.getDeliveryRecords(f.item.key)).toHaveLength(2);
+    expect(f.preview().reconciliation?.handoffs[f.item.key]?.status).toBe("completed");
   });
   it("does not treat manual verification without release receipts as published",async()=>{
     const f=await recoveryFixture({publish:true});f.merged();
@@ -720,4 +722,17 @@ it("AND-460 projects delivery-only attention consistently and keeps later indepe
   expect((await list()).needsAttention).toBe(true);
   f.db.prepare("UPDATE work_items SET content_version=content_version+1 WHERE id=?").run(f.item.id);
   expect(f.merges.attentionSessionIds(f.item.productId, f.owner.id)).toEqual([]);
+});
+
+it("keeps parallel merge proposals and accepts an existing claimant's proposal during verification",async()=>{
+ const f=await prepared();
+ const claim=await f.call("claim_item",{...f.claimInput,session:{...f.session,sessionRef:randomUUID()},idempotencyKey:"parallel-merge-claim"});f.safe(claim);
+ const identity={sessionId:claim.structuredContent!.sessionId!};
+ const second=f.merges.propose(f.owner.id,"original-client",identity,"parallel-offer",{...f.input,pullRequest:13});
+ expect(f.merges.list(f.item.productId,f.owner.id).filter(row=>row.state!=="withdrawn").map(row=>row.id)).toEqual(expect.arrayContaining([f.d.id,second.id]));
+ f.store.submitDevelopmentComplete({itemKey:f.item.key,completion,requiredArtifacts:["web"],attribution:{accountId:f.owner.id},idempotencyKey:"first-merge"});
+ f.store.submitForVerification({itemKey:f.item.key,completion,releases:[{artifact:"web",version:"1.0",sourceCommit:"a".repeat(40)}],deployedCommit:"a".repeat(40),receiptDigest:"b".repeat(64),attribution:{accountId:f.owner.id},idempotencyKey:"first-publication"});
+ const next=f.merges.propose(f.owner.id,"original-client",identity,"verification-offer",{...f.input,pullRequest:14});
+ expect(next.state).toBe("proposed");expect(f.store.getWorkItem(f.item.key).status).toBe("pending_verification");
+ expect(f.merges.list(f.item.productId,f.owner.id).find(row=>row.id===f.d.id)?.state).toBe("proposed");
 });

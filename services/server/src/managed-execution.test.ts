@@ -91,7 +91,7 @@ it.each(["separation", "separation-running", "baseline", "operate", "ai", "view-
       expect(dispatch.statusCode, dispatch.body).toBe(201);
       const ordinaryId = dispatch.json().id;
       expect((await app.inject({ method: "POST", url: "/api/v1/dispatches", headers: human,
-        payload: { nodeId: node.nodeId, agentKind: "codex", mode: "plan", itemKeys: ["AND-2"] } })).statusCode).toBe(409);
+        payload: { nodeId: node.nodeId, agentKind: "codex", mode: "plan", itemKeys: ["AND-2"] } })).statusCode).toBe(201);
       const claimed = await app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers });
       expect(claimed.statusCode, claimed.body).toBe(200);
       expect(claimed.json()).toMatchObject({ dispatchId: ordinaryId, mode: "plan", agentKind: "codex", repoPath: "/synthetic/repo" });

@@ -98,7 +98,7 @@ export class MergeDeliveries {
   private sourceValid(d: Delivery) {
     for (const itemKey of d.itemKeys) {
       recoverExecutionAuthorization(this.store, d.accountId, d.clientId, {itemKey, ...d.identity});
-      if (this.store.getWorkItem(itemKey).status !== "in_progress") throw changed();
+      if (!["in_progress","development_complete","pending_verification"].includes(this.store.getWorkItem(itemKey).status)) throw changed();
     }
     if (this.scope(d.itemKeys) !== d.scope || this.activity(d.sessionId) !== d.activity) throw changed();
   }
@@ -138,14 +138,14 @@ export class MergeDeliveries {
       }
       for (const itemKey of keys) recoverExecutionAuthorization(this.store, accountId, clientId, {itemKey,...identity});
       const productId = this.store.getWorkItem(keys[0]!).productId;
-      if (keys.some(key => this.store.getWorkItem(key).productId !== productId || this.store.getWorkItem(key).status !== "in_progress")) throw changed();
+      if (keys.some(key => this.store.getWorkItem(key).productId !== productId || !["in_progress","development_complete","pending_verification"].includes(this.store.getWorkItem(key).status))) throw changed();
       const sessionId = identity.sessionId ?? (this.db.connection.prepare("SELECT id FROM agent_sessions WHERE dispatch_id=?")
         .get(identity.dispatchId!) as {id:string}|undefined)?.id;
       if (!sessionId) throw changed();
       const history = this.listRaw(productId);
       const reconfirmation = history.some(d => d.accountId === accountId && d.sessionId === sessionId
         && d.state !== "merged" && d.itemKeys.some(key => keys.includes(key)));
-      const existing = history.filter(d => d.itemKeys.some(k => keys.includes(k)) && !["withdrawn","merged"].includes(d.state));
+      const existing = history.filter(d => d.accountId===accountId && d.clientId===clientId && d.sessionId===sessionId && d.itemKeys.some(k => keys.includes(k)) && !["withdrawn","merged"].includes(d.state));
       if (existing.some(d => d.state === "batched")) throw conflict("merge_batch_active", "这些改动已有合并批次，请核实原批次。");
       for (const d of existing) { d.state = "withdrawn"; this.save(d); }
       const d: Delivery = {...input,itemKeys:keys,id:randomUUID(),productId,accountId,clientId,identity,sessionId,
@@ -224,7 +224,8 @@ export class MergeDeliveries {
             &&sha.safeParse(p.deployedCommit).success&&Array.isArray(p.releases)&&p.releases.length>0
             &&p.releases.every((r:unknown)=>z.object({artifact:z.string().min(1),version:z.string().min(1),sourceCommit:sha}).safeParse(r).success);
         });
-        if(receipt) {
+        const record=this.store.getDeliveryRecords(key).find(row=>row.completion && sameCompletion(row.completion!,{kind:"github",url}));
+        if(receipt && (!record || record.published)) {
           publishedItems++;knownItems++;
           for(const r of receipt.payload.releases as {artifact:string;version:string;sourceCommit:string}[])
             if(!releases.some(previous=>previous.artifact===r.artifact&&previous.sourceCommit===r.sourceCommit))releases.push({...r,checkedAt:receipt.createdAt});
@@ -381,7 +382,7 @@ export class MergeDeliveries {
         || !result || result.status !== "merged" || !result.commit || result.head !== entry?.head
         || entry.repair || b.reconciliation?.handoffs[raw.itemKey]?.status !== "completed" || this.itemBlocker(d,raw.itemKey)
         || !sameCompletion(raw.completion,{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`}))throw changed();
-      const e=this.store.getDevelopmentEvidence(raw.itemKey);
+      const e=this.store.getDevelopmentEvidence(raw.itemKey,raw.developmentEventId);
       if(!e.handover || e.handover.id !== raw.developmentEventId)throw changed();
       return this.store.submitNonReleaseForVerification(raw,{batchId:b.id,deliveryId:d.id});
     });
@@ -397,6 +398,8 @@ export class MergeDeliveries {
   batchProduct(id:string) {return this.read<Batch>("merge_batches",id).productId;}
   private publishedHandoff(d:Delivery,key:string) {
     const item=this.store.getWorkItem(key),e=this.store.getDevelopmentEvidence(key);
+    const record=this.store.getDeliveryRecords(key).find(row=>row.completion && sameCompletion(row.completion!,{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`}));
+    if(record)return record.published;
     // A delivery lists the PR's artifact union. Each independently completed
     // item keeps its own authoritative scope; do not require sibling artifacts.
     const required=this.store.getDevelopmentReleaseScope(key)??d.requiredArtifacts;
@@ -444,7 +447,9 @@ export class MergeDeliveries {
           repository:d.repository,pullRequest:d.pullRequest,targetBranch:d.targetBranch,result:b.results[deliveryId],
           requiredArtifacts:d.requiredArtifacts,noReleaseReason:d.noReleaseReason,
           repair:b.integration?.entries[deliveryId]?.repair,
-          items:d.itemKeys.map(itemKey=>{const item=this.store.getWorkItem(itemKey),e=this.store.getDevelopmentEvidence(itemKey),scope=this.store.getDevelopmentReleaseDecision(itemKey);
+          items:d.itemKeys.map(itemKey=>{const item=this.store.getWorkItem(itemKey);
+            const record=this.store.getDeliveryRecords(itemKey).find(row=>row.completion && sameCompletion(row.completion!,{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`}));
+            const e=this.store.getDevelopmentEvidence(itemKey,record?.id),scope=this.store.getDevelopmentReleaseDecision(itemKey,record?.id);
             const blocker=this.itemBlocker(d,itemKey);
             return {itemKey,status:item.status,revision:item.revision,blocker,developmentEventId:e.handover?.id,roundKey:e.roundKey??undefined,requiredArtifacts:scope.requiredArtifacts,
               missingPublicationEvidence:item.status==="pending_verification"&&!this.publishedHandoff(d,itemKey),
@@ -501,10 +506,12 @@ export class MergeDeliveries {
           const item=this.store.getWorkItem(itemKey);
           const completion={kind:"github" as const,url:`${d.repository}/pull/${d.pullRequest}`};
           if(item.status==="in_progress")this.store.submitDevelopmentComplete({itemKey,completion,requiredArtifacts:d.requiredArtifacts,
-            ...(d.noReleaseReason?{noReleaseReason:d.noReleaseReason}:{}),summary:b.results[d.id]!.detail,idempotencyKey:`merge-batch:${b.id}:${itemKey}`,attribution:{accountId:b.accountId}});
-          else if(item.status==="development_complete") {
+            ...(d.noReleaseReason?{noReleaseReason:d.noReleaseReason}:{}),summary:b.results[d.id]!.detail,idempotencyKey:`merge-batch:${b.id}:${d.id}:${itemKey}`,attribution:{accountId:b.accountId}});
+          else if((item.status==="development_complete" || item.status==="pending_verification") && !this.publishedHandoff(d,itemKey)) {
             const e=this.store.getDevelopmentEvidence(itemKey),scope=this.store.getDevelopmentReleaseDecision(itemKey);
-            if(requestId)this.store.supplementDevelopmentEvidence({itemKey,accountId:b.accountId,batchId:b.id,requestId,completion,requiredArtifacts:d.requiredArtifacts,...(d.noReleaseReason?{noReleaseReason:d.noReleaseReason}:{})});
+            if(e.handover?.actorKind==="agent" && e.completion && !sameCompletion(e.completion,completion))this.store.submitDevelopmentComplete({itemKey,completion,requiredArtifacts:d.requiredArtifacts,
+              ...(d.noReleaseReason?{noReleaseReason:d.noReleaseReason}:{}),summary:b.results[d.id]!.detail,idempotencyKey:`merge-batch:${b.id}:${d.id}:${itemKey}`,attribution:{accountId:b.accountId}});
+            else if(requestId)this.store.supplementDevelopmentEvidence({itemKey,accountId:b.accountId,batchId:b.id,requestId,completion,requiredArtifacts:d.requiredArtifacts,preserveVerification:item.status==="pending_verification",...(d.noReleaseReason?{noReleaseReason:d.noReleaseReason}:{})});
             else if(!e.completion||!sameCompletion(e.completion,completion)||scope.requiredArtifacts===null||digest([...scope.requiredArtifacts].sort())!==digest([...d.requiredArtifacts].sort()))throw conflict("handoff_evidence_missing","人工推进后的交付依据缺失或冲突，请在对账预览中申请补证据。");
           }
         });

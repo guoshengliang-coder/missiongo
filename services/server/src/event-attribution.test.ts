@@ -132,7 +132,7 @@ describe("work-item event attribution", () => {
       itemKey: item.key,
       agentId: "agent-2",
       idempotencyKey: "claim-2",
-    })).toThrowError(/人工明确交给本会话接手/);
+    })).toThrowError(/conversation.s identity/);
   });
 
   it("records a merged PR before a verified release", async () => {
@@ -235,9 +235,9 @@ describe("work-item event attribution", () => {
 
     // Verification must cover every recorded artifact, and only those.
     const verification = { itemKey: item.key, pullRequestUrl: base.pullRequestUrl, deployedCommit: "a".repeat(40), receiptDigest: "b".repeat(64) };
-    expect(() => store.submitForVerification({ ...verification, releases: [
+    expect(store.submitForVerification({ ...verification, releases: [
       { artifact: "web", version: "1", sourceCommit: "a".repeat(40) },
-    ], idempotencyKey: "partial" })).toThrow(/every required artifact/);
+    ], idempotencyKey: "partial" }).status).toBe("development_complete");
     expect(() => store.submitForVerification({ ...verification, releases: [
       { artifact: "web", version: "1", sourceCommit: "a".repeat(40) },
       { artifact: "gateway", version: "1", sourceCommit: "a".repeat(40) },

@@ -65,7 +65,8 @@ describe("picking items to dispatch", () => {
 
   it("only takes items that are waiting", () => {
     expect(isDispatchable("ready")).toBe(true);
-    for (const status of ["inbox", "in_progress", "on_hold", "pending_verification", "done", "cancelled"] as const) {
+    expect(isDispatchable("in_progress")).toBe(true);
+    for (const status of ["inbox", "on_hold", "pending_verification", "done", "cancelled"] as const) {
       expect(isDispatchable(status)).toBe(false);
     }
   });

@@ -55,7 +55,7 @@ export function conflictSignature(conflicts: readonly ActiveDispatch[]): string 
 }
 
 export function redispatchReasonKey(reason: NonNullable<RedispatchEligibility["reason"]>) {
-  return ({started:"redispatchStarted",other_account:"redispatchOtherAccount",partial_batch:"redispatchPartialBatch",execution_unconfirmed:"executionStopBlocked"} as const)[reason];
+  return ({started:"redispatchStarted",other_account:"redispatchOtherAccount",partial_batch:"redispatchPartialBatch",execution_unconfirmed:"executionStopBlocked",item_not_dispatchable:"dispatchItemNotDispatchable"} as const)[reason];
 }
 
 /**

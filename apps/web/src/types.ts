@@ -722,6 +722,7 @@ export interface CreateDispatchInput {
    * server otherwise refuses, because two sessions would start on one item.
    */
   readonly force?: boolean;
+  readonly idempotencyKey?: string;
 }
 
 /**
@@ -762,7 +763,7 @@ export interface RedispatchEligibility {
   readonly takeoverWarnings?: readonly {itemKey:string;executionId:string}[];
   readonly allowed: boolean;
   readonly requiresConfirmation: boolean;
-  readonly reason: "other_account" | "started" | "partial_batch" | "execution_unconfirmed" | null;
+  readonly reason: "other_account" | "started" | "partial_batch" | "execution_unconfirmed" | "item_not_dispatchable" | null;
   readonly conflicts: readonly ActiveDispatch[];
 }
 

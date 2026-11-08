@@ -25,34 +25,33 @@ function fixture() {
   return {items,dispatches,original,node,send};
 }
 
-it("only offers confirmation when the full owned queued batch can actually be replaced",()=>{
+it("allows independent partial-batch dispatch without cancelling queued work",()=>{
   const f=fixture();const keys=f.items.map(i=>i.key);
   expect(f.dispatches.checkRedispatch("owner",keys)).toMatchObject({allowed:true,requiresConfirmation:false,conflicts:[]});
   const previous=f.send();
-  expect(f.dispatches.checkRedispatch("owner",keys)).toMatchObject({allowed:true,requiresConfirmation:true,reason:null});
-  expect(f.dispatches.checkRedispatch("owner",[keys[0]!])).toMatchObject({allowed:false,reason:"partial_batch",requiresConfirmation:false});
-  expect(()=>f.send([keys[0]!],"owner",f.original.nodeId,true)).toThrow(/Existing execution/);
+  expect(f.dispatches.checkRedispatch("owner",keys)).toMatchObject({allowed:true,requiresConfirmation:false,reason:null});
+  expect(f.dispatches.checkRedispatch("owner",[keys[0]!])).toMatchObject({allowed:true,reason:null,requiresConfirmation:false});
+  expect(()=>f.send([keys[0]!],"owner",f.original.nodeId,true)).not.toThrow();
   const replacement=f.send(keys,"owner",f.original.nodeId,true);
   expect(replacement.id).not.toBe(previous.id);
-  expect(f.dispatches.getDispatch("owner",previous.id).status).toBe("cancelled");
+  expect(f.dispatches.getDispatch("owner",previous.id).status).toBe("queued");
 });
 
-it("never offers a force checkbox after delivery or launch, matching the write guard",()=>{
+it("does not fence parallel dispatch after delivery or launch",()=>{
   const f=fixture(); const keys=[f.items[0]!.key]; const dispatched=f.send(keys);
   f.dispatches.claimNextDispatch(f.original.nodeId);
-  expect(f.dispatches.checkRedispatch("owner",keys)).toMatchObject({allowed:false,requiresConfirmation:false,reason:"started"});
-  expect(()=>f.send(keys,"owner",f.original.nodeId,true)).toThrow(/Existing execution/);
+  expect(f.dispatches.checkRedispatch("owner",keys)).toMatchObject({allowed:true,requiresConfirmation:false,reason:null});
+  expect(()=>f.send(keys,"owner",f.original.nodeId,true)).not.toThrow();
   f.dispatches.recordDispatchResult({nodeId:f.original.nodeId,dispatchId:dispatched.id,status:"launched",sessionRef:"native-thread"});
-  expect(f.dispatches.checkRedispatch("owner",keys)).toMatchObject({allowed:false,reason:"started"});
+  expect(f.dispatches.checkRedispatch("owner",keys)).toMatchObject({allowed:true,reason:null});
 });
 
-it("does not expose another account's private conversation ID or permit a replacement",()=>{
+it("allows independent work without exposing another account’s private conversation",()=>{
   const f=fixture();const keys=[f.items[0]!.key];const other=f.node("other"); f.send(keys,"other",other.nodeId);
   const policy=f.dispatches.checkRedispatch("owner",keys);
-  expect(policy).toMatchObject({allowed:false,reason:"other_account"});
-  expect(policy.conflicts[0]).not.toHaveProperty("agentSessionId");
-  expect(policy.conflicts[0]).not.toHaveProperty("accountId");
-  expect(()=>f.send(keys,"owner",f.original.nodeId,true)).toThrow(/Existing execution/);
+  expect(policy).toMatchObject({allowed:true,reason:null});
+  expect(policy.conflicts).toEqual([]);
+  expect(()=>f.send(keys,"owner",f.original.nodeId,true)).not.toThrow();
 });
 
 it("projects a waiting, unclaimed conversation separately from an item's ready status",()=>{

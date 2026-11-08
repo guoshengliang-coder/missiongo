@@ -102,7 +102,7 @@ it("invalidates old plan revisions without using approval as a claim permission"
   f.store.database.connection.prepare("UPDATE work_items SET content_version=content_version+1 WHERE id=?").run(f.item.id);
   expect((await f.get(first.sessionId)).json().implementationPlan).toMatchObject({approved:false,valid:false});
   expect((await f.call("claim_item", { itemKey: f.item.key, agentId: "Fixture", session: f.session, idempotencyKey: "independent-claim" })).isError).not.toBe(true);
-  expect((await f.call("claim_item", { itemKey: f.item.key, agentId: "Fixture", session: f.session, idempotencyKey: "other-client" }, f.tokenFor("other-client"))).isError).toBe(true);
+  expect((await f.call("claim_item", { itemKey: f.item.key, agentId: "Fixture", session: f.session, idempotencyKey: "other-client" }, f.tokenFor("other-client"))).isError).not.toBe(true);
   expect(f.store.getWorkItem(f.item.key).status).toBe("in_progress");
 });
 

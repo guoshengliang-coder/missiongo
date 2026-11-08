@@ -42,7 +42,7 @@ export function transitionPolicy(database: MissionGoDatabase,item: PolicyItem,ac
     return result(false,"item_not_accessible");
   }
   if (verifier && to === "cancelled" && (!roles.operate || !roles.manager && !roles.builder)) return result(false,"collaboration_receiver_required");
-  if (to === "in_progress" && reason === "claim" && requiresExecutionStopCheck(database,item.id) && hasBlockingItemExecution(database,item.id,item.executionDispatchId)) return result(false,"execution_stop_unconfirmed");
+  if (actor !== "agent" && to === "in_progress" && reason === "claim" && requiresExecutionStopCheck(database,item.id) && hasBlockingItemExecution(database,item.id,item.executionDispatchId)) return result(false,"execution_stop_unconfirmed");
   if (actor !== "human") {
     if (actor === "system") return result(
       to === "development_complete" && reason === "resolution_submitted" && ["inbox","ready","in_progress","development_complete"].includes(item.status)

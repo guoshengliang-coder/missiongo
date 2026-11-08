@@ -749,6 +749,7 @@ export interface ItemExecution {
   sessionId?: string; recorded?: boolean; sessionStatus?: string; accountName?: string; status: string; result: string; createdAt: string; startedAt: string | null; endedAt: string | null;
 }
 export interface ItemDelivery {
+  deliveries?: Array<{id:string;createdAt:string;status:"published"|"partial"|"awaiting_release";published:boolean;requiredArtifacts:string[]|null;releases:Array<{artifact:string;version:string;sourceCommit:string}>}>;
   canHandoffToAgent?:boolean;
   pendingAgentHandoff?:{id:string;sessionId?:string;dispatchId?:string;createdAt:string};
   agentHandoffTargets?:Array<{sessionId:string;dispatchId?:string;agentKind:string;name:string}>;
