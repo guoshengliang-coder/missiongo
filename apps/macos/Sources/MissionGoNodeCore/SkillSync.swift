@@ -5,9 +5,9 @@ import Foundation
 /// A dispatched session is told to "use the missiongo skill"; an agent without
 /// it, or with an old copy, works the items by rules the server has moved on
 /// from. The foreground integration check fetches SKILL.md from this Mac's
-/// server and writes just enabled targets, never over a newer copy or a
-/// symlink someone set up by hand. Heartbeats may trigger a sync when the
-/// server advertises a newer expected version; they never enable a client.
+/// server and writes just enabled targets. If the server advertises an older
+/// version and serves that exact Skill, keep a backup before rolling back.
+/// Symlinks are preserved and heartbeats never enable a client.
 public enum SkillSync {
     public static let downloadPath = "/downloads/missiongo-skill/SKILL.md"
     static let maxBytes = 1_000_000
@@ -110,9 +110,13 @@ public enum SkillSync {
     }
 
     /// Writes `skill` to each target that is missing it or holds an older
-    /// version. A local copy that is newer, unreadable as a version, or a symlink
-    /// is left alone: that is someone working on the Skill itself.
+    /// version. A download must match the server's advertised version before
+    /// it can replace a newer local copy.
     public static func apply(skill: String, targets: [String]) throws -> Outcome {
+        try apply(skill: skill, targets: targets, allowRollback: false)
+    }
+
+    private static func apply(skill: String, targets: [String], allowRollback: Bool) throws -> Outcome {
         guard let remote = version(ofSkill: skill) else { throw SyncError.invalidSkill }
         var updated: [String] = []
         var failures: [String] = []
@@ -130,12 +134,17 @@ public enum SkillSync {
                 failures.append("\(target)：\(error.localizedDescription)")
                 continue
             }
-            if let data {
-                let local = version(ofSkill: String(decoding: data, as: UTF8.self))
-                guard let local, isNewer(remote, than: local) else { continue }
-            }
             do {
-                try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+                if let data {
+                    guard let local = version(ofSkill: String(decoding: data, as: UTF8.self)) else { continue }
+                    if !isNewer(remote, than: local) {
+                        guard allowRollback, isNewer(local, than: remote) else { continue }
+                        let backup = URL(fileURLWithPath: target + ".before-rollback-" + UUID().uuidString)
+                        try FileManager.default.copyItem(at: URL(fileURLWithPath: target), to: backup)
+                    }
+                } else {
+                    try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+                }
                 try Data(skill.utf8).write(to: URL(fileURLWithPath: target), options: .atomic)
                 updated.append(target)
             } catch {
@@ -172,6 +181,6 @@ public enum SkillSync {
             throw SyncError.versionMismatch(expected: expectedVersion, received: receivedVersion)
         }
         guard shouldApply() else { throw CancellationError() }
-        return try apply(skill: text, targets: targets)
+        return try apply(skill: text, targets: targets, allowRollback: expectedVersion != nil)
     }
 }

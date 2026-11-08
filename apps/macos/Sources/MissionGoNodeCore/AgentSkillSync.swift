@@ -51,10 +51,9 @@ public final class AgentSkillSync: @unchecked Sendable {
 
 extension SkillSync {
     /// Check the actual files after writing as well as after a no-op. Protected
-    /// links, invalid files and newer local copies must not look synchronized
-    /// merely because apply() did not report an I/O failure. `targets` may hold
-    /// more than one copy of the same Skill (Codex reads a shared directory
-    /// too); all of them have to carry the expected version.
+    /// or unconfirmed copies must not look synchronized merely because apply()
+    /// did not report an I/O failure. Codex can read more than one copy, so all
+    /// targets have to carry the expected version.
     public static func check(
         serverUrl: String,
         targets: [String],
@@ -86,7 +85,7 @@ extension SkillSync {
                 if isSymlink(mismatched) || isSymlink((mismatched as NSString).deletingLastPathComponent) {
                     reason = "\(mismatched)：Skill 路径为符号链接，已保留原文件；本地版本与服务端要求不一致。"
                 } else if let found, isNewer(found, than: expected) {
-                    reason = "\(mismatched)：本地 Skill \(found) 高于服务端要求 \(expected)，已保留本地文件。"
+                    reason = "\(mismatched)：本地 Skill \(found) 高于下载版本 \(expected)，尚未确认服务端要求，已保留本地文件。"
                 } else if FileManager.default.fileExists(atPath: mismatched) {
                     // Applying refuses to replace a file it cannot read a
                     // version from, so without this the user only sees a
