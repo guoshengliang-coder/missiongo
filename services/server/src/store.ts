@@ -1108,6 +1108,26 @@ export class MissionGoStore {
     return this.mapWorkItem(row);
   }
 
+  /** Lightweight key-to-id lookup for hot paths that only need the row id. */
+  workItemId(itemKey: string): string {
+    const row = this.getWorkItemRow(itemKey);
+    if (!row) throw notFound("Work item");
+    return row.id;
+  }
+
+  /** Row-field lookups for batch scope digests; avoid full snapshots on hot paths. */
+  workItemContentVersion(itemKey: string): number {
+    const row = this.getWorkItemRow(itemKey);
+    if (!row) throw notFound("Work item");
+    return row.content_version;
+  }
+
+  workItemBuilderAccountId(itemKey: string): string | null {
+    const row = this.getWorkItemRow(itemKey);
+    if (!row) throw notFound("Work item");
+    return row.builder_account_id ?? null;
+  }
+
   updateWorkItem(itemKey: string, input: UpdateWorkItemInput): WorkItemSnapshot {
     this.assertWorkItemWritable(itemKey);
     const current = this.getWorkItemRow(itemKey);
@@ -1750,8 +1770,8 @@ export class MissionGoStore {
   }
 
   /** Resolve append-only evidence for precisely the current development event and round. */
-  getDevelopmentEvidence(itemKey: string, deliveryId?: string) {
-    const timeline = this.getTimeline(itemKey).filter(event => !event.historySourceKey);
+  getDevelopmentEvidence(itemKey: string, deliveryId?: string, timelineIn?: readonly WorkItemEventSnapshot[]) {
+    const timeline = (timelineIn ?? this.getTimeline(itemKey)).filter(event => !event.historySourceKey);
     const handover = [...timeline].reverse().find(event => (event.eventType === "delivery_recorded" || event.eventType === "status_changed" && event.toStatus === "development_complete") && (!deliveryId || event.id===deliveryId));
     let completion: ReturnType<typeof normalizeCompletion> | undefined;
     try { completion = normalizeCompletion(handover?.payload); } catch { /* Missing evidence is explicit. */ }
@@ -1765,18 +1785,18 @@ export class MissionGoStore {
 
   /** Each integration is an immutable delivery in one handling round, not a new business status. */
   getDeliveryRecords(itemKey: string) {
-    const item=this.getWorkItem(itemKey),round=deliveryRound(this.database,item.id);
-    const timeline=this.getTimeline(itemKey).filter(e=>!e.historySourceKey);
-    return timeline.filter(e=>(e.eventType==="delivery_recorded" || e.eventType==="status_changed" && e.toStatus==="development_complete") && e.payload.roundKey===round).map(event=>{
-      const evidence=this.getDevelopmentEvidence(itemKey,event.id),scope=this.getDevelopmentReleaseDecision(itemKey,event.id);
-      const receipts=timeline.filter(e=>(e.eventType==="release_evidence_added" || e.eventType==="status_changed" && e.toStatus==="pending_verification") &&
+    const rowId=this.workItemId(itemKey),round=deliveryRound(this.database,rowId);
+    const events=this.getTimeline(itemKey).filter(e=>!e.historySourceKey);
+    return events.filter(e=>(e.eventType==="delivery_recorded" || e.eventType==="status_changed" && e.toStatus==="development_complete") && e.payload.roundKey===round).map(event=>{
+      const evidence=this.getDevelopmentEvidence(itemKey,event.id,events),scope=this.getDevelopmentReleaseDecision(itemKey,event.id,events);
+      const receipts=events.filter(e=>(e.eventType==="release_evidence_added" || e.eventType==="status_changed" && e.toStatus==="pending_verification") &&
         (e.payload.developmentEventId===event.id || !e.payload.developmentEventId && event.eventType==="status_changed" && e.payload.roundKey===round));
       const artifacts=new Map<string,{artifact:string;version:string;sourceCommit:string}>();
       for(const receipt of receipts) for(const release of (Array.isArray(receipt.payload.releases) ? receipt.payload.releases : [])) {
         if(release && typeof release==="object" && "artifact" in release) artifacts.set(release.artifact,release);
       }
       const releases=[...artifacts.values()];
-      const noReleaseVerified=timeline.some(e=>e.payload.developmentEventId===event.id && e.payload.reason==="non_release_submitted");
+      const noReleaseVerified=events.some(e=>e.payload.developmentEventId===event.id && e.payload.reason==="non_release_submitted");
       const published=scope.requiredArtifacts!==null && (scope.requiredArtifacts.length===0 ? noReleaseVerified : scope.requiredArtifacts.every(a=>artifacts.has(a)));
       return {id:event.id,createdAt:event.createdAt,roundKey:round,completion:evidence.completion,...scope,releases,published,
         status:published ? "published" as const : releases.length ? "partial" as const : "awaiting_release" as const};
@@ -1815,9 +1835,9 @@ export class MissionGoStore {
     return this.getDevelopmentReleaseDecision(itemKey).requiredArtifacts;
   }
 
-  getDevelopmentReleaseDecision(itemKey: string, deliveryId?: string): { requiredArtifacts: readonly string[] | null; noReleaseReason?: string } {
-    const evidence = this.getDevelopmentEvidence(itemKey,deliveryId);
-    const entries=this.getTimeline(itemKey).filter(event=>!event.historySourceKey && (event.id===evidence.handover?.id ||
+  getDevelopmentReleaseDecision(itemKey: string, deliveryId?: string, timelineIn?: readonly WorkItemEventSnapshot[]): { requiredArtifacts: readonly string[] | null; noReleaseReason?: string } {
+    const evidence = this.getDevelopmentEvidence(itemKey,deliveryId,timelineIn);
+    const entries=(timelineIn ?? this.getTimeline(itemKey)).filter(event=>!event.historySourceKey && (event.id===evidence.handover?.id ||
       event.eventType==="delivery_evidence_added" && event.payload.developmentEventId===evidence.handover?.id && event.payload.roundKey===evidence.roundKey));
     for(const event of entries.reverse()) {
       const scope=event.payload.requiredArtifacts;

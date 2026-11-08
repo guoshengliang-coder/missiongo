@@ -83,8 +83,8 @@ export class MergeDeliveries {
   }
   private scope(keys: string[]) {
     return digest(keys.map(key => {
-      const i = this.store.getWorkItem(key);
-      return [i.id, i.contentVersion, i.builderAccountId, deliveryRound(this.db, i.id)];
+      const id = this.store.workItemId(key);
+      return [id, this.store.workItemContentVersion(key), this.store.workItemBuilderAccountId(key), deliveryRound(this.db, id)];
     }));
   }
   private activity(sessionId: string) {
@@ -219,6 +219,8 @@ export class MergeDeliveries {
     const batches = (this.db.connection.prepare("SELECT data_json FROM merge_batches WHERE product_id=? AND account_id=? ORDER BY rowid DESC")
       .all(productId,accountId) as {data_json:string}[]).map(row=>JSON.parse(row.data_json) as Batch);
     const byBatch = new Map(batches.map(b=>[b.id,b]));
+    const presentations = new Map<string, MergeBatchPresentation>();
+    const presentationOf = (b: Batch) => { const cached = presentations.get(b.id); if (cached) return cached; const built = this.presentation(b); presentations.set(b.id, built); return built; };
     const result: Record<string, SessionDeliveryStage> = {};
     const stage = (b:Batch, deliveries:Delivery[], sessionId:string):SessionDeliveryStage|undefined => {
       if (!deliveries.length || deliveries.some(d=>this.scope(d.itemKeys)!==d.scope)) return;
@@ -226,7 +228,7 @@ export class MergeDeliveries {
       if (outcomes.some(r=>!r)) return b.state === "active" ? "merging" : undefined;
       if (outcomes.some(r=>r?.status === "blocked")) return outcomes.some(r=>r?.status === "merged") ? "partial" : "blocked";
       if (b.displayBoundaries?.[sessionId] ? !this.displayUnchanged(b,sessionId) : !this.legacyDisplayUnchanged(sessionId,deliveries)) return;
-      const presentation = this.presentation(b);
+      const presentation = presentationOf(b);
       const needsPublication = deliveries.some(d=>d.requiredArtifacts.length>0);
       const publications = deliveries.map(d=>presentation.entries[d.id]?.publication);
       if (needsPublication && publications.every(value=>value === "published" || value === "not_required")) return "published";
@@ -308,7 +310,7 @@ export class MergeDeliveries {
         const timeline=(this.db.connection.prepare(`SELECT event_type AS eventType,to_status AS toStatus,payload_json AS payloadJson,created_at AS createdAt
           FROM work_item_events WHERE item_id=? AND history_source_key IS NULL
           AND (event_type='release_evidence_added' OR (event_type='status_changed' AND to_status='pending_verification')) ORDER BY rowid`)
-          .all(this.store.getWorkItem(key).id) as {eventType:string;toStatus:string;payloadJson:string;createdAt:string}[])
+          .all(this.store.workItemId(key)) as {eventType:string;toStatus:string;payloadJson:string;createdAt:string}[])
           .map(row=>({...row,payload:JSON.parse(row.payloadJson) as Record<string,unknown>}));
         // Each receipt covers its own item's complete scope, not the PR union.
         const receipt=[...timeline].reverse().find(e=>{
