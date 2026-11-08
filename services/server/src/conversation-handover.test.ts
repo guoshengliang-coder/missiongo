@@ -310,6 +310,7 @@ it("keeps two client claims independent through verification and lists an append
  expect((await f.call("recover_execution_authorization",{itemKey:f.item.key,...secondIdentity,authorizationMode:"conversation"})).isError).toBe(true);
  expect((await f.call("claim_item",{...f.claimInput,session:{...f.session,sessionRef:randomUUID()},idempotencyKey:"too-late"})).isError).toBe(true);
  const appended=await f.call("submit_development_complete",{itemKey:f.item.key,...secondIdentity,completion:{...completion,commit:"c".repeat(40)},requiredArtifacts:["web"],idempotencyKey:"second-completion"},{clientId:"second-client"});f.safe(appended);
+ expect(appended.structuredContent?.statusChanged).toBe(false);
  expect(f.store.getWorkItem(f.item.key).status).toBe("pending_verification");
  const candidates=await f.call("list_release_candidates",{productId:f.item.productId,includeUnscoped:true});
  expect(candidates.isError,JSON.stringify(candidates)).toBeFalsy();

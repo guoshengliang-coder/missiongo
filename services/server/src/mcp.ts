@@ -1571,6 +1571,7 @@ export function createMissionGoMcpServer(
       requireWriteScope(ctx);
       const access = accountAccess(ctx);
       authorizeHandover(ctx, input);
+      const previousStatus=store.getWorkItem(itemKey).status;
       const item = store.submitDevelopmentComplete({
         itemKey: requireItemAccess(ctx, store, itemKey),
         completion: normalizeCompletion({ completion, pullRequestUrl }),
@@ -1585,8 +1586,8 @@ export function createMissionGoMcpServer(
         idempotencyKey,
       });
       return textResult(
-        { item, statusChanged: item.status === "development_complete", deliveries:store.getDeliveryRecords(item.key) },
-        requiredArtifacts === undefined
+        { item, statusChanged: item.status !== previousStatus, deliveries:store.getDeliveryRecords(item.key) },
+        item.status==="pending_verification" ? `${item.key}: integration evidence recorded; pending verification is preserved. Read deliveries for unpublished additions.` : requiredArtifacts === undefined
           ? `${item.key} is development complete; release scope is unknown and verification can be arranged by a person.`
           : requiredArtifacts.length > 0
           ? `${item.key} is development complete and awaits a verified release.`
@@ -1648,12 +1649,13 @@ export function createMissionGoMcpServer(
       requireWriteScope(ctx);
       const access = accountAccess(ctx);
       authorizeHandover(ctx, input);
+      const previousStatus=store.getWorkItem(itemKey).status;
       const item = store.submitForVerification({
         itemKey: requireItemAccess(ctx, store, itemKey), completion: normalizeCompletion({ completion, pullRequestUrl }), releases, deployedCommit, receiptDigest, ...(developmentEventId?{developmentEventId}:{}),
         attribution: { accountId: access.accountId, ...(access.clientId ? { clientId: access.clientId } : {}) },
         idempotencyKey,
       });
-      return textResult({ item, statusChanged: item.status === "pending_verification", deliveries:store.getDeliveryRecords(item.key) }, `${item.key}: publication evidence recorded; current status is ${item.status}. Check deliveries for complete coverage; this is not acceptance.`);
+      return textResult({ item, statusChanged: item.status !== previousStatus, deliveries:store.getDeliveryRecords(item.key) }, `${item.key}: publication evidence recorded; current status is ${item.status}. Check deliveries for complete coverage; this is not acceptance.`);
     },
   );
 
