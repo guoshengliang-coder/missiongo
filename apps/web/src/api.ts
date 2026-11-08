@@ -705,6 +705,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ revision }),
     }),
+  getIntegrationDefaults: () => request<DispatchDefaults>("/api/v1/integration-defaults"),
   getDispatchDefaults: () => request<DispatchDefaults>("/api/v1/dispatch-defaults"),
   setDispatchDefaults: (defaults: DispatchDefaults) =>
     request<DispatchDefaults>("/api/v1/dispatch-defaults", { method: "PUT", body: JSON.stringify(defaults) }),

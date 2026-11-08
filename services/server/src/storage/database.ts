@@ -2596,6 +2596,17 @@ export class MissionGoDatabase {
       });
     }
 
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611081225").get()) {
+      this.transaction(() => {
+        this.connection.exec(`CREATE TABLE account_integration_defaults (
+          account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+          settings_json TEXT NOT NULL, updated_at TEXT NOT NULL
+        )`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611081225,new Date().toISOString());
+      });
+    }
+
     // Standalone native conversations have a project scope without synthetic work items.
     if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611081300").get()) {
       this.transaction(() => {

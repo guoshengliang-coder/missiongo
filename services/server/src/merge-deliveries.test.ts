@@ -794,6 +794,56 @@ it("keeps parallel merge proposals and accepts an existing claimant's proposal d
  expect(f.merges.list(f.item.productId,f.owner.id).find(row=>row.id===f.d.id)?.state).toBe("proposed");
 });
 
+describe("AND-476 independent integration defaults",()=>{
+  it("saves only opted-in accepted batches, isolates dispatch/accounts and does not overwrite newer preferences on replay",async()=>{
+    const f=await prepared(), store=new DispatchStore(f.store.database);
+    store.setDispatchDefaults(f.owner.id,{nodeId:f.node.nodeId,agentKind:"opencode",agents:{opencode:{mode:"plan"}}});
+    store.setDispatchDefaults(f.owner.id,{agents:{codex:{mode:"auto",model:"kept"}}},"integration");
+    f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
+    const selection=[{id:f.d.id,revision:f.d.revision}];
+    const batch=f.merges.start(f.owner.id,"integration-default-save",selection,f.config,false,1,true);
+    expect(store.getDispatchDefaults(f.owner.id,"integration")).toEqual({nodeId:f.node.nodeId,agentKind:"opencode",agents:{codex:{mode:"auto",model:"kept"},opencode:{mode:"default"}}});
+    expect(store.getDispatchDefaults(f.owner.id).agents.opencode?.mode).toBe("plan");
+    expect(store.getDispatchDefaults(f.other.id,"integration")).toEqual({agents:{}});
+    store.setDispatchDefaults(f.owner.id,{agents:{codex:{mode:"plan"}}},"integration");
+    expect(f.merges.start(f.owner.id,"integration-default-save",selection,f.config,false,1,true).id).toBe(batch.id);
+    expect(store.getDispatchDefaults(f.owner.id,"integration")).toEqual({agents:{codex:{mode:"plan"}}});
+    expect(()=>f.merges.start(f.owner.id,"integration-default-save",selection,f.config,false,1,false)).toThrow();
+  });
+  it("keeps existing defaults when not opted in and rolls back the whole batch if saving fails",async()=>{
+    const f=await prepared(),store=new DispatchStore(f.store.database);
+    f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
+    f.merges.start(f.owner.id,"without-default",[{id:f.d.id,revision:f.d.revision}],f.config,false,1);
+    expect(store.getDispatchDefaults(f.owner.id,"integration")).toEqual({agents:{}});
+    const g=await prepared();g.merges.decide(g.owner.id,g.d.id,g.d.revision,"confirm");
+    const before=g.db.prepare("SELECT count(*) AS n FROM dispatches").get();
+    const original=DispatchStore.prototype.setDispatchDefaults;
+    const spy=vi.spyOn(DispatchStore.prototype,"setDispatchDefaults").mockImplementation(function(account,body,scope){
+      if(scope==="integration")throw new Error("Synthetic preference write failure");
+      return original.call(this,account,body,scope);
+    });
+    try {
+      expect(()=>g.merges.start(g.owner.id,"rollback-default",[{id:g.d.id,revision:g.d.revision}],g.config,false,1,true)).toThrow("Synthetic preference write failure");
+      expect(g.db.prepare("SELECT count(*) AS n FROM dispatches").get()).toEqual(before);
+      expect(g.db.prepare("SELECT count(*) AS n FROM merge_batches").get()).toEqual({n:0});
+      expect(g.merges.list(g.item.productId,g.owner.id)[0]?.state).toBe("confirmed");
+    } finally {spy.mockRestore();}
+  });
+});
+
+it("AND-476 reads only the current account's integration defaults through the authenticated API",async()=>{
+  const f=await prepared(),store=new DispatchStore(f.store.database);
+  store.setDispatchDefaults(f.owner.id,{agents:{codex:{mode:"auto"}}},"integration");
+  store.setDispatchDefaults(f.other.id,{agents:{opencode:{mode:"plan"}}},"integration");
+  const login=await f.app.inject({method:"POST",url:"/api/v1/auth/login",payload:{username:f.owner.email,password:"synthetic password"}});
+  const raw=login.headers["set-cookie"];
+  const cookie=(Array.isArray(raw)?raw[0]:raw)!.split(";")[0]!;
+  const read=await f.app.inject({method:"GET",url:"/api/v1/integration-defaults",headers:{cookie}});
+  expect(read.statusCode).toBe(200);expect(read.json()).toEqual({agents:{codex:{mode:"auto"}}});
+  expect((await f.app.inject({method:"GET",url:"/api/v1/integration-defaults"})).statusCode).toBe(401);
+  const invalid=await f.app.inject({method:"POST",url:`/api/v1/products/${f.item.productId}/merge-batches`,headers:{cookie},payload:{requestKey:"invalid",selection:[],publish:false,saveAsDefault:"true"}});
+  expect(invalid.statusCode).toBe(400);
+});
 describe("standalone project deliveries",()=>{
   async function standalone(artifacts=["web","macosApp"],publish=false) {
     const f=await fixture(),launched=f.launch("codex"),merges=new MergeDeliveries(f.store);
