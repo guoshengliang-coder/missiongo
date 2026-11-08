@@ -314,7 +314,7 @@ describe("Commenting over MCP", () => {
     const coverage = await call(readToken, 7, "tools/call", {
       name: "list_release_candidates", arguments: { productId, limit: 1, includeUnscoped: true },
     });
-    expect(coverage.result?.structuredContent).toMatchObject({ productId, coverageVersion: 1, candidates: [], nextBeforeSequence: 1,
+    expect(coverage.result?.structuredContent).toMatchObject({ productId, coverageVersion: 2, candidates: [], nextBeforeSequence: 2,
       noReleaseItems: [{ itemKey: "HG-1", noReleaseReason: reason }] });
     expect(Date.parse(coverage.result?.structuredContent?.generatedAt as string)).not.toBeNaN();
     const published = await call(writeToken, 6, "tools/call", {
@@ -376,7 +376,7 @@ describe("Commenting over MCP", () => {
     const legacy = await call(readToken, 1, "tools/call", { name: "list_release_candidates", arguments: { productId } });
     expect(legacy.result?.structuredContent).toMatchObject({ candidates: [] });
     const coverage = await call(readToken, 2, "tools/call", { name: "list_release_candidates", arguments: { productId, includeUnscoped: true } });
-    expect(coverage.result?.structuredContent).toMatchObject({ coverageVersion: 1, candidates: [{ itemKey: "HG-1" }], noReleaseItems: [] });
+    expect(coverage.result?.structuredContent).toMatchObject({ coverageVersion: 2, candidates: [{ itemKey: "HG-1" }], noReleaseItems: [] });
     expect(coverage.result?.structuredContent?.candidates).toEqual([{ itemKey: "HG-1", expectedRevision: expect.any(Number), developmentEventId: expect.any(String), roundKey: expect.any(String) }]);
   });
 
@@ -404,7 +404,7 @@ describe("Commenting over MCP", () => {
     const result = await call(writeToken,2,"tools/call",{name:"submit_development_complete",arguments:{itemKey:"HG-1",pullRequestUrl:"https://github.com/owner/repo/pull/504",idempotencyKey:"no-scope-complete"}});
     expect(result.result?.structuredContent).toMatchObject({item:{status:"development_complete"}});
     const unscoped = await call(readToken, 5, "tools/call", {name:"list_release_candidates",arguments:{productId,includeUnscoped:true}});
-    expect(unscoped.result?.structuredContent).toMatchObject({ coverageVersion: 1, noReleaseItems: [],
+    expect(unscoped.result?.structuredContent).toMatchObject({ coverageVersion: 2, noReleaseItems: [],
       candidates:[{itemKey:"HG-1",pullRequestUrl:"https://github.com/owner/repo/pull/504"}] });
     expect(unscoped.result?.structuredContent?.candidates).not.toContainEqual(expect.objectContaining({requiredArtifacts:[]}));
   });

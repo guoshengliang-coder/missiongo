@@ -124,16 +124,22 @@ export function releaseBatches(productId, candidates, matched) {
       receiptDigest: matched.comments[0].receiptDigest, items: items.slice(offset, offset + 100) };
     batches.push({ ...request, idempotencyKey: `release-batch:${createHash("sha256").update(JSON.stringify(request)).digest("hex")}` });
   }
+  const deliveries=(matched.deliveries ?? []).map(row=>({deliveryId:row.deliveryId,expectedRevision:row.expectedRevision,releases:row.releases}));
+  for(let offset=0;offset<deliveries.length;offset+=100) {
+    const request={productId,deployedCommit:matched.deliveries[0].deployedCommit,receiptDigest:matched.deliveries[0].receiptDigest,items:[],deliveries:deliveries.slice(offset,offset+100)};
+    batches.push({...request,idempotencyKey:`release-deliveries:${createHash("sha256").update(JSON.stringify(request)).digest("hex")}`});
+  }
   return { batches, skipped };
 }
 
 export function matchCandidates(receipt, candidates, resolvePr, ancestor = isAncestor) {
   const comments = [];
+  const deliveries = [];
   const skipped = [];
   const facts = new Map();
   for (const candidate of candidates) {
-    if (!/^[A-Z][A-Z0-9]*-[1-9][0-9]*$/.test(candidate.itemKey ?? "")) {
-      skipped.push({ itemKey: candidate.itemKey, reason: "invalid item key" });
+    if (candidate.kind!=="delivery" && !/^[A-Z][A-Z0-9]*-[1-9][0-9]*$/.test(candidate.itemKey ?? "")) {
+      skipped.push({ ...(candidate.kind==="delivery" ? {deliveryId:candidate.deliveryId,pullRequestUrl:candidate.pullRequestUrl} : {itemKey:candidate.itemKey}), reason: "invalid item key" });
       continue;
     }
     let pr;
@@ -144,28 +150,30 @@ export function matchCandidates(receipt, candidates, resolvePr, ancestor = isAnc
         pr = facts.get(candidate.pullRequestUrl);
       }
     }
-    catch (error) { skipped.push({ itemKey: candidate.itemKey, reason: `PR lookup failed: ${String(error)}` }); continue; }
-    if (!pr) { skipped.push({ itemKey: candidate.itemKey, reason: "PR is not a verified merge in this repository" }); continue; }
+    catch (error) { skipped.push({ ...(candidate.kind==="delivery" ? {deliveryId:candidate.deliveryId,pullRequestUrl:candidate.pullRequestUrl} : {itemKey:candidate.itemKey}), reason: `PR lookup failed: ${String(error)}` }); continue; }
+    if (!pr) { skipped.push({ ...(candidate.kind==="delivery" ? {deliveryId:candidate.deliveryId,pullRequestUrl:candidate.pullRequestUrl} : {itemKey:candidate.itemKey}), reason: "PR is not a verified merge in this repository" }); continue; }
     // The explicitly registered scope is authoritative. File paths remain a
     // suggestion at development time, not a second competing release contract.
     const recorded = candidate.requiredArtifacts;
     if (!Array.isArray(recorded) || !recorded.length || new Set(recorded).size !== recorded.length
       || recorded.some(artifact => typeof artifact !== "string" || !/^[a-z][A-Za-z0-9_-]{0,49}$/.test(artifact))) {
-      skipped.push({itemKey:candidate.itemKey,reason:"release scope is missing or invalid"}); continue;
+      skipped.push({...(candidate.kind==="delivery" ? {deliveryId:candidate.deliveryId,pullRequestUrl:candidate.pullRequestUrl} : {itemKey:candidate.itemKey}),reason:"release scope is missing or invalid"}); continue;
     }
     const required = [...recorded].sort();
     const releases = required.map((artifact) => currentRelease(receipt, artifact));
     if (releases.some((release) => !release)
       || !/^[0-9a-f]{40}$/.test(receipt.deployedCommit ?? "")
       || releases.some((release) => !ancestor(pr.mergeCommit, release.sourceCommit))) {
-      skipped.push({ itemKey: candidate.itemKey, reason: "not every required public artifact contains the PR" });
+      skipped.push({ ...(candidate.kind==="delivery" ? {deliveryId:candidate.deliveryId,pullRequestUrl:candidate.pullRequestUrl} : {itemKey:candidate.itemKey}), reason: "not every required public artifact contains the PR" });
       continue;
     }
     // A currently verified release containing the PR can repair a missed
     // handoff even when nothing new was published in this particular receipt.
-    comments.push(proposedComment(candidate, releases, receipt));
+    if(candidate.kind==="delivery") deliveries.push({deliveryId:candidate.deliveryId,expectedRevision:candidate.expectedRevision,pullRequestUrl:candidate.pullRequestUrl,
+      releases,deployedCommit:receipt.deployedCommit,receiptDigest:createHash("sha256").update(JSON.stringify(receipt)).digest("hex")});
+    else comments.push(proposedComment(candidate, releases, receipt));
   }
-  return { comments, skipped };
+  return { comments, skipped, ...(deliveries.length ? {deliveries} : {}) };
 }
 
 
@@ -214,7 +222,7 @@ function main() {
   }
   const repository = gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner");
   const matched = matchCandidates(receipt, candidates, (url) => pullRequestFacts(url, repository));
-  process.stdout.write(`${JSON.stringify({ comments: matched.comments, ...releaseBatches(productId, candidates, matched), ...(evidence ? { verifiedEvidence: evidence } : {}) }, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({ comments: matched.comments, ...(matched.deliveries ? {deliveries:matched.deliveries} : {}), ...releaseBatches(productId, candidates, matched), ...(evidence ? { verifiedEvidence: evidence } : {}) }, null, 2)}\n`);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

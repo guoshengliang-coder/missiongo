@@ -720,7 +720,9 @@ describe("external conversation archive migration (AND-337)", () => {
     const at = "2026-10-30T00:00:00.000Z";
     db.exec(`ALTER TABLE external_agent_sessions DROP COLUMN archive_reason;
       ALTER TABLE external_agent_sessions DROP COLUMN auto_archive_suppressed;
-      DELETE FROM schema_migrations WHERE version=202610310352;`);
+      ALTER TABLE external_agent_sessions DROP COLUMN product_id;
+      DROP TABLE merge_delivery_release_requests;
+      DELETE FROM schema_migrations WHERE version IN (202610310352,202611081300);`);
     db.prepare("INSERT INTO products(id,key_prefix,name,created_at,updated_at) VALUES ('product','EX','Example',?,?)").run(at, at);
     let sequence = 0;
     for (const [id, statuses] of [["finished", ["done", "cancelled"]], ["open", ["done", "in_progress"]],

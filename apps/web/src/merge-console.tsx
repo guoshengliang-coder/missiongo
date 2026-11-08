@@ -199,13 +199,13 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
       <div className="merge-list">{candidates.map(d=><div className="merge-row" key={d.id}>
         <label><input type="checkbox" checked={Boolean(selected[d.id])} disabled={locked||(d.blocker==="changed"&&!selected[d.id])}
           onChange={e=>setSelected(prev=>{const next={...prev};if(e.target.checked)next[d.id]=d.revision;else delete next[d.id];return next;})}/>
-          <span><strong>{d.summary}</strong><small>{d.itemKeys.join(" · ")}</small><small>{t("mergeAffected")}: {d.requiredArtifacts.map(a=>a==="web"?"Web":a==="macosApp"?"macOS":a==="androidApp"?"Android":a).join(" / ") || d.noReleaseReason} · {t(checkLabel(d.blocker))}</small></span></label>
+          <span><strong>{d.summary}</strong><small>{d.itemKeys.join(" · ") || `PR #${d.pullRequestUrl.split("/").at(-1)}`}</small><small>{t("mergeAffected")}: {d.requiredArtifacts.map(a=>a==="web"?"Web":a==="macosApp"?"macOS":a==="androidApp"?"Android":a).join(" / ") || d.noReleaseReason} · {t(checkLabel(d.blocker))}</small></span></label>
         <button type="button" className="text-button merge-detail-button" onClick={()=>setDetail(d)}>{t("mergeDetails")}</button>
       </div>)}</div>
       </div>
       {!createdBatch&&!selectedValid&&<div role="alert" className="inline-error">{t("mergeSelectionChanged")} <button type="button" className="secondary-button" disabled={locked} onClick={()=>{setSelected(prev=>Object.fromEntries(Object.entries(prev).filter(([id,revision])=>selectable.some(d=>d.id===id&&d.revision===revision))));setStep(1);}}>{t("mergeReviewSelection")}</button></div>}
       {step===2&&<div className="merge-configuration-step">
-      <p>{t("mergeSelected",{count:selectedCount,items:itemCount})}</p>
+      <p>{t(itemCount ? "mergeSelected" : "mergeSelectedGroups",{count:selectedCount,items:itemCount})}</p>
       <p>{t("integrationAuthorization")}</p>
       <section className="merge-config"><strong>{t("mergeExecutor")}</strong><p>{t("mergeExecutorHelp")}</p>
         <div className="merge-config-fields">
@@ -227,7 +227,7 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
       <label className="merge-publish"><input type="checkbox" checked={publish} disabled={locked} onChange={e=>setPublish(e.target.checked)}/><span>{t("mergePublish")}<small>{t("mergePublishHelp")}</small></span></label>
       </div>}
       {start.isError&&<p role="alert" className="inline-error">{start.error instanceof ApiError && start.error.status<500 ? start.error.message : t("mergeStartError")}</p>}
-      <div className="form-footer merge-footer"><span>{t("mergeSelected",{count:selectedCount,items:itemCount})}</span>
+      <div className="form-footer merge-footer"><span>{t(itemCount ? "mergeSelected" : "mergeSelectedGroups",{count:selectedCount,items:itemCount})}</span>
         <button type="button" className="secondary-button" disabled={start.isPending||openSession.isPending} onClick={close}>{t("cancel")}</button>
         {step===2&&<button type="button" className="secondary-button" disabled={locked} onClick={()=>setStep(1)}>{t("mergePrevious")}</button>}
         {step===1?<button type="button" className="primary-button" disabled={locked||!selectedCount||!selectedValid||query.isError} onClick={()=>setStep(2)}>{t("mergeNext")}</button>:
@@ -237,7 +237,7 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
       </div>
     </div>}
   </Modal>
-    {detail&&<Modal title={t("mergeDetails")} subtitle={detail.itemKeys.join(" · ")} onClose={()=>setDetail(undefined)} pending={openSession.isPending} wide scrolls>
+    {detail&&<Modal title={t("mergeDetails")} subtitle={detail.itemKeys.join(" · ") || `PR #${detail.pullRequestUrl.split("/").at(-1)}`} onClose={()=>setDetail(undefined)} pending={openSession.isPending} wide scrolls>
       <div className="merge-delivery-detail">
         <button type="button" className="secondary-button" data-initial-focus onClick={()=>setDetail(undefined)}>{t("mergeBackToSelection")}</button>
         <h3>{(detailCurrent??detail).summary}</h3>

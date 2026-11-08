@@ -159,3 +159,16 @@ test("matches a commit delivery only when the public artifact contains its commi
  assert.equal(matchCandidates(receipt,[candidate],resolve,()=>true).comments.length,1);
  assert.equal(matchCandidates(receipt,[candidate],resolve,()=>false).comments.length,0);
 });
+
+test("standalone release handover generates delivery receipts without work-item comments",()=>{
+  const candidate={kind:"delivery",deliveryId:"12345678-1234-4234-8234-123456789abc",expectedRevision:"a".repeat(64),pullRequestUrl:"https://github.com/example/repo/pull/12",requiredArtifacts:["web","macosApp"]};
+  const source="c".repeat(40),merge="b".repeat(40);
+  const receipt={schemaVersion:1,deployedCommit:source,current:{web:{version:"1",commit:source,clean:true,ciPassed:true},macosApp:{version:"2",sourceCommit:source}},publicEvidence:{checks:{web:true,macosApp:true}}};
+  const matched=matchCandidates(receipt,[candidate],()=>({mergeCommit:merge}),()=>true);
+  assert.deepEqual(matched.comments,[]);assert.deepEqual(matched.skipped,[]);assert.equal(matched.deliveries.length,1);
+  const result=releaseBatches("product",[candidate],matched);
+  assert.equal(result.batches.length,1);assert.deepEqual(result.batches[0].items,[]);
+  assert.deepEqual(result.batches[0].deliveries,[{deliveryId:candidate.deliveryId,expectedRevision:candidate.expectedRevision,releases:matched.deliveries[0].releases}]);
+  const missing=matchCandidates({...receipt,publicEvidence:{checks:{web:true,macosApp:false}}},[candidate],()=>({mergeCommit:merge}),()=>true);
+  assert.equal(missing.deliveries,undefined);assert.equal(missing.skipped[0].deliveryId,candidate.deliveryId);
+});
