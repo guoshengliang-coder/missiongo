@@ -610,6 +610,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const rows = consoleSessions.list(accountId).map(session => planApprovals.withAttention(agentApprovalStore.withAttention(session)));
     const handled = new Set(rows.flatMap(sessionProducts).filter((id, index, ids) => ids.indexOf(id) === index)
       .flatMap(productId => merges.attentionSessionIds(productId, accountId)));
+    if (aiTitle.attentionEnabled()) for (const id of handled) {
+      if (agentSessionStore.requestDeliveryAttribution(id)) scheduleAttentionClassification(id);
+    }
     return rows.map(session => withDeliveryAttention(session, [session.id, ...(session.relatedSessionIds ?? [])].some(id => handled.has(id))));
   };
   const accountStore = new AccountStore(store.database);
@@ -2489,6 +2492,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         ...(optionalName(body, "effort") ? { effort: optionalName(body, "effort")! } : {}),
         itemKeys: authorizedKeys,
         force: body.force === true,
+        saveAsDefault: body.saveAsDefault === true,
       }, true);
       for (const itemId of dispatchStore.listDispatchItemIds(dispatch.id)) {
         store.appendSystemEvent(itemId, "dispatched", {
@@ -2510,7 +2514,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const {productId}=request.params as {productId:string};
     requireProductPermission(request,productId,"view");
     const accountId=requireAccountId(request);
-    return {deliveries:merges.list(productId,accountId),batches:merges.batches(productId,accountId),attentionSessionIds:merges.attentionSessionIds(productId,accountId)};
+    return {deliveries:merges.list(productId,accountId),batches:merges.batches(productId,accountId),attentionSessionIds:merges.attentionSessionIds(productId,accountId),sessionProgress:merges.sessionProgress(productId,accountId)};
   });
   app.post("/api/v1/merge-deliveries/:id/decision",async request=>{
     const {id}=request.params as {id:string},body=objectBody(request.body);
@@ -2553,6 +2557,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const dispatch = freeSessionStore.prepare(requireAccountId(request), stringField(body,"requestKey")!, {
       productId, nodeId:stringField(body,"nodeId")!, agentKind:stringField(body,"agentKind")! as AgentKind,
       mode:stringField(body,"mode")!,
+      saveAsDefault: body.saveAsDefault === true,
       ...(optionalName(body,"model") ? {model:optionalName(body,"model")!} : {}),
       ...(optionalName(body,"effort") ? {effort:optionalName(body,"effort")!} : {}),
     }, stringField(body,"text",false) ?? "", body.attachmentCount === undefined ? 0 : Number(body.attachmentCount));
