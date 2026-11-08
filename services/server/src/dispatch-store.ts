@@ -714,6 +714,7 @@ export class DispatchStore {
     force?: boolean;
     /** Internal human handoff route only; never read from the ordinary dispatch request. */
     handoffItemId?: string;
+    saveAsDefault?: boolean;
   }, alreadyInTransaction = false): DispatchSnapshot {
     if (!AGENT_KINDS.includes(input.agentKind)) throw invalidInput("Unsupported agent kind.");
     if (!isSupportedDispatchMode(input.agentKind, input.mode)) {
@@ -835,21 +836,14 @@ export class DispatchStore {
         "INSERT INTO dispatch_items (dispatch_id, item_id, position) VALUES (?, ?, ?)",
       );
       items.forEach((item, index) => insertItem.run(dispatchId, item.id, index));
-      // Initialize once, atomically with the accepted dispatch. A saved policy
-      // (including an explicitly empty one) must never be replaced by dispatching.
-      const defaults: DispatchDefaults = {
-        nodeId: node.id,
-        agentKind: input.agentKind,
-        agents: { [input.agentKind]: {
-          mode: input.mode,
-          ...(input.model ? { model: input.model } : {}),
+      // Only an explicit opt-in writes preferences, atomically with acceptance.
+      if (input.saveAsDefault) this.setDispatchDefaults(input.accountId, {
+        nodeId: node.id, agentKind: input.agentKind,
+        agents: { ...this.getDispatchDefaults(input.accountId).agents, [input.agentKind]: {
+          mode: input.mode, ...(input.model ? { model: input.model } : {}),
           ...(input.effort ? { effort: input.effort } : {}),
         } },
-      };
-      this.database.connection.prepare(
-        `INSERT INTO account_dispatch_defaults (account_id, settings_json, updated_at) VALUES (?, ?, ?)
-         ON CONFLICT(account_id) DO NOTHING`,
-      ).run(input.accountId, JSON.stringify(defaults), now);
+      });
       const created = this.getDispatch(input.accountId, dispatchId);
       // The machine is usually already waiting on a poll, so it picks this up in
       // well under a second rather than on its next scheduled ask.
@@ -1130,25 +1124,36 @@ export class DispatchStore {
   }> {
     const rows = this.database.connection
       .prepare(
-        `SELECT w.item_key, d.id AS dispatch_id, COALESCE(n.nickname, n.name) AS node_name, d.agent_kind, d.created_at
-         FROM work_items w
-         JOIN work_item_events claim ON claim.item_id = w.id
+        // Resolve the latest event once per relevant item before matching dispatches.
+        `WITH latest_claims AS MATERIALIZED (
+           SELECT w.id AS item_id, w.item_key, (
+             SELECT MAX(latest.timeline_seq) FROM work_item_events latest INDEXED BY idx_work_item_events_item_created
+             WHERE latest.item_id = w.id AND (latest.to_status = 'in_progress' OR latest.event_type = 'execution_taken_over')
+           ) AS timeline_seq
+           FROM work_items w
+           WHERE w.status = 'in_progress' AND EXISTS (
+             SELECT 1 FROM dispatch_items di INDEXED BY idx_dispatch_items_item
+             JOIN dispatches d ON d.id = di.dispatch_id
+             WHERE di.item_id = w.id AND d.account_id = $accountId AND d.status = 'launched'
+           )
+         )
+         SELECT current.item_key, d.id AS dispatch_id, COALESCE(n.nickname, n.name) AS node_name, d.agent_kind, d.created_at
+         FROM latest_claims current
+         CROSS JOIN work_item_events claim INDEXED BY idx_work_item_events_item_created
+           ON claim.item_id = current.item_id
+           AND claim.timeline_seq = current.timeline_seq
            AND (claim.to_status = 'in_progress' OR claim.event_type = 'execution_taken_over')
            AND claim.actor_kind = 'agent'
-           AND claim.timeline_seq = (
-             SELECT MAX(latest.timeline_seq) FROM work_item_events latest
-             WHERE latest.item_id = w.id AND (latest.to_status = 'in_progress' OR latest.event_type = 'execution_taken_over')
-           )
-         JOIN dispatch_items di ON di.item_id = w.id
+         JOIN dispatch_items di ON di.item_id = current.item_id
          JOIN dispatches d ON d.id = di.dispatch_id
            AND d.status = 'launched' AND d.created_at <= claim.created_at
            AND ((json_extract(claim.payload_json,'$.dispatchId') IS NULL AND json_extract(claim.payload_json,'$.handoffId') IS NULL) OR json_extract(claim.payload_json,'$.dispatchId')=d.id)
          JOIN nodes n ON n.id = d.node_id
-         WHERE d.account_id = ? AND w.status = 'in_progress'
+         WHERE d.account_id = $accountId
            AND NOT EXISTS (SELECT 1 FROM builder_revoked_dispatches r WHERE r.dispatch_id=d.id)
          ORDER BY d.created_at DESC`,
       )
-      .all(accountId) as unknown as Array<{
+      .all({ $accountId: accountId }) as unknown as Array<{
         item_key: string;
         dispatch_id: string;
         node_name: string;

@@ -56,6 +56,7 @@ export function AgentSessionQuickSettings({ session }: { session: AgentSessionSu
       feedback.finish(operation);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }),
+        queryClient.invalidateQueries({ queryKey: ["merge-deliveries"] }),
         queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] }),
       ]);
     },

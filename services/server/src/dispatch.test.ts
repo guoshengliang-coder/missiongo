@@ -4822,7 +4822,7 @@ describe("Codex failure diagnostics (HG-193)", () => {
   });
 });
 
-describe("First dispatch defaults (AND-343)", () => {
+describe("Opt-in dispatch defaults (AND-468)", () => {
   async function fixture() {
     const { app, cookie } = await signedInApp();
     const node = await registeredNode(app);
@@ -4839,15 +4839,15 @@ describe("First dispatch defaults (AND-343)", () => {
       } })).statusCode).toBe(200);
     expect((await app.inject({ method: "PUT", url: `/api/v1/nodes/${node.nodeId}/repos`, headers: { cookie },
       payload: { repos: [{ productId: mission.productId, repoPath: join(tmpdir(), "missiongo-defaults-fixture") }] } })).statusCode).toBe(200);
-    const dispatch = (itemKey = mission.itemKey, mode = "plan") => app.inject({ method: "POST", url: "/api/v1/dispatches", headers: { cookie },
-      payload: { nodeId: node.nodeId, agentKind: "codex", mode, model: "fixture-model", effort: "high", itemKeys: [itemKey] } });
+    const dispatch = (itemKey = mission.itemKey, mode = "plan", saveAsDefault = false) => app.inject({ method: "POST", url: "/api/v1/dispatches", headers: { cookie },
+      payload: { nodeId: node.nodeId, agentKind: "codex", mode, model: "fixture-model", effort: "high", itemKeys: [itemKey], saveAsDefault } });
     const defaults = async () => (await app.inject({ method: "GET", url: "/api/v1/dispatch-defaults", headers: { cookie } })).json();
     return { app, cookie, node, mission, secondKey: second.json().key as string, dispatch, defaults };
   }
 
-  it("initializes all choices on creation and retains them after a launch failure and later dispatch", async () => {
+  it("saves opted-in choices atomically on creation and retains them after a launch failure and later dispatch", async () => {
     const f = await fixture();
-    const response = await f.dispatch();
+    const response = await f.dispatch(f.mission.itemKey, "plan", true);
     expect(response.statusCode).toBe(201);
     const expected = { nodeId: f.node.nodeId, agentKind: "codex", agents: { codex: { mode: "plan", model: "fixture-model", effort: "high" } } };
     expect(await f.defaults()).toEqual(expected);
@@ -4858,12 +4858,18 @@ describe("First dispatch defaults (AND-343)", () => {
     expect(await f.defaults()).toEqual(expected);
   });
 
-  it("rolls back dispatch creation if default initialization cannot be persisted", async () => {
+  it("AND-468 preserves other agents when replacing the explicitly selected default",async()=>{
+    const f=await fixture();
+    expect((await f.app.inject({method:"PUT",url:"/api/v1/dispatch-defaults",headers:{cookie:f.cookie},payload:{agents:{claude_code:{mode:"plan"}}}})).statusCode).toBe(200);
+    expect((await f.dispatch(f.mission.itemKey,"plan",true)).statusCode).toBe(201);
+    expect((await f.defaults()).agents).toEqual({claude_code:{mode:"plan"},codex:{mode:"plan",model:"fixture-model",effort:"high"}});
+  });
+  it("rolls back dispatch creation if opted-in default save cannot be persisted", async () => {
     const f = await fixture();
     const db = f.app.missionGoStore.database.connection;
     db.exec(`CREATE TRIGGER fail_default_initialization BEFORE INSERT ON account_dispatch_defaults
       BEGIN SELECT RAISE(ABORT, 'synthetic initialization failure'); END`);
-    expect((await f.dispatch()).statusCode).toBe(500);
+    expect((await f.dispatch(f.mission.itemKey, "plan", true)).statusCode).toBe(500);
     expect(db.prepare("SELECT COUNT(*) AS count FROM dispatches").get()).toMatchObject({ count: 0 });
     db.exec("DROP TRIGGER fail_default_initialization");
     expect((await f.dispatch()).statusCode).toBe(201);
@@ -4877,11 +4883,11 @@ describe("First dispatch defaults (AND-343)", () => {
     expect(await f.defaults()).toEqual(saved);
   });
 
-  it("does not initialize on rejection and lets only one accepted concurrent creation initialize", async () => {
+  it("does not save on rejection or unchecked acceptance and isolates accounts", async () => {
     const f = await fixture();
-    expect((await f.dispatch("DF-99999")).statusCode).toBe(404);
+    expect((await f.dispatch("DF-99999", "plan", true)).statusCode).toBe(404);
     expect(await f.defaults()).toEqual({ agents: {} });
-    const responses = await Promise.all([f.dispatch(), f.dispatch(f.secondKey, "default")]);
+    const responses = await Promise.all([f.dispatch(f.mission.itemKey, "plan", true), f.dispatch(f.secondKey, "default")]);
     expect(responses.map(response => response.statusCode)).toEqual([201, 201]);
     const defaults = await f.defaults();
     expect(defaults.agents.codex.mode).toBe(responses[0]!.json().mode);
@@ -4913,6 +4919,23 @@ describe("AND-369 project conversations", () => {
     return { app, cookie, product, node, headers, input, prepare, start, claim };
   }
 
+  it("AND-468 saves project defaults only with accepted first-send start, rolls back failure and retries the same reservation", async () => {
+    const f=await fixture();
+    const defaults=async()=>(await f.app.inject({method:"GET",url:"/api/v1/dispatch-defaults",headers:{cookie:f.cookie}})).json();
+    const a=(await f.prepare({...f.input,saveAsDefault:true} as typeof f.input)).json();
+    expect(await defaults()).toEqual({agents:{}});
+    const db=f.app.missionGoStore.database.connection;
+    db.exec("CREATE TRIGGER fail_opted_default BEFORE INSERT ON account_dispatch_defaults BEGIN SELECT RAISE(ABORT,'fixture failure'); END");
+    expect((await f.start(a.id)).statusCode).toBe(500);
+    expect(await defaults()).toEqual({agents:{}});
+    expect(db.prepare("SELECT COUNT(*) AS n FROM agent_session_commands WHERE session_id=?").get(a.agentSessionId)).toEqual({n:0});
+    db.exec("DROP TRIGGER fail_opted_default");
+    expect((await f.start(a.id)).statusCode).toBe(200);
+    const saved=await defaults();expect(saved).toMatchObject({nodeId:f.node.nodeId,agentKind:f.input.agentKind,agents:{[f.input.agentKind]:{mode:f.input.mode}}});
+    expect((await f.start(a.id)).statusCode).toBe(200);
+    expect(await defaults()).toEqual(saved);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM agent_session_commands WHERE session_id=?").get(a.agentSessionId)).toEqual({n:1});
+  });
   it("AND-404 shares a saved, distinct title with the node without renaming legacy conversations", async () => {
     const f = await fixture();
     const db = f.app.missionGoStore.database.connection;

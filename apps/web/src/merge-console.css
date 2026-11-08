@@ -104,3 +104,8 @@
 .merge-delivery-detail { overflow-wrap: anywhere; }
 .merge-delivery-detail > button { justify-self: start; }
 .merge-active-notice { font-size: var(--text-md); }
+
+.item-handler-badge[data-merge-progress="merged"], .merge-delivery-notice[data-session-delivery="merged"] { background: var(--integration-merged-bg); color: var(--integration-merged-fg); border-color: var(--integration-merged-fg); }
+.item-handler-badge[data-merge-progress="published"], .merge-delivery-notice[data-session-delivery="published"] { background: var(--integration-published-bg); color: var(--integration-published-fg); border-color: var(--integration-published-fg); }
+.merge-delivery-notice[data-session-delivery="merged"] .merge-delivery-icon,
+.merge-delivery-notice[data-session-delivery="published"] .merge-delivery-icon { background: transparent; }

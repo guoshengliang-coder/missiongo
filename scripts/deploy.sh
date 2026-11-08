@@ -217,7 +217,14 @@ remote() { ssh "$host" "$@"; }
 # describe artifacts staged locally for this deployment.
 before_snapshot="$(node scripts/release-receipt.mjs snapshot \
   --host "$host" --current-link "$current_link" --downloads-dir "$downloads_dir")"
-source "${MISSIONGO_RELEASE_TOOLS:?Use missiongo-release}/release-coverage-guard.sh"
+# Direct invocation is rejected with an explicit exit: a ${VAR:?} expansion
+# failure in `source` arguments is masked to exit 0 by the timing EXIT trap on
+# bash 3.2, which makes automation read a blocked deploy as success.
+if [ -z "${MISSIONGO_RELEASE_TOOLS:-}" ]; then
+  echo 'Deploy through missiongo-release; MISSIONGO_RELEASE_TOOLS is not set.' >&2
+  exit 1
+fi
+source "${MISSIONGO_RELEASE_TOOLS}/release-coverage-guard.sh"
 check_release_coverage
 node scripts/web-version.mjs check --previous-json "$before_snapshot"
 web_version="$(node -p 'JSON.parse(require("fs").readFileSync("product.json", "utf8")).web.version')"

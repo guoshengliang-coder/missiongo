@@ -7,7 +7,7 @@ import { conflict, invalidInput, notFound } from "./errors.js";
 
 export interface FreeSessionConfig {
   productId: string; nodeId: string; agentKind: AgentKind; mode: string;
-  model?: string; effort?: string;
+  model?: string; effort?: string; saveAsDefault?: boolean;
 }
 interface StartRow {
   dispatch_id: string; account_id: string; request_key: string; product_id: string;
@@ -45,7 +45,7 @@ export class FreeSessionStore {
       if (attachmentCount && !this.dispatches.getNode(accountId, config.nodeId).supportsChatAttachments) {
         throw conflict("agent_node_attachments_unsupported", "Update this node before sending attachments.");
       }
-      const dispatch = this.dispatches.createDispatch({ ...config, accountId, itemKeys: [] }, true);
+      const dispatch = this.dispatches.createDispatch({ ...config, saveAsDefault: false, accountId, itemKeys: [] }, true);
       this.db.connection.prepare(`INSERT INTO free_session_starts
         (dispatch_id,account_id,request_key,product_id,initial_text,config_json,attachment_count,session_title) VALUES (?,?,?,?,?,?,?,?)`)
         .run(dispatch.id, accountId, requestKey, config.productId, text, configJson, attachmentCount,
@@ -68,6 +68,13 @@ export class FreeSessionStore {
       if (new Set(attachmentIds).size !== row.attachment_count || attachmentIds.length !== row.attachment_count) {
         throw invalidInput("Finish uploading all first-message attachments before starting.");
       }
+      const config = JSON.parse(row.config_json) as FreeSessionConfig;
+      if (config.saveAsDefault) this.dispatches.setDispatchDefaults(accountId, {
+        nodeId: dispatch.nodeId, agentKind: dispatch.agentKind,
+        agents: { ...this.dispatches.getDispatchDefaults(accountId).agents, [dispatch.agentKind]: {
+          mode: dispatch.mode, ...(dispatch.model ? { model: dispatch.model } : {}), ...(dispatch.effort ? { effort: dispatch.effort } : {}),
+        } },
+      });
       this.sessions.enqueue(accountId, dispatch.agentSessionId, row.initial_text, attachmentIds);
       this.db.connection.prepare("UPDATE free_session_starts SET ready=1 WHERE dispatch_id=?").run(dispatchId);
       this.dispatches.wake(dispatch.nodeId);

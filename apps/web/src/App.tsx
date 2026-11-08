@@ -1,3 +1,4 @@
+import { inconsistentItemPage } from "./item-list-state";
 import { DeliveryEvidence } from "./delivery-evidence";
 import { PlanDocumentPage } from "./plan-document-page";
 import { PendingMergeButton, MergeProgressBadge, useMergeProgress } from "./merge-console";
@@ -1017,7 +1018,7 @@ export function App() {
   const deferredSearch = useDeferredValue(search.trim());
   const itemsQuery = useInfiniteQuery({
     queryKey: ["items", selectedProductId, statusFilter, typeFilter, deferredSearch, builderFilter, advancedFilterKey],
-    queryFn: ({ pageParam }) => api.listItems(selectedProductId, {
+    queryFn: ({ pageParam, signal }) => api.listItems(selectedProductId, {
       ...advancedFilters,
       ...(builderFilter ? { builder: builderFilter } : {}),
       ...(statusFilter !== "all" ? { status: statusFilter } : {}),
@@ -1025,7 +1026,7 @@ export function App() {
       ...(deferredSearch ? { search: deferredSearch } : {}),
       limit: ITEM_PAGE_SIZE,
       ...(pageParam ? { beforeSequence: pageParam } : {}),
-    }),
+    }, signal),
     initialPageParam: null as number | null,
     getNextPageParam: (page) => page.nextBeforeSequence ?? null,
     enabled: bootstrapQuery.isSuccess && Boolean(selectedProductId),
@@ -1033,6 +1034,18 @@ export function App() {
       && query.state.data?.pages.some(page => page.items.some(item => Boolean(item.deliveryProgress) || item.status === "in_progress")) ? 15_000 : false,
   });
   const items = itemsQuery.data?.pages.flatMap((page) => page.items) ?? [];
+  const listQueryKey = ["items", selectedProductId, statusFilter, typeFilter, deferredSearch, builderFilter, advancedFilterKey];
+  const listQueryScope = JSON.stringify(listQueryKey);
+  const recoveryAttempt = useRef({ scope: "", retried: false });
+  const inconsistentList = itemsQuery.isSuccess && inconsistentItemPage(itemsQuery.data?.pages[0], statusFilter);
+  useEffect(() => {
+    if (recoveryAttempt.current.scope !== listQueryScope) recoveryAttempt.current = { scope: listQueryScope, retried: false };
+    if (!inconsistentList || itemsQuery.isFetching || recoveryAttempt.current.retried) return;
+    recoveryAttempt.current.retried = true;
+    // Reset to the first page once; never repair another filter's cache or loop.
+    void queryClient.resetQueries({ queryKey: listQueryKey, exact: true });
+  }, [inconsistentList, itemsQuery.isFetching, listQueryScope, queryClient]);
+  const retryItemList = () => inconsistentList || items.length === 0 ? queryClient.resetQueries({ queryKey: listQueryKey, exact: true }) : itemsQuery.refetch();
   // While a newly picked status loads, keep the counts the other tabs already
   // fetched: the summary ignores the status filter, so they are the same numbers
   // (AND-62). Without this every badge dropped to 0 for the length of a request.
@@ -1584,8 +1597,12 @@ export function App() {
             </div>
             <div className="item-list">
               {itemsQuery.isLoading && <ListSkeleton />}
-              {itemsQuery.isError && <InlineError message={errorMessage(itemsQuery.error, t("somethingWentWrong"))} />}
-              {!itemsQuery.isLoading && visibleItems.length === 0 && (
+              {itemsQuery.isPending && !itemsQuery.isFetching && <p role="status" className="section-empty">{t("itemListWaiting")}</p>}
+              {(itemsQuery.isError || inconsistentList) && <div role="alert" className="inline-error">
+                <span>{inconsistentList ? t("itemListInconsistent") : localizedErrorText(itemsQuery.error, t)}</span>
+                <button type="button" className="secondary-button" disabled={itemsQuery.isFetching} onClick={() => void retryItemList()}>{t("retry")}</button>
+              </div>}
+              {itemsQuery.isSuccess && !inconsistentList && visibleItems.length === 0 && (
                 <div className="empty-list">
                   <div className="round-icon"><Lightbulb size={22} /></div>
                   <h2>{!listFiltersActive && (itemSummary?.productTotal ?? 0) === 0 ? t("captureFirstSpark") : t("noMatchingItems")}</h2>
@@ -1648,6 +1665,7 @@ export function App() {
         <AgentSessionConsole
           productId={selectedProductId}
           search={agentConsoleSearch}
+          onSearchChange={setAgentConsoleSearch}
           initialFilter={agentConsoleLinkedFilter}
           allSessions={allAgentSessions}
           sessionsLoaded={agentSessionsQuery.data !== undefined}

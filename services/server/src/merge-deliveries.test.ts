@@ -1,7 +1,7 @@
 import { legacyIntegratorPrompt } from "./legacy-merge-authorization.js";
 import { recoveryDetailPrefix } from "./merge-recovery-transport.js";
 import { randomUUID } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "./app.js";
 import { createAiAccessToken, hashPassword } from "./admin-auth.js";
 import { AgentSessionStore } from "./agent-session-store.js";
@@ -263,7 +263,7 @@ describe("AND-423 explicit merge deliveries",()=>{
 });
 
 describe("planned integration batches",()=>{
-  async function batchFixture(count=1,noRelease=false) {
+  async function batchFixture(count=1,noRelease=false,publish=false) {
     const f=await prepared(),deliveries=[noRelease ? f.merges.propose(f.owner.id,"original-client",f.identity,"no-release-offer",{...f.input,requiredArtifacts:[],noReleaseReason:"Internal merge/CI tools only"}) : f.d];
     for(let i=1;i<count;i++) {
       const item=f.store.createWorkItem({productId:f.item.productId,title:`Related ${i}`,description:"Synthetic integration",type:"task",priority:"normal",status:"ready",environment:{platform:"shared"}});
@@ -271,7 +271,7 @@ describe("planned integration batches",()=>{
       deliveries.push(f.merges.propose(f.owner.id,"original-client",{sessionId:claim.structuredContent!.sessionId!},`offer-${i}`,{...proposal(item.key),pullRequest:12+i}));
     }
     for(const d of deliveries)f.merges.decide(f.owner.id,d.id,d.revision,"confirm");
-    const b=f.merges.start(f.owner.id,randomUUID(),deliveries.map(d=>({id:d.id,revision:d.revision})),f.config,false,1);
+    const b=f.merges.start(f.owner.id,randomUUID(),deliveries.map(d=>({id:d.id,revision:d.revision})),f.config,publish,1);
     const dispatches=new DispatchStore(f.store.database);dispatches.claimNextDispatch(f.node.nodeId);dispatches.recordDispatchResult({nodeId:f.node.nodeId,dispatchId:b.dispatchId,status:"launched"});
     const current=()=>new MergeDeliveries(f.store).batch(f.owner.id,b.dispatchId,b.id);
     const act=(action:Parameters<MergeDeliveries["integrate"]>[5],key=randomUUID(),revision=current().integration!.revision)=>
@@ -281,6 +281,60 @@ describe("planned integration batches",()=>{
     const merged=(id:string,head="a".repeat(40))=>f.merges.report(f.owner.id,b.dispatchId,b.id,id,{status:"merged",head,commit:"c".repeat(40),detail:"Verified real merge in synthetic fixture"});
     return {...f,b,deliveries,current,act,plan,check,merged};
   }
+  it("AND-469 shares current stages and preserves history when a new input clears completion",async()=>{
+    const f=await batchFixture(), d=f.deliveries[0]!;
+    const progress=()=>f.merges.sessionProgress(f.item.productId,f.owner.id);
+    expect(progress()).toMatchObject({[d.sessionId]:"merging",[f.b.sessionId]:"merging"});
+    expect(f.merges.attentionSessionIds(f.item.productId,f.owner.id)).toContain(d.sessionId);
+    f.act(f.plan); f.check(d.id); f.merged(d.id);
+    expect(progress()).toMatchObject({[d.sessionId]:"merged",[f.b.sessionId]:"merged"});
+    // Repeated reads, new Agent output and a late old human echo do not clear it.
+    new AgentSessionStore(f.store.database).recordSnapshot({nodeId:f.node.nodeId,sessionId:d.sessionId,status:"idle",messages:[
+      {sourceId:"old-echo",role:"user",text:"Earlier input",occurredAt:"2020-01-01T00:00:00.000Z"},
+      {sourceId:"result",role:"agent",text:"Delivery result"}]});
+    expect(progress()[f.b.sessionId]).toBe("merged");
+    expect(progress()[d.sessionId]).toBe("merged");
+    // Saved execution settings clear only that conversation's current label.
+    f.db.prepare("UPDATE agent_sessions SET settings_revision=settings_revision+1 WHERE id=?").run(f.b.sessionId);
+    expect(progress()[f.b.sessionId]).toBeUndefined();
+    expect(f.merges.batches(f.item.productId,f.owner.id)[0]?.results[d.id]?.status).toBe("merged");
+    const command=new AgentSessionStore(f.store.database).enqueue(f.owner.id,d.sessionId,"A new adjustment",[]);
+    const persisted=f.db.prepare("SELECT data_json FROM merge_batches WHERE id=?").get(f.b.id) as {data_json:string};
+    const boundary=JSON.parse(persisted.data_json).displayBoundaries[d.sessionId];
+    f.db.prepare("UPDATE agent_session_commands SET created_at=? WHERE id=?").run(boundary.at,command.id);
+    expect(progress()[d.sessionId]).toBeUndefined();
+  });
+  it("AND-469 reads old completion without inventing a settings baseline or clearing historical facts",async()=>{
+    const f=await batchFixture(),d=f.deliveries[0]!;
+    f.act(f.plan);f.check(d.id);f.merged(d.id);
+    const raw=JSON.parse((f.db.prepare("SELECT data_json FROM merge_batches WHERE id=?").get(f.b.id) as {data_json:string}).data_json);
+    delete raw.displayBoundaries;
+    f.db.prepare("UPDATE merge_batches SET data_json=? WHERE id=?").run(JSON.stringify(raw),f.b.id);
+    expect(f.merges.sessionProgress(f.item.productId,f.owner.id)[d.sessionId]).toBe("merged");
+    f.db.prepare("UPDATE agent_sessions SET settings_revision=2 WHERE id=?").run(d.sessionId);
+    expect(f.merges.sessionProgress(f.item.productId,f.owner.id)[d.sessionId]).toBeUndefined();
+    expect(f.merges.batches(f.item.productId,f.owner.id)[0]?.results[d.id]?.status).toBe("merged");
+  });
+  it("AND-469 accepts only authorized publication signals, expires them and never treats ended as a receipt",async()=>{
+    const f=await batchFixture(1,false,true),d=f.deliveries[0]!;
+    const signal=()=>({kind:"publication_progress" as const,state:"publishing" as const,checkedAt:new Date().toISOString(),resultsDigest:f.current().resultsDigest,detail:"Verified release process started"});
+    expect(()=>f.act(signal())).toThrow();
+    f.act(f.plan);f.check(d.id);f.merged(d.id);
+    expect(()=>f.act(signal())).toThrow();
+    f.act({kind:"final_validation",head:"c".repeat(40),checkedAt:new Date().toISOString(),validation:"Combination passed",source:"Synthetic actual target"});
+    expect(()=>f.act({...signal(),resultsDigest:"0".repeat(64)})).toThrow();
+    expect(()=>f.act({...signal(),checkedAt:"2020-01-01T00:00:00.000Z"})).toThrow();
+    f.act(signal(),"publication-heartbeat");
+    expect(f.merges.sessionProgress(f.item.productId,f.owner.id)[d.sessionId]).toBe("publishing");
+    expect(()=>f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id)).toThrow(/发布/);
+    const clock=vi.spyOn(Date,"now").mockReturnValue(Date.now()+360_000);
+    try { expect(f.merges.sessionProgress(f.item.productId,f.owner.id)[d.sessionId]).toBe("publication_unknown"); } finally { clock.mockRestore(); }
+    f.act({...signal(),state:"ended"});
+    expect(f.merges.sessionProgress(f.item.productId,f.owner.id)[d.sessionId]).toBe("publication_unknown");
+    const g=await batchFixture();g.act(g.plan);g.check(g.deliveries[0]!.id);g.merged(g.deliveries[0]!.id);
+    g.act({kind:"final_validation",head:"c".repeat(40),checkedAt:new Date().toISOString(),validation:"Passed",source:"Fixture"});
+    expect(()=>g.act({...signal(),resultsDigest:g.current().resultsDigest})).toThrow();
+  });
   it("hands only this active batch's unchanged no-release merged item to verification",async()=>{
     const f=await batchFixture(1,true),d=f.deliveries[0]!;
     const validation={checks:[{name:"Merged target",method:"Verify integration and run checks",result:"passed" as const,evidence:"Synthetic merged Git fixture"}],remainingVerification:["Human review"],limitations:[]};
@@ -639,7 +693,9 @@ describe("AND-439 batch reconciliation",()=>{
     const {requiredArtifacts:_scope,...candidate}=row;
     f.safe(await f.call("submit_release_batch",{productId:f.item.productId,idempotencyKey:"published",deployedCommit:"f".repeat(40),receiptDigest:"a".repeat(64),
       items:[{...candidate,releases:[{artifact:"web",version:"test",sourceCommit:"f".repeat(40)}]}]}));
+    expect(f.merges.sessionProgress(f.item.productId,f.owner.id)[f.d.sessionId]).toBe("published");
     new AgentSessionStore(f.store.database).enqueue(f.owner.id,f.d.sessionId,"Discuss next work",[]);
+    expect(f.merges.sessionProgress(f.item.productId,f.owner.id)[f.d.sessionId]).toBeUndefined();
     expect(f.preview().entries[0]?.items[0]?.blocker).toBeUndefined();
     const before=f.store.getTimeline(f.item.key);
     expect(f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id).state).toBe("finished");

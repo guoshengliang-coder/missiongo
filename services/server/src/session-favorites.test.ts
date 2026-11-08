@@ -82,3 +82,16 @@ it("binds delivery-only classifications to the current message and rejects delay
   snapshot("long-request", "等待合并" + "x".repeat(21_000));
   expect(f.sessions.pendingAttention(f.id)?.truncated).toBe(true);
 });
+
+it("AND-469 upgrades only a current legacy instruction once and refuses a stale classification result", async () => {
+  const f = await fixture();
+  const snapshot = (sourceId:string,text:string) => f.sessions.recordSnapshot({nodeId:"node",sessionId:f.id,status:"idle",messages:[{sourceId,role:"agent",phase:"final_answer",text}]});
+  snapshot("legacy","代码已提交，请发起合并。");
+  const candidate=f.sessions.pendingAttention(f.id)!;
+  f.sessions.completeAttention(f.id,candidate.messageHash,{needsAttention:true,kind:"instruction",reason:"Legacy",model:"fixture"});
+  f.db.prepare("UPDATE agent_session_attention SET delivery_only=NULL WHERE session_id=?").run(f.id);
+  expect(f.sessions.requestDeliveryAttribution(f.id)).toBe(true);
+  expect(f.sessions.requestDeliveryAttribution(f.id)).toBe(false);
+  snapshot("new","请确认另一项独立选择。");
+  expect(f.sessions.completeAttention(f.id,candidate.messageHash,{needsAttention:true,kind:"instruction",reason:"Old result",model:"fixture",deliveryOnly:true})).toBe(false);
+});

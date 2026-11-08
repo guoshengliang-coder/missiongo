@@ -55,10 +55,11 @@ for (const viewport of [
       const effort = form.getByRole("combobox", { name: "强度", exact: true });
       await expect(model).toHaveAttribute("data-value", "limited");
       await expect(effort).toHaveAttribute("data-value", "");
-      await form.getByRole("button", { name: "设为默认值", exact: true }).click();
-      await expect.poll(() => defaults.agents[agent.kind]).toEqual({ mode: agent.mode, model: "limited" });
+      await form.getByRole("checkbox", { name: "设为默认值", exact: true }).check();
+      expect(defaults.agents[agent.kind].effort).toBe("high");
       await chooseOption(model, "flexible");
       await chooseOption(effort, "high");
+      await expect(form.getByRole("checkbox", { name: "设为默认值", exact: true })).not.toBeChecked();
       await chooseOption(form.getByRole("combobox", { name: "设备", exact: true }), otherNode.id);
       await expect(effort).toHaveAttribute("data-value", "");
       await chooseOption(effort, "low");
