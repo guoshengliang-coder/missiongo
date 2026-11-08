@@ -48,8 +48,8 @@ export class AgentConsoleSessions {
     return group;
   }
 
-  getSummary(accountId: string, id: string): AgentSessionListItem {
-    return this.summary(this.members(accountId, id), this.preferences(accountId));
+  getSummary(accountId: string, id: string, group = this.members(accountId, id)): AgentSessionListItem {
+    return this.summary(group, this.preferences(accountId));
   }
 
   list(accountId: string): AgentSessionListItem[] {
