@@ -2679,14 +2679,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const group = members ?? consoleSessions.members(account.id, sessionId);
     const keys = [...new Set(group.flatMap((row) => row.items.map((item) => item.key)))];
     const items = keys.map((key) => store.getWorkItem(key));
+    const products = [...new Set(group.flatMap(sessionProducts))];
+    products.forEach(id=>requireProductPermission(request,id,operate ? "operate" : "view"));
     for (const key of keys) {
       requireItemPermission(request, key, operate ? "operate" : "view");
     }
-    if (useAi) items.forEach((item) => requireProductPermission(request, item.productId, "ai"));
+    if (useAi) products.forEach(id=>requireProductPermission(request,id,"ai"));
     const session = consoleSessions.withMessages(account.id, sessionId, externalSessionStore.getForAccount(account.id, sessionId), group);
-    const canOperate = items.every((item) => accountStore.allows(account, item.productId, "operate"));
-    const canUseAi = items.every((item) => accountStore.allows(account, item.productId, "ai"));
-    const reason = session.nativeConnection ? agentSessionReplyBlockedReason({ hasSession: true, replyable: items.some((item) => item.status !== "done"),
+    const canOperate = products.every(id => accountStore.allows(account, id, "operate"));
+    const canUseAi = products.every(id => accountStore.allows(account, id, "ai"));
+    const reason = session.nativeConnection ? agentSessionReplyBlockedReason({ hasSession: true, replyable: Boolean(session.productId) || items.some((item) => item.status !== "done"),
       ...(session.archivedAt ? { archivedAt: session.archivedAt } : {}), nodeRevoked: false, canOperate, canUseAi })
       ?? (session.replyable ? undefined : "external_native_unavailable" as const) : "external_progress_only" as const;
     return { ...session, canReply: session.replyable && !reason, canAttach: session.replyable && !reason && externalNativeStore.supportsAttachments(account.id, sessionId), canResolveDelivery: Boolean(session.nativeConnection) && canOperate && canUseAi,
@@ -2936,7 +2938,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         const replyBlockedReason = session.source === "external" && !session.nativeConnection ? "external_progress_only" as const : agentSessionReplyBlockedReason({
           hasSession: Boolean(session.agentSessionId),
           starting: Boolean(session.productId && ["queued", "delivered"].includes(session.dispatchStatus)),
-          replyable: session.source === "external" ? session.items.some((item) => store.getWorkItem(item.key).status !== "done") : session.replyable,
+          replyable: session.source === "external" ? Boolean(session.productId) || session.items.some((item) => store.getWorkItem(item.key).status !== "done") : session.replyable,
           ...(session.archivedAt ? { archivedAt: session.archivedAt } : {}),
           ...(session.archivedSource ? { archivedSource: session.archivedSource } : {}),
           nodeRevoked: session.nodeRevoked,

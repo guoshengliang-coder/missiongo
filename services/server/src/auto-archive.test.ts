@@ -93,3 +93,10 @@ it.each(["external", "dispatch"])("waits for all items and %s replies across the
   autoArchiveForItem(f.store.database, second.id);
   expect(f.sessions.getForAccount("owner", f.id).archivedAt).toBeUndefined();
 });
+
+it("keeps an explicitly registered external project conversation after its linked item is done",()=>{
+  const f=fixture();
+  expect(f.sessions.registerProject(owner,{agentKind:"codex",sessionRef:"thread",refKind:"native"},f.item.productId)).toBe(f.id);
+  f.finish(f.item.key);autoArchiveForItem(f.store.database,f.item.id);
+  expect(f.sessions.getForAccount(owner.accountId,f.id).archivedAt).toBeUndefined();
+});

@@ -65,8 +65,8 @@ export function planReleaseCoverage(input, { productId, repository, head, artifa
   const items = [];
   const required = new Set();
   for (const candidate of snapshot.candidates) {
-    if (!/^[A-Z][A-Z0-9]*-[1-9][0-9]*$/.test(candidate?.itemKey ?? "")) throw new Error("Invalid candidate item key");
-    const row = { itemKey: candidate.itemKey, requiredArtifacts: candidate.requiredArtifacts ?? null };
+    if (candidate.kind!=="delivery" && !/^[A-Z][A-Z0-9]*-[1-9][0-9]*$/.test(candidate?.itemKey ?? "")) throw new Error("Invalid candidate item key");
+    const row = { ...(candidate.kind==="delivery" ? {kind:"delivery",deliveryId:candidate.deliveryId,title:candidate.title,pullRequestUrl:candidate.pullRequestUrl} : {itemKey:candidate.itemKey}), requiredArtifacts: candidate.requiredArtifacts ?? null };
     let integration;
     try {
       const key = JSON.stringify(candidate.completion ?? candidate.pullRequestUrl ?? candidate.itemKey);
@@ -97,14 +97,14 @@ export function planReleaseCoverage(input, { productId, repository, head, artifa
   }
   const blocked = items.filter(item => ["missing_artifacts", "scope_unknown", "integration_unverified"].includes(item.status));
   return { schemaVersion: 1, productId, repository, plannedCommit: head, snapshotAt: snapshot.snapshotAt, scope,
-    requiredArtifacts: [...required].sort(), items, noReleaseItems: snapshot.noReleaseItems,
+    requiredArtifacts: [...required].sort(), items, noReleaseItems: snapshot.noReleaseItems, noReleaseDeliveries:snapshot.noReleaseDeliveries,
     ready: blocked.length === 0, fullCoverage: blocked.length === 0 && items.every(item => ["ready", "waiting_merge"].includes(item.status)) };
 }
 
 export function assertReleaseCoverage(plan) {
   if (plan.ready) return;
   const failures = plan.items.filter(item => ["missing_artifacts", "scope_unknown", "integration_unverified"].includes(item.status));
-  const details = failures.map(item => `${item.itemKey}: ${item.missing?.map(m => `${m.artifact} (${m.reason})`).join(", ") || item.reason}`);
+  const details = failures.map(item => `${item.itemKey ?? item.pullRequestUrl ?? item.deliveryId}: ${item.missing?.map(m => `${m.artifact} (${m.reason})`).join(", ") || item.reason}`);
   for (const conflict of plan.scopeConflicts ?? []) details.push(`${conflict.artifact}: deployment would change an artifact outside the user's explicit scope`);
   throw new Error(`Release coverage incomplete: ${details.join("; ")}`);
 }

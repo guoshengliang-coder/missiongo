@@ -261,7 +261,7 @@ export function createMissionGoMcpServer(
   const singleHandoverIdentity = (input: z.infer<typeof handoverAuthorizationSchema>) =>
     [input.dispatchId, input.sessionId, input.session, input.executionAuthorization].filter(value => value !== undefined).length === 1;
   const authorizeSession = (ctx: ServerContext, sessionId: string, itemKey: string) =>
-    sessions.authorize(accountAccess(ctx), sessionId, itemKey, (key) => requireItemAccess(ctx, store, key));
+    sessions.authorize(accountAccess(ctx), sessionId, itemKey, (key) => requireItemAccess(ctx, store, key),id=>requireProductAccess(ctx,id));
   const authorizeExecution = (ctx: ServerContext, itemKey: string, credential?: string) => {
     const access = accountAccess(ctx), key = requireItemAccess(ctx,store,itemKey);
     if (options.canOperate && !options.canOperate(access.accountId,store.getWorkItem(key).productId)) throw new Error("Product operation is not permitted.");
@@ -361,6 +361,8 @@ export function createMissionGoMcpServer(
           supportsMergeBatches: true,
           supportsMergeReconciliation: true,
           supportsReleaseBatchHandover: true,
+          supportsStandaloneMergeDeliveries: true,
+          releaseCoverageVersion: 2,
           supportsSharedReleaseObservations: true,
         },
         skill: skillVersionInfo(options.publicOrigin),
@@ -466,7 +468,7 @@ export function createMissionGoMcpServer(
       title: "List development-complete work awaiting a verified release",
       description:
         "For one authorized product, list development-complete items whose handover records an integration reference and "
-        + "nonempty required artifacts. With includeUnscoped, also return work missing scope/integration evidence, explicit no-release exclusions, and a timestamped coverageVersion=1 page for pre-deploy planning. The release client must verify integration and every required artifact.",
+        + "nonempty required artifacts. With includeUnscoped, also return work missing scope/integration evidence, explicit no-release exclusions, and a timestamped coverageVersion=2 page including merged standalone deliveries for pre-deploy planning; preserve all candidate kinds. The release client must verify integration and every required artifact.",
       inputSchema: z.object({
         productId: z.string().min(1),
         limit: z.number().int().min(1).max(100).default(50),
@@ -477,12 +479,13 @@ export function createMissionGoMcpServer(
     },
     async ({ productId, limit, beforeSequence, includeUnscoped }, ctx) => {
       requireProductAccess(ctx, productId);
-      const items = store.listWorkItems({
-        productId,
-        releaseCandidates: true,
-        limit,
-        ...(beforeSequence ? { beforeSequence } : {}),
-      });
+      const coverage=includeUnscoped;
+      const itemBefore=coverage && beforeSequence ? Math.ceil(beforeSequence/2) : beforeSequence;
+      const itemPage = store.listWorkItems({productId,releaseCandidates:true,limit,...(itemBefore ? {beforeSequence:itemBefore} : {})});
+      const standalone=coverage ? new MergeDeliveries(store).releaseCandidates(productId,beforeSequence,limit) : [];
+      const page=[...itemPage.map(item=>({sequence:Number(item.key.slice(item.key.lastIndexOf("-")+1))*(coverage?2:1),item})),...standalone]
+        .sort((a,b)=>b.sequence-a.sequence).slice(0,limit);
+      const items=page.flatMap(row=>"item" in row ? [row.item] : []);
       const noReleaseItems: Array<{ itemKey: string; noReleaseReason: string }> = [];
       const candidates = items.flatMap(item => {
         const records=store.getDeliveryRecords(item.key);
@@ -502,13 +505,21 @@ export function createMissionGoMcpServer(
             ...(completion?completionPayload(completion):{}),...(requiredArtifacts!==null?{requiredArtifacts}: {})}];
         });
       });
-      const lastKey = items.at(-1)?.key;
-      const lastSequence = lastKey ? Number(lastKey.slice(lastKey.lastIndexOf("-") + 1)) : undefined;
+      const deliveryCandidates=page.flatMap(row=>{
+        if(!("delivery" in row)) return [];
+        const d=row.delivery;
+        if(!d.requiredArtifacts.length && d.noReleaseReason) return [];
+        if(d.requiredArtifacts.length && d.requiredArtifacts.every(a=>d.releaseReceipts?.some(r=>r.releases.some(release=>release.artifact===a)))) return [];
+        return [row.candidate];
+      });
+      const noReleaseDeliveries=page.flatMap(row=>"delivery" in row && !row.delivery.requiredArtifacts.length && row.delivery.noReleaseReason
+        ? [{deliveryId:row.delivery.id,noReleaseReason:row.delivery.noReleaseReason}] : []);
+      const lastSequence=page.at(-1)?.sequence;
       return textResult({
         productId,
-        candidates,
-        ...(includeUnscoped ? { coverageVersion: 1, generatedAt: new Date().toISOString(), noReleaseItems } : {}),
-        ...(items.length === limit && Number.isSafeInteger(lastSequence) ? { nextBeforeSequence: lastSequence } : {}),
+        candidates:[...candidates,...deliveryCandidates],
+        ...(includeUnscoped ? { coverageVersion: 2, generatedAt: new Date().toISOString(), noReleaseItems, noReleaseDeliveries } : {}),
+        ...(page.length === limit && Number.isSafeInteger(lastSequence) ? { nextBeforeSequence: lastSequence } : {}),
       });
     },
   );
@@ -1081,12 +1092,13 @@ export function createMissionGoMcpServer(
   server.registerTool(
     "propose_merge_delivery", {
     annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false},
-    description:"Request human delivery confirmation after completing the user's agreed work and verification. This never merges, publishes or changes item status. Use the original claimed conversation. Bind the exact GitHub repository, PR, target branch and head; report current executor-verified check evidence, not inferred readiness. Existing non-batched offers for these items are superseded. No local-only or unpushed work can be offered as a GitHub PR. Pass instructionConfirmation only in the same turn as the user's explicit imperative delivery order (for example an add-to-merge order): the server stores the quoted instruction and confirms immediately, bound to the session's latest human input, which any later human input invalidates. Questions, discussion, or ambiguous turns must not carry it. Without instructionConfirmation, human confirmation happens in the console.",
+    description:"Request human delivery confirmation after completing the user's agreed work and verification. This never merges, publishes or changes item status. For item-backed work use the original claimed conversation; for standalone work set delivery.productId and empty itemKeys, using an account-owned project dispatch or a project session registered with register_agent_session(productId,session). Bind the exact GitHub repository, PR, target branch and head; report current executor-verified check evidence, not inferred readiness. Existing non-batched offers for these items are superseded. No local-only or unpushed work can be offered as a GitHub PR. Pass instructionConfirmation only in the same turn as the user's explicit imperative delivery order (for example an add-to-merge order): the server stores the quoted instruction and confirms immediately, bound to the session's latest human input, which any later human input invalidates. Questions, discussion, or ambiguous turns must not carry it. Without instructionConfirmation, human confirmation happens in the console.",
     inputSchema:z.object({identity:mergeIdentity,idempotencyKey:z.string().min(1).max(200),delivery:deliverySchema,
       instructionConfirmation:z.object({quote:z.string().trim().min(1).max(500)}).optional()}),
   },async (input,ctx)=>{
     requireWriteScope(ctx);
-    const access=mergeAccess(ctx,store.getWorkItem(requireItemAccess(ctx,store,input.delivery.itemKeys[0]!)).productId,true);
+    const productId=input.delivery.itemKeys.length ? store.getWorkItem(requireItemAccess(ctx,store,input.delivery.itemKeys[0]!)).productId : input.delivery.productId!;
+    const access=mergeAccess(ctx,productId,true);
     for(const key of input.delivery.itemKeys) requireItemAccess(ctx,store,key);
     return textResult({delivery:merges.propose(access.accountId,access.clientId??"",{...(input.identity.dispatchId?{dispatchId:input.identity.dispatchId}:{}),...(input.identity.sessionId?{sessionId:input.identity.sessionId}:{})},input.idempotencyKey,input.delivery,input.instructionConfirmation)});
   });
@@ -1663,7 +1675,7 @@ export function createMissionGoMcpServer(
     "submit_release_batch",
     {
       title: "Hand a verified release batch over for verification",
-      description: "Only for a user-authorized publication in one product. Read each candidate fully, verify its integration and every required public artifact, write its release comment, then submit the frozen candidate revision, development event and round from list_release_candidates. Product operation and AI permissions replace original developer claim ownership only for this release handover. Never copy another conversation's credential. Up to 100 items; keep exact inputs and idempotencyKey on retry. Results distinguish submitted, already_submitted and skipped; changed candidates need fresh verification and a new batch. For missing historical integration/scope only, the supplied completion and complete releases atomically append evidence before handover; conflicting evidence or changed content/Builder is refused. No original merge session or separate approval is needed. This does not accept work or verify public evidence on the server.",
+      description: "Only for a user-authorized publication in one product. Read each candidate fully, verify its integration and every required public artifact, write its release comment, then submit the frozen candidate revision, development event and round from list_release_candidates. Product operation and AI permissions replace original developer claim ownership only for this release handover. Never copy another conversation's credential. Standalone delivery candidates use deliveries with deliveryId, expectedRevision and verified releases; append publication receipts without creating or changing items. Up to 100 candidates; keep exact inputs and idempotencyKey on retry. Results distinguish submitted, already_submitted and skipped; changed candidates need fresh verification and a new batch. For missing historical integration/scope only, the supplied completion and complete releases atomically append evidence before handover; conflicting evidence or changed content/Builder is refused. No original merge session or separate approval is needed. This does not accept work or verify public evidence on the server.",
       inputSchema: releaseBatchSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
@@ -1672,7 +1684,11 @@ export function createMissionGoMcpServer(
       requireAccessibleProduct(ctx, input.productId);
       const access = accountAccess(ctx);
       if (options.canOperate && !options.canOperate(access.accountId, input.productId)) throw new Error("Product operation is not permitted.");
-      return textResult(store.submitReleaseBatch({ ...input, items: input.items.map(({ completion, pullRequestUrl, ...row }) => ({ ...row, ...(completion ? { completion } : {}), ...(pullRequestUrl ? { pullRequestUrl } : {}) })), attribution: { accountId: access.accountId, clientId: access.clientId ?? "" } }));
+      return textResult(store.database.transaction(()=>{
+        const deliveryResults=input.deliveries?.length ? new MergeDeliveries(store).recordRelease(access.accountId,access.clientId ?? "",{...input,deliveries:input.deliveries}) : [];
+        const result=input.items.length ? store.submitReleaseBatch({ ...input, items: input.items.map(({ completion, pullRequestUrl, ...row }) => ({ ...row, ...(completion ? { completion } : {}), ...(pullRequestUrl ? { pullRequestUrl } : {}) })), attribution: { accountId: access.accountId, clientId: access.clientId ?? "" } }) : {productId:input.productId,results:[]};
+        return {...result,...(input.deliveries ? {deliveries:deliveryResults} : {})};
+      }));
     },
   );
 
@@ -1870,13 +1886,26 @@ export function createMissionGoMcpServer(
       description: "Register this user-directed conversation against an in-progress, development-complete or pending-verification item. "
         + "Reuse the same sessionRef for every item in this conversation. Use native only for a verified client session ID; otherwise generate a conversation UUID and use tracking. "
         + "Set autoConnect for a trusted native ID to let an enabled account-owned node confirm this exact conversation before Web replies become available. "
-        + "Optional sessionId upgrades your own existing tracking record without losing progress. It never claims an item or launches a client.",
-      inputSchema: z.object({ itemKey: z.string().min(2).max(50), session: sessionIdentity, sessionId: z.string().uuid().optional() }),
+        + "For standalone work, pass productId instead of itemKey to associate this conversation with that project without claiming work. Optional sessionId upgrades your own existing tracking record without losing progress. It never claims an item or launches a client.",
+      inputSchema: z.object({ itemKey: z.string().min(2).max(50).optional(), productId:z.string().min(1).optional(), session: sessionIdentity, sessionId: z.string().uuid().optional() })
+        .refine(i=>Boolean(i.itemKey)!==Boolean(i.productId),"Use an item or a project, not both."),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ itemKey, session, sessionId: previousSessionId }, ctx) => {
+    async ({ itemKey, productId, session, sessionId: previousSessionId }, ctx) => {
       requireWriteScope(ctx);
-      const key = requireItemAccess(ctx, store, itemKey);
+      if(productId) {
+        const access=mergeAccess(ctx,productId,true);
+        if(previousSessionId) throw new Error("Keep the original project session identity.");
+        const projects=session.refKind==="native" ? store.database.connection.prepare(`SELECT d.id,s.id AS sessionId,f.product_id AS productId FROM agent_sessions s
+          JOIN dispatches d ON d.id=s.dispatch_id JOIN free_session_starts f ON f.dispatch_id=d.id
+          WHERE d.account_id=? AND s.agent_kind=? AND s.agent_session_ref=?`).all(access.accountId,session.agentKind,session.sessionRef) as {id:string;sessionId:string;productId:string}[] : [];
+        if(projects.length) {
+          if(projects.length!==1 || projects[0]!.productId!==productId) throw new Error("The native project conversation is ambiguous or belongs to another project.");
+          return textResult({dispatchId:projects[0]!.id,projectSessionId:projects[0]!.sessionId,sessionSource:"dispatch",statusChanged:false});
+        }
+        return textResult({sessionId:sessions.registerProject(access,session,productId),sessionSource:"external",statusChanged:false});
+      }
+      const key = requireItemAccess(ctx, store, itemKey!);
       const project = projectSessions.resolve(accountAccess(ctx).accountId, key, { session });
       if (project) {
         assertBuilderExecution(store.database,store.getWorkItem(key).id,accountAccess(ctx).accountId);

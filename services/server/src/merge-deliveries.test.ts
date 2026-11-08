@@ -6,6 +6,7 @@ import { buildApp } from "./app.js";
 import { createAiAccessToken, hashPassword } from "./admin-auth.js";
 import { AgentSessionStore } from "./agent-session-store.js";
 import { MergeDeliveries, type DeliveryInput } from "./merge-deliveries.js";
+import { ExternalNativeSessionStore } from "./external-native-session-store.js";
 import { FreeSessionStore } from "./free-session-store.js";
 import { DispatchStore } from "./dispatch-store.js";
 
@@ -842,4 +843,99 @@ it("AND-476 reads only the current account's integration defaults through the au
   expect((await f.app.inject({method:"GET",url:"/api/v1/integration-defaults"})).statusCode).toBe(401);
   const invalid=await f.app.inject({method:"POST",url:`/api/v1/products/${f.item.productId}/merge-batches`,headers:{cookie},payload:{requestKey:"invalid",selection:[],publish:false,saveAsDefault:"true"}});
   expect(invalid.statusCode).toBe(400);
+});
+describe("standalone project deliveries",()=>{
+  async function standalone(artifacts=["web","macosApp"],publish=false) {
+    const f=await fixture(),launched=f.launch("codex"),merges=new MergeDeliveries(f.store);
+    const identity={dispatchId:launched.dispatch.id},input={...proposal(f.item.key),itemKeys:[],productId:f.item.productId,requiredArtifacts:artifacts,
+      ...(!artifacts.length?{noReleaseReason:"Only local verification fixtures"}:{})};
+    const offered=await f.call("propose_merge_delivery",{identity,idempotencyKey:"standalone",delivery:input,instructionConfirmation:{quote:"加入待合并"}});f.safe(offered);
+    const d=merges.list(f.item.productId,f.owner.id)[0]!;
+    const b=merges.start(f.owner.id,randomUUID(),[{id:d.id,revision:d.revision}],{productId:f.item.productId,nodeId:launched.node.nodeId,agentKind:"codex",mode:"default"},publish);
+    const ds=new DispatchStore(f.store.database);ds.claimNextDispatch(launched.node.nodeId);ds.recordDispatchResult({nodeId:launched.node.nodeId,dispatchId:b.dispatchId,status:"launched"});
+    return {...f,...launched,merges,identity,input,d,b};
+  }
+  const merged={status:"merged" as const,head:"a".repeat(40),commit:"c".repeat(40),detail:"Verified exact-head integration"};
+  const proof={deployedCommit:"e".repeat(40),receiptDigest:"f".repeat(64)};
+  it("merges without claiming an item and retains release coverage after a merge-only batch finishes",async()=>{
+    const f=await standalone(),before=f.snapshot();
+    expect(f.d.itemKeys).toEqual([]);expect(f.merges.list(f.item.productId,f.owner.id)[0]!.state).toBe("batched");
+    expect(f.merges.batches(f.item.productId,f.owner.id)[0]!.presentation.entries[f.d.id]!.publication).toBe("pending");
+    f.merges.report(f.owner.id,f.b.dispatchId,f.b.id,f.d.id,merged);f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id);
+    expect(f.snapshot()).toEqual(before);
+    const listing=await f.call("list_release_candidates",{productId:f.item.productId,includeUnscoped:true});f.safe(listing);
+    expect(listing.structuredContent).toMatchObject({coverageVersion:2,candidates:[{kind:"delivery",deliveryId:f.d.id,expectedRevision:f.d.revision,requiredArtifacts:["web","macosApp"]}]});
+    const release={productId:f.item.productId,idempotencyKey:"standalone-release",...proof,deliveries:[{deliveryId:f.d.id,expectedRevision:f.d.revision,releases:[{artifact:"web",version:"1",sourceCommit:"e".repeat(40)}]}]};
+    const partial=await f.call("submit_release_batch",release);f.safe(partial);
+    expect(partial.structuredContent).toMatchObject({deliveries:[{deliveryId:f.d.id,outcome:"submitted"}]});
+    f.safe(await f.call("submit_release_batch",release));
+    expect(f.merges.batches(f.item.productId,f.owner.id)[0]!.presentation.entries[f.d.id]!.publication).toBe("partial");
+    expect((await f.call("list_release_candidates",{productId:f.item.productId,includeUnscoped:true})).structuredContent!.candidates).toHaveLength(1);
+    f.safe(await f.call("submit_release_batch",{...release,idempotencyKey:"finish-release",deliveries:[{...release.deliveries[0],releases:[{artifact:"macosApp",version:"2",sourceCommit:"e".repeat(40)}]}]}));
+    expect((await f.call("list_release_candidates",{productId:f.item.productId,includeUnscoped:true})).structuredContent!.candidates).toEqual([]);
+    expect(f.merges.batches(f.item.productId,f.owner.id)[0]!.presentation.entries[f.d.id]!.publication).toBe("published");
+    expect(f.snapshot()).toEqual(before);
+  });
+  it("requires complete publication receipts to finish a publish batch, but explicit no-release work needs none",async()=>{
+    const f=await standalone(["macosApp"],true);f.merges.report(f.owner.id,f.b.dispatchId,f.b.id,f.d.id,merged);
+    expect(()=>f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id)).toThrow(/发布凭据/);
+    const bad={productId:f.item.productId,idempotencyKey:"bad",...proof,deliveries:[{deliveryId:f.d.id,expectedRevision:"0".repeat(64),releases:[{artifact:"macosApp",version:"2",sourceCommit:"e".repeat(40)}]}]};
+    expect((await f.call("submit_release_batch",bad)).isError).toBe(true);
+    f.safe(await f.call("submit_release_batch",{...bad,idempotencyKey:"valid",deliveries:[{...bad.deliveries[0],expectedRevision:f.d.revision}]}));
+    expect(f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id).state).toBe("finished");
+    const g=await standalone([],true);g.merges.report(g.owner.id,g.b.dispatchId,g.b.id,g.d.id,merged);g.merges.finish(g.owner.id,g.b.dispatchId,g.b.id);
+    const listing=await g.call("list_release_candidates",{productId:g.item.productId,includeUnscoped:true});
+    expect(listing.structuredContent).toMatchObject({candidates:[],noReleaseDeliveries:[{deliveryId:g.d.id,noReleaseReason:g.input.noReleaseReason}]});
+  });
+  it("registers external project conversations with ownership and project isolation",async()=>{
+    const f=await fixture(),session={agentKind:"codex",refKind:"tracking",sessionRef:randomUUID()};
+    const registered=await f.call("register_agent_session",{productId:f.item.productId,session});f.safe(registered);
+    const identity={sessionId:registered.structuredContent!.sessionId!},delivery={...proposal(f.item.key),itemKeys:[],productId:f.item.productId};
+    const offer=await f.call("propose_merge_delivery",{identity,delivery,idempotencyKey:"external"});f.safe(offer);
+    const otherClient=await f.call("propose_merge_delivery",{identity,delivery,idempotencyKey:"foreign"},{clientId:"foreign-client"});expect(otherClient.isError).toBe(true);
+    const unrelated=f.store.createProduct({name:"Unrelated",keyPrefix:"OTHER",createdByAccountId:config.id});
+    expect((await f.call("propose_merge_delivery",{identity,delivery:{...delivery,productId:unrelated.id},idempotencyKey:"foreign-project"})).isError).toBe(true);
+    const merges=new MergeDeliveries(f.store),d=merges.list(f.item.productId,f.owner.id)[0]!;
+    merges.decide(f.owner.id,d.id,d.revision,"confirm");
+    f.db.prepare("UPDATE external_agent_sessions SET archived_at=? WHERE id=?").run(new Date().toISOString(),identity.sessionId);
+    expect(merges.list(f.item.productId,f.owner.id)).toEqual([]);
+    expect(f.store.getWorkItem(f.item.key).status).toBe("ready");
+  });
+  it("paginates mixed item and standalone candidates without gaps, including empty no-release pages",async()=>{
+    const f=await standalone();f.merges.report(f.owner.id,f.b.dispatchId,f.b.id,f.d.id,merged);f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id);
+    f.safe(await f.call("claim_item",f.claimInput));
+    const claimed=f.db.prepare("SELECT id FROM external_agent_sessions WHERE session_ref=?").get(f.session.sessionRef) as {id:string};
+    f.safe(await f.complete({sessionId:claimed.id}));
+    const found:Record<string,unknown>[]=[],cursors:number[]=[];let beforeSequence:number|undefined;
+    do {
+      const listing=await f.call("list_release_candidates",{productId:f.item.productId,includeUnscoped:true,limit:1,...(beforeSequence?{beforeSequence}:{})});f.safe(listing);
+      found.push(...listing.structuredContent!.candidates as Record<string,unknown>[]);
+      beforeSequence=listing.structuredContent!.nextBeforeSequence as number|undefined;
+      if(beforeSequence){expect(cursors).not.toContain(beforeSequence);cursors.push(beforeSequence);}
+    }while(beforeSequence);
+    expect(found).toHaveLength(2);expect(found.some(c=>c.deliveryId===f.d.id)).toBe(true);expect(found.some(c=>c.itemKey===f.item.key)).toBe(true);
+  });
+  it("checks project permissions for external node discovery and standalone release handover",async()=>{
+    const f=await fixture(),node=f.launch("codex").node;
+    const registered=await f.call("register_agent_session",{productId:f.item.productId,session:{agentKind:"codex",refKind:"native",sessionRef:randomUUID(),autoConnect:true}});f.safe(registered);
+    const id=registered.structuredContent!.sessionId!,native=new ExternalNativeSessionStore(f.store),authorized:string[]=[];
+    const discovery=native.listForNode(f.owner.id,node.nodeId,"worker",product=>{authorized.push(product);},true);
+    expect(discovery.some(s=>s.id===id)).toBe(true);expect(authorized).toContain(f.item.productId);
+    expect(native.listForNode(f.owner.id,node.nodeId,"worker",()=>{throw new Error("Permission revoked");},true)).toEqual([]);
+    const read=await f.call("get_agent_session",{sessionId:id});f.safe(read);
+    const g=await standalone();g.merges.report(g.owner.id,g.b.dispatchId,g.b.id,g.d.id,merged);g.grant(false,true);
+    expect((await g.call("submit_release_batch",{productId:g.item.productId,idempotencyKey:"revoked",...proof,deliveries:[{deliveryId:g.d.id,expectedRevision:g.d.revision,releases:[{artifact:"web",version:"1",sourceCommit:"e".repeat(40)}]}]})).isError).toBe(true);
+    expect(g.merges.batches(g.item.productId,g.owner.id)[0]!.presentation.entries[g.d.id]!.publication).toBe("pending");
+  });
+  it("invalidates source changes and supersedes only the same standalone PR",async()=>{
+    const f=await fixture(),launched=f.launch("codex"),merges=new MergeDeliveries(f.store),identity={dispatchId:launched.dispatch.id};
+    const input={...proposal(f.item.key),itemKeys:[],productId:f.item.productId};
+    const first=merges.propose(f.owner.id,"original-client",identity,"first",input);merges.decide(f.owner.id,first.id,first.revision,"confirm");
+    const second=merges.propose(f.owner.id,"original-client",identity,"second",{...input,pullRequest:13});
+    expect(merges.list(f.item.productId,f.owner.id)).toHaveLength(2);
+    const renewed=merges.propose(f.owner.id,"original-client",identity,"renewed",input);
+    expect(renewed.reconfirmation).toBe(true);expect(merges.list(f.item.productId,f.owner.id).map(d=>d.id)).toEqual([renewed.id,second.id]);
+    new AgentSessionStore(f.store.database).enqueue(f.owner.id,launched.projectSessionId,"Continue changing the implementation",[]);
+    expect(merges.list(f.item.productId,f.owner.id)).toEqual([]);
+  });
 });

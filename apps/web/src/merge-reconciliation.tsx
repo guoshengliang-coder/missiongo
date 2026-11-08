@@ -12,6 +12,7 @@ export function MergeReconciliation({batchId,initiallyOpen=false}:{batchId:strin
     request(`/api/v1/merge-batches/${encodeURIComponent(batchId)}/reconciliation/${encodeURIComponent(id)}/decision`,{
       method:"POST",body:JSON.stringify({snapshot,decision,noExecutionRemaining:confirmed})}),
     onSettled:()=>{setConfirmed(false);void query.refetch();}});
+  const label=(entry:MergeReconciliationPreview["entries"][number]|undefined)=>entry ? entry.itemKeys.join(" · ") || `PR #${entry.pullRequest}` : "";
   const labels={accept_merge:"recoveryAcceptMerge",retry_handover:"recoveryRetryHandover",retry_blocked:"recoveryRetryBlocked",
     defer_publication:"recoveryDefer",allow_partial_publication:"recoveryPartial"} as const;
   return <details className="merge-reconciliation" open={open} onToggle={e=>setOpen(e.currentTarget.open)}>
@@ -21,7 +22,7 @@ export function MergeReconciliation({batchId,initiallyOpen=false}:{batchId:strin
       <button type="button" className="secondary-button" disabled={query.isFetching||decide.isPending} onClick={()=>{setConfirmed(false);void query.refetch();}}>{t("refresh")}</button>
       {(query.isError||decide.isError)&&<p role="alert" className="inline-error">{decide.error instanceof Error?decide.error.message:t("recoveryError")}</p>}
       {query.data?.entries.map(entry=><div className="merge-delivery-card" key={entry.deliveryId}>
-        <strong>{entry.itemKeys.join(" · ")}</strong>
+        <strong>{label(entry)}</strong>
         <p><a href={`${entry.repository}/pull/${entry.pullRequest}`} target="_blank" rel="noreferrer">PR #{entry.pullRequest}</a> → {entry.targetBranch}</p>
         <p>{t("integrationOriginal")}: <code>{entry.originalHead}</code></p>
         <p>{t("integrationCurrent")}: <code>{entry.executionHead}</code></p>
@@ -36,7 +37,7 @@ export function MergeReconciliation({batchId,initiallyOpen=false}:{batchId:strin
       {query.isSuccess&&!query.data.reconciliation?.requests.length&&<p>{t("recoveryEmpty")}</p>}
       {query.data?.reconciliation?.requests.map(row=><div className="merge-delivery-card" key={row.id}>
         <strong>{t(labels[row.action.kind])}</strong><small>{formatTime(row.at)}</small>
-        {"deliveryId" in row.action&&<p>{query.data.entries.find(e=>e.deliveryId===("deliveryId" in row.action?row.action.deliveryId:undefined))?.itemKeys.join(" · ")}</p>}
+        {"deliveryId" in row.action&&<p>{label(query.data.entries.find(e=>e.deliveryId===("deliveryId" in row.action?row.action.deliveryId:undefined)))}</p>}
         {"reason" in row.action&&<p>{row.action.reason}</p>}
         {row.action.kind==="accept_merge"&&<><p>{row.action.evidence.validation}</p>
           <p>{t("recoveryActual")}: <code>{row.action.evidence.head}</code></p><p><code>{row.action.evidence.commit}</code> → <code>{row.action.evidence.targetHead}</code></p>

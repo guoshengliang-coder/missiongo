@@ -27,7 +27,7 @@ export interface ExternalNativeConnection {
   readonly automatic?: boolean;
 }
 interface Row {
-  id: string; account_id: string; agent_kind: string; session_ref: string; ref_kind: string;
+  id: string; account_id: string; product_id: string | null; agent_kind: string; session_ref: string; ref_kind: string;
   native_node_id: string | null; native_generation: number; native_synced_at: string | null;
   native_snapshot_json: string | null; archived_at: string | null;
   dismissed_revision: string | null;
@@ -67,7 +67,7 @@ export class ExternalNativeSessionStore {
     const reserved = this.db.prepare("SELECT worker_id FROM external_native_commands WHERE id=? AND session_id=?").get(commandId, id) as { worker_id: string } | undefined;
     if (row.archived_at || row.native_node_id !== nodeId || command?.id !== commandId || command.status !== "delivering"
       || reserved?.worker_id !== workerId) throw notFound("Agent session attachment");
-    this.items(id).forEach((item) => authorizeProduct(item.product_id, true));
+    this.authorizeProducts(id,authorizeProduct,true);
   }
   private get db() { return this.store.database.connection; }
   private row(accountId: string, id: string): Row {
@@ -78,6 +78,14 @@ export class ExternalNativeSessionStore {
   private items(id: string) {
     return this.db.prepare(`SELECT w.item_key, w.product_id, w.status FROM external_agent_session_items i
       JOIN work_items w ON w.id=i.item_id WHERE i.session_id=?`).all(id) as { item_key: string; product_id: string; status: string }[];
+  }
+  private authorizeProducts(id: string, authorize: (id:string, execute:boolean)=>void, execute:boolean) {
+    const project=this.db.prepare("SELECT product_id FROM external_agent_sessions WHERE id=?").get(id) as {product_id:string|null}|undefined;
+    for (const productId of new Set([...(project?.product_id ? [project.product_id] : []),...this.items(id).map(item=>item.product_id)])) authorize(productId,execute);
+  }
+  private workOpen(id: string) {
+    return Boolean((this.db.prepare("SELECT product_id FROM external_agent_sessions WHERE id=?").get(id) as {product_id:string|null}|undefined)?.product_id)
+      || this.items(id).some(item=>item.status!=="done");
   }
   private expireCommands(id: string, workerId?: string) {
     this.db.prepare(`UPDATE external_native_commands SET status='delivery_unknown', error='Delivery could not be confirmed. Check the original client before resolving.'
@@ -173,7 +181,7 @@ export class ExternalNativeSessionStore {
       ...(snapshot ? { status: !row.native_node_id || !online ? "unavailable" as const : health!.status, turnState: snapshot.turnState, activities: snapshot.activities ?? [],
         ...(row.native_synced_at ? { updatedAt: row.native_synced_at } : {}),
         ...(health?.reason || snapshot.error ? { lastError: health?.reason ?? snapshot.error } : {}) } : {}),
-      ...(command ? { command } : {}), replyable: connected && !row.archived_at && this.items(id).some((item) => item.status !== "done"),
+      ...(command ? { command } : {}), replyable: connected && !row.archived_at && this.workOpen(id),
       ...(revision ? { attention: { state: needed ? "needed" as const : "not_needed" as const, ...(!health?.reason ? { revision } : {}),
         ...(needed ? { kind: "action" as const, reason: health?.reason ?? snapshot?.error ?? nativeMessages.at(-1)?.text ?? "请查看原生会话。" } : {}),
         ...(row.dismissed_revision === revision && !health?.reason ? { dismissed: true } : {}) }, needsAttention: needed, waitingForReply: needed } : {}),
@@ -185,7 +193,7 @@ export class ExternalNativeSessionStore {
     const values = { ...state.values, ...(snapshot?.mode ? { mode: snapshot.mode } : {}),
       ...(snapshot?.model ? { model: snapshot.model } : {}), ...(snapshot?.effort ? { effort: snapshot.effort } : {}) };
     return { ...values, mode: values.mode ?? "external", supportedFields: fields,
-      adjustable: connected && !row.archived_at && fields.length > 0 && this.items(row.id).some((item) => item.status !== "done"),
+      adjustable: connected && !row.archived_at && fields.length > 0 && this.workOpen(row.id),
       applyOn: row.agent_kind === "codex" ? "next_reply" : "idle",
       ...(!connected ? { unavailableReason: "connect" as const } : snapshot?.settingsSupport === undefined
         ? { unavailableReason: "upgrade" as const } : fields.length === 0 ? { unavailableReason: "source" as const } : {}),
@@ -278,16 +286,16 @@ export class ExternalNativeSessionStore {
       ORDER BY s.native_node_id IS NULL, s.id LIMIT 100`).all(accountId, nodeId, allowAutomatic ? 1 : 0, nodeId, nodeId) as unknown as Row[];
     return rows.flatMap((row) => {
       const automatic = row.native_node_id === null;
-      if (automatic && (!enabled.has(row.agent_kind) || this.items(row.id).every((item) => item.status === "done"))) return [];
-      try { this.items(row.id).forEach((item) => authorizeProduct(item.product_id, automatic)); } catch { return []; }
+      if (automatic && (!enabled.has(row.agent_kind) || !this.workOpen(row.id))) return [];
+      try { this.authorizeProducts(row.id,authorizeProduct,automatic); } catch { return []; }
       this.expireCommands(row.id, workerId);
       let command = this.command(row.id);
       if (automatic || command && !["queued", "delivering"].includes(command.status)) command = undefined;
       if (command) {
-        try { this.items(row.id).forEach((item) => authorizeProduct(item.product_id, true)); }
+        try { this.authorizeProducts(row.id,authorizeProduct,true); }
         catch { command = undefined; }
       }
-      if (this.items(row.id).every((item) => item.status === "done")) command = undefined;
+      if (!this.workOpen(row.id)) command = undefined;
       const snapshot = row.native_snapshot_json ? JSON.parse(row.native_snapshot_json) as NativeSnapshot : undefined;
       const settings = this.settingsState(row);
       // A downgraded worker must not send a reply while silently dropping the
@@ -296,7 +304,7 @@ export class ExternalNativeSessionStore {
       let mayAdjust = allowSettings && !automatic && enabled.has(row.agent_kind) && settings.revision > settings.settled
         && this.overlay(accountId, row.id, false).settings.adjustable;
       if (mayAdjust) {
-        try { assertExternalExecution(this.store.database, row.id); this.items(row.id).forEach((item) => authorizeProduct(item.product_id, true)); }
+        try { assertExternalExecution(this.store.database, row.id); this.authorizeProducts(row.id,authorizeProduct,true); }
         catch { mayAdjust = false; }
       }
       return [{ id: row.id, agentKind: row.agent_kind, sessionRef: row.session_ref, status: snapshot?.status ?? "unavailable",
@@ -319,8 +327,8 @@ export class ExternalNativeSessionStore {
       if (input.autoConnect) {
         if (!row.native_auto_connect || row.ref_kind !== "native" || row.session_ref !== input.nativeSessionRef || row.archived_at
           || input.commandId || input.commandStatus) throw notFound("Automatic native connection");
-        this.items(row.id).forEach((item) => authorizeProduct(item.product_id, true));
-        if (this.items(row.id).every((item) => item.status === "done")) throw conflict("agent_session_work_finished", "The linked work is done.");
+        this.authorizeProducts(row.id,authorizeProduct,true);
+        if (!this.workOpen(row.id)) throw conflict("agent_session_work_finished", "The linked work is done.");
         if (row.native_node_id === null && row.native_generation === input.generation) {
           // Probes cannot start a CLI or send input. Only the exact source's
           // verified history can admit a read-only node; failed probes never steal a binding.
@@ -346,9 +354,9 @@ export class ExternalNativeSessionStore {
         generation = row.native_generation;
       }
       if (row.native_node_id !== input.nodeId || row.native_generation !== generation || row.archived_at) throw notFound("Native binding");
-      this.items(row.id).forEach((item) => authorizeProduct(item.product_id, Boolean(input.commandId)));
+      this.authorizeProducts(row.id,authorizeProduct,Boolean(input.commandId));
       if (Boolean(input.commandId) !== Boolean(input.commandStatus)) throw invalidInput("A command ID and status must be reported together.");
-      if (input.commandStatus === "delivering" && this.items(row.id).every((item) => item.status === "done")) throw conflict("agent_session_work_finished", "The linked work is done.");
+      if (input.commandStatus === "delivering" && !this.workOpen(row.id)) throw conflict("agent_session_work_finished", "The linked work is done.");
       if (input.messages.length > 2000) throw invalidInput("Too many native messages.");
       const now = new Date().toISOString(); let changed = false;
       observeMessageTimes(this.db, `external:${row.id}`, input.messages, now);
@@ -403,7 +411,7 @@ export class ExternalNativeSessionStore {
       const settings = this.settingsState(row);
       if (input.settingsRevision !== undefined) {
         if (!Number.isSafeInteger(input.settingsRevision) || input.settingsRevision < 1 || input.settingsRevision > settings.revision) throw invalidInput("Invalid settings revision.");
-        this.items(row.id).forEach((item) => authorizeProduct(item.product_id, true));
+        this.authorizeProducts(row.id,authorizeProduct,true);
         assertExternalExecution(this.store.database, row.id);
         if (input.settingsRevision > settings.settled) {
           settings.settled = input.settingsRevision;

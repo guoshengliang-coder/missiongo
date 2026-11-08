@@ -28,7 +28,7 @@ export interface ExternalSessionOwner {
   readonly clientId?: string;
 }
 interface SessionRow {
-  id: string; account_id: string; client_id: string; agent_kind: AgentKind | "other";
+  id: string; account_id: string; client_id: string; product_id: string | null; agent_kind: AgentKind | "other";
   session_ref: string; ref_kind: "native" | "tracking"; name: string | null;
   progress_status: ExternalProgressStatus; created_at: string; updated_at: string;
   activity_at: string; conversation_at: string; archived_at: string | null; unread_at: string | null;
@@ -59,11 +59,12 @@ export class ExternalAgentSessionStore {
   }
 
   /** Check every linked product before returning any conversation content. */
-  authorize(owner: ExternalSessionOwner, sessionId: string, itemKey: string, authorizeItem: (key: string) => unknown): void {
+  authorize(owner: ExternalSessionOwner, sessionId: string, itemKey: string, authorizeItem: (key: string) => unknown, authorizeProject?: (id:string)=>unknown): void {
     const row = this.row(owner.accountId, sessionId);
     if (row.client_id !== (owner.clientId ?? "")) throw notFound("Agent session");
     const keys = this.itemKeys(owner.accountId, sessionId);
     if (!keys.includes(itemKey.toUpperCase())) throw notFound("Session item");
+    if(row.product_id) authorizeProject?.(row.product_id);
     keys.forEach(authorizeItem);
   }
 
@@ -75,6 +76,7 @@ export class ExternalAgentSessionStore {
         .get(owner.accountId, owner.clientId ?? "", identity.agentKind, identity.sessionRef) as unknown as SessionRow | undefined;
       if (row) {
         assertExternalExecution(this.store.database, row.id);
+        if(row.product_id && keys.some(key=>this.store.getWorkItem(key).productId!==row!.product_id)) throw conflict("session_identity_conflict","The conversation belongs to another project.");
         if (row.ref_kind !== identity.refKind || row.archived_at) throw conflict("session_identity_conflict", "Use this conversation's active original identity.");
       }
       for (const key of keys) assertBuilderExecution(this.store.database, this.store.getWorkItem(key).id, owner.accountId);
@@ -138,6 +140,7 @@ export class ExternalAgentSessionStore {
       const existing = this.db.prepare(`SELECT * FROM external_agent_sessions
         WHERE account_id = ? AND client_id = ? AND agent_kind = ? AND session_ref = ?`)
         .get(owner.accountId, owner.clientId ?? "", identity.agentKind, identity.sessionRef) as unknown as SessionRow | undefined;
+      if (existing?.product_id && existing.product_id !== item.productId) throw conflict("session_identity_conflict","The conversation belongs to another project.");
       if (existing && this.isHandling(existing.id, item.key)) {
         assertExternalExecution(this.store.database, existing.id);
         if (existing.ref_kind !== identity.refKind) throw conflict("session_identity_conflict", "The reference kind cannot change.");
@@ -159,6 +162,33 @@ export class ExternalAgentSessionStore {
       const inserted = this.db.prepare(`INSERT INTO external_agent_session_items(session_id, item_id, link_kind) VALUES (?, ?, 'handling')
         ON CONFLICT(session_id,item_id) DO UPDATE SET link_kind='handling' WHERE link_kind='approval'`).run(id, item.id);
       if (inserted.changes) this.report(owner, id, item.key, "working", `开始处理 ${item.key}`, `linked:${item.id}`);
+      return id;
+    });
+  }
+
+  /** Explicit project association; does not claim work or launch a native client. */
+  registerProject(owner: ExternalSessionOwner, identity: ExternalSessionIdentity, productId: string): string {
+    this.store.assertProductWritable(productId);
+    if (identity.autoConnect && (identity.refKind !== "native" || !["codex","claude_code","opencode"].includes(identity.agentKind)))
+        throw invalidInput("Automatic connection requires a supported native identity.");
+    return this.store.database.transaction(() => {
+      const existing = this.db.prepare(`SELECT * FROM external_agent_sessions
+        WHERE account_id=? AND client_id=? AND agent_kind=? AND session_ref=?`)
+        .get(owner.accountId,owner.clientId ?? "",identity.agentKind,identity.sessionRef) as SessionRow | undefined;
+      if (existing) {
+        assertExternalExecution(this.store.database,existing.id);
+        if (existing.product_id && existing.product_id !== productId || existing.ref_kind !== identity.refKind || existing.archived_at
+          || this.itemKeys(owner.accountId,existing.id).some(key=>this.store.getWorkItem(key).productId!==productId))
+          throw conflict("session_identity_conflict","Keep the original active project conversation.");
+        if(!existing.product_id)this.db.prepare("UPDATE external_agent_sessions SET product_id=? WHERE id=?").run(productId,existing.id);
+        if(identity.autoConnect && identity.refKind==="native")this.db.prepare("UPDATE external_agent_sessions SET native_auto_connect=1 WHERE id=? AND native_generation=0").run(existing.id);
+        return existing.id;
+      }
+      const id=randomUUID(),now=new Date().toISOString();
+      this.db.prepare(`INSERT INTO external_agent_sessions
+        (id,account_id,client_id,agent_kind,session_ref,ref_kind,name,progress_status,created_at,updated_at,activity_at,product_id,native_auto_connect)
+        VALUES (?,?,?,?,?,?,?,'working',?,?,?,?,?)`)
+        .run(id,owner.accountId,owner.clientId ?? "",identity.agentKind,identity.sessionRef,identity.refKind,identity.name ?? null,now,now,now,productId,identity.autoConnect ? 1 : 0);
       return id;
     });
   }
@@ -209,9 +239,9 @@ export class ExternalAgentSessionStore {
     const reports = this.db.prepare("SELECT id, item_key, status, text, created_at FROM external_agent_session_reports WHERE session_id = ? ORDER BY created_at, rowid")
       .all(sessionId) as unknown as { id: string; item_key: string; status: ExternalProgressStatus; text: string | null; created_at: string }[];
     return {
-      id: row.id, source: "external", agentKind: row.agent_kind, status: this.status(row),
+      id: row.id, ...(row.product_id ? {productId:row.product_id} : {}), source: "external", agentKind: row.agent_kind, status: this.status(row),
       progressStatus: row.progress_status, refKind: row.ref_kind,
-      approvalOnly: !this.db.prepare("SELECT 1 FROM external_agent_session_items WHERE session_id=? AND link_kind='handling' LIMIT 1").get(sessionId),
+      approvalOnly: !row.product_id && !this.db.prepare("SELECT 1 FROM external_agent_session_items WHERE session_id=? AND link_kind='handling' LIMIT 1").get(sessionId),
       ...(reports.length ? {lastReportedAt:reports.at(-1)!.created_at} : {}),
       updatedAt: row.updated_at, ...(row.archived_at ? { archivedAt: row.archived_at, archivedSource: "missiongo" as const } : {}),
       activities: [], turnState: {},
@@ -262,8 +292,8 @@ export class ExternalAgentSessionStore {
       const needsAttention = ["waiting_for_input", "blocked", "failed"].includes(row.progress_status)
         && row.dismissed_revision !== revision;
       return {
-        id: row.id, source: "external", agentKind: row.agent_kind, status: this.status(row),
-        progressStatus: row.progress_status, refKind: row.ref_kind, approvalOnly: items.every(item=>item.linkKind === "approval"),
+        id: row.id, ...(row.product_id ? {productId:row.product_id} : {}), source: "external", agentKind: row.agent_kind, status: this.status(row),
+        progressStatus: row.progress_status, refKind: row.ref_kind, approvalOnly: !row.product_id && items.every(item=>item.linkKind === "approval"),
         ...(latest ? {lastReportedAt:latest.created_at} : {}),
         updatedAt: row.updated_at, ...(row.archived_at ? { archivedAt: row.archived_at, archivedSource: "missiongo" as const } : {}),
         activities: [], turnState: {}, agentSessionId: row.id, activityAt: row.conversation_at,

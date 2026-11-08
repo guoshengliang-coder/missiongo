@@ -15,10 +15,11 @@
     {
       "requestedBeforeSequence": null,
       "productId": "product-id",
-      "coverageVersion": 1,
+      "coverageVersion": 2,
       "generatedAt": "<保留服务端实际返回时间>",
       "candidates": [],
-      "noReleaseItems": []
+      "noReleaseItems": [],
+      "noReleaseDeliveries": []
     }
   ]
 }
@@ -95,3 +96,11 @@ missiongo-release deploy --candidates /path/to/refreshed-candidates.json --only-
 ## 已发布历史条目补证据
 
 优先用 `supplement_release_evidence` 补齐后刷新服务端清单。旧客户端工具列表未更新但服务端已支持 5.54 时，可在已独立核实全部发布前置后给 `release-notices.mjs` 传 `--verified-evidence <JSON>`：对象含 productId、items，每项含 itemKey、原清单 expectedRevision/developmentEventId/roundKey、completion（GitHub PR）、完整 requiredArtifacts、verification 核验记录。原始 MCP 分页文件不得改写；脚本输出单列 verifiedEvidence，继续查询真实 PR 合并及公开产物来源覆盖，并生成原子补证据/交接请求。此文件仅用于已发布交接，不供部署覆盖门禁使用；不能将本地声明冒充服务端返回值或仅列已发布的子集。
+
+## 无条目交付的覆盖（协议 2）
+
+已合并的无条目改动与条目候选共用分页和产物覆盖门禁，以 `kind: "delivery"`、`deliveryId`、`expectedRevision` 标识；摘要、真实 PR 和完整 requiredArtifacts 供核验。不得为适配旧客户端过滤无条目记录。显式无需发布的交付独立列入 noReleaseDeliveries，保留原因。游标是服务端不透明值，空候选页也必须按 nextBeforeSequence 续读。
+
+升级服务端后，从本主线重新运行共享覆盖安装器；旧解析器拒绝协议 2，保持阻断直到安装器验证并升级完成。本轮开发不自动安装共享工具或发布服务端。新解析器继续接受协议 1 的旧服务页，但协议 1 不允许携带无条目候选，不用旧格式冒充完整的新清单。
+
+合并批次结束后，无条目交付仍参与后续产品发布：同样核验 PR 集成、构建来源、全部必需产物与用户明确的局部范围。部署后 `release-notices.mjs` 为这些候选生成 `submit_release_batch` 的 deliveries 请求（原 ID、revision、已核实 releases），而非条目评论或状态流转。部分发布继续留在候选，完整发布后才移出；正式发布凭据保留在原交付记录中，并供集成详情和批次收尾核对。条目候选仍按原流程完整读取、评论并交接，最终验收由人工执行。

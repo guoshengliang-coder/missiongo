@@ -70,3 +70,18 @@ test("missing provenance and public verification cannot be borrowed from release
   const expired = input([candidate("AND-1", ["web"])], { generatedAt: new Date(now - 60 * 60_000).toISOString() });
   assert.equal(plan(expired, { receipt: true, artifacts: values }).ready, true, "post-release accounting can evaluate the original cutoff without authorizing a stale deployment");
 });
+
+test("standalone deliveries share full coverage and cannot disappear through old or truncated pages",()=>{
+  const standalone={kind:"delivery",deliveryId:"12345678-1234-4234-8234-123456789abc",expectedRevision:"a".repeat(64),title:"Connection repair",pullRequestUrl:"https://github.com/owner/repo/pull/43",requiredArtifacts:["web","macosApp"]};
+  const data=input([candidate("AND-1"),standalone],{coverageVersion:2,noReleaseDeliveries:[]});
+  const report=plan(data);
+  assert.equal(report.ready,false);assert.equal(report.items[1].deliveryId,standalone.deliveryId);
+  assert.equal(report.items[1].itemKey,undefined);assert.deepEqual(report.items[1].missing.map(r=>r.artifact),["macosApp"]);
+  assert.throws(()=>assertReleaseCoverage(report),/pull\/43: macosApp/);
+  assert.equal(plan(data,{artifacts:artifacts.map(a=>({...a,sourceCommit:head}))}).ready,true);
+  const partial=plan(data,{scope:releaseScope("web","User selected Web only")});
+  assert.equal(partial.ready,true);assert.equal(partial.fullCoverage,false);assert.deepEqual(partial.items[1].excludedArtifacts,["macosApp"]);
+  assert.throws(()=>plan(input([standalone])),/coverageVersion=2/);
+  assert.throws(()=>plan({...data,pages:[{...data.pages[0],nextBeforeSequence:4}]}),/final page/);
+  assert.throws(()=>plan(input([standalone,standalone],{coverageVersion:2,noReleaseDeliveries:[]})),/repeat/);
+});

@@ -11,10 +11,10 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     await page.setViewportSize({width,height:900});
     await page.emulateMedia({colorScheme:theme});
     const product=await (await request.post("/api/v1/products",{data:{name:`Merge ${width} ${theme}`,keyPrefix:`MG${width}${theme[0]!.toUpperCase()}`}})).json();
-    await page.clock.setFixedTime(new Date("2026-11-08T08:00:00Z"));
-    const now="2026-11-08T08:00:00Z";
+    const now="2026-11-08T10:00:00.000Z";
+    await page.clock.setFixedTime(new Date(now));
     const delivery={id:"delivery-one",productId:product.id,sessionId:"development-session",revision:"revision-one",state:"confirmed",blocker:width===320?"pending":"stale",
-      itemKeys:["MG-1"],head:"a".repeat(40),summary:"会话交付确认与待合并清单",validation:"服务端回归测试通过",requiredArtifacts:["web"],
+      itemKeys:width===320?[]:["MG-1"],head:"a".repeat(40),summary:"会话交付确认与待合并清单",validation:"服务端回归测试通过",requiredArtifacts:["web"],
       pullRequestUrl:"https://github.com/example/project/pull/12",evidence:{checkedAt:now,source:"GitHub"}};
     await page.route("**/merge-deliveries",route=>route.fulfill({json:{deliveries:[delivery],batches:[]}}));
     await page.route("**/api/v1/nodes",route=>route.fulfill({json:{nodes:[{id:"merge-node",name:"Fixture Mac",online:true,supportsFreeSessions:true,
@@ -33,7 +33,12 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     await entry.click();
     const dialog=page.getByRole("dialog");
     await expect(dialog).toBeVisible();
+    await page.screenshot({path:testInfo.outputPath(`merge-selection-${width}-${theme}.png`),fullPage:true});
     await expect(dialog.getByRole("button",{name:"下一步：配置 Agent"})).toBeDisabled();
+    if(width===320) await expect(dialog.locator(".merge-row")).toContainText("PR #12");
+    await dialog.getByRole("button",{name:"查看改动与验证详情",exact:true}).click();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeVisible();
     await dialog.locator(".merge-row input").check();
     await dialog.getByRole("button",{name:"下一步：配置 Agent"}).click();
     await expect(dialog.getByRole("checkbox",{name:/合并后发布/})).not.toBeChecked();
