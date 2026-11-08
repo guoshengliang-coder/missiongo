@@ -1,3 +1,4 @@
+import { AgentPlanRecords } from "./agent-plan-records";
 import { AgentProgressReports } from "./agent-progress-reports";
 import { permissionReplyText } from "./permission-presentation";
 import { DeliveryCards, IntegrationDetails, invalidateSessionDeliveries } from "./merge-console";
@@ -151,6 +152,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
             <>
               <header className="agent-session-head">
                 <strong>{t("agentSessionTitle")}</strong>
+                <AgentPlanRecords key={sessionId} session={session.data} />
                 <IntegrationDetails productId={productId} sessionId={sessionId} />
               </header>
               {history.messages.length === 0 && (

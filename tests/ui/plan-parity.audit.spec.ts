@@ -17,15 +17,16 @@ for(const surface of ["console","panel"] as const) for(const [agent,texts] of Ob
    else {await page.goto(`/?product=${fixture.productId}&item=${fixture.detailKey}`);await page.locator(".execution-history > summary").click();await page.locator(".execution-record > summary").filter({hasText:"派单 · Fixture"}).click();await page.locator(".agent-session-toggle").click();}
   }
   await open();
-  await expect(page.getByText("方案已登记，原始消息尚未同步或未关联。",{exact:true})).toBeVisible();
+  await expect(page.getByText("方案已登记，正在关联会话消息。",{exact:true})).toBeVisible();
   await expect(page.locator("article[data-agent-message-id]")).toHaveCount(0);
-  await expect(page.getByRole("button",{name:"批准",exact:true})).toBeDisabled();
+  await expect(page.getByRole("button",{name:"批准",exact:true})).toHaveCount(0);
+  await expect(page.locator(".agent-console-attention-banner.agent-plan-record")).toHaveCount(0);
   synced=true;await open();
   const articles=page.locator("article[data-agent-message-id]");await expect(articles).toHaveCount(texts.length);
   await expect(articles.first().getByRole("link",{name:"完整说明"})).toHaveAttribute("href",`https://example.test/?planDocument=${documentId}`);
   await expect(articles.first().getByRole("button",{name:"批准",exact:true})).toBeEnabled();
   await expect(articles.first().locator("table")).toHaveCount(1);
-  await expect(page.getByText("方案已登记，原始消息尚未同步或未关联。",{exact:true})).toHaveCount(0);
+  await expect(page.getByText("方案已登记，正在关联会话消息。",{exact:true})).toHaveCount(0);
   // Source output, including additional native messages, must never be hidden.
   for(let n=0;n<texts.length;n++)await expect(articles.nth(n)).toHaveAttribute("data-agent-message-id",`agent:source-${n}`);
  });

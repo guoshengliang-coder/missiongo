@@ -544,6 +544,7 @@ export interface AgentSessionAttachment {
 }
 
 export interface AgentSession {
+  readonly hasPlanRecords?: boolean;
   readonly progressReports?: ReadonlyArray<{ id: string; text: string; occurredAt: string }>;
   readonly history?: { readonly nextCursor?: string; readonly error?: string };
   readonly planApproval?: { readonly documentId?: string; readonly revision: string; readonly reason: string; readonly plan?: string; readonly validation?: string; readonly itemKeys?: readonly string[] } | undefined;
@@ -762,3 +763,12 @@ export interface RedispatchEligibility {
   readonly reason: "other_account" | "started" | "partial_batch" | "execution_unconfirmed" | null;
   readonly conflicts: readonly ActiveDispatch[];
 }
+
+export interface AgentPlanRecord {
+  id:number; revision:string; keys:string[]; kind:"proposal"|"rework"; current:boolean; effective:boolean;
+  scopeValid:boolean; legacy:boolean; submittedAt?:string;
+  approval?:{approvedAt:string;source:string}; documentId?:string; version?:number;
+  rounds?:{key:string;number:number}[]; sha256?:string; parentDocumentId?:string; parentApproved?:boolean;
+  plan?:string; validation?:string; markdown?:string;
+}
+export interface AgentPlanRecordsPage { records:AgentPlanRecord[]; historyIncomplete:boolean; nextBefore?:number }
