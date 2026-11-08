@@ -12,6 +12,29 @@ describe("local merge preparation guidance", () => {
     expect(mergePreparationEvidence(session())?.commit).toBe("dacc633a");
     expect(mergePreparationEvidence(session({ agentKind: "claude_code", messages: [{ id: message.id, sourceId: message.sourceId, role: message.role, text: message.text, occurredAt: message.occurredAt }] }))?.commit).toBe("dacc633a");
   });
+  it.each([
+    "已按批准方案完成并本地提交 `06a98a04`：\n\n- 列表隐藏派单标签，详情保留“派单会话”。\n- 统一“派单会话／非派单会话”及筛选名称。\n- 完整检查、42 个相关 UI 场景通过，结果已回写条目。\n\n尚未推送、创建 PR、合并或发布；条目保持处理中。真实设备及线上效果待发布后验证。",
+    "已完成并本地提交 `06a98a04`，检查通过。尚未推送。",
+    "已按照批准的方案完成，本地提交 `06a98a04`。尚未创建 PR。",
+    "已依照已批准的实施方案完成；本地提交 `06a98a04`，尚未推送。",
+    "按批准方案已完成并提交 `06a98a04`，尚未推送。",
+  ])("recognizes affirmative scope completion: %s", text => {
+    expect(mergePreparationEvidence(session({ messages: [{ ...message, text }] }))?.commit).toBe("06a98a04");
+  });
+  it.each([
+    "计划按批准方案完成并本地提交 `06a98a04`，尚未推送。",
+    "尚未按批准方案完成，本地提交 `06a98a04`，尚未推送。",
+    "如果已按批准方案完成并本地提交 `06a98a04`，可以继续；尚未推送。",
+    "完成后的示例：已按批准方案完成并本地提交 `06a98a04`，尚未推送。",
+    "> 已按批准方案完成并本地提交 `06a98a04`，尚未推送。\n以上是旧消息。",
+    "```\n已按批准方案完成并本地提交 `06a98a04`，尚未推送。\n```",
+    "已按批准方案完成并本地提交 `06a98a04`，检查未通过。尚未推送。",
+    "已按批准方案完成并本地提交 `06a98a04`。",
+    "已按批准方案完成，尚未推送。",
+    "已按批准方案完成并本地提交 `06a98a04`，尚未推送。请批准下一阶段方案。",
+  ])("keeps incomplete, hypothetical and blocked scope reports out: %s", text => {
+    expect(mergePreparationEvidence(session({ messages: [{ ...message, text }] }))).toBeUndefined();
+  });
   it.each(["active", "suspended", "stalled", "unavailable", "failed"] as const)("does not offer for %s sessions", status => {
     expect(mergePreparationEvidence(session({ status }))).toBeUndefined();
   });
