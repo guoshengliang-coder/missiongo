@@ -3889,9 +3889,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const waitMs = Number.isFinite(requested) ? Math.min(Math.max(requested, 0), MAX_CLAIM_WAIT_MS) : 0;
     if (waitMs > 0) {
       // Stop waiting if the machine hangs up, so a reconnecting daemon does not
-      // leave a waiter behind on every retry.
+      // leave a waiter behind on every retry. The request message's "close"
+      // also fires once the body has been read, which aborted every long poll
+      // immediately and turned each node into a once-per-second claim loop;
+      // the socket is what actually dies on hangup.
       const abort = new AbortController();
-      request.raw.on("close", () => abort.abort());
+      request.raw.socket.once("close", () => abort.abort());
       await dispatchStore.waitForDispatch(node.nodeId, waitMs, abort.signal);
       if (agentSessionStore.countExecutionSlots(node.nodeId) >= MAX_NODE_EXECUTION_SESSIONS) {
         return reply.status(204).send();
