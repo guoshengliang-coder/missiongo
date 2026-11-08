@@ -102,6 +102,20 @@ export class AgentApprovalStore {
       .get(sessionId) as unknown as ApprovalRow | undefined;
   }
 
+  private closeObsoleteQueuedRetry(row: ApprovalRow): ApprovalRow {
+    if (row.retry_status !== "queued"
+      || (row.retry_review_id === row.approval_id && row.kind === "auto" && row.status === "denied")) {
+      return row;
+    }
+    const retryError = "原自动审查已不再是当前被拒绝的审查，已结束排队的人工审批重试。";
+    const closed = this.database.connection.prepare(
+      `UPDATE agent_session_approvals SET retry_status = 'failed', retry_error = ?, updated_at = ?
+       WHERE session_id = ? AND retry_id IS ? AND retry_status = 'queued'
+       AND (retry_review_id IS NOT approval_id OR kind != 'auto' OR status != 'denied')`,
+    ).run(retryError, new Date().toISOString(), row.session_id, row.retry_id);
+    return closed.changes ? { ...row, retry_status: "failed", retry_error: retryError } : this.row(row.session_id) ?? row;
+  }
+
   /** Only the node that owns this Codex session can report its source approval. */
   record(nodeId: string, sessionId: string, approval: AgentApproval): void {
     const owner = this.database.connection.prepare(
@@ -168,6 +182,9 @@ export class AgentApprovalStore {
           approval.action, approval.reason ?? null, approval.startedAtMs, now, approval.options === undefined ? null : JSON.stringify(approval.options),
           approval.requestKind ?? null);
       }
+      if (previous?.retry_status === "queued") {
+        this.closeObsoleteQueuedRetry({ ...previous, approval_id: approval.id, kind: approval.kind, status: approval.status });
+      }
     });
   }
 
@@ -192,10 +209,11 @@ export class AgentApprovalStore {
 
   requestRetry(sessionId: string, approvalId: string): AgentApproval {
     return this.database.transaction(() => {
-      const row = this.row(sessionId);
-      if (!row || row.approval_id !== approvalId || row.kind !== "auto" || row.status !== "denied") {
+      const current = this.row(sessionId);
+      if (!current || current.approval_id !== approvalId || current.kind !== "auto" || current.status !== "denied") {
         throw conflict("approval_retry_unavailable", "Only a current automatic-review denial can be retried.");
       }
+      const row = this.closeObsoleteQueuedRetry(current);
       if (row.retry_review_id === approvalId && row.retry_id) return publicApproval(row);
       if (row.retry_id && row.retry_status !== "restored" && row.retry_status !== "failed") {
         throw conflict("approval_retry_in_progress", "The previous manual retry has not finished.");
@@ -210,8 +228,9 @@ export class AgentApprovalStore {
   /** Sent to the owning node on its next session poll. */
   pendingForNode(sessionId: string): { approvalDecision?: { id: string; choice: string };
     approvalRetry?: { id: string; reviewId: string; status: string } } {
-    const row = this.row(sessionId);
-    if (!row) return {};
+    const current = this.row(sessionId);
+    if (!current) return {};
+    const row = this.closeObsoleteQueuedRetry(current);
     return {
       ...(row.kind === "manual" && row.status === "pending" && row.decision
         ? { approvalDecision: { id: row.approval_id, choice: row.decision } } : {}),

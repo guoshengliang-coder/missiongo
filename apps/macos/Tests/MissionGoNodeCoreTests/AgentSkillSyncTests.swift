@@ -104,11 +104,12 @@ final class AgentSkillSyncTests: XCTestCase {
         XCTAssertTrue(failed.reason?.contains("HTTP 503") == true)
     }
 
-    func testProtectedAndNewerFilesDoNotReportFalseSuccess() async throws {
+    func testSymlinkAndUnconfirmedRollbackDoNotReportFalseSuccess() async throws {
         let root = try directory()
         let target = root.appendingPathComponent("SKILL.md")
         let source = root.appendingPathComponent("source.md")
-        try skill("5.14.0").write(to: source, atomically: true, encoding: .utf8)
+        let original = skill("5.16.0")
+        try original.write(to: source, atomically: true, encoding: .utf8)
         try FileManager.default.createSymbolicLink(at: target, withDestinationURL: source)
         let remote = skill("5.15.0")
         StubURLProtocol.install { _, _ in .response(status: 200, body: remote) }
@@ -116,20 +117,24 @@ final class AgentSkillSyncTests: XCTestCase {
             serverUrl: "https://example.test", targets: [target.path], expectedVersion: "5.15.0",
             session: StubURLProtocol.session()
         )
-        XCTAssertEqual(linked.localVersion, "5.14.0")
+        XCTAssertEqual(linked.localVersion, "5.16.0")
+        XCTAssertEqual(linked.syncState, "failed")
         XCTAssertTrue(linked.reason?.contains("符号链接") == true)
+        XCTAssertEqual(try String(contentsOf: source, encoding: .utf8), original)
         try FileManager.default.removeItem(at: target)
-        try skill("5.16.0").write(to: target, atomically: true, encoding: .utf8)
+        try original.write(to: target, atomically: true, encoding: .utf8)
         let newer = await SkillSync.check(
-            serverUrl: "https://example.test", targets: [target.path], expectedVersion: "5.15.0",
+            serverUrl: "https://example.test", targets: [target.path],
             session: StubURLProtocol.session()
         )
         XCTAssertEqual(newer.localVersion, "5.16.0")
         XCTAssertEqual(newer.syncState, "failed")
-        XCTAssertTrue(newer.reason?.contains("高于服务端要求") == true)
+        XCTAssertTrue(newer.reason?.contains("尚未确认服务端要求") == true)
+        XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), original)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path).count, 2)
     }
 
-    func testNewerSharedCodexCopyIsPreservedAndReported() async throws {
+    func testConfirmedRollbackAlignsAllCopiesAndBacksUpOnlyReplacedFiles() async throws {
         let home = try directory()
         let primary = home.appendingPathComponent(".codex/skills/missiongo/SKILL.md")
         let shared = home.appendingPathComponent(".agents/skills/missiongo/SKILL.md")
@@ -139,17 +144,45 @@ final class AgentSkillSyncTests: XCTestCase {
             )
         }
         try skill("5.15.0").write(to: primary, atomically: true, encoding: .utf8)
-        try skill("5.16.0").write(to: shared, atomically: true, encoding: .utf8)
+        let customized = skill("5.16.0") + "Local notes\n"
+        try customized.write(to: shared, atomically: true, encoding: .utf8)
         let remote = skill("5.15.0")
         StubURLProtocol.install { _, _ in .response(status: 200, body: remote) }
         let result = await SkillSync.check(
             serverUrl: "https://example.test", targets: [primary.path, shared.path],
             expectedVersion: "5.15.0", session: StubURLProtocol.session()
         )
+        XCTAssertEqual(result.syncState, "ready")
+        XCTAssertEqual(result.localVersion, "5.15.0")
+        XCTAssertEqual(result.expectedVersion, "5.15.0")
+        XCTAssertNil(result.reason)
+        XCTAssertEqual(try String(contentsOf: shared, encoding: .utf8), remote)
+        let primaryDirectory = primary.deletingLastPathComponent()
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: primaryDirectory.path), ["SKILL.md"])
+        let sharedDirectory = shared.deletingLastPathComponent()
+        let backups = try FileManager.default.contentsOfDirectory(atPath: sharedDirectory.path)
+            .filter { $0.hasPrefix("SKILL.md.before-rollback-") }
+        XCTAssertEqual(backups.count, 1)
+        let backup = sharedDirectory.appendingPathComponent(try XCTUnwrap(backups.first))
+        XCTAssertEqual(try String(contentsOf: backup, encoding: .utf8), customized)
+    }
+
+    func testRollbackRequiresDownloadToMatchAdvertisedVersion() async throws {
+        let root = try directory()
+        let target = root.appendingPathComponent("SKILL.md")
+        let original = skill("5.16.0")
+        try original.write(to: target, atomically: true, encoding: .utf8)
+        let stale = skill("5.14.0")
+        StubURLProtocol.install { _, _ in .response(status: 200, body: stale) }
+        let result = await SkillSync.check(
+            serverUrl: "https://example.test", targets: [target.path], expectedVersion: "5.15.0",
+            session: StubURLProtocol.session()
+        )
         XCTAssertEqual(result.syncState, "failed")
-        XCTAssertEqual(SkillSync.localVersion(at: shared.path), "5.16.0")
-        XCTAssertTrue(result.reason?.contains(shared.path) == true)
-        XCTAssertTrue(result.reason?.contains("高于服务端要求") == true)
+        XCTAssertEqual(result.localVersion, "5.16.0")
+        XCTAssertTrue(result.reason?.contains("5.14.0") == true)
+        XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), original)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), ["SKILL.md"])
     }
 
     func testUnrecognizedLocalFileIsPreservedAndExplained() async throws {

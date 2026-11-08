@@ -1432,6 +1432,46 @@ describe("Claiming a dispatch on the node", () => {
     return { app, cookie, databasePath, node, mission, dispatchId: dispatch.json<{ id: string }>().id };
   }
 
+  it("closes obsolete queued approval retries and accepts the next Codex snapshot", async () => {
+    const { app, cookie, node, dispatchId } = await queuedDispatch(undefined, "codex");
+    const headers = { authorization: `Bearer ${node.token}` };
+    await app.inject({ method: "POST", url: "/api/v1/node/dispatches/claim-next", headers });
+    const launched = await app.inject({ method: "POST", url: `/api/v1/node/dispatches/${dispatchId}/result`, headers,
+      payload: { status: "launched", sessionRef: "approval-retry-fixture" } });
+    expect(launched.statusCode).toBe(204);
+    const poll = async () => (await app.inject({ method: "GET", url: "/api/v1/node/agent-sessions", headers })).json().sessions[0];
+    const { id: sessionId } = await poll();
+    const snapshot = (payload: Record<string, unknown>) => app.inject({
+      method: "POST", url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`, headers,
+      payload: { status: "idle", messages: [], ...payload },
+    });
+    const retry = (id: string) => app.inject({ method: "POST",
+      url: `/api/v1/agent-sessions/${sessionId}/approvals/${id}/retry`, headers: { cookie } });
+    const review = { id: "old-review", kind: "auto", status: "denied", turnId: "turn-1", action: "fixture", startedAtMs: 1 };
+    expect((await snapshot({ approval: review })).statusCode).toBe(204);
+    const queued = await retry(review.id);
+    expect(queued.statusCode).toBe(200);
+    const oldRetryId = queued.json().approval.retryId;
+    expect((await poll()).approvalRetry).toEqual({ id: oldRetryId, reviewId: review.id, status: "queued" });
+
+    // Older servers could persist a new approval without closing the old queue.
+    const db = app.missionGoStore.database.connection;
+    db.prepare("UPDATE agent_session_approvals SET approval_id = 'new-review', status = 'approved' WHERE session_id = ?").run(sessionId);
+    const storedRetry = () => db.prepare("SELECT retry_status, retry_error FROM agent_session_approvals WHERE session_id = ?").get(sessionId);
+    expect((await poll()).approvalRetry).toBeUndefined();
+    expect(storedRetry()).toMatchObject({ retry_status: "failed", retry_error: expect.any(String) });
+    expect((await snapshot({ messages: [{ sourceId: "next-output", role: "agent", text: "Synced" }] })).statusCode).toBe(204);
+
+    const next = { ...review, id: "another-review", turnId: "turn-2", startedAtMs: 2 };
+    expect((await snapshot({ approval: next })).statusCode).toBe(204);
+    const fresh = await retry(next.id);
+    expect(fresh.statusCode).toBe(200);
+    expect(fresh.json().approval.retryId).not.toBe(oldRetryId);
+    expect((await snapshot({ approval: { ...next, status: "approved" } })).statusCode).toBe(204);
+    expect(storedRetry()).toMatchObject({ retry_status: "failed" });
+    expect((await poll()).approvalRetry).toBeUndefined();
+  });
+
   describe("AND-391 durable stop lifecycle", () => {
     const kinds = ["codex", "claude_code", "opencode"] as const;
     async function started(kind: typeof kinds[number] = "claude_code") {

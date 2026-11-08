@@ -2416,6 +2416,28 @@ final class CodexLauncherTests: XCTestCase {
         }
     }
 
+    func testApprovalRetrySnapshotOmitsFieldsUntilThereIsAStatusToReport() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.pendingApproval = CodexApprovalSnapshot(id: "new-review", kind: "auto", status: "approved",
+            turnId: "new-turn", action: "Synthetic review", startedAtMs: 2)
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        let queued = NodeAgentSession(id: "retry-session", sessionRef: "thread-1", status: "idle",
+            approvalRetry: CodexApprovalRetry(id: "retry", reviewId: "old-review", status: "queued"))
+        let report = try await launcher.synchronize(queued)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(report)) as? [String: Any])
+        XCTAssertNil(json["approvalRetryId"])
+        XCTAssertNil(json["approvalRetryStatus"])
+        XCTAssertEqual(report.approval?.id, "new-review")
+
+        control.pendingApproval = CodexApprovalSnapshot(id: "old-review", kind: "auto", status: "denied",
+            turnId: "old-turn", action: "Synthetic review", startedAtMs: 1)
+        let reservation = try await launcher.synchronize(queued)
+        XCTAssertEqual(reservation.approvalRetryId, "retry")
+        XCTAssertEqual(reservation.approvalRetryStatus, "delivering")
+        XCTAssertTrue(control.replies.current.isEmpty)
+    }
+
     func testLimitedHistoryNeverReplaysAnUnreservedApprovalRetry() async throws {
         let control = RecordingControl(threadId: "thread-1")
         control.snapshot.historyLimited = true
