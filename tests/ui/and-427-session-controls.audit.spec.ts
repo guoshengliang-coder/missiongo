@@ -43,6 +43,8 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
     const details = row.locator("details");
     const stop = row.getByRole("button", { name: "停止当前回合", exact: true });
     await expect(stop).toBeVisible();
+    await expect(stop).toHaveText("停止");
+    expect(await details.locator("summary").innerText()).not.toContain("运行详情");
     await expect(page.locator(".agent-console-conversation-head .status-pill")).toHaveCount(0);
     await expect(page.locator(".agent-console-conversation-head button", { hasText: "停止当前回合" })).toHaveCount(0);
     await expect(page.locator(".dispatch-session-link, a[href^='codex:'], a[href^='claude:'], a[href^='https://claude.ai/code/']")).toHaveCount(0);
@@ -74,6 +76,10 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
         expect(Math.abs(beforeStop!.x - afterStop!.x)).toBeLessThanOrEqual(1);
         expect(Math.abs((before!.y - beforeStop!.y) - (after!.y - afterStop!.y))).toBeLessThanOrEqual(1);
         const diagnostics = await page.locator(".agent-run-diagnostics").boundingBox();
+        expect(Math.abs(diagnostics!.x - after!.x)).toBeLessThanOrEqual(1);
+        // Single-pane phones and wide conversations fit both short controls.
+        // Narrow split panes retain normal wrapping rather than shrinking touch targets.
+        if (width <= 520 || width >= 1024) expect(Math.abs(after!.y - afterStop!.y), `${width}px ${scale}: action row alignment`).toBeLessThanOrEqual(1);
         expect(diagnostics!.y).toBeGreaterThanOrEqual(Math.max(after!.y + after!.height, afterStop!.y + afterStop!.height));
         if ((width === 320 && scale === "large") || (width === 1440 && scale === "medium")) await page.screenshot({ path: testInfo.outputPath(`expanded-${width}.png`) });
         await details.locator("summary").click();
@@ -106,6 +112,13 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
     const panel = page.locator(".agent-session-panel");
     await expect(panel.locator(".agent-run-details")).toContainText("Codex 运行中");
     await expect(panel.locator(".agent-session-head .status-pill")).toHaveCount(0);
+    const panelSummary = panel.locator(".agent-run-details > summary");
+    expect(await panelSummary.innerText()).not.toContain("运行详情");
+    await panelSummary.click();
+    const panelDetails = panel.locator(".agent-run-diagnostics");
+    await expect(panelDetails).toBeVisible();
+    const panelSummaryBox = await panelSummary.boundingBox(), panelDetailsBox = await panelDetails.boundingBox();
+    expect(Math.abs(panelSummaryBox!.x - panelDetailsBox!.x)).toBeLessThanOrEqual(1);
     await expect(panel.getByRole("button", { name: "停止当前回合", exact: true })).toHaveCount(0);
   });
 });

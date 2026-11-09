@@ -928,11 +928,12 @@ export function AgentSessionConsole({
     <button
       type="button"
       className="secondary-button agent-run-stop"
+      aria-label={t("agentConsoleStop")}
       disabled={retryDispatch.isPending || stopDispatch.isPending || stopPending}
       onClick={async () => {
         if (await confirm(t("agentConsoleStopConfirm"))) stopDispatch.mutate({ sessionId: operationSessionId, dispatchId: selected.dispatchId! });
       }}
-    ><Square size={16} />{t("agentConsoleStop")}</button>
+    ><Square size={16} />{t("agentConsoleStopShort")}</button>
   );
   const sessionActions = selected && (
     <div className="agent-console-actions">

@@ -78,10 +78,10 @@ export function AgentRunDetails({ label, icon, status, children, actions }: {
   return <div className="agent-run-group">
     <div className="agent-run-controls">
       <details className="agent-run-details" onToggle={event => setOpen(event.currentTarget.open)}>
-        <summary aria-controls={diagnosticsId} className={`agent-console-activity agent-console-activity-${status}`}>
+        <summary aria-controls={diagnosticsId} aria-label={`${label} · ${t("agentRunDetails")}`} className={`agent-console-activity agent-console-activity-${status}`}>
           {icon && <span className="agent-run-icon" aria-hidden="true">{icon}</span>}
           <span role="status">{label}</span>
-          <span className="agent-run-disclosure">{t("agentRunDetails")}<ChevronDown size={12} aria-hidden="true" /></span>
+          <span className="agent-run-disclosure"><ChevronDown size={12} aria-hidden="true" /></span>
         </summary>
       </details>
       {actions}
