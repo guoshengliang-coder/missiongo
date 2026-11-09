@@ -43,7 +43,7 @@ for (const kind of ["opencode", "codex", "claude_code"]) for (const phone of [tr
     await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
     await page.locator(".agent-run-details > summary").click();
     await expect(page.locator(".agent-console-background")).toContainText("等待 CI");
-    await expect(page.locator(".agent-run-diagnostics")).toContainText("正在等待工具返回");
+    await expect(page.locator(".agent-run-diagnostics")).toContainText("正在等待当前工具结束");
     await expect(page.locator(".agent-console-outgoing")).toContainText("排队中");
     await expect(page.locator(".agent-run-diagnostics")).toContainText("当前工具结束");
     accepted = true;

@@ -61,7 +61,7 @@ for (const width of [320, 768, 1440]) for (const theme of ["light", "dark"] as c
     await expect(bubble).not.toContainText("详情");
     await expect(bubble).not.toContainText("送达与开始执行");
     await expect(details).not.toHaveAttribute("open", "");
-    await expect(details.locator("summary")).toContainText("Codex 运行中");
+    await expect(details.locator("summary")).toContainText("排队中");
     await expect(page.locator(".agent-run-diagnostics")).not.toBeVisible();
     await details.locator("summary").focus(); await page.keyboard.press("Enter");
     await expect(page.locator(".agent-run-diagnostics")).toContainText("送达与开始执行是两个阶段");
