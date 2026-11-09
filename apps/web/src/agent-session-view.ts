@@ -171,6 +171,28 @@ export function effectiveAgentSessionStatus(
   return replyInFlight && status === "idle" ? "active" : status;
 }
 
+/** Delivery is a presentation phase, never evidence that a native turn started. */
+export function sessionReplyPresentation(
+  status: AgentSessionStatus,
+  command: AgentSessionCommand | undefined,
+  requestInFlight = false,
+  stopCommand?: AgentSessionCommand,
+): { labelKey: MessageKey; iconStatus: "active" | "waiting"; visualStatus: "active" | "idle" } | undefined {
+  if (!["active", "idle", "suspended"].includes(status)) return undefined;
+  if (requestInFlight) return { labelKey: "agentReplySendingShort", iconStatus: "active", visualStatus: "active" };
+  if (command?.kind !== "message") return undefined;
+  // A late list snapshot must not resurrect delivery of a message already
+  // superseded by a confirmed stop. A genuinely newer message can resume it.
+  if (stopCommand?.kind === "interrupt" && stopCommand.status === "delivered" && stopCommand.stopConfirmed
+    && Date.parse(stopCommand.createdAt) >= Date.parse(command.createdAt)) return undefined;
+  if (command.status === "delivery_unknown") return {
+    labelKey: "agentReplyDeliveryUnknownShort", iconStatus: "waiting", visualStatus: "idle",
+  };
+  if (command.status !== "queued" && command.status !== "delivering") return undefined;
+  return { labelKey: command.status === "queued" ? "agentReplyQueuedShort" : "agentReplyDeliveringShort",
+    iconStatus: "active", visualStatus: "active" };
+}
+
 export function replyBlockedLabelKey(reason: AgentSessionReplyBlockedReason | undefined):
   | "agentSessionStarting"
   | "agentSessionWorkFinishedReadOnly"

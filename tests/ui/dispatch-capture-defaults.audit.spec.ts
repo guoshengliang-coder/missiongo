@@ -74,6 +74,11 @@ for (const width of [375, 1440]) {
     await openDispatch();
     const form = page.locator(".dispatch-form");
     await expect(form.getByRole("combobox", { name: "Agent", exact: true })).toHaveAttribute("data-value", "codex");
+    // AND-490: remount with cached account defaults, without reloading the page.
+    await expect(form.getByRole("combobox", { name: "权限模式", exact: true })).toHaveAttribute("data-value", "auto");
+    await form.getByRole("button", { name: "取消", exact: true }).click();
+    await page.getByRole("button", { name: "派单", exact: true }).click();
+    await expect(form.getByRole("combobox", { name: "权限模式", exact: true })).toHaveAttribute("data-value", "auto");
     await chooseOption(form.getByRole("combobox", { name: "模型", exact: true }), "fixture-model");
     await chooseOption(form.getByRole("combobox", { name: "强度", exact: true }), "high");
     const save = form.getByRole("checkbox", { name: "设为默认值", exact: true });

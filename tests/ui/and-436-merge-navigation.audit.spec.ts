@@ -1,3 +1,4 @@
+import { refreshFromConsoleStream } from "./polling";
 import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 
@@ -55,11 +56,12 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
       return route.fulfill({ json: { ...summary, messages: [{ id: "answer", role: "agent", text: "集成会话正文", occurredAt: stamp }] } });
     });
     await page.goto(`/?product=${fixture.productId}&console=agent`);
-    await page.getByRole("button", { name: "待合并 1", exact: true }).click();
+    await page.getByRole("button", { name: "待集成 1", exact: true }).click();
     const dialog = page.getByRole("dialog");
     await dialog.locator(".merge-row input").check();
     await dialog.getByRole("button", { name: "下一步：配置 Agent" }).click();
     if (stalePoll) {
+      await refreshFromConsoleStream(page);
       await page.clock.runFor(5_000);
       await expect.poll(() => beforeReads).toBeGreaterThan(1);
     }

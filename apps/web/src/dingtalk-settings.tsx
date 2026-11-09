@@ -236,7 +236,7 @@ function BindingImportDialog({ onClose, onSaved }: { onClose: () => void; onSave
 
 export function DingTalkSettingsPage() {
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: api.listAccounts });
-  const bindings = useQuery({ queryKey: ["dingtalk-bindings"], queryFn: api.dingtalkBindings, refetchInterval: 5000 });
+  const bindings = useQuery({ queryKey: ["dingtalk-bindings"], queryFn: api.dingtalkBindings });
   const [search, setSearch] = useState("");
   const [importing, setImporting] = useState(false);
   const [imported, setImported] = useState(false);
@@ -272,7 +272,7 @@ export function DingTalkProjectSettings({productId}:{productId:string}) {
   </section>;
 }
 export function useItemDingTalkNotifications(itemKey:string|null) {
-  return useQuery({queryKey:["dingtalk-notifications",itemKey],queryFn:()=>api.dingtalkNotifications(itemKey!),enabled:Boolean(itemKey),refetchInterval:5000});
+  return useQuery({queryKey:["dingtalk-notifications",itemKey],queryFn:()=>api.dingtalkNotifications(itemKey!),enabled:Boolean(itemKey)});
 }
 export type ItemNotificationQuery=ReturnType<typeof useItemDingTalkNotifications>;
 
@@ -284,7 +284,7 @@ export function ItemDingTalkNotificationRecord({itemKey,pending,notice,canRetry}
 export function CommentDingTalkNotifications({itemKey,commentId,query,hasAudience,readOnly}:{itemKey:string;commentId:string;query:ItemNotificationQuery;hasAudience:boolean;readOnly:boolean}) {
   const {t}=useI18n();
   const [open,setOpen]=useState(false);
-  const specific=useQuery({queryKey:["comment-dingtalk-notifications",itemKey,commentId],queryFn:()=>api.commentDingtalkNotifications(itemKey,commentId),enabled:open,refetchInterval:open?5000:false});
+  const specific=useQuery({queryKey:["comment-dingtalk-notifications",itemKey,commentId],queryFn:()=>api.commentDingtalkNotifications(itemKey,commentId),enabled:open});
   const notices=specific.data?.notifications ?? query.data?.notifications.filter(notice=>notice.kind==="comment" && notice.commentId===commentId) ?? [];
   const status=notificationGroupStatus(notices);
   if(!hasAudience && !notices.length)return null;

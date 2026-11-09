@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 
 import { PAGES, THEMES, VIEWPORTS } from "./fixture.mjs";
+import { waitForNetworkQuiet } from "./polling";
 
 /**
  * Screenshot comparison, one per page, viewport and theme.
@@ -46,7 +47,7 @@ for (const viewport of VIEWPORTS) {
           await page.clock.setFixedTime(fixture.snapshotTime);
           await page.emulateMedia({ colorScheme: theme as "light" | "dark" });
           await page.goto(pageUnderTest.path(fixture));
-          await page.waitForLoadState("networkidle");
+          await waitForNetworkQuiet(page);
           await page.addStyleTag({ content: "*, *::before, *::after { transition: none !important; animation: none !important; }" });
           await page.waitForTimeout(200);
           // Lazy thumbnails start after IntersectionObserver, sometimes after

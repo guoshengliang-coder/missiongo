@@ -2,6 +2,7 @@ import { chooseOption } from "./select-helpers";
 import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
+import { waitForNetworkQuiet } from "./polling";
 import { AUDIT_SOURCE } from "./audit-page.mjs";
 import { WEB_ORIGIN } from "./fixture.mjs";
 
@@ -32,7 +33,7 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
       await expect(page.locator(".settings-page-title")).toContainText("基本资料");
       await expect(page).toHaveURL(new RegExp(`/settings/products/${fixture.productId}/product`));
       if (width === 1440) expect((await nav(page).boundingBox())!.y).toBe(top);
-      await page.waitForLoadState("networkidle");
+      await waitForNetworkQuiet(page);
       const audit = await page.evaluate(AUDIT_SOURCE) as { horizontalOverflow: number; text: Array<{ fontSize: number; fontWeight: number; contrast: number }>; targets: Array<{ width: number; height: number; where: string }> };
       expect(audit.horizontalOverflow).toBeLessThanOrEqual(0);
       expect(audit.text.filter(x => x.fontSize > 0 && x.fontSize < 11)).toEqual([]);

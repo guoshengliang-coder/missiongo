@@ -38,9 +38,9 @@ function PlanRecordDetails({sessionId}:{sessionId:string}) {
   useOverlay(selected!==undefined,()=>setSelected(undefined));
   useOverlay(Boolean(parent),()=>setParent(undefined));
   const pages=useInfiniteQuery({queryKey:["plan-records",sessionId],initialPageParam:undefined as number|undefined,
-    queryFn:({pageParam})=>api.getPlanRecords(sessionId,pageParam),getNextPageParam:page=>page.nextBefore,refetchInterval:5000});
+    queryFn:({pageParam})=>api.getPlanRecords(sessionId,pageParam),getNextPageParam:page=>page.nextBefore});
   const detail=useQuery({queryKey:["plan-record",sessionId,selected],enabled:selected!==undefined,
-    queryFn:()=>api.getPlanRecords(sessionId,undefined,selected),refetchInterval:5000});
+    queryFn:()=>api.getPlanRecords(sessionId,undefined,selected)});
   const parentDocument=useQuery({queryKey:["plan-record-parent",sessionId,parent],enabled:Boolean(parent),queryFn:()=>api.getPlanDocument(parent!)});
   const time=(value?:string)=>value ? new Date(value).toLocaleString(locale) : t("agentPlanUnknownTime");
   const record=detail.data?.records[0];

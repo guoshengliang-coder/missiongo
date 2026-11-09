@@ -119,7 +119,13 @@ export class PersonalNotifications {
     const coveredUnreadCount=(this.db.prepare(`SELECT count(*) AS count ${joins}
       WHERE ${scope.sql} AND ${needsReading} AND n.kind='verification'
         AND w.id IN (SELECT w.id ${todoJoins} WHERE ${todo.sql})`).get(...scope.args,...todo.args) as {count:number}).count;
-    return {count:todoCount+unreadCount-coveredUnreadCount,todoCount,unreadCount,coveredUnreadCount};
+    // Per-project split for the inbox project filter (AND-493). Both reuse the
+    // scopes above, so an inaccessible or archived product never appears.
+    const todoByProduct=this.db.prepare(`SELECT w.product_id AS productId,count(*) AS count ${todoJoins}
+      WHERE ${todo.sql} GROUP BY w.product_id`).all(...todo.args) as unknown as PersonalAttentionCount["todoByProduct"];
+    const unreadByProduct=this.db.prepare(`SELECT w.product_id AS productId,count(*) AS count ${joins}
+      WHERE ${scope.sql} AND ${needsReading} GROUP BY w.product_id`).all(...scope.args) as unknown as PersonalAttentionCount["unreadByProduct"];
+    return {count:todoCount+unreadCount-coveredUnreadCount,todoCount,unreadCount,coveredUnreadCount,todoByProduct,unreadByProduct};
   }
   list(account: AccountSnapshot, filter: PersonalNotificationFilter): PersonalNotificationPage {
     const scope=this.scope(account),extra=this.filter(filter);

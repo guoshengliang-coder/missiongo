@@ -11,10 +11,8 @@ import { AGENT_KINDS, type AgentKind } from "@missiongo/domain";
 import { api, ApiError } from "./api";
 import { errorMessageKey, localizedErrorText } from "./error-text";
 import { agentModels, effortLabelKey, effortOptions, groupModelsByProvider, modelDisplayLabel, reconcileEffort } from "./agent-model-options";
-import { NODE_LIST_REFETCH_MS } from "./node-install";
 import {
   ACTIVE_DISPATCHES_QUERY_KEY,
-  ACTIVE_DISPATCHES_REFETCH_MS,
   activeDispatchStatusKey,
 } from "./dispatch-conflicts";
 import {
@@ -117,7 +115,6 @@ export function DispatchDialog({
     // The dialog can wait out a machine that is momentarily not ready: readiness
     // travels with the heartbeat, and 30 seconds matches the rest of the console
     // (AND-151).
-    refetchInterval: NODE_LIST_REFETCH_MS,
   });
   const isNewSession = Boolean(newSession);
   const nodes = useMemo(() => (nodesQuery.data?.nodes ?? []).filter(node => !isNewSession || node.supportsFreeSessions), [nodesQuery.data, isNewSession]);
@@ -127,7 +124,7 @@ export function DispatchDialog({
   // anything. What no longer fits -- a machine gone, a model retired -- is
   // corrected by the effects below exactly as a manual pick would be.
   useEffect(() => {
-    if (defaultsApplied || !defaultsQuery.isFetched) return;
+    if (defaultsApplied || !defaultsQuery.isSuccess) return;
     setDefaultsApplied(true);
     const defaults = defaultsQuery.data;
     if (!defaults || touched) return;
@@ -141,14 +138,13 @@ export function DispatchDialog({
     setModel(saved.model ?? "");
     setEffort(saved.effort ?? "");
     if (defaults.nodeId) setNodeId(defaults.nodeId);
-  }, [agentKind, defaultsApplied, defaultsQuery.data, defaultsQuery.isFetched, touched]);
+  }, [agentKind, defaultsApplied, defaultsQuery.data, defaultsQuery.isSuccess, touched]);
   const itemKeys = useMemo(() => items.map((item) => item.key), [items]);
   const productIds = useMemo(() => isNewSession ? [projectId] : [...new Set(items.map((item) => item.productId))], [items, isNewSession, projectId]);
   const eligibility = useQuery({
     queryKey: [...ACTIVE_DISPATCHES_QUERY_KEY,"eligibility",...itemKeys],
     queryFn: () => api.checkRedispatch(itemKeys),
     enabled: itemKeys.length > 0 && !created && !handoff,
-    refetchInterval: ACTIVE_DISPATCHES_REFETCH_MS,
   });
   // Eligibility is required before submission; the write repeats the same guard
   // so a dispatch delivered after this check cannot be replaced accidentally.
@@ -162,16 +158,18 @@ export function DispatchDialog({
   // Land on a machine that can actually take the batch. Changing the agent can
   // invalidate the current pick, so this runs on every change rather than once.
   useEffect(() => {
-    if (nodes.length === 0 || !defaultsApplied) return;
+    if (nodes.length === 0 || (!defaultsApplied && !touched)) return;
     if (nodes.some((node) => node.id === nodeId && !ineligibility.get(node.id))) return;
     const firstEligible = nodes.find((node) => !ineligibility.get(node.id));
     setNodeId(firstEligible?.id ?? nodes[0]!.id);
-  }, [defaultsApplied, ineligibility, nodeId, nodes]);
+  }, [defaultsApplied, touched, ineligibility, nodeId, nodes]);
 
   const selectedAgent = nodes.find(node=>node.id===nodeId)?.agents.find(agent=>agent.kind===agentKind);
   useEffect(() => {
-    if (!modeExplicit) setMode(dispatchModeOrDefault(agentKind,undefined,selectedAgent?.modes,model || undefined));
-  },[agentKind,modeExplicit,selectedAgent?.modes,model]);
+    // Cached defaults and this effect can run in the same mount. Wait for the
+    // defaults transaction before deriving a mode from the previous render.
+    if ((defaultsApplied || touched) && !modeExplicit) setMode(dispatchModeOrDefault(agentKind,undefined,selectedAgent?.modes,model || undefined));
+  },[defaultsApplied,touched,agentKind,modeExplicit,selectedAgent?.modes,model]);
   const modeIssue = modeProblem(agentKind,mode,selectedAgent?.modes,model || undefined);
   const models = agentModels(nodes.find((node) => node.id === nodeId), agentKind);
   const modelUnavailable=Boolean(model && models && !models.some(entry=>entry.id===model));

@@ -189,9 +189,7 @@ export function startVersionWatch(options: { hasUnsavedInput: () => boolean }): 
     if (Date.now() - lastCheck >= FOREGROUND_CHECK_THROTTLE_MS) void check();
   });
 
-  window.setInterval(() => {
-    if (document.visibilityState === "visible") void check();
-  }, PERIODIC_CHECK_MS);
+  window.addEventListener("missiongo:console-connected", () => { void check(); });
 
   // The service worker says so as soon as its background refresh brings in a
   // different document, which is sooner than any timer here.

@@ -1,3 +1,4 @@
+import { refreshFromConsoleStream } from "./polling";
 import { chooseOption } from "./select-helpers";
 import { expect, test } from "@playwright/test";
 
@@ -29,11 +30,12 @@ for (const viewport of [{width:320,theme:"dark"},{width:724,theme:"light"},{widt
       await expect.poll(()=>selected.evaluate(el=>{const list=el.closest(".agent-console-session-list")!;const a=el.getBoundingClientRect(),b=list.getBoundingClientRect();return a.top>=b.top-1&&a.bottom<=b.bottom+1;})).toBe(true);
       await page.screenshot({path:info.outputPath("selected-conversation.png")});
       await list.evaluate(el=>{el.scrollTop=0;});
+      await refreshFromConsoleStream(page);
       await page.clock.fastForward(6_000);
       await expect.poll(()=>list.evaluate(el=>el.scrollTop)).toBe(0);
       if(viewport.width===320)await selected.click();
       for(const [next,label]of [["merging","合并中"],["publishing","发布中"],["merged","合并完成"],["published","已发布"],["publication_unknown","已合并 · 发布待核实"]]){
-        phase=next!;await page.clock.fastForward(16_000);
+        phase=next!;await refreshFromConsoleStream(page);await page.clock.fastForward(16_000);
         const notice=page.locator(`[data-session-delivery="${next}"]`);
         await expect(notice).toBeVisible();await expect(notice.locator("strong")).toHaveText(label!);
         await expect(page.locator(`.agent-console-session.active [data-merge-progress="${next}"]`)).toHaveCount(1);

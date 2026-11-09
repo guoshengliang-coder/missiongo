@@ -16,7 +16,7 @@ test.describe("AND-476 click help and integration defaults",()=>{
     const bodies:Record<string,unknown>[]=[];
     await page.route("**/merge-batches",route=>{bodies.push(route.request().postDataJSON());return route.fulfill({status:503,json:{title:"Synthetic lost acknowledgement"}});});
     await page.goto(`/?product=${product.id}&console=agent`);
-    await page.getByRole("button",{name:"待合并 7",exact:true}).click();
+    await page.getByRole("button",{name:"待集成 7",exact:true}).click();
     const dialog=page.getByRole("dialog").first();
     await expect(dialog.locator(".merge-check")).toHaveCount(4);
     for(const index of [1,4,6,7])await expect(dialog.locator(".merge-row").nth(index).locator(".merge-check")).toHaveCount(0);
@@ -50,7 +50,7 @@ test.describe("AND-476 click help and integration defaults",()=>{
       expect(size!.x-(label!.x+label!.width)).toBeLessThanOrEqual(8);
       expect(Math.abs((label!.y+label!.height/2)-(size!.y+size!.height/2)-(-1))).toBeLessThanOrEqual(1);
       await page.keyboard.press("Escape");await expect(panel).toHaveCount(0);await expect(help).toBeFocused();
-      await expect(dialog.getByRole("heading",{name:"待合并",exact:true})).toBeVisible();
+      await expect(dialog.getByRole("heading",{name:"待集成",exact:true})).toBeVisible();
     }
     await checkbox.check();
     const publish=dialog.getByRole("checkbox",{name:"合并后发布",exact:true});
@@ -70,13 +70,13 @@ test.describe("AND-476 click help and integration defaults",()=>{
     await dialog.getByRole("button",{name:"开始处理",exact:true}).click();await expect(dialog.getByRole("alert")).toBeVisible();
     await dialog.getByRole("button",{name:"重试原批次",exact:true}).click();
     await expect.poll(()=>bodies.length).toBe(2);expect(bodies[0]).toEqual(bodies[1]);expect(bodies[0]).toMatchObject({saveAsDefault:true,publish:false});
-    active=true;empty=false;await page.reload();await page.getByRole("button",{name:"待合并 7",exact:true}).click();
+    active=true;empty=false;await page.reload();await page.getByRole("button",{name:"待集成 7",exact:true}).click();
     await expect(dialog.locator(".merge-active-notice")).toBeVisible();await expect(dialog.locator(".merge-row")).toHaveCount(8);
     await dialog.getByRole("button",{name:"全选可选内容"}).click();await expect(dialog.getByRole("button",{name:"下一步：配置 Agent"})).toBeDisabled();
     await dialog.getByRole("button",{name:"查看改动与验证详情"}).first().click();await expect(page.getByRole("dialog")).toHaveCount(2);await page.keyboard.press("Escape");
     await page.screenshot({path:testInfo.outputPath("and-476-active-list.png"),fullPage:true});
-    empty=true;await page.reload();await page.getByRole("button",{name:"待合并 0",exact:true}).click();
-    await expect(dialog.getByText("当前没有待合并的改动",{exact:true})).toBeVisible();await expect(dialog.getByRole("button",{name:"全选可选内容"})).toBeDisabled();
+    empty=true;await page.reload();await page.getByRole("button",{name:"待集成 0",exact:true}).click();
+    await expect(dialog.getByText("当前没有待集成的改动",{exact:true})).toBeVisible();await expect(dialog.getByRole("button",{name:"全选可选内容"})).toBeDisabled();
     await expect(dialog.getByRole("button",{name:"进入合并会话"})).toBeEnabled();await expect(dialog.getByRole("button",{name:"下一步：配置 Agent"})).toBeDisabled();
     await page.screenshot({path:testInfo.outputPath("and-476-active-empty.png"),fullPage:true});
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
@@ -93,7 +93,7 @@ test("AND-476 saved integration preference takes priority and read failures can 
   await page.route("**/api/v1/dispatch-defaults",route=>route.fulfill({json:{nodeId:"dispatch-node",agentKind:"codex",agents:{codex:{mode:"auto"}}}}));
   await page.route("**/api/v1/integration-defaults",route=>failed?route.fulfill({status:503,json:{title:"Synthetic preference read failure"}}):route.fulfill({json:{nodeId:"integration-node",agentKind:"codex",agents:{codex:{mode:"default"}}}}));
   await page.route("**/merge-batches",route=>{posts++;return route.fulfill({status:503,json:{title:"Unexpected start"}});});
-  await page.goto(`/?product=${product.id}&console=agent`);await page.getByRole("button",{name:"待合并 1",exact:true}).click();
+  await page.goto(`/?product=${product.id}&console=agent`);await page.getByRole("button",{name:"待集成 1",exact:true}).click();
   const dialog=page.getByRole("dialog");await dialog.getByRole("button",{name:"全选可选内容"}).click();await dialog.getByRole("button",{name:"下一步：配置 Agent"}).click();
   await expect(dialog.getByText("集成默认配置加载失败，请重试后再开始处理。",{exact:false})).toBeVisible();
   await expect(dialog.getByRole("button",{name:"开始处理",exact:true})).toBeDisabled();

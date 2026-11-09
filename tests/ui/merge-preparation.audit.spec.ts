@@ -32,7 +32,7 @@ for (const surface of ["console", "panel"] as const) for (const width of [320, 1
       else { await page.goto(`/?product=${product.id}&item=${item.key}`); await page.locator(".execution-history > summary").click(); await page.locator(".execution-record > summary").filter({ hasText: "Fixture" }).click(); await page.locator(".agent-session-toggle").click(); }
     };
     await open();
-    const notice = page.getByRole("status", { name: "本地修改已完成，是否提交到待合并？" });
+    const notice = page.getByRole("status", { name: "本地修改已完成，是否提交到待集成？" });
     await expect(notice).toBeVisible(); await expect(notice).toContainText("不会立即合并或发布");
     await expect(page.locator(".agent-console-attention-banner")).toHaveCount(0);
     const draft = page.locator(surface === "console" ? ".agent-console-reply textarea" : ".agent-session-reply textarea");
@@ -44,16 +44,16 @@ for (const surface of ["console", "panel"] as const) for (const width of [320, 1
     }
     await page.screenshot({ path: testInfo.outputPath("local-merge-guide.png"), fullPage: true });
     // A send failure leaves the guide retryable and never consumes the chat draft.
-    await notice.getByRole("button", { name: "提交到待合并", exact: true }).click();
+    await notice.getByRole("button", { name: "提交到待集成", exact: true }).click();
     await expect(notice.getByRole("alert")).toBeVisible(); await expect(draft).toHaveValue("保留我的下一条草稿"); expect(commands).toBe(1);
     // Revalidation sees a different message even before the background detail poll catches up.
     latest = { ...report, id: "changed", text: "接下来先调整范围。" };
-    await notice.getByRole("button", { name: "提交到待合并", exact: true }).click();
+    await notice.getByRole("button", { name: "提交到待集成", exact: true }).click();
     await expect(notice).toHaveCount(0); expect(commands).toBe(1);
     latest = report; reject = false; await open(); await expect(notice).toBeVisible(); await draft.fill("仍保留草稿");
-    await notice.getByRole("button", { name: "提交到待合并", exact: true }).dblclick();
+    await notice.getByRole("button", { name: "提交到待集成", exact: true }).dblclick();
     await expect(notice).toHaveCount(0); await expect(draft).toHaveValue("仍保留草稿"); expect(commands).toBe(2);
-    await expect(page.getByText("已进入待合并状态", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("已加入待集成清单", { exact: true })).toHaveCount(0);
     // A dismissed guide stays dismissed across reload; a changed completion gets a new guide.
     currentCommand = undefined; latest = { ...report, id: "second" }; await open(); await expect(notice).toBeVisible();
     await notice.getByRole("button", { name: "暂不提交" }).click(); await open(); await expect(notice).toHaveCount(0);
@@ -66,7 +66,7 @@ for (const surface of ["console", "panel"] as const) for (const width of [320, 1
     await open(); await expect(notice).toBeVisible();
     // Revalidate the source completion too, even though the latest review did not change.
     history[0] = { ...report, id: "second", text: "审计发现问题，仍需补修。" };
-    await notice.getByRole("button", { name: "提交到待合并", exact: true }).click();
+    await notice.getByRole("button", { name: "提交到待集成", exact: true }).click();
     await expect(notice).toHaveCount(0); expect(commands).toBe(2);
   });
 }

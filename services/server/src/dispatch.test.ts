@@ -1214,6 +1214,25 @@ describe("Checkouts a node reports", () => {
 });
 
 describe("Dispatching a batch", () => {
+  it("keeps an installed Codex with an unconfirmed version visible but not dispatchable (AND-486)", async () => {
+    const { app, cookie } = await signedInApp();
+    const node = await registeredNode(app);
+    const mission = await readyItem(app, cookie, "Probe fixture", "PROBE486");
+    const reason = "Codex 已安装，但版本探测暂不可确认（timeout）；将自动复查，确认恢复前不能派单。";
+    const heartbeat = await app.inject({ method: "POST", url: "/api/v1/node/heartbeat",
+      headers: { authorization: `Bearer ${node.token}` }, payload: { agents: [{ kind: "codex", planApprovalProtocol: 1, version: "", ready: false, unavailableReason: reason }] } });
+    expect(heartbeat.statusCode).toBe(200);
+    const nodes = await app.inject({ method: "GET", url: "/api/v1/nodes", headers: { cookie } });
+    expect(nodes.json<{ nodes: Array<{ id: string; agents: unknown[] }> }>().nodes.find(entry => entry.id === node.nodeId)?.agents)
+      .toEqual([expect.objectContaining({ kind: "codex", ready: false, unavailableReason: reason })]);
+    await app.inject({ method: "PUT", url: `/api/v1/nodes/${node.nodeId}/repos`, headers: { cookie },
+      payload: { repos: [{ productId: mission.productId, repoPath: "/fixture/repository" }] } });
+    const dispatched = await app.inject({ method: "POST", url: "/api/v1/dispatches", headers: { cookie },
+      payload: { nodeId: node.nodeId, agentKind: "codex", mode: "auto", itemKeys: [mission.itemKey] } });
+    expect(dispatched.statusCode).toBe(409);
+    expect(dispatched.json()).toMatchObject({ code: "agent_not_ready" });
+  });
+
   it("keeps work queued until the node reports the expected Skill as ready", async () => {
     const { app, cookie } = await signedInApp();
     const node = await registeredNode(app);
