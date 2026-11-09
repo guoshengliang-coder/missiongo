@@ -38,7 +38,8 @@ describe("personal message center",()=>{
     const id=enqueuePersonalNotification(f.store.database,{itemId:f.item.id,productId:f.product.id,accountId:f.member.id,kind:"verification",businessEventId:eventId,createdAt:at})!;
     const page=f.service.list(f.member,{kind:"verification"});
     expect(page.notifications.map(n=>n.id)).toEqual([id]);
-    expect(f.service.attentionCount(f.member)).toEqual({count:1,todoCount:0,unreadCount:1,coveredUnreadCount:0});
+    expect(f.service.attentionCount(f.member)).toEqual({count:1,todoCount:0,unreadCount:1,coveredUnreadCount:0,
+      todoByProduct:[],unreadByProduct:[{productId:f.product.id,count:1}]});
     f.service.markAllRead(f.member,page.throughSequence,{kind:"verification"});
     expect(f.service.detail(f.member,id).readAt).not.toBeNull();
     expect(f.service.count(f.member)).toBe(0);
@@ -244,8 +245,10 @@ describe("personal message center",()=>{
     const counts=f.service.attentionCount(f.member);
     const ordered=(rows:readonly {productId:string;count:number}[])=>rows.slice().sort((a,b)=>a.productId.localeCompare(b.productId));
     expect(ordered(counts.todoByProduct)).toEqual(ordered([{productId:f.product.id,count:1},{productId:visible.id,count:1}]));
-    expect(ordered(counts.unreadByProduct)).toEqual(ordered([{productId:f.product.id,count:1},{productId:visible.id,count:1}]));
-    expect(counts).toMatchObject({todoCount:2,unreadCount:2,coveredUnreadCount:2,count:2});
+    // Ordinary delivery reminders are hidden by AND-494's visibleNotice, so the
+    // per-project unread split stays empty while both products keep their todo.
+    expect(ordered(counts.unreadByProduct)).toEqual([]);
+    expect(counts).toMatchObject({todoCount:2,unreadCount:0,coveredUnreadCount:0,count:2});
     // An inaccessible product never leaks into the per-project split.
     expect([...counts.todoByProduct,...counts.unreadByProduct].some(row=>row.productId===hidden.id)).toBe(false);
   });
