@@ -5,6 +5,8 @@ const integer = (value, min, max) => Number.isInteger(value) && value >= min && 
 export function validateBudget(config) {
   assert.equal(config?.version, 1, "Unknown performance budget version");
   assert.ok(["advisory", "blocking"].includes(config.ciMode), "Invalid CI mode");
+  assert.equal(config.timingUnit, "process-cpu-ms", "Budget units must match the synchronous CPU measurement");
+  assert.ok(integer(config.maxCiDurationMs, 1000, 25_000) && integer(config.maxLocalDurationMs, config.maxCiDurationMs, 120_000), "Invalid process deadlines");
   assert.ok(typeof config.reason === "string" && config.reason.trim(), "Budget changes need a reason");
   assert.ok(typeof config.baselineEvidence === "string" && config.baselineEvidence.trim(), "Missing baseline evidence");
   assert.ok(integer(config.samples, 3, 15) && config.samples % 2 === 1, "Need an odd sample count, 3..15");
@@ -59,11 +61,11 @@ export function performanceMarkdown(report) {
     report.mode === "advisory" ? "Performance warnings do not block CI during observation. Green CI is not a passing budget." : "Local/blocking mode fails on exceeded or invalid measurements.", "",
     `Commit: ${report.head} · Run/attempt: ${report.runId ?? "local"}/${report.attempt ?? "local"} · Config: ${report.configDigest}`,
     `Fixture: ${report.shape.items} items, ${report.shape.events} events, ${report.shape.deliveries} deliveries, ${report.shape.batches} batches.`,
-    `Calibration: ${f(report.calibration.medianMs)}ms/read, scale ${f(report.calibration.scale)}, relative IQR ${f(report.calibration.relativeIqr)} (${report.calibration.valid ? "valid" : "INVALID"}).`,
+    `Calibration: ${f(report.calibration.medianMs)} CPU ms/read, scale ${f(report.calibration.scale)}, relative IQR ${f(report.calibration.relativeIqr)} (${report.calibration.valid ? "valid" : "INVALID"}).`,
     ...(report.calibration.reason ? [report.calibration.reason] : []), "",
-    "| Target | Median ms | Effective budget ms | Normalized ms | Suggested reference ms | Result |",
-    "|---|---:|---:|---:|---:|---|",
-    ...report.targets.map(t => `| ${t.name} | ${f(t.medianMs)} | ${f(t.effectiveBudgetMs)} | ${f(t.normalizedMs)} | ${f(t.suggestedReferenceBudgetMs)} | ${t.status} |`), "",
+    "| Target | Median CPU ms | Median wall ms | Effective CPU budget ms | Normalized CPU ms | Suggested reference CPU ms | Result |",
+    "|---|---:|---:|---:|---:|---:|---|",
+    ...report.targets.map(t => `| ${t.name} | ${f(t.medianMs)} | ${t.wallSamplesMs ? f(median(t.wallSamplesMs)) : "unknown"} | ${f(t.effectiveBudgetMs)} | ${f(t.normalizedMs)} | ${f(t.suggestedReferenceBudgetMs)} | ${t.status} |`), "",
     "Suggested budgets are diagnostic data for review, never an automatic update or permission to accept a regression.",
     `Stages ms: fixture ${f(report.timings.fixtureMs)}, calibration ${f(report.timings.calibrationMs)}, warmup ${f(report.timings.warmupMs)}, samples ${f(report.timings.samplesMs)}, total ${f(report.timings.totalMs)}.`,
     "Total is this performance process, not the full CI increment; add the HTTP contract and runner overhead when reviewing the <30s goal.", ""].join("\n");

@@ -18,6 +18,7 @@ export function summarizeObservations(reports, ledger, configDigest) {
   let invalid = 0, unrelated = 0, unreviewed = 0, reviewed = 0, falsePositives = 0, regressions = 0;
   const days = new Set(), identities = new Set();
   for (const report of reports) {
+    if (typeof report.configDigest !== "string") { invalid++; continue; }
     if (report.configDigest !== configDigest) { unrelated++; continue; }
     const key = `${report.runId}/${report.attempt}`;
     assert.ok(!identities.has(key), "Duplicate report/run attempt"); identities.add(key);

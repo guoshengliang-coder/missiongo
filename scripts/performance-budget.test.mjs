@@ -48,7 +48,8 @@ test("versioned configuration rejects missing reasons, modes, targets and invali
   assert.equal(validateBudget(config), config);
   for (const edit of [c => c.version++, c => c.ciMode = "skip", c => c.reason = "", c => c.samples = 2,
     c => c.warmups = 0, c => c.baseline.referenceMs = 0, c => c.baseline.maxScale = 1000,
-    c => c.shape.batches = 0, c => delete c.targets["merge-deliveries"], c => c.targets["item-list"].iterations = 0]) {
+    c => c.shape.batches = 0, c => delete c.targets["merge-deliveries"], c => c.targets["item-list"].iterations = 0,
+    c => c.timingUnit = "wall-ms", c => c.maxCiDurationMs = 0, c => c.maxLocalDurationMs = 999999]) {
     const changed = structuredClone(config); edit(changed); assert.throws(() => validateBudget(changed));
   }
 });

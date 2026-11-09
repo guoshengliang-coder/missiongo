@@ -52,8 +52,13 @@ authorization/scope cannot silently skip the expensive branches.
 Targets reuse the actual synchronous operations composed by the merge-deliveries
 HTTP route (list, batches, attention, sessionProgress), plus item list and summary.
 This excludes HTTP/authentication/network cost. No implementation algorithm is
-copied. Seven samples after warmup are retained, taking their median. Summary
-reads are grouped to reduce sub-millisecond timer noise.
+copied. Seven samples after warmup are retained, taking their median. Score
+**process CPU milliseconds (user + system)** for the synchronous work, retaining
+each sample's monotonic wall time separately. Summary reads are grouped to reduce
+sub-millisecond timer noise. A later wall-only local run over budgeted normal code
+during contention: the baseline changed ~20% but wall time changed much more.
+CPU scoring avoids classifying descheduling as extra CPU computation. It includes
+process GC/background CPU and is not an end-user response latency SLA.
 
 The independent baseline is a fixed single-product read, 10,000 operations per
 sample. `scale = measured baseline / reference baseline`; effective target budget
@@ -64,7 +69,7 @@ Mathematical tests cover common machine drift versus isolated 5x regressions.
 Real CI calibration still needs the observation period; this is no promise that
 all CPU, SQLite, memory and scheduler effects scale identically.
 
-Initial darwin-arm64 Node 22.23.2 measurements were ~825ms for the full associated
+Initial darwin-arm64 Node 22.23.2 low-contention wall measurements were ~825ms for the full associated
 merge projection, ~88ms for a 100-item list, ~0.027ms for summary and ~0.006ms for
 the product baseline. This larger associated fixture already exceeds the item's
 illustrative 100–150ms. Initial reference budgets are 1250/140/0.09ms: reviewed
@@ -72,10 +77,20 @@ headroom above normal, below 5× normal. They are not production latency SLAs.
 **Do not shrink the fixture to meet an assumed 150ms figure.** Any configuration
 change must explain measured data, calibration/shape changes and reason in its PR.
 The runner prints suggested values; it never edits budgets or accepts a regression.
+The same numerical budgets were retained when changing the explicit unit to CPU
+time, rather than increasing limits to hide the wall-only failure. First CPU run:
+~840 CPU ms / 821 wall ms merge, ~92 CPU ms list; calibration ~0.0065 CPU ms/read.
 
 Initial local performance-process time was ~11.5s including ~3.8s fixture creation;
 the HTTP tests add ~2s plus test startup. The <30s CI-increment goal must still be
 checked on actual Actions steps; local duration alone does not prove it.
+An independent parent process kills the performance child after the configured
+25s CI wall deadline (120s locally for deliberate mutation experiments), including
+when synchronous code cannot service a timer. It reports an **invalid/incomplete**
+measurement, advisory exit 0 or blocking exit 1; it never fabricates target values.
+Correctness/configuration errors keep their failure codes in either mode.
+The deadline bounds the performance child, not artifact upload, TypeScript startup
+or HTTP contracts; actual complete CI increment remains to be measured.
 
 ## Diagnostic regression experiments
 
@@ -95,6 +110,11 @@ regression experiment, not a reconstruction of the production incident. Source
 matching assertions fail if implementation changes, so stale experiments cannot
 quietly run unchanged code. Preserve mutation reports separately before running a
 normal measurement; mutation samples never count towards the observation week.
+
+To verify that scheduling delay does not masquerade as extra synchronous CPU,
+use the `scheduling` mutation with the same command: it adds a deliberate 500ms
+sleep to each merge projection. The CPU budget should pass while recorded wall
+time increases. This synthetic pause is not an actual CI-machine drift measurement.
 
 ## Observe for at least a week, then review promotion
 

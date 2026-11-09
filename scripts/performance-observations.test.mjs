@@ -14,7 +14,7 @@ test("no evidence, local/dirty/invalid runs and unreviewed warnings never prove 
   const r = report(1, "exceeded");
   assert.equal(summarizeObservations([r], ledger([]), digest).unreviewed, 1);
   for (const edit of [r => r.runId = null, r => r.dirty = true, r => r.calibration.valid = false,
-    r => r.status = "incomplete", r => r.targets = [], r => r.experiment = "fivefold", r => r.targets[0].name = "wrong"]) {
+    r => r.status = "incomplete", r => r.targets = [], r => r.experiment = "fivefold", r => r.targets[0].name = "wrong", r => delete r.configDigest]) {
     const broken = report(1); edit(broken);
     const result = summarizeObservations([broken], ledger([report(1)]), digest);
     assert.equal(result.invalid, 1); assert.equal(result.eligibleForBlockingReview, false);
