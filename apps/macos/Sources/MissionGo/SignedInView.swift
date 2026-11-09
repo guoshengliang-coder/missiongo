@@ -351,7 +351,6 @@ private struct AgentMark: View {
 
 private struct VersionStatusSection: View {
     @EnvironmentObject private var model: AppModel
-    @State private var confirmsImmediateRestart = false
 
     var body: some View {
         MenuGroup(title: "版本与更新", symbol: "shippingbox", trailing: AnyView(
@@ -393,32 +392,8 @@ private struct VersionStatusSection: View {
                 }
                 .frame(minHeight: 32)
                 if let activity = model.updateActivity {
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        Text(activity.detail(now: context.date))
-                            .font(.caption)
-                            .foregroundStyle(MenuPalette.secondaryText)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    if activity.stage == .downloading {
-                        ProgressView(value: activity.fraction)
-                            .accessibilityLabel("更新下载进度")
-                    }
-                    if activity.stage.canCancel && model.updateState.isBusy {
-                        Button("取消下载") { model.cancelUpdate() }
-                            .font(.caption)
-                    }
-                    if activity.stage == .waiting {
-                        Button("立即重启更新") { confirmsImmediateRestart = true }
-                            .font(.caption)
-                    }
-                    DisclosureGroup("本次更新诊断") {
-                        Text(activity.diagnostics)
-                            .font(.caption)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Button("复制诊断") { model.copyToClipboard(activity.diagnostics) }
-                            .font(.caption)
-                    }
+                    Text(activity.stage.rawValue).foregroundStyle(MenuPalette.secondaryText)
+                    Button("查看更新进度与操作") { model.showClientUpdate() }.font(.caption)
                 }
                 if case let .available(update) = model.updateState {
                     Button("查看 \(update.version) 的更新内容") { model.showAvailableUpdate() }
@@ -434,12 +409,6 @@ private struct VersionStatusSection: View {
             .font(.caption)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-        }
-        .alert("立即重启 MissionGo？", isPresented: $confirmsImmediateRestart) {
-            Button("继续等待", role: .cancel) {}
-            Button("立即重启") { model.restartInstalledUpdate(immediately: true) }
-        } message: {
-            Text("立即打开已安装的新版本可能中断正在启动的派单或尚未完成的结果回传。已启动的 Agent 会继续运行。")
         }
     }
 

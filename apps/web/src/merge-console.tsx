@@ -216,7 +216,7 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
       <div className="merge-list">{candidates.map(d=><div className="merge-row" key={d.id}>
         <label><input type="checkbox" checked={Boolean(selected[d.id])} disabled={locked||(d.blocker==="changed"&&!selected[d.id])}
           onChange={e=>setSelected(prev=>{const next={...prev};if(e.target.checked)next[d.id]=d.revision;else delete next[d.id];return next;})}/>
-          <span><strong>{d.summary}</strong><small>{d.itemKeys.join(" · ") || `PR #${d.pullRequestUrl.split("/").at(-1)}`}</small><small>{t("mergeAffected")}: {d.requiredArtifacts.map(a=>a==="web"?"Web":a==="macosApp"?"macOS":a==="androidApp"?"Android":a).join(" / ") || d.noReleaseReason}</small><span className="merge-check" data-check={d.blocker??"passed"}><strong>{t(checkLabel(d.blocker))}</strong><small>{t(checkImpact(d.blocker))}</small></span></span></label>
+          <span><strong>{d.summary}</strong><small>{d.itemKeys.join(" · ") || `PR #${d.pullRequestUrl.split("/").at(-1)}`}</small><small>{t("mergeAffected")}: {d.requiredArtifacts.map(a=>a==="web"?"Web":a==="macosApp"?"macOS":a==="androidApp"?"Android":a).join(" / ") || d.noReleaseReason}</small>{["failed","conflicting","dependency","changed"].includes(d.blocker??"")&&<span className="merge-check" data-check={d.blocker}><strong>{t(checkLabel(d.blocker))}</strong><small>{t(checkImpact(d.blocker))}</small></span>}</span></label>
         <button type="button" className="text-button merge-detail-button" onClick={()=>setDetail(d)}>{t("mergeDetails")}</button>
       </div>)}</div>
       </div>

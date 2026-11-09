@@ -31,9 +31,10 @@ private final class TestUpdateService: ClientUpdateService, @unchecked Sendable 
     let progress = Locked<(@Sendable (Int, Int, TimeInterval) -> Void)?>(nil)
     var failRelaunch = false
 
-    init(version: String = "1.1") throws {
+    init(version: String = "1.1", longNotes: Bool = false) throws {
+        let notes = longNotes ? String(repeating: "长更新说明，保持进度和底部操作可见。", count: 200) : "简短更新说明"
         let manifest = try AppUpdater.decode(manifest: Data("""
-        {"version":"\(version)","sha256":"\(String(repeating: "a", count: 64))","size":6,"downloadPath":"/update.zip"}
+        {"version":"\(version)","sha256":"\(String(repeating: "a", count: 64))","size":6,"downloadPath":"/update.zip","releaseNotes":[{"pullRequestNumber":1,"title":"更新","items":[{"key":"TEST-1","title":"\(notes)"}]}]}
         """.utf8))
         update = AppUpdater.Available(current: "1.0", manifest: manifest)
         checkedUpdate = update
@@ -212,5 +213,67 @@ final class UpdateLifecycleTests: XCTestCase {
             }
         }
     }
+    @MainActor func testUpdateWindowKeepsConsentProgressAndRestartActionsInOneSurface() async throws {
+        _ = NSApplication.shared
+        let service = try TestUpdateService()
+        let model = try model(service)
+        XCTAssertTrue(model.canRetryClientUpdate)
+        let controller = ClientUpdateWindowController(model: model)
+        let originalWindow = controller.window
+        model.retryClientUpdate()
+        await fulfillment(of: [service.began], timeout: 2)
+        XCTAssertFalse(model.canRetryClientUpdate)
+        XCTAssertFalse(controller.windowShouldClose(originalWindow))
+        model.cancelUpdate()
+        XCTAssertTrue(controller.windowShouldClose(originalWindow))
+        XCTAssertTrue(model.canRetryClientUpdate)
+        XCTAssertTrue(originalWindow === controller.window)
+        await service.gate.release()
+        await fulfillment(of: [service.downloadReturned], timeout: 2)
+    }
+
+    @MainActor func testPersistentOfferTracksSameVersionManifestAndWithdrawal() throws {
+        let service = try TestUpdateService()
+        let model = try model(service)
+        model.applyCheckedUpdate(service.update, current: "1.0", manual: false)
+        let revised = try TestUpdateService(longNotes: true).update
+        model.applyCheckedUpdate(revised, current: "1.0", manual: false)
+        XCTAssertEqual(model.updateOffer?.manifest, revised.manifest)
+        model.applyCheckedUpdate(nil, current: "1.0", manual: true)
+        XCTAssertNil(model.updateOffer)
+        XCTAssertEqual(model.updateState, .current("1.0"))
+        XCTAssertFalse(model.canRetryClientUpdate)
+    }
+
+    @MainActor func testUpdateWindowStagesRenderAtNarrowSizesInBothThemes() async throws {
+        _ = NSApplication.shared
+        let service = try TestUpdateService(longNotes: true)
+        for stage: UpdateActivity.Stage in [.downloading, .security, .waiting, .restartFailed, .failed, .cancelled] {
+            var activity = UpdateActivity(version: "1.1", size: 6)
+            activity.move(to: stage)
+            let model = try model(service, activity: activity)
+            let controller = ClientUpdateWindowController(model: model)
+            controller.show()
+            defer { controller.window.close() }
+            for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+                controller.window.appearance = NSAppearance(named: appearance)
+                for width in [390, 640] {
+                    controller.window.setContentSize(NSSize(width: width, height: 440))
+                    let host = try XCTUnwrap(controller.window.contentView)
+                    host.layoutSubtreeIfNeeded()
+                    try await Task.sleep(nanoseconds: 50_000_000)
+                    controller.window.displayIfNeeded()
+                    XCTAssertLessThanOrEqual(host.fittingSize.width, CGFloat(width) + 1)
+                    if let directory = ProcessInfo.processInfo.environment["MISSIONGO_UI_CAPTURE_DIRECTORY"] {
+                        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                        host.cacheDisplay(in: host.bounds, to: bitmap)
+                        let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                        try png.write(to: URL(fileURLWithPath: directory).appendingPathComponent("update-dialog-\(stage)-\(appearance.rawValue)-\(width).png"))
+                    }
+                }
+            }
+        }
+    }
+
 }
 #endif

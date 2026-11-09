@@ -1873,7 +1873,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   // AND-356: acceptance belongs to a person with a project role or the
   // account that proposed the item, independently of ordinary operation rights.
-  function canVerifyItem(request: FastifyRequest, item: ReturnType<MissionGoStore["getWorkItem"]>): boolean {
+  function canVerifyItem(request: FastifyRequest, item: Omit<ReturnType<MissionGoStore["getWorkItem"]>,"description"|"report"|"attachments"|"diagnosticSummary">): boolean {
     if (unauthenticatedDeployment) return true; // The local console's synthetic administrator.
     const account = sessionAccount(request);
     if (!account) return false; // A deployment/AI token is not a human account.
@@ -4360,7 +4360,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       : typeof query.builder === "string" && query.builder ? query.builder : undefined;
     const builderFilter = { ...parseItemFilters(query, () => requireAccount(request).id), ...(builderAccountId !== undefined ? { builderAccountId } : {}) };
     const effectiveLimit = limit ?? 50;
-    const items = store.listWorkItems({
+    const list = query.projection === "list" ? store.listWorkItemRows.bind(store) : store.listWorkItems.bind(store);
+    const items = list({
       ...builderFilter,
       productId,
       ...(typeof query.status === "string" ? { status: query.status as never } : {}),
@@ -4436,7 +4437,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return withCreatorNames([withTransferReferences(request, store.getWorkItem(requireItemPermission(request, itemKey)))])[0];
   });
 
-  function withTransferReferences(request: FastifyRequest, item: ReturnType<MissionGoStore["getWorkItem"]>) {
+  function withTransferReferences(request: FastifyRequest, item: Omit<ReturnType<MissionGoStore["getWorkItem"]>,"description"|"report"|"attachments"|"diagnosticSummary">) {
     const accountId=sessionAccount(request)?.id;
     const roles=itemRoles(store.database,item,accountId);
     const archived=Boolean(store.getProduct(item.productId).archivedAt);

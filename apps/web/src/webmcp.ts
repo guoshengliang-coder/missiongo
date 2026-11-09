@@ -1,4 +1,5 @@
-import { COMPONENT_KINDS, ITEM_PRIORITIES, ITEM_TYPES, type WorkItem, type WorkItemEnvironment, type WorkItemPriority, type WorkItemType } from "./types";
+import { isItemListRow } from "./types";
+import { COMPONENT_KINDS, ITEM_PRIORITIES, ITEM_TYPES, type WorkItem, type WorkItemRow, type WorkItemEnvironment, type WorkItemPriority, type WorkItemType } from "./types";
 
 export interface WebMcpTool {
   readonly name: string;
@@ -18,7 +19,7 @@ export interface ModelContextLike {
 
 export interface MissionGoWebMcpOptions {
   readonly product: { readonly id: string; readonly name: string };
-  readonly visibleItems: readonly WorkItem[];
+  readonly visibleItems: readonly WorkItemRow[];
   readonly activeFilters: { readonly status: string; readonly type: string; readonly search: string };
   readonly createItem: (input: {
     readonly title: string;
@@ -27,7 +28,7 @@ export interface MissionGoWebMcpOptions {
     readonly priority: WorkItemPriority;
     readonly platform: WorkItemEnvironment["platform"];
   }) => Promise<WorkItem>;
-  readonly openItem: (itemKey: string) => WorkItem;
+  readonly openItem: (itemKey: string) => WorkItemRow;
   readonly reportError?: (error: unknown) => void;
 }
 
@@ -80,15 +81,15 @@ export function registerMissionGoWebMcp(
       return {
         product: options.product,
         filters: options.activeFilters,
-        items: options.visibleItems.map(({ key, title, type, priority, status, environment, attachments, updatedAt }) => ({
-          key,
-          title,
-          type,
-          priority,
-          status,
-          environment,
-          attachmentCount: attachments?.length ?? 0,
-          updatedAt,
+        items: options.visibleItems.map(item => ({
+          key: item.key,
+          title: item.title,
+          type: item.type,
+          priority: item.priority,
+          status: item.status,
+          environment: item.environment,
+          attachmentCount: isItemListRow(item) ? item.listSummary.attachmentCount : item.attachments.length,
+          updatedAt: item.updatedAt,
         })),
       };
     },

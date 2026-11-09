@@ -2,11 +2,13 @@ import { expect, test } from "@playwright/test";
 
 for (const surface of ["console", "panel"] as const) for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const) {
   test(`local completion offers delivery on ${surface} ${width} ${theme}`, async ({ page, request }, testInfo) => {
+    await page.clock.setFixedTime(new Date("2026-11-08T10:45:00.000Z"));
     await page.setViewportSize({ width, height: 950 }); await page.emulateMedia({ colorScheme: theme });
     const product = await (await request.post("/api/v1/products", { data: { name: "Local delivery", keyPrefix: `LP${surface[0]!.toUpperCase()}${width}${theme[0]!.toUpperCase()}` } })).json();
     const item = await (await request.post("/api/v1/items", { data: { productId: product.id, type: "task", priority: "normal", status: "ready", title: "Local completion", description: "Fixture", environment: { platform: "web" } } })).json();
-    const id = "prepare-session", stamp = new Date().toISOString();
-    const report = { id: "final", sourceId: "final", role: "agent", phase: "final_answer", occurredAt: stamp, text: "已完成本地修复并提交 `dacc633a`，检查与 66 项 UI 回归通过。尚未推送、合并或发布，条目保持处理中。" };
+    const id = "prepare-session", stamp = "2026-11-08T10:43:09.626Z";
+    const report = { id: "final", sourceId: "final", role: "agent", phase: "final_answer", occurredAt: stamp, text: "已按批准方案完成并本地提交 `06a98a04`：\n\n- 列表隐藏派单标签，详情保留“派单会话”。\n- 统一“派单会话／非派单会话”及筛选名称。\n- 完整检查、42 个相关 UI 场景通过，结果已回写条目。\n\n尚未推送、创建 PR、合并或发布；条目保持处理中。真实设备及线上效果待发布后验证。" };
+    let history: typeof report[] = [];
     let latest = report, reject = true, commands = 0, currentCommand: unknown, registered = false;
     const summary = { id, agentSessionId: id, productId: product.id, dispatchId: "prep-dispatch", agentKind: "codex", status: "idle", createdAt: stamp, updatedAt: stamp,
       nodeName: "Fixture", nodeId: "node", nodeConnectionState: "online", mode: "auto", dispatchStatus: "launched", activities: [], settings: {}, unread: false,
@@ -16,12 +18,12 @@ for (const surface of ["console", "panel"] as const) for (const width of [320, 1
       const path = new URL(route.request().url()).pathname;
       if (route.request().method() === "POST" && path.endsWith("/commands")) {
         commands++; const body = route.request().postDataJSON();
-        expect(body.text).toContain("dacc633a"); expect(body.text).toContain("不要执行合并或发布"); expect(body.text).toContain("我授权推送");
+        expect(body.text).toContain("06a98a04"); expect(body.text).toContain("不要执行合并或发布"); expect(body.text).toContain("我授权推送");
         if (reject) return route.fulfill({ status: 503, json: { title: "Synthetic send failure" } });
-        currentCommand = { id: "submitted", kind: "message", text: body.text, status: "queued", createdAt: new Date().toISOString() };
+        currentCommand = { id: "submitted", kind: "message", text: body.text, status: "queued", createdAt: "2026-11-08T10:45:00.000Z" };
         return route.fulfill({ json: currentCommand });
       }
-      return route.fulfill({ json: path === "/api/v1/agent-sessions" ? { sessions: [summary] } : { ...summary, messages: [latest], command: currentCommand } });
+      return route.fulfill({ json: path === "/api/v1/agent-sessions" ? { sessions: [summary] } : { ...summary, messages: [...history, latest], command: currentCommand } });
     });
     await page.route("**/api/v1/items/*/dispatches", route => route.fulfill({ json: { dispatches: [{ id: summary.dispatchId, agentSessionId: id, agentKind: "codex", mode: "auto", nodeName: "Fixture", status: "launched", createdAt: stamp, itemKeys: [item.key] }] } }));
     await page.route("**/merge-deliveries", route => route.fulfill({ json: { deliveries: [], batches: [], attentionSessionIds: registered ? [id] : [] } }));
@@ -57,5 +59,14 @@ for (const surface of ["console", "panel"] as const) for (const width of [320, 1
     await notice.getByRole("button", { name: "暂不提交" }).click(); await open(); await expect(notice).toHaveCount(0);
     latest = { ...report, id: "third" }; registered = true; await open(); await expect(notice).toHaveCount(0);
     expect(commands).toBe(2);
+    // A clean read-only review offers a fresh choice after the earlier guide was dismissed.
+    registered = false;
+    history = [{ ...report, id: "second" }, { ...report, id: "review-request", role: "user", text: "做一次审计检查" }];
+    latest = { ...report, id: "review-result", text: "复审完成，未发现新的需补修问题。本轮未修改代码，未推送、合并或发布。" };
+    await open(); await expect(notice).toBeVisible();
+    // Revalidate the source completion too, even though the latest review did not change.
+    history[0] = { ...report, id: "second", text: "审计发现问题，仍需补修。" };
+    await notice.getByRole("button", { name: "提交到待合并", exact: true }).click();
+    await expect(notice).toHaveCount(0); expect(commands).toBe(2);
   });
 }
