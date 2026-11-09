@@ -65,6 +65,9 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
         expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
         expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
         expect(await row.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+        const group = await page.locator(".agent-run-group").boundingBox();
+        const controls = await row.boundingBox();
+        expect(Math.abs((controls!.x + controls!.width / 2) - (group!.x + group!.width / 2))).toBeLessThanOrEqual(1);
         const before = await details.locator("summary").boundingBox();
         const beforeStop = await stop.boundingBox();
         await details.locator("summary").click();
