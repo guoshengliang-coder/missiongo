@@ -1,5 +1,5 @@
 import { itemRoles, transitionPolicy } from "./item-policy.js";
-import { deliveryExplanation } from "./delivery-explanation.js";
+import { deliveryExplanations } from "./delivery-explanation.js";
 import { BuilderHandovers } from "./builder-handovers.js";
 import { assertBuilderExecution, requiresExecutionStopCheck } from "./builder-authority.js";
 import { confirmItemExecutionStopped, itemExecutionBlockers } from "./item-execution-blockers.js";
@@ -128,7 +128,8 @@ export function registerItemDeliveryRoutes(app: FastifyInstance, {store, account
     const manualClaimBlocked = item.status === "ready" && roles.operate && (roles.builder || roles.executor || !item.builderAccountId)
       && (!item.builderHandover || item.builderHandover.status === "completed")
       && transitionPolicy(store.database,item,account.id,"in_progress","claim","human",roles).code === "execution_stop_unconfirmed";
-    return { deliveries:store.getDeliveryRecords(itemKey), deliveryExplanation:deliveryExplanation(store,itemKey), manualClaimBlocked, builderHandover: item.builderHandover,
+    const deliveries=store.getDeliveryRecords(itemKey),explanations=deliveryExplanations(store,itemKey,deliveries);
+    return { deliveries, deliveryExplanation:explanations.at(-1), deliveryExplanations:explanations, manualClaimBlocked, builderHandover: item.builderHandover,
       canTakeOver: Boolean(item.builderHandover?.canTakeOver && item.builderAccountId === account.id && accounts.allows(account,item.productId,"operate") && accounts.allows(account,item.productId,"ai")), builderAccountId: item.builderAccountId ?? null, builderName: item.builderName ?? null,
       builderNeedsReassignment: item.builderNeedsReassignment ?? false, canManage: manages(account,item), canManageBuilder: managesBuilder(account,item), currentAccountId: account.id,
       candidates: candidates(item.productId).map(row => ({id:row.id,name:name(row.id)})),

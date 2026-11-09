@@ -31,7 +31,18 @@ function setup() {
     store.transitionWorkItem({itemKey:stale.key,to:"ready",reason:"verification_failed",actor:"human",note:"Rework required",attribution:{accountId}});
     store.submitForVerification({itemKey:partial.key,developmentEventId:store.getDevelopmentEvidence(partial.key).handover!.id,
       completion:{kind:"commit",commit:"a".repeat(40),targetBranch:"main"},releases:[{artifact:"web",version:"1",sourceCommit:"a".repeat(40)}],deployedCommit:"a".repeat(40),receiptDigest:"a".repeat(64),attribution:{accountId},idempotencyKey:randomUUID()});
-    return {product,blocked,stale,partial,noRelease,sessionId,nodeId:node.nodeId};
+    const mixed=create("多份交付逐份提示缺失依据");
+    store.claimWorkItem({itemKey:mixed.key,agentId:"Codex",executionIdentity:`native:${mixed.key}`,attribution:{accountId},idempotencyKey:randomUUID()});
+    const mixedIds:string[]=[];
+    for(const digit of ["a","b","c"]) {
+      const completion={kind:"commit" as const,commit:digit.repeat(40),targetBranch:"main"};
+      store.submitDevelopmentComplete({itemKey:mixed.key,completion,
+        ...(digit==="a"?{}:{requiredArtifacts:digit==="b"?["web","macosApp"]:["web"]}),attribution:{accountId},idempotencyKey:randomUUID()});
+      const delivery=store.getDeliveryRecords(mixed.key).at(-1)!;mixedIds.push(delivery.id);
+      if(digit!=="a")store.submitForVerification({itemKey:mixed.key,developmentEventId:delivery.id,completion,
+        releases:[{artifact:"web",version:digit,sourceCommit:digit.repeat(40)}],deployedCommit:digit.repeat(40),receiptDigest:digit.repeat(64),attribution:{accountId},idempotencyKey:randomUUID()});
+    }
+    return {product,blocked,stale,partial,noRelease,mixed,mixedIds,sessionId,nodeId:node.nodeId};
   } finally {store.close();}
 }
 
@@ -70,6 +81,17 @@ for(const width of [320,1440])for(const theme of ["light","dark"] as const)test.
       await expect(panel).not.toContainText("已合并，尚待发布");
       await panel.locator(".execution-history > summary").first().click();
       await expect(panel).toContainText("无需发布，尚待提交验证");
+      await page.goto(`/?product=${f.product.id}&status=pending_verification&item=${f.mixed.key}`);
+      const gaps=page.getByRole("status").filter({hasText:"对应交付："});
+      await expect(gaps).toHaveCount(2);
+      await expect(gaps.filter({hasText:f.mixedIds[0]})).toContainText("本轮必需发布产物尚未确认");
+      await expect(gaps.filter({hasText:f.mixedIds[1]})).toContainText("尚缺发布证据：macosApp");
+      await expect(gaps.filter({hasText:f.mixedIds[2]})).toHaveCount(0);
+      for(const scale of ["small","medium","large"]) {
+        await page.evaluate(value=>document.documentElement.dataset.fontScale=value,scale);
+        for(const gap of await gaps.all())expect(await gap.evaluate(el=>el.scrollWidth-el.clientWidth)).toBeLessThanOrEqual(1);
+      }
+      await page.screenshot({path:info.outputPath("multiple-delivery-gaps.png")});
       expect((await (await request.get(`/api/v1/items/${f.stale.key}`)).json()).status).toBe("ready");
       expect((await (await request.get(`/api/v1/items/${f.partial.key}`)).json()).status).toBe("development_complete");
     } finally {

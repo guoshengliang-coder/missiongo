@@ -753,6 +753,7 @@ export interface ItemExecution {
 }
 export interface ItemDelivery {
   deliveryExplanation?: DeliveryExplanation;
+  deliveryExplanations?: DeliveryExplanation[];
   manualClaimBlocked?: boolean;
   deliveries?: Array<{id:string;createdAt:string;status:"published"|"partial"|"awaiting_release";published:boolean;requiredArtifacts:string[]|null;noReleaseReason?:string;releases:Array<{artifact:string;version:string;sourceCommit:string}>}>;
   canHandoffToAgent?:boolean;

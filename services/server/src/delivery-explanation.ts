@@ -4,10 +4,26 @@ import type { MissionGoStore } from "./store.js";
 /** Explain the latest evidence inside existing records, without making it current. */
 export function deliveryExplanation(store: MissionGoStore, itemKey: string): DeliveryExplanation | undefined {
   const events = store.getTimeline(itemKey).filter(event => !event.historySourceKey);
-  const evidence = store.getDevelopmentEvidence(itemKey, undefined, events);
+  return explain(store,itemKey,events,store.getWorkItem(itemKey));
+}
+
+/** Keep every current delivery's gaps visible, plus the latest historical context. */
+export function deliveryExplanations(store: MissionGoStore, itemKey: string, deliveries: ReturnType<MissionGoStore["getDeliveryRecords"]>): DeliveryExplanation[] {
+  const events = store.getTimeline(itemKey).filter(event => !event.historySourceKey);
+  const latest = store.getDevelopmentEvidence(itemKey,undefined,events).handover;
+  const ids = deliveries.map(delivery=>delivery.id);
+  if (latest && !ids.includes(latest.id)) ids.push(latest.id);
+  const item = store.getWorkItem(itemKey);
+  return ids.flatMap(id=>{
+    const explanation=explain(store,itemKey,events,item,id);
+    return explanation ? [explanation] : [];
+  });
+}
+
+function explain(store:MissionGoStore,itemKey:string,events:ReturnType<MissionGoStore["getTimeline"]>,item:ReturnType<MissionGoStore["getWorkItem"]>,deliveryId?:string):DeliveryExplanation|undefined {
+  const evidence = store.getDevelopmentEvidence(itemKey, deliveryId, events);
   const event = evidence.handover;
   if (!event) return undefined;
-  const item = store.getWorkItem(itemKey);
   const after = events.slice(events.findIndex(row => row.id === event.id) + 1);
   const boundary = after.slice().reverse().flatMap(row => {
     if (row.eventType === "status_changed") {

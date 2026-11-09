@@ -2,7 +2,7 @@ import {afterEach,expect,it} from "vitest";
 import {randomUUID} from "node:crypto";
 import {MissionGoStore} from "./store.js";
 import {seedStoreActors} from "./testing-fixtures.js";
-import {deliveryExplanation} from "./delivery-explanation.js";
+import {deliveryExplanation,deliveryExplanations} from "./delivery-explanation.js";
 
 const stores:MissionGoStore[]=[];
 afterEach(()=>stores.splice(0).forEach(store=>store.close()));
@@ -52,4 +52,25 @@ it("ordinary manual moves keep the evidence current, while a newly claimed round
   f.store.claimWorkItem({itemKey:f.item.key,agentId:"Codex",executionIdentity:"native:new",attribution:{accountId:"owner"},idempotencyKey:randomUUID()});
   expect(deliveryExplanation(f.store,f.item.key)).toMatchObject({applicability:"historical",reason:"round_changed"});
   f.complete();expect(deliveryExplanation(f.store,f.item.key)).toMatchObject({applicability:"current",missingArtifacts:["web"]});
+});
+
+it.each(["unknown","partial","no_release"] as const)("keeps an earlier %s delivery gap when the latest delivery is fully published",mode=>{
+  const f=fixture(mode==="partial"?["web","macosApp"]:mode==="no_release"?[]:undefined);f.complete();
+  const older=f.store.getDeliveryRecords(f.item.key)[0]!;
+  if(mode==="partial")f.store.submitForVerification({itemKey:f.item.key,developmentEventId:older.id,completion:f.completion,
+    releases:[{artifact:"web",version:"1",sourceCommit:"a".repeat(40)}],deployedCommit:"a".repeat(40),receiptDigest:"a".repeat(64),attribution:{accountId:"owner"},idempotencyKey:randomUUID()});
+  const newerCompletion={...f.completion,commit:"b".repeat(40)};
+  f.store.submitDevelopmentComplete({itemKey:f.item.key,completion:newerCompletion,requiredArtifacts:["web"],attribution:{accountId:"owner"},idempotencyKey:randomUUID()});
+  const latest=f.store.getDeliveryRecords(f.item.key).at(-1)!;
+  f.store.submitForVerification({itemKey:f.item.key,developmentEventId:latest.id,completion:newerCompletion,
+    releases:[{artifact:"web",version:"2",sourceCommit:"b".repeat(40)}],deployedCommit:"b".repeat(40),receiptDigest:"b".repeat(64),attribution:{accountId:"owner"},idempotencyKey:randomUUID()});
+  const before=f.store.getTimeline(f.item.key),records=f.store.getDeliveryRecords(f.item.key);
+  const explanations=deliveryExplanations(f.store,f.item.key,records);
+  expect(explanations).toHaveLength(2);
+  expect(explanations[0]).toMatchObject({developmentEventId:older.id,applicability:"current",
+    missing:mode==="unknown"?["release_scope"]:mode==="no_release"?["no_release_verification"]:[],missingArtifacts:mode==="partial"?["macosApp"]:[]});
+  expect(explanations[1]).toEqual(deliveryExplanation(f.store,f.item.key));
+  expect(explanations[1]).toMatchObject({missing:[],missingArtifacts:[]});
+  expect(f.store.getTimeline(f.item.key)).toEqual(before);
+  expect(records[0]!.published).toBe(false);expect(records[1]!.published).toBe(true);
 });

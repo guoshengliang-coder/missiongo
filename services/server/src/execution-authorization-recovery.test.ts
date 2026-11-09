@@ -265,3 +265,25 @@ it("explains a missing own claim or broken receipt without diagnosing foreign id
   expect(result.structuredContent).toMatchObject({reason:"records_missing"});
   expect(f.snapshot()).toEqual(broken);
 });
+
+it("does not disclose native-ref ambiguity until every mapping has this client's verifiable claim",async()=>{
+  const f=await fixture(),first=f.launch().dispatch,second=f.launch().dispatch;
+  const original=await f.claim({dispatchId:first.id});
+  const input={session:f.identity,authorizationMode:"conversation"};
+  const before=f.snapshot();
+  const wrongClient=await f.recover(input,{clientId:"different-client"});
+  refused(wrongClient,original.executionAuthorization);
+  expect(wrongClient.structuredContent).toBeUndefined();
+  const missingAssociation=await f.recover(input);
+  refused(missingAssociation,original.executionAuthorization);
+  expect(missingAssociation.structuredContent).toBeUndefined();
+  expect(f.snapshot()).toEqual(before);
+  expect((await f.recover({dispatchId:first.id})).structuredContent?.executionAuthorization).toBe(original.executionAuthorization);
+  const otherClaim=await f.claim({dispatchId:second.id});
+  const claimed=f.snapshot();
+  const ambiguous=await f.recover(input);
+  refused(ambiguous,original.executionAuthorization);refused(ambiguous,otherClaim.executionAuthorization);
+  expect(ambiguous.structuredContent).toMatchObject({reason:"identity_ambiguous",statusChanged:false});
+  expect((await f.recover(input,{clientId:"different-client"})).structuredContent).toBeUndefined();
+  expect(f.snapshot()).toEqual(claimed);
+});

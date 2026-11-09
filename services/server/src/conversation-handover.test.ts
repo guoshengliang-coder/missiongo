@@ -325,6 +325,8 @@ it("returns the same read-only delivery explanation in MCP text and structured c
   const before=f.snapshot();
   const context=await f.call("get_item_context",{itemKey:f.item.key});
   expect(context.structuredContent?.deliveryExplanation).toMatchObject({applicability:"current",missing:[],missingArtifacts:["web"]});
+  expect(context.structuredContent?.deliveryExplanations).toEqual([context.structuredContent?.deliveryExplanation]);
   expect(JSON.parse(text(context)).deliveryExplanation).toEqual(context.structuredContent?.deliveryExplanation);
+  expect(JSON.parse(text(context)).deliveryExplanations).toEqual(context.structuredContent?.deliveryExplanations);
   expect(f.snapshot()).toEqual(before);
 });

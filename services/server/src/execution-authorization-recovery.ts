@@ -61,7 +61,19 @@ export function recoverExecutionAuthorization(store: MissionGoStore, accountId: 
         .all(accountId, identity.agentKind, identity.sessionRef, item.id) as Conversation[]);
     }
     if (!matches.length) unavailable();
-    if (matches.length !== 1) unavailable("identity_ambiguous");
+    if (matches.length !== 1) {
+      // A native ref can be mirrored by several dispatches. Account ownership
+      // alone does not prove this OAuth client's association with those claims.
+      const ownsEveryClaim = matches.every(match => db.prepare(`SELECT 1 FROM builder_execution_authorizations a
+        JOIN mcp_agent_claim_receipts r ON r.account_id=a.account_id AND r.client_id=a.client_id
+          AND json_extract(r.result_json,'$.executionAuthorization')=a.id
+          AND json_extract(r.result_json,'$.item.id')=a.item_id
+        WHERE a.item_id=? AND a.account_id=? AND a.client_id=? AND ${match.dispatchId
+          ? "a.dispatch_id=?" : "a.dispatch_id IS NULL AND json_extract(r.result_json,'$.sessionId')=?"} LIMIT 1`)
+        .get(item.id,accountId,clientId,match.dispatchId ?? match.sessionId!));
+      if (!ownsEveryClaim) unavailable();
+      unavailable("identity_ambiguous");
+    }
     conversation = matches[0]!;
   } else {
     unavailable();

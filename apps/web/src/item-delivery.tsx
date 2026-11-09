@@ -142,7 +142,7 @@ function DispatchRecord({dispatch,children}: {dispatch:Dispatch;children:ReactNo
   </>}><div className="execution-record-body">{children}</div></RecordDisclosure>;
 }
 
-function DeliveryExplanationNotice({explanation}:{explanation:DeliveryExplanation}) {
+function DeliveryExplanationNotice({explanation,identify=false}:{explanation:DeliveryExplanation;identify?:boolean}) {
   const {t}=useI18n();
   const reasons = {verification_failed:"deliveryReasonRework",reopened:"deliveryReasonReopened",cancelled:"deliveryReasonCancelled",
     builder_changed:"deliveryReasonBuilder",scope_changed:"deliveryReasonScope",round_changed:"deliveryReasonRound",evidence_missing:"deliveryReasonMissing"} as const;
@@ -153,7 +153,8 @@ function DeliveryExplanationNotice({explanation}:{explanation:DeliveryExplanatio
     </div>
   </RecordDisclosure>;
   if (!explanation.missing.length && !explanation.missingArtifacts.length) return null;
-  return <div className="execution-record-body" role="status">
+  return <div className="execution-record-body timeline-handover-evidence" role="status">
+    {identify && <p>{t("deliveryEvidenceFor",{id:explanation.developmentEventId})}</p>}
     {explanation.missing.map(gap=><p key={gap}>{t(gaps[gap])}</p>)}
     {explanation.missingArtifacts.length>0 && <p>{t("deliveryMissingArtifacts",{artifacts:explanation.missingArtifacts.join("、")})}</p>}
   </div>;
@@ -171,6 +172,7 @@ export function ItemDeliveryPanel({item,summarizedSessionId,dispatches,dispatche
   ]);};
   const assign=useMutation({mutationFn:()=>api.assignExecution(item.key,{...(performer.startsWith("agent:") ? {kind:"agent" as const,sessionId:performer.slice(6)} : {kind:"human" as const,accountId:performer}),scope,...(previousId ? {previousId:previousId.replace(/^followup:/,""),followUp:previousId.startsWith("followup:"),note:executionNote} : {})}),onSuccess:async()=>{setMode(null);setScope("");setExecutionNote("");setPreviousId("");await refresh();}});
   const data=query.data;
+  const explanations=data?.deliveryExplanations ?? (data?.deliveryExplanation ? [data.deliveryExplanation] : []);
   const latestPublished=data?.deliveries?.slice().reverse().find(record=>record.published && !noReleaseDelivery(record));
   const awaitingPublication=data?.deliveries?.filter(record=>!record.published && !noReleaseDelivery(record)) ?? [];
   // Count the rows we display: a linked session/dispatch is one record;
@@ -186,7 +188,7 @@ export function ItemDeliveryPanel({item,summarizedSessionId,dispatches,dispatche
   for (const notice of notificationsQuery.data?.notifications ?? []) if (notice.kind!=="comment") rows.push({key:`notice:${notice.id}`,createdAt:notice.createdAt,notice});
   rows.sort((a,b) => a.createdAt.localeCompare(b.createdAt));
   const hasExecutions=rows.length>0;
-  if(!data?.deliveries?.length && !data?.deliveryExplanation && !hasExecutions && !data?.executionBlockers?.length && !data?.pendingAgentHandoff && !EXECUTION_ASSIGNMENT_ENABLED && !query.isError && !dispatchesFailed && !notificationsQuery.isError) return null;
+  if(!data?.deliveries?.length && !explanations.length && !hasExecutions && !data?.executionBlockers?.length && !data?.pendingAgentHandoff && !EXECUTION_ASSIGNMENT_ENABLED && !query.isError && !dispatchesFailed && !notificationsQuery.isError) return null;
   return <section className="delivery-panel" aria-label="执行记录">
     <div className="delivery-heading">{!hasExecutions && <h3>执行记录</h3>}
       {EXECUTION_ASSIGNMENT_ENABLED && data?.canManage && <div className="delivery-actions">
@@ -194,7 +196,7 @@ export function ItemDeliveryPanel({item,summarizedSessionId,dispatches,dispatche
       </div>}
     </div>
     {awaitingPublication.length>0 && <div className="execution-record-body"><p role="status">{t("deliveryVersionAwaiting")}: {awaitingPublication.length} · {t("deliveryVersionHelp")}</p></div>}
-    {data?.deliveryExplanation && <DeliveryExplanationNotice explanation={data.deliveryExplanation} />}
+    {explanations.map(explanation=><DeliveryExplanationNotice key={explanation.developmentEventId} explanation={explanation} identify={explanations.length>1} />)}
     {Boolean(data?.deliveries?.length) && <RecordDisclosure className="execution-history" summary={t("deliveryVersions")}>
       <div className="execution-record-body"><p>{t("deliveryVersionHelp")}</p>
         {latestPublished && <p className="execution-row" role="status">{t("deliveryVersionCurrent")}: <code>{latestPublished.id}</code></p>}
