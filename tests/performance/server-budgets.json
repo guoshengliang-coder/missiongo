@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "ciMode": "advisory",
+  "timingUnit": "process-cpu-ms",
+  "maxCiDurationMs": 25000,
+  "maxLocalDurationMs": 120000,
+  "reason": "AND-488 initial synthetic baseline, not a production SLA. Observe at least seven days before a reviewed blocking change.",
+  "baselineEvidence": "Initial Node 22.23.2 darwin-arm64 low-contention wall samples: product ~0.006ms, merge ~825ms, list ~88ms, summary ~0.027ms. Later wall-only calibration misclassified scheduler contention; score process CPU user+system and retain wall samples. Keep the same initial budgets (not raised for that failure), subject to CPU-time validation and at least one advisory week. This 200x200 associated fixture exceeds the illustrative 100-150ms budget.",
+  "shape": { "batches": 5, "deliveriesPerBatch": 4, "itemsPerDelivery": 10, "eventsPerItem": 200, "payloadBytes": 1024 },
+  "samples": 7,
+  "warmups": 1,
+  "baseline": { "referenceMs": 0.006, "iterations": 10000, "minScale": 0.1, "maxScale": 10, "maxRelativeIqr": 0.5 },
+  "targets": {
+    "merge-deliveries": { "budgetMs": 1250, "iterations": 1 },
+    "item-list": { "budgetMs": 140, "iterations": 1 },
+    "item-summary": { "budgetMs": 0.09, "iterations": 100 }
+  }
+}
