@@ -3471,6 +3471,9 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .timeline-handover-evidence { overflow-wrap: anywhere; }
 .timeline-handover-evidence summary { cursor: pointer; min-height: 44px; padding-block: 12px; }
 .timeline-handover-evidence p { white-space: pre-wrap; }
+/* Same wrapping for the delivery gap notices in the execution panel. */
+.delivery-explanation-notice { overflow-wrap: anywhere; }
+.delivery-explanation-notice p { white-space: pre-wrap; }
 
 /* Operation feedback is shared by the console, embedded conversation and settings. */
 .agent-operation-feedback { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px; max-width: 100%; font-size: var(--text-sm); }

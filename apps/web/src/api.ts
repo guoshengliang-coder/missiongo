@@ -1,4 +1,5 @@
 import { checkReleaseStatus, deploymentInProgress } from "./release-status";
+import type { DeliveryExplanation } from "@missiongo/contracts";
 import type { AgentHistoryPage } from "./types";
 import type { PersonalAttentionCount, PersonalTodoPage, PersonalNotificationDetail, PersonalNotificationFilter, PersonalNotificationPage } from "@missiongo/domain";
 import type { CommentAudienceInput, CommentCandidate } from "@missiongo/domain";
@@ -752,7 +753,10 @@ export interface ItemExecution {
   sessionId?: string; recorded?: boolean; sessionStatus?: string; accountName?: string; status: string; result: string; createdAt: string; startedAt: string | null; endedAt: string | null;
 }
 export interface ItemDelivery {
-  deliveries?: Array<{id:string;createdAt:string;status:"published"|"partial"|"awaiting_release";published:boolean;requiredArtifacts:string[]|null;releases:Array<{artifact:string;version:string;sourceCommit:string}>}>;
+  deliveryExplanation?: DeliveryExplanation;
+  deliveryExplanations?: DeliveryExplanation[];
+  manualClaimBlocked?: boolean;
+  deliveries?: Array<{id:string;createdAt:string;status:"published"|"partial"|"awaiting_release";published:boolean;requiredArtifacts:string[]|null;noReleaseReason?:string;releases:Array<{artifact:string;version:string;sourceCommit:string}>}>;
   canHandoffToAgent?:boolean;
   pendingAgentHandoff?:{id:string;sessionId?:string;dispatchId?:string;createdAt:string};
   agentHandoffTargets?:Array<{sessionId:string;dispatchId?:string;agentKind:string;name:string}>;
@@ -766,4 +770,5 @@ export interface ItemExecutionBlocker {
   id:string; source:"external"|"dispatch"|"performer"|"ai"|"managed"; executionId:string; sessionId?:string;
   status:string; progressStatus?:string; nodeName?:string; lastObservedAt?:string; error?:string; scope?:string;
   reason:"active"|"commands_pending"|"connection_unknown"|"execution_open"; canConfirmStopped:boolean; revision:string; blocking?:boolean; superseded?:boolean;
+  canOpenSession?: boolean;
 }

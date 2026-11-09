@@ -1,4 +1,5 @@
-import { itemRoles } from "./item-policy.js";
+import { itemRoles, transitionPolicy } from "./item-policy.js";
+import { deliveryExplanations } from "./delivery-explanation.js";
 import { BuilderHandovers } from "./builder-handovers.js";
 import { assertBuilderExecution, requiresExecutionStopCheck } from "./builder-authority.js";
 import { confirmItemExecutionStopped, itemExecutionBlockers } from "./item-execution-blockers.js";
@@ -115,13 +116,27 @@ export function registerItemDeliveryRoutes(app: FastifyInstance, {store, account
     if (item.builderHandover) { handovers.reconcile(item.builderHandover.id); item = store.getWorkItem(itemKey); }
     let canHandoffToAgent=manages(account,item) && accounts.allows(account,item.productId,"ai") && item.status==="in_progress";
     try {assertBuilderExecution(store.database,item.id,account.id);} catch {canHandoffToAgent=false;}
-    return { deliveries:store.getDeliveryRecords(itemKey), builderHandover: item.builderHandover,
+    const canOpenSession = (id: string | undefined) => {
+      if (!id || !db.prepare(`SELECT s.id FROM agent_sessions s JOIN dispatches d ON d.id=s.dispatch_id WHERE s.id=? AND d.account_id=?
+        UNION ALL SELECT id FROM external_agent_sessions WHERE id=? AND account_id=?`).get(id,account.id,id,account.id)) return false;
+      const products = db.prepare(`SELECT w.product_id FROM work_items w JOIN dispatch_items i ON i.item_id=w.id JOIN agent_sessions s ON s.dispatch_id=i.dispatch_id WHERE s.id=?
+        UNION SELECT w.product_id FROM work_items w JOIN external_agent_session_items i ON i.item_id=w.id WHERE i.session_id=?
+        UNION SELECT product_id FROM external_agent_sessions WHERE id=? AND product_id IS NOT NULL`).all(id,id,id) as {product_id:string}[];
+      return products.every(row => accounts.allows(account,row.product_id,"view"));
+    };
+    const roles = itemRoles(store.database,item,account.id);
+    const manualClaimBlocked = item.status === "ready" && roles.operate && (roles.builder || roles.executor || !item.builderAccountId)
+      && (!item.builderHandover || item.builderHandover.status === "completed")
+      && transitionPolicy(store.database,item,account.id,"in_progress","claim","human",roles).code === "execution_stop_unconfirmed";
+    const deliveries=store.getDeliveryRecords(itemKey),explanations=deliveryExplanations(store,itemKey,deliveries);
+    return { deliveries, deliveryExplanation:explanations.at(-1), deliveryExplanations:explanations, manualClaimBlocked, builderHandover: item.builderHandover,
       canTakeOver: Boolean(item.builderHandover?.canTakeOver && item.builderAccountId === account.id && accounts.allows(account,item.productId,"operate") && accounts.allows(account,item.productId,"ai")), builderAccountId: item.builderAccountId ?? null, builderName: item.builderName ?? null,
       builderNeedsReassignment: item.builderNeedsReassignment ?? false, canManage: manages(account,item), canManageBuilder: managesBuilder(account,item), currentAccountId: account.id,
       candidates: candidates(item.productId).map(row => ({id:row.id,name:name(row.id)})),
       performers: accounts.listAccounts().filter(row => !row.disabledAt && accounts.allows(row,item.productId,"operate"))
         .map(row => ({id:row.id,name:name(row.id)})), executions: list(itemKey),
       executionBlockers: (requiresExecutionStopCheck(store.database,item.id) ? itemExecutionBlockers(store.database,item.id) : []).map(blocker => ({...blocker,
+        canOpenSession: canOpenSession(blocker.sessionId),
         canConfirmStopped: blocker.canConfirmStopped && manages(account,item) && !store.getProduct(item.productId).archivedAt && ["ready","inbox","in_progress"].includes(item.status)})),
       canHandoffToAgent,
       pendingAgentHandoff: agentHandoffs.pending(account.id,itemKey),

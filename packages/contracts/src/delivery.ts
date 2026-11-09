@@ -4,6 +4,16 @@ export interface DeliveryValidation {
   readonly remainingVerification: readonly string[];
   readonly limitations: readonly string[];
 }
+
+/** Read-only context; never changes a delivery's eligibility or its handling round. */
+export interface DeliveryExplanation {
+  readonly developmentEventId: string;
+  readonly roundKey: string | null;
+  readonly applicability: "current" | "historical";
+  readonly reason?: "verification_failed" | "reopened" | "cancelled" | "builder_changed" | "scope_changed" | "round_changed" | "evidence_missing";
+  readonly missing: readonly ("integration" | "release_scope" | "no_release_verification")[];
+  readonly missingArtifacts: readonly string[];
+}
 export interface LocalChangeEvidence {
   readonly version: 1;
   readonly target: string;

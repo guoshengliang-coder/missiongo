@@ -84,6 +84,23 @@ it("reproduces the completed/unavailable case, settles only the human-verified e
   expect(()=>f.dispatch(item.key)).not.toThrow();
 });
 
+it("explains only the blocked manual restart, with original-session links scoped to their owner",async()=>{
+  const f=await fixture(),{item,sessionId}=f.interrupted();
+  f.snapshot(sessionId,"active",true);
+  const data=await f.read(item.key);
+  expect(data.manualClaimBlocked).toBe(true);
+  expect(data.executionBlockers).toContainEqual(expect.objectContaining({sessionId,blocking:true,superseded:false,canOpenSession:true}));
+  expect(f.dispatches.checkRedispatch(f.accountId,[item.key]).allowed).toBe(true);
+  const other=f.app.missionGoAccounts.createAccount({email:"observer@example.test",password:"synthetic observer password",role:"member"});
+  f.app.missionGoAccounts.replacePermissions(other.id,[{productId:f.product.id,canView:true,canOperate:false,canUseAi:false}]);
+  const login=await f.app.inject({method:"POST",url:"/api/v1/auth/login",payload:{username:other.email,password:"synthetic observer password"}});
+  const read=await f.app.inject({method:"GET",url:`/api/v1/items/${item.key}/delivery`,headers:{cookie:login.headers["set-cookie"]!.toString().split(";")[0]!}});
+  expect(read.json().manualClaimBlocked).toBe(false);
+  expect(read.json().executionBlockers.find((row:{sessionId?:string})=>row.sessionId===sessionId).canOpenSession).toBe(false);
+  f.snapshot(sessionId,"unavailable");
+  expect((await f.read(item.key)).manualClaimBlocked).toBe(false);
+});
+
 it.each(["queued","delivering","delivery_unknown"])("does not allow completion or manual confirmation to bypass a %s command",async status=>{
   const f=await fixture(),{item,sessionId}=f.create();
   f.db.prepare("INSERT INTO external_native_commands(id,session_id,text,status,created_at) VALUES (?,?,?,?,?)")

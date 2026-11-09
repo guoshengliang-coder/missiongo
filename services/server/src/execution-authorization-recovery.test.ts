@@ -158,7 +158,10 @@ describe("AND-397 execution authorization recovery", () => {
           SELECT account_id,client_id,'ambiguous-claim',digest,json_set(result_json,'$.executionAuthorization',?) FROM mcp_agent_claim_receipts`).run(id);
       }
       const before = f.snapshot();
-      refused(await f.recover({ session: f.identity }), original.executionAuthorization);
+      const result = await f.recover({ session: f.identity });
+      refused(result, original.executionAuthorization);
+      expect(result.structuredContent).toMatchObject({code:"execution_authorization_not_recoverable",statusChanged:false,
+        reason:condition==="ambiguous-credential" ? "identity_ambiguous" : condition==="old-round" ? "round_changed" : condition==="revoked" ? "revoked" : "claim_not_found"});
       expect(f.snapshot()).toEqual(before);
     });
 
@@ -243,4 +246,44 @@ describe("AND-397 execution authorization recovery", () => {
     expect((await f.recover({ dispatchId: dispatch.id })).structuredContent?.executionAuthorization).toBe(original.executionAuthorization);
     expect(f.snapshot()).toEqual(before);
   });
+});
+
+it("explains a missing own claim or broken receipt without diagnosing foreign identities",async()=>{
+  const f=await fixture();
+  const original=await f.claim();
+  const registration=await f.call("register_agent_session",{itemKey:f.item.key,session:{...f.identity,sessionRef:randomUUID()}});
+  const sessionId=registration.structuredContent!.sessionId;
+  const before=f.snapshot();
+  expect((await f.recover({sessionId})).structuredContent).toMatchObject({reason:"claim_not_found",statusChanged:false});
+  expect((await f.recover({sessionId},{clientId:"other-client"})).structuredContent).toBeUndefined();
+  expect((await f.recover({sessionId:randomUUID()})).structuredContent).toBeUndefined();
+  expect(f.snapshot()).toEqual(before);
+  f.db.prepare("DELETE FROM builder_execution_authorizations").run();
+  const broken=f.snapshot();
+  const result=await f.recover({sessionId:original.sessionId});
+  refused(result,original.executionAuthorization);
+  expect(result.structuredContent).toMatchObject({reason:"records_missing"});
+  expect(f.snapshot()).toEqual(broken);
+});
+
+it("does not disclose native-ref ambiguity until every mapping has this client's verifiable claim",async()=>{
+  const f=await fixture(),first=f.launch().dispatch,second=f.launch().dispatch;
+  const original=await f.claim({dispatchId:first.id});
+  const input={session:f.identity,authorizationMode:"conversation"};
+  const before=f.snapshot();
+  const wrongClient=await f.recover(input,{clientId:"different-client"});
+  refused(wrongClient,original.executionAuthorization);
+  expect(wrongClient.structuredContent).toBeUndefined();
+  const missingAssociation=await f.recover(input);
+  refused(missingAssociation,original.executionAuthorization);
+  expect(missingAssociation.structuredContent).toBeUndefined();
+  expect(f.snapshot()).toEqual(before);
+  expect((await f.recover({dispatchId:first.id})).structuredContent?.executionAuthorization).toBe(original.executionAuthorization);
+  const otherClaim=await f.claim({dispatchId:second.id});
+  const claimed=f.snapshot();
+  const ambiguous=await f.recover(input);
+  refused(ambiguous,original.executionAuthorization);refused(ambiguous,otherClaim.executionAuthorization);
+  expect(ambiguous.structuredContent).toMatchObject({reason:"identity_ambiguous",statusChanged:false});
+  expect((await f.recover(input,{clientId:"different-client"})).structuredContent).toBeUndefined();
+  expect(f.snapshot()).toEqual(claimed);
 });

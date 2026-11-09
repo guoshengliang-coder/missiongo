@@ -11,10 +11,12 @@ import { ItemDingTalkNotificationRecord, type ItemNotificationQuery } from "./di
 import { dispatchStatusLabelKey } from "./dispatch-eligibility";
 import { RecordDisclosure } from "./record-disclosure";
 import { ExecutionStopNotice } from "./execution-stop-notice";
+import type { DeliveryExplanation } from "@missiongo/contracts";
 
 // 「安排执行／交接」暂时隐藏：功能与后续流转还没定，入口先不出现。
 // 改回 true 即可恢复按钮和弹窗；后端接口与执行记录展示不受影响。
 const EXECUTION_ASSIGNMENT_ENABLED = false;
+const noReleaseDelivery = (record:NonNullable<ItemDelivery["deliveries"]>[number]) => record.requiredArtifacts?.length === 0 && Boolean(record.noReleaseReason);
 
 const executionLabels: Record<string,string> = {
   assigned:"待执行", working:"执行中", completed:"本轮完成", blocked:"受阻", cancelled:"已取消", handed_over:"已交接",
@@ -139,6 +141,24 @@ function DispatchRecord({dispatch,children}: {dispatch:Dispatch;children:ReactNo
   </>}><div className="execution-record-body">{children}</div></RecordDisclosure>;
 }
 
+function DeliveryExplanationNotice({explanation,identify=false}:{explanation:DeliveryExplanation;identify?:boolean}) {
+  const {t}=useI18n();
+  const reasons = {verification_failed:"deliveryReasonRework",reopened:"deliveryReasonReopened",cancelled:"deliveryReasonCancelled",
+    builder_changed:"deliveryReasonBuilder",scope_changed:"deliveryReasonScope",round_changed:"deliveryReasonRound",evidence_missing:"deliveryReasonMissing"} as const;
+  const gaps = {integration:"deliveryMissingIntegration",release_scope:"deliveryMissingScope",no_release_verification:"deliveryMissingNoRelease"} as const;
+  if (explanation.applicability === "historical") return <RecordDisclosure className="execution-history" summary={t("deliveryHistoricalExplanation")}>
+    <div className="execution-record-body"><p>{t(reasons[explanation.reason ?? "evidence_missing"])}</p>
+      <p>{t("deliveryHistoricalNext")}</p><p>{t("deliveryEvidenceBoundary")}</p>
+    </div>
+  </RecordDisclosure>;
+  if (!explanation.missing.length && !explanation.missingArtifacts.length) return null;
+  return <div className="execution-record-body delivery-explanation-notice" role="status">
+    {identify && <p>{t("deliveryEvidenceFor",{id:explanation.developmentEventId})}</p>}
+    {explanation.missing.map(gap=><p key={gap}>{t(gaps[gap])}</p>)}
+    {explanation.missingArtifacts.length>0 && <p>{t("deliveryMissingArtifacts",{artifacts:explanation.missingArtifacts.join("、")})}</p>}
+  </div>;
+}
+
 export function ItemDeliveryPanel({item,summarizedSessionId,dispatches,dispatchesFailed,notificationsQuery,renderDispatch}: {item:WorkItem;summarizedSessionId?:string | undefined;dispatches:readonly Dispatch[];dispatchesFailed:boolean;notificationsQuery:ItemNotificationQuery;renderDispatch:(dispatch:Dispatch)=>ReactNode}) {
   const { t } = useI18n();
   const queryClient=useQueryClient();
@@ -151,7 +171,9 @@ export function ItemDeliveryPanel({item,summarizedSessionId,dispatches,dispatche
   ]);};
   const assign=useMutation({mutationFn:()=>api.assignExecution(item.key,{...(performer.startsWith("agent:") ? {kind:"agent" as const,sessionId:performer.slice(6)} : {kind:"human" as const,accountId:performer}),scope,...(previousId ? {previousId:previousId.replace(/^followup:/,""),followUp:previousId.startsWith("followup:"),note:executionNote} : {})}),onSuccess:async()=>{setMode(null);setScope("");setExecutionNote("");setPreviousId("");await refresh();}});
   const data=query.data;
-  const latestPublished=data?.deliveries?.slice().reverse().find(record=>record.published);
+  const explanations=data?.deliveryExplanations ?? (data?.deliveryExplanation ? [data.deliveryExplanation] : []);
+  const latestPublished=data?.deliveries?.slice().reverse().find(record=>record.published && !noReleaseDelivery(record));
+  const awaitingPublication=data?.deliveries?.filter(record=>!record.published && !noReleaseDelivery(record)) ?? [];
   // Count the rows we display: a linked session/dispatch is one record;
   // verification notifications are individual records, comments keep their own.
   const executions = data?.executions ?? [];
@@ -165,26 +187,29 @@ export function ItemDeliveryPanel({item,summarizedSessionId,dispatches,dispatche
   for (const notice of notificationsQuery.data?.notifications ?? []) if (notice.kind!=="comment") rows.push({key:`notice:${notice.id}`,createdAt:notice.createdAt,notice});
   rows.sort((a,b) => a.createdAt.localeCompare(b.createdAt));
   const hasExecutions=rows.length>0;
-  if(!data?.deliveries?.length && !hasExecutions && !data?.executionBlockers?.length && !data?.pendingAgentHandoff && !EXECUTION_ASSIGNMENT_ENABLED && !query.isError && !dispatchesFailed && !notificationsQuery.isError) return null;
+  if(!data?.deliveries?.length && !explanations.length && !hasExecutions && !data?.executionBlockers?.length && !data?.pendingAgentHandoff && !EXECUTION_ASSIGNMENT_ENABLED && !query.isError && !dispatchesFailed && !notificationsQuery.isError) return null;
   return <section className="delivery-panel" aria-label="执行记录">
     <div className="delivery-heading">{!hasExecutions && <h3>执行记录</h3>}
       {EXECUTION_ASSIGNMENT_ENABLED && data?.canManage && <div className="delivery-actions">
         <button type="button" className="secondary-button" onClick={()=>{setPerformer("");setScope("");setPreviousId("");setExecutionNote("");assign.reset();setMode("execution");}}>安排执行／交接</button>
       </div>}
     </div>
-    {data?.deliveries?.some(record=>!record.published) && <div className="execution-record-body"><p role="status">{t("deliveryVersionAwaiting")}: {data.deliveries.filter(record=>!record.published).length} · {t("deliveryVersionHelp")}</p></div>}
+    {awaitingPublication.length>0 && <div className="execution-record-body"><p role="status">{t("deliveryVersionAwaiting")}: {awaitingPublication.length} · {t("deliveryVersionHelp")}</p></div>}
+    {explanations.map(explanation=><DeliveryExplanationNotice key={explanation.developmentEventId} explanation={explanation} identify={explanations.length>1} />)}
     {Boolean(data?.deliveries?.length) && <RecordDisclosure className="execution-history" summary={t("deliveryVersions")}>
       <div className="execution-record-body"><p>{t("deliveryVersionHelp")}</p>
         {latestPublished && <p className="execution-row" role="status">{t("deliveryVersionCurrent")}: <code>{latestPublished.id}</code></p>}
       </div>
       <ol className="execution-list">{data?.deliveries?.map(record=><li key={record.id} className="execution-row">
-        <strong>{t(record.published ? "deliveryVersionPublished" : record.status==="partial" ? "deliveryVersionPartial" : "deliveryVersionAwaiting")}</strong>
+        <strong>{t(noReleaseDelivery(record) ? record.published ? "deliveryNoReleaseSubmitted" : "deliveryNoReleasePending" : record.published ? "deliveryVersionPublished" : record.status==="partial" ? "deliveryVersionPartial" : "deliveryVersionAwaiting")}</strong>
         <small>{record.createdAt} · {record.id}</small>
+        {!record.published && record.requiredArtifacts && record.requiredArtifacts.length>0 && <p>{t("deliveryMissingArtifacts",{artifacts:record.requiredArtifacts.filter(artifact=>!record.releases.some(release=>release.artifact===artifact)).join("、")})}</p>}
         {record.releases.map(release=><p key={release.artifact}>{release.artifact}: {release.version}</p>)}
       </li>)}</ol>
     </RecordDisclosure>}
     {data?.pendingAgentHandoff && <p className="account-note" role="status">{t("agentHandoffPending")}</p>}
-    {data && ["ready","inbox"].includes(item.status) && <ExecutionStopNotice itemKey={item.key} blockers={(data.executionBlockers ?? []).filter(row=>row.superseded && row.blocking)} onRefresh={refresh} />}
+    {data?.manualClaimBlocked === true && <ExecutionStopNotice itemKey={item.key} manualClaim blockers={(data.executionBlockers ?? []).filter(row=>row.blocking===true)} onRefresh={refresh} />}
+    {data && data.manualClaimBlocked !== true && ["ready","inbox"].includes(item.status) && <ExecutionStopNotice itemKey={item.key} blockers={(data.executionBlockers ?? []).filter(row=>row.superseded && row.blocking)} onRefresh={refresh} />}
     {data && item.status==="in_progress" && <ExecutionStopNotice itemKey={item.key}
       blockers={(data.executionBlockers ?? []).filter(row=>row.superseded && row.blocking)} onRefresh={refresh} />}
     {EXECUTION_ASSIGNMENT_ENABLED && data && mode==="execution" && <Modal title="安排执行／交接" subtitle="交付与执行" onClose={()=>setMode(null)} dirty={Boolean(scope || performer || previousId || executionNote)} pending={assign.isPending}>
