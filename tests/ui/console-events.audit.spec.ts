@@ -51,8 +51,17 @@ test("journal reset rebuilds the mounted page and preserves the saved comment dr
  await expect(page.locator(".detail-pane")).toBeVisible();
  const draft=page.locator('textarea').filter({visible:true}).last();
  await draft.fill("日志裁剪后保留草稿");
+ const composer=page.locator(".comment-form");
+ await composer.locator('input[type="file"]').setInputFiles({name:"reset-audit.txt",mimeType:"text/plain",buffer:Buffer.from("attachment retained across reset")});
+ await expect(composer.locator(".agent-chat-draft-files")).toContainText("reset-audit.txt");
  const bootstrap=page.waitForResponse(r=>new URL(r.url()).pathname==="/api/v1/bootstrap");
  await refreshFromConsoleStream(page);await bootstrap;
  await expect(page.locator(".detail-pane")).toBeVisible();
  await expect(page.locator('textarea').filter({visible:true}).last()).toHaveValue("日志裁剪后保留草稿");
+ await expect(composer.locator(".agent-chat-draft-files")).toContainText("reset-audit.txt");
+ await expect(composer).not.toContainText("上次选择的附件未恢复");
+ const sent=page.waitForResponse(r=>r.request().method()==="POST" && new URL(r.url()).pathname===`/api/v1/items/${fixture.detailKey}/comments`);
+ await composer.locator('button[type="submit"]').click();
+ expect((await sent).ok()).toBe(true);
+ await expect(composer.locator(".agent-chat-draft-files")).toHaveCount(0);
 });

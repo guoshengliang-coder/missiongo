@@ -74,6 +74,7 @@ export function startConsoleEvents(client:QueryClient, fetcher:typeof fetch=(inp
    // A formerly-authorized snapshot must not remain visible after revocation.
    if(full || resources.some(r=>r.kind==="access")) {
     await client.cancelQueries();
+    if(stopped)return;
     client.removeQueries({predicate:q=>q.queryKey[0]!=="bootstrap"});
     await client.resetQueries({queryKey:["bootstrap"]},{throwOnError:true});
    } else {
@@ -106,7 +107,8 @@ export function startConsoleEvents(client:QueryClient, fetcher:typeof fetch=(inp
   try {
    const response=await fetcher(`/api/v1/console/events${cursor?`?cursor=${encodeURIComponent(cursor)}`:""}`,{
     credentials:"same-origin",cache:"no-store",signal:controller.signal,headers:{accept:"text/event-stream"}});
-   if(response.status===401||response.status===403){stopped=true;void client.cancelQueries().then(()=>{client.removeQueries({predicate:q=>q.queryKey[0]!=="bootstrap"});return client.resetQueries({queryKey:["bootstrap"]});});setConnection("disconnected");return;}
+   if(attempt!==generation||stopped){await response.body?.cancel();return;}
+   if(response.status===401||response.status===403){stopped=true;void client.cancelQueries().then(()=>{if(attempt!==generation)return;client.removeQueries({predicate:q=>q.queryKey[0]!=="bootstrap"});return client.resetQueries({queryKey:["bootstrap"]});});setConnection("disconnected");return;}
    if(!response.ok||!response.body||!response.headers.get("content-type")?.includes("text/event-stream"))throw new Error("Console stream unavailable");
    if(attempt!==generation||stopped){await response.body.cancel();return;}
    connected=true;setConnection("connected");retry=0;window.dispatchEvent(new Event("missiongo:console-connected"));
@@ -114,10 +116,10 @@ export function startConsoleEvents(client:QueryClient, fetcher:typeof fetch=(inp
    try {
     while(!stopped) {
      const chunk=await reader.read();if(chunk.done)break;
-     if(attempt!==generation)break;
+     if(attempt!==generation||stopped)break;
      for(const frame of frames.push(decoder.decode(chunk.value,{stream:true}))) {
       const data=JSON.parse(frame.data) as {epoch?:string;version?:number;resources?:ChangeResource[]};
-      if(frame.event==="unauthorized"){stopped=true;void client.cancelQueries().then(()=>{client.removeQueries({predicate:q=>q.queryKey[0]!=="bootstrap"});return client.resetQueries({queryKey:["bootstrap"]});});controller.abort();break;}
+      if(frame.event==="unauthorized"){stopped=true;void client.cancelQueries().then(()=>{if(attempt!==generation)return;client.removeQueries({predicate:q=>q.queryKey[0]!=="bootstrap"});return client.resetQueries({queryKey:["bootstrap"]});});controller.abort();break;}
       if(frame.event==="hello") {
        if(!cursor)enqueue([],`${data.epoch}:${data.version}`,true);
       } else if(frame.event==="reset") enqueue([],frame.id,true);
@@ -140,7 +142,7 @@ export function startConsoleEvents(client:QueryClient, fetcher:typeof fetch=(inp
  const offline=()=>{connected=false;controller?.abort();setConnection("disconnected");};
  document.addEventListener("visibilitychange",foreground);window.addEventListener("online",foreground);window.addEventListener("offline",offline);
  void connect();
- return ()=>{stopped=true;controller?.abort();if(timer)clearTimeout(timer);if(retryRead)clearTimeout(retryRead);
+ return ()=>{stopped=true;generation++;controller?.abort();if(timer)clearTimeout(timer);if(retryRead)clearTimeout(retryRead);
   document.removeEventListener("visibilitychange",foreground);window.removeEventListener("online",foreground);window.removeEventListener("offline",offline);};
 }
 export function useConsoleEvents(client:QueryClient,accountId:string|undefined,initialCursor?:string) {

@@ -1,4 +1,4 @@
-import {useCallback,useRef,useState} from "react";
+import {useCallback,useRef,useState,useSyncExternalStore} from "react";
 import type {DraftMention} from "./comment-mentions";
 
 export interface CommentDraft {
@@ -63,4 +63,30 @@ export function useCommentDraft(accountId:string,itemKey:string|null,scope?:stri
     if(ref.current.key===key){ref.current={key,draft,failed};setState(ref.current);}
   },[key]);
   return {draft:current.draft,update,storageFailed:current.failed};
+}
+
+// File objects and upload retry identities survive an authorization-driven shell
+// rebuild within this page. They are never persisted or shared across accounts.
+interface CommentFiles {
+ files:readonly File[];
+ uploaded:{current:Map<File,string>};
+ uploadIds:{current:Map<File,string>};
+ listeners:Set<()=>void>;
+}
+const commentFiles=new Map<string,CommentFiles>();
+export function useCommentFiles(accountId:string,itemKey:string,scope:string) {
+ const key=JSON.stringify([accountId,itemKey,scope]);
+ let entry=commentFiles.get(key);
+ if(!entry){entry={files:[],uploaded:{current:new Map()},uploadIds:{current:new Map()},listeners:new Set()};commentFiles.set(key,entry);}
+ const store=entry;
+ const subscribe=useCallback((listener:()=>void)=>{store.listeners.add(listener);return()=>{store.listeners.delete(listener);};},[store]);
+ const snapshot=useCallback(()=>store.files,[store]);
+ const files=useSyncExternalStore(subscribe,snapshot,snapshot);
+ const setFiles=useCallback((files:readonly File[])=>{
+  const kept=new Set(files);
+  for(const file of store.uploaded.current.keys())if(!kept.has(file))store.uploaded.current.delete(file);
+  for(const file of store.uploadIds.current.keys())if(!kept.has(file))store.uploadIds.current.delete(file);
+  store.files=files;store.listeners.forEach(listener=>listener());
+ },[store]);
+ return {files,setFiles,uploaded:store.uploaded,uploadIds:store.uploadIds};
 }

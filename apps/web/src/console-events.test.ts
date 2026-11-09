@@ -89,3 +89,23 @@ it("evicts revoked snapshots and revalidates bootstrap after a journal reset",as
  expect(f.client.getQueryData(["bootstrap"])).toEqual({role:"member",products:[]});
  expect(f.client.getQueryData(["item","SECRET-1"])).toBeUndefined();
 });
+
+it("ignores an already resolved unauthorized response after stream disposal",async()=>{
+ const f=fixture();cleanup.pop()!();
+ const stop=startConsoleEvents(f.client,async()=>new Response(null,{status:401}),"epoch:0");
+ stop();f.client.setQueryData(["bootstrap"],{user:{id:"new-account"}});
+ f.client.setQueryData(["item","NEW-1"],"new snapshot");await settle();
+ expect(f.client.getQueryData(["item","NEW-1"])).toBe("new snapshot");
+ expect(f.client.getQueryData(["bootstrap"])).toEqual({user:{id:"new-account"}});
+});
+it("ignores an obsolete unauthorized response when a newer connection is active",async()=>{
+ const f=fixture();cleanup.pop()!();
+ let finish:((value:Response)=>void)|undefined;
+ const fetcher=vi.fn<typeof fetch>().mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}))
+  .mockResolvedValue(new Response(new ReadableStream(),{headers:{"content-type":"text/event-stream"}}));
+ const stop=startConsoleEvents(f.client,fetcher,"epoch:0");cleanup.push(stop);
+ f.windowTarget.dispatchEvent(new Event("online"));await settle();
+ f.client.setQueryData(["item","NEW-1"],"current snapshot");
+ finish!(new Response(null,{status:401}));await settle();
+ expect(f.client.getQueryData(["item","NEW-1"])).toBe("current snapshot");
+});

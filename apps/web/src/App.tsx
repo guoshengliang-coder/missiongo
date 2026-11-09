@@ -32,7 +32,7 @@ import { DetailStatusList, detailStatusItems } from "./detail-status";
 import { CommentDingTalkNotifications, useItemDingTalkNotifications } from "./dingtalk-settings";
 import { CommentMoreActions } from "./comment-actions";
 import { COMMENT_CATEGORIES, useCommentFilters } from "./comment-filters";
-import {EMPTY_COMMENT_DRAFT,useCommentDraft,type CommentDraft} from "./comment-draft";
+import {EMPTY_COMMENT_DRAFT,useCommentDraft,useCommentFiles,type CommentDraft} from "./comment-draft";
 import {useBeforeUnloadGuard} from "./unsaved-changes";
 import { statisticsIsOpen, statisticsUrl, statisticsExitUrl } from "./statistics-state";
 import { useOverlay, OverlayMenu } from "./overlay";
@@ -3111,7 +3111,7 @@ function DetailPane({
             </section>
         </>
       </div>
-      {!item.transferred && !readOnlySource && accountId && <CommentComposer idPrefix={commentIdPrefix} key={`${accountId}:${item.key}`} item={item} draft={commentDraft} onDraftChange={updateCommentDraft} storageFailed={storageFailed} replyUnavailable={replyUnavailable}
+      {!item.transferred && !readOnlySource && accountId && <CommentComposer accountId={accountId} idPrefix={commentIdPrefix} key={`${accountId}:${item.key}`} item={item} draft={commentDraft} onDraftChange={updateCommentDraft} storageFailed={storageFailed} replyUnavailable={replyUnavailable}
         replyTo={replyTo} onLocateReply={()=>replyTo && locateComment(replyTo.id)} onCancelReply={()=>setReplyTo(null)} onPosted={refreshItem} onNotice={onNotice} />}
       {transferring && <TransferItemDialog item={item} onClose={() => setTransferring(false)} />}
       {transferBuilderOpen && deliveryQuery.data && (
@@ -3291,8 +3291,8 @@ function CommentGroup({idPrefix="",root,replies,visibleCommentIds,item,onReply,o
   </div>;
 }
 
-function CommentComposer({ idPrefix="", item, onPosted, onNotice, replyTo, onCancelReply,onLocateReply,draft,onDraftChange,storageFailed,replyUnavailable }: {
-  idPrefix?:string;replyTo: WorkItemEvent|null; onCancelReply:()=>void;onLocateReply:()=>void;
+function CommentComposer({ accountId, idPrefix="", item, onPosted, onNotice, replyTo, onCancelReply,onLocateReply,draft,onDraftChange,storageFailed,replyUnavailable }: {
+  accountId:string;idPrefix?:string;replyTo: WorkItemEvent|null; onCancelReply:()=>void;onLocateReply:()=>void;
   draft:CommentDraft;onDraftChange:(change:CommentDraft|((previous:CommentDraft)=>CommentDraft))=>void;storageFailed:boolean;replyUnavailable:boolean;
   item: WorkItem; onPosted: () => Promise<void>; onNotice: (message: string) => void;
 }) {
@@ -3329,11 +3329,9 @@ function CommentComposer({ idPrefix="", item, onPosted, onNotice, replyTo, onCan
   const replyName=replyTo ? commentAuthor({...replyTo,agentName:eventAgentName(replyTo.payload)},actorLabel(replyTo.actorKind)) : "";
   const replyExcerpt=replyTo ? deriveSummary(typeof replyTo.payload.summary==="string" && replyTo.payload.summary.trim()
     ? replyTo.payload.summary : commentPlainText(replyTo.payload.bodyKind,(replyTo.payload.body ?? {}) as Readonly<Record<string,unknown>>),160) || t("commentAttachmentQuote") : "";
-  const [files, setFiles] = useState<readonly File[]>([]);
+  const {files,setFiles,uploaded,uploadIds}=useCommentFiles(accountId,item.key,idPrefix);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const uploaded = useRef(new Map<File, string>());
-  const uploadIds = useRef(new Map<File, string>());
   const attempt = useRef(draft.attempt ?? { fingerprint: "", key: "" });
   const existingIds = new Set(item.attachments.map(attachment => attachment.id));
   const selectedAlreadyCounted = files.filter(file => existingIds.has(uploaded.current.get(file) ?? "")).length;
