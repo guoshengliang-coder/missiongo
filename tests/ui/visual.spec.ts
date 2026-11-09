@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 
 import { PAGES, THEMES, VIEWPORTS } from "./fixture.mjs";
+import { waitForNetworkQuiet } from "./polling";
 
 /**
  * Screenshot comparison, one per page, viewport and theme.
@@ -46,18 +47,7 @@ for (const viewport of VIEWPORTS) {
           await page.clock.setFixedTime(fixture.snapshotTime);
           await page.emulateMedia({ colorScheme: theme as "light" | "dark" });
           await page.goto(pageUnderTest.path(fixture));
-          // The console event stream stays open for the page's lifetime, so
-          // networkidle never fires. Wait instead until every non-stream
-          // resource count has been quiet across consecutive polls. Polling
-          // runs in Node: the page clock is fixed and its timers never run.
-          await expect.poll(() => page.evaluate(() => {
-            const quiet = performance.getEntriesByType("resource")
-              .filter(entry => !entry.name.includes("/api/v1/console/events")).length;
-            const tracker = window as unknown as { mgLastQuietResources?: number; mgQuietPolls?: number };
-            if (quiet === tracker.mgLastQuietResources) tracker.mgQuietPolls = (tracker.mgQuietPolls ?? 0) + 1;
-            else { tracker.mgLastQuietResources = quiet; tracker.mgQuietPolls = 0; }
-            return tracker.mgQuietPolls ?? 0;
-          }), { timeout: 15_000 }).toBeGreaterThanOrEqual(3);
+          await waitForNetworkQuiet(page);
           await page.addStyleTag({ content: "*, *::before, *::after { transition: none !important; animation: none !important; }" });
           await page.waitForTimeout(200);
           // Lazy thumbnails start after IntersectionObserver, sometimes after

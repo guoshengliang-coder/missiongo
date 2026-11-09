@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 import { WEB_ORIGIN } from "./fixture.mjs";
+import { advanceSessionDetailPoll } from "./polling";
 
 const fixture = JSON.parse(readFileSync(fileURLToPath(new URL("./.auth/fixture.json", import.meta.url)), "utf8")) as { productId: string };
 const id = "hg193-failure-fixture";
@@ -120,6 +121,7 @@ for (const outcome of ["delivered", "failed", "delivery_unknown"] as const) {
       ...(outcome === "failed" ? { error: "回复未发送：原会话无法恢复" } : {}) },
       ...(outcome === "delivered" ? { status: "active", failure: undefined,
         messages: [{ id: "mirror", sourceId: reply.id, role: "user", text: reply.text, occurredAt: stamp }] } : {}) };
+    await advanceSessionDetailPoll(page);
     if (outcome === "delivery_unknown") {
       await expect(page.locator(".agent-console-message-delivery")).toContainText("未收到");
       await expect(composer).toBeDisabled();

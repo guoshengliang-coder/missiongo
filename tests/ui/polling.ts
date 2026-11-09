@@ -47,3 +47,18 @@ async function advanceQueryPoll(page: Page, path: string) {
 export async function advanceTimelinePoll(page: Page,itemKey:string){await advanceQueryPoll(page,`/api/v1/items/${itemKey}/timeline`);}
 export async function advanceAttentionPoll(page: Page){await advanceQueryPoll(page,"/api/v1/attention/count");}
 export async function advanceDingTalkBindingsPoll(page: Page){await advanceQueryPoll(page,"/api/v1/dingtalk/bindings");}
+
+/** The console event stream stays open, so networkidle never fires. Wait
+ * instead until the count of non-stream resources has been quiet across
+ * consecutive polls. Polling runs in Node; the page clock may be frozen. */
+export async function waitForNetworkQuiet(page: Page, stable = 3) {
+  const { expect } = await import("@playwright/test");
+  await expect.poll(() => page.evaluate(() => {
+    const quiet = performance.getEntriesByType("resource")
+      .filter(entry => !entry.name.includes("/api/v1/console/events")).length;
+    const tracker = window as unknown as { mgLastQuietResources?: number; mgQuietPolls?: number };
+    if (quiet === tracker.mgLastQuietResources) tracker.mgQuietPolls = (tracker.mgQuietPolls ?? 0) + 1;
+    else { tracker.mgLastQuietResources = quiet; tracker.mgQuietPolls = 0; }
+    return tracker.mgQuietPolls ?? 0;
+  }), { timeout: 15_000 }).toBeGreaterThanOrEqual(stable);
+}

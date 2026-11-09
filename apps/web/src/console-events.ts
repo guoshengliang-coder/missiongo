@@ -80,7 +80,11 @@ export function startConsoleEvents(client:QueryClient, fetcher:typeof fetch=(inp
     if(stopped)return;
     client.removeQueries({predicate:q=>q.queryKey[0]!=="bootstrap" && q.getObserversCount()===0});
     await client.invalidateQueries({predicate:q=>q.queryKey[0]!=="bootstrap"},{throwOnError:true});
-    await client.resetQueries({queryKey:["bootstrap"]},{throwOnError:true});
+    // Revalidate bootstrap in place: clearing it would unmount every consumer
+    // (losing e.g. a just-saved settings notice) for changes that merely
+    // touch the account. Revocation still lands through the refetch, the
+    // stream's unauthorized handling and the eviction above.
+    await client.invalidateQueries({queryKey:["bootstrap"]},{throwOnError:true});
    } else {
     await Promise.all(affected.map(async q=>{
      await client.cancelQueries({queryKey:q.queryKey,exact:true});

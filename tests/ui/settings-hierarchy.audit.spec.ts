@@ -2,6 +2,7 @@ import { chooseOption } from "./select-helpers";
 import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { expect, test } from "@playwright/test";
+import { waitForNetworkQuiet } from "./polling";
 import { WEB_ORIGIN } from "./fixture.mjs";
 import { AUDIT_SOURCE } from "./audit-page.mjs";
 
@@ -34,7 +35,7 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
       await expect(page.locator(".settings-page-title")).toContainText("产品概览");
       await expect(page.getByRole("button", { name: "添加产品", exact: true })).toHaveCount(0);
       await page.screenshot({ path: test.info().outputPath("product-overview.png") });
-      await page.waitForLoadState("networkidle");
+      await waitForNetworkQuiet(page);
       const audit = await page.evaluate(AUDIT_SOURCE) as { horizontalOverflow: number; text: Array<{ fontSize: number; fontWeight: number; contrast: number }>; targets: Array<{ width: number; height: number }> };
       expect(audit.horizontalOverflow).toBeLessThanOrEqual(0);
       expect(audit.text.filter(x => x.fontSize > 0 && x.fontSize < 11)).toEqual([]);
