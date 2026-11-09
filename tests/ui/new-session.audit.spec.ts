@@ -5,7 +5,8 @@ for (const width of [375, 768, 1440]) {
   test(`project conversation retains a local draft and retries first send once at ${width}px`, async ({ page, request }, testInfo) => {
     await page.setViewportSize({ width, height: 900 });
     const product = await (await request.post("/api/v1/products", { data: { name: `Project conversation ${width}`, keyPrefix: `PC${width}` } })).json();
-    const now = new Date().toISOString();
+    const now = "2026-11-09T06:00:00.000Z";
+    await page.clock.setFixedTime(new Date(now));
     const node = { id: "fixture-node", name: "Fixture Mac", online: true, supportsFreeSessions: true, supportsChatAttachments: true,
       agents: [{ kind: "codex", planApprovalProtocol: 1, ready: true, models: [{ id: "draft-beta", label: "Draft Beta", efforts: ["low", "high"] }] }], repos: [{ productId: product.id, repoPath: "fixture-repository" }], repoCandidates: [], createdAt: now };
     await page.route("**/api/v1/nodes", route => route.fulfill({ json: { nodes: [node] } }));
@@ -110,5 +111,13 @@ for (const width of [375, 768, 1440]) {
     summary.canRetry = true;
     await page.reload();
     await expect(page.getByRole("button", { name: "重试启动", exact: true })).toBeEnabled();
+    if (width === 375) {
+      await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+      await expect(page.locator(".agent-console-list")).toBeVisible();
+    }
+    await page.locator(".agent-console-topbar-back").click();
+    await expect(page).not.toHaveURL(/console=agent/);
+    await page.goForward();
+    await expect(page).toHaveURL(/console=agent/);
   });
 }
