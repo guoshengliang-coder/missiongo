@@ -72,10 +72,10 @@ export function startConsoleEvents(client:QueryClient, fetcher:typeof fetch=(inp
   try {
    const affected=client.getQueryCache().findAll({predicate:q=>q.queryKey[0]!=="bootstrap" && (full||resources.some(r=>changeAffects(q.queryKey,r)))});
    // A formerly-authorized snapshot must not remain visible after revocation.
-   if(resources.some(r=>r.kind==="access")) {
+   if(full || resources.some(r=>r.kind==="access")) {
     await client.cancelQueries();
     client.removeQueries({predicate:q=>q.queryKey[0]!=="bootstrap"});
-    await client.invalidateQueries({queryKey:["bootstrap"]},{throwOnError:true});
+    await client.resetQueries({queryKey:["bootstrap"]},{throwOnError:true});
    } else {
     await Promise.all(affected.map(async q=>{
      await client.cancelQueries({queryKey:q.queryKey,exact:true});

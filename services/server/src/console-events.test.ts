@@ -86,3 +86,23 @@ it("limits collaboration notifications to the shared item and clears reach after
  db.prepare("UPDATE collaboration_requests SET access_revoked_at=? WHERE id='request'").run(now);
  const revoked=await stream.event();expect(revoked.data.resources).toContainEqual({kind:"access",productId:target.id});expect(JSON.stringify(revoked)).not.toContain(shared.key);
 });
+
+it("shares live journal reads and skips auth queries for unrelated private changes",async()=>{
+ const f=await fixture(true);
+ const member=f.app.missionGoAccounts.createAccount({email:"idle@example.invalid",password:"synthetic-password",role:"member"});
+ const now=new Date().toISOString();
+ f.store.database.connection.prepare("INSERT INTO nodes(id,account_id,installation_id,name,token_hash,agents_json,created_at,updated_at) VALUES('private-node','owner','fixture','Node','synthetic','[]',?,?)").run(now,now);
+ const cookie=await f.login(member.email);
+ const streams=await Promise.all(Array.from({length:100},()=>f.connect(cookie)));
+ await Promise.all(streams.map(s=>s.event()));
+ const db=f.store.database.connection;
+ const spy=vi.spyOn(db,"prepare");
+ try {
+  // Owner-only node changes must not recheck unrelated member sessions.
+  db.prepare("UPDATE nodes SET name='Changed' WHERE id='private-node'").run();
+  await new Promise(resolve=>setTimeout(resolve,20));
+  const sql=spy.mock.calls.map(([sql])=>String(sql));
+  expect(sql.filter(sql=>sql.startsWith("SELECT * FROM console_changes"))).toHaveLength(1);
+  expect(sql.filter(sql=>sql.includes("FROM accounts") && sql.startsWith("SELECT"))).toHaveLength(0);
+ } finally {spy.mockRestore();}
+});

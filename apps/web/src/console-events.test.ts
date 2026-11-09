@@ -4,7 +4,7 @@ import { changeAffects, EventFrames, startConsoleEvents } from "./console-events
 const cleanup:(()=>void)[]=[];
 afterEach(()=>{cleanup.splice(0).forEach(fn=>fn());vi.unstubAllGlobals();vi.useRealTimers();});
 const settle=async()=>{for(let i=0;i<15;i++)await Promise.resolve();};
-function fixture() {
+function fixture(initialCursor="epoch:0") {
  const windowTarget=new EventTarget(),documentTarget=Object.assign(new EventTarget(),{visibilityState:"visible"});
  vi.stubGlobal("window",windowTarget);vi.stubGlobal("document",documentTarget);vi.stubGlobal("navigator",{onLine:true});
  const client=new QueryClient({defaultOptions:{queries:{retry:false,gcTime:Infinity}}});cleanup.push(()=>client.clear());
@@ -13,7 +13,7 @@ function fixture() {
   const stream=new ReadableStream<Uint8Array>({start(controller){streams.push(controller);options?.signal?.addEventListener("abort",()=>{try{controller.close();}catch{/* already ended */}});}});
   return new Response(stream,{headers:{"content-type":"text/event-stream"}});
  });
- const stop=startConsoleEvents(client,fetcher);cleanup.push(stop);
+ const stop=startConsoleEvents(client,fetcher,initialCursor);cleanup.push(stop);
  const send=(event:string,data:unknown,id="epoch:1",stream=streams[0])=>stream!.enqueue(new TextEncoder().encode(`id: ${id}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
  return {client,fetcher,send,streams,windowTarget,documentTarget};
 }
@@ -40,7 +40,7 @@ it("does no idle polling and coalesces duplicate invalidations into refreshed st
  await settle();expect(f.client.getQueryData(["timeline","P-1"])).toEqual({version:2});expect(read).toHaveBeenCalledOnce();
 });
 it("reconnects from the processed cursor and catches up a hidden page without losing a read in flight",async()=>{
- vi.useFakeTimers();const f=fixture();await settle();f.send("hello",{epoch:"epoch",version:2},"");await settle();
+ vi.useFakeTimers();const f=fixture("");await settle();f.send("hello",{epoch:"epoch",version:2},"");await settle();
  f.streams[0]!.close();await settle();vi.advanceTimersByTime(1000);await settle();
  expect(String(f.fetcher.mock.calls[1]?.[0])).toContain("epoch%3A2");
  f.documentTarget.visibilityState="hidden";f.documentTarget.dispatchEvent(new Event("visibilitychange"));await settle();
@@ -75,4 +75,17 @@ it("uses a bootstrap cursor without forcing an unnecessary initial snapshot read
  const invalidate=vi.spyOn(f.client,"invalidateQueries");
  const stop=startConsoleEvents(f.client,fetcher,"epoch:9");cleanup.push(stop);await settle();
  expect(String(fetcher.mock.calls[0]?.[0])).toContain("epoch%3A9");expect(invalidate).not.toHaveBeenCalled();
+});
+
+it("evicts revoked snapshots and revalidates bootstrap after a journal reset",async()=>{
+ const f=fixture();await settle();
+ const read=vi.fn().mockResolvedValue({role:"member",products:[]});
+ f.client.setQueryData(["bootstrap"],{role:"admin",products:["revoked"]});
+ f.client.setQueryData(["item","SECRET-1"],{description:"old private content"});
+ const bootstrap=new QueryObserver(f.client,{queryKey:["bootstrap"],queryFn:read,staleTime:Infinity});
+ cleanup.push(bootstrap.subscribe(()=>{}));
+ f.send("reset",{version:20000},"new-epoch:20000");await settle();
+ expect(read).toHaveBeenCalledOnce();
+ expect(f.client.getQueryData(["bootstrap"])).toEqual({role:"member",products:[]});
+ expect(f.client.getQueryData(["item","SECRET-1"])).toBeUndefined();
 });

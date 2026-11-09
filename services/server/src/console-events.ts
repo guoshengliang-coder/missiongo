@@ -1,9 +1,9 @@
 import type { ConsoleChangeResource } from "@missiongo/contracts";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { ConsoleChanges, type ConsoleChange } from "./console-changes.js";
+import { ConsoleChanges, type ConsoleChange, type ConsoleChangeBatch } from "./console-changes.js";
 import { invalidInput } from "./errors.js";
 
-interface Access { expiresAt: number; canRead: (change: ConsoleChange) => boolean }
+interface Access { accountId?: string; expiresAt: number; canRead: (change: ConsoleChange) => boolean }
 /** A read-only stream. Its heartbeat writes bytes only; authorization is checked
  * on every committed batch and an expiry timer ends otherwise idle sessions. */
 export function registerConsoleEvents(app: FastifyInstance, feed: ConsoleChanges,
@@ -34,12 +34,20 @@ export function registerConsoleEvents(app: FastifyInstance, feed: ConsoleChanges
    if (reply.raw.writableLength>256*1024) {close();return;}
    reply.raw.write(frame);
   };
-  const flush=()=>{
+  const flush=(batch?:ConsoleChangeBatch)=>{
    if(closed)return;
+   // Private changes for another account cannot alter this connection's access.
+   // Advance its cursor without doing account or journal queries.
+   if(batch && cursor>=batch.after && cursor<=batch.page.version && !reset && !batch.page.reset && initial.accountId &&
+      batch.page.changes.every(change=>change.account_id && change.account_id!==initial.accountId)) {
+    cursor=batch.page.version;return;
+   }
    let current:Access;
    try {current=access(request);} catch {send("unauthorized",{});close();return;}
    for(let count=0;count<21;count++) {
-    const page=feed.page(cursor);
+    const page=batch && cursor>=batch.after && cursor<=batch.page.version
+     ? {...batch.page,changes:batch.page.changes.filter(change=>change.version>cursor),more:false}
+     : feed.page(cursor);
     if(reset || page.reset) {
      cursor=feed.latest(); reset=false;
      send("reset",{version:cursor},cursor);return;

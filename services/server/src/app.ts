@@ -1861,7 +1861,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const account = requireAccount(request);
     const claims = readAdminSession(options.adminAccount!, cookieValue(request, ADMIN_SESSION_COOKIE));
     if (!claims) throw new MissionGoError("authentication_required", "Sign in to read console changes.", 401);
-    return { expiresAt: claims.expiresAt * 1000, canRead: change => {
+    return { accountId: account.id, expiresAt: claims.expiresAt * 1000, canRead: change => {
       if (change.account_id && change.account_id !== account.id) return false;
       if (change.kind === "admin") return account.role === "admin";
       if (change.item_key) {

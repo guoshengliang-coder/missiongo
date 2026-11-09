@@ -14,6 +14,7 @@ export interface ConsoleChange {
  version: number; kind: ConsoleChangeKind; account_id: string | null; product_id: string | null;
  item_key: string | null; resource_id: string | null;
 }
+export interface ConsoleChangeBatch { after: number; page: ReturnType<ConsoleChanges["page"]> }
 interface Spec { kind: ConsoleChangeKind; account?: string; product?: string; item?: string; resource?: string; ignore?: string[]; adminAlso?: boolean }
 const ignored = new Set(["updated_at", "observed_at", "last_used_at", "received_at", "native_synced_at", "next_at", "lease_until"]);
 const item = (column = "item_id") => `(SELECT item_key FROM work_items WHERE id=$.${column})`;
@@ -74,7 +75,7 @@ export class ConsoleChanges {
  private cursor: number;
  private queued = false;
  private closed = false;
- private listeners = new Set<() => void>();
+ private listeners = new Set<(batch: ConsoleChangeBatch) => void>();
  private deadlines = new Map<string, ReturnType<typeof setTimeout>>();
  private clockQueue = new Set<string>();
  private readonly db: DatabaseSync;
@@ -137,7 +138,7 @@ export class ConsoleChanges {
   const version = changes.at(-1)?.version ?? latest;
   return { changes, version: reset ? latest : version, reset, more: version < latest };
  }
- subscribe(listener: () => void) { this.listeners.add(listener); return () => {this.listeners.delete(listener);}; }
+ subscribe(listener: (batch: ConsoleChangeBatch) => void) { this.listeners.add(listener); return () => {this.listeners.delete(listener);}; }
  private wake() {
   if (this.closed || this.queued) return;
   this.queued = true;
@@ -148,10 +149,17 @@ export class ConsoleChanges {
    for (const key of clocks) this.schedule(key);
    const latest = this.latest();
    if (latest <= this.cursor) return;
+   let after = this.cursor;
    this.cursor = latest;
    // Bounded retention; cleanup happens only on writes, never on keepalive.
    this.db.prepare("DELETE FROM console_changes WHERE version<=?").run(latest - 10_000);
-   for (const listener of this.listeners) listener();
+   // Read each committed page once, regardless of the number of subscribers.
+   do {
+    const page = this.page(after);
+    for (const listener of this.listeners) listener({ after, page });
+    after = page.version;
+    if (!page.more) break;
+   } while (after < latest);
   });
  }
  private schedule(key: string) {

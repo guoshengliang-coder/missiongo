@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { refreshFromConsoleStream } from "./polling";
 import { readFileSync } from "node:fs";
 const fixture=JSON.parse(readFileSync(new URL("./.auth/fixture.json",import.meta.url),"utf8")) as {productId:string;detailKey:string};
 test.beforeEach(async({page})=>{await page.clock.install({time:new Date("2026-11-09T02:00:00Z")});});
@@ -43,4 +44,15 @@ for(const [width,theme] of [[320,"dark"],[1440,"light"]] as const)test(`SSE fail
  }
  await page.screenshot({path:info.outputPath(`sse-failure-${width}-${theme}.png`)});
  unavailable=false;await banner.getByRole("button",{name:"重试",exact:true}).click();await expect(banner).toHaveCount(0);await expect(comment).toHaveValue("连接失败也保留草稿");
+});
+
+test("journal reset rebuilds the mounted page and preserves the saved comment draft",async({page})=>{
+ await page.goto(`/?product=${fixture.productId}&item=${fixture.detailKey}`);
+ await expect(page.locator(".detail-pane")).toBeVisible();
+ const draft=page.locator('textarea').filter({visible:true}).last();
+ await draft.fill("日志裁剪后保留草稿");
+ const bootstrap=page.waitForResponse(r=>new URL(r.url()).pathname==="/api/v1/bootstrap");
+ await refreshFromConsoleStream(page);await bootstrap;
+ await expect(page.locator(".detail-pane")).toBeVisible();
+ await expect(page.locator('textarea').filter({visible:true}).last()).toHaveValue("日志裁剪后保留草稿");
 });

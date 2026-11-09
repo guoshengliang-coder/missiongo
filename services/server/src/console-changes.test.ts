@@ -73,3 +73,17 @@ it("persists the epoch and replays committed changes after a server restart",asy
   expect(feed.epoch).toBe(epoch);expect(feed.page(cursor).changes).toMatchObject([{kind:"products"}]);
  } finally {feed.close();store.close();rmSync(dir,{recursive:true,force:true});}
 });
+
+it("shares bounded live pages across subscribers without losing a multi-page commit",async()=>{
+ const f=fixture();await Promise.resolve();
+ const first=vi.fn(),second=vi.fn();f.feed.subscribe(first);f.feed.subscribe(second);
+ const spy=vi.spyOn(f.db,"prepare");
+ try {
+  f.store.database.transaction(()=>{for(let i=0;i<1001;i++)f.db.prepare("UPDATE products SET name=? WHERE id=?").run(`revision-${i}`,f.product.id);});
+  await Promise.resolve();
+  expect(first).toHaveBeenCalledTimes(3);expect(second).toHaveBeenCalledTimes(3);
+  expect(first.mock.calls.flatMap(([batch])=>batch.page.changes)).toHaveLength(1001);
+  for(let i=0;i<3;i++)expect(first.mock.calls[i]![0].page).toBe(second.mock.calls[i]![0].page);
+  expect(spy.mock.calls.filter(([sql])=>String(sql).startsWith("SELECT * FROM console_changes"))).toHaveLength(3);
+ }finally{spy.mockRestore();}
+});
