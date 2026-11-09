@@ -10,10 +10,14 @@ const sha = value => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
 const digest = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const sameNumber = (actual, expected) => Number.isFinite(actual) && Math.abs(actual - expected) <= Math.max(1e-9, Math.abs(expected) * 1e-8);
 const samplesValid = (samples, count) => Array.isArray(samples) && samples.length === count && samples.every(positive);
+const wallTotal = (samples, iterations) => samples.reduce((sum, value) => sum + value, 0) * iterations;
+// JSON round trips and per-iteration division can introduce tiny rounding
+// differences. This fixed 10us allowance cannot grow with suspect sample values.
+const stageCovers = (stageMs, sampledMs) => Number.isFinite(sampledMs) && sampledMs <= stageMs + 0.01;
 
 /** Status labels alone are not measurement evidence. Recompute from raw CPU
  * samples and the exact versioned config; wall samples remain required context. */
-function validMeasurement(report, config) {
+function validMeasurement(report, config, reviewedAtMs) {
   try {
     if (report.version !== 1 || !identifier(report.runId) || !identifier(report.attempt) || !sha(report.head)
       || report.dirty !== false || report.experiment !== null || report.mode !== config.ciMode || report.timingUnit !== config.timingUnit
@@ -23,6 +27,7 @@ function validMeasurement(report, config) {
       || !Number.isFinite(Date.parse(report.measuredAt))) return false;
     const canonicalTime = report.measuredAt.includes(".") ? report.measuredAt : report.measuredAt.replace("Z", ".000Z");
     if (new Date(report.measuredAt).toISOString() !== canonicalTime) return false;
+    if (Date.parse(report.measuredAt) > reviewedAtMs) return false;
     const shape = config.shape, items = shape.batches * shape.deliveriesPerBatch * shape.itemsPerDelivery;
     assert.deepEqual(report.shape, { ...shape, items, events: items * shape.eventsPerItem, deliveries: shape.batches * shape.deliveriesPerBatch });
     const measured = report.calibration;
@@ -43,16 +48,20 @@ function validMeasurement(report, config) {
     const stages = ["fixtureMs", "calibrationMs", "warmupMs", "samplesMs"];
     if (!report.timings || ![...stages, "totalMs"].every(key => positive(report.timings[key]))
       || report.timings.totalMs + 1e-6 < stages.reduce((sum, key) => sum + report.timings[key], 0)) return false;
+    const calibrationWall = wallTotal(measured.wallSamplesMs, config.baseline.iterations);
+    const targetsWall = report.targets.reduce((sum, target) => sum + wallTotal(target.wallSamplesMs, config.targets[target.name].iterations), 0);
+    if (!stageCovers(report.timings.calibrationMs, calibrationWall) || !stageCovers(report.timings.samplesMs, targetsWall)) return false;
     return true;
   } catch { return false; }
 }
 
 // Reports are Actions evidence supplied explicitly by a reviewer, not a signed
 // attestation. This calculator never changes CI mode or branch protection.
-export function summarizeObservations(reports, ledger, configDigest, config) {
+export function summarizeObservations(reports, ledger, configDigest, config, reviewedAtMs = Date.now()) {
   validateBudget(config);
   assert.ok(digest(configDigest), "Invalid expected configuration digest");
   assert.ok(Array.isArray(reports));
+  assert.ok(Number.isFinite(reviewedAtMs) && Number.isFinite(new Date(reviewedAtMs).getTime()), "Invalid review clock");
   assert.equal(ledger.version, 1);
   assert.ok(Array.isArray(ledger.reviews));
   const reviews = new Map();
@@ -70,7 +79,7 @@ export function summarizeObservations(reports, ledger, configDigest, config) {
     if (report.configDigest !== configDigest) { unrelated++; continue; }
     const key = `${report.runId}/${report.attempt}`;
     assert.ok(!identities.has(key), "Duplicate report/run attempt"); identities.add(key);
-    if (!validMeasurement(report, config)) { invalid++; continue; }
+    if (!validMeasurement(report, config, reviewedAtMs)) { invalid++; continue; }
     const review = reviews.get(key);
     if (!review || review.configDigest !== configDigest || review.head !== report.head) { unreviewed++; continue; }
     assert.equal(review.decision === "pass", report.status === "passed", "Review contradicts the measured result");
@@ -92,7 +101,7 @@ export function summarizeObservations(reports, ledger, configDigest, config) {
   const elapsedHours = firstTime === null ? 0 : (lastTime - firstTime) / 3_600_000;
   const continuous = sorted.length >= 8 && sorted.length === calendarSpanDays + 1;
   const missingReports = missingReportReviews.length;
-  return { version: 1, configDigest, reports: reports.length, reviewed, unreviewed, invalid, unrelated,
+  return { version: 1, configDigest, reviewedAt: new Date(reviewedAtMs).toISOString(), reports: reports.length, reviewed, unreviewed, invalid, unrelated,
     missingReports, missingReportReviews, knownFalsePositiveReviews, knownRegressionReviews,
     falsePositives, regressions, falsePositiveRate: reviewed && !missingReports && !invalid && !unreviewed ? falsePositives / reviewed : null,
     firstDay: sorted[0] ?? null, lastDay: sorted.at(-1) ?? null, calendarSpanDays,

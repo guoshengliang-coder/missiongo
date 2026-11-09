@@ -7,21 +7,28 @@ import { summarizeObservations } from "./performance-observations.mjs";
 const digest = "c".repeat(64), head = "a".repeat(40);
 const config = JSON.parse(readFileSync(new URL("../tests/performance/server-budgets.json", import.meta.url)));
 const samples = value => Array(config.samples).fill(value);
+const sum = values => values.reduce((total, value) => total + value, 0);
+const targetsWall = targets => sum(targets.map(t => sum(t.wallSamplesMs) * config.targets[t.name].iterations));
+const totalTime = timings => timings.fixtureMs + timings.calibrationMs + timings.warmupMs + timings.samplesMs + 100;
 const report = (day, status = "passed") => {
   const calibrated = calibration(samples(config.baseline.referenceMs), config.baseline);
+  const targets = Object.entries(config.targets).map(([name, budget]) => {
+    const value = budget.budgetMs * (status === "passed" ? 0.5 : 2);
+    return { ...evaluateTarget(name, samples(value), budget, calibrated), wallSamplesMs: samples(value) };
+  });
+  const timings = { fixtureMs: 3000, calibrationMs: sum(samples(config.baseline.referenceMs)) * config.baseline.iterations + 20,
+    warmupMs: 1000, samplesMs: targetsWall(targets) + 20 };
   return { version: 1, runId: String(100 + day), attempt: "1", head, dirty: false, experiment: null,
     configDigest: digest, measuredAt: `2026-01-${String(day).padStart(2, "0")}T12:00:00.000Z`, status,
     timingUnit: config.timingUnit, mode: config.ciMode, platform: "linux", arch: "x64", node: "v22.13.0",
     shape: { ...config.shape, items: 200, events: 40000, deliveries: 20 },
     calibration: { ...calibrated, wallSamplesMs: samples(config.baseline.referenceMs) },
-    targets: Object.entries(config.targets).map(([name, budget]) => {
-      const value = budget.budgetMs * (status === "passed" ? 0.5 : 2);
-      return { ...evaluateTarget(name, samples(value), budget, calibrated), wallSamplesMs: samples(value) };
-    }), timings: { fixtureMs: 3000, calibrationMs: 500, warmupMs: 1000, samplesMs: 6000, totalMs: 11000 } };
+    targets, timings: { ...timings, totalMs: totalTime(timings) } };
 };
 const ledger = reports => ({ version: 1, reviews: reports.map(r => ({ runId: r.runId, attempt: r.attempt, head,
   configDigest: digest, decision: r.status === "passed" ? "pass" : "false_positive", note: "Human evidence review" })) });
-const summarize = (reports, reviews = ledger(reports)) => summarizeObservations(reports, reviews, digest, config);
+const reviewClock = Date.parse("2026-01-09T12:00:00.000Z");
+const summarize = (reports, reviews = ledger(reports), at = reviewClock) => summarizeObservations(reports, reviews, digest, config, at);
 const week = () => Array.from({ length: 8 }, (_, i) => report(i + 1));
 
 test("no evidence, local/dirty/invalid runs and unreviewed warnings never prove zero false positives", () => {
@@ -122,4 +129,52 @@ test("false positive rate is unavailable for incomplete evidence and never infer
   assert.equal(summarize(reports).falsePositiveRate, 2 / 3);
   const contradictory = ledger(reports); contradictory.reviews[1].decision = "pass";
   assert.throws(() => summarize(reports, contradictory));
+});
+
+test("future observations cannot manufacture a completed week", () => {
+  const reports = week();
+  for (let i = 0; i < reports.length; i++) reports[i].measuredAt = `2027-01-${String(i + 1).padStart(2, "0")}T12:00:00.000Z`;
+  const future = summarize(reports);
+  assert.equal(future.reviewedAt, new Date(reviewClock).toISOString());
+  assert.equal(future.invalid, 8); assert.equal(future.reviewed, 0);
+  assert.equal(future.elapsedHours, 0); assert.equal(future.falsePositiveRate, null);
+  assert.equal(future.eligibleForBlockingReview, false);
+});
+
+test("review clock includes an observation at now, rejects one millisecond in the future, and fails closed if invalid", () => {
+  const reports = week(), last = Date.parse(reports.at(-1).measuredAt), reviews = ledger(reports);
+  assert.equal(summarize(reports, reviews, last).eligibleForBlockingReview, true);
+  assert.equal(summarize(reports, reviews, last + 1).eligibleForBlockingReview, true);
+  const future = summarize(reports, reviews, last - 1);
+  assert.equal(future.invalid, 1); assert.equal(future.eligibleForBlockingReview, false);
+  for (const invalid of [NaN, Infinity, "2026-01-09", null, 9e15]) assert.throws(() => summarize(reports, reviews, invalid));
+});
+
+test("sample wall totals must fit calibration and target stages, including every iteration", () => {
+  const reports = week(), reviews = ledger(reports);
+  for (const edit of [
+    r => { for (const t of r.targets) t.wallSamplesMs.fill(1_000_000); },
+    r => r.calibration.wallSamplesMs.fill(1_000_000),
+    r => { r.timings.calibrationMs = sum(r.calibration.wallSamplesMs) + 1; },
+    r => { r.timings.samplesMs = Math.max(...r.targets.map(t => sum(t.wallSamplesMs) * config.targets[t.name].iterations)) + 1; },
+    r => { r.timings.samplesMs = targetsWall(r.targets) - 20; },
+  ]) {
+    const changed = structuredClone(reports); edit(changed[3]);
+    // Keep the enclosing total internally consistent, isolating the new check.
+    changed[3].timings.totalMs = totalTime(changed[3].timings);
+    const result = summarize(changed, reviews);
+    assert.equal(result.invalid, 1); assert.equal(result.eligibleForBlockingReview, false);
+  }
+});
+
+test("stage rounding tolerance is a fixed 10us and exact sample totals are accepted", () => {
+  const reports = week(), reviews = ledger(reports);
+  for (const deficit of [0, 0.005, 0.02]) {
+    for (const stage of ["calibrationMs", "samplesMs"]) {
+      const changed = structuredClone(reports), r = changed[3];
+      const required = stage === "calibrationMs" ? sum(r.calibration.wallSamplesMs) * config.baseline.iterations : targetsWall(r.targets);
+      r.timings[stage] = required - deficit; r.timings.totalMs = totalTime(r.timings);
+      assert.equal(summarize(changed, reviews).invalid, deficit > 0.01 ? 1 : 0);
+    }
+  }
 });

@@ -150,6 +150,11 @@ The calculator recomputes calibration and target results from the complete raw
 CPU samples and the exact current configuration. It validates wall samples,
 sample counts, units, fixture shape, finite numeric values, stage timing, effective
 budgets and derived status; a `passed` label alone is not evidence.
+Calibration wall samples multiplied by baseline iterations must fit
+`calibrationMs`; all target wall samples multiplied by their own iterations must
+collectively fit `samplesMs`. Each comparison has only a fixed 0.01ms rounding
+allowance, not a percentage that could hide large inconsistencies. CPU and wall
+time are not compared directly: process/background CPU may exceed elapsed wall.
 
 It reconciles both directions: reports without matching reviews are unreviewed;
 current-configuration reviews without reports appear in `missingReports` and
@@ -164,6 +169,12 @@ as evidence on every UTC calendar day (at least eight dates), zero known false
 positives/regressions and no unreviewed/invalid/missing samples. `elapsedHours`
 and `spanDays` use complete timestamps; `calendarSpanDays` and `continuous` only
 describe day coverage. Covering eight date labels alone is insufficient.
+The calculator captures one review clock (`Date.now()` in the CLI), returns it as
+`reviewedAt`, and rejects any sample timestamp later than that clock. Tests inject
+a fixed millisecond review time; changing the system date is unnecessary. There
+is no future-time grace period that can manufacture elapsed observation time.
+If a source clock is ahead, correct/verify its clock or review once that timestamp
+is actually in the past; future reports cannot contribute to the window.
 Verify that the set includes all relevant runs: the calculator can detect omissions
 known to the ledger, but cannot discover runs absent from both inputs or sign them.
 Its `eligibleForBlockingReview` is review evidence only. Current ledger is empty;
