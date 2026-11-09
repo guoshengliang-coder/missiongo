@@ -1,0 +1,55 @@
+# AND-479 / AND-480 / AND-481 / AND-482 实施与验证
+
+本批按固定版本方案实施，单分支保留全部修复；本记录不表示已经创建 PR、合并、发布或人工验收。
+
+## 行为变化
+
+| 条目 | 实施结果 | 共用实现与边界 |
+|---|---|---|
+| AND-482 | 同意更新后保留原窗口，展示下载、校验、安装、失败处理及重启；长说明在进度之后滚动，底部操作常驻 | ClientUpdateWindowController / ClientUpdateView 观察既有 AppModel；保留取消代际隔离、包校验、安全等待及立即重启确认 |
+| AND-481 | 条目来源会话一次返回原详情，列表来源保留列表层；宽窄切换、刷新、前进后退不增加虚假列表层 | 原 App 路由、BackButton、Android 深度桥接；返回恢复焦点及阅读位置；页面上层保留文字/附件草稿，不承诺刷新持久恢复 |
+| AND-480 | 展开内容在原两个控件下方独立出现，控件宽度和横向位置不受正文影响 | 控制台与条目面板共用 AgentRunDetails；原生 details / aria-controls；停止权限不变 |
+| AND-479 | v1 增加可选受限诊断，明确检查失败、过期、查询异常及恢复；重新检查有进行中和结果 | ReleaseNotice / Modal / toast、宿主兜底、Android 原生入口；不显示任意原文，不重放 mutation |
+
+附带的同范围补修：返回条目会卸载控制台，因此将文字、附件和附件错误草稿提升至当前页状态，换账号清除；发布 block 的变化同时补了共享安装器对已知旧版的窄范围迁移，不放行未知版本。
+
+## 实现文件
+
+- macOS：AppModel.swift、ClientUpdateWindow.swift、SignedInView.swift、UpdateLifecycleTests.swift。
+- Web 导航与草稿：App.tsx、navigation.ts、agent-session-console.tsx。
+- 共用展开：agent-session-feedback.tsx、styles.css。
+- 服务更新：release-status.ts、ReleaseNotice.tsx、i18n.tsx、release-status.test.ts。
+- 发布集成：deploy.sh、release-status.sh、enable-release-status.mjs、受审阅的 release-status-v1.block.sh、release-status.test.mjs。
+- 宿主兜底：deploy/release-status/wait.js。
+- Android：MainActivity.kt、ReleaseAvailability.kt、strings.xml、ReleaseAvailabilityTest.kt。
+- UI 回归：and-479-481.audit.spec.ts、and-427-session-controls.audit.spec.ts、and-416-418.audit.spec.ts。
+- 设计与部署边界同步到 design-system.md、release-status.md。
+
+## 验证结果
+
+| 验证 | 结果 | 说明 |
+|---|---|---|
+| npm run check | 通过 | lint、身份、平台契约、迁移、样式、测试、类型检查与生产构建；脚本172项，工作区106/645/9/59/1382通过，服务端2项原有跳过 |
+| npm run check:ui-contracts | 通过 | 沿用共享浮层/菜单契约；不扩大样式豁免 |
+| swift test --package-path apps/macos | 通过 | 首轮全套749项执行，8项原有跳过，无失败；当时已包含新的窗口实现 |
+| 最终 UpdateLifecycleTests 定向 | 8项通过 | 包含新增的窗口关闭/取消与同一窗口生命周期、长说明、390/640宽度、明暗实际渲染；已查看最终图片 |
+| Android App testDebugUnitTest / assembleDebug | 通过 | 14项单测，无跳过；包含失败/过期/旧协议与白名单诊断；仅本地调试构建，未安装 |
+| AND-416/418 与最初新增 UI 专项 | 32项通过 | 原权限/归档、更新、首次加载、恢复、草稿和重复写入保护 |
+| 设置、共享浮层与会话反馈复查 | 19项通过 | agent-settings-compact、overlay-history、and-371-session-feedback；其余同批新增用例已在最终专项重新执行 |
+| 最终 AND-427 + AND-479/481 | 14项全部通过 | 7档宽度、三档字号、明暗/触控；展开前后几何；来源返回/焦点/刷新/前进后退；查询去重、恢复 toast 可见、未知诊断隐藏、兜底版本核验 |
+| git diff --check | 通过 | 无补丁空白错误 |
+
+本地 UI 使用独立端口和临时数据库，不读取生产用户数据。涉及时间的用例固定时钟，并统一 Node 模拟状态期限与浏览器时钟；兜底语言固定为中文。开发过程曾出现旧测试时间不一致、控制台卸载丢草稿与编辑期间热更新干扰，均保留断言、修正实现或测试条件后复测，不靠删除测试或放宽阈值通过。
+
+macOS 截图使用真实 AppKit/SwiftUI 窗口和离线注入服务；先给原生绘制周期完成再截图，避免缓存图层未绘制被误当产品效果。图片为测试状态，更新目标是虚构版本，未真实替换应用。
+
+## 集成与发布前置
+
+- 实施与交付前均核对 origin/main，基线为 4010bc0e11368254a0653200b053936619313ff7，无相关主线漂移。主工作区和其他 worktree 未修改。
+- 预期产物：AND-482 为 macosApp；AND-480、AND-481 为 web；AND-479 为 web、androidApp。最终发布按完整候选及真实 diff 核定。
+- AND-479 还需发布者安装更新后的共享发布 block、宿主兜底静态文件；本次未运行共享工具 --apply、未改宿主配置、未操作生产。
+- 本地提交不等于集成。没有核实合并时，四条保持处理中；所有必需产物及部署前置具备实际证据后才能交到待验证。人工验收由人完成。
+
+## 尚未证明的场景
+
+真实 macOS 跨版本安装、签名/Gatekeeper及权限恢复、活动节点等待后重启、Android实体机WebView/系统返回和生产更新失败/恢复仍待核验。未在生产制造故障。历史重启检查失败的具体底层原因没有被本次证据证明，提示修复不等于底层故障已根治。公开清单读取不证明用户设备已安装新版本。

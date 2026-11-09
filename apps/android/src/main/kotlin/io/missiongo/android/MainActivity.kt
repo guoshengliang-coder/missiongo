@@ -67,6 +67,9 @@ class MainActivity : ComponentActivity() {
     private var loadFailurePending = false
     private var failedLoadUrl: String? = null
     private lateinit var errorView: LinearLayout
+    private lateinit var loadErrorTitle: TextView
+    private lateinit var loadErrorMessage: TextView
+    private lateinit var loadErrorRetry: Button
     private lateinit var outdatedView: LinearLayout
     // Registered in onCreate: activity results have to be registered before the
     // activity is started, and the labels need a context that only exists then.
@@ -292,12 +295,19 @@ class MainActivity : ComponentActivity() {
 
         errorView = centeredMessage().apply {
             visibility = View.GONE
-            addView(messageText(getString(R.string.load_error_title), 20f))
-            addView(messageText(getString(R.string.load_error_message), 14f))
+            loadErrorTitle = messageText(getString(R.string.load_error_title), 20f)
+            loadErrorMessage = messageText(getString(R.string.load_error_message), 14f)
+            addView(loadErrorTitle)
+            addView(loadErrorMessage)
             addView(Button(this@MainActivity).apply {
-                text = getString(R.string.retry)
+                loadErrorRetry = this
+                text = getString(R.string.release_check_again)
                 isAllCaps = false
-                setOnClickListener { openMissionGo() }
+                setOnClickListener {
+                    val url = failedLoadUrl
+                    if (loadFailurePending && url != null) checkFailedLoad(url, loadGeneration, retryIfIdle = true)
+                    else openMissionGo()
+                }
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 topMargin = dp(16)
             })
@@ -584,10 +594,12 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Only the independent host signal can identify a deployment during a failed first load. */
-    private fun checkFailedLoad(failedUrl: String, generation: Int, sawUpdate: Boolean = false) {
+    private fun checkFailedLoad(failedUrl: String, generation: Int, sawUpdate: Boolean = false, retryIfIdle: Boolean = false) {
         if (generation != loadGeneration || isFinishing || isDestroyed) return
+        loadErrorRetry.isEnabled = false
+        loadErrorRetry.text = getString(R.string.release_checking)
         releaseExecutor.execute {
-            val state = runCatching {
+            val probe = runCatching {
                 val connection = URL(BuildConfig.MISSIONGO_ENDPOINT.trimEnd('/') + "/release-status.json").openConnection() as java.net.HttpURLConnection
                 try {
                     connection.connectTimeout = 5000
@@ -605,21 +617,48 @@ class MainActivity : ComponentActivity() {
                         if (text.length <= 4096) JSONObject(text.toString()) else null
                     } else null
                 } finally { connection.disconnect() }
-            }.getOrNull()
+            }
+            val state = probe.getOrNull()
+            val timedOut = probe.exceptionOrNull() is java.net.SocketTimeoutException
             runOnUiThread {
                 if (generation != loadGeneration || !loadFailurePending || isFinishing || isDestroyed) return@runOnUiThread
-                val updating = state != null && ReleaseAvailability.isUpdating(state.optInt("version"), state.optString("phase"), state.optLong("expiresAt"), System.currentTimeMillis())
-                if (updating) {
+                loadErrorRetry.isEnabled = true
+                loadErrorRetry.text = getString(R.string.release_check_again)
+                val now = System.currentTimeMillis()
+                val status = if (state == null || !state.has("expiresAt") || !state.has("release")) ReleaseAvailability.State.UNAVAILABLE
+                    else ReleaseAvailability.classify(state.optInt("version"), state.optString("phase"), state.optLong("expiresAt"), now)
+                if (status == ReleaseAvailability.State.UPDATING) {
                     loadingView.visibility = View.GONE
                     errorView.visibility = View.GONE
                     upgradeView.visibility = View.VISIBLE
-                    releaseHandler.postDelayed({ checkFailedLoad(failedUrl, generation, true) }, 3000)
-                } else if (sawUpdate && state?.optInt("version") == 1 && state.optString("phase") == "idle") {
-                    // This retries only a failed main-frame GET, never an API mutation.
+                    releaseHandler.postDelayed({ checkFailedLoad(failedUrl, generation, sawUpdate = true) }, 3000)
+                } else if (status == ReleaseAvailability.State.IDLE && (sawUpdate || retryIfIdle)) {
+                    // Only the original failed main-frame GET is retried, never a mutation.
                     openMissionGo(failedUrl)
                 } else {
                     upgradeView.visibility = View.GONE
                     showLoadError()
+                    loadErrorTitle.text = getString(when (status) {
+                        ReleaseAvailability.State.FAILED -> R.string.release_failed
+                        ReleaseAvailability.State.EXPIRED -> R.string.release_unconfirmed
+                        else -> R.string.release_unavailable
+                    })
+                    val failure = state?.optJSONObject("failure")
+                    val reason = failure?.let { ReleaseAvailability.failureReason(it.optString("stage"), it.optString("reason"), it.optLong("occurredAt"), now) }
+                    val explanation = getString(when {
+                        status == ReleaseAvailability.State.EXPIRED -> R.string.release_expired
+                        timedOut -> R.string.release_check_timeout
+                        status != ReleaseAvailability.State.FAILED -> R.string.release_check_failed
+                        reason == "health_timeout" -> R.string.release_health_timeout
+                        reason == "health_unavailable" -> R.string.release_health_unavailable
+                        reason == "health_mismatch" -> R.string.release_health_mismatch
+                        reason == "health_invalid" -> R.string.release_health_invalid
+                        reason == "restart_check_failed" -> R.string.release_restart_failed
+                        else -> R.string.release_unknown
+                    })
+                    loadErrorMessage.text = explanation + if (status == ReleaseAvailability.State.FAILED && reason != null) {
+                        "\n" + getString(R.string.release_failure_time, java.text.DateFormat.getDateTimeInstance().format(java.util.Date(failure!!.optLong("occurredAt"))))
+                    } else ""
                 }
             }
         }
@@ -635,6 +674,8 @@ class MainActivity : ComponentActivity() {
 
     private fun showLoadError() {
         loadingView.visibility = View.GONE
+        loadErrorTitle.text = getString(R.string.load_error_title)
+        loadErrorMessage.text = getString(R.string.load_error_message)
         errorView.visibility = View.VISIBLE
     }
 

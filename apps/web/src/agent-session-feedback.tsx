@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { ChevronDown, CircleAlert, CircleCheck, CircleDot, CirclePause, LoaderCircle } from "lucide-react";
 import { useI18n } from "./i18n";
 import type { AgentSessionStatus } from "./types";
@@ -73,15 +73,19 @@ export function AgentRunDetails({ label, icon, status, children, actions }: {
   label: string; icon?: ReactNode; status: string; children: ReactNode; actions?: ReactNode;
 }) {
   const { t } = useI18n();
-  return <div className="agent-run-controls">
-    <details className="agent-run-details">
-      <summary className={`agent-console-activity agent-console-activity-${status}`}>
-        {icon && <span className="agent-run-icon" aria-hidden="true">{icon}</span>}
-        <span role="status">{label}</span>
-        <span className="agent-run-disclosure">{t("agentRunDetails")}<ChevronDown size={12} aria-hidden="true" /></span>
-      </summary>
-      <div className="agent-run-diagnostics">{children}</div>
-    </details>
-    {actions}
+  const [open, setOpen] = useState(false);
+  const diagnosticsId = useId();
+  return <div className="agent-run-group">
+    <div className="agent-run-controls">
+      <details className="agent-run-details" onToggle={event => setOpen(event.currentTarget.open)}>
+        <summary aria-controls={diagnosticsId} className={`agent-console-activity agent-console-activity-${status}`}>
+          {icon && <span className="agent-run-icon" aria-hidden="true">{icon}</span>}
+          <span role="status">{label}</span>
+          <span className="agent-run-disclosure">{t("agentRunDetails")}<ChevronDown size={12} aria-hidden="true" /></span>
+        </summary>
+      </details>
+      {actions}
+    </div>
+    <div id={diagnosticsId} className="agent-run-diagnostics" hidden={!open}>{children}</div>
   </div>;
 }

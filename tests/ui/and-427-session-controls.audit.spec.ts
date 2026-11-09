@@ -3,7 +3,8 @@ import { expect, test, type Page } from "@playwright/test";
 
 const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as { productId: string; detailKey: string };
 const id = "and427-controls";
-const stamp = new Date().toISOString();
+const stamp = "2026-11-09T01:00:00.000Z";
+test.beforeEach(async ({ page }) => { await page.clock.setFixedTime(new Date(stamp)); });
 type Phase = "running" | "waiting" | "readonly" | "archived" | "failed" | "starting";
 
 async function mockSession(page: Page) {
@@ -62,6 +63,20 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
         expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
         expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
         expect(await row.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+        const before = await details.locator("summary").boundingBox();
+        const beforeStop = await stop.boundingBox();
+        await details.locator("summary").click();
+        await expect(page.locator(".agent-run-diagnostics")).toBeVisible();
+        const after = await details.locator("summary").boundingBox();
+        const afterStop = await stop.boundingBox();
+        expect(Math.abs(before!.width - after!.width)).toBeLessThanOrEqual(1);
+        expect(Math.abs(before!.x - after!.x)).toBeLessThanOrEqual(1);
+        expect(Math.abs(beforeStop!.x - afterStop!.x)).toBeLessThanOrEqual(1);
+        expect(Math.abs((before!.y - beforeStop!.y) - (after!.y - afterStop!.y))).toBeLessThanOrEqual(1);
+        const diagnostics = await page.locator(".agent-run-diagnostics").boundingBox();
+        expect(diagnostics!.y).toBeGreaterThanOrEqual(Math.max(after!.y + after!.height, afterStop!.y + afterStop!.height));
+        if ((width === 320 && scale === "large") || (width === 1440 && scale === "medium")) await page.screenshot({ path: testInfo.outputPath(`expanded-${width}.png`) });
+        await details.locator("summary").click();
         if (width >= 1024) {
           const stateBounds = await details.locator("summary").boundingBox();
           expect(Math.abs(stateBounds!.y - bounds!.y)).toBeLessThanOrEqual(1);
