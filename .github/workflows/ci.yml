@@ -101,6 +101,14 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - name: Preserve server performance observation
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: server-performance-${{ github.run_attempt }}
+          path: ci-diagnostics/server-performance/
+          retention-days: 30
+          if-no-files-found: warn
 
   # Each shard has its own server, database and account. Keep one worker per
   # runner: tests intentionally exercise account-wide notifications/settings.

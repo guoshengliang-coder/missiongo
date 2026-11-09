@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "ciMode": "advisory",
+  "reason": "AND-488 initial synthetic baseline, not a production SLA. Observe at least seven days before a reviewed blocking change.",
+  "baselineEvidence": "Initial Node 22.23.2 darwin-arm64 samples: product read ~0.006ms, full merge projection ~825ms, list ~88ms, summary ~0.027ms. The associated 200x200 fixture costs more than the illustrative 100-150ms budget; retain its shape and allow ~50% headroom, below a 5x regression.",
+  "shape": { "batches": 5, "deliveriesPerBatch": 4, "itemsPerDelivery": 10, "eventsPerItem": 200, "payloadBytes": 1024 },
+  "samples": 7,
+  "warmups": 1,
+  "baseline": { "referenceMs": 0.006, "iterations": 10000, "minScale": 0.1, "maxScale": 10, "maxRelativeIqr": 0.5 },
+  "targets": {
+    "merge-deliveries": { "budgetMs": 1250, "iterations": 1 },
+    "item-list": { "budgetMs": 140, "iterations": 1 },
+    "item-summary": { "budgetMs": 0.09, "iterations": 100 }
+  }
+}
