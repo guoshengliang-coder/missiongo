@@ -28,3 +28,25 @@ for(const [width,theme,scale] of [[320,"light","small"],[320,"dark","large"],[14
     await editor.getByRole("button",{name:"取消",exact:true}).click();
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
   });
+
+for(const action of ["escape","summary","outside","reopen"] as const)test(`AND-484 pending menu respects latest ${action} intent`,async({page,request})=>{
+  await page.clock.setFixedTime(new Date("2026-11-09T02:00:00Z"));
+  const product=await(await request.post("/api/v1/products",{data:{name:"Audit menu",keyPrefix:`AM${action.toUpperCase()}`}})).json();
+  const item=await(await request.post("/api/v1/items",{data:{productId:product.id,type:"bug",priority:"normal",status:"ready",title:"Audit asynchronous close",description:"Synthetic",environment:{platform:"web"}}})).json();
+  let release=()=>{},started=()=>{};
+  const blocked=new Promise<void>(resolve=>{release=resolve;}),arrived=new Promise<void>(resolve=>{started=resolve;});
+  await page.route(`**/api/v1/items/${item.key}`,async route=>{started();await blocked;return route.continue();});
+  await page.goto(`/?product=${product.id}&status=ready`);
+  const menu=page.locator(".item-row .row-more-menu");
+  await menu.locator(":scope > summary").click();await arrived;
+  await expect(menu).toHaveAttribute("open","");
+  if(action==="summary")await menu.locator(":scope > summary").click();
+  else if(action==="outside")await page.locator("h1").first().click();
+  else await page.keyboard.press("Escape");
+  await expect(menu).not.toHaveAttribute("open","");
+  if(action==="reopen")await menu.locator(":scope > summary").click();
+  release();
+  await expect(menu.getByRole("button",{name:"编辑",exact:true,includeHidden:true})).toBeAttached();
+  if(action==="reopen")await expect(menu).toHaveAttribute("open","");
+  else await expect(menu).not.toHaveAttribute("open","");
+});

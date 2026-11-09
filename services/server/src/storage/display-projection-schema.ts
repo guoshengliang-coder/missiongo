@@ -84,3 +84,25 @@ INSERT INTO item_list_dirty SELECT id FROM work_items;
 INSERT INTO merge_display_dirty SELECT 'delivery',id FROM merge_deliveries;
 INSERT INTO merge_display_dirty SELECT 'batch',id FROM merge_batches;
 `;
+
+/** Additive repair: existing v1 databases retain their source events and receipts. */
+export const DISPLAY_ACTIVITY_SCHEMA = `
+ALTER TABLE merge_delivery_projection ADD COLUMN expected_activity TEXT NOT NULL DEFAULT '';
+ALTER TABLE merge_batch_projection ADD COLUMN activity_json TEXT NOT NULL DEFAULT '{}';
+CREATE INDEX merge_delivery_projection_visible ON merge_delivery_projection(product_id,account_id,sequence DESC) WHERE visible=1;
+CREATE INDEX merge_delivery_projection_attention ON merge_delivery_projection(product_id,account_id,session_id,sequence DESC) WHERE attention=1;
+CREATE INDEX merge_delivery_projection_active_session ON merge_delivery_projection(session_id) WHERE visible=1 OR attention=1;
+CREATE INDEX merge_delivery_projection_unmerged_activity ON merge_delivery_projection(session_id,expected_activity)
+  WHERE json_extract(data_json,'$.state')!='merged';
+CREATE TABLE merge_display_activity(session_id TEXT PRIMARY KEY,activity TEXT NOT NULL) WITHOUT ROWID;
+CREATE TABLE merge_display_activity_scopes(session_id TEXT NOT NULL,product_id TEXT NOT NULL,account_id TEXT NOT NULL,
+  PRIMARY KEY(session_id,product_id,account_id)) WITHOUT ROWID;
+${["agent_session_messages","agent_session_commands","external_native_messages","external_native_commands"].flatMap(table=>
+  ["insert","update","delete"].map(operation=>`DROP TRIGGER display_${table}_${operation};`)).join("\n")}
+${trigger("agent_session_messages", "activity", "$.session_id", {when:"OLD.role IS NOT NEW.role OR OLD.text IS NOT NEW.text OR OLD.source_id IS NOT NEW.source_id OR OLD.occurred_at IS NOT NEW.occurred_at",filter:"$.role='user'"})}
+${trigger("agent_session_commands", "activity", "$.session_id", {updates:"kind,created_at",filter:"$.kind='message'"})}
+${trigger("external_native_messages", "activity", "$.session_id", {filter:"json_extract($.payload_json,'$.role')='user'"})}
+${trigger("external_native_commands", "activity", "$.session_id", {updates:"created_at,session_id"})}
+INSERT INTO merge_display_dirty SELECT 'delivery',id FROM merge_deliveries WHERE 1 ON CONFLICT DO NOTHING;
+INSERT INTO merge_display_dirty SELECT 'batch',id FROM merge_batches WHERE 1 ON CONFLICT DO NOTHING;
+`;

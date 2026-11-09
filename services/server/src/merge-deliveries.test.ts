@@ -1056,9 +1056,49 @@ for(const [itemCount,batchCount] of [[500,100],[1000,200]])it(`AND-484 scale ${i
   const writeAt=performance.now();
   f.store.updateWorkItem(`CON-${itemCount}`,{title:"One unrelated item update"});
   const writeMs=performance.now()-writeAt,firstMs=times[0]!;
+  db.exec(`CREATE TEMP TABLE observed_activity_refresh(kind TEXT);
+    CREATE TEMP TRIGGER observe_activity_batch AFTER INSERT ON merge_batch_projection BEGIN INSERT INTO observed_activity_refresh VALUES('batch'); END;
+    CREATE TEMP TRIGGER observe_activity_delivery AFTER INSERT ON merge_delivery_projection BEGIN INSERT INTO observed_activity_refresh VALUES('delivery'); END;`);
+  const messageAt=performance.now();
+  new AgentSessionStore(f.store.database).enqueue(f.owner.id,f.projectSessionId,"A new input after historical deliveries",[]);
+  const relatedMessageWriteMs=performance.now()-messageAt;
+  expect(db.prepare("SELECT * FROM observed_activity_refresh WHERE kind='batch'").all()).toEqual([]);
+  expect(db.prepare("SELECT * FROM observed_activity_refresh WHERE kind='delivery'").all()).toHaveLength(1);
+  expect(f.merges.batches(f.item.productId,f.owner.id)).toEqual(f.merges.recomputeBatches(f.item.productId,f.owner.id));
+  expect(f.merges.sessionProgress(f.item.productId,f.owner.id)).toEqual(f.merges.recomputeSessionProgress(f.item.productId,f.owner.id));
   times.sort((a,b)=>a-b);
-  console.log(JSON.stringify({benchmark:"AND-484",itemCount,batchCount,deliveries:batchCount*20,events:100,returnedBatches:20,initializationMs,referenceMs,referenceQueries,readQueries:queryCounts[0],firstMs,p50:times[15],p95:times[28],max:times[29],unrelatedWriteMs:writeMs}));
+  console.log(JSON.stringify({benchmark:"AND-484",itemCount,batchCount,deliveries:batchCount*20,events:100,returnedBatches:20,initializationMs,referenceMs,referenceQueries,readQueries:queryCounts[0],firstMs,p50:times[15],p95:times[28],max:times[29],unrelatedWriteMs:writeMs,relatedMessageWriteMs}));
   // Latency is reported rather than made a flaky CI assertion. The strict
   // guard is that every cold/hot request succeeds without the history reader.
   expect(times).toHaveLength(30);
+},60_000);
+
+ it("AND-484 filters retired history through partial indexes",async()=>{
+   const f=await prepared();
+   for(const [predicate,index] of [["visible=1","merge_delivery_projection_visible"],["attention=1","merge_delivery_projection_attention"]]) {
+     const plan=f.db.prepare(`EXPLAIN QUERY PLAN SELECT session_id FROM merge_delivery_projection WHERE product_id=? AND account_id=? AND ${predicate} ${predicate==="attention=1" ? "GROUP BY session_id ORDER BY MAX(sequence) DESC" : "ORDER BY sequence DESC"}`).all(f.item.productId,f.owner.id);
+     expect(JSON.stringify(plan)).toContain(index);
+   }
+ });
+
+it("AND-484 query work should be bounded by live rows rather than retired history",async()=>{
+  const f=await prepared(),db=f.db;
+  const template=db.prepare("SELECT * FROM merge_delivery_projection WHERE id=?").get(f.d.id) as Record<string,string|number|null>;
+  const keys=Object.keys(template),insert=db.prepare(`INSERT INTO merge_delivery_projection(${keys.join(',')}) VALUES (${keys.map(()=>'?').join(',')})`);
+  f.store.database.transaction(()=>{
+    for(let i=0;i<500000;i++){
+      const row={...template,id:`retired-${i}`,sequence:i+100,visible:0,attention:0,data_json:'{}'};
+      insert.run(...keys.map(key=>row[key as keyof typeof row] as string|number|null));
+    }
+  });
+  const queries=["SELECT data_json,fresh_from,fresh_until,fresh_blocker FROM merge_delivery_projection WHERE product_id=? AND account_id=? AND visible=1 ORDER BY sequence DESC",
+    "SELECT session_id FROM merge_delivery_projection WHERE product_id=? AND account_id=? AND attention=1 GROUP BY session_id ORDER BY MAX(sequence) DESC"];
+  const results=queries.map(sql=>{
+    const plan=db.prepare('EXPLAIN QUERY PLAN '+sql).all(f.item.productId,f.owner.id);
+    const times=[];for(let i=0;i<10;i++){const at=performance.now();db.prepare(sql).all(f.item.productId,f.owner.id);times.push(performance.now()-at);}
+    expect(JSON.stringify(plan)).toContain(sql.includes("visible=1") ? "merge_delivery_projection_visible" : "merge_delivery_projection_attention");
+    return {plan,maxMs:Math.max(...times)};
+  });
+  console.log(JSON.stringify({audit:'retired-history-scan',rows:500000,results}));
+  expect(f.merges.list(f.item.productId,f.owner.id)).toHaveLength(1);
 },60_000);

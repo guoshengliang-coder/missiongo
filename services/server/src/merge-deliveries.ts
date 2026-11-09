@@ -264,14 +264,18 @@ export class MergeDeliveries {
 
   /** Shared list/detail projection. Historical receipts never become mutable conversation state. */
   recomputeSessionProgress(productId: string, accountId: string, onlySession?: string, now = Date.now(), onPublishing?: (expires:number) => void): Record<string, SessionDeliveryStage> {
-    const batchRows = this.db.connection.prepare(`SELECT data_json FROM merge_batches WHERE product_id=? AND account_id=?
-      ${onlySession ? "AND (json_extract(data_json,'$.sessionId')=? OR id IN (SELECT json_extract(data_json,'$.batchId') FROM merge_deliveries WHERE product_id=? AND account_id=? AND json_extract(data_json,'$.sessionId')=?))" : ""} ORDER BY rowid DESC`)
-      .all(productId,accountId,...(onlySession ? [onlySession,productId,accountId,onlySession] : [])) as {data_json:string}[];
-    const batchIds=batchRows.map(row=>(JSON.parse(row.data_json) as Batch).id);
-    const rows = (this.db.connection.prepare(`SELECT data_json FROM merge_deliveries WHERE product_id=? AND account_id=?
-      ${onlySession ? `AND (json_extract(data_json,'$.sessionId')=? OR json_extract(data_json,'$.batchId') IN (${batchIds.map(()=>"?").join(",")}))` : ""} ORDER BY rowid DESC`)
-      .all(productId,accountId,...(onlySession ? [onlySession,...batchIds] : [])) as {data_json:string}[]).map(row=>JSON.parse(row.data_json) as Delivery);
-    const batches = (batchRows as {data_json:string}[]).map(row=>JSON.parse(row.data_json) as Batch);
+    let rows:Delivery[], batches:Batch[];
+    if(onlySession) {
+      const latest=this.db.connection.prepare("SELECT data_json FROM merge_deliveries WHERE product_id=? AND account_id=? AND json_extract(data_json,'$.sessionId')=? ORDER BY rowid DESC LIMIT 1").get(productId,accountId,onlySession) as {data_json:string}|undefined;
+      const delivery=latest ? JSON.parse(latest.data_json) as Delivery : undefined;
+      const batch=delivery ? (delivery.batchId ? this.db.connection.prepare("SELECT data_json FROM merge_batches WHERE id=?").get(delivery.batchId) : undefined)
+        : this.db.connection.prepare("SELECT data_json FROM merge_batches WHERE product_id=? AND account_id=? AND json_extract(data_json,'$.sessionId')=? ORDER BY rowid DESC LIMIT 1").get(productId,accountId,onlySession);
+      batches=batch ? [JSON.parse((batch as {data_json:string}).data_json) as Batch] : [];
+      rows=batches.length ? (this.db.connection.prepare("SELECT data_json FROM merge_deliveries WHERE product_id=? AND account_id=? AND json_extract(data_json,'$.batchId')=? ORDER BY rowid DESC").all(productId,accountId,batches[0]!.id) as {data_json:string}[]).map(row=>JSON.parse(row.data_json) as Delivery) : delivery ? [delivery] : [];
+    } else {
+      batches=(this.db.connection.prepare("SELECT data_json FROM merge_batches WHERE product_id=? AND account_id=? ORDER BY rowid DESC").all(productId,accountId) as {data_json:string}[]).map(row=>JSON.parse(row.data_json) as Batch);
+      rows=(this.db.connection.prepare("SELECT data_json FROM merge_deliveries WHERE product_id=? AND account_id=? ORDER BY rowid DESC").all(productId,accountId) as {data_json:string}[]).map(row=>JSON.parse(row.data_json) as Delivery);
+    }
     const byBatch = new Map(batches.map(b=>[b.id,b]));
     const presentations = new Map<string, MergeBatchPresentation>();
     const presentationOf = (b: Batch) => { const cached = presentations.get(b.id); if (cached) return cached; const built = this.presentation(b); presentations.set(b.id, built); return built; };
@@ -299,6 +303,7 @@ export class MergeDeliveries {
     };
     const seen = new Set<string>();
     for (const d of rows) {
+      if (onlySession && d.sessionId!==onlySession) continue;
       if (seen.has(d.sessionId)) continue;
       seen.add(d.sessionId);
       if (d.state === "confirmed" && this.eligible(d)!=="changed") result[d.sessionId]="pending";
@@ -311,6 +316,7 @@ export class MergeDeliveries {
       }
     }
     for (const b of batches) {
+      if (onlySession && b.sessionId!==onlySession) continue;
       if (seen.has(b.sessionId)) continue;
       seen.add(b.sessionId);
       const value = stage(b,rows.filter(d=>b.deliveries.includes(d.id)),b.sessionId);
@@ -337,8 +343,17 @@ export class MergeDeliveries {
     });
   }
   batches(productId: string, accountId: string): ReturnType<MergeDeliveries["recomputeBatches"]> {
-    return (this.db.connection.prepare(`SELECT data_json FROM merge_batch_projection WHERE product_id=? AND account_id=?
-      ORDER BY sequence DESC LIMIT 20`).all(productId,accountId) as {data_json:string}[]).map(row=>JSON.parse(row.data_json));
+    const rows=this.db.connection.prepare(`SELECT data_json,activity_json FROM merge_batch_projection WHERE product_id=? AND account_id=? ORDER BY sequence DESC LIMIT 20`).all(productId,accountId) as {data_json:string;activity_json:string}[];
+    type ActivityBoundary={sessionId:string;activity:string;sensitive:boolean};
+    const boundaries=rows.map(row=>JSON.parse(row.activity_json) as Record<string,ActivityBoundary>);
+    const sessionIds=[...new Set(boundaries.flatMap(entries=>Object.values(entries).map(entry=>entry.sessionId)))];
+    const activity=new Map((sessionIds.length ? this.db.connection.prepare(`SELECT session_id,activity FROM merge_display_activity WHERE session_id IN (${sessionIds.map(()=>"?").join(",")})`).all(...sessionIds) as {session_id:string;activity:string}[] : []).map(row=>[row.session_id,row.activity]));
+    return rows.map((row,index)=>{
+      const value=JSON.parse(row.data_json) as ReturnType<MergeDeliveries["recomputeBatches"]>[number];
+      const expected=boundaries[index]!;
+      for(const [id,entry] of Object.entries(expected))if(value.presentation.entries[id]?.publication==="pending" && activity.get(entry.sessionId)!==entry.activity && entry.sensitive)value.presentation.entries[id]!.publication="unknown";
+      return value;
+    });
   }
   attentionSessionIds(productId: string, accountId: string): string[] {
     return (this.db.connection.prepare(`SELECT session_id FROM merge_delivery_projection WHERE product_id=? AND account_id=?
@@ -356,7 +371,13 @@ export class MergeDeliveries {
   private writeDisplay() {
     const changes=this.db.connection.prepare("SELECT kind,id FROM merge_display_dirty").all() as {kind:string;id:string}[];
     if(!changes.length)return;
-    const deliveries=new Set<string>(), batches=new Set<string>();
+    const deliveries=new Set<string>(), batches=new Set<string>(), activityOnly=new Set<string>();
+    const activitySessions=changes.filter(change=>change.kind==="activity").map(change=>change.id);
+    for(const sessionId of activitySessions) {
+      const current=this.activity(sessionId);
+      this.db.connection.prepare("INSERT OR REPLACE INTO merge_display_activity VALUES (?,?)").run(sessionId,current);
+      for(const row of this.db.connection.prepare("SELECT id FROM merge_delivery_projection WHERE session_id=? AND (visible=1 OR attention=1) UNION SELECT id FROM merge_delivery_projection WHERE session_id=? AND expected_activity=? AND json_extract(data_json,'$.state')!='merged'").all(sessionId,sessionId,current) as {id:string}[])activityOnly.add(row.id);
+    }
     for(const change of changes) {
       if(change.kind==="delivery")deliveries.add(change.id);
       if(change.kind==="batch")batches.add(change.id);
@@ -371,10 +392,17 @@ export class MergeDeliveries {
     this.db.connection.prepare("DELETE FROM merge_display_dirty").run();
     for(const id of batches)for(const row of this.db.connection.prepare("SELECT value AS id FROM merge_batches,json_each(data_json,'$.deliveries') WHERE merge_batches.id=?").all(id) as {id:string}[])deliveries.add(row.id);
     const sessions=new Map<string,{productId:string;accountId:string;sessionId:string}>();
-    const remember=(productId:string,accountId:string,sessionId:string)=>sessions.set(JSON.stringify([productId,accountId,sessionId]),{productId,accountId,sessionId});
+    const remember=(productId:string,accountId:string,sessionId:string)=>{
+      sessions.set(JSON.stringify([productId,accountId,sessionId]),{productId,accountId,sessionId});
+      this.db.connection.prepare("INSERT OR IGNORE INTO merge_display_activity_scopes VALUES (?,?,?)").run(sessionId,productId,accountId);
+      this.db.connection.prepare("INSERT OR REPLACE INTO merge_display_activity VALUES (?,?)").run(sessionId,this.activity(sessionId));
+    };
+    for(const id of activityOnly)deliveries.add(id);
+    for(const sessionId of activitySessions)for(const row of this.db.connection.prepare("SELECT product_id,account_id FROM merge_display_activity_scopes WHERE session_id=?").all(sessionId) as {product_id:string;account_id:string}[])remember(row.product_id,row.account_id,sessionId);
     for(const id of deliveries) {
+      const activityChange=activityOnly.has(id) && !changes.some(change=>change.kind!=="activity");
       const previous=this.db.connection.prepare("SELECT product_id,account_id,session_id,batch_id FROM merge_delivery_projection WHERE id=?").get(id) as {product_id:string;account_id:string;session_id:string;batch_id:string|null}|undefined;
-      if(previous){remember(previous.product_id,previous.account_id,previous.session_id);if(previous.batch_id)batches.add(previous.batch_id);}
+      if(previous){remember(previous.product_id,previous.account_id,previous.session_id);if(previous.batch_id&&!activityChange)batches.add(previous.batch_id);}
       const source=this.db.connection.prepare("SELECT rowid AS sequence,data_json FROM merge_deliveries WHERE id=?").get(id) as {sequence:number;data_json:string}|undefined;
       this.db.connection.prepare("DELETE FROM merge_display_dependencies WHERE delivery_id=?").run(id);
       if(!source){this.db.connection.prepare("DELETE FROM merge_delivery_projection WHERE id=?").run(id);continue;}
@@ -388,12 +416,12 @@ export class MergeDeliveries {
           : d.itemKeys.some(key=>collaborationBlockers(this.db,this.store.workItemId(key))>0) ? "dependency" : undefined;
       }
       const time=Date.parse(d.evidence.checkedAt);
-      this.db.connection.prepare(`INSERT OR REPLACE INTO merge_delivery_projection VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      this.db.connection.prepare(`INSERT OR REPLACE INTO merge_delivery_projection VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
         d.id,d.productId,d.accountId,d.sessionId,d.batchId??null,source.sequence,Number(visible),Number(attention),JSON.stringify(view),
-        d.state==="batched"||d.evidence.head!==d.head?null:time-30_000,d.state==="batched"||d.evidence.head!==d.head?null:time+300_000,freshBlocker??null);
+        d.state==="batched"||d.evidence.head!==d.head?null:time-30_000,d.state==="batched"||d.evidence.head!==d.head?null:time+300_000,freshBlocker??null,d.activity);
       const link=(kind:string,key:string)=>this.db.connection.prepare("INSERT OR IGNORE INTO merge_display_dependencies VALUES (?,?,?)").run(id,kind,key);
       link("session",d.sessionId);link("account",d.accountId);link("product",d.productId);
-      if(d.batchId){batches.add(d.batchId);link("batch",d.batchId);}
+      if(d.batchId){if(!activityChange)batches.add(d.batchId);link("batch",d.batchId);}
       for(const key of d.itemKeys)link("item",this.store.workItemId(key));
       if(d.identity.dispatchId)link("dispatch",d.identity.dispatchId);
       for(const sessionId of [d.sessionId]) {
@@ -408,7 +436,7 @@ export class MergeDeliveries {
       const source=this.db.connection.prepare("SELECT rowid AS sequence,data_json FROM merge_batches WHERE id=?").get(id) as {sequence:number;data_json:string}|undefined;
       if(!source){this.db.connection.prepare("DELETE FROM merge_batch_projection WHERE id=?").run(id);continue;}
       const b=JSON.parse(source.data_json) as Batch;
-      this.db.connection.prepare("INSERT OR REPLACE INTO merge_batch_projection VALUES (?,?,?,?,?,?)").run(b.id,b.productId,b.accountId,b.sessionId,source.sequence,JSON.stringify({...b,presentation:this.presentation(b)}));
+      this.db.connection.prepare("INSERT OR REPLACE INTO merge_batch_projection VALUES (?,?,?,?,?,?,?)").run(b.id,b.productId,b.accountId,b.sessionId,source.sequence,JSON.stringify({...b,presentation:this.presentation(b,true)}),JSON.stringify(Object.fromEntries(b.deliveries.map(id=>{const d=this.read<Delivery>("merge_deliveries",id);return [id,{sessionId:d.sessionId,activity:d.activity,sensitive:d.itemKeys.some(key=>!this.publishedHandoff(d,key))}];}))));
       remember(b.productId,b.accountId,b.sessionId);
     }
     for(const {productId,accountId,sessionId} of sessions.values()) {
@@ -492,8 +520,8 @@ export class MergeDeliveries {
   }
   /** Historical publication is read from formal receipts for this PR, not current
    * item status, free-form progress, or the fact that a batch was finished. */
-  private presentation(b:Batch):MergeBatchPresentation {
-    return this.displayRead("presentation:"+b.id,()=>{
+  private presentation(b:Batch,ignoreActivity=false):MergeBatchPresentation {
+    return this.displayRead("presentation:"+b.id+":"+ignoreActivity,()=>{
     return {entries:Object.fromEntries(b.deliveries.map(id=>{
       const d=this.read<Delivery>("merge_deliveries",id),url=`${d.repository}/pull/${d.pullRequest}`;
       const releases:MergeBatchPresentation["entries"][string]["releases"]=[];
@@ -520,7 +548,7 @@ export class MergeDeliveries {
           publishedItems++;knownItems++;
           for(const r of receipt.payload.releases as {artifact:string;version:string;sourceCommit:string}[])
             if(!releases.some(previous=>previous.artifact===r.artifact&&previous.sourceCommit===r.sourceCommit))releases.push({...r,checkedAt:receipt.createdAt});
-        } else if(!this.itemBlocker(d,key))knownItems++;
+        } else if(!this.itemBlocker(d,key,ignoreActivity))knownItems++;
       }
       if(!d.itemKeys.length) for(const receipt of d.releaseReceipts ?? []) for(const release of receipt.releases)
         if(!releases.some(r=>r.artifact===release.artifact && r.sourceCommit===release.sourceCommit)) releases.push({...release,checkedAt:receipt.at});
@@ -726,7 +754,7 @@ export class MergeDeliveries {
       &&typeof p?.deployedCommit==="string"&&sha.safeParse(p.deployedCommit).success
       &&Array.isArray(artifacts)&&required.every(a=>artifacts.some(r=>r.artifact===a&&sha.safeParse(r.sourceCommit).success&&r.version)));
   }
-  private itemBlocker(d:Delivery,key:string):string|undefined {
+  private itemBlocker(d:Delivery,key:string,ignoreActivity=false):string|undefined {
     try {
       const item=this.store.getWorkItem(key);
       if(d.itemScopes ? d.itemScopes[key]!==this.scope([key]) : d.scope!==this.scope(d.itemKeys)) return "条目内容、Builder 或处理轮次已变化；旧交付不能覆盖。";
@@ -737,7 +765,7 @@ export class MergeDeliveries {
       // A publisher's completed handover is independent of later conversation
       // activity. Scope/round/rework/dependency guards above still apply.
       if(this.publishedHandoff(d,key))return undefined;
-      if(this.activity(d.sessionId)!==d.activity) return "开发会话收到新的人工输入，请重新核对交付范围。";
+      if(!ignoreActivity && this.activity(d.sessionId)!==d.activity) return "开发会话收到新的人工输入，请重新核对交付范围。";
       recoverExecutionAuthorization(this.store,d.accountId,d.clientId,{itemKey:key,...d.identity});
     } catch {return "原开发授权、项目或条目范围已失效，请由当前 Builder 核对。";}
     return undefined;

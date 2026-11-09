@@ -2441,23 +2441,30 @@ function ListRowActions(props: {item:WorkItemRow;onEdit:()=>void;onNotice:(messa
   const [loadedRevision,setLoadedRevision]=useState("");
   const sourceRevision=JSON.stringify([props.item.key,props.item.revision,props.item.access,props.item.transitionDecisions]);
   const requests=useRef(0);
+  const pendingMenu=useRef<HTMLDetailsElement>(null);
+  const [openLoaded,setOpenLoaded]=useState(false);
+  useEffect(()=>{
+    const close=(event:MouseEvent)=>{if(pendingMenu.current&&!pendingMenu.current.contains(event.target as Node))pendingMenu.current.open=false;};
+    document.addEventListener("mousedown",close);
+    return ()=>document.removeEventListener("mousedown",close);
+  },[]);
   useEffect(()=>()=>{requests.current++;},[props.item.key]);
   const [loading,setLoading]=useState(false);
   const {t}=useI18n();
   if(props.item.transferred)return null;
   if(!isItemListRow(props.item))return <ItemRowActions {...props} item={props.item}/>;
-  if(detail && loadedRevision===sourceRevision)return <ItemRowActions {...props} item={detail} openInitially/>;
+  if(detail && loadedRevision===sourceRevision)return <ItemRowActions {...props} item={detail} openInitially={openLoaded}/>;
   const load=async()=>{
     if(loading)return;
     const attempt=++requests.current;
     setLoading(true);
     try{
       const value=await api.getItem(props.item.key);
-      if(requests.current===attempt){setDetail(value);setLoadedRevision(sourceRevision);}
+      if(requests.current===attempt){setOpenLoaded(Boolean(pendingMenu.current?.open));setDetail(value);setLoadedRevision(sourceRevision);}
     } catch(error){if(requests.current===attempt)props.onNotice(errorMessage(error,t("somethingWentWrong")));}
     finally{if(requests.current===attempt)setLoading(false);}
   };
-  return <OverlayMenu className="detail-more-menu row-more-menu" onToggle={event=>{if(event.currentTarget.open)void load();}}>
+  return <OverlayMenu ref={pendingMenu} className="detail-more-menu row-more-menu" onToggle={event=>{if(event.currentTarget.open)void load();}}>
     <summary className="secondary-button" aria-label={t("moreActionsFor",{key:props.item.key})} aria-busy={loading}>
       {loading?<LoaderCircle className="spin" size={16}/>:<MoreVertical size={16}/>}</summary>
     <div className="detail-more-menu-popover detail-actions-popover" role="status">{loading?t("loadingMore"):<button type="button" onClick={()=>void load()}>{t("retry")}</button>}</div>
