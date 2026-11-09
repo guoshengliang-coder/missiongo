@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useBeforeUnloadGuard } from "./unsaved-changes";
 import { X } from "lucide-react";
 import { useI18n } from "./i18n";
-import { DialogDraftContext, type DialogDraft } from "./dialog-state";
+import { DialogDraftContext, useDialogDraftState } from "./dialog-state";
 import { useModalSurface } from "./overlay";
 
 export function Modal({ className = "", fullScreenOnCompact = false, title, subtitle, onClose, children, wide = false, scrolls = false, dirty: ownDirty = false, pending: ownPending = false, pendingNotice, closeWarning }: {
@@ -23,16 +23,11 @@ export function Modal({ className = "", fullScreenOnCompact = false, title, subt
   const { t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const titleId = useId();
-  const [drafts, setDrafts] = useState<Record<string, DialogDraft>>({});
+  const drafts = useDialogDraftState();
   const [discarding, setDiscarding] = useState(false);
   const [waiting, setWaiting] = useState(false);
-  const update = useCallback((id: string, draft?: DialogDraft) => setDrafts(previous => {
-    if (!draft && !previous[id]) return previous;
-    if (draft && previous[id]?.dirty === draft.dirty && previous[id]?.pending === draft.pending) return previous;
-    const next = { ...previous }; if (draft) next[id] = draft; else delete next[id]; return next;
-  }), []);
-  const dirty = ownDirty || Object.values(drafts).some(draft => draft.dirty);
-  const pending = ownPending || Object.values(drafts).some(draft => draft.pending);
+  const dirty = ownDirty || drafts.dirty;
+  const pending = ownPending || drafts.pending;
   useBeforeUnloadGuard(dirty || pending || Boolean(closeWarning));
   const previousFocus = useRef<HTMLElement | null>(null);
   const close = useRef<() => boolean>(() => false);
@@ -84,7 +79,7 @@ export function Modal({ className = "", fullScreenOnCompact = false, title, subt
           </div>
         </div>}
         <div className="modal-content" hidden={discarding}>
-          <DialogDraftContext.Provider value={update}><fieldset className="modal-fields" disabled={pending}>{typeof children==="function" ? children(()=>{close.current();}) : children}</fieldset></DialogDraftContext.Provider>
+          <DialogDraftContext.Provider value={drafts.update}><fieldset className="modal-fields" disabled={pending}>{typeof children==="function" ? children(()=>{close.current();}) : children}</fieldset></DialogDraftContext.Provider>
         </div>
       </section>
     </dialog>

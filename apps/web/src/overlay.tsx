@@ -218,7 +218,7 @@ export function useModalSurface(ref: RefObject<HTMLDialogElement | null>, onClos
   }, [open, ref]);
 }
 
-export function OverlayDialog({ onClose, children, ...props }: Omit<ComponentProps<"dialog">, "onClose" | "open" | "ref"> & { onClose: () => void }) {
+export function OverlayDialog({ onClose, children, ...props }: Omit<ComponentProps<"dialog">, "onClose" | "open" | "ref"> & { onClose: () => boolean | void }) {
   const ref = useRef<HTMLDialogElement>(null);
   useModalSurface(ref, onClose);
   return <dialog {...props} ref={ref} onClick={event => {

@@ -28,7 +28,7 @@ interface Row {
   id:string; sequence:number; kind:PersonalNotificationKind; read_at:string|null; created_at:string;
   item_key:string; title:string; product_id:string; product_name:string; comment_id:string|null;
   withdrawn_at:string|null; body_json:string|null; summary:string|null; actor_id:string|null; agent_name:string|null;
-  payload_json:string|null; resolved_at:string|null;
+  payload_json:string|null; resolved_at:string|null; business_event_id:string|null;
 }
 const joins = `FROM personal_notifications n JOIN notification_events e ON e.id=n.event_id
   JOIN work_items w ON w.id=e.item_id JOIN products p ON p.id=w.product_id
@@ -44,7 +44,10 @@ const resolution = `CASE WHEN n.kind='verification' THEN (
     AND later.event_type IN ('status_changed','item_transferred_out')
   ORDER BY later.timeline_seq LIMIT 1
 ) ELSE NULL END`;
-const needsReading = `n.read_at IS NULL AND (${resolution}) IS NULL`;
+// Only ordinary delivery reminders are represented by the personal todo.
+// Collaboration verification has separate recipients and no equivalent todo.
+const visibleNotice = `(n.kind!='verification' OR coalesce(b.event_type,'')!='status_changed' OR coalesce(b.to_status,'')!='pending_verification')`;
+const needsReading = `${visibleNotice} AND n.read_at IS NULL AND (${resolution}) IS NULL`;
 // Same ownership as verification delivery and human acceptance: the accessible
 // non-SDK proposer. Administrator capability alone is not personal assignment.
 const todoJoins = `FROM work_items w JOIN products p ON p.id=w.product_id
@@ -55,7 +58,7 @@ const todoWhere = `w.status='pending_verification' AND p.archived_at IS NULL
   AND creator.account_id=? AND creator.actor_kind IN ('human','agent')
   AND (creator.actor_kind='agent' OR coalesce(json_extract(creator.payload_json,'$.source'),'')!='android_sdk')`;
 const select = `SELECT n.id,n.sequence,n.kind,n.read_at,e.created_at,w.item_key,w.title,w.product_id,p.name AS product_name,
-  e.comment_id,c.withdrawn_at,c.body_json,c.summary,coalesce(c.account_id,b.account_id) AS actor_id,c.agent_name,b.payload_json,${resolution} AS resolved_at ${joins}`;
+  e.comment_id,e.business_event_id,c.withdrawn_at,c.body_json,c.summary,coalesce(c.account_id,b.account_id) AS actor_id,c.agent_name,b.payload_json,${resolution} AS resolved_at ${joins}`;
 
 export class PersonalNotifications {
   constructor(private store: MissionGoStore, private accounts: AccountStore) {}
@@ -69,7 +72,7 @@ export class PersonalNotifications {
     return {sql:`n.account_id=? AND w.product_id IN (${ids.map(()=>"?").join(",") || "NULL"})`,args:[account.id,...ids]};
   }
   private filter(filter: PersonalNotificationFilter) {
-    const sql:string[]=[],args:(string|number)[]=[];
+    const sql:string[]=[visibleNotice],args:(string|number)[]=[];
     if(filter.unread) sql.push(needsReading);
     if(filter.productId) {sql.push("w.product_id=?");args.push(filter.productId);}
     if(filter.kind) {sql.push("n.kind=?");args.push(filter.kind);}
@@ -88,7 +91,7 @@ export class PersonalNotifications {
     return {id:row.id,sequence:row.sequence,kind:row.kind,readAt:row.read_at,resolvedAt:row.resolved_at,createdAt:row.created_at,
       itemKey:row.item_key,itemTitle:row.title,productId:row.product_id,productName:row.product_name,
       actorName:row.agent_name || (row.actor_id ? this.accounts.displayNames([row.actor_id]).get(row.actor_id) : undefined) || "",
-      summary:unavailable ? "" : (row.summary || text).slice(0,240),text,commentId:row.comment_id,unavailable};
+      summary:unavailable ? "" : (row.summary || text).slice(0,240),text,commentId:row.comment_id,businessEventId:row.business_event_id,unavailable};
   }
   count(account: AccountSnapshot) {
     const scope=this.scope(account);
@@ -101,26 +104,27 @@ export class PersonalNotifications {
   todos(account:AccountSnapshot, filter:{productId?:string|undefined;beforeSequence?:number|undefined}={}):PersonalTodoPage {
     const scope=this.todoScope(account,filter.productId);
     const rows=this.db.prepare(`SELECT w.id,w.rowid AS sequence,w.item_key,w.title,w.product_id,p.name AS product_name,
+      (SELECT e.id FROM work_item_events e WHERE e.item_id=w.id AND e.history_source_key IS NULL
+        AND e.event_type='status_changed' AND e.to_status='pending_verification' ORDER BY e.timeline_seq DESC LIMIT 1) AS business_event_id,
       coalesce((SELECT e.created_at FROM work_item_events e WHERE e.item_id=w.id AND e.history_source_key IS NULL
         AND e.event_type='status_changed' AND e.to_status='pending_verification' ORDER BY e.timeline_seq DESC LIMIT 1),w.updated_at) AS created_at
       ${todoJoins} WHERE ${scope.sql} AND w.rowid<? ORDER BY w.rowid DESC LIMIT 51`)
       .all(...scope.args,filter.beforeSequence ?? Number.MAX_SAFE_INTEGER) as unknown as {
-        id:string;sequence:number;item_key:string;title:string;product_id:string;product_name:string;created_at:string;
+        id:string;sequence:number;item_key:string;title:string;product_id:string;product_name:string;created_at:string;business_event_id:string|null;
       }[];
     const page=rows.slice(0,50);
-    return {todos:page.map(row=>({id:`verification:${row.id}`,sequence:row.sequence,kind:"verification",
-      itemKey:row.item_key,itemTitle:row.title,productId:row.product_id,productName:row.product_name,createdAt:row.created_at})),
+    return {todos:page.map(row=>({id:`verification:${row.id}:${row.business_event_id ?? "legacy"}`,sequence:row.sequence,kind:"verification",
+      itemKey:row.item_key,itemTitle:row.title,productId:row.product_id,productName:row.product_name,createdAt:row.created_at,businessEventId:row.business_event_id})),
       ...(rows.length>50?{nextBeforeSequence:page.at(-1)!.sequence}:{})};
   }
   attentionCount(account:AccountSnapshot):PersonalAttentionCount {
-    const todo=this.todoScope(account),scope=this.scope(account);
+    const todo=this.todoScope(account);
     const todoCount=(this.db.prepare(`SELECT count(*) AS count ${todoJoins} WHERE ${todo.sql}`).get(...todo.args) as {count:number}).count;
     const unreadCount=this.count(account);
-    const coveredUnreadCount=(this.db.prepare(`SELECT count(*) AS count ${joins}
-      WHERE ${scope.sql} AND ${needsReading} AND n.kind='verification'
-        AND w.id IN (SELECT w.id ${todoJoins} WHERE ${todo.sql})`).get(...scope.args,...todo.args) as {count:number}).count;
-    return {count:todoCount+unreadCount-coveredUnreadCount,todoCount,unreadCount,coveredUnreadCount};
+    // Retain the old response field so older clients remain compatible.
+    return {count:todoCount+unreadCount,todoCount,unreadCount,coveredUnreadCount:0};
   }
+
   list(account: AccountSnapshot, filter: PersonalNotificationFilter): PersonalNotificationPage {
     const scope=this.scope(account),extra=this.filter(filter);
     const throughSequence=(this.db.prepare("SELECT coalesce(max(sequence),0) AS seq FROM personal_notifications WHERE account_id=?").get(account.id) as {seq:number}).seq;

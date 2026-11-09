@@ -23,7 +23,26 @@ async function fixture() {
   const comment=(text:string,accountId="admin",audience:Record<string,unknown>={mentionAccountIds:[member.id]})=>store.createComment({itemKey:item.key,actorKind:"human",bodyKind:"free",body:{text},attribution:{accountId},...audience});
   return {app,store,accounts,db,product,member,item,service,external,call,comment};
 }
+// Seed pre-AND-494 notification records to exercise compatibility without
+// relying on the now-retired verification enqueue path.
+function legacyVerification(f: Awaited<ReturnType<typeof fixture>>) {
+  const event=f.db.prepare("SELECT id,created_at FROM work_item_events WHERE item_id=? AND to_status='pending_verification' ORDER BY timeline_seq DESC LIMIT 1").get(f.item.id) as {id:string;created_at:string};
+  const id=enqueuePersonalNotification(f.store.database,{itemId:f.item.id,productId:f.product.id,accountId:f.member.id,kind:"verification",businessEventId:event.id,createdAt:event.created_at})!;
+  return f.service.detail(f.member,id);
+}
+
 describe("personal message center",()=>{
+  it("keeps collaboration verification visible because it has no equivalent personal todo",async()=>{
+    const f=await fixture(),at=new Date().toISOString();
+    const eventId=f.store.recordCollaborationEvent(f.item.id,{note:"Collaboration requires its designated verifier"},"admin","human",at);
+    const id=enqueuePersonalNotification(f.store.database,{itemId:f.item.id,productId:f.product.id,accountId:f.member.id,kind:"verification",businessEventId:eventId,createdAt:at})!;
+    const page=f.service.list(f.member,{kind:"verification"});
+    expect(page.notifications.map(n=>n.id)).toEqual([id]);
+    expect(f.service.attentionCount(f.member)).toEqual({count:1,todoCount:0,unreadCount:1,coveredUnreadCount:0});
+    f.service.markAllRead(f.member,page.throughSequence,{kind:"verification"});
+    expect(f.service.detail(f.member,id).readAt).not.toBeNull();
+    expect(f.service.count(f.member)).toBe(0);
+  });
   it("persists independent of DingTalk, deduplicates mention/reply and does not notify ordinary comments",async()=>{
     const f=await fixture();
     const parent=f.comment("My question",f.member.id,{});
@@ -81,19 +100,21 @@ describe("personal message center",()=>{
     expect(f.store.getWorkItem(f.item.key).status).toBe(f.item.status);
     expect((await f.call("POST","/api/v1/notifications/read-all",{throughSequence:-1})).statusCode).toBe(400);
   });
-  it("keeps verification in-app with external disabled, and snapshots channels for new events",async()=>{
+  it("keeps verification only as a todo, while external channel settings remain independent",async()=>{
     const f=await fixture();
     f.store.transitionWorkItem({itemKey:f.item.key,to:"pending_verification",actor:"human",reason:"manual_override",note:"synthetic override"});
-    expect(f.service.list(f.member,{}).notifications[0]?.kind).toBe("verification");
+    expect(f.service.list(f.member,{}).notifications).toEqual([]);
+    expect(f.service.todos(f.member).todos).toHaveLength(1);
+    expect(f.db.prepare("SELECT count(*) AS n FROM personal_notifications").get()).toEqual({n:0});
     expect(f.external.list(f.item.id)[0]?.status).toBe("skipped");
     f.external.saveProject(f.product.id,f.accounts.getAccount("admin"),false,false,false,true);
     f.comment("in-app only");
     const jobs=f.external.list(f.item.id);expect(jobs.find(n=>n.kind==="comment")?.reason).toBe("仅站内通知");
-    expect(f.service.count(f.member)).toBe(2);
+    expect(f.service.count(f.member)).toBe(1);
     f.external.saveProject(f.product.id,f.accounts.getAccount("admin"),true,false,true,false);
     f.comment("in-app and external");
     expect(f.external.list(f.item.id).filter(n=>n.kind==="comment").map(n=>n.status).sort()).toEqual(["queued","skipped"]);
-    expect(f.service.count(f.member)).toBe(3);
+    expect(f.service.count(f.member)).toBe(2);
   });
   it("paginates without duplicates and never lets another account read or acknowledge a message",async()=>{
     const f=await fixture();
@@ -112,9 +133,12 @@ describe("personal message center",()=>{
   it("counts verification once before and after reading, but keeps independent comments",async()=>{
     const f=await fixture();
     f.store.transitionWorkItem({itemKey:f.item.key,to:"pending_verification",actor:"human",reason:"manual_override",note:"synthetic delivery"});
-    const notice=f.service.list(f.member,{}).notifications[0]!;
-    expect(f.service.attentionCount(f.member)).toEqual({count:1,todoCount:1,unreadCount:1,coveredUnreadCount:1});
+    const notice=legacyVerification(f);
+    expect(f.service.attentionCount(f.member)).toEqual({count:1,todoCount:1,unreadCount:0,coveredUnreadCount:0});
     expect((await f.call("GET","/api/v1/attention/todos")).json().todos).toMatchObject([{kind:"verification",itemKey:f.item.key}]);
+    expect(f.service.list(f.member,{kind:"verification"}).notifications).toEqual([]);
+    f.service.markAllRead(f.member,f.service.list(f.member,{}).throughSequence,{});
+    expect(f.service.detail(f.member,notice.id).readAt).toBeNull();
     f.service.markRead(f.member,notice.id);
     expect(f.service.attentionCount(f.member)).toEqual({count:1,todoCount:1,unreadCount:0,coveredUnreadCount:0});
     f.comment("Independent comment requiring attention");
@@ -132,19 +156,27 @@ describe("personal message center",()=>{
     const move=(to:"pending_verification"|"done"|"ready",reason:"manual_override"|"verification_passed"|"reopened"|"verification_failed")=>
       f.store.transitionWorkItem({itemKey:f.item.key,to,actor:"human",reason,note:"synthetic action",attribution:{accountId:"admin"}});
     move("pending_verification","manual_override");
-    const first=f.service.list(f.member,{}).notifications[0]!;
+    const first=legacyVerification(f);
+    const firstTodo=f.service.todos(f.member).todos[0]!;
     f.comment("Do not silently mark this read");
     move("done","verification_passed");
     expect(f.service.detail(f.member,first.id)).toMatchObject({readAt:null,resolvedAt:expect.any(String)});
     expect(f.service.list(f.member,{unread:true}).notifications.map(n=>n.kind)).toEqual(["mention"]);
     expect(f.service.attentionCount(f.member)).toEqual({count:1,todoCount:0,unreadCount:1,coveredUnreadCount:0});
     move("ready","reopened");move("pending_verification","manual_override");
-    expect(f.service.attentionCount(f.member)).toEqual({count:3,todoCount:1,unreadCount:3,coveredUnreadCount:1});
+    const nextTodo=f.service.todos(f.member).todos[0]!;
+    expect(nextTodo.id).not.toBe(firstTodo.id);
+    expect(nextTodo.businessEventId).not.toBe(firstTodo.businessEventId);
+    expect(f.service.todos(f.member).todos).toEqual([nextTodo]);
+    expect(f.service.attentionCount(f.member)).toEqual({count:3,todoCount:1,unreadCount:2,coveredUnreadCount:0});
     expect(f.service.detail(f.member,first.id).resolvedAt).not.toBeNull();
+    const decision=f.service.list(f.member,{}).notifications.find(n=>n.kind==="decision")!;
+    expect(decision.businessEventId).toEqual(expect.any(String));
+    expect(f.db.prepare("SELECT to_status FROM work_item_events WHERE id=?").get(decision.businessEventId!)).toMatchObject({to_status:"ready"});
     move("ready","verification_failed");
     expect(f.service.todos(f.member).todos).toEqual([]);
     expect(f.service.list(f.member,{unread:true}).notifications.map(n=>n.kind).sort()).toEqual(["decision","decision","mention"]);
-    expect(f.service.list(f.member,{}).notifications.filter(n=>n.kind==="verification")).toHaveLength(2);
+    expect(f.service.list(f.member,{}).notifications.filter(n=>n.kind==="verification")).toHaveLength(0);
   });
   it("derives old pending work without notification backfill; scopes tasks to the accessible proposer",async()=>{
     const f=await fixture();
@@ -180,7 +212,7 @@ describe("personal message center",()=>{
     const f=await fixture(),target=f.store.createProduct({name:"Target",keyPrefix:"DST",createdByAccountId:"admin"});
     f.accounts.replacePermissions(f.member.id,[f.product,target].map(p=>({productId:p.id,canView:true,canOperate:true,canUseAi:false})));
     f.store.transitionWorkItem({itemKey:f.item.key,to:"pending_verification",actor:"human",reason:"manual_override",note:"synthetic delivery"});
-    const notice=f.service.list(f.member,{}).notifications[0]!;
+    const notice=legacyVerification(f);
     const response=await f.call("POST",`/api/v1/items/${f.item.key}/transfer`,{targetProductId:target.id,idempotencyKey:"attention-transfer"});
     expect(response.statusCode).toBe(200);
     const member=f.accounts.getAccount(f.member.id),moved=response.json();
