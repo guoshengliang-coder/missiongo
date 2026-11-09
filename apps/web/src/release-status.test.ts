@@ -34,3 +34,31 @@ it("blocks new writes during a confirmed upgrade without submitting or replaying
   await checkReleaseStatus();
   expect(fetch).toHaveBeenCalledTimes(1); // Recovery queried only the status, never the blocked mutation.
 });
+it("strips unknown diagnostics and private fields while accepting the legacy protocol", () => {
+  const failure = { stage: "health", reason: "health_timeout", occurredAt: now - 10, rawLog: "private" };
+  expect(parseReleaseStatus({ ...status, phase: "failed", failure, rawLog: "private" }, now)?.failure)
+    .toEqual({ stage: "health", reason: "health_timeout", occurredAt: now - 10 });
+  for (const patch of [{ reason: "private host" }, { stage: "command" }, { occurredAt: now + 60_001 }, { occurredAt: 0 }]) {
+    const parsed = parseReleaseStatus({ ...status, phase: "failed", failure: { ...failure, ...patch } }, now);
+    expect(parsed?.phase).toBe("failed"); expect(parsed?.failure).toBeUndefined();
+  }
+  expect(parseReleaseStatus({ ...status, phase: "failed" }, now)?.failure).toBeUndefined();
+});
+it("deduplicates checks and exposes failure without inventing recovery", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(now);
+  let finish!: (value: Response) => void;
+  const fetch = vi.fn().mockImplementation(() => new Promise<Response>(resolve => { finish = resolve; }));
+  vi.stubGlobal("fetch", fetch);
+  const { releaseProbeSnapshot } = await import("./release-status");
+  const first = checkReleaseStatus(); const second = checkReleaseStatus();
+  expect(first).toBe(second);
+  await Promise.resolve(); expect(releaseProbeSnapshot().state).toBe("checking");
+  finish(new Response(JSON.stringify(status))); await first;
+  expect(fetch).toHaveBeenCalledTimes(1);
+  fetch.mockRejectedValue(new DOMException("timeout", "TimeoutError"));
+  await checkReleaseStatus(); expect(releaseProbeSnapshot()).toEqual({ state: "failed", error: "timeout" });
+  expect(deploymentInProgress()).toBe(true);
+  fetch.mockResolvedValue(new Response("invalid"));
+  await checkReleaseStatus(); expect(releaseProbeSnapshot().state).toBe("failed");
+  expect(deploymentInProgress()).toBe(true);
+});

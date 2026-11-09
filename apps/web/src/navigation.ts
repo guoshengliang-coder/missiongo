@@ -33,6 +33,9 @@ export const AGENT_CONVERSATION_HISTORY_MARKER = "missiongo:agent-conversation";
  * New quick settings use useOverlay, as do their child Select menus. */
 export const QUICK_SETTINGS_HISTORY_MARKER = "missiongo:quick-settings";
 
+/** Direct item-to-conversation entry shares one history level at every width. */
+export const AGENT_CONSOLE_RETURN_ITEM_KEY = "missiongo:agent-return-item";
+
 /** Records the layout that produced the current console entry across a WebView recreation. */
 export const AGENT_CONSOLE_LAYOUT_KEY = "missiongo:agent-console-layout";
 

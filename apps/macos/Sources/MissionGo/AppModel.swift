@@ -147,6 +147,8 @@ final class AppModel: ObservableObject {
     private var updateTask: Task<Void, Never>?
     private var updateGeneration = 0
     private var installedUpdateBundle: URL?
+    @Published private(set) var updateOffer: AppUpdater.Available?
+    private var clientUpdateWindow: ClientUpdateWindowController?
     /// This build's version, for the menu to name; nil when run without a bundle.
     let appVersion: String? = AppUpdater.currentVersion()
 
@@ -219,10 +221,15 @@ final class AppModel: ObservableObject {
         self.connectionDiagnosis = connectionDiagnosis
         self.updateService = updateService
         self.updateActivity = updateActivity
+        self.updateOffer = update
         loopTask = previewLoopTask
         if let update {
             if let updateActivity {
-                updateState = updateActivity.stage.canCancel ? .downloading(update) : .installing(update)
+                switch updateActivity.stage {
+                case .cancelled: updateState = .available(update)
+                case .failed, .restartFailed: updateState = .failed(current: update.current, reason: updateActivity.stage.rawValue)
+                default: updateState = updateActivity.stage.canCancel ? .downloading(update) : .installing(update)
+                }
             } else { updateState = .available(update) }
         }
         phase = .signedIn(previewCredential)
@@ -428,6 +435,9 @@ final class AppModel: ObservableObject {
         // The version is a property of this build, not of the session, so it
         // stays; anything in flight does not.
         if !updateState.isBusy {
+            updateOffer = nil
+            updateActivity = nil
+            lastPresentedUpdateVersion = nil
             updateState = AppUpdater.currentVersion().map { .current($0) } ?? .unavailable
         }
     }
@@ -1210,16 +1220,23 @@ final class AppModel: ObservableObject {
         do {
             let found = try await AppUpdater.check(serverUrl: credential.serverUrl, currentVersion: current)
             guard self.credential == credential, !updateState.isBusy else { return }
-            if let found {
-                updateState = .available(found)
-                presentUpdate(found, force: manual)
-            } else {
-                updateState = .current(current)
-                if manual { updateNotice = "当前已是最新版（\(current)）。" }
-            }
+            applyCheckedUpdate(found, current: current, manual: manual)
         } catch {
             guard self.credential == credential, !updateState.isBusy else { return }
             updateState = .failed(current: current, reason: error.localizedDescription)
+        }
+    }
+
+    /// Synchronize persistent window data independently from automatic presentation.
+    func applyCheckedUpdate(_ found: AppUpdater.Available?, current: String, manual: Bool) {
+        if let found {
+            updateState = .available(found)
+            presentUpdate(found, force: manual)
+        } else {
+            updateOffer = nil
+            lastPresentedUpdateVersion = nil
+            updateState = .current(current)
+            if manual { updateNotice = "当前已是最新版（\(current)）。" }
         }
     }
 
@@ -1241,6 +1258,7 @@ final class AppModel: ObservableObject {
                     try Task.checkCancellation()
                     guard updateGeneration == generation else { return }
                     updateState = .current(update.current)
+                    updateOffer = nil
                     updateActivity = nil
                     updateNotice = "更新信息已变化，请重新检查。"
                     return
@@ -1317,6 +1335,7 @@ final class AppModel: ObservableObject {
     }
 
     private func presentUpdate(_ update: AppUpdater.Available, force: Bool) {
+        updateOffer = update
         guard force || lastPresentedUpdateVersion != update.version else { return }
         lastPresentedUpdateVersion = update.version
         #if DEBUG
@@ -1324,30 +1343,32 @@ final class AppModel: ObservableObject {
         // a modal dialog or allowing a real update on the test machine.
         if isPreview { return }
         #endif
-        let alert = NSAlert()
-        alert.messageText = "发现 MissionGo \(update.version)"
-        var details = "当前版本：\(update.current)"
-        if let published = update.manifest.publishedAtLabel {
-            details += "\n发布时间：\(published)"
+        showClientUpdate()
+    }
+
+    func showClientUpdate() {
+        if clientUpdateWindow == nil { clientUpdateWindow = ClientUpdateWindowController(model: self) }
+        clientUpdateWindow?.show()
+    }
+
+    func closeClientUpdate() {
+        guard !updateState.isBusy else { return }
+        clientUpdateWindow?.window.close()
+    }
+
+    var canRetryClientUpdate: Bool {
+        guard !updateState.isBusy, updateActivity?.stage != .restartFailed else { return false }
+        switch updateState {
+        case .available: return true
+        case .failed: return updateOffer != nil
+        default: return false
         }
-        if Bundle.main.object(forInfoDictionaryKey: "MissionGoAllowsAdHocUpdates") as? Bool == true {
-            details += "\n\n此安装使用 ad-hoc 签名；更新后 macOS 可能要求重新授予权限。"
-        }
-        // macOS refuses to let a translocated copy replace itself. Saying where
-        // the update will land beats failing after the download has finished.
-        if AppUpdater.isTranslocated(bundle: Bundle.main.bundleURL) {
-            details += "\n\n当前 MissionGo 是从下载位置临时运行的副本（macOS 的 App Translocation）。"
-                + "更新会把它安装到「应用程序」，并从那里重新打开。"
-        }
-        alert.informativeText = details
-        // The notes live in a bounded, scrolling box: release after release they
-        // are the only unbounded part of this alert, and a long one must never
-        // push the buttons out of reach.
-        alert.accessoryView = UpdateNotesView.make(text: update.manifest.releaseNotesText)
-        alert.addButton(withTitle: "同意更新")
-        alert.addButton(withTitle: "稍后")
-        NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn { installUpdate() }
+    }
+
+    func retryClientUpdate() {
+        guard canRetryClientUpdate, let update = updateOffer else { return }
+        updateState = .available(update)
+        installUpdate()
     }
 
     /// Stop requesting new work, then wait for an already claimed dispatch to

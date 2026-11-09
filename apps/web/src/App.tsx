@@ -187,6 +187,7 @@ import { MarkdownText } from "./markdown-text";
 import {
   AGENT_CONSOLE_HISTORY_MARKER,
   AGENT_CONSOLE_LAYOUT_KEY,
+  AGENT_CONSOLE_RETURN_ITEM_KEY,
   AGENT_CONVERSATION_HISTORY_MARKER,
   DEFAULT_STATUS,
   ITEM_HISTORY_MARKER,
@@ -216,7 +217,7 @@ import {
 } from "./pane-layout";
 import { ProductBadge } from "./product-badge";
 import { AgentSessionPanel } from "./agent-session-panel";
-import { AgentSessionConsole } from "./agent-session-console";
+import { AgentSessionConsole, useAgentConsoleDrafts } from "./agent-session-console";
 import { currentDispatchForStatus, dispatchIssueLabelKey, itemProgressKeys } from "./dispatch-attention";
 import { agentUnreadCounts, agentSessionsRefetchInterval } from "./agent-session-view";
 import { registerMissionGoWebMcp } from "./webmcp";
@@ -329,12 +330,13 @@ export function App() {
   const [downloadsOpen, setDownloadsOpen] = useState(false);
   const [statisticsOpen,setStatisticsOpen] = useState(statisticsIsOpen);
   const [agentConsoleOpen, setAgentConsoleOpen] = useState(agentConsoleIsOpen);
+  const consoleDrafts = useAgentConsoleDrafts();
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
   const [agentSessionId, setAgentSessionId] = useState<string | null>(agentSessionIdFromUrl);
   // Read before the deep-link handling below rewrites the URL without it.
   const [agentConsoleLinkedFilter, setAgentConsoleLinkedFilter] = useState(agentConsoleFilterFromUrl);
   const [agentConversationOpen, setAgentConversationOpen] = useState(
-    () => Boolean(history.state?.[AGENT_CONVERSATION_HISTORY_MARKER]),
+    () => Boolean(history.state?.[AGENT_CONVERSATION_HISTORY_MARKER] || history.state?.[AGENT_CONSOLE_RETURN_ITEM_KEY]),
   );
   const [agentConsoleBulkMode, setAgentConsoleBulkMode] = useState(false);
   const [agentConsoleBulkAvailable, setAgentConsoleBulkAvailable] = useState(false);
@@ -390,6 +392,8 @@ export function App() {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const workspaceRef = useRef<HTMLElement>(null);
   const listScrollTopRef = useRef(0);
+  const consoleReturnScroll = useRef<{ item: string; top: number } | null>(null);
+  const consoleReturnFocus = useRef<HTMLElement | null>(null);
   const previousAgentConsoleOpenRef = useRef(agentConsoleOpen);
 
   useEffect(() => {
@@ -456,6 +460,7 @@ export function App() {
       [AGENT_CONSOLE_HISTORY_MARKER]: _console,
       [AGENT_CONVERSATION_HISTORY_MARKER]: _conversation,
       [AGENT_CONSOLE_LAYOUT_KEY]: _layout,
+      [AGENT_CONSOLE_RETURN_ITEM_KEY]: _returnItem,
       ...state
     } = current;
     history.pushState(
@@ -475,35 +480,31 @@ export function App() {
     setMobileSearchOpen(false);
   };
 
-  /**
-   * Open the console on one dispatch's session, from the work item it belongs
-   * to (AND-217). The console entry is pushed, so the item detail is still one
-   * back away; on the phone layout the conversation is pushed above it, the
-   * same way a deep link from the address bar lands.
-   */
+  /** Item-origin conversations return directly to that detail at every width. */
   const openAgentSession = (sessionId: string) => {
     setAgentConsoleLinkedFilter(null);
-    const current = typeof history.state === "object" && history.state
-      ? history.state as Record<string, unknown>
-      : {};
+    const current = typeof history.state === "object" && history.state ? history.state as Record<string, unknown> : {};
     const {
       [AGENT_CONSOLE_HISTORY_MARKER]: _console,
       [AGENT_CONVERSATION_HISTORY_MARKER]: _conversation,
       [AGENT_CONSOLE_LAYOUT_KEY]: _layout,
+      [AGENT_CONSOLE_RETURN_ITEM_KEY]: _returnItem,
       ...state
     } = current;
+    const returnItem = selectedItemKey;
+    if (returnItem) {
+      consoleReturnScroll.current = { item: returnItem, top: document.querySelector(".detail-scroll")?.scrollTop ?? 0 };
+      consoleReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    }
     const consoleState = {
       ...state,
       [AGENT_CONSOLE_HISTORY_MARKER]: true,
       [AGENT_CONSOLE_LAYOUT_KEY]: agentConsoleLayout,
+      ...(returnItem ? { [AGENT_CONSOLE_RETURN_ITEM_KEY]: returnItem } : {}),
     };
     history.pushState(consoleState, "", agentConsoleUrl(sessionId));
-    if (agentConsoleSinglePane) {
-      history.pushState(
-        { ...consoleState, [AGENT_CONVERSATION_HISTORY_MARKER]: true },
-        "",
-        agentConsoleUrl(sessionId),
-      );
+    if (agentConsoleSinglePane && !returnItem) {
+      history.pushState({ ...consoleState, [AGENT_CONVERSATION_HISTORY_MARKER]: true }, "", agentConsoleUrl(sessionId));
     }
     syncBackDepth();
     setAgentSessionId(sessionId);
@@ -531,6 +532,7 @@ export function App() {
       [AGENT_CONSOLE_HISTORY_MARKER]: _console,
       [AGENT_CONVERSATION_HISTORY_MARKER]: _conversation,
       [AGENT_CONSOLE_LAYOUT_KEY]: _layout,
+      [AGENT_CONSOLE_RETURN_ITEM_KEY]: _returnItem,
       ...state
     } = current;
     history.replaceState(state, "", agentConsoleExitUrl());
@@ -546,13 +548,14 @@ export function App() {
       ? history.state as Record<string, unknown>
       : {};
     const conversation = Boolean(sessionId && showConversation && agentConsoleSinglePane);
+    const directItem = Boolean(current[AGENT_CONSOLE_RETURN_ITEM_KEY]);
     const nextState = {
       ...current,
       [AGENT_CONSOLE_HISTORY_MARKER]: true,
       [AGENT_CONSOLE_LAYOUT_KEY]: agentConsoleLayout,
-      [AGENT_CONVERSATION_HISTORY_MARKER]: conversation || undefined,
+      [AGENT_CONVERSATION_HISTORY_MARKER]: (!directItem && conversation) || undefined,
     };
-    if (conversation && !history.state?.[AGENT_CONVERSATION_HISTORY_MARKER]) {
+    if (conversation && !directItem && !history.state?.[AGENT_CONVERSATION_HISTORY_MARKER]) {
       history.pushState(nextState, "", agentConsoleUrl(sessionId));
     } else {
       history.replaceState(nextState, "", agentConsoleUrl(sessionId));
@@ -563,6 +566,7 @@ export function App() {
   };
 
   const closeAgentConversation = () => {
+    if (history.state?.[AGENT_CONSOLE_RETURN_ITEM_KEY]) { closeAgentConsole(); return; }
     if (history.state?.[AGENT_CONVERSATION_HISTORY_MARKER]) {
       history.back();
       return;
@@ -686,17 +690,24 @@ export function App() {
       // Reaching here means the workspace route or drawer needs updating.
       syncBackDepth();
       if (!history.state?.[SIDEBAR_HISTORY_MARKER]) setSidebarOpen(false);
+      const returningToItem = previousAgentConsoleOpenRef.current && !agentConsoleIsOpen();
       setStatisticsOpen(statisticsIsOpen());
       setAgentConsoleOpen(agentConsoleIsOpen());
       setAgentSessionId(agentSessionIdFromUrl());
-      setAgentConversationOpen(Boolean(history.state?.[AGENT_CONVERSATION_HISTORY_MARKER]));
+      setAgentConversationOpen(Boolean(history.state?.[AGENT_CONVERSATION_HISTORY_MARKER] || agentConsoleSinglePane && history.state?.[AGENT_CONSOLE_RETURN_ITEM_KEY]));
       const itemKey = itemKeyFromUrl();
       setDetailOpenInEdit(false);
       setSelectedItemKey(itemKey);
       if (itemKey) {
         requestAnimationFrame(() => {
-          workspaceRef.current?.scrollTo({ top: 0 });
-          window.scrollTo({ top: 0 });
+          if (returningToItem && consoleReturnScroll.current?.item === itemKey) {
+            const focus = consoleReturnFocus.current?.isConnected ? consoleReturnFocus.current : document.querySelector<HTMLElement>(".detail-dispatch-jump");
+            focus?.focus({ preventScroll: true });
+            document.querySelector(".detail-scroll")?.scrollTo({ top: consoleReturnScroll.current.top });
+          } else {
+            workspaceRef.current?.scrollTo({ top: 0 });
+            window.scrollTo({ top: 0 });
+          }
         });
       } else {
         restoreListScroll();
@@ -717,6 +728,7 @@ export function App() {
         [AGENT_CONSOLE_HISTORY_MARKER]: _console,
         [AGENT_CONVERSATION_HISTORY_MARKER]: _conversation,
         [AGENT_CONSOLE_LAYOUT_KEY]: _layout,
+        [AGENT_CONSOLE_RETURN_ITEM_KEY]: _returnItem,
         ...state
       } = current;
       history.replaceState(state, "", agentConsoleExitUrl());
@@ -757,6 +769,13 @@ export function App() {
     const current = typeof history.state === "object" && history.state
       ? history.state as Record<string, unknown>
       : {};
+
+    if (current[AGENT_CONSOLE_RETURN_ITEM_KEY]) {
+      history.replaceState({ ...current, [AGENT_CONSOLE_LAYOUT_KEY]: agentConsoleLayout }, "", agentConsoleUrl(agentSessionId));
+      setAgentConversationOpen(Boolean(agentConsoleSinglePane && agentSessionId));
+      syncBackDepth();
+      return;
+    }
 
     if (agentConsoleSinglePane && agentSessionId) {
       // A wide console has its selected conversation in the same entry. When a
@@ -925,12 +944,13 @@ export function App() {
   useEffect(() => {
     const accountId = bootstrapQuery.data?.user.id;
     if (accountId && draftAccountId.current && accountId !== draftAccountId.current) {
+      consoleDrafts.clear();
       setNewSessionDraft(null);
       setNewSessionOpen(false);
       setNewSessionConfigOpen(false);
     }
     if (accountId) draftAccountId.current = accountId;
-  }, [bootstrapQuery.data?.user.id]);
+  }, [bootstrapQuery.data?.user.id, consoleDrafts.clear]);
   const allAgentSessions = agentSessionsQuery.data?.sessions ?? [];
   const unreadCounts = useMemo(() => agentUnreadCounts(allAgentSessions), [allAgentSessions]);
 
@@ -952,6 +972,7 @@ export function App() {
       [AGENT_CONSOLE_HISTORY_MARKER]: _console,
       [AGENT_CONVERSATION_HISTORY_MARKER]: _conversation,
       [AGENT_CONSOLE_LAYOUT_KEY]: _layout,
+      [AGENT_CONSOLE_RETURN_ITEM_KEY]: _returnItem,
       ...state
     } = current;
     history.replaceState(state, "", agentConsoleExitUrl());
@@ -1666,6 +1687,7 @@ export function App() {
 
       {agentConsoleOpen && selectedProductId && (
         <AgentSessionConsole
+          drafts={consoleDrafts}
           productId={selectedProductId}
           search={agentConsoleSearch}
           onSearchChange={setAgentConsoleSearch}
@@ -1693,6 +1715,7 @@ export function App() {
             else selectAgentSession(id, show);
           }}
           onBackToSessions={closeAgentConversation}
+          backToItem={Boolean(history.state?.[AGENT_CONSOLE_RETURN_ITEM_KEY])}
         />
       )}
 

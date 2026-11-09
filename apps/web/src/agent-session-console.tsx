@@ -187,6 +187,15 @@ function attentionLabel(session: AgentSessionSummary, t: ReturnType<typeof useI1
   return t("agentAttentionUncertain");
 }
 
+/** Page-owned, memory-only drafts survive leaving and reopening the console. */
+export function useAgentConsoleDrafts() {
+  const [replyDrafts, setReplyDrafts] = useState<Readonly<Record<string, string>>>({});
+  const [replyFileDrafts, setReplyFileDrafts] = useState<Readonly<Record<string, File[]>>>({});
+  const [replyFileErrors, setReplyFileErrors] = useState<Readonly<Record<string, string | null>>>({});
+  const clear = useCallback(() => { setReplyDrafts({}); setReplyFileDrafts({}); setReplyFileErrors({}); }, []);
+  return { replyDrafts, setReplyDrafts, replyFileDrafts, setReplyFileDrafts, replyFileErrors, setReplyFileErrors, clear };
+}
+
 export function AgentSessionConsole({
   productId,
   initialFilter,
@@ -203,6 +212,8 @@ export function AgentSessionConsole({
   onBulkAvailabilityChange,
   onSelectSession,
   onBackToSessions,
+  backToItem = false,
+  drafts,
 }: {
   productId: string;
   initialFilter: AgentSessionFilter | null;
@@ -219,6 +230,8 @@ export function AgentSessionConsole({
   onBulkAvailabilityChange: (available: boolean) => void;
   onSelectSession: (sessionId: string | null, showConversation: boolean) => void;
   onBackToSessions: () => void;
+  backToItem?: boolean;
+  drafts: ReturnType<typeof useAgentConsoleDrafts>;
 }) {
   const confirm = useConfirm();
   const { locale, t } = useI18n();
@@ -229,14 +242,12 @@ export function AgentSessionConsole({
   const [filter, setFilter] = useState<AgentSessionFilter>(initialFilter ?? DEFAULT_AGENT_SESSION_FILTER);
   const [agentFilter, setAgentFilter] = useState<AgentKindFilter>(DEFAULT_AGENT_KIND_FILTER);
   const [association, setAssociation] = useState<AgentAssociationFilter>("all");
-  const [replyDrafts, setReplyDrafts] = useState<Readonly<Record<string, string>>>({});
+  const { replyDrafts, setReplyDrafts, replyFileDrafts, setReplyFileDrafts, replyFileErrors, setReplyFileErrors } = drafts;
   const [clock, setClock] = useState(Date.now);
   useEffect(() => {
     const timer = window.setInterval(() => setClock(Date.now()), 15_000);
     return () => window.clearInterval(timer);
   }, []);
-  const [replyFileDrafts, setReplyFileDrafts] = useState<Readonly<Record<string, File[]>>>({});
-  const [replyFileErrors, setReplyFileErrors] = useState<Readonly<Record<string, string | null>>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dismissedCommandId, setDismissedCommandId] = useState<string | null>(null);
   const [followLatest, setFollowLatest] = useState(true);
@@ -917,11 +928,12 @@ export function AgentSessionConsole({
     <button
       type="button"
       className="secondary-button agent-run-stop"
+      aria-label={t("agentConsoleStop")}
       disabled={retryDispatch.isPending || stopDispatch.isPending || stopPending}
       onClick={async () => {
         if (await confirm(t("agentConsoleStopConfirm"))) stopDispatch.mutate({ sessionId: operationSessionId, dispatchId: selected.dispatchId! });
       }}
-    ><Square size={16} />{t("agentConsoleStop")}</button>
+    ><Square size={16} />{t("agentConsoleStopShort")}</button>
   );
   const sessionActions = selected && (
     <div className="agent-console-actions">
@@ -1200,7 +1212,7 @@ export function AgentSessionConsole({
         {selected && (
           <>
             <header className="agent-console-conversation-head">
-              <BackButton className="agent-console-conversation-back" label={t("agentConsoleBackToSessions")} onClick={onBackToSessions} />
+              <BackButton className="agent-console-conversation-back" label={t(backToItem ? "agentConsoleBackToItem" : "agentConsoleBackToSessions")} onClick={onBackToSessions} />
               <span className="agent-console-avatar"><AgentIcon kind={selected.agentKind} size={18} /></span>
               <div className="agent-console-heading">
                 <h2>{sessionTitle(selected, roundLabel)}<SessionCategoryBadge session={selected} /></h2>
