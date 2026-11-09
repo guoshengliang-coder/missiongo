@@ -1,7 +1,18 @@
 import { postItemCommand } from "./item-command";
 import { readFileSync } from "node:fs";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { expectUsableControl } from "./visible-control";
+
+// On loaded CI runners the page can abort an in-flight navigation while the
+// console SSE stream settles (net::ERR_ABORTED); one retry is enough there and
+// every assertion below still runs on the reloaded page.
+const gotoStable = async (page: Page, url: string) => {
+  try { await page.goto(url); }
+  catch (error) {
+    if (!/net::ERR_ABORTED/.test(String(error))) throw error;
+    await page.goto(url);
+  }
+};
 
 const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as { productId: string };
 
@@ -24,14 +35,14 @@ for (const [width, theme] of [[1280, "light"], [375, "dark"]] as const) {
     const other = await create(`Acceptance peer ${width}`);
     // Only the browser's cookie becomes the member's; the admin request fixture remains independent.
     expect((await page.request.post("/api/v1/auth/login", { data: { username: email, password } })).ok()).toBeTruthy();
-    await page.goto(`/?product=${fixture.productId}&status=pending_verification&q=${other.key}`);
+    await gotoStable(page,`/?product=${fixture.productId}&status=pending_verification&q=${other.key}`);
     const row = page.locator(".item-row").filter({ hasText: other.key });
     await expect(row).toBeVisible();
     await expect(row.locator('input[type="checkbox"]')).toHaveCount(0);
     await row.locator(".row-more-menu > summary").click();
     await expect(row.getByRole("button", { name: "验证通过", exact: true })).toHaveCount(0);
     await expect(row.getByRole("button", { name: "验收打回", exact: true })).toHaveCount(0);
-    await page.goto(`/?product=${fixture.productId}&status=pending_verification&item=${other.key}`);
+    await gotoStable(page,`/?product=${fixture.productId}&status=pending_verification&item=${other.key}`);
     await expect(page.locator(".detail-pane").getByText(/只有系统管理员、项目管理员或该条目提需者/)).toBeVisible();
     await expect(page.locator(".detail-pane .toolbar-primary-action")).toHaveCount(0);
 
@@ -43,7 +54,7 @@ for (const [width, theme] of [[1280, "light"], [375, "dark"]] as const) {
     await expect(page.locator(".detail-pane .toolbar-primary-action")).toHaveText("验证通过");
     await expectUsableControl(page.locator(".detail-pane .toolbar-primary-action"), width < 1280);
     await page.screenshot({ path: test.info().outputPath("acceptance-detail.png") });
-    await page.goto(`/?product=${fixture.productId}&status=pending_verification&q=${other.key}`);
+    await gotoStable(page,`/?product=${fixture.productId}&status=pending_verification&q=${other.key}`);
     const allowedRow = page.locator(".item-row").filter({ hasText: other.key });
     await allowedRow.locator('input[type="checkbox"]').check();
     const bulk = page.locator(".bulk-bar .primary-button");
