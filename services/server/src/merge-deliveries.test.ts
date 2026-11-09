@@ -252,11 +252,17 @@ describe("AND-423 explicit merge deliveries",()=>{
     expect(g.merges.decide(g.owner.id,d.id,d.revision,"confirm").confirmedBy).toBe("session-instruction");
     expect(()=>g.merges.propose(g.owner.id,"original-client",g.identity,"instruction",{...g.input,pullRequest:14},{quote:"加入待合并"})).toThrow();
   });
-  it("confirms through the MCP tool only when instructionConfirmation is carried",async()=>{
+  // Semantic interpretation remains the Agent's job. These exercise transport and
+  // domain effects after a valid current-turn queue instruction has been identified.
+  it.each(["添加到待集成", "加入待集成", "提交到待集成", "添加到待合并", "加入待合并", "提交到待合并", "添加到待合成", "添加到待发布"])("queues a current delivery with original wording: %s",async quote=>{
     const f=await prepared();
-    const ordered=await f.call("propose_merge_delivery",{identity:f.identity,idempotencyKey:"mcp-instruction",delivery:f.input,instructionConfirmation:{quote:"添加到待合并"}});
+    const ordered=await f.call("propose_merge_delivery",{identity:f.identity,idempotencyKey:"mcp-instruction",delivery:f.input,instructionConfirmation:{quote}});
     f.safe(ordered);
-    expect(ordered.structuredContent!.delivery).toMatchObject({state:"confirmed",confirmedBy:"session-instruction"});
+    expect(ordered.structuredContent!.delivery).toMatchObject({state:"confirmed",confirmedBy:"session-instruction",instructionQuote:quote});
+    const repeated=await f.call("propose_merge_delivery",{identity:f.identity,idempotencyKey:"mcp-instruction",delivery:f.input,instructionConfirmation:{quote}});
+    expect(repeated.structuredContent!.delivery).toMatchObject({id:(ordered.structuredContent!.delivery as {id:string}).id,state:"confirmed",instructionQuote:quote});
+    expect(f.merges.batches(f.item.productId,f.owner.id)).toEqual([]);
+    expect(f.store.getWorkItem(f.item.key).status).toBe("in_progress");
     const plain=await f.call("propose_merge_delivery",{identity:f.identity,idempotencyKey:"mcp-plain",delivery:f.input});
     f.safe(plain);
     expect(plain.structuredContent!.delivery).toMatchObject({state:"proposed"});

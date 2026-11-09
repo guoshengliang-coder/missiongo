@@ -160,7 +160,7 @@ export class AiTitleService {
                 "只输出一个 JSON 对象，不要 Markdown：",
                 '{"needsAttention":true|false,"kind":"answer|approval|action|instruction|none","reason":"不超过80字的中文理由"}',
                 "needsAttention 为 false 时 kind 必须是 none；为 true 时 kind 不能是 none。",
-                "可增加 deliveryOnly 布尔字段：仅在 kind=instruction，且最新回复所需的全部下一步仅是添加到待合并、发起合并或继续既定交付流程时为 true。",
+                "可增加 deliveryOnly 布尔字段：仅在 kind=instruction，且最新回复所需的全部下一步仅是加入待集成清单（兼容旧称待合并）、发起合并或继续既定交付流程时为 true。",
                 "独立选择、资料补充、风险接受、其他指令，以及无法确定时，deliveryOnly 必须为 false；同一回复包含交付和独立指令也为 false。",
               ].join("\n"),
             },
