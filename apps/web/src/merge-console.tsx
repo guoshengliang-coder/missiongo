@@ -129,7 +129,7 @@ export function PendingMergeButton({productId,onSession}:{productId:string;onSes
   const count=query.data?.deliveries.filter(d=>d.state==="confirmed"&&d.blocker!=="changed").length??0;
   return <>
     <button type="button" className="secondary-button merge-entry" onClick={()=>setOpen(true)}>
-      {t("mergePending")} {query.isSuccess&&<span className="agent-unread-badge">{count}</span>}
+      {t("integrationQueueTitle")} {query.isSuccess&&<span className="agent-unread-badge">{count}</span>}
     </button>
     {open&&<MergeDialog key={productId} productId={productId} onClose={()=>setOpen(false)}
       onSession={async id=>{await onSession(id);setOpen(false);}}/>}
@@ -201,7 +201,7 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
   const modeIssue=config?modeProblem(config.agentKind,config.mode,node?.agents.find(a=>a.kind===config.agentKind)?.modes,config.model):undefined;
   const modelUnavailable=Boolean(config?.model && (!models || !models.some(m=>m.id===config.model)));
   const configValid=Boolean(!modeIssue&&!modelUnavailable&&config&&node?.online&&node.supportsFreeSessions&&node.repos.some(r=>r.productId===productId)&&node.agents.some(a=>a.kind===config.agentKind&&a.ready!==false));
-  return <><Modal title={t("mergePending")} subtitle={t("mergeSelectHelp")} onClose={onClose} wide scrolls
+  return <><Modal title={t("integrationQueueTitle")} subtitle={t("mergeSelectHelp")} onClose={onClose} wide scrolls
     dirty={!createdBatch&&(Boolean(selectedCount)||publish||saveAsDefault||Boolean(initialConfig.current&&JSON.stringify(config)!==initialConfig.current))} pending={start.isPending||openSession.isPending}>
     {close=><div className="merge-dialog">
       <ol className="merge-steps" aria-label={t("mergeSteps")}><li aria-current={step===1?"step":undefined}>{t("mergeStepSelect")}</li><li aria-current={step===2?"step":undefined}>{t("mergeStepConfigure")}</li></ol>

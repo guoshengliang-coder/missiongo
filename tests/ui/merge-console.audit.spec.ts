@@ -14,7 +14,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     const now="2026-11-08T10:00:00.000Z";
     await page.clock.setFixedTime(new Date(now));
     const delivery={id:"delivery-one",productId:product.id,sessionId:"development-session",revision:"revision-one",state:"confirmed",blocker:width===320?"pending":"stale",
-      itemKeys:width===320?[]:["MG-1"],head:"a".repeat(40),summary:"会话交付确认与待合并清单",validation:"服务端回归测试通过",requiredArtifacts:["web"],
+      itemKeys:width===320?[]:["MG-1"],head:"a".repeat(40),summary:"会话交付确认与待集成清单",validation:"服务端回归测试通过",requiredArtifacts:["web"],
       pullRequestUrl:"https://github.com/example/project/pull/12",evidence:{checkedAt:now,source:"GitHub"}};
     await page.route("**/merge-deliveries",route=>route.fulfill({json:{deliveries:[delivery],batches:[]}}));
     await page.route("**/api/v1/nodes",route=>route.fulfill({json:{nodes:[{id:"merge-node",name:"Fixture Mac",online:true,supportsFreeSessions:true,
@@ -23,7 +23,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     const bodies:unknown[]=[];
     await page.route("**/merge-batches",route=>{bodies.push(route.request().postDataJSON());return route.fulfill({status:503,json:{title:"Synthetic lost acknowledgement"}});});
     await page.goto(`/?product=${product.id}&console=agent`);
-    const entry=page.getByRole("button",{name:"待合并 1",exact:true});
+    const entry=page.getByRole("button",{name:"待集成 1",exact:true});
     const bar=page.locator(".agent-console-topbar");
     const bounds=await bar.boundingBox();
     for(const control of [entry,page.locator(".agent-console-topbar-actions")]) {
@@ -102,8 +102,8 @@ for (const width of [320,1440]) for (const theme of ["light","dark"] as const) f
   }
   await page.screenshot({path:testInfo.outputPath("proposed-notice.png"),fullPage:true});
   await expect(page.locator(".agent-console-attention-banner")).toHaveCount(0);
-  await card.getByRole("button",{name:"添加到待合并",exact:true}).click();await expect(card).toContainText("已进入待合并状态");
-  await expect(card).toContainText("发送新消息或改动发生变化后，将自动移出待合并。");
+  await card.getByRole("button",{name:"添加到待集成",exact:true}).click();await expect(card).toContainText("已加入待集成清单");
+  await expect(card).toContainText("发送新消息或改动发生变化后，将自动移出待集成。");
   await expect(card.getByRole("button")).toHaveCount(0);
   await expect(card.locator(".lucide-git-merge")).toBeVisible();
   await expect(badge).toHaveText("待合并");
@@ -124,7 +124,7 @@ for (const width of [320,1440]) for (const theme of ["light","dark"] as const) f
   blocker=undefined;state="proposed";reconfirmation=true;
   await page.reload();
   if(surface==="panel"){await page.locator(".execution-history > summary").click();await page.locator(".execution-record > summary").filter({hasText:"Fixture"}).click();await page.locator(".agent-session-toggle").click();}
-  await expect(card).toContainText("是否重新添加到待合并？");
+  await expect(card).toContainText("是否重新添加到待集成？");
   await card.getByRole("button",{name:"暂不添加",exact:true}).click();await expect(card).toHaveCount(0);expect(decisions).toBe(2);
   await expect(page.locator(".agent-console-attention-banner")).toHaveCount(0);
 
@@ -144,7 +144,7 @@ for (const width of [320,1440]) for (const theme of ["light","dark"] as const) f
   state="merged";await page.reload();await expect(badge).toHaveCount(0);
   state="confirmed";blocker="changed";await page.reload();await expect(badge).toHaveCount(0);
   if(surface==="console") {
-    await page.getByRole("button",{name:"待合并 0",exact:true}).click();
+    await page.getByRole("button",{name:"待集成 0",exact:true}).click();
     await expect(page.getByRole("dialog").locator(".merge-row input")).toBeDisabled();
   }
   const current=await(await request.get(`/api/v1/items/${item.key}`)).json();expect(current.status??current.item?.status).toBe("ready");
@@ -306,7 +306,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     agents:[{kind:"codex",ready:true,models:[]}],repos:[{productId:product.id,repoPath:"fixture"}],repoCandidates:[],createdAt:at}]}}));
   await page.route("**/api/v1/dispatch-defaults",route=>route.fulfill({json:{nodeId:"wizard-node",agentKind:"codex",agents:{codex:{mode:"auto"}}}}));
   await page.route("**/merge-batches",route=>{posts++;return route.fulfill({status:409,json:{title:"Fixture conflict"}});});
-  await page.goto(`/?product=${product.id}&console=agent`);await page.getByRole("button",{name:"待合并 2",exact:true}).click();
+  await page.goto(`/?product=${product.id}&console=agent`);await page.getByRole("button",{name:"待集成 2",exact:true}).click();
   const dialog=page.getByRole("dialog").first();
   await expect(dialog.locator(".merge-config")).toBeHidden();
   await dialog.getByRole("button",{name:"全选可选内容"}).click();
@@ -343,7 +343,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
   }
   await page.screenshot({path:testInfo.outputPath("and-447-step-two.png"),fullPage:true});
   expect(posts).toBe(0);
-  active=true;await page.reload();await page.getByRole("button",{name:"待合并 2",exact:true}).click();
+  active=true;await page.reload();await page.getByRole("button",{name:"待集成 2",exact:true}).click();
   await expect(dialog.locator(".integration-progress")).toHaveCount(0);await expect(dialog.locator(".merge-active-notice")).toBeVisible();
   await dialog.getByRole("button",{name:"全选可选内容"}).click();
   await expect(dialog.getByRole("button",{name:"下一步：配置 Agent"})).toBeDisabled();
@@ -357,7 +357,7 @@ test("AND-447 polling invalidates a removed selection and permits deliberate res
   const now="2026-11-08T08:00:00Z";let removed=false,reads=0;
   const delivery={id:"stale",productId:product.id,sessionId:"dev",revision:"first",state:"confirmed",itemKeys:["ST-1"],head:"a".repeat(40),summary:"变化中的改动",validation:"回归说明",requiredArtifacts:["web"],pullRequestUrl:"https://github.com/example/project/pull/1",evidence:{checkedAt:now,source:"Fixture"}};
   await page.route("**/merge-deliveries",route=>{reads++;return route.fulfill({json:{deliveries:removed?[]:[delivery],batches:[]}});});
-  await page.goto(`/?product=${product.id}&console=agent`);await page.getByRole("button",{name:"待合并 1",exact:true}).click();
+  await page.goto(`/?product=${product.id}&console=agent`);await page.getByRole("button",{name:"待集成 1",exact:true}).click();
   const dialog=page.getByRole("dialog");await dialog.getByRole("button",{name:"全选可选内容"}).click();await dialog.getByRole("button",{name:"下一步：配置 Agent"}).click();
   removed=true;const before=reads;
   // Advance the controlled timer; reloading would lose the selected revision.
@@ -365,5 +365,5 @@ test("AND-447 polling invalidates a removed selection and permits deliberate res
   await expect.poll(()=>reads,{timeout:20000}).toBeGreaterThan(before);
   await expect(dialog.getByRole("alert")).toContainText("已选改动已变化");await expect(dialog.getByRole("button",{name:"开始处理",exact:true})).toBeDisabled();
   await dialog.getByRole("button",{name:"重新选择",exact:true}).click();
-  await expect(dialog).toContainText("暂无已确认的待合并改动");await expect(dialog.getByRole("button",{name:"下一步：配置 Agent"})).toBeDisabled();
+  await expect(dialog).toContainText("暂无已确认的待集成改动");await expect(dialog.getByRole("button",{name:"下一步：配置 Agent"})).toBeDisabled();
 });
