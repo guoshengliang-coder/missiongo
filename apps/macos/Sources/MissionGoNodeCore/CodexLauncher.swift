@@ -285,6 +285,20 @@ public enum CodexPreflight {
         return Preflight.parseClaudeVersion(result.stdout) ?? Preflight.parseClaudeVersion(result.stderr)
     }
 
+    /// Never send probe output: it can contain local paths or credentials.
+    static func detectionReport(binary: String?, run: CommandRunner) async -> DetectedAgent? {
+        guard let binary else { return nil }
+        let result = await run(binary, ["--version"])
+        if result.code == 0,
+           let version = Preflight.parseClaudeVersion(result.stdout) ?? Preflight.parseClaudeVersion(result.stderr) {
+            return DetectedAgent(kind: "codex", version: version)
+        }
+        let reason = result.code == -1 ? "timeout"
+            : result.code == 0 ? "unrecognized_version" : "exit_\(result.code)"
+        return DetectedAgent(kind: "codex", version: "", ready: false,
+            unavailableReason: "Codex 已安装，但版本探测暂不可确认（\(reason)）；将自动复查，确认恢复前不能派单。")
+    }
+
     public static func mcpState(binary: String, run: CommandRunner) async -> McpState {
         let result = await run(binary, ["mcp", "list", "--json"])
         guard result.code == 0 else { return .unreadable }
@@ -475,6 +489,10 @@ public struct CodexLauncher: AgentAdapter {
     public func detect() async -> String? {
         guard let binary = CodexLocation.binary(environment: environment) else { return nil }
         return await CodexPreflight.version(binary: binary, run: run)
+    }
+
+    public func detectionReport() async -> DetectedAgent? {
+        return await CodexPreflight.detectionReport(binary: CodexLocation.binary(environment: environment), run: run)
     }
 
     /// From the app-server's own `model/list`. Only asked when the control

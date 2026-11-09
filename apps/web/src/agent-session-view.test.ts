@@ -24,6 +24,7 @@ import {
   DEFAULT_AGENT_KIND_FILTER,
   DEFAULT_AGENT_SESSION_FILTER,
   effectiveAgentSessionStatus,
+  sessionReplyPresentation,
   formatAgentMessageTime,
   isNearMessageBottom,
   isAbnormalAgentSession,
@@ -723,4 +724,30 @@ it("excludes tagged execution records without hiding original JSON messages", ()
   const text = '{"command":"user example"}';
   const base = { id: "message", sourceId: "message", role: "agent" as const, occurredAt: "2026-11-07T00:00:00Z" };
   expect(agentChatMessages([{ ...base, phase: "execution", text: "private" }, { ...base, id: "reply", sourceId: "reply", text }], []).map(message => message.text)).toEqual([text]);
+});
+
+
+describe("message delivery presentation (AND-487)", () => {
+  const message = { id: "new-message", kind: "message", text: "继续", status: "queued", createdAt: "2026-11-09T00:01:00Z" } as const;
+  const stop = { ...message, id: "stop", kind: "interrupt", status: "delivered", stopConfirmed: true, createdAt: "2026-11-09T00:02:00Z" } as const;
+  it("shows delivery even when the native turn is idle, without changing execution status", () => {
+    expect(effectiveAgentSessionStatus("idle", message, false, true)).toBe("idle");
+    expect(sessionReplyPresentation("idle", message)?.labelKey).toBe("agentReplyQueuedShort");
+    expect(sessionReplyPresentation("idle", { ...message, status: "delivering" })?.labelKey).toBe("agentReplyDeliveringShort");
+    expect(sessionReplyPresentation("idle", message, true)?.labelKey).toBe("agentReplySendingShort");
+    expect(sessionReplyPresentation("suspended", message)?.iconStatus).toBe("active");
+  });
+  it("keeps unknown delivery static and respects terminal commands and runtime faults", () => {
+    expect(sessionReplyPresentation("idle", { ...message, status: "delivery_unknown" })).toEqual({
+      labelKey: "agentReplyDeliveryUnknownShort", iconStatus: "waiting", visualStatus: "idle",
+    });
+    for (const status of ["delivered", "failed", "cancelled"] as const) expect(sessionReplyPresentation("idle", { ...message, status })).toBeUndefined();
+    for (const status of ["failed", "unavailable", "stalled"] as const) expect(sessionReplyPresentation(status, message)).toBeUndefined();
+    expect(sessionReplyPresentation("idle", { ...message, kind: "interrupt" })).toBeUndefined();
+  });
+  it("does not revive an older message after a confirmed stop, but allows new input", () => {
+    expect(sessionReplyPresentation("idle", message, false, stop)).toBeUndefined();
+    expect(sessionReplyPresentation("idle", { ...message, createdAt: "2026-11-09T00:03:00Z" }, false, stop)?.iconStatus).toBe("active");
+    expect(sessionReplyPresentation("idle", message, true, stop)?.labelKey).toBe("agentReplySendingShort");
+  });
 });
