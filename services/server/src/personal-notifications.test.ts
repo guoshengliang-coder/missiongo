@@ -113,10 +113,12 @@ describe("personal message center",()=>{
     const f=await fixture();
     f.store.transitionWorkItem({itemKey:f.item.key,to:"pending_verification",actor:"human",reason:"manual_override",note:"synthetic delivery"});
     const notice=f.service.list(f.member,{}).notifications[0]!;
-    expect(f.service.attentionCount(f.member)).toEqual({count:1,todoCount:1,unreadCount:1,coveredUnreadCount:1});
+    expect(f.service.attentionCount(f.member)).toEqual({count:1,todoCount:1,unreadCount:1,coveredUnreadCount:1,
+      todoByProduct:[{productId:f.product.id,count:1}],unreadByProduct:[{productId:f.product.id,count:1}]});
     expect((await f.call("GET","/api/v1/attention/todos")).json().todos).toMatchObject([{kind:"verification",itemKey:f.item.key}]);
     f.service.markRead(f.member,notice.id);
-    expect(f.service.attentionCount(f.member)).toEqual({count:1,todoCount:1,unreadCount:0,coveredUnreadCount:0});
+    expect(f.service.attentionCount(f.member)).toEqual({count:1,todoCount:1,unreadCount:0,coveredUnreadCount:0,
+      todoByProduct:[{productId:f.product.id,count:1}],unreadByProduct:[]});
     f.comment("Independent comment requiring attention");
     expect(f.service.attentionCount(f.member).count).toBe(2);
     f.service.markAllRead(f.member,f.service.list(f.member,{}).throughSequence,{});
@@ -137,9 +139,11 @@ describe("personal message center",()=>{
     move("done","verification_passed");
     expect(f.service.detail(f.member,first.id)).toMatchObject({readAt:null,resolvedAt:expect.any(String)});
     expect(f.service.list(f.member,{unread:true}).notifications.map(n=>n.kind)).toEqual(["mention"]);
-    expect(f.service.attentionCount(f.member)).toEqual({count:1,todoCount:0,unreadCount:1,coveredUnreadCount:0});
+    expect(f.service.attentionCount(f.member)).toEqual({count:1,todoCount:0,unreadCount:1,coveredUnreadCount:0,
+      todoByProduct:[],unreadByProduct:[{productId:f.product.id,count:1}]});
     move("ready","reopened");move("pending_verification","manual_override");
-    expect(f.service.attentionCount(f.member)).toEqual({count:3,todoCount:1,unreadCount:3,coveredUnreadCount:1});
+    expect(f.service.attentionCount(f.member)).toEqual({count:3,todoCount:1,unreadCount:3,coveredUnreadCount:1,
+      todoByProduct:[{productId:f.product.id,count:1}],unreadByProduct:[{productId:f.product.id,count:3}]});
     expect(f.service.detail(f.member,first.id).resolvedAt).not.toBeNull();
     move("ready","verification_failed");
     expect(f.service.todos(f.member).todos).toEqual([]);
@@ -150,7 +154,8 @@ describe("personal message center",()=>{
     const f=await fixture();
     // Represents already-pending work created before notifications were installed.
     f.db.prepare("UPDATE work_items SET status='pending_verification' WHERE id=?").run(f.item.id);
-    expect(f.service.attentionCount(f.member)).toEqual({count:1,todoCount:1,unreadCount:0,coveredUnreadCount:0});
+    expect(f.service.attentionCount(f.member)).toEqual({count:1,todoCount:1,unreadCount:0,coveredUnreadCount:0,
+      todoByProduct:[{productId:f.product.id,count:1}],unreadByProduct:[]});
     expect(f.service.todos(f.accounts.getAccount("admin")).todos).toEqual([]);
     expect(f.service.todos(f.member,{productId:"outside-scope"}).todos).toEqual([]);
     expect((await f.app.inject({url:"/api/v1/attention/count"})).statusCode).toBe(401);
@@ -160,7 +165,7 @@ describe("personal message center",()=>{
     expect(f.service.attentionCount(f.member).todoCount).toBe(0);
     f.db.prepare("UPDATE products SET archived_at=NULL WHERE id=?").run(f.product.id);
     f.accounts.replacePermissions(f.member.id,[]);
-    expect((await f.call("GET","/api/v1/attention/count")).json()).toEqual({count:0,todoCount:0,unreadCount:0,coveredUnreadCount:0});
+    expect((await f.call("GET","/api/v1/attention/count")).json()).toEqual({count:0,todoCount:0,unreadCount:0,coveredUnreadCount:0,todoByProduct:[],unreadByProduct:[]});
     expect((await f.call("GET","/api/v1/attention/todos")).json().todos).toEqual([]);
     expect(f.service.list(f.member,{}).notifications).toEqual([]);
   });
@@ -186,12 +191,31 @@ describe("personal message center",()=>{
     const member=f.accounts.getAccount(f.member.id),moved=response.json();
     expect(f.service.todos(member).todos.map(t=>t.itemKey)).toEqual([moved.key]);
     expect(f.service.detail(member,notice.id)).toMatchObject({readAt:null,resolvedAt:expect.any(String)});
-    expect(f.service.attentionCount(member)).toEqual({count:1,todoCount:1,unreadCount:0,coveredUnreadCount:0});
+    expect(f.service.attentionCount(member)).toEqual({count:1,todoCount:1,unreadCount:0,coveredUnreadCount:0,
+      todoByProduct:[{productId:target.id,count:1}],unreadByProduct:[]});
     // Proposer verification is allowed even without general editing permission.
     f.accounts.replacePermissions(member.id,[{productId:target.id,canView:true,canOperate:false,canUseAi:false}]);
     expect((await f.call("GET","/api/v1/attention/todos")).json().todos.map((t:{itemKey:string})=>t.itemKey)).toEqual([moved.key]);
     expect((await f.call("POST",`/api/v1/items/${moved.key}/transitions`,{to:"done",reason:"verification_passed",expectedStatus:moved.status,expectedRevision:moved.revision,idempotencyKey:"attention-verify"})).statusCode).toBe(200);
     expect((await f.call("GET","/api/v1/attention/count")).json().count).toBe(0);
+  });
+
+  it("splits todos and unread notices per product for the inbox project filter (AND-493)",async()=>{
+    const f=await fixture();
+    const visible=f.store.createProduct({name:"Visible",keyPrefix:"VIS",createdByAccountId:"admin"});
+    const hidden=f.store.createProduct({name:"Hidden",keyPrefix:"HID",createdByAccountId:"admin"});
+    f.accounts.replacePermissions(f.member.id,[f.product,visible].map(p=>({productId:p.id,canView:true,canOperate:true,canUseAi:false})));
+    const second=f.store.createWorkItem({productId:visible.id,title:"Second product task",description:"",type:"task",priority:"normal",attribution:{accountId:f.member.id}});
+    const outside=f.store.createWorkItem({productId:hidden.id,title:"No access task",description:"",type:"task",priority:"normal",attribution:{accountId:f.member.id}});
+    for(const key of [f.item.key,second.key,outside.key])
+      f.store.transitionWorkItem({itemKey:key,to:"pending_verification",actor:"human",reason:"manual_override",note:"synthetic delivery"});
+    const counts=f.service.attentionCount(f.member);
+    const ordered=(rows:readonly {productId:string;count:number}[])=>rows.slice().sort((a,b)=>a.productId.localeCompare(b.productId));
+    expect(ordered(counts.todoByProduct)).toEqual(ordered([{productId:f.product.id,count:1},{productId:visible.id,count:1}]));
+    expect(ordered(counts.unreadByProduct)).toEqual(ordered([{productId:f.product.id,count:1},{productId:visible.id,count:1}]));
+    expect(counts).toMatchObject({todoCount:2,unreadCount:2,coveredUnreadCount:2,count:2});
+    // An inaccessible product never leaks into the per-project split.
+    expect([...counts.todoByProduct,...counts.unreadByProduct].some(row=>row.productId===hidden.id)).toBe(false);
   });
 
 });

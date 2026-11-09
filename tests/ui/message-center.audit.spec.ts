@@ -177,7 +177,7 @@ for(const width of [390,1440])test.describe(`attention lifecycle ${width}`,()=>{
     await expect(page.getByRole("button",{name:/^待办/})).toHaveAttribute("aria-pressed","true");
     await page.getByRole("button",{name:/^通知/}).click();
     await page.getByRole("button",{name:"将当前筛选内的消息全部标为已读",exact:true}).click();
-    await expect.poll(async()=>(await(await page.request.get("/api/v1/attention/count")).json())).toEqual({count:baseline+1,todoCount:baseline+1,unreadCount:0,coveredUnreadCount:0});
+    await expect.poll(async()=>(await(await page.request.get("/api/v1/attention/count")).json())).toMatchObject({count:baseline+1,todoCount:baseline+1,unreadCount:0,coveredUnreadCount:0});
     await expect(badge).toHaveText(badgeText(baseline+1));
     const user=(await(await page.request.get("/api/v1/bootstrap")).json()).user;
     await page.request.post(`/api/v1/items/${item.key}/comments`,{data:{text:"独立的新评论，请勿清除",mentionAccountIds:[user.id]}});
@@ -207,7 +207,7 @@ for(const width of [390,1440])test.describe(`attention lifecycle ${width}`,()=>{
 });
 
 test("zero attention hides only the badge and keeps history reachable",async({page})=>{
-  await page.route("**/api/v1/attention/count",route=>route.fulfill({json:{count:0,todoCount:0,unreadCount:0,coveredUnreadCount:0}}));
+  await page.route("**/api/v1/attention/count",route=>route.fulfill({json:{count:0,todoCount:0,unreadCount:0,coveredUnreadCount:0,todoByProduct:[],unreadByProduct:[]}}));
   await page.goto(`/?product=${fixture.productId}&status=all`);
   await expect(page.locator(".message-unread-badge")).toHaveCount(0);
   await page.getByRole("button",{name:"待处理",exact:true}).click();
@@ -231,9 +231,27 @@ test("todo empty and error states support refresh without changing notification 
 });
 
 test("large attention counts display 99+ with the exact accessible count",async({page})=>{
-  await page.route("**/api/v1/attention/count",route=>route.fulfill({json:{count:125,todoCount:125,unreadCount:0,coveredUnreadCount:0}}));
+  await page.route("**/api/v1/attention/count",route=>route.fulfill({json:{count:125,todoCount:125,unreadCount:0,coveredUnreadCount:0,todoByProduct:[{productId:fixture.productId,count:125}],unreadByProduct:[]}}));
   await page.goto(`/?product=${fixture.productId}&status=all`);
   const badge=page.locator(".message-unread-badge");
   await expect(badge).toHaveText("99+");
   await expect(badge).toHaveAttribute("aria-label","125 项待处理");
+});
+
+test("keeps counts in the project filter and off the tabs (AND-493)",async({page})=>{
+  const {item}=await seed(page);
+  expect((await postItemCommand(page.request,`/api/v1/items/${item.key}/transitions`,{data:{to:"pending_verification",reason:"manual_override"}})).ok()).toBe(true);
+  await page.goto(`/?product=${fixture.productId}&status=all`);
+  await page.getByRole("button",{name:"待处理",exact:true}).click();
+  const todoTab=page.getByRole("button",{name:/^待办/});
+  await expect(todoTab).toHaveText("待办");
+  const projectFilter=page.getByRole("combobox",{name:"按项目筛选消息"});
+  await expect(projectFilter).toHaveText(/^全部项目( · (\d+|99\+))?$/);
+  await projectFilter.click();
+  // Every project choice carries its own number; the seeded project holds one.
+  await expect(page.locator(`.single-select-option[data-value="${fixture.productId}"]`)).toHaveText(/ · (\d+|99\+)$/);
+  await page.keyboard.press("Escape");
+  await page.getByRole("button",{name:/^通知/}).click();
+  await expect(page.getByRole("button",{name:/^通知/})).toHaveText("通知");
+  await expect(page.getByRole("combobox",{name:"按项目筛选消息"})).toHaveText(/^全部项目( · (\d+|99\+))?$/);
 });

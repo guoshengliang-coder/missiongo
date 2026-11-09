@@ -1,22 +1,19 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { foregroundSyncTargets } from "./foreground-sync";
 
 /**
  * Re-read the queries on screen when the page comes back to the foreground
- * after a while, and report whether such a background sync is in flight so the
- * topbar can show it (AND-192).
+ * after a while (AND-192). The sync stays invisible (AND-491): unchanged data
+ * re-renders nothing, and a spinner for it only looked like a stray status.
  *
  * Deliberately not React Query's `refetchOnWindowFocus`: that fires on every
- * focus, including moving between two side-by-side windows, and offers no place
- * to hang the "syncing" indicator. Here a return only acts on queries whose
- * data is already stale, and unchanged data re-renders nothing -- the person
- * sees a change only when there was one.
+ * focus, including moving between two side-by-side windows. Here a return only
+ * acts on queries whose data is already stale.
  */
-export function useForegroundSync(): boolean {
+export function useForegroundSync(): void {
   const queryClient = useQueryClient();
-  const [syncing, setSyncing] = useState(false);
   const inFlight = useRef(false);
 
   useEffect(() => {
@@ -32,12 +29,10 @@ export function useForegroundSync(): boolean {
       );
       if (targets.length === 0) return;
       inFlight.current = true;
-      setSyncing(true);
       void Promise.allSettled(
         targets.map((queryKey) => queryClient.refetchQueries({ queryKey, type: "active" })),
       ).finally(() => {
         inFlight.current = false;
-        setSyncing(false);
       });
     };
     // `visibilitychange` catches a tab coming back; `focus` also catches two
@@ -52,6 +47,4 @@ export function useForegroundSync(): boolean {
       window.removeEventListener("focus", sync);
     };
   }, [queryClient]);
-
-  return syncing;
 }

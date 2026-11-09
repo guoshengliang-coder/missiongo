@@ -397,8 +397,9 @@ export function App() {
   const previousAgentConsoleOpenRef = useRef(agentConsoleOpen);
 
   // Coming back to the page re-reads what is on screen if it has gone stale
-  // (AND-192); the spinner it returns drives the topbar indicator below.
-  const foregroundSyncing = useForegroundSync();
+  // (AND-192). The re-read stays invisible: AND-491 removed the topbar spinner,
+  // which wrapped into a second grid row and looked like a stray status.
+  useForegroundSync();
   const [listPaneWidth, setListPaneWidth] = useState(readListPaneWidth);
   const agentConsoleSinglePane = useMediaQuery("(max-width: 520px)");
   const agentConsoleLayout = agentConsoleSinglePane ? "single" : "wide";
@@ -1443,11 +1444,6 @@ export function App() {
             </button>
           </>
         )}
-      {foregroundSyncing && (
-          <span className="sync-indicator" role="status" aria-label={t("syncing")} title={t("syncing")}>
-            <RefreshCw className="spin" size={15} aria-hidden="true" />
-          </span>
-        )}
       </header>
       {isOnline && consoleConnection === "disconnected" && <div className="offline-banner" role="status">
         <WifiOff size={15} /> <span>{t("consoleDisconnected")}</span> <button className="text-button" onClick={() => { void queryClient.invalidateQueries(); window.dispatchEvent(new Event("online")); }}>{t("retry")}</button>
@@ -1549,7 +1545,6 @@ export function App() {
                   creates elsewhere only show up on a refetch, so give people
                   one they can ask for. Counts come from the same query. */}
               <RefreshButton
-                refreshing={itemsQuery.isFetching}
                 onRefresh={() => queryClient.invalidateQueries({ queryKey: ["items"] })}
               />
             </div>
@@ -2921,7 +2916,7 @@ function DetailPane({
             </button>
           )}
           <div className="adaptive-toolbar-secondary" data-toolbar-secondary aria-hidden={toolbarOverflow} inert={toolbarOverflow}>
-            <RefreshButton refreshing={itemQuery.isFetching || timelineQuery.isFetching} onRefresh={refreshItem} />
+            <RefreshButton onRefresh={refreshItem} />
             {!readOnlySource && item.status === "in_progress" && deliveryQuery.data?.canHandoffToAgent && <button className="secondary-button toolbar-dispatch-button" onClick={() => onTakeOver(item)}>{t("dispatchSubmit")}</button>}
             {!readOnlySource && <button className="secondary-button" disabled={item.transferred || item.access?.canOperate === false} onClick={() => setEditing(true)}>{t("edit")}</button>}
           </div>
@@ -4787,14 +4782,22 @@ function ProductForm({ onCreated }: { onCreated: (product: Product) => void | Pr
 }
 
 
-function RefreshButton({ refreshing, onRefresh }: { refreshing: boolean; onRefresh: () => unknown }) {
+/** Spins only for a refresh the person asked for (AND-491). Background polling
+ * still refetches on its own, but it must not make the button look busy. */
+function RefreshButton({ onRefresh }: { onRefresh: () => unknown }) {
   const { t } = useI18n();
+  const [refreshing, setRefreshing] = useState(false);
+  const refresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try { await onRefresh(); } finally { setRefreshing(false); }
+  };
   return (
     <button
       type="button"
       className="secondary-button refresh-button"
       disabled={refreshing}
-      onClick={() => void onRefresh()}
+      onClick={() => void refresh()}
       aria-label={t("refresh")}
       title={t("refresh")}
     >

@@ -30,12 +30,20 @@ export interface PersonalTodoPage {
   todos: PersonalTodo[];
   nextBeforeSequence?: number;
 }
+export interface PersonalAttentionProductCount {
+  productId: string;
+  count: number;
+}
 export interface PersonalAttentionCount {
   count: number;
   todoCount: number;
   unreadCount: number;
   /** Unread notifications already represented by an active todo. */
   coveredUnreadCount: number;
+  /** Active todos per product, so each project can say how much it holds. */
+  todoByProduct: PersonalAttentionProductCount[];
+  /** Unread notifications per product, independent of the merged total. */
+  unreadByProduct: PersonalAttentionProductCount[];
 }
 export interface PersonalNotificationDetail extends PersonalNotification { text: string }
 export interface PersonalNotificationFilter {
