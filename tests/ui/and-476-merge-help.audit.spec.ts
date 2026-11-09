@@ -7,7 +7,7 @@ test.describe("AND-476 click help and integration defaults",()=>{
     await page.setViewportSize({width,height:900});await page.emulateMedia({colorScheme:theme});
     const product=await(await request.post("/api/v1/products",{data:{name:"AND-476 fixture",keyPrefix:`HP${width}${theme[0]!.toUpperCase()}`}})).json();
     const at="2026-11-08T08:00:00Z";let active=false,empty=false;
-    const deliveries=["conflicting","stale","failed","dependency","pending","changed"].map((blocker,i)=>({id:`help-${i}`,productId:product.id,sessionId:`dev-${i}`,revision:`rev-${i}`,state:"confirmed",blocker,
+    const deliveries=["conflicting","stale","failed","dependency","pending","changed",undefined,"unknown"].map((blocker,i)=>({id:`help-${i}`,productId:product.id,sessionId:`dev-${i}`,revision:`rev-${i}`,state:"confirmed",blocker,
       itemKeys:[`HP-${i+1}`],head:"a".repeat(40),summary:`改动 ${i+1}`,validation:"验证说明",requiredArtifacts:["web"],pullRequestUrl:`https://github.com/example/repo/pull/${i+1}`,evidence:{checkedAt:at,source:"Fixture"}}));
     await page.route("**/merge-deliveries",route=>route.fulfill({json:{deliveries:empty?[]:deliveries,batches:active?[{id:"active",sessionId:"active-session",state:"active",deliveries:[],results:{},publish:false}]:[]}}));
     await page.route("**/api/v1/nodes",route=>route.fulfill({json:{nodes:[{id:"help-node",name:"Fixture Mac",online:true,supportsFreeSessions:true,agents:[{kind:"codex",ready:true,models:[]}],repos:[{productId:product.id,repoPath:"fixture"}],repoCandidates:[],createdAt:at}]}}));
@@ -16,12 +16,22 @@ test.describe("AND-476 click help and integration defaults",()=>{
     const bodies:Record<string,unknown>[]=[];
     await page.route("**/merge-batches",route=>{bodies.push(route.request().postDataJSON());return route.fulfill({status:503,json:{title:"Synthetic lost acknowledgement"}});});
     await page.goto(`/?product=${product.id}&console=agent`);
-    await page.getByRole("button",{name:"待合并 5",exact:true}).click();
+    await page.getByRole("button",{name:"待合并 7",exact:true}).click();
     const dialog=page.getByRole("dialog").first();
-    await expect(dialog.locator(".merge-check")).toHaveCount(6);
+    await expect(dialog.locator(".merge-check")).toHaveCount(4);
+    for(const index of [1,4,6,7])await expect(dialog.locator(".merge-row").nth(index).locator(".merge-check")).toHaveCount(0);
+    for(const index of [0,2,3,5])await expect(dialog.locator(".merge-row").nth(index).locator(".merge-check")).toBeVisible();
+    await expect(dialog.getByText("自动检查结果待核实",{exact:true})).toHaveCount(0);
+    await expect(dialog.getByText("可选择，由集成 Agent 重新核验检查结果。",{exact:true})).toHaveCount(0);
     await expect(dialog.getByText("可选择，实际合并前需解决冲突。",{exact:true})).toBeVisible();
     await dialog.getByRole("button",{name:"全选可选内容"}).click();
-    await expect(dialog.locator(".merge-row input:checked")).toHaveCount(5);
+    await expect(dialog.locator(".merge-row input:checked")).toHaveCount(7);
+    await expect(dialog.locator(".merge-row").nth(5).getByRole("checkbox")).toBeDisabled();
+    await dialog.locator(".merge-row").nth(1).getByRole("button",{name:"查看改动与验证详情"}).click();
+    const details=page.getByRole("dialog").last();
+    await expect(details.getByText("自动检查结果待核实",{exact:true})).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(dialog.locator(".merge-row input:checked")).toHaveCount(7);
     await dialog.getByRole("button",{name:"下一步：配置 Agent"}).click();
     const checkbox=dialog.getByRole("checkbox",{name:"设为默认集成 Agent",exact:true});
     const help=dialog.getByRole("button",{name:"查看设为默认集成 Agent说明",exact:true});
@@ -60,8 +70,8 @@ test.describe("AND-476 click help and integration defaults",()=>{
     await dialog.getByRole("button",{name:"开始处理",exact:true}).click();await expect(dialog.getByRole("alert")).toBeVisible();
     await dialog.getByRole("button",{name:"重试原批次",exact:true}).click();
     await expect.poll(()=>bodies.length).toBe(2);expect(bodies[0]).toEqual(bodies[1]);expect(bodies[0]).toMatchObject({saveAsDefault:true,publish:false});
-    active=true;empty=false;await page.reload();await page.getByRole("button",{name:"待合并 5",exact:true}).click();
-    await expect(dialog.locator(".merge-active-notice")).toBeVisible();await expect(dialog.locator(".merge-row")).toHaveCount(6);
+    active=true;empty=false;await page.reload();await page.getByRole("button",{name:"待合并 7",exact:true}).click();
+    await expect(dialog.locator(".merge-active-notice")).toBeVisible();await expect(dialog.locator(".merge-row")).toHaveCount(8);
     await dialog.getByRole("button",{name:"全选可选内容"}).click();await expect(dialog.getByRole("button",{name:"下一步：配置 Agent"})).toBeDisabled();
     await dialog.getByRole("button",{name:"查看改动与验证详情"}).first().click();await expect(page.getByRole("dialog")).toHaveCount(2);await page.keyboard.press("Escape");
     await page.screenshot({path:testInfo.outputPath("and-476-active-list.png"),fullPage:true});
