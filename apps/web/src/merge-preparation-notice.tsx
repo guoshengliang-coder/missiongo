@@ -34,7 +34,7 @@ export function MergePreparationNotice({ productId, session, evidence, blocked, 
     try {
       const [fresh, deliveryState] = await Promise.all([api.getAgentSession(session.id), deliveries.refetch()]);
       const current = mergePreparationEvidence(fresh);
-      if (!fresh.canReply || !current || current.messageId !== evidence.messageId || current.text !== evidence.text
+      if (!fresh.canReply || !current || current.messageId !== evidence.messageId || current.text !== evidence.text || current.key !== evidence.key || current.commit !== evidence.commit
         || deliveryState.isError || hasDelivery(deliveryState.data)) {
         setError(t("mergePreparationChanged"));
         await client.invalidateQueries({ queryKey: ["agent-session", session.id] });
