@@ -232,6 +232,19 @@ final class UpdateLifecycleTests: XCTestCase {
         await fulfillment(of: [service.downloadReturned], timeout: 2)
     }
 
+    @MainActor func testPersistentOfferTracksSameVersionManifestAndWithdrawal() throws {
+        let service = try TestUpdateService()
+        let model = try model(service)
+        model.applyCheckedUpdate(service.update, current: "1.0", manual: false)
+        let revised = try TestUpdateService(longNotes: true).update
+        model.applyCheckedUpdate(revised, current: "1.0", manual: false)
+        XCTAssertEqual(model.updateOffer?.manifest, revised.manifest)
+        model.applyCheckedUpdate(nil, current: "1.0", manual: true)
+        XCTAssertNil(model.updateOffer)
+        XCTAssertEqual(model.updateState, .current("1.0"))
+        XCTAssertFalse(model.canRetryClientUpdate)
+    }
+
     @MainActor func testUpdateWindowStagesRenderAtNarrowSizesInBothThemes() async throws {
         _ = NSApplication.shared
         let service = try TestUpdateService(longNotes: true)

@@ -14,6 +14,10 @@ object ReleaseAvailability {
     fun isUpdating(version: Int, phase: String, expiresAt: Long, now: Long): Boolean =
         classify(version, phase, expiresAt, now) == State.UPDATING
 
+    /** A manual GET retry needs no recovery claim; active upgrades still block it. */
+    fun shouldRetryMainFrame(state: State, manual: Boolean, sawUpdate: Boolean): Boolean =
+        state != State.UPDATING && (manual || state == State.IDLE && sawUpdate)
+
     /** Only public enum codes survive; no server-provided free text enters the UI. */
     fun failureReason(stage: String, reason: String, occurredAt: Long, now: Long): String? =
         if (stage in setOf("restart", "health") && occurredAt > 0 && occurredAt <= now + 60_000 &&

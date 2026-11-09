@@ -305,7 +305,7 @@ class MainActivity : ComponentActivity() {
                 isAllCaps = false
                 setOnClickListener {
                     val url = failedLoadUrl
-                    if (loadFailurePending && url != null) checkFailedLoad(url, loadGeneration, retryIfIdle = true)
+                    if (loadFailurePending && url != null) checkFailedLoad(url, loadGeneration, manualRetry = true)
                     else openMissionGo()
                 }
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
@@ -594,7 +594,7 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Only the independent host signal can identify a deployment during a failed first load. */
-    private fun checkFailedLoad(failedUrl: String, generation: Int, sawUpdate: Boolean = false, retryIfIdle: Boolean = false) {
+    private fun checkFailedLoad(failedUrl: String, generation: Int, sawUpdate: Boolean = false, manualRetry: Boolean = false) {
         if (generation != loadGeneration || isFinishing || isDestroyed) return
         loadErrorRetry.isEnabled = false
         loadErrorRetry.text = getString(R.string.release_checking)
@@ -632,7 +632,8 @@ class MainActivity : ComponentActivity() {
                     errorView.visibility = View.GONE
                     upgradeView.visibility = View.VISIBLE
                     releaseHandler.postDelayed({ checkFailedLoad(failedUrl, generation, sawUpdate = true) }, 3000)
-                } else if (status == ReleaseAvailability.State.IDLE && (sawUpdate || retryIfIdle)) {
+                } else if (ReleaseAvailability.shouldRetryMainFrame(status, manual = manualRetry, sawUpdate = sawUpdate)) {
+                    // Explicit retries may recover without a working status endpoint.
                     // Only the original failed main-frame GET is retried, never a mutation.
                     openMissionGo(failedUrl)
                 } else {

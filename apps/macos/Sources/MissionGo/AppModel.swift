@@ -435,6 +435,9 @@ final class AppModel: ObservableObject {
         // The version is a property of this build, not of the session, so it
         // stays; anything in flight does not.
         if !updateState.isBusy {
+            updateOffer = nil
+            updateActivity = nil
+            lastPresentedUpdateVersion = nil
             updateState = AppUpdater.currentVersion().map { .current($0) } ?? .unavailable
         }
     }
@@ -1217,16 +1220,23 @@ final class AppModel: ObservableObject {
         do {
             let found = try await AppUpdater.check(serverUrl: credential.serverUrl, currentVersion: current)
             guard self.credential == credential, !updateState.isBusy else { return }
-            if let found {
-                updateState = .available(found)
-                presentUpdate(found, force: manual)
-            } else {
-                updateState = .current(current)
-                if manual { updateNotice = "当前已是最新版（\(current)）。" }
-            }
+            applyCheckedUpdate(found, current: current, manual: manual)
         } catch {
             guard self.credential == credential, !updateState.isBusy else { return }
             updateState = .failed(current: current, reason: error.localizedDescription)
+        }
+    }
+
+    /// Synchronize persistent window data independently from automatic presentation.
+    func applyCheckedUpdate(_ found: AppUpdater.Available?, current: String, manual: Bool) {
+        if let found {
+            updateState = .available(found)
+            presentUpdate(found, force: manual)
+        } else {
+            updateOffer = nil
+            lastPresentedUpdateVersion = nil
+            updateState = .current(current)
+            if manual { updateNotice = "当前已是最新版（\(current)）。" }
         }
     }
 
@@ -1325,9 +1335,9 @@ final class AppModel: ObservableObject {
     }
 
     private func presentUpdate(_ update: AppUpdater.Available, force: Bool) {
+        updateOffer = update
         guard force || lastPresentedUpdateVersion != update.version else { return }
         lastPresentedUpdateVersion = update.version
-        updateOffer = update
         #if DEBUG
         // Offline fixtures may exercise a superseding manifest without opening
         // a modal dialog or allowing a real update on the test machine.
