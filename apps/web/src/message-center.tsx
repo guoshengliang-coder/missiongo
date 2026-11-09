@@ -4,6 +4,7 @@ import { ArrowLeft, Bell, ListTodo, CheckCheck, ExternalLink, X } from "lucide-r
 import type { PersonalNotificationFilter, PersonalNotificationKind } from "@missiongo/domain";
 import { api } from "./api";
 import { useI18n } from "./i18n";
+import { productCount } from "./message-counts";
 import { OverlayDialog, useOverlay } from "./overlay";
 import { Modal } from "./modal";
 import { Select } from "./select";
@@ -57,6 +58,18 @@ export function MessageCenter({accountId,products,onClose,renderItem}:{
   const rows=list.isError?[]:list.data?.pages.flatMap(page=>page.notifications) ?? [];
   const current=detail.isError?undefined:detail.data;
   const choose=(id:string)=>{attempted.current=null;read.reset();setSelected(id);};
+  // Each project says how much it holds, and the whole-scope option carries the
+  // same number the tabs used to show (AND-493): moving it here keeps one count
+  // instead of two copies. Zero draws no number, like the home badge.
+  const projectChoice=(value:string,asValue:boolean)=>{
+    const label=value?products.find(product=>product.id===value)?.name ?? value:t("messagesAllProjects");
+    const total=tab==="todos"?count.data?.todoCount:count.data?.unreadCount;
+    const amount=value?productCount(tab==="todos"?count.data?.todoByProduct:count.data?.unreadByProduct,value):total ?? 0;
+    return <span className="message-project-choice">
+      {asValue?<span className="single-select-text">{label}</span>:<span>{label}</span>}
+      {amount>0 && <small className="message-project-count"> · {amount>99?"99+":amount}</small>}
+    </span>;
+  };
   return <OverlayDialog className="message-center-layer" aria-labelledby="message-center-title" onClose={onClose}>
     <section className="message-center-panel">
       <header className="message-center-header">
@@ -65,13 +78,13 @@ export function MessageCenter({accountId,products,onClose,renderItem}:{
         {!compact && <button type="button" className="icon-button" data-initial-focus onClick={onClose} aria-label={t("close")}><X size={20}/></button>}
       </header>
       <div className="message-center-tabs" aria-label={t("attentionCategories")}>
-        <button type="button" className="secondary-button" aria-pressed={tab==="todos"} onClick={()=>{setTab("todos");setSelected(null);}}><ListTodo size={17}/>{t("attentionTodos")}{count.isSuccess && <small>{count.data.todoCount}</small>}</button>
-        <button type="button" className="secondary-button" aria-pressed={tab==="notifications"} onClick={()=>{setTab("notifications");setSelected(null);}}><Bell size={17}/>{t("attentionNotifications")}{count.isSuccess && <small>{count.data.unreadCount}</small>}</button>
+        <button type="button" className="secondary-button" aria-pressed={tab==="todos"} onClick={()=>{setTab("todos");setSelected(null);}}><ListTodo size={17}/>{t("attentionTodos")}</button>
+        <button type="button" className="secondary-button" aria-pressed={tab==="notifications"} onClick={()=>{setTab("notifications");setSelected(null);}}><Bell size={17}/>{t("attentionNotifications")}</button>
       </div>
       <div className={`message-center-body${compact && selected?" showing-detail":""}`}>
         {tab==="todos" ? <>
           <section className="message-list-pane" aria-label={t("attentionTodos")}>
-            <div className="message-list-tools"><Select aria-label={t("messagesProject")} value={productId} onChange={event=>{setProductId(event.target.value);setSelected(null);}}><option value="">{t("messagesAllProjects")}</option>{products.map(product=><option key={product.id} value={product.id}>{product.name}</option>)}</Select></div>
+            <div className="message-list-tools"><Select aria-label={t("messagesProject")} value={productId} onChange={event=>{setProductId(event.target.value);setSelected(null);}} renderValue={value=>projectChoice(value,true)} renderOption={value=>projectChoice(value,false)}><option value="">{t("messagesAllProjects")}</option>{products.map(product=><option key={product.id} value={product.id}>{product.name}</option>)}</Select></div>
             <div className="message-list-scroll">
               {todos.isPending && <p role="status">{t("messagesLoading")}</p>}
               {todos.isError && <p role="alert">{t("messagesLoadFailed")} <button type="button" className="secondary-button" onClick={()=>void todos.refetch()}>{t("retry")}</button></p>}
@@ -97,7 +110,7 @@ export function MessageCenter({accountId,products,onClose,renderItem}:{
               <button type="button" className="icon-button" disabled={!list.data || list.isError || allRead.isPending || !rows.some(row=>!row.readAt && !row.resolvedAt)} onClick={()=>allRead.mutate(list.data!.pages[0]!.throughSequence)} aria-label={t("messagesReadAll")} title={t("messagesReadAll")}><CheckCheck size={19}/></button>
             </div>
             <div className="message-list-filters">
-              <Select aria-label={t("messagesProject")} value={productId} onChange={event=>setProductId(event.target.value)}><option value="">{t("messagesAllProjects")}</option>{products.map(product=><option key={product.id} value={product.id}>{product.name}</option>)}</Select>
+              <Select aria-label={t("messagesProject")} value={productId} onChange={event=>setProductId(event.target.value)} renderValue={value=>projectChoice(value,true)} renderOption={value=>projectChoice(value,false)}><option value="">{t("messagesAllProjects")}</option>{products.map(product=><option key={product.id} value={product.id}>{product.name}</option>)}</Select>
               <Select aria-label={t("messagesType")} value={kind} onChange={event=>setKind(event.target.value as typeof kind)}><option value="">{t("messagesAllTypes")}</option>{kinds.map(value=><option key={value} value={value}>{t(labels[value])}</option>)}</Select>
             </div>
             {allRead.isError && <p role="alert">{t("messagesReadFailed")}</p>}

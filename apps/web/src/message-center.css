@@ -72,5 +72,10 @@
 
 .message-center-tabs { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
 .message-center-tabs button { min-height: 44px; }
-.message-center-tabs small { font-size: var(--text-sm); }
 .message-center-tabs [aria-pressed=true] { background: var(--accent-bg); border-color: var(--accent-line); color: var(--accent-text-strong); }
+
+/* Each project carries its own count in the filter (AND-493); the tab labels no
+   longer repeat the total, which the "all projects" choice already shows. */
+.message-project-choice { display: flex; align-items: center; min-width: 0; }
+.message-project-choice > span { min-width: 0; }
+.message-project-count { flex: 0 0 auto; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
