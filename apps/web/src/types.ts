@@ -779,9 +779,9 @@ export interface RedispatchEligibility {
 
 export interface AgentPlanRecord {
   id:number; revision:string; keys:string[]; kind:"proposal"|"rework"; current:boolean; effective:boolean;
-  scopeValid:boolean; legacy:boolean; submittedAt?:string;
+  scopeValid:boolean; legacy:boolean; submittedAt?:string; pending?:boolean; currentValid?:boolean; summary?:string;
   approval?:{approvedAt:string;source:string}; documentId?:string; version?:number;
   rounds?:{key:string;number:number}[]; sha256?:string; parentDocumentId?:string; parentApproved?:boolean;
   plan?:string; validation?:string; markdown?:string;
 }
-export interface AgentPlanRecordsPage { records:AgentPlanRecord[]; historyIncomplete:boolean; nextBefore?:number }
+export interface AgentPlanRecordsPage { records:AgentPlanRecord[]; historyIncomplete:boolean; nextBefore?:number; hasHistory?:boolean }
