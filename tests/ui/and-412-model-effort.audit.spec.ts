@@ -1,3 +1,4 @@
+import { refreshFromConsoleStream } from "./polling";
 import { expect, test, type Page } from "@playwright/test";
 import { chooseOption } from "./select-helpers";
 
@@ -101,6 +102,7 @@ for (const viewport of [
       models[0]!.efforts = ["low"];
       // Advance the normal node heartbeat interval instead of sleeping or
       // reaching into React state. The draft remains mounted throughout.
+      await refreshFromConsoleStream(page);
       await page.clock.fastForward(31_000);
       const effort = reply.locator("button.agent-settings-effort");
       await expect(effort).toHaveAttribute("data-value", "");
@@ -112,6 +114,7 @@ for (const viewport of [
       const reservation = prepared;
       prepared = undefined;
       models[0]!.id = "retired-replacement";
+      await refreshFromConsoleStream(page);
       await page.clock.fastForward(31_000);
       // An uncertain reservation remains retryable with its original key and
       // immutable parameters even if the catalog changes before the retry.

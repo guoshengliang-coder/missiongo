@@ -1,3 +1,5 @@
+import { ConsoleChanges } from "./console-changes.js";
+import { registerConsoleEvents } from "./console-events.js";
 import { PlanRecords } from "./plan-records.js";
 import { PlanDocuments } from "./plan-documents.js";
 import { MergeDeliveries } from "./merge-deliveries.js";
@@ -972,6 +974,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return (payload as NodeJS.ReadableStream).pipe(gunzip).pipe(capped);
   });
 
+  const consoleChanges = new ConsoleChanges(store.database);
+  let consoleStreams: ReturnType<typeof registerConsoleEvents> | undefined;
   app.decorate("missionGoStore", store);
   app.decorate("missionGoAccounts", accountStore);
   app.addHook("onClose", async () => {
@@ -979,6 +983,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     await widgetPush.close();
     await dingtalk.close();
     await mcpHandler?.close();
+    consoleChanges.close();
     store.close();
   });
 
@@ -1448,6 +1453,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
    * this only collapses the *first* screen.
    */
   app.get("/api/v1/bootstrap", async (request, reply) => {
+    const consoleCursor = `${consoleChanges.epoch}:${consoleChanges.latest()}`;
     const query = request.query as Record<string, unknown>;
     reply.header("cache-control", "no-store");
 
@@ -1478,10 +1484,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const requested = typeof query.productId === "string" ? query.productId : undefined;
     const product = products.find((entry) => entry.id === requested) ?? products[0];
     if (!product) {
-      return reply.send({ user, products, productId: null, items: [], components: [] });
+      return reply.send({ user, products, productId: null, items: [], components: [], consoleCursor });
     }
 
     return reply.send({
+      consoleCursor,
       user,
       products,
       productId: product.id,
@@ -1682,6 +1689,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
 
   app.post("/api/v1/auth/logout", async (_request, reply) => {
+    consoleStreams?.closeForKey(cookieValue(_request, ADMIN_SESSION_COOKIE) ?? "");
     if (options.adminAccount) reply.header("set-cookie", expiredAdminSessionCookie(options.adminAccount));
     return reply.header("cache-control", "no-store").send({ ok: true });
   });
@@ -1847,6 +1855,21 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (capability !== "view") store.assertWorkItemWritable(normalizedKey);
     return normalizedKey;
   };
+
+  consoleStreams = registerConsoleEvents(app, consoleChanges, request => {
+    if (unauthenticatedDeployment) return { expiresAt: Date.now()+180*24*60*60_000, canRead: () => true };
+    const account = requireAccount(request);
+    const claims = readAdminSession(options.adminAccount!, cookieValue(request, ADMIN_SESSION_COOKIE));
+    if (!claims) throw new MissionGoError("authentication_required", "Sign in to read console changes.", 401);
+    return { accountId: account.id, expiresAt: claims.expiresAt * 1000, canRead: change => {
+      if (change.account_id && change.account_id !== account.id) return false;
+      if (change.kind === "admin") return account.role === "admin";
+      if (change.item_key) {
+        try { requireItemPermission(request, change.item_key); return true; } catch { return false; }
+      }
+      return !change.product_id || accountStore.allows(account, change.product_id, "view");
+    }};
+  }, request => cookieValue(request, ADMIN_SESSION_COOKIE) ?? "");
 
   // AND-356: acceptance belongs to a person with a project role or the
   // account that proposed the item, independently of ordinary operation rights.

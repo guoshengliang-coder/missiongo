@@ -32,8 +32,7 @@ export function AgentArtifactMarkdown({ text, sessionId, messageId, onImageLoad 
 function useArtifact(sessionId: string, messageId: string, href: string) {
   const [waiting, setWaiting] = useState(false);
   const request = useQuery({ queryKey: ["artifact-request", sessionId, messageId, href], queryFn: () => api.requestAgentArtifact(sessionId, messageId, href), retry: false, staleTime: Infinity });
-  const state = useQuery({ queryKey: ["artifact-state", sessionId, request.data?.id], queryFn: () => api.agentArtifact(sessionId, request.data!.id), enabled: Boolean(request.data),
-    refetchInterval: (query) => query.state.data?.status === "pending" && Date.now() - request.dataUpdatedAt < 90_000 ? 1500 : false });
+  const state = useQuery({ queryKey: ["artifact-state", sessionId, request.data?.id], queryFn: () => api.agentArtifact(sessionId, request.data!.id), enabled: Boolean(request.data) });
   const status = state.data && state.dataUpdatedAt >= request.dataUpdatedAt ? state.data : request.data;
   const bundle = useQuery({ queryKey: ["artifact-bundle", sessionId, status?.id], queryFn: () => api.agentArtifactBundle(sessionId, status!.id), enabled: status?.status === "ready", staleTime: Infinity });
   useEffect(() => {

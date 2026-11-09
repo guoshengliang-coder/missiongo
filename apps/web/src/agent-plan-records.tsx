@@ -43,11 +43,11 @@ function PlanRecordDetails({sessionId}:{sessionId:string}) {
   },[screen]);
   useOverlay(selected!==undefined,()=>setSelected(undefined));
   useOverlay(Boolean(parent),()=>setParent(undefined));
-  const overview=useQuery({queryKey:["plan-overview",sessionId],queryFn:()=>api.getPlanOverview(sessionId),refetchInterval:5000});
+  const overview=useQuery({queryKey:["plan-overview",sessionId],queryFn:()=>api.getPlanOverview(sessionId)});
   const pages=useInfiniteQuery({queryKey:["plan-records",sessionId],initialPageParam:undefined as number|undefined,enabled:historyOpen,
-    queryFn:({pageParam})=>api.getPlanRecords(sessionId,pageParam),getNextPageParam:page=>page.nextBefore,refetchInterval:historyOpen?5000:false});
+    queryFn:({pageParam})=>api.getPlanRecords(sessionId,pageParam),getNextPageParam:page=>page.nextBefore});
   const detail=useQuery({queryKey:["plan-record",sessionId,selected],enabled:selected!==undefined,
-    queryFn:()=>api.getPlanRecords(sessionId,undefined,selected),refetchInterval:5000});
+    queryFn:()=>api.getPlanRecords(sessionId,undefined,selected)});
   const parentDocument=useQuery({queryKey:["plan-record-parent",sessionId,parent],enabled:Boolean(parent),queryFn:()=>api.getPlanDocument(parent!)});
   useLayoutEffect(()=>{
     const area=root.current?.querySelector<HTMLElement>(`[data-screen="${screen}"]`);

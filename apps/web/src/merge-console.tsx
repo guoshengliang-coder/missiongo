@@ -27,7 +27,7 @@ const post=<T,>(path:string,body:unknown)=>request<T>(path,{method:"POST",body:J
 export const useDeliveries=(productId:string)=>useQuery({
   queryKey:["merge-deliveries",productId],
   queryFn:()=>request<{deliveries:Delivery[];batches:Batch[];attentionSessionIds?:string[];sessionProgress?:Record<string,MergeProgress>}>(`/api/v1/products/${encodeURIComponent(productId)}/merge-deliveries`),
-  enabled:Boolean(productId),refetchInterval:15_000,
+  enabled:Boolean(productId),
 });
 
 export function useMergeProgress(productId:string) {

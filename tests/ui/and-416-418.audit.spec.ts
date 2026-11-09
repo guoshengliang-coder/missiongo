@@ -1,3 +1,4 @@
+import { refreshFromConsoleStream } from "./polling";
 import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as { productId: string; detailKey: string };
@@ -109,6 +110,7 @@ for (const phase of ["idle", "failed", "expired"]) test(`upgrade retains draft a
   await page.goto(`/?product=${fixture.productId}&console=agent&session=${row.id}`);
   await page.locator(".agent-console-reply textarea").fill("升级期间保留草稿");
   current = "upgrading";
+  await refreshFromConsoleStream(page);
   await page.clock.runFor(5100);
   const dialog = page.getByRole("dialog");
   await expect(dialog).toContainText("正在发布新版本");
@@ -116,6 +118,7 @@ for (const phase of ["idle", "failed", "expired"]) test(`upgrade retains draft a
   await page.keyboard.press("Escape"); await expect(dialog).toBeVisible();
   await page.screenshot({ path: info.outputPath("upgrading.png"), animations: "disabled" });
   current = phase;
+  await refreshFromConsoleStream(page);
   await page.clock.runFor(5100);
   if (phase === "idle") await expect(dialog).toHaveCount(0);
   else { await expect(dialog).toContainText(phase === "failed" ? "服务更新未通过检查" : "升级尚未确认恢复"); await dialog.getByRole("button", { name: "关闭", exact: true }).click(); }
@@ -154,6 +157,7 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
       await page.screenshot({ path, animations: "disabled" });
       await info.attach("permission", { path, contentType: "image/png" });
       phase = "upgrading";
+      await refreshFromConsoleStream(page);
       await page.clock.runFor(5100);
       const dialog = page.getByRole("dialog");
       await expect(dialog).toContainText("正在发布新版本");
@@ -165,6 +169,7 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
       await page.screenshot({ path, animations: "disabled" });
       await info.attach("upgrade", { path, contentType: "image/png" });
       phase = "idle";
+      await refreshFromConsoleStream(page);
       await page.clock.runFor(5100);
       await expect(dialog).toHaveCount(0);
       await expect(page.locator(".agent-console-reply textarea")).toHaveValue("保留未发送内容");
