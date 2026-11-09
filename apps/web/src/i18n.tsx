@@ -8,6 +8,7 @@ import { ITEM_STATUSES, type WorkItemPriority, type WorkItemStatus, type WorkIte
 export type Locale = "zh-CN" | "en";
 
 const EN_MESSAGES = {
+  consoleDisconnected: "Live updates are disconnected. Reconnecting; saved content and drafts remain available.",
   operationSettings: "Change settings",
   operationSend: "Send message",
   operationRetry: "Resume session",
@@ -1783,6 +1784,7 @@ const EN_MESSAGES = {
 export type MessageKey = keyof typeof EN_MESSAGES;
 
 const ZH_MESSAGES: Record<MessageKey, string> = {
+  consoleDisconnected: "实时更新连接已中断，正在重连；已加载内容和草稿仍保留，可手动重试。",
   operationSettings: "修改设置",
   operationSend: "发送消息",
   operationRetry: "恢复会话",

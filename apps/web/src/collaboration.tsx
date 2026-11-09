@@ -118,7 +118,6 @@ export function CollaborationPanel({
   const q = useQuery({
     queryKey: ["collaboration", item.key],
     queryFn: () => collab.context(item.key),
-    refetchInterval: 15000,
   });
   // Native <details> can open before React's toggle handler is in play (a click
   // right after a viewport change). Observe the attribute so placement never
@@ -990,7 +989,6 @@ export function SharedCollaboration({
     q = useQuery({
       queryKey: ["collaboration-detail", id],
       queryFn: () => collab.detail(id),
-      refetchInterval: 15000,
     });
   const [action, setAction] = useState<
     | "verify"

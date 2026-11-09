@@ -1,3 +1,4 @@
+import { CONSOLE_CHANGE_SCHEMA } from "../console-changes.js";
 import { SESSION_MESSAGE_CLOCK_SCHEMA } from "./session-message-clock-schema.js";
 import { COLLABORATION_SCHEMA } from "./collaboration-schema.js";
 import { EXECUTION_STOP_SCHEMA } from "./execution-stop-schema.js";
@@ -2616,6 +2617,14 @@ export class MissionGoDatabase {
           ) STRICT;`);
         this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
           .run(202611081300,new Date().toISOString());
+      });
+    }
+
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611090200").get()) {
+      this.transaction(() => {
+        this.connection.exec(CONSOLE_CHANGE_SCHEMA);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611090200,new Date().toISOString());
       });
     }
 

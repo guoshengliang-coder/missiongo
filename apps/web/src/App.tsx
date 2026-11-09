@@ -1,3 +1,4 @@
+import { useConsoleConnection, useConsoleEvents } from "./console-events";
 import { inconsistentItemPage } from "./item-list-state";
 import { DeliveryEvidence } from "./delivery-evidence";
 import { PlanDocumentPage } from "./plan-document-page";
@@ -122,7 +123,6 @@ import {
 import { androidFeedbackBridge, androidMediaDeletion, reportAndroidBackDepth } from "./android-bridge";
 import {
   ACTIVE_DISPATCHES_QUERY_KEY,
-  ACTIVE_DISPATCHES_REFETCH_MS,
   activeDispatchStatusKey,
   dispatchesByItem,
 } from "./dispatch-conflicts";
@@ -218,7 +218,7 @@ import { ProductBadge } from "./product-badge";
 import { AgentSessionPanel } from "./agent-session-panel";
 import { AgentSessionConsole } from "./agent-session-console";
 import { currentDispatchForStatus, dispatchIssueLabelKey, itemProgressKeys } from "./dispatch-attention";
-import { agentUnreadCounts, agentSessionsRefetchInterval } from "./agent-session-view";
+import { agentUnreadCounts } from "./agent-session-view";
 import { registerMissionGoWebMcp } from "./webmcp";
 import { AutoGrowTextarea } from "./auto-grow-textarea";
 import { useMediaQuery } from "./use-media-query";
@@ -329,7 +329,6 @@ export function App() {
   const [downloadsOpen, setDownloadsOpen] = useState(false);
   const [statisticsOpen,setStatisticsOpen] = useState(statisticsIsOpen);
   const [agentConsoleOpen, setAgentConsoleOpen] = useState(agentConsoleIsOpen);
-  const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
   const [agentSessionId, setAgentSessionId] = useState<string | null>(agentSessionIdFromUrl);
   // Read before the deep-link handling below rewrites the URL without it.
   const [agentConsoleLinkedFilter, setAgentConsoleLinkedFilter] = useState(agentConsoleFilterFromUrl);
@@ -392,11 +391,6 @@ export function App() {
   const listScrollTopRef = useRef(0);
   const previousAgentConsoleOpenRef = useRef(agentConsoleOpen);
 
-  useEffect(() => {
-    const update = () => setDocumentVisible(document.visibilityState === "visible");
-    document.addEventListener("visibilitychange", update);
-    return () => document.removeEventListener("visibilitychange", update);
-  }, []);
   // Coming back to the page re-reads what is on screen if it has gone stale
   // (AND-192); the spinner it returns drives the topbar indicator below.
   const foregroundSyncing = useForegroundSync();
@@ -880,6 +874,8 @@ export function App() {
     queryFn: () => api.listProducts(),
     enabled: bootstrapQuery.isSuccess,
   });
+  useConsoleEvents(queryClient, bootstrapQuery.data?.user.id, bootstrapQuery.data?.consoleCursor);
+  const consoleConnection = useConsoleConnection();
   const products = productsQuery.data ?? bootstrapQuery.data?.products ?? [];
   const selectedProduct = products.find((product) => product.id === selectedProductId);
   const mergeProgress = useMergeProgress(selectedProduct?.id ?? "");
@@ -915,11 +911,6 @@ export function App() {
     queryKey: ["agent-sessions"],
     queryFn: () => api.listAgentSessions(),
     enabled: bootstrapQuery.isSuccess && products.length > 0,
-    refetchInterval: (query) => agentSessionsRefetchInterval(
-      agentConsoleOpen,
-      documentVisible,
-      query.state.fetchFailureCount,
-    ),
   });
   const draftAccountId = useRef<string | undefined>(undefined);
   useEffect(() => {
@@ -1030,8 +1021,6 @@ export function App() {
     initialPageParam: null as number | null,
     getNextPageParam: (page) => page.nextBeforeSequence ?? null,
     enabled: bootstrapQuery.isSuccess && Boolean(selectedProductId),
-    refetchInterval: query => document.visibilityState === "visible" && query.state.fetchFailureCount < 3
-      && query.state.data?.pages.some(page => page.items.some(item => Boolean(item.deliveryProgress) || item.status === "in_progress")) ? 15_000 : false,
   });
   const items = itemsQuery.data?.pages.flatMap((page) => page.items) ?? [];
   const listQueryKey = ["items", selectedProductId, statusFilter, typeFilter, deferredSearch, builderFilter, advancedFilterKey];
@@ -1077,7 +1066,6 @@ export function App() {
     queryKey: ACTIVE_DISPATCHES_QUERY_KEY,
     queryFn: api.listActiveDispatches,
     enabled: bootstrapQuery.isSuccess,
-    refetchInterval: ACTIVE_DISPATCHES_REFETCH_MS,
   });
   const latestDispatches = useMemo(
     () => dispatchesByItem([...(activeDispatchesQuery.data?.latest ?? []),...(activeDispatchesQuery.data?.active ?? [])]),
@@ -1422,6 +1410,9 @@ export function App() {
           </span>
         )}
       </header>
+      {isOnline && consoleConnection === "disconnected" && <div className="offline-banner" role="status">
+        <WifiOff size={15} /> <span>{t("consoleDisconnected")}</span> <button className="text-button" onClick={() => { void queryClient.invalidateQueries(); window.dispatchEvent(new Event("online")); }}>{t("retry")}</button>
+      </div>}
       {!isOnline && <div className="offline-banner" role="status"><WifiOff size={15} /> {t("offlineMode")}</div>}
 
       <aside ref={sidebarRef} className={`sidebar ${sidebarOpen ? "open" : ""}`} inert={sidebarIsDrawer && !sidebarOpen}>
@@ -2598,15 +2589,13 @@ function DetailPane({
   const confirm = useConfirm();
   const queryClient = useQueryClient();
   const { actorLabel, eventLabel, formatTime, priorityLabel, statusLabel, t, transitionLabel, typeLabel } = useI18n();
-  const itemQuery = useQuery({ queryKey: ["item", itemKey], queryFn: () => api.getItem(itemKey!), enabled: Boolean(itemKey),
-    refetchInterval: query => document.visibilityState === "visible" && query.state.fetchFailureCount < 3
-      && (query.state.data?.deliveryProgress || query.state.data?.status === "in_progress" || query.state.data?.access?.readOnlySource) ? 15_000 : false });
+  const itemQuery = useQuery({ queryKey: ["item", itemKey], queryFn: () => api.getItem(itemKey!), enabled: Boolean(itemKey), });
   // AND-406: the server marks an item that is readable only through an active
   // collaboration request. That mode hides every action and keeps the source
   // project closed; it never turns into ordinary project access.
   const linkedSource = itemQuery.data?.access?.readOnlySource;
   const readOnlySource = Boolean(linkedSource);
-  const timelineQuery = useQuery({ queryKey: ["timeline", itemKey], queryFn: () => api.getTimeline(itemKey!), enabled: Boolean(itemKey), refetchInterval: 5_000 });
+  const timelineQuery = useQuery({ queryKey: ["timeline", itemKey], queryFn: () => api.getTimeline(itemKey!), enabled: Boolean(itemKey) });
   const notificationsQuery=useItemDingTalkNotifications(linkedSource ? null : itemKey);
   const {draft:commentDraft,update:updateCommentDraft,storageFailed}=useCommentDraft(accountId,itemKey,initialCommentId===undefined?undefined:"messages");
   const commentIdPrefix=initialCommentId===undefined?"":"message-";
@@ -2659,10 +2648,9 @@ function DetailPane({
     queryKey: ["dispatches", itemKey],
     queryFn: () => api.listItemDispatches(itemKey!),
     enabled: Boolean(itemKey),
-    refetchInterval: ACTIVE_DISPATCHES_REFETCH_MS,
   });
   const activeDispatches = useQuery({queryKey:ACTIVE_DISPATCHES_QUERY_KEY,queryFn:api.listActiveDispatches,
-    enabled:Boolean(itemKey),refetchInterval:ACTIVE_DISPATCHES_REFETCH_MS});
+    enabled:Boolean(itemKey)});
   // Same cache entry the delivery panel reads, so the Builder can sit in the
   // title line without a second request. A collaboration-linked read gets a
   // execution-only view from the server (no roster or management).
