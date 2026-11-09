@@ -491,6 +491,8 @@ release_timing_stage build_images
 remote "cd '${target}/deploy' && sudo env MISSIONGO_RELEASE='${commit}' docker compose --env-file '${env_file}' build"
 release_status_begin
 release_timing_stage build_and_restart
+release_failure_stage=restart
+release_failure_reason=restart_check_failed
 echo "==> Rebuilding and restarting"
 # sudo drops the environment, so the value is handed over explicitly. The
 # server reports it on /health, which is how a running deployment names itself.

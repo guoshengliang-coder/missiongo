@@ -8,21 +8,23 @@ import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const releaseStatusBlock = readFileSync(join(root, "scripts/deploy.sh"), "utf8").match(/# BEGIN RELEASE STATUS[\s\S]*?# END RELEASE STATUS/)[0];
+export const previousReleaseStatusBlock = readFileSync(join(root, "scripts/release-status-v1.block.sh"), "utf8").trimEnd();
 export const priorDeploySwitch = `release_timing_stage build_and_restart
 echo "==> Rebuilding and restarting"
 # sudo drops the environment, so the value is handed over explicitly. The
 # server reports it on /health, which is how a running deployment names itself.
 remote "cd '\${target}/deploy' && sudo env MISSIONGO_RELEASE='\${commit}' docker compose --env-file '\${env_file}' up -d --build"`;
 export function withoutReleaseStatus(source) {
-  if (!source.includes(releaseStatusBlock)) throw new Error("Partial or different release status installation; preserved existing tools.");
-  return source.replace(releaseStatusBlock, priorDeploySwitch);
+  const known = [releaseStatusBlock, previousReleaseStatusBlock].find(block => source.includes(block));
+  if (!known) throw new Error("Partial or different release status installation; preserved existing tools.");
+  return source.replace(known, priorDeploySwitch);
 }
 export function upgradeReleaseStatusDeploy(source) {
   if (!source.includes("check_release_coverage") || !source.includes("release_timing_start")) throw new Error("Install existing coverage and timing guards first.");
   if (source.includes("# BEGIN RELEASE STATUS")) {
     if (source.match(/# BEGIN RELEASE STATUS[\s\S]*?# END RELEASE STATUS/g)?.length !== 1
-      || !source.includes(releaseStatusBlock)) throw new Error("Partial or different release status installation; preserved existing tools.");
-    return source;
+      || ![releaseStatusBlock, previousReleaseStatusBlock].some(block => source.includes(block))) throw new Error("Partial or different release status installation; preserved existing tools.");
+    return source.replace(previousReleaseStatusBlock, releaseStatusBlock);
   }
   const before = /release_timing_stage build_and_restart\necho "==> Rebuilding and restarting"[\s\S]*?remote "cd '\$\{target\}\/deploy' && sudo env MISSIONGO_RELEASE='\$\{commit\}' docker compose --env-file '\$\{env_file\}' up -d --build"/g;
   if ([...source.matchAll(before)].length !== 1) throw new Error("Unknown deploy switch; preserved existing tools.");

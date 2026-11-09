@@ -100,12 +100,12 @@ for (const phase of ["idle", "failed", "expired"]) test(`upgrade retains draft a
   let current = "idle";
   let writes = 0;
   await page.route("**/release-status.json*", route => route.fulfill({ json: { version: 1,
-    phase: current === "expired" ? "upgrading" : current, expiresAt: current === "expired" ? Date.now() - 1 : Date.now() + 600_000, release: "deploy-1" } }));
+    phase: current === "expired" ? "upgrading" : current, expiresAt: current === "expired" ? Date.parse("2026-11-09T01:00:00.000Z") - 1 : Date.parse("2026-11-09T01:00:00.000Z") + 600_000, release: "deploy-1" } }));
   await page.route("**/api/v1/agent-sessions**", route => {
     if (route.request().method() === "POST") { writes++; return route.fulfill({ status: 204 }); }
     return route.fulfill({ json: new URL(route.request().url()).pathname === "/api/v1/agent-sessions" ? { sessions: [row] } : { ...row, messages: [] } });
   });
-  await page.clock.install();
+  await page.clock.install({ time: new Date("2026-11-09T01:00:00.000Z") });
   await page.goto(`/?product=${fixture.productId}&console=agent&session=${row.id}`);
   await page.locator(".agent-console-reply textarea").fill("升级期间保留草稿");
   current = "upgrading";
@@ -118,7 +118,7 @@ for (const phase of ["idle", "failed", "expired"]) test(`upgrade retains draft a
   current = phase;
   await page.clock.runFor(5100);
   if (phase === "idle") await expect(dialog).toHaveCount(0);
-  else { await expect(dialog).toContainText("升级尚未确认恢复"); await dialog.getByRole("button", { name: "关闭", exact: true }).click(); }
+  else { await expect(dialog).toContainText(phase === "failed" ? "服务更新未通过检查" : "升级尚未确认恢复"); await dialog.getByRole("button", { name: "关闭", exact: true }).click(); }
   await expect(page.locator(".agent-console-reply textarea")).toHaveValue("升级期间保留草稿");
   expect(writes).toBe(0);
 });
@@ -139,11 +139,11 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
     test("permission and upgrade surfaces preserve focus, touch size and content", async ({ page }, info) => {
       const row = session("opencode");
       let phase = "idle";
-      await page.route("**/release-status.json*", route => route.fulfill({ json: { version: 1, phase, expiresAt: Date.now() + 600_000, release: "review" } }));
+      await page.route("**/release-status.json*", route => route.fulfill({ json: { version: 1, phase, expiresAt: Date.parse("2026-11-09T01:00:00.000Z") + 600_000, release: "review" } }));
       await page.route("**/api/v1/agent-sessions**", route => route.fulfill({ json: new URL(route.request().url()).pathname === "/api/v1/agent-sessions"
         ? { sessions: [row] } : { ...row, messages: [{ id: "permission-review", sourceId: "permission-review", role: "agent", occurredAt: now,
           text: "OpenCode 请求使用工具", questions: [{ key: "授权请求 review", title: "请求读取项目文件", detail: "只允许本次读取；原授权范围不变。", options: ["允许一次", "拒绝"] }] }] } }));
-      await page.clock.install();
+      await page.clock.install({ time: new Date("2026-11-09T01:00:00.000Z") });
       await page.goto(`/?product=${fixture.productId}&console=agent&session=${row.id}`);
       const card = page.locator(".agent-session-question");
       await expect(card).toBeVisible();
@@ -178,9 +178,9 @@ for (const initial of ["upgrading", "unknown", "expired"]) test(`host first-load
   await page.route("**/release-fallback-fixture", route => { loads++; return route.fulfill({ status: 503, contentType: "text/html", body: readFileSync(new URL("wait.html", directory), "utf8") }); });
   for (const file of ["wait.js", "wait.css"]) await page.route(`**/release-wait/${file}`, route => route.fulfill({ contentType: file.endsWith("js") ? "application/javascript" : "text/css", body: readFileSync(new URL(file, directory), "utf8") }));
   await page.route("**/release-status.json*", route => route.fulfill({ json: { version: 1, phase: phase === "expired" ? "upgrading" : phase,
-    expiresAt: phase === "expired" ? Date.now() - 1 : Date.now() + 600_000, release: "fallback" } }));
-  await page.route("**/health", route => route.fulfill({ json: { status: "ok" } }));
-  await page.clock.install();
+    expiresAt: phase === "expired" ? Date.parse("2026-11-09T01:00:00.000Z") - 1 : Date.parse("2026-11-09T01:00:00.000Z") + 600_000, release: "fallback" } }));
+  await page.route("**/health", route => route.fulfill({ json: { status: "ok", release: "fallback" } }));
+  await page.clock.install({ time: new Date("2026-11-09T01:00:00.000Z") });
   await page.goto("/release-fallback-fixture");
   if (initial === "upgrading") {
     await expect(page.getByRole("heading")).toHaveText(/正在发布新版本|A new version is being deployed/);
@@ -189,7 +189,7 @@ for (const initial of ["upgrading", "unknown", "expired"]) test(`host first-load
     await page.clock.runFor(3100);
     await expect.poll(() => loads).toBe(2);
   } else {
-    await expect(page.getByRole("heading")).toHaveText(/暂时无法连接|Connection unavailable/);
+    await expect(page.getByRole("heading")).toHaveText(initial === "expired" ? /升级尚未确认恢复|Update recovery is unconfirmed/ : /暂时无法获取服务状态|Service status unavailable/);
     await expect(page.getByRole("button")).toBeEnabled();
     expect(loads).toBe(1);
   }

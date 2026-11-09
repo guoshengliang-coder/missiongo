@@ -939,3 +939,166 @@ describe("standalone project deliveries",()=>{
     expect(merges.list(f.item.productId,f.owner.id)).toEqual([]);
   });
 });
+
+// The reference calculations stay available to test the projection after real
+// writes. Normal reads must never call them, even on the first request.
+describe("AND-484 write-time display projections",()=>{
+  it("matches full recomputation across writes and keeps all four reads lightweight",async()=>{
+    const f=await prepared();
+    const verify=()=>{
+      const expected={list:f.merges.recomputeList(f.item.productId,f.owner.id),
+        batches:f.merges.recomputeBatches(f.item.productId,f.owner.id),
+        attention:f.merges.recomputeAttentionSessionIds(f.item.productId,f.owner.id),
+        progress:f.merges.recomputeSessionProgress(f.item.productId,f.owner.id)};
+      const item=vi.spyOn(f.store,"getWorkItem").mockImplementation(()=>{throw new Error("Read assembled detail");});
+      const events=vi.spyOn(f.store,"getTimeline").mockImplementation(()=>{throw new Error("Read assembled timeline");});
+      try {
+        expect(f.merges.list(f.item.productId,f.owner.id)).toEqual(expected.list);
+        expect(f.merges.batches(f.item.productId,f.owner.id)).toEqual(expected.batches);
+        expect(f.merges.attentionSessionIds(f.item.productId,f.owner.id)).toEqual(expected.attention);
+        expect(f.merges.sessionProgress(f.item.productId,f.owner.id)).toEqual(expected.progress);
+      }finally{item.mockRestore();events.mockRestore();}
+    };
+    verify();f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");verify();
+    const clock=vi.spyOn(Date,"now").mockReturnValue(Date.now()+360_000);
+    try{verify();expect(f.merges.list(f.item.productId,f.owner.id)[0]?.blocker).toBe("stale");}finally{clock.mockRestore();}
+    f.grant(false);verify();f.grant();verify();
+    new AgentSessionStore(f.store.database).enqueue(f.owner.id,f.projectSessionId,"New authorized input",[]);verify();
+    expect(f.merges.list(f.item.productId,f.owner.id)).toEqual([]);
+  });
+  it("keeps mismatched heads stale and observes user-to-Agent history corrections",async()=>{
+    const f=await prepared();
+    const d=f.merges.propose(f.owner.id,"original-client",f.identity,"mismatched-head",{...f.input,evidence:{...f.input.evidence,head:"f".repeat(40)}});
+    expect(d.blocker).toBe("stale");
+    expect(f.merges.list(f.item.productId,f.owner.id)).toEqual(f.merges.recomputeList(f.item.productId,f.owner.id));
+    new AgentSessionStore(f.store.database).recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[{sourceId:"source-user",role:"user",text:"A newer input"}]});
+    expect(f.merges.list(f.item.productId,f.owner.id)).toEqual([]);
+    f.db.prepare("UPDATE agent_session_messages SET role='agent' WHERE session_id=? AND source_id='source-user'").run(f.projectSessionId);
+    expect(f.merges.list(f.item.productId,f.owner.id)).toEqual(f.merges.recomputeList(f.item.productId,f.owner.id));
+    expect(f.merges.list(f.item.productId,f.owner.id)).toHaveLength(1);
+  });
+  it("rolls back source and projection together, including a failed nested transaction",async()=>{
+    const f=await prepared(),before=f.merges.list(f.item.productId,f.owner.id);
+    let fail=false;
+    f.store.database.registerProjectionWriter("synthetic-failure",()=>{if(fail)throw new Error("projection failure");});
+    fail=true;
+    expect(()=>f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm")).toThrow("projection failure");
+    fail=false;
+    expect(f.merges.list(f.item.productId,f.owner.id)).toEqual(before);
+    expect(f.merges.readForAccount(f.owner.id,f.d.id).state).toBe("proposed");
+    f.store.database.transaction(()=>{
+      expect(()=>f.store.database.transaction(()=>{f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");throw new Error("rollback nested");})).toThrow("rollback nested");
+    });
+    expect(f.merges.list(f.item.productId,f.owner.id)).toEqual(before);
+    expect(f.db.prepare("SELECT * FROM merge_display_dirty").all()).toEqual([]);
+  });
+  it("does not refresh display rows for ordinary Agent output or unchanged snapshots",async()=>{
+    const f=await prepared();
+    const before=f.db.prepare("SELECT total_changes() AS n").get() as {n:number};
+    f.db.exec(`CREATE TEMP TABLE observed_refreshes(value INTEGER);
+      CREATE TEMP TRIGGER observe_display AFTER INSERT ON merge_delivery_projection BEGIN INSERT INTO observed_refreshes VALUES(1); END;`);
+    new AgentSessionStore(f.store.database).recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[{sourceId:"new-output",role:"agent",text:"Only an output"}]});
+    expect((f.db.prepare("SELECT total_changes() AS n").get() as {n:number}).n).toBeGreaterThan(before.n);
+    expect(f.db.prepare("SELECT * FROM observed_refreshes").all()).toEqual([]);
+    f.store.createComment({itemKey:f.item.key,actorKind:"human",bodyKind:"free",body:{text:"An ordinary comment"}});
+    expect(f.db.prepare("SELECT * FROM observed_refreshes").all()).toEqual([]);
+  });
+});
+
+for(const [itemCount,batchCount] of [[500,100],[1000,200]])it(`AND-484 scale ${itemCount} items and ${batchCount} historical batches`,async()=>{
+  const f=await prepared(),db=f.db;
+  const source=JSON.parse((db.prepare("SELECT data_json FROM merge_deliveries WHERE id=?").get(f.d.id) as {data_json:string}).data_json);
+  const baseItem=db.prepare("SELECT * FROM work_items WHERE id=?").get(f.item.id) as Record<string,string|number|null>;
+  const columns=Object.keys(baseItem),insertItem=db.prepare(`INSERT INTO work_items(${columns.join(",")}) VALUES (${columns.map(()=>"?").join(",")})`);
+  const started=performance.now();
+  f.store.database.transaction(()=>{
+    for(let i=1;i<itemCount;i++){
+      const row={...baseItem,id:`synthetic-item-${i}`,item_key:`CON-${i+1}`,sequence:i+1,title:`Synthetic item ${i}`};
+      insertItem.run(...columns.map(column=>row[column as keyof typeof row] as string|number|null));
+    }
+    // A long diagnostic history is deliberately present but irrelevant to reads.
+    for(let i=0;i<100;i++)db.prepare(`INSERT INTO work_item_events(id,item_id,event_type,actor_kind,payload_json,timeline_seq,created_at)
+      VALUES (?,?,'synthetic_diagnostic','system',?,?,?)`).run(`synthetic-event-${i}`,f.item.id,JSON.stringify({text:"Historical diagnostic ".repeat(100)}),100+i,new Date().toISOString());
+    for(let i=0;i<batchCount;i++){
+      const batchId=`synthetic-batch-${i}`,ids:string[]=[],results:Record<string,unknown>={};
+      for(let j=0;j<20;j++){
+        const id=`synthetic-delivery-${i}-${j}`;ids.push(id);results[id]={status:"merged",head:source.head,commit:"c".repeat(40),detail:"Synthetic historic result"};
+        db.prepare("INSERT INTO merge_deliveries(id,product_id,account_id,client_id,request_key,state,data_json) VALUES (?,?,?,?,?,'merged',?)")
+          .run(id,f.item.productId,f.owner.id,"original-client",id,JSON.stringify({...source,id,state:"merged",batchId}));
+      }
+      db.prepare("INSERT INTO merge_batches(id,product_id,account_id,request_key,state,data_json) VALUES (?,?,?,?,'finished',?)")
+        .run(batchId,f.item.productId,f.owner.id,batchId,JSON.stringify({id:batchId,productId:f.item.productId,accountId:f.owner.id,requestKey:batchId,
+          dispatchId:batchId,sessionId:batchId,config:f.config,publish:false,deliveries:ids,selection:[],state:"finished",createdAt:new Date().toISOString(),results}));
+    }
+  });
+  const initializationMs=performance.now()-started;
+  let queries=0;
+  const prepare=db.prepare.bind(db);
+  const counter=vi.spyOn(db,"prepare").mockImplementation(sql=>{queries++;return prepare(sql);});
+  const referenceAt=performance.now();
+  const expected={deliveries:f.merges.recomputeList(f.item.productId,f.owner.id),batches:f.merges.recomputeBatches(f.item.productId,f.owner.id),
+    attentionSessionIds:f.merges.recomputeAttentionSessionIds(f.item.productId,f.owner.id),sessionProgress:f.merges.recomputeSessionProgress(f.item.productId,f.owner.id)};
+  const referenceMs=performance.now()-referenceAt,referenceQueries=queries;queries=0;
+  const login=await f.app.inject({method:"POST",url:"/api/v1/auth/login",payload:{username:f.owner.email,password:"synthetic password"}});
+  const cookie=login.headers["set-cookie"]!.toString().split(";")[0]!;
+  const heavy=vi.spyOn(f.store,"getTimeline").mockImplementation(()=>{throw new Error("Hot read loaded timeline");});
+  queries=0;
+  const times:number[]=[],queryCounts:number[]=[];
+  try{
+    for(let i=0;i<30;i++){
+      queries=0;
+      const at=performance.now(),response=await f.app.inject({method:"GET",url:`/api/v1/products/${f.item.productId}/merge-deliveries`,headers:{cookie}});
+      times.push(performance.now()-at);queryCounts.push(queries);expect(response.statusCode).toBe(200);
+      if(i===0)expect(response.json()).toEqual(expected);
+    }
+  }finally{heavy.mockRestore();counter.mockRestore();}
+  expect(new Set(queryCounts).size).toBe(1);expect(queryCounts[0]).toBeLessThan(25);
+  const writeAt=performance.now();
+  f.store.updateWorkItem(`CON-${itemCount}`,{title:"One unrelated item update"});
+  const writeMs=performance.now()-writeAt,firstMs=times[0]!;
+  db.exec(`CREATE TEMP TABLE observed_activity_refresh(kind TEXT);
+    CREATE TEMP TRIGGER observe_activity_batch AFTER INSERT ON merge_batch_projection BEGIN INSERT INTO observed_activity_refresh VALUES('batch'); END;
+    CREATE TEMP TRIGGER observe_activity_delivery AFTER INSERT ON merge_delivery_projection BEGIN INSERT INTO observed_activity_refresh VALUES('delivery'); END;`);
+  const messageAt=performance.now();
+  new AgentSessionStore(f.store.database).enqueue(f.owner.id,f.projectSessionId,"A new input after historical deliveries",[]);
+  const relatedMessageWriteMs=performance.now()-messageAt;
+  expect(db.prepare("SELECT * FROM observed_activity_refresh WHERE kind='batch'").all()).toEqual([]);
+  expect(db.prepare("SELECT * FROM observed_activity_refresh WHERE kind='delivery'").all()).toHaveLength(1);
+  expect(f.merges.batches(f.item.productId,f.owner.id)).toEqual(f.merges.recomputeBatches(f.item.productId,f.owner.id));
+  expect(f.merges.sessionProgress(f.item.productId,f.owner.id)).toEqual(f.merges.recomputeSessionProgress(f.item.productId,f.owner.id));
+  times.sort((a,b)=>a-b);
+  console.log(JSON.stringify({benchmark:"AND-484",itemCount,batchCount,deliveries:batchCount*20,events:100,returnedBatches:20,initializationMs,referenceMs,referenceQueries,readQueries:queryCounts[0],firstMs,p50:times[15],p95:times[28],max:times[29],unrelatedWriteMs:writeMs,relatedMessageWriteMs}));
+  // Latency is reported rather than made a flaky CI assertion. The strict
+  // guard is that every cold/hot request succeeds without the history reader.
+  expect(times).toHaveLength(30);
+},60_000);
+
+ it("AND-484 filters retired history through partial indexes",async()=>{
+   const f=await prepared();
+   for(const [predicate,index] of [["visible=1","merge_delivery_projection_visible"],["attention=1","merge_delivery_projection_attention"]]) {
+     const plan=f.db.prepare(`EXPLAIN QUERY PLAN SELECT session_id FROM merge_delivery_projection WHERE product_id=? AND account_id=? AND ${predicate} ${predicate==="attention=1" ? "GROUP BY session_id ORDER BY MAX(sequence) DESC" : "ORDER BY sequence DESC"}`).all(f.item.productId,f.owner.id);
+     expect(JSON.stringify(plan)).toContain(index);
+   }
+ });
+
+it("AND-484 query work should be bounded by live rows rather than retired history",async()=>{
+  const f=await prepared(),db=f.db;
+  const template=db.prepare("SELECT * FROM merge_delivery_projection WHERE id=?").get(f.d.id) as Record<string,string|number|null>;
+  const keys=Object.keys(template),insert=db.prepare(`INSERT INTO merge_delivery_projection(${keys.join(',')}) VALUES (${keys.map(()=>'?').join(',')})`);
+  f.store.database.transaction(()=>{
+    for(let i=0;i<500000;i++){
+      const row={...template,id:`retired-${i}`,sequence:i+100,visible:0,attention:0,data_json:'{}'};
+      insert.run(...keys.map(key=>row[key as keyof typeof row] as string|number|null));
+    }
+  });
+  const queries=["SELECT data_json,fresh_from,fresh_until,fresh_blocker FROM merge_delivery_projection WHERE product_id=? AND account_id=? AND visible=1 ORDER BY sequence DESC",
+    "SELECT session_id FROM merge_delivery_projection WHERE product_id=? AND account_id=? AND attention=1 GROUP BY session_id ORDER BY MAX(sequence) DESC"];
+  const results=queries.map(sql=>{
+    const plan=db.prepare('EXPLAIN QUERY PLAN '+sql).all(f.item.productId,f.owner.id);
+    const times=[];for(let i=0;i<10;i++){const at=performance.now();db.prepare(sql).all(f.item.productId,f.owner.id);times.push(performance.now()-at);}
+    expect(JSON.stringify(plan)).toContain(sql.includes("visible=1") ? "merge_delivery_projection_visible" : "merge_delivery_projection_attention");
+    return {plan,maxMs:Math.max(...times)};
+  });
+  console.log(JSON.stringify({audit:'retired-history-scan',rows:500000,results}));
+  expect(f.merges.list(f.item.productId,f.owner.id)).toHaveLength(1);
+},60_000);

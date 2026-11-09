@@ -1,3 +1,4 @@
+import { isItemListRow, type WorkItemRow } from "./types";
 import { inconsistentItemPage } from "./item-list-state";
 import { DeliveryEvidence } from "./delivery-evidence";
 import { PlanDocumentPage } from "./plan-document-page";
@@ -187,6 +188,7 @@ import { MarkdownText } from "./markdown-text";
 import {
   AGENT_CONSOLE_HISTORY_MARKER,
   AGENT_CONSOLE_LAYOUT_KEY,
+  AGENT_CONSOLE_RETURN_ITEM_KEY,
   AGENT_CONVERSATION_HISTORY_MARKER,
   DEFAULT_STATUS,
   ITEM_HISTORY_MARKER,
@@ -216,7 +218,7 @@ import {
 } from "./pane-layout";
 import { ProductBadge } from "./product-badge";
 import { AgentSessionPanel } from "./agent-session-panel";
-import { AgentSessionConsole } from "./agent-session-console";
+import { AgentSessionConsole, useAgentConsoleDrafts } from "./agent-session-console";
 import { currentDispatchForStatus, dispatchIssueLabelKey, itemProgressKeys } from "./dispatch-attention";
 import { agentUnreadCounts, agentSessionsRefetchInterval } from "./agent-session-view";
 import { registerMissionGoWebMcp } from "./webmcp";
@@ -329,12 +331,13 @@ export function App() {
   const [downloadsOpen, setDownloadsOpen] = useState(false);
   const [statisticsOpen,setStatisticsOpen] = useState(statisticsIsOpen);
   const [agentConsoleOpen, setAgentConsoleOpen] = useState(agentConsoleIsOpen);
+  const consoleDrafts = useAgentConsoleDrafts();
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
   const [agentSessionId, setAgentSessionId] = useState<string | null>(agentSessionIdFromUrl);
   // Read before the deep-link handling below rewrites the URL without it.
   const [agentConsoleLinkedFilter, setAgentConsoleLinkedFilter] = useState(agentConsoleFilterFromUrl);
   const [agentConversationOpen, setAgentConversationOpen] = useState(
-    () => Boolean(history.state?.[AGENT_CONVERSATION_HISTORY_MARKER]),
+    () => Boolean(history.state?.[AGENT_CONVERSATION_HISTORY_MARKER] || history.state?.[AGENT_CONSOLE_RETURN_ITEM_KEY]),
   );
   const [agentConsoleBulkMode, setAgentConsoleBulkMode] = useState(false);
   const [agentConsoleBulkAvailable, setAgentConsoleBulkAvailable] = useState(false);
@@ -390,6 +393,8 @@ export function App() {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const workspaceRef = useRef<HTMLElement>(null);
   const listScrollTopRef = useRef(0);
+  const consoleReturnScroll = useRef<{ item: string; top: number } | null>(null);
+  const consoleReturnFocus = useRef<HTMLElement | null>(null);
   const previousAgentConsoleOpenRef = useRef(agentConsoleOpen);
 
   useEffect(() => {
@@ -456,6 +461,7 @@ export function App() {
       [AGENT_CONSOLE_HISTORY_MARKER]: _console,
       [AGENT_CONVERSATION_HISTORY_MARKER]: _conversation,
       [AGENT_CONSOLE_LAYOUT_KEY]: _layout,
+      [AGENT_CONSOLE_RETURN_ITEM_KEY]: _returnItem,
       ...state
     } = current;
     history.pushState(
@@ -475,35 +481,31 @@ export function App() {
     setMobileSearchOpen(false);
   };
 
-  /**
-   * Open the console on one dispatch's session, from the work item it belongs
-   * to (AND-217). The console entry is pushed, so the item detail is still one
-   * back away; on the phone layout the conversation is pushed above it, the
-   * same way a deep link from the address bar lands.
-   */
+  /** Item-origin conversations return directly to that detail at every width. */
   const openAgentSession = (sessionId: string) => {
     setAgentConsoleLinkedFilter(null);
-    const current = typeof history.state === "object" && history.state
-      ? history.state as Record<string, unknown>
-      : {};
+    const current = typeof history.state === "object" && history.state ? history.state as Record<string, unknown> : {};
     const {
       [AGENT_CONSOLE_HISTORY_MARKER]: _console,
       [AGENT_CONVERSATION_HISTORY_MARKER]: _conversation,
       [AGENT_CONSOLE_LAYOUT_KEY]: _layout,
+      [AGENT_CONSOLE_RETURN_ITEM_KEY]: _returnItem,
       ...state
     } = current;
+    const returnItem = selectedItemKey;
+    if (returnItem) {
+      consoleReturnScroll.current = { item: returnItem, top: document.querySelector(".detail-scroll")?.scrollTop ?? 0 };
+      consoleReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    }
     const consoleState = {
       ...state,
       [AGENT_CONSOLE_HISTORY_MARKER]: true,
       [AGENT_CONSOLE_LAYOUT_KEY]: agentConsoleLayout,
+      ...(returnItem ? { [AGENT_CONSOLE_RETURN_ITEM_KEY]: returnItem } : {}),
     };
     history.pushState(consoleState, "", agentConsoleUrl(sessionId));
-    if (agentConsoleSinglePane) {
-      history.pushState(
-        { ...consoleState, [AGENT_CONVERSATION_HISTORY_MARKER]: true },
-        "",
-        agentConsoleUrl(sessionId),
-      );
+    if (agentConsoleSinglePane && !returnItem) {
+      history.pushState({ ...consoleState, [AGENT_CONVERSATION_HISTORY_MARKER]: true }, "", agentConsoleUrl(sessionId));
     }
     syncBackDepth();
     setAgentSessionId(sessionId);
@@ -531,6 +533,7 @@ export function App() {
       [AGENT_CONSOLE_HISTORY_MARKER]: _console,
       [AGENT_CONVERSATION_HISTORY_MARKER]: _conversation,
       [AGENT_CONSOLE_LAYOUT_KEY]: _layout,
+      [AGENT_CONSOLE_RETURN_ITEM_KEY]: _returnItem,
       ...state
     } = current;
     history.replaceState(state, "", agentConsoleExitUrl());
@@ -546,13 +549,14 @@ export function App() {
       ? history.state as Record<string, unknown>
       : {};
     const conversation = Boolean(sessionId && showConversation && agentConsoleSinglePane);
+    const directItem = Boolean(current[AGENT_CONSOLE_RETURN_ITEM_KEY]);
     const nextState = {
       ...current,
       [AGENT_CONSOLE_HISTORY_MARKER]: true,
       [AGENT_CONSOLE_LAYOUT_KEY]: agentConsoleLayout,
-      [AGENT_CONVERSATION_HISTORY_MARKER]: conversation || undefined,
+      [AGENT_CONVERSATION_HISTORY_MARKER]: (!directItem && conversation) || undefined,
     };
-    if (conversation && !history.state?.[AGENT_CONVERSATION_HISTORY_MARKER]) {
+    if (conversation && !directItem && !history.state?.[AGENT_CONVERSATION_HISTORY_MARKER]) {
       history.pushState(nextState, "", agentConsoleUrl(sessionId));
     } else {
       history.replaceState(nextState, "", agentConsoleUrl(sessionId));
@@ -563,6 +567,7 @@ export function App() {
   };
 
   const closeAgentConversation = () => {
+    if (history.state?.[AGENT_CONSOLE_RETURN_ITEM_KEY]) { closeAgentConsole(); return; }
     if (history.state?.[AGENT_CONVERSATION_HISTORY_MARKER]) {
       history.back();
       return;
@@ -686,17 +691,24 @@ export function App() {
       // Reaching here means the workspace route or drawer needs updating.
       syncBackDepth();
       if (!history.state?.[SIDEBAR_HISTORY_MARKER]) setSidebarOpen(false);
+      const returningToItem = previousAgentConsoleOpenRef.current && !agentConsoleIsOpen();
       setStatisticsOpen(statisticsIsOpen());
       setAgentConsoleOpen(agentConsoleIsOpen());
       setAgentSessionId(agentSessionIdFromUrl());
-      setAgentConversationOpen(Boolean(history.state?.[AGENT_CONVERSATION_HISTORY_MARKER]));
+      setAgentConversationOpen(Boolean(history.state?.[AGENT_CONVERSATION_HISTORY_MARKER] || agentConsoleSinglePane && history.state?.[AGENT_CONSOLE_RETURN_ITEM_KEY]));
       const itemKey = itemKeyFromUrl();
       setDetailOpenInEdit(false);
       setSelectedItemKey(itemKey);
       if (itemKey) {
         requestAnimationFrame(() => {
-          workspaceRef.current?.scrollTo({ top: 0 });
-          window.scrollTo({ top: 0 });
+          if (returningToItem && consoleReturnScroll.current?.item === itemKey) {
+            const focus = consoleReturnFocus.current?.isConnected ? consoleReturnFocus.current : document.querySelector<HTMLElement>(".detail-dispatch-jump");
+            focus?.focus({ preventScroll: true });
+            document.querySelector(".detail-scroll")?.scrollTo({ top: consoleReturnScroll.current.top });
+          } else {
+            workspaceRef.current?.scrollTo({ top: 0 });
+            window.scrollTo({ top: 0 });
+          }
         });
       } else {
         restoreListScroll();
@@ -717,6 +729,7 @@ export function App() {
         [AGENT_CONSOLE_HISTORY_MARKER]: _console,
         [AGENT_CONVERSATION_HISTORY_MARKER]: _conversation,
         [AGENT_CONSOLE_LAYOUT_KEY]: _layout,
+        [AGENT_CONSOLE_RETURN_ITEM_KEY]: _returnItem,
         ...state
       } = current;
       history.replaceState(state, "", agentConsoleExitUrl());
@@ -757,6 +770,13 @@ export function App() {
     const current = typeof history.state === "object" && history.state
       ? history.state as Record<string, unknown>
       : {};
+
+    if (current[AGENT_CONSOLE_RETURN_ITEM_KEY]) {
+      history.replaceState({ ...current, [AGENT_CONSOLE_LAYOUT_KEY]: agentConsoleLayout }, "", agentConsoleUrl(agentSessionId));
+      setAgentConversationOpen(Boolean(agentConsoleSinglePane && agentSessionId));
+      syncBackDepth();
+      return;
+    }
 
     if (agentConsoleSinglePane && agentSessionId) {
       // A wide console has its selected conversation in the same entry. When a
@@ -925,12 +945,13 @@ export function App() {
   useEffect(() => {
     const accountId = bootstrapQuery.data?.user.id;
     if (accountId && draftAccountId.current && accountId !== draftAccountId.current) {
+      consoleDrafts.clear();
       setNewSessionDraft(null);
       setNewSessionOpen(false);
       setNewSessionConfigOpen(false);
     }
     if (accountId) draftAccountId.current = accountId;
-  }, [bootstrapQuery.data?.user.id]);
+  }, [bootstrapQuery.data?.user.id, consoleDrafts.clear]);
   const allAgentSessions = agentSessionsQuery.data?.sessions ?? [];
   const unreadCounts = useMemo(() => agentUnreadCounts(allAgentSessions), [allAgentSessions]);
 
@@ -952,6 +973,7 @@ export function App() {
       [AGENT_CONSOLE_HISTORY_MARKER]: _console,
       [AGENT_CONVERSATION_HISTORY_MARKER]: _conversation,
       [AGENT_CONSOLE_LAYOUT_KEY]: _layout,
+      [AGENT_CONSOLE_RETURN_ITEM_KEY]: _returnItem,
       ...state
     } = current;
     history.replaceState(state, "", agentConsoleExitUrl());
@@ -1098,8 +1120,25 @@ export function App() {
     queryClient.invalidateQueries({ queryKey: ["agent-sessions"] }),
     queryClient.invalidateQueries({ queryKey: ["agent-session"] }),
   ]);
+  const [loadingListDetails,setLoadingListDetails]=useState(false);
+  const detailLoad=useRef({revision:0,pending:false});
+  useEffect(()=>{
+    detailLoad.current={revision:detailLoad.current.revision+1,pending:false};
+    setLoadingListDetails(false);
+  },[selectedProductId,statusFilter,typeFilter,deferredSearch,advancedFilterKey,builderFilter]);
+  const loadListDetails=async (rows:readonly WorkItemRow[],next:(items:WorkItem[])=>void) => {
+    if(detailLoad.current.pending)return;
+    const attempt=++detailLoad.current.revision;
+    detailLoad.current.pending=true;
+    setLoadingListDetails(true);
+    try {
+      const details=await Promise.all(rows.map(row=>api.getItem(row.key)));
+      if(detailLoad.current.revision===attempt)next(details);
+    } catch(error){if(detailLoad.current.revision===attempt)setNotice(errorMessage(error,t("somethingWentWrong")));}
+    finally {if(detailLoad.current.revision===attempt){detailLoad.current.pending=false;setLoadingListDetails(false);}}
+  };
   const visibleItems = items;
-  const showAttachmentColumn = visibleItems.some((item) => item.attachments.some(attachment => !attachment.commentId && !attachment.transitionEventId && isMediaAttachment(attachment)));
+  const showAttachmentColumn = visibleItems.some((item) => (isItemListRow(item) ? item.listSummary.media : item.attachments).some(attachment => !attachment.commentId && !attachment.transitionEventId && isMediaAttachment(attachment)));
   const selectedItems = visibleItems.filter((item) => selectedItemKeys.has(item.key)
     && (item.status !== "pending_verification" || canSelectForVerification(item)));
   // A selection is one status: the one both batch actions are keyed on (AND-66).
@@ -1557,8 +1596,8 @@ export function App() {
                 <button
                   type="button"
                   className="primary-button positive"
-                  disabled={selectedItems.length === 0}
-                  onClick={() => setVerifyBatch(selectedItems.filter(canSelectForVerification))}
+                  disabled={selectedItems.length === 0 || loadingListDetails}
+                  onClick={() => void loadListDetails(selectedItems.filter(canSelectForVerification),setVerifyBatch)}
                 >
                   <CheckCircle2 size={16} /> {t("verifySelected", { count: selectedItems.length })}
                 </button>
@@ -1566,12 +1605,12 @@ export function App() {
                 // A wrong or stale dispatch is undone on many items at once
                 // (AND-160); the domain's note travels with the whole batch.
                 <>
-                {selectedProductCanUseAi && <button type="button" className="primary-button" disabled={!selectedItems.length} onClick={()=>setDispatchBatch(selectedItems)}><Rocket size={16}/>{t("dispatchSelected")}</button>}
+                {selectedProductCanUseAi && <button type="button" className="primary-button" disabled={!selectedItems.length || loadingListDetails} onClick={()=>void loadListDetails(selectedItems,setDispatchBatch)}><Rocket size={16}/>{t("dispatchSelected")}</button>}
                 <button
                   type="button"
                   className="secondary-button"
-                  disabled={selectedItems.length === 0}
-                  onClick={() => setReleaseBatch(selectedItems.filter((item) => item.status === "in_progress"))}
+                  disabled={selectedItems.length === 0 || loadingListDetails}
+                  onClick={() => void loadListDetails(selectedItems.filter((item) => item.status === "in_progress"),setReleaseBatch)}
                 >
                   <Undo2 size={16} /> {t("releaseSelected", { count: selectedItems.length })}
                 </button>
@@ -1580,8 +1619,8 @@ export function App() {
                 <button
                   type="button"
                   className="primary-button"
-                  disabled={selectedItems.length === 0}
-                  onClick={() => setDispatchBatch(selectedItems)}
+                  disabled={selectedItems.length === 0 || loadingListDetails}
+                  onClick={() => void loadListDetails(selectedItems,setDispatchBatch)}
                 >
                   <Rocket size={16} /> {t("dispatchSelected")}
                 </button>
@@ -1666,6 +1705,7 @@ export function App() {
 
       {agentConsoleOpen && selectedProductId && (
         <AgentSessionConsole
+          drafts={consoleDrafts}
           productId={selectedProductId}
           search={agentConsoleSearch}
           onSearchChange={setAgentConsoleSearch}
@@ -1693,6 +1733,7 @@ export function App() {
             else selectAgentSession(id, show);
           }}
           onBackToSessions={closeAgentConversation}
+          backToItem={Boolean(history.state?.[AGENT_CONSOLE_RETURN_ITEM_KEY])}
         />
       )}
 
@@ -1906,7 +1947,7 @@ function ItemRow({
   onNotice,
   onStartWork,
 }: {
-  item: WorkItem;
+  item: WorkItemRow;
   mergeProgress: MergeProgress | undefined;
   canOperate: boolean;
   sourceComponent: Component | undefined;
@@ -1932,14 +1973,18 @@ function ItemRow({
   const { actorLabel, formatTime, locale, priorityLabel, statusLabel, t, typeLabel } = useI18n();
   const TypeIcon = TYPE_ICONS[item.type];
   const environment = item.environment;
-  const overview = item.report?.overview ?? item.description;
+  const summary = isItemListRow(item) ? item.listSummary : undefined;
+  const detail = isItemListRow(item) ? undefined : item;
+  const media = summary?.media ?? detail!.attachments;
+  const diagnostic = summary?.diagnosticSummary ?? detail!.diagnosticSummary;
+  const overview = summary?.overview ?? detail?.report?.overview ?? detail?.description;
   // An attached log file and a structured log entry are not the same unit, and showing their sum
   // made a whole attached history look like one more line.
   const logFileCount = Math.max(
-    item.attachments.filter((attachment) => !attachment.commentId && !attachment.transitionEventId && attachment.kind === "log").length,
-    item.diagnosticSummary?.logFileCount ?? 0,
+    media.filter((attachment) => !attachment.commentId && !attachment.transitionEventId && attachment.kind === "log").length,
+    diagnostic?.logFileCount ?? 0,
   );
-  const logCount = item.diagnosticSummary?.logCount ?? 0;
+  const logCount = diagnostic?.logCount ?? 0;
   const contextPrimary = sourceComponent?.name ?? (environment ? platformName(environment.platform, t) : t("notSpecified"));
   const contextDetails = environmentSummary(environment, Boolean(sourceComponent), t);
   const creator = creatorLabel(item.createdBy, { human: actorLabel("human"), sdk: t("creatorSdk"), agent: actorLabel("agent") });
@@ -2059,10 +2104,10 @@ function ItemRow({
               {item.verificationReturn && <VerificationReturnBadge />}
               {item.collaboration && <small className="item-derived-badge">{t(item.collaboration.blocking?"collaborationAwaiting":item.collaboration.received?"collaborationReceived":"collaborationSent")}{item.collaboration.blocking?` · ${item.collaboration.blocking}`:""}</small>}
               <span className="item-evidence-summary">
-                {item.type === "bug" && item.report?.reproductionSteps && <small className="evidence-strong">{t("hasReproduction")}</small>}
+                {item.type === "bug" && (summary?.hasReproduction ?? detail?.report?.reproductionSteps) && <small className="evidence-strong">{t("hasReproduction")}</small>}
                 {logCount > 0 && <small>{t("logCount", { count: logCount })}</small>}
                 {logFileCount > 0 && <small className="evidence-strong">{t("logFileCount", { count: logFileCount })}</small>}
-                {(item.diagnosticSummary?.contextEntryCount ?? 0) > 0 && <small>{t("contextCount", { count: item.diagnosticSummary.contextEntryCount })}</small>}
+                {(diagnostic?.contextEntryCount ?? 0) > 0 && <small>{t("contextCount", { count: diagnostic?.contextEntryCount ?? 0 })}</small>}
               </span>
             </span>
             {/* Out of the meta line, so the title gets the whole column on a
@@ -2074,7 +2119,7 @@ function ItemRow({
           </span>
         </button>
       </span>
-      <ItemMediaStrip itemKey={item.key} attachments={item.attachments} preserveColumn={showAttachmentColumn} />
+      <ItemMediaStrip itemKey={item.key} attachments={media} preserveColumn={showAttachmentColumn} />
       <span className="item-context">
         <strong className={environment ? "item-context-primary-with-platform" : undefined}>{contextPrimary}</strong>
         {environment && <strong className="item-context-platform">{platformName(environment.platform, t)}</strong>}
@@ -2114,7 +2159,7 @@ function ItemRow({
         <span>{formatTime(item.updatedAt)}</span>
       </span>
       <span className="item-row-actions">
-        {(canOperate || item.access?.canVerify || item.transitionDecisions?.some(d=>d.allowed)) && <ItemRowActions item={item} onEdit={onEdit} onNotice={onNotice} onStartWork={onStartWork} />}
+        {(canOperate || item.access?.canVerify || item.transitionDecisions?.some(d=>d.allowed)) && <ListRowActions item={item} onEdit={onEdit} onNotice={onNotice} onStartWork={onStartWork} />}
       </span>
     </article>
   );
@@ -2414,7 +2459,43 @@ function TransferItemDialog({ item, onClose }: { item: WorkItem; onClose: () => 
   </Modal>;
 }
 
-function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
+function ListRowActions(props: {item:WorkItemRow;onEdit:()=>void;onNotice:(message:string)=>void;onStartWork:(item:WorkItem)=>void}) {
+  const [detail,setDetail]=useState<WorkItem|null>(null);
+  const [loadedRevision,setLoadedRevision]=useState("");
+  const sourceRevision=JSON.stringify([props.item.key,props.item.revision,props.item.access,props.item.transitionDecisions]);
+  const requests=useRef(0);
+  const pendingMenu=useRef<HTMLDetailsElement>(null);
+  const [openLoaded,setOpenLoaded]=useState(false);
+  useEffect(()=>{
+    const close=(event:MouseEvent)=>{if(pendingMenu.current&&!pendingMenu.current.contains(event.target as Node))pendingMenu.current.open=false;};
+    document.addEventListener("mousedown",close);
+    return ()=>document.removeEventListener("mousedown",close);
+  },[]);
+  useEffect(()=>()=>{requests.current++;},[props.item.key]);
+  const [loading,setLoading]=useState(false);
+  const {t}=useI18n();
+  if(props.item.transferred)return null;
+  if(!isItemListRow(props.item))return <ItemRowActions {...props} item={props.item}/>;
+  if(detail && loadedRevision===sourceRevision)return <ItemRowActions {...props} item={detail} openInitially={openLoaded}/>;
+  const load=async()=>{
+    if(loading)return;
+    const attempt=++requests.current;
+    setLoading(true);
+    try{
+      const value=await api.getItem(props.item.key);
+      if(requests.current===attempt){setOpenLoaded(Boolean(pendingMenu.current?.open));setDetail(value);setLoadedRevision(sourceRevision);}
+    } catch(error){if(requests.current===attempt)props.onNotice(errorMessage(error,t("somethingWentWrong")));}
+    finally{if(requests.current===attempt)setLoading(false);}
+  };
+  return <OverlayMenu ref={pendingMenu} className="detail-more-menu row-more-menu" onToggle={event=>{if(event.currentTarget.open)void load();}}>
+    <summary className="secondary-button" aria-label={t("moreActionsFor",{key:props.item.key})} aria-busy={loading}>
+      {loading?<LoaderCircle className="spin" size={16}/>:<MoreVertical size={16}/>}</summary>
+    <div className="detail-more-menu-popover detail-actions-popover" role="status">{loading?t("loadingMore"):<button type="button" onClick={()=>void load()}>{t("retry")}</button>}</div>
+  </OverlayMenu>;
+}
+
+function ItemRowActions({ item, onEdit, onNotice, onStartWork, openInitially = false }: {
+  openInitially?: boolean;
   item: WorkItem;
   onEdit: () => void;
   onNotice: (message: string) => void;
@@ -2428,6 +2509,7 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork }: {
   const secondaryActions = otherActions.filter((action) => action.tone !== "danger");
   const destructiveActions = otherActions.filter((action) => action.tone === "danger");
   const moreActionsRef = useRef<HTMLDetailsElement>(null);
+  useEffect(()=>{if(openInitially && moreActionsRef.current){moreActionsRef.current.open=true;moreActionsRef.current.querySelector("summary")?.focus();}},[openInitially]);
   const [transferring, setTransferring] = useState(false);
   const [noteAction, setNoteAction] = useState<TransitionAction | null>(null);
   const [transitionKeys]=useState(()=>new TransitionCommandKeys());

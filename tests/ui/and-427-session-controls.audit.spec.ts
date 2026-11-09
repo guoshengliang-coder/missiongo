@@ -3,7 +3,8 @@ import { expect, test, type Page } from "@playwright/test";
 
 const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as { productId: string; detailKey: string };
 const id = "and427-controls";
-const stamp = new Date().toISOString();
+const stamp = "2026-11-09T01:00:00.000Z";
+test.beforeEach(async ({ page }) => { await page.clock.setFixedTime(new Date(stamp)); });
 type Phase = "running" | "waiting" | "readonly" | "archived" | "failed" | "starting";
 
 async function mockSession(page: Page) {
@@ -42,6 +43,8 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
     const details = row.locator("details");
     const stop = row.getByRole("button", { name: "停止当前回合", exact: true });
     await expect(stop).toBeVisible();
+    await expect(stop).toHaveText("停止");
+    expect(await details.locator("summary").innerText()).not.toContain("运行详情");
     await expect(page.locator(".agent-console-conversation-head .status-pill")).toHaveCount(0);
     await expect(page.locator(".agent-console-conversation-head button", { hasText: "停止当前回合" })).toHaveCount(0);
     await expect(page.locator(".dispatch-session-link, a[href^='codex:'], a[href^='claude:'], a[href^='https://claude.ai/code/']")).toHaveCount(0);
@@ -62,6 +65,30 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
         expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
         expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
         expect(await row.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+        const group = await page.locator(".agent-run-group").boundingBox();
+        const controls = await row.boundingBox();
+        expect(Math.abs((controls!.x + controls!.width / 2) - (group!.x + group!.width / 2))).toBeLessThanOrEqual(1);
+        const before = await details.locator("summary").boundingBox();
+        const beforeStop = await stop.boundingBox();
+        await details.locator("summary").click();
+        await expect(page.locator(".agent-run-diagnostics")).toBeVisible();
+        const after = await details.locator("summary").boundingBox();
+        const afterStop = await stop.boundingBox();
+        expect(Math.abs(before!.width - after!.width)).toBeLessThanOrEqual(1);
+        expect(Math.abs(before!.x - after!.x)).toBeLessThanOrEqual(1);
+        expect(Math.abs(beforeStop!.x - afterStop!.x)).toBeLessThanOrEqual(1);
+        expect(Math.abs((before!.y - beforeStop!.y) - (after!.y - afterStop!.y))).toBeLessThanOrEqual(1);
+        const diagnostics = await page.locator(".agent-run-diagnostics").boundingBox();
+        expect(Math.abs((diagnostics!.x + diagnostics!.width / 2) - (group!.x + group!.width / 2))).toBeLessThanOrEqual(1);
+        expect(diagnostics!.width).toBeLessThanOrEqual(group!.width + 1);
+        expect(Math.abs(diagnostics!.x - controls!.x)).toBeLessThanOrEqual(1);
+        expect(Math.abs(diagnostics!.width - controls!.width)).toBeLessThanOrEqual(1);
+        // Single-pane phones and wide conversations fit both short controls.
+        // Narrow split panes retain normal wrapping rather than shrinking touch targets.
+        if (width <= 520 || width >= 1024) expect(Math.abs(after!.y - afterStop!.y), `${width}px ${scale}: action row alignment`).toBeLessThanOrEqual(1);
+        expect(diagnostics!.y).toBeGreaterThanOrEqual(Math.max(after!.y + after!.height, afterStop!.y + afterStop!.height));
+        if ((width === 320 && scale === "large") || (width === 1440 && scale === "medium")) await page.screenshot({ path: testInfo.outputPath(`expanded-${width}.png`) });
+        await details.locator("summary").click();
         if (width >= 1024) {
           const stateBounds = await details.locator("summary").boundingBox();
           expect(Math.abs(stateBounds!.y - bounds!.y)).toBeLessThanOrEqual(1);
@@ -91,6 +118,21 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
     const panel = page.locator(".agent-session-panel");
     await expect(panel.locator(".agent-run-details")).toContainText("Codex 运行中");
     await expect(panel.locator(".agent-session-head .status-pill")).toHaveCount(0);
+    const panelSummary = panel.locator(".agent-run-details > summary");
+    expect(await panelSummary.innerText()).not.toContain("运行详情");
+    await panelSummary.click();
+    const panelDetails = panel.locator(".agent-run-diagnostics");
+    await expect(panelDetails).toBeVisible();
+    const panelGroupBox = await panel.locator(".agent-run-group").boundingBox(), panelDetailsBox = await panelDetails.boundingBox();
+    expect(Math.abs((panelGroupBox!.x + panelGroupBox!.width / 2) - (panelDetailsBox!.x + panelDetailsBox!.width / 2))).toBeLessThanOrEqual(1);
+    await panelDetails.evaluate(element => {
+      const long = document.createElement("p");
+      long.textContent = "LongUnbrokenDiagnostic".repeat(100);
+      element.append(long);
+    });
+    expect(await panelDetails.evaluate(element => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
+    const longBox = await panelDetails.boundingBox();
+    expect(longBox!.width).toBeLessThanOrEqual(panelGroupBox!.width + 1);
     await expect(panel.getByRole("button", { name: "停止当前回合", exact: true })).toHaveCount(0);
   });
 });

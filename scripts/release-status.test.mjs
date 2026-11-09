@@ -5,12 +5,13 @@ import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync, realpathSy
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer } from "node:net";
-import { upgradeReleaseStatusDeploy } from "./enable-release-status.mjs";
+import { previousReleaseStatusBlock, releaseStatusBlock, upgradeReleaseStatusDeploy } from "./enable-release-status.mjs";
 const root = resolve(import.meta.dirname, "..");
 const script = readFileSync(join(root, "scripts/deploy.sh"), "utf8");
 test("shared installer is idempotent and preserves coverage, timing and the original exit status", () => {
   const installed = upgradeReleaseStatusDeploy(script);
   assert.equal(installed, script);
+  assert.equal(upgradeReleaseStatusDeploy(script.replace(releaseStatusBlock, previousReleaseStatusBlock)), script);
   const old = script.replace(/# BEGIN RELEASE STATUS[\s\S]*?# END RELEASE STATUS/, 'release_timing_stage build_and_restart\necho "==> Rebuilding and restarting"\nremote "cd \'${target}/deploy\' && sudo env MISSIONGO_RELEASE=\'${commit}\' docker compose --env-file \'${env_file}\' up -d --build"');
   assert.equal(upgradeReleaseStatusDeploy(old), script);
   assert.throws(() => upgradeReleaseStatusDeploy(old.replace("check_release_coverage", "no_coverage")), /guards/);
@@ -95,4 +96,28 @@ test("one installer composes missing timing and status, preserves guards, and re
     const unknown=old.replace('echo "==> Rebuilding and restarting"','echo "different switch"');writeFileSync(path,unknown);
     result=run("--apply");assert.notEqual(result.status,0);assert.equal(readFileSync(path,"utf8"),unknown);
   } finally {rmSync(directory,{recursive:true,force:true});}
+});
+
+test("failure diagnostics distinguish evidence and never include raw command output", () => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "mg-status-reasons-")));
+  try {
+    const bin = join(directory, "bin"); mkdirSync(bin);
+    writeFileSync(join(bin, "sudo"), '#!/bin/sh\nexec "$@"\n', { mode: 0o700 });
+    const setup = `set -eu\ncommit=abc123\nnotice_origin=https://fixture.invalid\nsource '${root}/scripts/release-status.sh'\nremote() { bash -c "$1"; }\nsleep() { :; }\ncurl() { cat "$release_status_directory/status.json"; }\nrelease_status_begin\ntrap 'release_status_finish "$?"' EXIT\n`;
+    for (const [body, reason, stage] of [
+      ['release_failure_stage=restart; release_failure_reason=restart_check_failed; exit 17', 'restart_check_failed', 'restart'],
+      ['curl() { return 28; }; release_status_complete', 'health_timeout', 'health'],
+      ['curl() { return 7; }; release_status_complete', 'health_unavailable', 'health'],
+      ["curl() { printf '%s' 'invalid-private-text'; }; release_status_complete", 'health_invalid', 'health'],
+      ["curl() { printf '%s' '{\"status\":\"ok\",\"release\":\"old\"}'; }; release_status_complete", 'health_mismatch', 'health'],
+    ]) {
+      const result = spawnSync("bash", ["-c", setup + body], { encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, MISSIONGO_RELEASE_STATUS_DIRECTORY: directory } });
+      assert.notEqual(result.status, 0);
+      const text = readFileSync(join(directory, "status.json"), "utf8");
+      const status = JSON.parse(text);
+      assert.equal(status.phase, "failed"); assert.equal(status.failure.reason, reason); assert.equal(status.failure.stage, stage);
+      assert.ok(status.failure.occurredAt <= Date.now());
+      assert.doesNotMatch(text, /invalid-private-text|fixture.invalid/);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });

@@ -32,6 +32,7 @@ import {
   type WorkItemReference,
   type WorkItemReport,
   type WorkItemSnapshot,
+  type WorkItemListRow,
   type WorkItemStatus,
   type WorkItemType,
   type ItemFilters,
@@ -288,6 +289,20 @@ export class MissionGoStore {
 
   constructor(databasePath: string) {
     this.database = new MissionGoDatabase(databasePath);
+    this.database.registerProjectionWriter("item-list-v1", () => this.refreshItemList());
+  }
+
+  private projectionReads: Map<string,unknown> | undefined;
+  /** Only used while deriving display rows, after source writes have finished. */
+  withProjectionReads<T>(read:()=>T):T {
+    if(this.projectionReads)return read();
+    this.projectionReads=new Map();
+    try{return read();}finally{this.projectionReads=undefined;}
+  }
+  private projectionRead<T>(key:string,read:()=>T):T {
+    if(!this.projectionReads)return read();
+    if(!this.projectionReads.has(key))this.projectionReads.set(key,read());
+    return this.projectionReads.get(key) as T;
   }
 
   private isTransferred(itemId: string): boolean {
@@ -1037,7 +1052,15 @@ export class MissionGoStore {
     return { clauses, values };
   }
 
+  listWorkItemRows(input: ListWorkItemsInput): readonly WorkItemListRow[] {
+    return this.queryItemProjection<WorkItemListRow>({...input,projection:"list"});
+  }
+
   listWorkItems(input: ListWorkItemsInput): readonly WorkItemSnapshot[] {
+    return this.queryItemProjection<WorkItemSnapshot>(input);
+  }
+
+  private queryItemProjection<T extends WorkItemSnapshot|WorkItemListRow>(input: ListWorkItemsInput & {projection?:"list"}): readonly T[] {
     this.getProduct(input.productId);
     const limit = input.limit ?? 50;
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
@@ -1051,11 +1074,7 @@ export class MissionGoStore {
     // current status determines list position. Event rowids preserve insertion
     // order even when two changes share the same millisecond timestamp.
     // Comments and edits deliberately do not change that position.
-    const entryOrder = `COALESCE((
-      SELECT MAX(e.rowid) FROM work_item_events e
-      WHERE e.item_id = work_items.id AND e.event_type IN ('item_created', 'status_changed', 'item_transferred_in') AND e.history_source_key IS NULL
-        AND e.to_status = work_items.status
-    ), 0)`;
+    const entryOrder = `COALESCE((SELECT status_order FROM item_list_projection WHERE item_id=work_items.id),0)`;
     if (input.releaseCandidates && input.beforeSequence !== undefined) { clauses.push("sequence < ?"); values.push(input.beforeSequence); }
     else if (input.beforeSequence !== undefined) {
       // The existing cursor is a sequence, but the position it denotes is now
@@ -1073,13 +1092,16 @@ export class MissionGoStore {
 
     const rows = this.database.connection
       .prepare(
-        `SELECT * FROM work_items
+        `SELECT id,item_key,sequence FROM work_items
          WHERE ${clauses.join(" AND ")}
          ORDER BY ${input.releaseCandidates ? "sequence DESC" : `${entryOrder} DESC, sequence DESC`}
          LIMIT ?`,
       )
-      .all(...values) as unknown as WorkItemRow[];
-    return rows.map((row) => this.mapWorkItem(row));
+      .all(...values) as {id:string;item_key:string;sequence:number}[];
+    const projections = this.database.connection.prepare(`SELECT item_id,${input.projection === "list" ? "list_json" : "data_json"} AS data_json
+      FROM item_list_projection WHERE item_id IN (${rows.map(()=>"?").join(",")})`).all(...rows.map(row=>row.id)) as {item_id:string;data_json:string}[];
+    const byId=new Map(projections.map(row=>[row.item_id,JSON.parse(row.data_json) as T]));
+    return rows.map(row=>{const projected=byId.get(row.id);if(!projected)throw new Error("Missing item list projection");return projected;});
   }
 
   getWorkItemListSummary(input: WorkItemListSummaryInput): WorkItemListSummary {
@@ -1103,9 +1125,11 @@ export class MissionGoStore {
   }
 
   getWorkItem(itemKey: string): WorkItemSnapshot {
+    return this.projectionRead("item:"+itemKey.toUpperCase(),()=>{
     const row = this.getWorkItemRow(itemKey);
     if (!row) throw notFound("Work item");
     return this.mapWorkItem(row);
+    });
   }
 
   /** Lightweight key-to-id lookup for hot paths that only need the row id. */
@@ -1500,6 +1524,7 @@ export class MissionGoStore {
    * back as evidence on the next read.
    */
   getTimeline(itemKey: string, options: { includeWithdrawn?: boolean } = {}): readonly WorkItemEventSnapshot[] {
+    return this.projectionRead("timeline:"+itemKey.toUpperCase()+":"+Boolean(options.includeWithdrawn),()=>{
     const item = this.getWorkItemRow(itemKey);
     if (!item) throw notFound("Work item");
     const rows = this.database.connection
@@ -1542,6 +1567,7 @@ export class MissionGoStore {
     const hidden = options.includeWithdrawn ? new Set<string>() : this.getWithdrawnCommentAttachmentIds(itemKey);
     return [...events.filter(event => !hidden.has(event.payload.attachmentId as string)), ...comments]
       .sort((left, right) => sequences.get(left.id)! - sequences.get(right.id)!);
+    });
   }
 
   private commentAsTimelineEntry(comment: WorkItemCommentSnapshot): WorkItemEventSnapshot {
@@ -2528,9 +2554,11 @@ export class MissionGoStore {
   }
 
   private getWorkItemRow(itemKey: string): WorkItemRow | undefined {
+    return this.projectionRead("row:"+itemKey.toUpperCase(),()=>{
     return this.database.connection.prepare("SELECT * FROM work_items WHERE item_key = ?").get(itemKey) as unknown as
       | WorkItemRow
       | undefined;
+    });
   }
 
   private assertComponentsBelongToProduct(productId: string, componentIds: readonly string[]): void {
@@ -2935,6 +2963,39 @@ export class MissionGoStore {
   private collaborationCounts(id:string): Pick<WorkItemSnapshot,"collaboration"> {
     const counts=this.database.connection.prepare("SELECT sum(source_item_id=?) AS sent,sum(target_item_id=?) AS received FROM collaboration_requests WHERE source_item_id=? OR target_item_id=?").get(id,id,id,id) as {sent:number|null;received:number|null};
     return counts.sent||counts.received ? {collaboration:{sent:counts.sent??0,received:counts.received??0,blocking:collaborationBlockers(this.database,id)}} : {};
+  }
+  private refreshItemList() {
+    const ids=new Set((this.database.connection.prepare("SELECT item_id FROM item_list_dirty").all() as {item_id:string}[]).map(row=>row.item_id));
+    // Permission/name changes affect builder labels; target state affects source
+    // collaboration badges. Resolve these from indexed source relations.
+    const changes=this.database.connection.prepare("SELECT kind,id FROM item_list_changes").all() as {kind:string;id:string}[];
+    if(!ids.size && !changes.length)return;
+    for(const change of changes) {
+      const query=change.kind==="token" ? `SELECT e.item_id AS id FROM work_item_events e JOIN feedback_drafts d ON d.id=json_extract(e.payload_json,'$.feedbackDraftId') WHERE e.event_type='item_created' AND d.access_token_id=?`
+        : change.kind==="account" ? "SELECT id FROM work_items WHERE builder_account_id=?"
+        : change.kind==="product" ? "SELECT id FROM work_items WHERE product_id=?"
+        : `SELECT source_item_id AS id FROM collaboration_requests WHERE target_item_id=?
+           UNION SELECT target_item_id FROM collaboration_requests WHERE source_item_id=?
+           UNION SELECT id FROM work_items WHERE derived_from_item_id=?
+           UNION SELECT derived_from_item_id FROM work_items WHERE id=? AND derived_from_item_id IS NOT NULL`;
+      for(const row of this.database.connection.prepare(query).all(...(change.kind==="item"?[change.id,change.id,change.id,change.id]:[change.id])) as {id:string}[])ids.add(row.id);
+    }
+    this.database.connection.prepare("DELETE FROM item_list_dirty").run();
+    this.database.connection.prepare("DELETE FROM item_list_changes").run();
+    for(const id of ids) {
+      const row=this.database.connection.prepare("SELECT * FROM work_items WHERE id=?").get(id) as WorkItemRow|undefined;
+      if(!row)continue;
+      const snapshot=this.mapWorkItem(row), report=snapshot.report;
+      const {description:_description,report:_report,attachments:_attachments,diagnosticSummary:_diagnostic,...base}=snapshot;
+      const list={...base,projection:"list",listSummary:{
+        overview:(report?.overview??snapshot.description).slice(0,500),hasReproduction:Boolean(report?.reproductionSteps),
+        diagnosticSummary:snapshot.diagnosticSummary,attachmentCount:snapshot.attachments.length,
+        media:snapshot.attachments.filter(a=>!a.commentId&&!a.transitionEventId&&["image","video"].includes(a.kind)),
+      }};
+      this.database.connection.prepare("INSERT OR REPLACE INTO item_list_projection VALUES (?,?,?,?,1)").run(id,JSON.stringify(snapshot),JSON.stringify(list),
+        (this.database.connection.prepare(`SELECT COALESCE(MAX(rowid),0) AS n FROM work_item_events WHERE item_id=?
+          AND event_type IN ('item_created','status_changed','item_transferred_in') AND history_source_key IS NULL AND to_status=?`).get(id,row.status) as {n:number}).n);
+    }
   }
   private mapWorkItem(row: WorkItemRow): WorkItemSnapshot {
     const environment = parseEnvironment(row.environment_json);

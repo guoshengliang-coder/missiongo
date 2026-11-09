@@ -40,6 +40,8 @@ async function openListMenu(page: Page, key: string, status = "all") {
   const row = page.locator(".item-row").filter({ has: page.locator("code", { hasText: new RegExp(`^${key}$`) }) });
   const menu = row.locator(".row-more-menu");
   await menu.locator(":scope > summary").click();
+  // Compact list rows load complete operation data when opening the menu.
+  await expect(menu.locator(".detail-action-group").first()).toBeVisible();
   return { row, menu };
 }
 
