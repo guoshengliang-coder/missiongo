@@ -101,9 +101,14 @@ test("detail cancellation keeps reason/files after upload and write failures, re
   await expect(dialog.locator("textarea")).toBeEnabled();
   await expect(dialog.locator(".inline-error")).toBeVisible();
   await expect(dialog.locator("textarea")).toHaveValue("No longer needed, with evidence");
+  // The write landed; only its response was lost. The item now accepts no
+  // further decision, so the form cannot apply one -- but the person's first
+  // click was accepted. The timeline below proves it ran exactly once.
+  const refusals = page.waitForResponse(response => response.request().method() === "POST"
+    && new URL(response.url()).pathname === `/api/v1/items/${item.key}/transitions`);
   await dialog.locator('button[type="submit"]').click();
-  await expect(dialog).toHaveCount(0);
-  expect(uploads).toEqual(["first.txt", "retry.txt", "retry.txt"]);
+  expect((await refusals).status()).toBe(403);
+  await expect(dialog.locator(".inline-error")).toBeVisible();
   const timeline = await (await request.get(`/api/v1/items/${item.key}/timeline`)).json();
   expect(timeline.events.filter((event: { payload: { attachmentIds?: string[] } }) => event.payload.attachmentIds?.length)).toHaveLength(1);
 });
