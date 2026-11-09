@@ -58,10 +58,11 @@ for (const kind of ["opencode", "codex", "claude_code"]) for (const phone of [tr
     status = "unavailable";
     await advanceSessionListPoll(page);
     await expect(page.locator(".agent-console-activity-unavailable")).toBeVisible({ timeout: 10_000 });
-    // Native idle remains idle even when a reply is still waiting in MissionGo.
+    // AND-487: a reply still on its way reads as queued work, not native idle.
     progressed = true; accepted = false; status = "idle";
     await advanceSessionListPoll(page);
-    await expect(page.locator(".agent-console-activity-idle")).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator(".agent-console-activity-active")).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator(".agent-console-activity-active")).toContainText("排队中");
     await expect(page.locator(".agent-console-background")).toHaveCount(0);
     expect(inputs).toEqual([]);
     await context.close();
