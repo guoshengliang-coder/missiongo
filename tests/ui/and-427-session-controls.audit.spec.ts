@@ -79,7 +79,9 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
         expect(Math.abs(beforeStop!.x - afterStop!.x)).toBeLessThanOrEqual(1);
         expect(Math.abs((before!.y - beforeStop!.y) - (after!.y - afterStop!.y))).toBeLessThanOrEqual(1);
         const diagnostics = await page.locator(".agent-run-diagnostics").boundingBox();
-        expect(Math.abs(diagnostics!.x - after!.x)).toBeLessThanOrEqual(1);
+        expect(Math.abs((diagnostics!.x + diagnostics!.width / 2) - (group!.x + group!.width / 2))).toBeLessThanOrEqual(1);
+        expect(diagnostics!.width).toBeLessThanOrEqual(group!.width + 1);
+        if (width >= 1024) expect(diagnostics!.width).toBeLessThan(group!.width / 2);
         // Single-pane phones and wide conversations fit both short controls.
         // Narrow split panes retain normal wrapping rather than shrinking touch targets.
         if (width <= 520 || width >= 1024) expect(Math.abs(after!.y - afterStop!.y), `${width}px ${scale}: action row alignment`).toBeLessThanOrEqual(1);
@@ -120,8 +122,16 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
     await panelSummary.click();
     const panelDetails = panel.locator(".agent-run-diagnostics");
     await expect(panelDetails).toBeVisible();
-    const panelSummaryBox = await panelSummary.boundingBox(), panelDetailsBox = await panelDetails.boundingBox();
-    expect(Math.abs(panelSummaryBox!.x - panelDetailsBox!.x)).toBeLessThanOrEqual(1);
+    const panelGroupBox = await panel.locator(".agent-run-group").boundingBox(), panelDetailsBox = await panelDetails.boundingBox();
+    expect(Math.abs((panelGroupBox!.x + panelGroupBox!.width / 2) - (panelDetailsBox!.x + panelDetailsBox!.width / 2))).toBeLessThanOrEqual(1);
+    await panelDetails.evaluate(element => {
+      const long = document.createElement("p");
+      long.textContent = "LongUnbrokenDiagnostic".repeat(100);
+      element.append(long);
+    });
+    expect(await panelDetails.evaluate(element => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
+    const longBox = await panelDetails.boundingBox();
+    expect(longBox!.width).toBeLessThanOrEqual(panelGroupBox!.width + 1);
     await expect(panel.getByRole("button", { name: "停止当前回合", exact: true })).toHaveCount(0);
   });
 });
