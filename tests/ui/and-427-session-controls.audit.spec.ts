@@ -81,7 +81,8 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"] as cons
         const diagnostics = await page.locator(".agent-run-diagnostics").boundingBox();
         expect(Math.abs((diagnostics!.x + diagnostics!.width / 2) - (group!.x + group!.width / 2))).toBeLessThanOrEqual(1);
         expect(diagnostics!.width).toBeLessThanOrEqual(group!.width + 1);
-        if (width >= 1024) expect(diagnostics!.width).toBeLessThan(group!.width / 2);
+        expect(Math.abs(diagnostics!.x - controls!.x)).toBeLessThanOrEqual(1);
+        expect(Math.abs(diagnostics!.width - controls!.width)).toBeLessThanOrEqual(1);
         // Single-pane phones and wide conversations fit both short controls.
         // Narrow split panes retain normal wrapping rather than shrinking touch targets.
         if (width <= 520 || width >= 1024) expect(Math.abs(after!.y - afterStop!.y), `${width}px ${scale}: action row alignment`).toBeLessThanOrEqual(1);
