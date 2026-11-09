@@ -20,8 +20,8 @@
       "sha256": "7d02ced1ceb174fd6a31e0ac7bd22bfe9b8be7b78d71e4c2153566bd1c2c7e29"
     },
     "androidApp": {
-      "version": "0.1.20",
-      "commit": "f7cba0d60a40a86a5e4299959dfa7e869472e0b5",
+      "version": "0.1.21",
+      "commit": "3665f9064bb54c3701365159a46aff8a069f1d0c",
       "versionFile": "sdks/android-feedback/gradle.properties",
       "versionProperty": "missiongoAndroidVersionName",
       "paths": [
