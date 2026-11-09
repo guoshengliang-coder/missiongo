@@ -8,8 +8,11 @@ export async function refreshFromConsoleStream(page: Page) {
     const original = window.fetch;
     window.fetch = async (input, init) => {
       if (!String(input).startsWith("/api/v1/console/events")) return original(input, init);
-      window.fetch = original;
+      // A pending reconnect timer can abort this fetch before its headers
+      // arrive; stay installed until one stream start actually succeeds so
+      // the synthetic reset is never lost to that race.
       const response = await original(input, init);
+      window.fetch = original;
       const reader = response.body!.getReader();
       const body = new ReadableStream<Uint8Array>({
         start(controller) {

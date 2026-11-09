@@ -275,7 +275,6 @@ for (const viewport of [
 
         // Confirmed history comes from the session, independently of new drafts.
         state.deliverReply();
-        await advanceSessionDetailPoll(page);
         const answeredIndex = state.messages.findIndex((message) => message.id === "questions");
         const answered = state.messages[answeredIndex]!;
         state.messages[answeredIndex] = { ...answered,
@@ -283,6 +282,7 @@ for (const viewport of [
             ...question, answered: ["方案 B", "项目 B", "否"][index],
           })),
         };
+        await advanceSessionDetailPoll(page);
         await expect(option("方案 B")).toBeDisabled();
         await expect(option("方案 B")).toHaveClass("selected");
         await reply.fill("接下来我想补充说明");
