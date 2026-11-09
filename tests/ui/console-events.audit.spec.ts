@@ -65,3 +65,44 @@ test("journal reset rebuilds the mounted page and preserves the saved comment dr
  expect((await sent).ok()).toBe(true);
  await expect(composer.locator(".agent-chat-draft-files")).toHaveCount(0);
 });
+
+for(const loseResponse of [false,true])test(`active send survives reset and settles once, lost response ${loseResponse}`,async({page})=>{
+ const item=await (await page.request.post("/api/v1/items",{data:{productId:fixture.productId,type:"note",priority:"normal",title:"Send across reset",description:"",environment:{platform:"web"}}})).json();
+ await page.goto(`/?product=${fixture.productId}&status=all&item=${item.key}`);
+ const composer=page.locator(".comment-form"),send=composer.locator('button[type="submit"]'),text=composer.locator("textarea");
+ await text.fill("one intended comment");
+ await composer.locator('input[type=file]').setInputFiles({name:"send.txt",mimeType:"text/plain",buffer:Buffer.from("send evidence")});
+ let release!:()=>void,entered!:()=>void;const gate=new Promise<void>(r=>release=r),waiting=new Promise<void>(r=>entered=r);
+ let held=false;const keys:string[]=[];
+ await page.route(`**/api/v1/items/${item.key}/comments`,async route=>{
+  if(route.request().method()!=="POST"){await route.continue();return;}
+  keys.push(route.request().postDataJSON().idempotencyKey);
+  if(!held){held=true;const response=await route.fetch();entered();await gate;
+   if(loseResponse)await route.abort("failed");else await route.fulfill({response});
+  }else await route.continue();
+ });
+ await send.click();await waiting;
+ const bootstrap=page.waitForResponse(r=>new URL(r.url()).pathname==="/api/v1/bootstrap");
+ await refreshFromConsoleStream(page);await bootstrap;
+ await expect(composer).toBeVisible();await expect(send).toBeDisabled();await expect(text).toBeDisabled();
+ // Even a synthetic submit must not launch another mutation while remounted.
+ await composer.dispatchEvent("submit");expect(keys).toHaveLength(1);
+ release();
+ if(loseResponse){
+  await expect(composer.locator(":scope > .inline-error")).toBeVisible();
+  await expect(text).toHaveValue("one intended comment");
+  await expect(composer.locator(".agent-chat-draft-files")).toContainText("send.txt");
+  await expect(send).toBeEnabled();await send.click();
+  await expect.poll(()=>keys.length).toBe(2);expect(keys[1]).toBe(keys[0]);
+ }
+ await expect(text).toHaveValue("");await expect(text).toBeEnabled();
+ await expect(composer.locator(".agent-chat-draft-files")).toHaveCount(0);
+ const comments=await (await page.request.get(`/api/v1/items/${item.key}/comments`)).json();expect(comments.comments).toHaveLength(1);
+ const attachments=await (await page.request.get(`/api/v1/items/${item.key}/attachments`)).json();expect(attachments.attachments).toHaveLength(1);
+ await text.fill("new unsent draft");
+ await composer.locator('input[type=file]').setInputFiles({name:"next.txt",mimeType:"text/plain",buffer:Buffer.from("next draft")});
+ await page.waitForTimeout(100);
+ await expect(text).toHaveValue("new unsent draft");await expect(composer.locator(".agent-chat-draft-files")).toContainText("next.txt");
+ const persisted=await page.evaluate(()=>Object.keys(localStorage).filter(k=>k.startsWith("missiongo.comment-draft")).map(k=>localStorage.getItem(k)));
+ expect(persisted.some(raw=>raw?.includes("new unsent draft"))).toBe(true);
+});

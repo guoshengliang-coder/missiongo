@@ -32,7 +32,7 @@ import { DetailStatusList, detailStatusItems } from "./detail-status";
 import { CommentDingTalkNotifications, useItemDingTalkNotifications } from "./dingtalk-settings";
 import { CommentMoreActions } from "./comment-actions";
 import { COMMENT_CATEGORIES, useCommentFilters } from "./comment-filters";
-import {EMPTY_COMMENT_DRAFT,useCommentDraft,useCommentFiles,type CommentDraft} from "./comment-draft";
+import {useCommentDraft,useCommentFiles,type CommentDraft} from "./comment-draft";
 import {useBeforeUnloadGuard} from "./unsaved-changes";
 import { statisticsIsOpen, statisticsUrl, statisticsExitUrl } from "./statistics-state";
 import { useOverlay, OverlayMenu } from "./overlay";
@@ -3329,10 +3329,9 @@ function CommentComposer({ accountId, idPrefix="", item, onPosted, onNotice, rep
   const replyName=replyTo ? commentAuthor({...replyTo,agentName:eventAgentName(replyTo.payload)},actorLabel(replyTo.actorKind)) : "";
   const replyExcerpt=replyTo ? deriveSummary(typeof replyTo.payload.summary==="string" && replyTo.payload.summary.trim()
     ? replyTo.payload.summary : commentPlainText(replyTo.payload.bodyKind,(replyTo.payload.body ?? {}) as Readonly<Record<string,unknown>>),160) || t("commentAttachmentQuote") : "";
-  const {files,setFiles,uploaded,uploadIds}=useCommentFiles(accountId,item.key,idPrefix);
+  const {files,setFiles,uploaded,uploadIds,attempt,sending,failure,beginSend,finishSend,saveAttempt}=useCommentFiles(accountId,item.key,idPrefix?"messages":undefined);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const attempt = useRef(draft.attempt ?? { fingerprint: "", key: "" });
   const existingIds = new Set(item.attachments.map(attachment => attachment.id));
   const selectedAlreadyCounted = files.filter(file => existingIds.has(uploaded.current.get(file) ?? "")).length;
   // Server caps one comment at 10 attachment references; uploads also draw on the item budget.
@@ -3343,6 +3342,8 @@ function CommentComposer({ accountId, idPrefix="", item, onPosted, onNotice, rep
     mutationFn: async () => {
       if(draft.replyToCommentId && !replyTo)throw new Error(t("commentDraftReplyUnavailable"));
       if(missingDraftFiles)throw new Error(t("commentDraftFilesMissing"));
+      const revision=beginSend();
+      try {
       const attachmentIds: string[] = [];
       for (const file of files) {
         let id = uploaded.current.get(file);
@@ -3357,36 +3358,38 @@ function CommentComposer({ accountId, idPrefix="", item, onPosted, onNotice, rep
       const audience={...mentionAudience(mentions),...(replyTo?{replyToCommentId:replyTo.id}:{})};
       const fingerprint = JSON.stringify({ text: text.trim(), attachmentIds, ...audience });
       if (attempt.current.fingerprint !== fingerprint) attempt.current = { fingerprint, key: crypto.randomUUID() };
-      onDraftChange(current=>({...current,attempt:attempt.current}));
-      return api.createComment(item.key, { text: text.trim(), attachmentIds, ...audience, idempotencyKey: attempt.current.key });
+      saveAttempt();
+      const comment=await api.createComment(item.key, { text: text.trim(), attachmentIds, ...audience, idempotencyKey: attempt.current.key });
+      return {comment,revision};
+      } catch(error){finishSend(revision,false,error);throw error;}
     },
-    onSuccess: async () => {
-      onDraftChange(EMPTY_COMMENT_DRAFT);setCursor(0);onCancelReply(); setFiles([]); setError(null); uploaded.current.clear(); uploadIds.current.clear(); attempt.current = { fingerprint: "", key: "" };
+    onSuccess: async ({revision}) => {
+      if(finishSend(revision,true)){setCursor(0);setError(null);}
       await onPosted(); onNotice(t("commentPosted"));
     },
     onError: async (failure) => { setError(errorMessage(failure, t("somethingWentWrong"))); await onPosted(); },
   });
   const addFiles = (incoming: readonly File[]) => {
-    if (mutation.isPending) return;
+    if ((sending || mutation.isPending)) return;
     const result = validateIncomingFiles(files, incoming, t, capacity);
     setFiles(result.files); setError(result.error ?? null);
     if(result.files.length)onDraftChange(current=>({...current,attachmentNames:result.files.map(file=>file.name)}));
   };
-  useBeforeUnloadGuard(mutation.isPending || files.length>0 || storageFailed && Boolean(text));
-  const { isDraggingFiles, dropHandlers } = useFileDropZone(addFiles, { canAccept: remaining > 0 && !mutation.isPending });
-  useDialogDraft(files.length>0 || storageFailed && Boolean(text),mutation.isPending);
+  useBeforeUnloadGuard((sending || mutation.isPending) || files.length>0 || storageFailed && Boolean(text));
+  const { isDraggingFiles, dropHandlers } = useFileDropZone(addFiles, { canAccept: remaining > 0 && !(sending || mutation.isPending) });
+  useDialogDraft(files.length>0 || storageFailed && Boolean(text),(sending || mutation.isPending));
   return <form className="comment-form detail-composer" aria-label={t("addComment")} {...dropHandlers}
     onPaste={event => { const incoming = Array.from(event.clipboardData.files); if (incoming.length) { event.preventDefault(); addFiles(incoming); } }}
-    onSubmit={event => { event.preventDefault(); if (!mutation.isPending && !missingDraftFiles && (!draft.replyToCommentId || replyTo) && (text.trim() || files.length)) mutation.mutate(); }}>
+    onSubmit={event => { event.preventDefault(); if (!(sending || mutation.isPending) && !missingDraftFiles && (!draft.replyToCommentId || replyTo) && (text.trim() || files.length)) mutation.mutate(); }}>
     {isDraggingFiles && <FileDropOverlay remaining={remaining} />}
-    <fieldset disabled={mutation.isPending}>
+    <fieldset disabled={(sending || mutation.isPending)}>
       {replyTo && <div className="comment-reply-context">
         <button type="button" className="comment-reply-source" onClick={onLocateReply} title={t("viewOriginalComment")}><strong>{t("commentReplyTo",{name:replyName})}</strong><span>{replyExcerpt}</span></button>
         <button type="button" className="comment-cancel-reply" aria-label={t("cancelReply")} title={t("cancelReply")} onClick={onCancelReply}><X size={16} aria-hidden="true" /></button>
       </div>}
       <label className="sr-only" htmlFor={`${idPrefix}comment-draft`}>{t("addComment")}</label>
       {files.length > 0 && <div className="agent-chat-draft-files">
-        {files.map((file, index) => <DraftChatFile key={`${file.name}-${file.lastModified}-${index}`} file={file} disabled={mutation.isPending}
+        {files.map((file, index) => <DraftChatFile key={`${file.name}-${file.lastModified}-${index}`} file={file} disabled={(sending || mutation.isPending)}
           onRemove={() => {const next=files.filter((_,fileIndex)=>fileIndex!==index);setFiles(next);onDraftChange(current=>({...current,attachmentNames:next.map(file=>file.name)}));}} />)}
       </div>}
           {query && <div className="comment-mention-menu" role="listbox" id={`${idPrefix}comment-mention-list`} aria-label={t("mentionPeople")}>
@@ -3394,7 +3397,7 @@ function CommentComposer({ accountId, idPrefix="", item, onPosted, onNotice, rep
               onMouseDown={event=>event.preventDefault()} onClick={()=>chooseMention(choice)}><strong>{choice.label}</strong>{choice.detail && <small>{choice.detail}</small>}</button>):<p>{t("mentionNoPeople")}</p>}
           </div>}
       <div className="detail-composer-row">
-        <button type="button" className="secondary-button agent-chat-icon-button" disabled={remaining < 1 || mutation.isPending}
+        <button type="button" className="secondary-button agent-chat-icon-button" disabled={remaining < 1 || (sending || mutation.isPending)}
           title={t("addAttachments")} aria-label={t("addAttachments")} onClick={() => fileInputRef.current?.click()}><Plus size={18} /></button>
         <div className="comment-input-wrap" role="combobox" aria-label={t("mentionPeople")} aria-expanded={Boolean(query)} aria-controls={query?`${idPrefix}comment-mention-list`:undefined}>
           <AutoGrowTextarea id={`${idPrefix}comment-draft`} value={text} onChange={event=>updateText(event.target.value,event.target.selectionStart)}
@@ -3412,18 +3415,18 @@ function CommentComposer({ accountId, idPrefix="", item, onPosted, onNotice, rep
         <div className="agent-chat-send-actions">
           <input ref={fileInputRef} type="file" multiple hidden accept="image/png,image/jpeg,image/webp,image/gif,image/heic,video/mp4,video/quicktime,video/webm,.log,.md,.txt,.csv,.json,.pdf,.html,.zip"
             onChange={event => { addFiles(Array.from(event.currentTarget.files ?? [])); event.currentTarget.value = ""; }} />
-          <button type="submit" className="primary-button agent-chat-icon-button" disabled={!(text.trim() || files.length) || mutation.isPending || missingDraftFiles || Boolean(draft.replyToCommentId && !replyTo)}
-            title={t(mutation.isPending ? "commentSending" : "commentSend")} aria-label={t(mutation.isPending ? "commentSending" : "commentSend")}>
-            {mutation.isPending ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />}
+          <button type="submit" className="primary-button agent-chat-icon-button" disabled={!(text.trim() || files.length) || (sending || mutation.isPending) || missingDraftFiles || Boolean(draft.replyToCommentId && !replyTo)}
+            title={t((sending || mutation.isPending) ? "commentSending" : "commentSend")} aria-label={t((sending || mutation.isPending) ? "commentSending" : "commentSend")}>
+            {(sending || mutation.isPending) ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />}
           </button>
         </div>
       </div>
     </fieldset>
-    {error && <InlineError message={error} role="alert" />}
+    {Boolean(error || failure) && <InlineError message={error ?? errorMessage(failure,t("somethingWentWrong"))} role="alert" />}
     {storageFailed && <p className="detail-composer-hint" role="alert">{t("commentDraftSaveFailed")}</p>}
     {replyUnavailable && <p className="detail-composer-hint" role="status">{t("commentDraftReplyUnavailable")} <button type="button" className="text-button" onClick={onCancelReply}>{t("commentDraftAsNew")}</button></p>}
     {missingDraftFiles && <p className="detail-composer-hint" role="status">{t("commentDraftFilesMissing")} <button type="button" className="text-button" onClick={()=>onDraftChange(current=>({...current,attachmentNames:[]}))}>{t("commentDraftFilesDismiss")}</button></p>}
-    {mutation.isError && uploaded.current.size > 0 && <p className="detail-composer-hint">{t("commentUploadRetained")}</p>}
+    {(mutation.isError || Boolean(failure)) && uploaded.current.size > 0 && <p className="detail-composer-hint">{t("commentUploadRetained")}</p>}
   </form>;
 }
 
