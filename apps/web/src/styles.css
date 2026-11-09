@@ -309,6 +309,10 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .agent-console-topbar-more-menu button { width: 100%; min-height: 42px; display: flex; align-items: center; gap: 8px; padding: 0 10px; color: var(--ink); background: transparent; border: 0; border-radius: var(--radius-sm); text-align: left; white-space: nowrap; cursor: pointer; }
 @media (hover: hover) { .agent-console-topbar-more-menu button:hover { background: var(--row-hover); } }
 .offline-banner { position: fixed; top: 82px; right: 18px; z-index: 35; display: inline-flex; align-items: center; gap: 7px; padding: 9px 11px; color: var(--warn-text); background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: var(--radius-md); box-shadow: var(--shadow); font-size: var(--text-sm); font-weight: 700; }
+.offline-banner > svg { flex-shrink: 0; }
+.offline-banner > span { min-width: 0; }
+.offline-banner .text-button { flex: 0 0 auto; min-width: 44px; min-height: 44px; white-space: nowrap; }
+
 
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand-mark {
@@ -857,8 +861,6 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .workspace-head h1 { margin: 0; font-size: clamp(27px, 3vw, 38px); letter-spacing: -0.045em; line-height: 1; }
 .workspace-head-side { display: flex; align-items: center; gap: 22px; }
 .refresh-button { width: 44px; min-height: 44px; padding: 0; display: inline-grid; place-items: center; flex: 0 0 auto; }
-/* A background re-read on return to the foreground; small and out of the way. */
-.sync-indicator { display: inline-flex; align-items: center; flex: 0 0 auto; color: var(--muted); }
 .workspace-stats { display: flex; gap: 22px; color: var(--muted); font-size: var(--text-sm); }
 .workspace-stats strong { margin-right: 4px; color: var(--ink); font-size: 17px; }
 

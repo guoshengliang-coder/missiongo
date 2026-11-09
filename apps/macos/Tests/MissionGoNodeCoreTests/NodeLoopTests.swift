@@ -232,6 +232,19 @@ private struct RecoveringAdapter: AgentAdapter {
     }
 }
 
+private struct ProbeReportingAdapter: AgentAdapter {
+    let kind = "codex"
+    let confirmed = Locked(false)
+    let detections = Locked(0)
+    func detect() async -> String? { nil }
+    func detectionReport() async -> DetectedAgent? {
+        detections.withLock { $0 += 1 }
+        return confirmed.current ? DetectedAgent(kind: kind, version: "0.154.0")
+            : DetectedAgent(kind: kind, version: "", ready: false, unavailableReason: "Codex probe unconfirmed")
+    }
+    func launch(_ job: DispatchJob) async throws -> LaunchResult { throw LaunchError("Not used") }
+}
+
 private struct UnavailableAdapter: AgentAdapter {
     let kind: String
     let reason: String
@@ -656,6 +669,41 @@ final class NodeLoopTests: XCTestCase {
         task.cancel()
         try await task.value
         XCTAssertEqual(loop.currentState.agents.first?.skill?.localVersion, "5.14.0")
+    }
+
+    func testUnconfirmedInstalledProbeIsReportedUnreadyAndRetriedBeforeCaching() async throws {
+        let api = FakeAPI(claims: [])
+        let adapter = ProbeReportingAdapter()
+        let other = RecoveringAdapter()
+        var timing = fastTiming()
+        timing.agentDetectTTL = 0.15
+        let loop = NodeLoop(api: api, adapters: [adapter, other], fallbackNodeName: "Fixture", timing: timing, log: { _ in })
+        let task = Task { try await loop.run() }
+        defer { task.cancel() }
+        await waitUntil { api.heartbeats.current.count >= 3 }
+        XCTAssertGreaterThanOrEqual(adapter.detections.current, 3)
+        let reports = api.heartbeats.current
+        for report in reports {
+            XCTAssertEqual(report.first(where: { $0.kind == "codex" })?.ready, false)
+            XCTAssertEqual(report.first(where: { $0.kind == "codex" })?.unavailableReason, "Codex probe unconfirmed")
+        }
+        XCTAssertTrue(reports.last?.contains(where: { $0.kind == "claude_code" }) == true)
+        // Readiness from default resource/skill implementations cannot upgrade a failed probe.
+        let claimCount = api.calls.current.filter { $0.hasPrefix("claim:") && $0.contains("codex") }.count
+        let beats = api.heartbeats.current.count
+        await waitUntil { api.heartbeats.current.count >= beats + 2 }
+        XCTAssertEqual(api.calls.current.filter { $0.hasPrefix("claim:") && $0.contains("codex") }.count, claimCount)
+        adapter.confirmed.withLock { $0 = true }
+        await waitUntil { api.heartbeats.current.last?.first(where: { $0.kind == "codex" })?.version == "0.154.0" }
+        let recoveredCount = adapter.detections.current
+        let recoveredBeats = api.heartbeats.current.count
+        await waitUntil { api.heartbeats.current.count > recoveredBeats }
+        XCTAssertEqual(adapter.detections.current, recoveredCount, "A successful result uses the normal TTL")
+        adapter.confirmed.withLock { $0 = false }
+        await waitUntil { api.heartbeats.current.last?.first(where: { $0.kind == "codex" })?.ready == false }
+        XCTAssertGreaterThan(adapter.detections.current, recoveredCount, "Cache expiry rechecks installation health")
+        task.cancel()
+        try await task.value
     }
 
     func testMissingAgentIsDetectedAgainOnTheNextHeartbeat() async throws {

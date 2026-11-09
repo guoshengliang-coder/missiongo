@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { expect, test, type Page } from "@playwright/test";
+import { waitForNetworkQuiet } from "./polling";
 
 /**
  * The console entry leaves the phone topbar (AND-374).
@@ -24,7 +25,7 @@ test.describe("phone portrait", () => {
 
   test("floats above the capture button and replaces the topbar entry", async ({ page }) => {
     await page.goto(LIST_URL);
-    await page.waitForLoadState("networkidle");
+    await waitForNetworkQuiet(page);
 
     const fab = page.locator(".ai-console-fab");
     await expect(fab).toBeVisible();
@@ -44,7 +45,7 @@ test.describe("phone portrait", () => {
 
   test("shows no console entry on a detail page", async ({ page }) => {
     await page.goto(DETAIL_URL);
-    await page.waitForLoadState("networkidle");
+    await waitForNetworkQuiet(page);
 
     await expect(page.locator(".ai-console-fab")).toBeHidden();
     await expect(page.locator(".topbar .ai-console-toggle")).toBeHidden();
@@ -56,7 +57,7 @@ test.describe("phone landscape", () => {
 
   test("keeps the topbar entry once there is width for it", async ({ page }) => {
     await page.goto(LIST_URL);
-    await page.waitForLoadState("networkidle");
+    await waitForNetworkQuiet(page);
 
     await expect(page.locator(".ai-console-fab")).toBeHidden();
     await expect(page.locator(".topbar .ai-console-toggle")).toBeVisible();
@@ -69,14 +70,14 @@ test.describe("unread count", () => {
   test("draws the badge only when something is unread", async ({ page }) => {
     await stubUnreadSession(page, fixture.productId);
     await page.goto(LIST_URL);
-    await page.waitForLoadState("networkidle");
+    await waitForNetworkQuiet(page);
 
     await expect(page.locator(".ai-console-fab .agent-unread-badge")).toHaveText("1");
   });
 
   test("draws no badge at zero", async ({ page }) => {
     await page.goto(LIST_URL);
-    await page.waitForLoadState("networkidle");
+    await waitForNetworkQuiet(page);
 
     await expect(page.locator(".ai-console-fab")).toBeVisible();
     await expect(page.locator(".ai-console-fab .agent-unread-badge")).toHaveCount(0);

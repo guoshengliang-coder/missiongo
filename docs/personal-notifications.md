@@ -2,7 +2,8 @@
 
 首页保留现有布局。PC 顶栏固定为搜索图标、待处理入口与录入；紧凑外壳中的待处理入口在右侧。
 角标 = 未处理待办数 + 独立有效未读通知数。
-零时隐藏数字但保留入口，超过 99 显示 99+。分类数字可直接相加；兼容字段 `coveredUnreadCount` 固定返回 0。
+零时隐藏数字但保留入口，超过 99 显示 99+。兼容字段 `coveredUnreadCount` 固定返回 0。分类数量显示在项目筛选里，不重复放在「待办 / 通知」标签上（AND-493）：
+每个项目显示自己的待办数或有效未读通知数，「全部项目」显示当前分类的总数。
 
 ## 待办与通知
 
@@ -52,7 +53,7 @@ Agent 会话的未读数保持独立。搜索展开后自动聚焦，支持 Cmd/
 
 以下接口仅接受已登录账号，客户端不能指定其他接收账号：
 
-- `GET /api/v1/attention/count`：待处理合并计数、待办数、独立有效未读数，兼容重合字段固定为 0。
+- `GET /api/v1/attention/count`：待处理合并计数、待办数、独立有效未读数，兼容重合字段固定为 0；`todoByProduct` 与 `unreadByProduct` 按可访问项目给出各自数量，供筛选框展示。
 - `GET /api/v1/attention/todos`：最新创建的待验证条目优先，每页 50 条；支持 productId、beforeSequence，返回下一页游标。
 - `GET /api/v1/notifications`：最新 50 条；支持 unread、productId、kind、beforeSequence，返回下一页游标及 throughSequence。
 - `GET /api/v1/notifications/unread-count`：当前可访问且尚未结束提醒的未读数（不等于首页待处理数）。

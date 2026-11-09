@@ -76,12 +76,13 @@ for (const width of [375, 1440]) {
     await page.getByRole("button", { name: "待处理", exact: true }).click();
     await page.getByRole("button", { name: /^通知/ }).click();
     await page.locator(".message-list-row").filter({ hasText: item.key }).click();
-    await page.getByRole("button", { name: "前往评论 / 回复", exact: true }).click();
-    const business = page.locator(".message-business-modal");
-    await business.locator(".detail-toolbar .detail-more-menu > summary").click();
-    await business.getByRole("button", { name: "迁移条目", exact: true }).click();
+    // The attention center now embeds the full item detail directly (AND-494);
+    // the old "前往评论 / 回复" jump into a business modal is gone.
+    const nested = page.locator(".message-center-layer .message-detail-pane .detail-pane");
+    await nested.locator(".detail-toolbar .detail-more-menu > summary").click();
+    await nested.getByRole("button", { name: "迁移条目", exact: true }).click();
     const transfer = page.getByRole("dialog", { name: "迁移条目", exact: true });
-    await expect.poll(() => page.evaluate(() => history.state?.["missiongo:dialogs"]?.length ?? 0)).toBeGreaterThanOrEqual(3);
+    await expect.poll(() => page.evaluate(() => history.state?.["missiongo:dialogs"]?.length ?? 0)).toBeGreaterThanOrEqual(2);
     await chooseOption(transfer.getByLabel("目标产品"), target.id);
     await transfer.getByRole("button", { name: "下一步", exact: true }).click();
     await transfer.getByRole("button", { name: "迁移条目", exact: true }).click();

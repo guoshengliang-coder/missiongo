@@ -1,5 +1,16 @@
 # CI 性能与耗时报告
 
+## 服务端长轮询契约与同步热路径预算
+
+`npm run check` 增加真实 HTTP 的 2 秒空领取下限/断连清理契约，以及串行的
+200 条目 × 200 事件关联夹具性能预算。版本化配置、独立轻量接口校准、完整采样、
+实测/建议预算和灰度记录规则见 [服务端性能说明](../tests/performance/README.md)。
+
+性能预算本地严格执行，CI 初始为 advisory；超预算会告警并保存报告，但不阻断合并。
+配置/夹具错误及 HTTP 正确性断言仍失败，不吞掉其他 check 结果。
+至少一周有效日常样本且经审阅零误报，才能另行评审切换 blocking；当前不宣称已完成观察。
+CI Summary 与 `server-performance-<attempt>` 制品保留实测、校准及阶段耗时，不能把绿色 CI 当作预算通过。
+
 ## macOS 编译缓存
 
 `macos-build` 使用 `actions/cache` 保存 `apps/macos/.build`。测试和通用架构打包仍每次执行，

@@ -1477,6 +1477,35 @@ final class CodexAppServerControlTests: XCTestCase {
 }
 
 final class CodexPreflightTests: XCTestCase {
+    func testAbsentCodexIsMissingRatherThanAnUnconfirmedInstalledAgent() async {
+        let report = await CodexPreflight.detectionReport(binary: nil, run: { _, _ in
+            XCTFail("An absent executable must not start a command")
+            return ok("")
+        })
+        XCTAssertNil(report)
+    }
+
+    func testInstalledCodexProbeFailureIsUnreadyWithoutLeakingOutput() async throws {
+        for (code, classification) in [(Int32(-1), "timeout"), (Int32(2), "exit_2"), (Int32(0), "unrecognized_version")] {
+            let candidate = await CodexPreflight.detectionReport(binary: "fixture-codex", run: { _, args in
+                XCTAssertEqual(args, ["--version"])
+                return CommandResult(code: code, stdout: "private-output", stderr: "private-diagnostic")
+            })
+            let report = try XCTUnwrap(candidate)
+            XCTAssertEqual(report.kind, "codex")
+            XCTAssertEqual(report.version, "")
+            XCTAssertEqual(report.ready, false)
+            XCTAssertTrue(report.unavailableReason?.contains(classification) == true)
+            XCTAssertFalse(report.unavailableReason?.contains("private-") == true)
+            XCTAssertNil(report.models)
+            XCTAssertNil(report.modes)
+        }
+        let recovered = await CodexPreflight.detectionReport(binary: "fixture-codex", run: { _, _ in ok("codex-cli 0.154.0") })
+        XCTAssertEqual(recovered?.version, "0.154.0")
+        XCTAssertNil(recovered?.ready)
+        XCTAssertNil(recovered?.unavailableReason)
+    }
+
     func testReadsTheMissionGoServerFromTheMcpList() {
         XCTAssertEqual(CodexPreflight.parseMcpList(mcpReady), .ready)
         XCTAssertEqual(CodexPreflight.parseMcpList(#"[{"name":"other","enabled":true}]"#), .missing)
@@ -3183,6 +3212,8 @@ final class CodexLauncherTests: XCTestCase {
         let installed = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex())
         let version = await installed.detect()
         XCTAssertEqual(version, "0.154.0")
+        let report = await installed.detectionReport()
+        XCTAssertEqual(report?.version, "0.154.0")
     }
 }
 

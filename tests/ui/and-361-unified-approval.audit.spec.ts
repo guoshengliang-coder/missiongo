@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
+import { advanceSessionDetailPoll } from "./polling";
 
 const fixture = JSON.parse(readFileSync(fileURLToPath(new URL("./.auth/fixture.json", import.meta.url)), "utf8")) as { productId: string };
 const id = "and-361-unified-approval";
@@ -77,6 +78,7 @@ test("one permission area replaces generic approval, submits the native scope on
   expect(decisions).toEqual([{ decision: "acceptForSession" }]);
   expect(commands).toEqual([]);
   current = undefined;
+  await advanceSessionDetailPoll(page);
   await expect(panel).toHaveCount(0, { timeout: 10_000 });
   await expect(page.getByRole("button", { name: "批准", exact: true })).toBeDisabled();
   await expect(page.getByText("方案内容暂不可用，请重新加载后再审阅。")).toBeVisible();
@@ -122,6 +124,7 @@ test("reconnecting permission retains the yellow area without stale choices or g
   await expect(panel.getByRole("button")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "批准", exact: true })).toHaveCount(0);
   current = { ...permission, id: "fresh-permission", status: "pending" };
+  await advanceSessionDetailPoll(page);
   await expect(panel.getByRole("button")).toHaveCount(5, { timeout: 10_000 });
 });
 

@@ -52,7 +52,6 @@ import {
   planApprovalStatusKey,
   agentChatMessages,
   projectConversationMessages,
-  agentSessionDetailRefetchInterval,
   agentSessionMatches,
   agentSessionCategory,
   agentOtherProjectCounts,
@@ -63,6 +62,7 @@ import {
   DEFAULT_AGENT_KIND_FILTER,
   DEFAULT_AGENT_SESSION_FILTER,
   effectiveAgentSessionStatus,
+  sessionReplyPresentation,
   formatAgentMessageTime,
   isNearMessageBottom,
   isAbnormalAgentSession,
@@ -424,13 +424,10 @@ export function AgentSessionConsole({
       );
     },
     enabled: Boolean(selected?.agentSessionId) && documentVisible,
-    refetchInterval: (query) => selected?.agentSessionId
-      ? agentSessionDetailRefetchInterval(documentVisible, query.state.fetchFailureCount)
-      : false,
   });
   // List summaries arrive before the transcript. Reveal the whole conversation
   // together, including approval/attention/recovery cards (AND-375). Cached
-  // detail stays visible during polling and refetch errors; dispatches without
+  // detail stays visible during live updates and refetch errors; dispatches without
   // a native session have no detail request to wait for.
   const conversationReady = !selected?.agentSessionId || Boolean(sessionQuery.data);
   const feedback = useAgentOperationFeedback(sessionQuery.data && !sessionQuery.isError ? {
@@ -717,13 +714,14 @@ export function AgentSessionConsole({
     sendingSelected,
     Boolean(sessionQuery.data?.turnState?.observedAt),
   );
+  const replyPresentation = sessionReplyPresentation(sessionQuery.data?.status ?? selected?.status ?? "unavailable", command, sendingSelected, stopCommand);
   const messages = projectConversationMessages(history.messages, Boolean(selected?.productId));
   const attachmentMessages = sessionQuery.data?.attachmentMessages ?? [];
   const visibleMessages = agentChatMessages(messages, attachmentMessages, outgoing?.commandId);
   const planMessages = inlinePlanTranscript(visibleMessages, sessionQuery.data);
   const activities = sessionQuery.data?.activities ?? [];
   const turnState = sessionQuery.data?.turnState ?? selected?.turnState;
-  // Detail polls are faster than list polls. Use the same foreground rule as
+  // Detail and list notifications may arrive separately. Use the same foreground rule as
   // the server so a stale canStop flag cannot outlive the turn shown here.
   const canStopCurrentTurn = selected?.canStop && (
     ["queued", "delivered"].includes(selected.dispatchStatus)
@@ -759,7 +757,7 @@ export function AgentSessionConsole({
   // Claude's own instrumentation, Codex mapping its active thread, OpenCode
   // reporting an active session without a pending question (AND-223).
   const turnRunning = selected !== undefined && ["claude_code", "codex", "opencode"].includes(selected.agentKind)
-    && sessionStatus === "active"
+    && sessionStatus === "active" && !replyPresentation
     && turnState?.turnActive === true && !turnState.waitingForInput;
   // The fine print beside a running turn — thinking tokens, last output — is
   // metadata only Claude reports, so it stays Claude's alone.
@@ -771,7 +769,7 @@ export function AgentSessionConsole({
     && (!pending || selected.agentKind === "codex") && turnState?.waitingForInput === true;
   const claudeBackgroundOnly = selected?.agentKind === "claude_code"
     && sessionStatus === "active" && turnState?.turnActive === false && !agentWaiting && activities.length > 0;
-  const visualStatus = agentWaiting ? "idle" : sessionStatus;
+  const visualStatus = replyPresentation?.visualStatus ?? (agentWaiting ? "idle" : sessionStatus);
   // Every activity line names the agent that is actually running this session
   // (AND-236): Codex and OpenCode report turns too, so the copy must not say
   // "Claude Code" for them.
@@ -779,7 +777,7 @@ export function AgentSessionConsole({
   const waitingText = selected?.agentKind === "codex"
     ? t("agentSessionWaitingApproval", { agent: agentName })
     : t("agentSessionWaitingForInput", { agent: agentName });
-  const activityText = selected?.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected)) : agentWaiting
+  const activityText = replyPresentation ? t(replyPresentation.labelKey) : selected?.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected)) : agentWaiting
     ? waitingText
     : claudeBackgroundOnly
       ? t("agentSessionWaitingBackground", { count: activities.length })
@@ -814,9 +812,9 @@ export function AgentSessionConsole({
   useEffect(() => {
     if (!selected || selected.archivedAt || !shouldMarkRead(selected, openedSessionId === selected.id, documentVisible)) return;
     markReadMutate({ id: selected.id, sessionId: selected.agentSessionId, dispatchId: selected.dispatchId, through: selected.unreadAt });
-    // Keyed on the unread clock, not the object: each poll returns a new one.
+    // Keyed on the unread clock, not the object: each snapshot returns a new one.
     // A failed attempt rejoins through the last dependency once the retries
-    // run out, so the badge clears on a later poll instead of never.
+    // run out, so the badge clears on a later snapshot instead of never.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id, selectedUnreadAt, openedSessionId, documentVisible, markReadMutate, markReadRetry]);
 
@@ -1117,14 +1115,19 @@ export function AgentSessionConsole({
             // A row whose reply is still on its way reads as working, so the
             // list does not say "ended" beside a session that is about to run
             // (AND-195).
-            const rowStatus = effectiveAgentSessionStatus(session.status, session.command);
+            const detail = session.id === selectedId ? sessionQuery.data : undefined;
+            const rowCommand = detail ? command : session.command;
+            const rowStatus = effectiveAgentSessionStatus(detail?.status ?? session.status, rowCommand, false,
+              Boolean((detail?.turnState ?? session.turnState)?.observedAt));
+            const rowReply = sessionReplyPresentation(detail?.status ?? session.status, rowCommand,
+              send.isPending && send.variables?.sessionId === session.agentSessionId, detail?.stopCommand ?? session.stopCommand);
             const rowBackground = session.agentKind === "claude_code" && rowStatus === "active" && session.turnState?.turnActive === false
               && !session.turnState.waitingForInput && session.activities.length > 0;
             // Same rule as the conversation panel above (AND-222): an OpenCode
             // session blocked on a person reads as waiting, not as running.
             const rowWaiting = ["claude_code", "codex", "opencode"].includes(session.agentKind) && ["active", "idle"].includes(rowStatus)
               && (session.command?.status !== "queued" || session.agentKind === "codex") && session.turnState?.waitingForInput === true;
-            const rowLabel = session.source === "external" && !session.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(session)) : rowBackground ? t("agentSessionBackgroundStatus")
+            const rowLabel = rowReply ? t(rowReply.labelKey) : session.source === "external" && !session.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(session)) : rowBackground ? t("agentSessionBackgroundStatus")
               : rowWaiting ? t(session.waitingForPermission ? "agentSessionWaitingApprovalStatus" : waitingStatusLabelKey(session)) : statusLabel(rowStatus, t);
             return (
               <div
@@ -1172,7 +1175,7 @@ export function AgentSessionConsole({
                       role="img"
                       aria-label={`${nodeConnectionLabel(session, t)} · ${session.archivedAt ? t("archived") : rowLabel}`}
                     >
-                      {session.nodeConnectionState === "offline" ? <WifiOff size={14} /> : <SessionStatusIcon status={rowWaiting ? "waiting" : rowStatus} />}
+                      {session.nodeConnectionState === "offline" ? <WifiOff size={14} /> : <SessionStatusIcon status={rowReply?.iconStatus ?? (rowWaiting ? "waiting" : rowStatus)} />}
                     </span>
                     {session.unread && <i className="agent-console-unread-dot" role="img" aria-label={t("agentConsoleUnreadOne")} />}
                   </span>
@@ -1537,8 +1540,8 @@ export function AgentSessionConsole({
                     backgroundRunning={(sessionQuery.data?.activities.length ?? 0) > 0} />
                 {showRunDetails && (<>
                     {["stalled", "unavailable", "failed"].includes(sessionStatus) && <p className="agent-run-warning" role="alert">{activityText}</p>}
-                    <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={agentWaiting ? "waiting" : visualStatus} />} actions={stopAction}
-                      label={selected.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected))
+                    <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={replyPresentation?.iconStatus ?? (agentWaiting ? "waiting" : visualStatus)} />} actions={stopAction}
+                      label={replyPresentation ? t(replyPresentation.labelKey) : selected.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected))
                         : agentWaiting ? t(questionPermission ? "agentRunApproval" : runWaitingLabelKey({ agentKind: selected.agentKind, approval }), { agent: agentName })
                           : claudeBackgroundOnly ? t("agentRunBackground") : sessionStatus === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(sessionStatus, t)}>
                       {!["stalled", "unavailable", "failed"].includes(sessionStatus) && <p>{statusDetail}</p>}
@@ -1581,8 +1584,8 @@ export function AgentSessionConsole({
                 </>}
                 {conversationReady && !showRunDetails && (!showFailureCard || stopAction) && <div className="agent-run-controls agent-run-fallback">
                   {!showFailureCard && <p className={`agent-console-activity agent-console-activity-${visualStatus}`} role="status">
-                    <SessionStatusIcon status={agentWaiting ? "waiting" : visualStatus} />
-                    {selected.archivedAt ? t("archived")
+                    <SessionStatusIcon status={replyPresentation?.iconStatus ?? (agentWaiting ? "waiting" : visualStatus)} />
+                    {selected.archivedAt ? t("archived") : replyPresentation ? t(replyPresentation.labelKey)
                       : !selected.agentSessionId ? t(dispatchActivityLabelKey(selected)) : statusLabel(sessionStatus, t)}
                   </p>}
                   {stopAction}

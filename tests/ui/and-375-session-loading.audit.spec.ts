@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
+import { refreshFromConsoleStream } from "./polling";
 
 const fixture = JSON.parse(readFileSync(fileURLToPath(new URL("./.auth/fixture.json", import.meta.url)), "utf8")) as { productId: string };
 const stamp = "2026-11-04T00:00:00.000Z";
@@ -148,6 +149,13 @@ test("background refresh and its failure preserve loaded content and permission"
   const messages = page.locator(".agent-console-message");
   const approval = page.locator(".agent-console-approval");
   await expect(approval).toBeVisible();
+  // SSE replaced the periodic background poll: a refresh now happens on
+  // stream reset rather than on a timer. The mock gates the second response,
+  // so observe the outgoing request instead of awaiting it.
+  const secondRead = page.waitForRequest(request => request.method() === "GET"
+    && /\/api\/v1\/agent-sessions\/[^/]+$/.test(new URL(request.url()).pathname));
+  await refreshFromConsoleStream(page);
+  await secondRead;
   await expect.poll(() => requests).toBeGreaterThan(1);
   await expect(messages).toContainText(message.text);
   await expect(approval).toBeVisible();

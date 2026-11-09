@@ -8,6 +8,7 @@ import { ITEM_STATUSES, type WorkItemPriority, type WorkItemStatus, type WorkIte
 export type Locale = "zh-CN" | "en";
 
 const EN_MESSAGES = {
+  consoleDisconnected: "Live updates are disconnected. Reconnecting; saved content and drafts remain available.",
   operationSettings: "Change settings",
   operationSend: "Send message",
   operationRetry: "Resume session",
@@ -359,6 +360,7 @@ const EN_MESSAGES = {
   agentReplyQueuedShort: "Queued",
   agentReplyDeliveringShort: "Delivering",
   agentReplyDeliveredShort: "Delivered · awaiting execution",
+  agentReplyDeliveryUnknownShort: "Delivery unconfirmed",
   agentReplyEditShort: "Recall and edit",
   agentRunDetails: "Run details",
   agentHistoryOlder: "Load earlier messages",
@@ -697,7 +699,6 @@ const EN_MESSAGES = {
   copyToken: "Copy",
   copied: "Copied",
   refresh: "Refresh",
-  syncing: "Syncing…",
   revoke: "Revoke",
   confirmRevokeToken: "Revoke {name}? Any app still using it stops being able to submit.",
   revoked: "Revoked",
@@ -1807,6 +1808,7 @@ const EN_MESSAGES = {
 export type MessageKey = keyof typeof EN_MESSAGES;
 
 const ZH_MESSAGES: Record<MessageKey, string> = {
+  consoleDisconnected: "实时更新连接已中断，正在重连；已加载内容和草稿仍保留，可手动重试。",
   operationSettings: "修改设置",
   operationSend: "发送消息",
   operationRetry: "恢复会话",
@@ -2158,6 +2160,7 @@ const ZH_MESSAGES: Record<MessageKey, string> = {
   agentReplyQueuedShort: "排队中",
   agentReplyDeliveringShort: "送达中",
   agentReplyDeliveredShort: "已送达，待执行",
+  agentReplyDeliveryUnknownShort: "送达待核实",
   agentReplyEditShort: "撤回编辑",
   agentRunDetails: "运行详情",
   agentHistoryOlder: "加载更早消息",
@@ -2496,7 +2499,6 @@ const ZH_MESSAGES: Record<MessageKey, string> = {
   copyToken: "复制",
   copied: "已复制",
   refresh: "刷新",
-  syncing: "正在同步…",
   revoke: "吊销",
   confirmRevokeToken: "吊销「{name}」？仍在使用它的 App 将无法再提交。",
   revoked: "已吊销",

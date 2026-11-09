@@ -7,7 +7,6 @@ import { agentLabelKey, dispatchProblemKey } from "./dispatch-eligibility";
 import { localizedErrorText } from "./error-text";
 import { agentModels, reconcileEffort } from "./agent-model-options";
 import { modeProblem } from "./agent-mode-options";
-import { NODE_LIST_REFETCH_MS } from "./node-install";
 import { AutoGrowTextarea } from "./auto-grow-textarea";
 import { DraftSessionQuickSettings } from "./agent-session-settings";
 import { DraftChatFile } from "./agent-chat-draft-file";
@@ -33,7 +32,7 @@ export function NewSessionDraft({ draft, projectName, onChange, onBack, onConfig
   const picker = useRef<HTMLInputElement>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const [effortAdjusted, setEffortAdjusted] = useState(false);
-  const nodes = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes, refetchInterval: NODE_LIST_REFETCH_MS });
+  const nodes = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes });
   const node = nodes.data?.nodes.find(entry => entry.id === draft.config.nodeId);
   const models = agentModels(node, draft.config.agentKind);
   const { model: _model, effort: _effort, ...baseConfig } = draft.config;

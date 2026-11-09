@@ -118,11 +118,18 @@ export class PersonalNotifications {
       ...(rows.length>50?{nextBeforeSequence:page.at(-1)!.sequence}:{})};
   }
   attentionCount(account:AccountSnapshot):PersonalAttentionCount {
-    const todo=this.todoScope(account);
+    const todo=this.todoScope(account),scope=this.scope(account);
     const todoCount=(this.db.prepare(`SELECT count(*) AS count ${todoJoins} WHERE ${todo.sql}`).get(...todo.args) as {count:number}).count;
     const unreadCount=this.count(account);
-    // Retain the old response field so older clients remain compatible.
-    return {count:todoCount+unreadCount,todoCount,unreadCount,coveredUnreadCount:0};
+    // Ordinary delivery reminders are already hidden by visibleNotice, so the
+    // old covered count is always zero; keep the field for older clients.
+    // Per-project split for the inbox project filter (AND-493). Both reuse the
+    // scopes above, so an inaccessible or archived product never appears.
+    const todoByProduct=this.db.prepare(`SELECT w.product_id AS productId,count(*) AS count ${todoJoins}
+      WHERE ${todo.sql} GROUP BY w.product_id`).all(...todo.args) as unknown as PersonalAttentionCount["todoByProduct"];
+    const unreadByProduct=this.db.prepare(`SELECT w.product_id AS productId,count(*) AS count ${joins}
+      WHERE ${scope.sql} AND ${needsReading} GROUP BY w.product_id`).all(...scope.args) as unknown as PersonalAttentionCount["unreadByProduct"];
+    return {count:todoCount+unreadCount,todoCount,unreadCount,coveredUnreadCount:0,todoByProduct,unreadByProduct};
   }
 
   list(account: AccountSnapshot, filter: PersonalNotificationFilter): PersonalNotificationPage {
