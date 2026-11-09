@@ -146,12 +146,26 @@ start a separate evidence window.
 node scripts/performance-observations.mjs /path/to/run-a/report.json /path/to/run-b/report.json
 ```
 
+The calculator recomputes calibration and target results from the complete raw
+CPU samples and the exact current configuration. It validates wall samples,
+sample counts, units, fixture shape, finite numeric values, stage timing, effective
+budgets and derived status; a `passed` label alone is not evidence.
+
+It reconciles both directions: reports without matching reviews are unreviewed;
+current-configuration reviews without reports appear in `missingReports` and
+`missingReportReviews`. `knownFalsePositiveReviews` / `knownRegressionReviews`
+include those known but missing results, so omitting a file cannot erase them.
+Older configurations are separate. Run/attempt/head/config must match.
+
 The calculator reports `falsePositives / reviewed valid samples`, null when there
-are none, with unreviewed, invalid and unrelated counts separately. For promotion
-review it requires at least **seven full elapsed days**, evidence on every UTC
-calendar day (at least eight dates), zero false positives/regressions and no
-unreviewed/invalid samples in the supplied set. Verify that the set includes all
-relevant runs: the calculator cannot discover omitted Actions evidence or sign it.
+are none or evidence is missing, invalid or unreviewed, with those counts separately.
+For promotion review it requires **at least 168 actually elapsed hours**, as well
+as evidence on every UTC calendar day (at least eight dates), zero known false
+positives/regressions and no unreviewed/invalid/missing samples. `elapsedHours`
+and `spanDays` use complete timestamps; `calendarSpanDays` and `continuous` only
+describe day coverage. Covering eight date labels alone is insufficient.
+Verify that the set includes all relevant runs: the calculator can detect omissions
+known to the ledger, but cannot discover runs absent from both inputs or sign them.
 Its `eligibleForBlockingReview` is review evidence only. Current ledger is empty;
 no week or zero-misfire record has been claimed.
 
