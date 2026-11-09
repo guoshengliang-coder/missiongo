@@ -161,3 +161,31 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     });
   });
 }
+
+test("SSE reconnect fills a gap larger than the recent window using stored history only",async({page})=>{
+ await page.clock.install({time:new Date("2026-11-09T02:00:00Z")});
+ let shifted=false;const reads:string[]=[];
+ const id="catchup-window",summary={id,agentSessionId:id,productId:fixture.productId,agentKind:"codex",status:"idle",updatedAt:stamp,activityAt:stamp,createdAt:stamp,
+  nodeName:"Fixture",nodeConnectionState:"online",nodeRevoked:false,dispatchStatus:"launched",activities:[],settings:{},unread:false,canReply:true,canStop:true,canArchive:true,items:[],attention:{state:"not_needed"},needsAttention:false};
+ await page.route("**/api/v1/agent-sessions**",route=>{
+  const url=new URL(route.request().url());
+  if(url.pathname.endsWith("/history")) {
+   const cursor=url.searchParams.get("cursor")!;reads.push(cursor);
+   const start=cursor==="stored:message-150"?100:50;
+   return route.fulfill({json:{status:"ready",messages:Array.from({length:50},(_,n)=>message(n+start)),nextCursor:`stored:message-${start}`}});
+  }
+  if(route.request().method()!=="GET")return route.fulfill({status:204});
+  if(url.pathname==="/api/v1/agent-sessions")return route.fulfill({json:{sessions:[summary]}});
+  return route.fulfill({json:{...summary,messages:Array.from({length:50},(_,n)=>message(n+(shifted?150:50))),history:{nextCursor:shifted?"stored:message-150":"stored:message-50"}}});
+ });
+ await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
+ await expect(page.locator("[data-agent-message-id]")).toHaveCount(50);
+ const reply=page.locator(".agent-console-reply textarea");await reply.fill("Keep the reconnect draft");
+ shifted=true;await advanceSessionDetailPoll(page);
+ await expect(page.locator("[data-agent-message-id]")).toHaveCount(150);
+ expect(reads).toEqual(["stored:message-150","stored:message-100"]);
+ await expect(page.locator('[data-agent-message-id="agent:source-99"]')).toHaveCount(1);
+ await expect(page.locator('[data-agent-message-id="agent:source-100"]')).toHaveCount(1);
+ await expect(page.locator('[data-agent-message-id="agent:source-199"]')).toHaveCount(1);
+ await expect(reply).toHaveValue("Keep the reconnect draft");
+});

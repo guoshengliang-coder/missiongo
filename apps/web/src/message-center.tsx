@@ -11,7 +11,7 @@ import "./message-center.css";
 
 export function useMessageCount(accountId: string) {
   return useQuery({queryKey:["personal-notifications",accountId,"count"],queryFn:api.personalAttentionCount,
-    enabled:Boolean(accountId),refetchInterval:5000});
+    enabled:Boolean(accountId)});
 }
 export function MessageButton({accountId,onOpen}:{accountId:string;onOpen:()=>void}) {
   const {t}=useI18n(),count=useMessageCount(accountId);
@@ -38,8 +38,8 @@ export function MessageCenter({accountId,products,onClose,renderItem}:{
   const filter:PersonalNotificationFilter={unread,...(productId?{productId}:{}),...(kind?{kind}:{})};
   const list=useInfiniteQuery({queryKey:["personal-notifications",accountId,"list",filter],initialPageParam:undefined as number|undefined,
     queryFn:({pageParam})=>api.personalNotifications({...filter,...(pageParam?{beforeSequence:pageParam}:{})}),
-    getNextPageParam:page=>page.nextBeforeSequence,staleTime:0,refetchOnMount:"always",refetchInterval:5000,enabled:tab==="notifications"});
-  const detail=useQuery({queryKey:["personal-notifications",accountId,"detail",selected],queryFn:()=>api.personalNotification(selected!),enabled:tab==="notifications" && Boolean(selected),staleTime:0,refetchOnMount:"always",refetchInterval:5000});
+    getNextPageParam:page=>page.nextBeforeSequence,staleTime:0,refetchOnMount:"always",enabled:tab==="notifications"});
+  const detail=useQuery({queryKey:["personal-notifications",accountId,"detail",selected],queryFn:()=>api.personalNotification(selected!),enabled:tab==="notifications" && Boolean(selected),staleTime:0,refetchOnMount:"always"});
   const refresh=()=>client.invalidateQueries({queryKey:["personal-notifications",accountId]});
   const read=useMutation({mutationFn:api.readPersonalNotification,onSuccess:refresh});
   const allRead=useMutation({mutationFn:(through:number)=>api.readAllPersonalNotifications(through,filter),onSuccess:refresh});
@@ -51,7 +51,7 @@ export function MessageCenter({accountId,products,onClose,renderItem}:{
   },[tab,selected,detail.isSuccess,detail.isFetching,detail.data]);
   const todos=useInfiniteQuery({queryKey:["personal-notifications",accountId,"todos",productId],initialPageParam:undefined as number|undefined,
     queryFn:({pageParam})=>api.personalTodos({...(productId?{productId}:{}),...(pageParam?{beforeSequence:pageParam}:{})}),
-    getNextPageParam:page=>page.nextBeforeSequence,enabled:tab==="todos",staleTime:0,refetchOnMount:"always",refetchInterval:5000});
+    getNextPageParam:page=>page.nextBeforeSequence,enabled:tab==="todos",staleTime:0,refetchOnMount:"always"});
   const todoRows=todos.isError?[]:todos.data?.pages.flatMap(page=>page.todos) ?? [];
   const currentTodo=todoRows.find(row=>row.id===selected);
   const rows=list.isError?[]:list.data?.pages.flatMap(page=>page.notifications) ?? [];

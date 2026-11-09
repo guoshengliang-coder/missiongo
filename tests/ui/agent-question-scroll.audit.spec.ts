@@ -251,6 +251,7 @@ for (const viewport of [
         if (surface === "console") {
           const before = await scrollTop(area);
           state.messages.push({ id: "new-message", role: "agent", occurredAt: stamp, text: "New incoming message" });
+          await advanceSessionDetailPoll(page);
           await expect(area.locator("article").last()).toContainText("New incoming message");
           // Picking an option must also leave followLatest disabled while the
           // person is reading history, even after the next detail poll.
@@ -258,6 +259,7 @@ for (const viewport of [
           await page.locator(".agent-console-new-messages").click();
           await expect.poll(() => bottomGap(area)).toBeLessThanOrEqual(1);
           state.messages.push({ id: "followed-message", role: "agent", occurredAt: stamp, text: "Following latest still works" });
+          await advanceSessionDetailPoll(page);
           await expect(area.locator("article").last()).toContainText("Following latest still works");
           await expect.poll(() => bottomGap(area)).toBeLessThanOrEqual(1);
           await area.evaluate((element) => { element.scrollTop = 0; });
@@ -280,6 +282,7 @@ for (const viewport of [
             ...question, answered: ["方案 B", "项目 B", "否"][index],
           })),
         };
+        await advanceSessionDetailPoll(page);
         await expect(option("方案 B")).toBeDisabled();
         await expect(option("方案 B")).toHaveClass("selected");
         await reply.fill("接下来我想补充说明");

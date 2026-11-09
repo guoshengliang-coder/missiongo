@@ -648,6 +648,10 @@ AND-473 按用户已审阅的当天／跨天效果恢复上一版紧凑排版：
 
 共用 `DeliveryCards`、`MergeDialog`、`IntegrationProgress`、`MergeReconciliation` 与原 `Modal`。无条目改动显示摘要和 PR 编号，不留空标题，不显示异常警告；仅选无条目改动时展示改动组数，混合选择保留去重条目数。详情返回、焦点、勾选、草稿、未知结果重试及明暗/字号均沿用公共契约，不新增样式或豁免。服务端授权、发布候选与凭据范围见 `docs/merge-deliveries.md` 和 `docs/release-coverage.md`。
 
+### 控制台实时读取（AND-483）
+
+列表、详情、两处会话和待合并等读侧共用 `useConsoleEvents` 与资源版本通知；不新增周期业务查询作为断线兜底。普通连接失败复用 `offline-banner`、`text-button` 和本地化提示，保留草稿、阅读位置及选中项；权限撤销清除不可读缓存。重连只补读，不批准、重启或重放写命令。服务端提交、权限过滤、游标与单 Server 边界见 [实现与验证](and-483-console-events.md)；浏览器回归见 `console-events.audit.spec.ts` 及原会话/待合并审计。
+
 ### 更新窗口、会话返回与运行详情（AND-479/480/481/482）
 
 - macOS 使用单一 `ClientUpdateWindowController` / `ClientUpdateView` 观察既有 `AppModel` 更新状态机。点击同意后保留同一窗口；进度、阶段、取消、失败重试、等待重启与立即重启确认均在窗口内。当前进度优先于长更新说明，底部操作独立于滚动内容；主界面只保留摘要和重新打开入口。安装后继续安全等待，不强退 Agent，不跳过包校验。

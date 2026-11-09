@@ -1,3 +1,4 @@
+import { useConsoleConnection, useConsoleEvents } from "./console-events";
 import { isItemListRow, type WorkItemRow } from "./types";
 import { inconsistentItemPage } from "./item-list-state";
 import { DeliveryEvidence } from "./delivery-evidence";
@@ -32,7 +33,7 @@ import { DetailStatusList, detailStatusItems } from "./detail-status";
 import { CommentDingTalkNotifications, useItemDingTalkNotifications } from "./dingtalk-settings";
 import { CommentMoreActions } from "./comment-actions";
 import { COMMENT_CATEGORIES, useCommentFilters } from "./comment-filters";
-import {EMPTY_COMMENT_DRAFT,useCommentDraft,type CommentDraft} from "./comment-draft";
+import {useCommentDraft,useCommentFiles,type CommentDraft} from "./comment-draft";
 import {useBeforeUnloadGuard} from "./unsaved-changes";
 import { statisticsIsOpen, statisticsUrl, statisticsExitUrl } from "./statistics-state";
 import { useOverlay, OverlayMenu } from "./overlay";
@@ -123,7 +124,6 @@ import {
 import { androidFeedbackBridge, androidMediaDeletion, reportAndroidBackDepth } from "./android-bridge";
 import {
   ACTIVE_DISPATCHES_QUERY_KEY,
-  ACTIVE_DISPATCHES_REFETCH_MS,
   activeDispatchStatusKey,
   dispatchesByItem,
 } from "./dispatch-conflicts";
@@ -220,7 +220,7 @@ import { ProductBadge } from "./product-badge";
 import { AgentSessionPanel } from "./agent-session-panel";
 import { AgentSessionConsole, useAgentConsoleDrafts } from "./agent-session-console";
 import { currentDispatchForStatus, dispatchIssueLabelKey, itemProgressKeys } from "./dispatch-attention";
-import { agentUnreadCounts, agentSessionsRefetchInterval } from "./agent-session-view";
+import { agentUnreadCounts } from "./agent-session-view";
 import { registerMissionGoWebMcp } from "./webmcp";
 import { AutoGrowTextarea } from "./auto-grow-textarea";
 import { useMediaQuery } from "./use-media-query";
@@ -332,7 +332,6 @@ export function App() {
   const [statisticsOpen,setStatisticsOpen] = useState(statisticsIsOpen);
   const [agentConsoleOpen, setAgentConsoleOpen] = useState(agentConsoleIsOpen);
   const consoleDrafts = useAgentConsoleDrafts();
-  const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
   const [agentSessionId, setAgentSessionId] = useState<string | null>(agentSessionIdFromUrl);
   // Read before the deep-link handling below rewrites the URL without it.
   const [agentConsoleLinkedFilter, setAgentConsoleLinkedFilter] = useState(agentConsoleFilterFromUrl);
@@ -397,11 +396,6 @@ export function App() {
   const consoleReturnFocus = useRef<HTMLElement | null>(null);
   const previousAgentConsoleOpenRef = useRef(agentConsoleOpen);
 
-  useEffect(() => {
-    const update = () => setDocumentVisible(document.visibilityState === "visible");
-    document.addEventListener("visibilitychange", update);
-    return () => document.removeEventListener("visibilitychange", update);
-  }, []);
   // Coming back to the page re-reads what is on screen if it has gone stale
   // (AND-192); the spinner it returns drives the topbar indicator below.
   const foregroundSyncing = useForegroundSync();
@@ -900,6 +894,8 @@ export function App() {
     queryFn: () => api.listProducts(),
     enabled: bootstrapQuery.isSuccess,
   });
+  useConsoleEvents(queryClient, bootstrapQuery.data?.user.id, bootstrapQuery.data?.consoleCursor);
+  const consoleConnection = useConsoleConnection();
   const products = productsQuery.data ?? bootstrapQuery.data?.products ?? [];
   const selectedProduct = products.find((product) => product.id === selectedProductId);
   const mergeProgress = useMergeProgress(selectedProduct?.id ?? "");
@@ -935,11 +931,6 @@ export function App() {
     queryKey: ["agent-sessions"],
     queryFn: () => api.listAgentSessions(),
     enabled: bootstrapQuery.isSuccess && products.length > 0,
-    refetchInterval: (query) => agentSessionsRefetchInterval(
-      agentConsoleOpen,
-      documentVisible,
-      query.state.fetchFailureCount,
-    ),
   });
   const draftAccountId = useRef<string | undefined>(undefined);
   useEffect(() => {
@@ -1052,8 +1043,6 @@ export function App() {
     initialPageParam: null as number | null,
     getNextPageParam: (page) => page.nextBeforeSequence ?? null,
     enabled: bootstrapQuery.isSuccess && Boolean(selectedProductId),
-    refetchInterval: query => document.visibilityState === "visible" && query.state.fetchFailureCount < 3
-      && query.state.data?.pages.some(page => page.items.some(item => Boolean(item.deliveryProgress) || item.status === "in_progress")) ? 15_000 : false,
   });
   const items = itemsQuery.data?.pages.flatMap((page) => page.items) ?? [];
   const listQueryKey = ["items", selectedProductId, statusFilter, typeFilter, deferredSearch, builderFilter, advancedFilterKey];
@@ -1099,7 +1088,6 @@ export function App() {
     queryKey: ACTIVE_DISPATCHES_QUERY_KEY,
     queryFn: api.listActiveDispatches,
     enabled: bootstrapQuery.isSuccess,
-    refetchInterval: ACTIVE_DISPATCHES_REFETCH_MS,
   });
   const latestDispatches = useMemo(
     () => dispatchesByItem([...(activeDispatchesQuery.data?.latest ?? []),...(activeDispatchesQuery.data?.active ?? [])]),
@@ -1461,6 +1449,9 @@ export function App() {
           </span>
         )}
       </header>
+      {isOnline && consoleConnection === "disconnected" && <div className="offline-banner" role="status">
+        <WifiOff size={15} /> <span>{t("consoleDisconnected")}</span> <button className="text-button" onClick={() => { void queryClient.invalidateQueries(); window.dispatchEvent(new Event("online")); }}>{t("retry")}</button>
+      </div>}
       {!isOnline && <div className="offline-banner" role="status"><WifiOff size={15} /> {t("offlineMode")}</div>}
 
       <aside ref={sidebarRef} className={`sidebar ${sidebarOpen ? "open" : ""}`} inert={sidebarIsDrawer && !sidebarOpen}>
@@ -2680,15 +2671,13 @@ function DetailPane({
   const confirm = useConfirm();
   const queryClient = useQueryClient();
   const { actorLabel, eventLabel, formatTime, priorityLabel, statusLabel, t, transitionLabel, typeLabel } = useI18n();
-  const itemQuery = useQuery({ queryKey: ["item", itemKey], queryFn: () => api.getItem(itemKey!), enabled: Boolean(itemKey),
-    refetchInterval: query => document.visibilityState === "visible" && query.state.fetchFailureCount < 3
-      && (query.state.data?.deliveryProgress || query.state.data?.status === "in_progress" || query.state.data?.access?.readOnlySource) ? 15_000 : false });
+  const itemQuery = useQuery({ queryKey: ["item", itemKey], queryFn: () => api.getItem(itemKey!), enabled: Boolean(itemKey), });
   // AND-406: the server marks an item that is readable only through an active
   // collaboration request. That mode hides every action and keeps the source
   // project closed; it never turns into ordinary project access.
   const linkedSource = itemQuery.data?.access?.readOnlySource;
   const readOnlySource = Boolean(linkedSource);
-  const timelineQuery = useQuery({ queryKey: ["timeline", itemKey], queryFn: () => api.getTimeline(itemKey!), enabled: Boolean(itemKey), refetchInterval: 5_000 });
+  const timelineQuery = useQuery({ queryKey: ["timeline", itemKey], queryFn: () => api.getTimeline(itemKey!), enabled: Boolean(itemKey) });
   const notificationsQuery=useItemDingTalkNotifications(linkedSource ? null : itemKey);
   const {draft:commentDraft,update:updateCommentDraft,storageFailed}=useCommentDraft(accountId,itemKey,initialCommentId===undefined?undefined:"messages");
   const commentIdPrefix=initialCommentId===undefined?"":"message-";
@@ -2741,10 +2730,9 @@ function DetailPane({
     queryKey: ["dispatches", itemKey],
     queryFn: () => api.listItemDispatches(itemKey!),
     enabled: Boolean(itemKey),
-    refetchInterval: ACTIVE_DISPATCHES_REFETCH_MS,
   });
   const activeDispatches = useQuery({queryKey:ACTIVE_DISPATCHES_QUERY_KEY,queryFn:api.listActiveDispatches,
-    enabled:Boolean(itemKey),refetchInterval:ACTIVE_DISPATCHES_REFETCH_MS});
+    enabled:Boolean(itemKey)});
   // Same cache entry the delivery panel reads, so the Builder can sit in the
   // title line without a second request. A collaboration-linked read gets a
   // execution-only view from the server (no roster or management).
@@ -3205,7 +3193,7 @@ function DetailPane({
             </section>
         </>
       </div>
-      {!item.transferred && !readOnlySource && accountId && <CommentComposer idPrefix={commentIdPrefix} key={`${accountId}:${item.key}`} item={item} draft={commentDraft} onDraftChange={updateCommentDraft} storageFailed={storageFailed} replyUnavailable={replyUnavailable}
+      {!item.transferred && !readOnlySource && accountId && <CommentComposer accountId={accountId} idPrefix={commentIdPrefix} key={`${accountId}:${item.key}`} item={item} draft={commentDraft} onDraftChange={updateCommentDraft} storageFailed={storageFailed} replyUnavailable={replyUnavailable}
         replyTo={replyTo} onLocateReply={()=>replyTo && locateComment(replyTo.id)} onCancelReply={()=>setReplyTo(null)} onPosted={refreshItem} onNotice={onNotice} />}
       {transferring && <TransferItemDialog item={item} onClose={() => setTransferring(false)} />}
       {transferBuilderOpen && deliveryQuery.data && (
@@ -3385,8 +3373,8 @@ function CommentGroup({idPrefix="",root,replies,visibleCommentIds,item,onReply,o
   </div>;
 }
 
-function CommentComposer({ idPrefix="", item, onPosted, onNotice, replyTo, onCancelReply,onLocateReply,draft,onDraftChange,storageFailed,replyUnavailable }: {
-  idPrefix?:string;replyTo: WorkItemEvent|null; onCancelReply:()=>void;onLocateReply:()=>void;
+function CommentComposer({ accountId, idPrefix="", item, onPosted, onNotice, replyTo, onCancelReply,onLocateReply,draft,onDraftChange,storageFailed,replyUnavailable }: {
+  accountId:string;idPrefix?:string;replyTo: WorkItemEvent|null; onCancelReply:()=>void;onLocateReply:()=>void;
   draft:CommentDraft;onDraftChange:(change:CommentDraft|((previous:CommentDraft)=>CommentDraft))=>void;storageFailed:boolean;replyUnavailable:boolean;
   item: WorkItem; onPosted: () => Promise<void>; onNotice: (message: string) => void;
 }) {
@@ -3423,12 +3411,9 @@ function CommentComposer({ idPrefix="", item, onPosted, onNotice, replyTo, onCan
   const replyName=replyTo ? commentAuthor({...replyTo,agentName:eventAgentName(replyTo.payload)},actorLabel(replyTo.actorKind)) : "";
   const replyExcerpt=replyTo ? deriveSummary(typeof replyTo.payload.summary==="string" && replyTo.payload.summary.trim()
     ? replyTo.payload.summary : commentPlainText(replyTo.payload.bodyKind,(replyTo.payload.body ?? {}) as Readonly<Record<string,unknown>>),160) || t("commentAttachmentQuote") : "";
-  const [files, setFiles] = useState<readonly File[]>([]);
+  const {files,setFiles,uploaded,uploadIds,attempt,sending,failure,beginSend,finishSend,saveAttempt}=useCommentFiles(accountId,item.key,idPrefix?"messages":undefined);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const uploaded = useRef(new Map<File, string>());
-  const uploadIds = useRef(new Map<File, string>());
-  const attempt = useRef(draft.attempt ?? { fingerprint: "", key: "" });
   const existingIds = new Set(item.attachments.map(attachment => attachment.id));
   const selectedAlreadyCounted = files.filter(file => existingIds.has(uploaded.current.get(file) ?? "")).length;
   // Server caps one comment at 10 attachment references; uploads also draw on the item budget.
@@ -3439,6 +3424,8 @@ function CommentComposer({ idPrefix="", item, onPosted, onNotice, replyTo, onCan
     mutationFn: async () => {
       if(draft.replyToCommentId && !replyTo)throw new Error(t("commentDraftReplyUnavailable"));
       if(missingDraftFiles)throw new Error(t("commentDraftFilesMissing"));
+      const revision=beginSend();
+      try {
       const attachmentIds: string[] = [];
       for (const file of files) {
         let id = uploaded.current.get(file);
@@ -3453,36 +3440,38 @@ function CommentComposer({ idPrefix="", item, onPosted, onNotice, replyTo, onCan
       const audience={...mentionAudience(mentions),...(replyTo?{replyToCommentId:replyTo.id}:{})};
       const fingerprint = JSON.stringify({ text: text.trim(), attachmentIds, ...audience });
       if (attempt.current.fingerprint !== fingerprint) attempt.current = { fingerprint, key: crypto.randomUUID() };
-      onDraftChange(current=>({...current,attempt:attempt.current}));
-      return api.createComment(item.key, { text: text.trim(), attachmentIds, ...audience, idempotencyKey: attempt.current.key });
+      saveAttempt();
+      const comment=await api.createComment(item.key, { text: text.trim(), attachmentIds, ...audience, idempotencyKey: attempt.current.key });
+      return {comment,revision};
+      } catch(error){finishSend(revision,false,error);throw error;}
     },
-    onSuccess: async () => {
-      onDraftChange(EMPTY_COMMENT_DRAFT);setCursor(0);onCancelReply(); setFiles([]); setError(null); uploaded.current.clear(); uploadIds.current.clear(); attempt.current = { fingerprint: "", key: "" };
+    onSuccess: async ({revision}) => {
+      if(finishSend(revision,true)){setCursor(0);setError(null);}
       await onPosted(); onNotice(t("commentPosted"));
     },
     onError: async (failure) => { setError(errorMessage(failure, t("somethingWentWrong"))); await onPosted(); },
   });
   const addFiles = (incoming: readonly File[]) => {
-    if (mutation.isPending) return;
+    if ((sending || mutation.isPending)) return;
     const result = validateIncomingFiles(files, incoming, t, capacity);
     setFiles(result.files); setError(result.error ?? null);
     if(result.files.length)onDraftChange(current=>({...current,attachmentNames:result.files.map(file=>file.name)}));
   };
-  useBeforeUnloadGuard(mutation.isPending || files.length>0 || storageFailed && Boolean(text));
-  const { isDraggingFiles, dropHandlers } = useFileDropZone(addFiles, { canAccept: remaining > 0 && !mutation.isPending });
-  useDialogDraft(files.length>0 || storageFailed && Boolean(text),mutation.isPending);
+  useBeforeUnloadGuard((sending || mutation.isPending) || files.length>0 || storageFailed && Boolean(text));
+  const { isDraggingFiles, dropHandlers } = useFileDropZone(addFiles, { canAccept: remaining > 0 && !(sending || mutation.isPending) });
+  useDialogDraft(files.length>0 || storageFailed && Boolean(text),(sending || mutation.isPending));
   return <form className="comment-form detail-composer" aria-label={t("addComment")} {...dropHandlers}
     onPaste={event => { const incoming = Array.from(event.clipboardData.files); if (incoming.length) { event.preventDefault(); addFiles(incoming); } }}
-    onSubmit={event => { event.preventDefault(); if (!mutation.isPending && !missingDraftFiles && (!draft.replyToCommentId || replyTo) && (text.trim() || files.length)) mutation.mutate(); }}>
+    onSubmit={event => { event.preventDefault(); if (!(sending || mutation.isPending) && !missingDraftFiles && (!draft.replyToCommentId || replyTo) && (text.trim() || files.length)) mutation.mutate(); }}>
     {isDraggingFiles && <FileDropOverlay remaining={remaining} />}
-    <fieldset disabled={mutation.isPending}>
+    <fieldset disabled={(sending || mutation.isPending)}>
       {replyTo && <div className="comment-reply-context">
         <button type="button" className="comment-reply-source" onClick={onLocateReply} title={t("viewOriginalComment")}><strong>{t("commentReplyTo",{name:replyName})}</strong><span>{replyExcerpt}</span></button>
         <button type="button" className="comment-cancel-reply" aria-label={t("cancelReply")} title={t("cancelReply")} onClick={onCancelReply}><X size={16} aria-hidden="true" /></button>
       </div>}
       <label className="sr-only" htmlFor={`${idPrefix}comment-draft`}>{t("addComment")}</label>
       {files.length > 0 && <div className="agent-chat-draft-files">
-        {files.map((file, index) => <DraftChatFile key={`${file.name}-${file.lastModified}-${index}`} file={file} disabled={mutation.isPending}
+        {files.map((file, index) => <DraftChatFile key={`${file.name}-${file.lastModified}-${index}`} file={file} disabled={(sending || mutation.isPending)}
           onRemove={() => {const next=files.filter((_,fileIndex)=>fileIndex!==index);setFiles(next);onDraftChange(current=>({...current,attachmentNames:next.map(file=>file.name)}));}} />)}
       </div>}
           {query && <div className="comment-mention-menu" role="listbox" id={`${idPrefix}comment-mention-list`} aria-label={t("mentionPeople")}>
@@ -3490,7 +3479,7 @@ function CommentComposer({ idPrefix="", item, onPosted, onNotice, replyTo, onCan
               onMouseDown={event=>event.preventDefault()} onClick={()=>chooseMention(choice)}><strong>{choice.label}</strong>{choice.detail && <small>{choice.detail}</small>}</button>):<p>{t("mentionNoPeople")}</p>}
           </div>}
       <div className="detail-composer-row">
-        <button type="button" className="secondary-button agent-chat-icon-button" disabled={remaining < 1 || mutation.isPending}
+        <button type="button" className="secondary-button agent-chat-icon-button" disabled={remaining < 1 || (sending || mutation.isPending)}
           title={t("addAttachments")} aria-label={t("addAttachments")} onClick={() => fileInputRef.current?.click()}><Plus size={18} /></button>
         <div className="comment-input-wrap" role="combobox" aria-label={t("mentionPeople")} aria-expanded={Boolean(query)} aria-controls={query?`${idPrefix}comment-mention-list`:undefined}>
           <AutoGrowTextarea id={`${idPrefix}comment-draft`} value={text} onChange={event=>updateText(event.target.value,event.target.selectionStart)}
@@ -3508,18 +3497,18 @@ function CommentComposer({ idPrefix="", item, onPosted, onNotice, replyTo, onCan
         <div className="agent-chat-send-actions">
           <input ref={fileInputRef} type="file" multiple hidden accept="image/png,image/jpeg,image/webp,image/gif,image/heic,video/mp4,video/quicktime,video/webm,.log,.md,.txt,.csv,.json,.pdf,.html,.zip"
             onChange={event => { addFiles(Array.from(event.currentTarget.files ?? [])); event.currentTarget.value = ""; }} />
-          <button type="submit" className="primary-button agent-chat-icon-button" disabled={!(text.trim() || files.length) || mutation.isPending || missingDraftFiles || Boolean(draft.replyToCommentId && !replyTo)}
-            title={t(mutation.isPending ? "commentSending" : "commentSend")} aria-label={t(mutation.isPending ? "commentSending" : "commentSend")}>
-            {mutation.isPending ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />}
+          <button type="submit" className="primary-button agent-chat-icon-button" disabled={!(text.trim() || files.length) || (sending || mutation.isPending) || missingDraftFiles || Boolean(draft.replyToCommentId && !replyTo)}
+            title={t((sending || mutation.isPending) ? "commentSending" : "commentSend")} aria-label={t((sending || mutation.isPending) ? "commentSending" : "commentSend")}>
+            {(sending || mutation.isPending) ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />}
           </button>
         </div>
       </div>
     </fieldset>
-    {error && <InlineError message={error} role="alert" />}
+    {Boolean(error || failure) && <InlineError message={error ?? errorMessage(failure,t("somethingWentWrong"))} role="alert" />}
     {storageFailed && <p className="detail-composer-hint" role="alert">{t("commentDraftSaveFailed")}</p>}
     {replyUnavailable && <p className="detail-composer-hint" role="status">{t("commentDraftReplyUnavailable")} <button type="button" className="text-button" onClick={onCancelReply}>{t("commentDraftAsNew")}</button></p>}
     {missingDraftFiles && <p className="detail-composer-hint" role="status">{t("commentDraftFilesMissing")} <button type="button" className="text-button" onClick={()=>onDraftChange(current=>({...current,attachmentNames:[]}))}>{t("commentDraftFilesDismiss")}</button></p>}
-    {mutation.isError && uploaded.current.size > 0 && <p className="detail-composer-hint">{t("commentUploadRetained")}</p>}
+    {(mutation.isError || Boolean(failure)) && uploaded.current.size > 0 && <p className="detail-composer-hint">{t("commentUploadRetained")}</p>}
   </form>;
 }
 
@@ -4886,6 +4875,7 @@ function BulkReleaseDialog({ items, onClose, onDone }: {
           next.push({ itemKey: item.key, ok: true });
           await applyConfirmedItemTransition(queryClient, updated);
         } catch (error) {
+          draft.attempt.reset(item.key);
           next.push({ itemKey: item.key, ok: false, code: "transition_failed", message: transitionErrorText(error, t) });
         }
       }

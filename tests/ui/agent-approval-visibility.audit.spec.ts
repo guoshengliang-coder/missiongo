@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
+import { advanceSessionDetailPoll } from "./polling";
 
 const fixture = JSON.parse(readFileSync(
   fileURLToPath(new URL("./.auth/fixture.json", import.meta.url)), "utf8",
@@ -124,6 +125,7 @@ test("Simulator approval stays visible through delivery and clears after source 
     await expect(panel.locator("button").first()).toBeDisabled();
     await expect(panel).toContainText(/Decision queued|决定.*Mac/);
     current = { ...current, status: "resolved" };
+    await advanceSessionDetailPoll(page);
     await expect(panel).toHaveCount(0, { timeout: 10_000 });
   }
   expect(decisions).toEqual([{ decision: "accept" }, { decision: "accept" }]);
@@ -155,9 +157,11 @@ test("native authorization scopes survive navigation and reconnect with a fresh 
   await open();
   await expect(panel.getByRole("button", { name: /本会话内允许|Allow for this session/ })).toBeEnabled();
   current = { ...current, status: "reconnecting" };
+  await advanceSessionDetailPoll(page);
   await expect(panel).toContainText(/正在重新连接|Reconnecting/);
   await expect(panel.locator("button")).toHaveCount(0);
   current = { ...current, id: "scope-2", status: "pending" };
+  await advanceSessionDetailPoll(page);
   await expect(panel.locator("button")).toHaveCount(4);
   for (const theme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme: theme });
@@ -172,6 +176,7 @@ test("native authorization scopes survive navigation and reconnect with a fresh 
   expect(decisions).toEqual([{ decision: "acceptForSession" }]);
   current = { ...current, id: "scope-3", decision: undefined,
     options: [{ id: "accept", kind: "once" }, { id: "decline", kind: "decline" }] };
+  await advanceSessionDetailPoll(page);
   await expect(panel.locator("button")).toHaveCount(2);
   await expect(panel.getByRole("button", { name: /本会话内允许|Allow for this session/ })).toHaveCount(0);
 });

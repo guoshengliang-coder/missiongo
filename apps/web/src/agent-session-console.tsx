@@ -52,7 +52,6 @@ import {
   planApprovalStatusKey,
   agentChatMessages,
   projectConversationMessages,
-  agentSessionDetailRefetchInterval,
   agentSessionMatches,
   agentSessionCategory,
   agentOtherProjectCounts,
@@ -425,13 +424,10 @@ export function AgentSessionConsole({
       );
     },
     enabled: Boolean(selected?.agentSessionId) && documentVisible,
-    refetchInterval: (query) => selected?.agentSessionId
-      ? agentSessionDetailRefetchInterval(documentVisible, query.state.fetchFailureCount)
-      : false,
   });
   // List summaries arrive before the transcript. Reveal the whole conversation
   // together, including approval/attention/recovery cards (AND-375). Cached
-  // detail stays visible during polling and refetch errors; dispatches without
+  // detail stays visible during live updates and refetch errors; dispatches without
   // a native session have no detail request to wait for.
   const conversationReady = !selected?.agentSessionId || Boolean(sessionQuery.data);
   const feedback = useAgentOperationFeedback(sessionQuery.data && !sessionQuery.isError ? {
@@ -725,7 +721,7 @@ export function AgentSessionConsole({
   const planMessages = inlinePlanTranscript(visibleMessages, sessionQuery.data);
   const activities = sessionQuery.data?.activities ?? [];
   const turnState = sessionQuery.data?.turnState ?? selected?.turnState;
-  // Detail polls are faster than list polls. Use the same foreground rule as
+  // Detail and list notifications may arrive separately. Use the same foreground rule as
   // the server so a stale canStop flag cannot outlive the turn shown here.
   const canStopCurrentTurn = selected?.canStop && (
     ["queued", "delivered"].includes(selected.dispatchStatus)
@@ -816,9 +812,9 @@ export function AgentSessionConsole({
   useEffect(() => {
     if (!selected || selected.archivedAt || !shouldMarkRead(selected, openedSessionId === selected.id, documentVisible)) return;
     markReadMutate({ id: selected.id, sessionId: selected.agentSessionId, dispatchId: selected.dispatchId, through: selected.unreadAt });
-    // Keyed on the unread clock, not the object: each poll returns a new one.
+    // Keyed on the unread clock, not the object: each snapshot returns a new one.
     // A failed attempt rejoins through the last dependency once the retries
-    // run out, so the badge clears on a later poll instead of never.
+    // run out, so the badge clears on a later snapshot instead of never.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id, selectedUnreadAt, openedSessionId, documentVisible, markReadMutate, markReadRetry]);
 

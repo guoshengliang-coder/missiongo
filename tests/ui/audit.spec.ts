@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 
 import { expect, test, type Page } from "@playwright/test";
+import { waitForNetworkQuiet } from "./polling";
 
 import { AUDIT_SOURCE } from "./audit-page.mjs";
 import { PAGES, THEMES, VIEWPORTS } from "./fixture.mjs";
@@ -70,7 +71,7 @@ const SMALL_TARGET_ALLOWANCE = 0;
 async function auditPage(page: Page, path: string, theme: string): Promise<AuditResult> {
   await page.emulateMedia({ colorScheme: theme as "light" | "dark" });
   await page.goto(path);
-  await page.waitForLoadState("networkidle");
+  await waitForNetworkQuiet(page);
   // The shell animates in; measuring mid-transition reports colours that are
   // never actually shown.
   await page.addStyleTag({ content: "*, *::before, *::after { transition: none !important; animation: none !important; }" });
@@ -142,7 +143,7 @@ for (const viewport of [
     test("submits without hunting for the button", async ({ page }) => {
       await page.emulateMedia({ colorScheme: "dark" });
       await page.goto(`/?product=${fixture.productId}&status=all`);
-      await page.waitForLoadState("networkidle");
+      await waitForNetworkQuiet(page);
       await page.locator(".mobile-fab").click();
       const dialog = page.locator("dialog[open]");
       await expect(dialog).toBeVisible();
@@ -165,7 +166,7 @@ test.describe("row checkbox on a touch screen", () => {
 
   test("tapping the edge of its target ticks the box and leaves the list", async ({ page }) => {
     await page.goto(`/?product=${fixture.productId}&status=all`);
-    await page.waitForLoadState("networkidle");
+    await waitForNetworkQuiet(page);
     const hit = page.locator(".item-select-hit").first();
     await expect(hit).toBeVisible();
     const box = await hit.boundingBox();
@@ -236,7 +237,7 @@ test.describe("the more button on a compact card", () => {
 
   test("draws no surface of its own", async ({ page }) => {
     await page.goto(`/?product=${fixture.productId}&status=all`);
-    await page.waitForLoadState("networkidle");
+    await waitForNetworkQuiet(page);
     // The card is the only plate in the compact list, so this button cancels the
     // surface and border .secondary-button brings. A screenshot cannot hold this:
     // a 44px box on a 375x812 view is 0.6% of the image and toHaveScreenshot
@@ -254,7 +255,7 @@ test.describe("attachments a browser cannot read natively", () => {
 
   test("an iPhone HEIC is drawn from the server's decoded copy", async ({ page }) => {
     await page.goto(`/?product=${fixture.productId}&status=all&item=${fixture.detailKey}`);
-    await page.waitForLoadState("networkidle");
+    await waitForNetworkQuiet(page);
     // The thumbnail is mounted lazily; scroll its card before waiting for the
     // image, including when the persistent composer reduces the reading area.
     const card = page.locator(".attachment-card", { has: page.locator(".media-number-badge", { hasText: "图片 3" }) });
@@ -268,7 +269,7 @@ test.describe("attachments a browser cannot read natively", () => {
 
   test("a video this browser cannot play says so and offers the file", async ({ page }) => {
     await page.goto(`/?product=${fixture.productId}&status=all&item=${fixture.detailKey}`);
-    await page.waitForLoadState("networkidle");
+    await waitForNetworkQuiet(page);
     const card = page.locator(".attachment-card", { has: page.locator(".media-number-badge", { hasText: "视频 1" }) });
     await card.scrollIntoViewIfNeeded();
     await card.locator(".attachment-load-button").click();
