@@ -53,10 +53,10 @@ for (const viewport of VIEWPORTS) {
           await expect.poll(() => page.evaluate(() => {
             const quiet = performance.getEntriesByType("resource")
               .filter(entry => !entry.name.includes("/api/v1/console/events")).length;
-            const tracker = window as { __lastQuietResources?: number; __quietPolls?: number };
-            if (quiet === tracker.__lastQuietResources) tracker.__quietPolls = (tracker.__quietPolls ?? 0) + 1;
-            else { tracker.__lastQuietResources = quiet; tracker.__quietPolls = 0; }
-            return tracker.__quietPolls ?? 0;
+            const tracker = window as unknown as { mgLastQuietResources?: number; mgQuietPolls?: number };
+            if (quiet === tracker.mgLastQuietResources) tracker.mgQuietPolls = (tracker.mgQuietPolls ?? 0) + 1;
+            else { tracker.mgLastQuietResources = quiet; tracker.mgQuietPolls = 0; }
+            return tracker.mgQuietPolls ?? 0;
           }), { timeout: 15_000 }).toBeGreaterThanOrEqual(3);
           await page.addStyleTag({ content: "*, *::before, *::after { transition: none !important; animation: none !important; }" });
           await page.waitForTimeout(200);

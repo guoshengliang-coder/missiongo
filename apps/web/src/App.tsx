@@ -332,7 +332,6 @@ export function App() {
   const [statisticsOpen,setStatisticsOpen] = useState(statisticsIsOpen);
   const [agentConsoleOpen, setAgentConsoleOpen] = useState(agentConsoleIsOpen);
   const consoleDrafts = useAgentConsoleDrafts();
-  const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
   const [agentSessionId, setAgentSessionId] = useState<string | null>(agentSessionIdFromUrl);
   // Read before the deep-link handling below rewrites the URL without it.
   const [agentConsoleLinkedFilter, setAgentConsoleLinkedFilter] = useState(agentConsoleFilterFromUrl);

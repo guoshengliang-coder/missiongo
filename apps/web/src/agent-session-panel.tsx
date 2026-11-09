@@ -15,7 +15,7 @@ import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, SessionStatusI
 import { MarkdownText } from "./markdown-text";
 import { AgentArtifactMarkdown } from "./agent-artifact-viewer";
 import { api } from "./api";
-import { activityLabelKey, latestAgentSessionCommand, sessionReplyPresentation, agentSessionDetailRefetchInterval, formatAgentMessageTime, isWithdrawnCard, replyMirrorArrived, replyBlockedLabelKey, runWaitingLabelKey, sessionInlineError, sessionStatusDetail } from "./agent-session-view";
+import { activityLabelKey, latestAgentSessionCommand, sessionReplyPresentation, formatAgentMessageTime, isWithdrawnCard, replyMirrorArrived, replyBlockedLabelKey, runWaitingLabelKey, sessionInlineError, sessionStatusDetail } from "./agent-session-view";
 import { hasPendingPermissionQuestion } from "@missiongo/domain";
 import { AgentSessionQuestions } from "./agent-session-questions";
 import { useI18n } from "./i18n";

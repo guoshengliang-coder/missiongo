@@ -71,11 +71,15 @@ export function startConsoleEvents(client:QueryClient, fetcher:typeof fetch=(inp
   const resources=pending;pending=[];const full=reset;reset=false;const next=pendingCursor;
   try {
    const affected=client.getQueryCache().findAll({predicate:q=>q.queryKey[0]!=="bootstrap" && (full||resources.some(r=>changeAffects(q.queryKey,r)))});
-   // A formerly-authorized snapshot must not remain visible after revocation.
+   // A formerly-authorized snapshot must not remain readable after revocation.
+   // Observed queries (e.g. the embedded item conversation) revalidate in
+   // place; eviction alone would leave their mounted observers pointing at a
+   // removed query that never refetches. Only unobserved caches are dropped.
    if(full || resources.some(r=>r.kind==="access")) {
     await client.cancelQueries();
     if(stopped)return;
-    client.removeQueries({predicate:q=>q.queryKey[0]!=="bootstrap"});
+    client.removeQueries({predicate:q=>q.queryKey[0]!=="bootstrap" && q.getObserversCount()===0});
+    await client.invalidateQueries({predicate:q=>q.queryKey[0]!=="bootstrap"},{throwOnError:true});
     await client.resetQueries({queryKey:["bootstrap"]},{throwOnError:true});
    } else {
     await Promise.all(affected.map(async q=>{
