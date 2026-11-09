@@ -20,6 +20,11 @@ export class TransitionAttachmentAttempt {
   private readonly uploads = new Map<string, Map<File, { key: string; id?: string }>>();
   private readonly attempts = new Map<string, { fingerprint: string; key: string; expectedStatus: WorkItemStatus }>();
   readonly confirmed = new Map<string, WorkItem>();
+  // A key kept from a failed attempt answers the next one from its receipt,
+  // which then describes the attempt that failed rather than this one.
+  reset(itemKey: string): void {
+    this.attempts.delete(itemKey);
+  }
   collaborationDisposition: {mode:"withdraw"|"keep";successorAccountId?:string} | undefined;
   executionDisposition: "keep_running" | "stop_requested" | undefined;
 

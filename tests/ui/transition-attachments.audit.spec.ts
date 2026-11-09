@@ -72,8 +72,9 @@ test("detail cancellation keeps reason/files after upload and write failures, re
     if (name === "retry.txt" && failUpload) await route.fulfill({ status: 503, contentType: "application/json", body: '{}' });
     else await route.continue();
   });
+  let gateNow = false;
   await page.route(`**/items/${item.key}/transitions`, async route => {
-    await gate;
+    if (gateNow) await gate;
     const response = await route.fetch();
     if (loseResponse) { loseResponse = false; await route.fulfill({ status: 503, contentType: "application/json", body: '{}' }); }
     else await route.fulfill({ response });
@@ -81,6 +82,9 @@ test("detail cancellation keeps reason/files after upload and write failures, re
   const dialog = await openReason(page, item.key, "detail", true);
   await dialog.locator("textarea").fill("No longer needed, with evidence");
   await dialog.locator('input[type="file"]').setInputFiles([file("first.txt"), file("retry.txt")]);
+  // Hold the lost write alone: an earlier guard turns the console's own load
+  // refresh into a delay of it, and the form then writes an older snapshot.
+  gateNow = true;
   await dialog.locator('button[type="submit"]').click();
   await expect(dialog.locator(".inline-error")).toBeVisible();
   expect((await (await request.get(`/api/v1/items/${item.key}`)).json()).status).toBe("pending_verification");

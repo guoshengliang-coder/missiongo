@@ -31,6 +31,10 @@ for(const width of [320,1440])for(const theme of ["light","dark"] as const)test.
   }
   await page.screenshot({path:test.info().outputPath("delivery-evidence.png"),fullPage:true});
   await page.locator(".detail-toolbar button.toolbar-primary-action").click();
+  // The submit also refreshes the detail reads still in flight through the
+  // console stream; leaving the routes installed lets them keep fetching past
+  // the end of the test.
+  await page.unrouteAll({behavior:"ignoreErrors"});
   await expect.poll(async()=> (await (await request.get(`/api/v1/items/${item.key}`)).json()).status).toBe("pending_verification");
   const timeline=await (await request.get(`/api/v1/items/${item.key}/timeline`)).json();
   expect(timeline.events.at(-1).payload.reason).toBe("non_release_submitted");

@@ -4875,6 +4875,7 @@ function BulkReleaseDialog({ items, onClose, onDone }: {
           next.push({ itemKey: item.key, ok: true });
           await applyConfirmedItemTransition(queryClient, updated);
         } catch (error) {
+          draft.attempt.reset(item.key);
           next.push({ itemKey: item.key, ok: false, code: "transition_failed", message: transitionErrorText(error, t) });
         }
       }
