@@ -240,6 +240,7 @@ public final class NodeLoop: @unchecked Sendable {
     private let sessionSynchronization = SessionSynchronization()
 
     private let agentCache = Locked<(agents: [DetectedAgent], at: Date)?>(nil)
+    private let unconfirmedDetections = Locked<Set<String>>([])
     private let lastReposFingerprint = Locked<[RepoMapping]?>(nil)
     /// The account's live AI authorizations from the latest heartbeat (AND-306),
     /// used to judge a `mgpat_` token found in an agent config: the node hashes
@@ -920,6 +921,7 @@ public final class NodeLoop: @unchecked Sendable {
     private func availableAgentKinds() async -> [String] {
         var available: [String] = []
         for adapter in adapters {
+            if unconfirmedDetections.current.contains(adapter.kind) { continue }
             if skillReadiness != nil && !skillReadyAgents.current.contains(adapter.kind) {
                 let reason = "MissionGo Skill 尚未同步到服务端要求的版本。"
                 let changed = unavailableAgents.withLock { previous -> Bool in
@@ -1030,16 +1032,18 @@ public final class NodeLoop: @unchecked Sendable {
         }
         var detected: [DetectedAgent] = []
         for adapter in adapters {
-            // One adapter failing to detect must not hide the others; a missing
-            // agent is simply not reported.
-            if let version = await adapter.detect() {
-                detected.append(DetectedAgent(kind: adapter.kind, version: version))
+            // Missing and temporarily unconfirmed are different. Keep the
+            // latter visible, but never claim against a stale ready verdict.
+            if let report = await adapter.detectionReport() {
+                detected.append(report)
             }
         }
         // A failed version probe must not hide an otherwise installed agent
         // for the full five-minute cache window. Retry incomplete results on
         // the next heartbeat; complete results still avoid repeated processes.
-        agentCache.withLock { $0 = detected.count == adapters.count ? (detected, Date()) : nil }
+        let complete = detected.count == adapters.count && detected.allSatisfy { $0.ready != false }
+        unconfirmedDetections.withLock { $0 = Set(detected.filter { $0.ready == false }.map(\.kind)) }
+        agentCache.withLock { $0 = complete ? (detected, Date()) : nil }
         return detected
     }
 
@@ -1052,6 +1056,12 @@ public final class NodeLoop: @unchecked Sendable {
         var readyKinds = Set<String>()
         for agent in detected {
             guard let adapter = adapters.first(where: { $0.kind == agent.kind }) else { continue }
+            // Do not turn an unsuccessful installation probe into ready=true
+            // through an unrelated skill/resource check, or reuse its catalog.
+            if agent.ready == false {
+                reports.append(agent)
+                continue
+            }
             let skill = await skillReadiness?(agent.kind, expectedSkillVersion)
             let resource = await adapter.resourceSnapshot()
             let skillReady = skillReadiness == nil || (
