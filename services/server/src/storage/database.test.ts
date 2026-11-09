@@ -1,3 +1,4 @@
+import { beforeDisplayProjection } from "../test-fixtures/before-display-projection.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -718,6 +719,7 @@ describe("external conversation archive migration (AND-337)", () => {
     const seeded = new MissionGoDatabase(path);
     const db = seeded.connection;
     const at = "2026-10-30T00:00:00.000Z";
+    beforeDisplayProjection(db);
     db.exec(`ALTER TABLE external_agent_sessions DROP COLUMN archive_reason;
       ALTER TABLE external_agent_sessions DROP COLUMN auto_archive_suppressed;
       ALTER TABLE external_agent_sessions DROP COLUMN product_id;

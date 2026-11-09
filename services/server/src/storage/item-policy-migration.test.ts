@@ -1,3 +1,4 @@
+import { DatabaseSync } from "node:sqlite";
 import { beforeCollaboration } from "../test-fixtures/before-collaboration.js";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync,rmSync } from "node:fs";
@@ -19,10 +20,12 @@ it("upgrades existing owners, held cards, content and claim credentials once wit
   accounts.replacePermissions("limited",[{productId:product.id,canView:true,canOperate:true,canUseAi:true}]);
   const item=store.createWorkItem({productId:product.id,title:"Existing scope",description:"Original",type:"task",priority:"normal",status:"ready",environment:{platform:"web"}});
   store.claimWorkItem({itemKey:item.key,agentId:"Agent",attribution:{accountId:"owner"},idempotencyKey:"existing-claim"});
-  const db=store.database.connection,at=new Date().toISOString(),live=randomUUID(),old=randomUUID();
+  let db=store.database.connection;
+  const at=new Date().toISOString(),live=randomUUID(),old=randomUUID();
   for(const [id,date] of [[live,at],[old,"2000-01-01T00:00:00.000Z"]]) db.prepare("INSERT INTO builder_execution_authorizations(id,item_id,account_id,client_id,created_at) VALUES (?,?,?,'client',?)").run(id!,item.id,"owner",date!);
   const held=store.createWorkItem({productId:product.id,title:"Paused before start",description:"",type:"task",priority:"normal",status:"ready",environment:{platform:"web"}});
   store.transitionWorkItem({itemKey:held.key,to:"on_hold",actor:"human",reason:"request_human_input",note:"Await prioritization"});
+  store.close();db=new DatabaseSync(path);
   beforeCollaboration(db);
   // Remove later additive schemas before reconstructing this historical version.
   db.exec(`ALTER TABLE dingtalk_notifications DROP COLUMN personal_notification_id;
@@ -39,7 +42,7 @@ it("upgrades existing owners, held cards, content and claim credentials once wit
     ALTER TABLE accounts DROP COLUMN ai_scope;
     DELETE FROM product_administrators;
     DELETE FROM schema_migrations WHERE version=202611020744;`);
-  store.close();store=new MissionGoStore(path);
+  db.close();store=new MissionGoStore(path);
   const upgraded=new AccountStore(store.database);
   expect(upgraded.projectAdministratorIds(product.id)).toEqual(["owner"]);
   expect(store.getWorkItem(held.key)).toMatchObject({status:"on_hold",heldFrom:"ready",revision:1,contentVersion:1});

@@ -1,3 +1,5 @@
+import { sourceMutation } from "./sql-mutation.js";
+import { DISPLAY_PROJECTION_SCHEMA } from "./display-projection-schema.js";
 import { SESSION_MESSAGE_CLOCK_SCHEMA } from "./session-message-clock-schema.js";
 import { COLLABORATION_SCHEMA } from "./collaboration-schema.js";
 import { EXECUTION_STOP_SCHEMA } from "./execution-stop-schema.js";
@@ -31,6 +33,7 @@ export class MissionGoDatabase {
       this.connection.exec("PRAGMA journal_mode = WAL;");
     }
     this.migrate();
+    this.connection = this.observeWrites(this.connection);
   }
 
   close(): void {
@@ -45,6 +48,7 @@ export class MissionGoDatabase {
     this.transactionDepth += 1;
     try {
       const result = operation();
+      if (depth === 0) for (const flush of this.projectionWriters.values()) flush();
       this.connection.exec(depth === 0 ? "COMMIT;" : `RELEASE nested_${depth};`);
       return result;
     } catch (error) {
@@ -53,6 +57,34 @@ export class MissionGoDatabase {
     } finally {
       this.transactionDepth -= 1;
     }
+  }
+
+  private readonly projectionWriters = new Map<string, () => void>();
+
+  /** Writers run before the outer commit, including single-statement writes.
+   * A projection failure rolls back its source, never serving a stale success. */
+  registerProjectionWriter(name: string, writer: () => void): boolean {
+    if (this.projectionWriters.has(name)) return false;
+    this.projectionWriters.set(name, writer);
+    try { this.transaction(writer); } catch (error) { this.projectionWriters.delete(name); throw error; }
+    return true;
+  }
+
+  private observeWrites(raw: DatabaseSync): DatabaseSync {
+    const prepare=raw.prepare.bind(raw),exec=raw.exec.bind(raw);
+    const execute=<T>(operation:()=>T)=>this.transactionDepth?operation():this.transaction(operation);
+    raw.prepare=(sql:string)=>{
+      const statement=prepare(sql);
+      return new Proxy(statement,{get:(prepared,method)=>{
+        const value=Reflect.get(prepared,method,prepared);
+        if(typeof value!=="function")return value;
+        if(sourceMutation(sql) && ["run","get","all"].includes(String(method)))
+          return (...args:unknown[])=>execute(()=>Reflect.apply(value,prepared,args));
+        return value.bind(prepared);
+      }});
+    };
+    raw.exec=(sql:string)=>sourceMutation(sql,true)?execute(()=>exec(sql)):exec(sql);
+    return raw;
   }
 
   /**
@@ -2616,6 +2648,14 @@ export class MissionGoDatabase {
           ) STRICT;`);
         this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
           .run(202611081300,new Date().toISOString());
+      });
+    }
+
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611090156").get()) {
+      this.transaction(() => {
+        this.connection.exec(DISPLAY_PROJECTION_SCHEMA);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611090156,new Date().toISOString());
       });
     }
 

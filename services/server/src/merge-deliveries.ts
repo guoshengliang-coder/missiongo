@@ -69,7 +69,9 @@ const changed = () => conflict("merge_delivery_changed", "交付内容、代码�
 
 /** Explicit delivery intent is independent of item state and chat inference. */
 export class MergeDeliveries {
-  constructor(private readonly store: MissionGoStore) {}
+  constructor(private readonly store: MissionGoStore) {
+    this.db.registerProjectionWriter("merge-display-v1", () => this.store.withProjectionReads(() => this.refreshDisplay()));
+  }
   private get db() { return this.store.database; }
   private read<T>(table: "merge_deliveries" | "merge_batches", id: string): T {
     const row = this.db.connection.prepare(`SELECT data_json FROM ${table} WHERE id=?`).get(id) as {data_json:string}|undefined;
@@ -85,13 +87,22 @@ export class MergeDeliveries {
     this.db.connection.prepare("UPDATE merge_batches SET state=?,data_json=? WHERE id=?")
       .run(b.state, JSON.stringify(stored), b.id);
   }
+  private displayReads: Map<string,unknown> | undefined;
+  private displayRead<T>(key:string,read:()=>T):T {
+    if(!this.displayReads)return read();
+    if(!this.displayReads.has(key))this.displayReads.set(key,read());
+    return this.displayReads.get(key) as T;
+  }
   private scope(keys: string[]) {
+    return this.displayRead("scope:"+JSON.stringify(keys),()=>{
     return digest(keys.map(key => {
       const id = this.store.workItemId(key);
       return [id, this.store.workItemContentVersion(key), this.store.workItemBuilderAccountId(key), deliveryRound(this.db, id)];
     }));
+    });
   }
   private activity(sessionId: string) {
+    return this.displayRead("activity:"+sessionId,()=>{
     // New human input invalidates the offer, regardless of how it is worded.
     return digest([
       this.db.connection.prepare("SELECT id FROM agent_session_commands WHERE session_id=? AND kind='message' ORDER BY rowid DESC LIMIT 1").get(sessionId),
@@ -99,6 +110,7 @@ export class MergeDeliveries {
       this.db.connection.prepare("SELECT source_id,text FROM agent_session_messages WHERE session_id=? AND role='user' ORDER BY position DESC LIMIT 1").get(sessionId),
       this.db.connection.prepare("SELECT source_id,payload_json FROM external_native_messages WHERE session_id=? AND json_extract(payload_json,'$.role')='user' ORDER BY position DESC LIMIT 1").get(sessionId),
     ]);
+    });
   }
   /** Account ownership and the persisted project binding replace item claim authority only for standalone work. */
   private projectSource(accountId:string,clientId:string,identity:Identity,productId:string) {
@@ -200,16 +212,18 @@ export class MergeDeliveries {
     return {...visible, blocker: ["proposed","confirmed","batched"].includes(d.state) ? this.eligible(d) : undefined,
       pullRequestUrl:`${d.repository}/pull/${d.pullRequest}`};
   }
-  list(productId: string, accountId: string) {
+  recomputeList(productId: string, accountId: string) {
     return this.listRaw(productId).filter(d => d.accountId === accountId && !["withdrawn","merged"].includes(d.state)).map(d => this.view(d)).filter(d => d.state === "batched" || d.blocker !== "changed");
   }
   private displaySettings(sessionId: string): string {
+    return this.displayRead("settings:"+sessionId,()=>{
     return digest([
       this.db.connection.prepare("SELECT dispatch_id,settings_revision FROM agent_sessions WHERE id=?").get(sessionId),
       this.db.connection.prepare("SELECT json_extract(native_settings_json,'$.revision') AS revision FROM external_agent_sessions WHERE id=?").get(sessionId),
       this.db.connection.prepare("SELECT id FROM agent_session_commands WHERE session_id=? AND kind='message' ORDER BY rowid DESC LIMIT 1").get(sessionId),
       this.db.connection.prepare("SELECT id FROM external_native_commands WHERE session_id=? ORDER BY rowid DESC LIMIT 1").get(sessionId),
     ]);
+    });
   }
   private rememberDisplay(b: Batch, d: Delivery) {
     const boundaries = b.displayBoundaries ??= {};
@@ -237,6 +251,7 @@ export class MergeDeliveries {
     return completed.length>0 && (!stamp || Date.parse(stamp)<=Math.max(...completed));
   }
   private latestHumanStamp(sessionId: string): string | null {
+    return this.displayRead("human:"+sessionId,()=>{
     const latest = this.db.connection.prepare(`SELECT MAX(stamp) AS stamp FROM (
       SELECT occurred_at AS stamp FROM agent_session_messages WHERE session_id=? AND role='user'
       UNION ALL SELECT created_at FROM agent_session_commands WHERE session_id=? AND kind='message'
@@ -244,13 +259,19 @@ export class MergeDeliveries {
       UNION ALL SELECT created_at FROM external_native_commands WHERE session_id=?
     )`).get(sessionId,sessionId,sessionId,sessionId) as {stamp:string|null};
     return latest.stamp;
+    });
   }
 
   /** Shared list/detail projection. Historical receipts never become mutable conversation state. */
-  sessionProgress(productId: string, accountId: string): Record<string, SessionDeliveryStage> {
-    const rows = this.listRaw(productId).filter(d => d.accountId === accountId);
-    const batches = (this.db.connection.prepare("SELECT data_json FROM merge_batches WHERE product_id=? AND account_id=? ORDER BY rowid DESC")
-      .all(productId,accountId) as {data_json:string}[]).map(row=>JSON.parse(row.data_json) as Batch);
+  recomputeSessionProgress(productId: string, accountId: string, onlySession?: string, now = Date.now(), onPublishing?: (expires:number) => void): Record<string, SessionDeliveryStage> {
+    const batchRows = this.db.connection.prepare(`SELECT data_json FROM merge_batches WHERE product_id=? AND account_id=?
+      ${onlySession ? "AND (json_extract(data_json,'$.sessionId')=? OR id IN (SELECT json_extract(data_json,'$.batchId') FROM merge_deliveries WHERE product_id=? AND account_id=? AND json_extract(data_json,'$.sessionId')=?))" : ""} ORDER BY rowid DESC`)
+      .all(productId,accountId,...(onlySession ? [onlySession,productId,accountId,onlySession] : [])) as {data_json:string}[];
+    const batchIds=batchRows.map(row=>(JSON.parse(row.data_json) as Batch).id);
+    const rows = (this.db.connection.prepare(`SELECT data_json FROM merge_deliveries WHERE product_id=? AND account_id=?
+      ${onlySession ? `AND (json_extract(data_json,'$.sessionId')=? OR json_extract(data_json,'$.batchId') IN (${batchIds.map(()=>"?").join(",")}))` : ""} ORDER BY rowid DESC`)
+      .all(productId,accountId,...(onlySession ? [onlySession,...batchIds] : [])) as {data_json:string}[]).map(row=>JSON.parse(row.data_json) as Delivery);
+    const batches = (batchRows as {data_json:string}[]).map(row=>JSON.parse(row.data_json) as Batch);
     const byBatch = new Map(batches.map(b=>[b.id,b]));
     const presentations = new Map<string, MergeBatchPresentation>();
     const presentationOf = (b: Batch) => { const cached = presentations.get(b.id); if (cached) return cached; const built = this.presentation(b); presentations.set(b.id, built); return built; };
@@ -268,7 +289,10 @@ export class MergeDeliveries {
       const partiallyPublished = publications.some(value=>value === "partial" || value === "published");
       const publication = b.integration?.publication;
       if (needsPublication && publication && publication.resultsDigest === digest(b.results)) {
-        if (publication.state === "publishing" && b.state === "active" && Date.parse(publication.expiresAt)>Date.now()) return "publishing";
+        if (publication.state === "publishing" && b.state === "active" && Date.parse(publication.expiresAt)>now) {
+          if(sessionId===onlySession)onPublishing?.(Date.parse(publication.expiresAt));
+          return "publishing";
+        }
         return partiallyPublished ? "publication_partial" : "publication_unknown";
       }
       return partiallyPublished ? "publication_partial" : "merged";
@@ -295,11 +319,108 @@ export class MergeDeliveries {
     return result;
   }
   /** A declined offer also handles this turn's generic attention; later input never inherits that choice. */
-  attentionSessionIds(productId: string, accountId: string) {
+  recomputeAttentionSessionIds(productId: string, accountId: string) {
     return [...new Set(this.listRaw(productId).filter(d => d.accountId === accountId
       && d.state !== "merged" && d.activity === this.activity(d.sessionId))
       .filter(d => { try { this.sourceValid(d); return true; } catch { return false; } })
       .map(d => d.sessionId))];
+  }
+  /** Hot reads query only persisted display rows. Actions always use live sources. */
+  list(productId: string, accountId: string) {
+    const now=Date.now();
+    return (this.db.connection.prepare(`SELECT data_json,fresh_from,fresh_until,fresh_blocker FROM merge_delivery_projection
+      WHERE product_id=? AND account_id=? AND visible=1 ORDER BY sequence DESC`).all(productId,accountId) as
+      {data_json:string;fresh_from:number|null;fresh_until:number|null;fresh_blocker:string|null}[]).map(row=>{
+      const value=JSON.parse(row.data_json) as ReturnType<MergeDeliveries["view"]>;
+      if(row.fresh_until!==null && value.blocker!=="changed") value.blocker=now>=row.fresh_from! && now<=row.fresh_until ? row.fresh_blocker ?? undefined : "stale";
+      return value;
+    });
+  }
+  batches(productId: string, accountId: string): ReturnType<MergeDeliveries["recomputeBatches"]> {
+    return (this.db.connection.prepare(`SELECT data_json FROM merge_batch_projection WHERE product_id=? AND account_id=?
+      ORDER BY sequence DESC LIMIT 20`).all(productId,accountId) as {data_json:string}[]).map(row=>JSON.parse(row.data_json));
+  }
+  attentionSessionIds(productId: string, accountId: string): string[] {
+    return (this.db.connection.prepare(`SELECT session_id FROM merge_delivery_projection WHERE product_id=? AND account_id=?
+      AND attention=1 GROUP BY session_id ORDER BY MAX(sequence) DESC`).all(productId,accountId) as {session_id:string}[]).map(row=>row.session_id);
+  }
+  sessionProgress(productId: string, accountId: string): Record<string, SessionDeliveryStage> {
+    const rows=this.db.connection.prepare("SELECT session_id,stage,expires_at,expired_stage FROM merge_session_projection WHERE product_id=? AND account_id=?")
+      .all(productId,accountId) as {session_id:string;stage:SessionDeliveryStage;expires_at:number|null;expired_stage:SessionDeliveryStage|null}[];
+    return Object.fromEntries(rows.map(row=>[row.session_id,row.expires_at!==null && Date.now()>=row.expires_at ? row.expired_stage! : row.stage]));
+  }
+  private refreshDisplay() {
+    this.displayReads=new Map();
+    try{this.writeDisplay();}finally{this.displayReads=undefined;}
+  }
+  private writeDisplay() {
+    const changes=this.db.connection.prepare("SELECT kind,id FROM merge_display_dirty").all() as {kind:string;id:string}[];
+    if(!changes.length)return;
+    const deliveries=new Set<string>(), batches=new Set<string>();
+    for(const change of changes) {
+      if(change.kind==="delivery")deliveries.add(change.id);
+      if(change.kind==="batch")batches.add(change.id);
+      for(const row of this.db.connection.prepare("SELECT delivery_id FROM merge_display_dependencies WHERE kind=? AND id=?").all(change.kind,change.id) as {delivery_id:string}[])deliveries.add(row.delivery_id);
+      if(change.kind==="item") {
+        // A target's status can unblock a delivery in a different project.
+        for(const row of this.db.connection.prepare(`SELECT x.delivery_id FROM merge_display_dependencies x JOIN collaboration_requests r ON r.source_item_id=x.id
+          WHERE x.kind='item' AND r.target_item_id=?`).all(change.id) as {delivery_id:string}[])deliveries.add(row.delivery_id);
+      }
+      if(change.kind==="session")for(const row of this.db.connection.prepare("SELECT id FROM merge_batches WHERE json_extract(data_json,'$.sessionId')=?").all(change.id) as {id:string}[])batches.add(row.id);
+    }
+    this.db.connection.prepare("DELETE FROM merge_display_dirty").run();
+    for(const id of batches)for(const row of this.db.connection.prepare("SELECT value AS id FROM merge_batches,json_each(data_json,'$.deliveries') WHERE merge_batches.id=?").all(id) as {id:string}[])deliveries.add(row.id);
+    const sessions=new Map<string,{productId:string;accountId:string;sessionId:string}>();
+    const remember=(productId:string,accountId:string,sessionId:string)=>sessions.set(JSON.stringify([productId,accountId,sessionId]),{productId,accountId,sessionId});
+    for(const id of deliveries) {
+      const previous=this.db.connection.prepare("SELECT product_id,account_id,session_id,batch_id FROM merge_delivery_projection WHERE id=?").get(id) as {product_id:string;account_id:string;session_id:string;batch_id:string|null}|undefined;
+      if(previous){remember(previous.product_id,previous.account_id,previous.session_id);if(previous.batch_id)batches.add(previous.batch_id);}
+      const source=this.db.connection.prepare("SELECT rowid AS sequence,data_json FROM merge_deliveries WHERE id=?").get(id) as {sequence:number;data_json:string}|undefined;
+      this.db.connection.prepare("DELETE FROM merge_display_dependencies WHERE delivery_id=?").run(id);
+      if(!source){this.db.connection.prepare("DELETE FROM merge_delivery_projection WHERE id=?").run(id);continue;}
+      const d=JSON.parse(source.data_json) as Delivery,view=this.view(d);
+      const visible=!["withdrawn","merged"].includes(d.state) && (d.state==="batched" || view.blocker!=="changed");
+      let attention=false;
+      if(d.state!=="merged" && d.activity===this.activity(d.sessionId))try{this.sourceValid(d);attention=true;}catch{/* Invalid sources never suppress attention. */}
+      let freshBlocker: string|undefined;
+      if(view.blocker!=="changed" && d.state!=="batched") {
+        freshBlocker=d.evidence.checks!=="passed" ? d.evidence.checks : d.evidence.mergeable!=="clean" ? d.evidence.mergeable
+          : d.itemKeys.some(key=>collaborationBlockers(this.db,this.store.workItemId(key))>0) ? "dependency" : undefined;
+      }
+      const time=Date.parse(d.evidence.checkedAt);
+      this.db.connection.prepare(`INSERT OR REPLACE INTO merge_delivery_projection VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+        d.id,d.productId,d.accountId,d.sessionId,d.batchId??null,source.sequence,Number(visible),Number(attention),JSON.stringify(view),
+        d.state==="batched"||d.evidence.head!==d.head?null:time-30_000,d.state==="batched"||d.evidence.head!==d.head?null:time+300_000,freshBlocker??null);
+      const link=(kind:string,key:string)=>this.db.connection.prepare("INSERT OR IGNORE INTO merge_display_dependencies VALUES (?,?,?)").run(id,kind,key);
+      link("session",d.sessionId);link("account",d.accountId);link("product",d.productId);
+      if(d.batchId){batches.add(d.batchId);link("batch",d.batchId);}
+      for(const key of d.itemKeys)link("item",this.store.workItemId(key));
+      if(d.identity.dispatchId)link("dispatch",d.identity.dispatchId);
+      for(const sessionId of [d.sessionId]) {
+        const local=this.db.connection.prepare("SELECT d.id,d.node_id FROM agent_sessions s JOIN dispatches d ON d.id=s.dispatch_id WHERE s.id=?").get(sessionId) as {id:string;node_id:string}|undefined;
+        if(local){link("dispatch",local.id);link("node",local.node_id);}
+        const external=this.db.connection.prepare("SELECT native_node_id FROM external_agent_sessions WHERE id=?").get(sessionId) as {native_node_id:string|null}|undefined;
+        if(external?.native_node_id)link("node",external.native_node_id);
+      }
+      remember(d.productId,d.accountId,d.sessionId);
+    }
+    for(const id of batches) {
+      const source=this.db.connection.prepare("SELECT rowid AS sequence,data_json FROM merge_batches WHERE id=?").get(id) as {sequence:number;data_json:string}|undefined;
+      if(!source){this.db.connection.prepare("DELETE FROM merge_batch_projection WHERE id=?").run(id);continue;}
+      const b=JSON.parse(source.data_json) as Batch;
+      this.db.connection.prepare("INSERT OR REPLACE INTO merge_batch_projection VALUES (?,?,?,?,?,?)").run(b.id,b.productId,b.accountId,b.sessionId,source.sequence,JSON.stringify({...b,presentation:this.presentation(b)}));
+      remember(b.productId,b.accountId,b.sessionId);
+    }
+    for(const {productId,accountId,sessionId} of sessions.values()) {
+      let expires:number|null=null;
+      const stage=this.recomputeSessionProgress(productId,accountId,sessionId,Date.now(),value=>{expires=value;})[sessionId];
+      this.db.connection.prepare("DELETE FROM merge_session_projection WHERE product_id=? AND account_id=? AND session_id=?").run(productId,accountId,sessionId);
+      if(!stage)continue;
+      // Publishing is the only time-dependent stage. Compute its fallback once
+      // on the write, retaining just the deadline comparison on reads.
+      const expired=expires!==null ? this.recomputeSessionProgress(productId,accountId,sessionId,expires)[sessionId]??null : null;
+      this.db.connection.prepare("INSERT INTO merge_session_projection VALUES (?,?,?,?,?,?)").run(productId,accountId,sessionId,stage,expires,expired);
+    }
   }
   readForAccount(accountId: string, id: string) {
     const d=this.read<Delivery>("merge_deliveries",id);
@@ -324,7 +445,7 @@ export class MergeDeliveries {
     if (evidence.head !== d.head) d.state = "withdrawn";
     this.save(d); return this.view(d);
   }
-  batches(productId: string, accountId: string) {
+  recomputeBatches(productId: string, accountId: string) {
     return (this.db.connection.prepare("SELECT data_json FROM merge_batches WHERE product_id=? AND account_id=? ORDER BY rowid DESC LIMIT 20")
       .all(productId,accountId) as {data_json:string}[]).map(row => {
         const batch=JSON.parse(row.data_json) as Batch;
@@ -372,6 +493,7 @@ export class MergeDeliveries {
   /** Historical publication is read from formal receipts for this PR, not current
    * item status, free-form progress, or the fact that a batch was finished. */
   private presentation(b:Batch):MergeBatchPresentation {
+    return this.displayRead("presentation:"+b.id,()=>{
     return {entries:Object.fromEntries(b.deliveries.map(id=>{
       const d=this.read<Delivery>("merge_deliveries",id),url=`${d.repository}/pull/${d.pullRequest}`;
       const releases:MergeBatchPresentation["entries"][string]["releases"]=[];
@@ -407,6 +529,7 @@ export class MergeDeliveries {
       return [id,{itemKeys:d.itemKeys,title:d.displayTitle??(d.itemKeys.length?d.itemKeys.map(key=>this.store.getWorkItem(key).title).join(" / "):d.summary),summary:d.summary,pullRequestUrl:url,
         requiredArtifacts:d.requiredArtifacts,noReleaseReason:d.noReleaseReason,publication,releases}];
     }))};
+    });
   }
   start(accountId: string, requestKey: string, selection: {id:string;revision:string}[], config: FreeSessionConfig, publish: boolean, integrationProtocol?: 1, saveAsDefault = false) {
     return this.db.transaction(() => {

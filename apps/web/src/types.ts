@@ -161,6 +161,15 @@ export interface WorkItem {
   readonly updatedAt: string;
 }
 
+export interface WorkItemListRow extends Omit<WorkItem,"description"|"report"|"attachments"|"diagnosticSummary"> {
+  readonly projection: "list";
+  readonly listSummary: import("@missiongo/domain").WorkItemListRow["listSummary"];
+}
+export type WorkItemRow = WorkItem | WorkItemListRow;
+export function isItemListRow(item: WorkItemRow): item is WorkItemListRow {
+  return "projection" in item && item.projection === "list";
+}
+
 export interface WorkItemReference {
   readonly key: string;
   readonly title: string;

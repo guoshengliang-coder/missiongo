@@ -1,12 +1,12 @@
 import type { InfiniteData, Query, QueryClient } from "@tanstack/react-query";
 
 import type { WorkItemListPage } from "./api";
-import type { WorkItem } from "./types";
+import type { WorkItem, WorkItemRow } from "./types";
 
 type ItemListData = InfiniteData<WorkItemListPage, number | null>;
 
 // Transition responses omit the display names added by the read endpoints.
-function withCreatorName(updated: WorkItem, cached: WorkItem | undefined): WorkItem {
+function withCreatorName(updated: WorkItem, cached: WorkItemRow | undefined): WorkItem {
   return cached?.createdBy ? { ...updated, createdBy: cached.createdBy } : updated;
 }
 

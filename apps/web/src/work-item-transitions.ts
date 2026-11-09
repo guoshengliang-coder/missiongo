@@ -1,4 +1,4 @@
-import { ITEM_STATUSES, type TransitionAction, type WorkItem, type WorkItemStatus } from "./types";
+import { ITEM_STATUSES, type TransitionAction, type WorkItemRow, type WorkItemStatus } from "./types";
 
 // The domain allows a human to cancel from every status except `done` and
 // `cancelled` itself; keep this table in sync with packages/domain/src/work-item-status.ts.
@@ -65,7 +65,7 @@ export function manualMoves(from: WorkItemStatus, actions = TRANSITIONS[from]): 
 }
 
 /** Share the permission filter across list, detail and manual status menus. */
-export function itemTransitionActions(item: WorkItem) {
+export function itemTransitionActions(item: WorkItemRow) {
   const allowed = (action: TransitionAction) => !item.transferred
     && (item.transitionDecisions
       ? item.transitionDecisions.some(d => d.to === action.to && d.reason === action.reason && d.allowed)
@@ -80,6 +80,6 @@ export function itemTransitionActions(item: WorkItem) {
   };
 }
 
-export function canSelectForVerification(item: WorkItem): boolean {
+export function canSelectForVerification(item: WorkItemRow): boolean {
   return item.status === "pending_verification" && !item.transferred && item.access?.canVerify === true;
 }
