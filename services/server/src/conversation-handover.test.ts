@@ -318,3 +318,13 @@ it("keeps two client claims independent through verification and lists an append
  expect(candidates.structuredContent?.candidates).toMatchObject([{itemKey:f.item.key,developmentEventId:records[1]!.id}]);
  expect(f.db.prepare("SELECT COUNT(*) AS n FROM mcp_agent_claim_receipts").get()).toMatchObject({n:2});
 });
+
+it("returns the same read-only delivery explanation in MCP text and structured content",async()=>{
+  const f=await fixture(),claimed=await f.call("claim_item",f.claimInput),identity=textIdentity(claimed);
+  f.safe(await f.complete(identity));
+  const before=f.snapshot();
+  const context=await f.call("get_item_context",{itemKey:f.item.key});
+  expect(context.structuredContent?.deliveryExplanation).toMatchObject({applicability:"current",missing:[],missingArtifacts:["web"]});
+  expect(JSON.parse(text(context)).deliveryExplanation).toEqual(context.structuredContent?.deliveryExplanation);
+  expect(f.snapshot()).toEqual(before);
+});

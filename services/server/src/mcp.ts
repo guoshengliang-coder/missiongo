@@ -20,7 +20,8 @@ import { collaborationLinkedRead } from "./collaboration-policy.js";
 import { transitionPolicy, itemRoles } from "./item-policy.js";
 import { releaseBatchSchema, releaseEvidenceSchema } from "./release-batch.js";
 import { deliveryRound } from "./delivery-round.js";
-import { recoverExecutionAuthorization } from "./execution-authorization-recovery.js";
+import { deliveryExplanation } from "./delivery-explanation.js";
+import { ExecutionRecoveryError, recoverExecutionAuthorization } from "./execution-authorization-recovery.js";
 import { commentAudienceSchema, commentCandidates } from "./comment-discussions.js";
 import { assertBuilderExecution, assertDispatchExecution, assertExecutionAuthorization } from "./builder-authority.js";
 import { completionSchema, completionFields, completionPayload, normalizeCompletion } from "./completion.js";
@@ -553,6 +554,7 @@ export function createMissionGoMcpServer(
         ...(!productVisible ? { scopeNotice: "This item is readable through an active collaboration request. Only this item's content is shared; its project and other items remain out of scope." } : {}),
         collaboration: collaborations.context(access.accountId,item.key),
         deliveries: store.getDeliveryRecords(item.key),
+        deliveryExplanation: deliveryExplanation(store,item.key),
         developmentEvidence: (() => { const e=store.getDevelopmentEvidence(item.key); return {
           developmentEventId:e.handover?.id,roundKey:e.roundKey,completion:e.completion,
           ...(e.completion?{evidenceDigest:evidenceDigest(e.completion)}:{}),
@@ -1538,12 +1540,16 @@ export function createMissionGoMcpServer(
       const access = accountAccess(ctx);
       const key = requireItemAccess(ctx, store, input.itemKey);
       if (options.canOperate && !options.canOperate(access.accountId, store.getWorkItem(key).productId)) throw new Error("Product operation is not permitted.");
-      const result = store.database.transaction(() => recoverExecutionAuthorization(store, access.accountId, access.clientId ?? "", {
+      let result;
+      try { result = store.database.transaction(() => recoverExecutionAuthorization(store, access.accountId, access.clientId ?? "", {
         itemKey: key,
         ...(input.dispatchId ? { dispatchId: input.dispatchId } : {}),
         ...(input.sessionId ? { sessionId: input.sessionId } : {}),
         ...(input.session ? { session: input.session } : {}),
-      }));
+      })); } catch (error) {
+        if (!(error instanceof ExecutionRecoveryError)) throw error;
+        return {...textResult({code:error.code,reason:error.reason,statusChanged:false},error.message),isError:true};
+      }
       if (input.authorizationMode === "conversation") return conversationResult(result,
         `Confirmed the original claim for ${key}. No claim, session, or status was changed.`);
       return textResult(result, `Recovered the original executionAuthorization for ${key}. Keep it for this handling round. No claim, session, or status was changed.`);

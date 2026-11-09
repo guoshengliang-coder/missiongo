@@ -76,7 +76,7 @@ export class AgentHandoffs {
     }
   }
 
-  /** Called inside the normal claim transaction, after the persisted plan/mode gate. */
+  /** Called inside the normal claim transaction; plan approval and native mode are independent. */
   consume(key:string,accountId:string,identity:string):string {
     const item=this.store.getWorkItem(key);
     const row=this.db.prepare(`SELECT * FROM agent_handoffs WHERE item_id=? AND account_id=? AND target_identity=?

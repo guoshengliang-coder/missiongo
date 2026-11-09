@@ -64,7 +64,8 @@ for (const width of [320,1440]) for (const theme of ["light","dark"] as const) {
       const data=await (await request.get(`/api/v1/items/${item.key}/delivery`)).json();
       expect(data.executions.length).toBeGreaterThan(0);
       activity(sessionId,true);await page.reload();
-      await expect(notice).toHaveCount(0);
+      await expect(notice).toContainText("人工重新开始被原执行阻止");
+      await expect(notice).toContainText("不阻止已授权 Agent 独立派单或并行领取");
       expect((await (await request.get(`/api/v1/items/${item.key}/delivery`)).json()).executions.length).toBeGreaterThan(0);
       activity(sessionId,false);
       await page.screenshot({path:info.outputPath("parallel-history.png")});
