@@ -1,3 +1,4 @@
+import { CONSOLE_CHANGE_SCHEMA } from "../console-changes.js";
 import { sourceMutation } from "./sql-mutation.js";
 import { DISPLAY_PROJECTION_SCHEMA, DISPLAY_ACTIVITY_SCHEMA } from "./display-projection-schema.js";
 import { SESSION_MESSAGE_CLOCK_SCHEMA } from "./session-message-clock-schema.js";
@@ -2656,6 +2657,14 @@ export class MissionGoDatabase {
         this.connection.exec(DISPLAY_PROJECTION_SCHEMA);
         this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
           .run(202611090156,new Date().toISOString());
+      });
+    }
+
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611090200").get()) {
+      this.transaction(() => {
+        this.connection.exec(CONSOLE_CHANGE_SCHEMA);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611090200,new Date().toISOString());
       });
     }
 

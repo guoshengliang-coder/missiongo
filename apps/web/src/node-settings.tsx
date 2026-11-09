@@ -14,7 +14,6 @@ import {
   arrivalProgress,
   MACOS_CLIENT_DOWNLOAD_PATH,
   NODE_WAIT_GIVE_UP_MS,
-  nodeListRefetchInterval,
   type ArrivalProgress,
   type PendingArrival,
 } from "./node-install";
@@ -57,16 +56,10 @@ export function NodeSettings({ products, nodeId, onOpenNode }: { products: reado
   // Only a clock for the give-up: bumped once, when the wait runs out.
   const [now, setNow] = useState(() => Date.now());
 
-  // Polled while this panel is open: online is a heartbeat away from changing,
-  // and this is the screen somebody watches to see a Mac come up after signing
-  // in. The interval is a function so it follows the wait that exists at each
-  // fetch, and drops back once the wait is over.
+  // Node arrival and connectivity changes arrive through the page SSE feed.
   const nodesQuery = useQuery({
     queryKey: ["nodes"],
     queryFn: api.listNodes,
-    refetchInterval: (query) => nodeListRefetchInterval(
-      arrival ? arrivalProgress(arrival, query.state.data?.nodes ?? [], Date.now()) : undefined,
-    ),
   });
   const nodes = nodesQuery.data?.nodes ?? [];
   const progress = arrival ? arrivalProgress(arrival, nodes, now) : undefined;

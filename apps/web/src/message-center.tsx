@@ -4,6 +4,7 @@ import { ArrowLeft, Bell, ListTodo, CheckCheck, ExternalLink, X } from "lucide-r
 import type { PersonalNotificationFilter, PersonalNotificationKind } from "@missiongo/domain";
 import { api } from "./api";
 import { useI18n } from "./i18n";
+import { productCount } from "./message-counts";
 import { OverlayDialog, useOverlay } from "./overlay";
 import { Modal } from "./modal";
 import { Select } from "./select";
@@ -11,7 +12,7 @@ import "./message-center.css";
 
 export function useMessageCount(accountId: string) {
   return useQuery({queryKey:["personal-notifications",accountId,"count"],queryFn:api.personalAttentionCount,
-    enabled:Boolean(accountId),refetchInterval:5000});
+    enabled:Boolean(accountId)});
 }
 export function MessageButton({accountId,onOpen}:{accountId:string;onOpen:()=>void}) {
   const {t}=useI18n(),count=useMessageCount(accountId);
@@ -38,8 +39,8 @@ export function MessageCenter({accountId,products,onClose,renderItem}:{
   const filter:PersonalNotificationFilter={unread,...(productId?{productId}:{}),...(kind?{kind}:{})};
   const list=useInfiniteQuery({queryKey:["personal-notifications",accountId,"list",filter],initialPageParam:undefined as number|undefined,
     queryFn:({pageParam})=>api.personalNotifications({...filter,...(pageParam?{beforeSequence:pageParam}:{})}),
-    getNextPageParam:page=>page.nextBeforeSequence,staleTime:0,refetchOnMount:"always",refetchInterval:5000,enabled:tab==="notifications"});
-  const detail=useQuery({queryKey:["personal-notifications",accountId,"detail",selected],queryFn:()=>api.personalNotification(selected!),enabled:tab==="notifications" && Boolean(selected),staleTime:0,refetchOnMount:"always",refetchInterval:5000});
+    getNextPageParam:page=>page.nextBeforeSequence,staleTime:0,refetchOnMount:"always",enabled:tab==="notifications"});
+  const detail=useQuery({queryKey:["personal-notifications",accountId,"detail",selected],queryFn:()=>api.personalNotification(selected!),enabled:tab==="notifications" && Boolean(selected),staleTime:0,refetchOnMount:"always"});
   const refresh=()=>client.invalidateQueries({queryKey:["personal-notifications",accountId]});
   const read=useMutation({mutationFn:api.readPersonalNotification,onSuccess:refresh});
   const allRead=useMutation({mutationFn:(through:number)=>api.readAllPersonalNotifications(through,filter),onSuccess:refresh});
@@ -51,12 +52,24 @@ export function MessageCenter({accountId,products,onClose,renderItem}:{
   },[tab,selected,detail.isSuccess,detail.isFetching,detail.data]);
   const todos=useInfiniteQuery({queryKey:["personal-notifications",accountId,"todos",productId],initialPageParam:undefined as number|undefined,
     queryFn:({pageParam})=>api.personalTodos({...(productId?{productId}:{}),...(pageParam?{beforeSequence:pageParam}:{})}),
-    getNextPageParam:page=>page.nextBeforeSequence,enabled:tab==="todos",staleTime:0,refetchOnMount:"always",refetchInterval:5000});
+    getNextPageParam:page=>page.nextBeforeSequence,enabled:tab==="todos",staleTime:0,refetchOnMount:"always"});
   const todoRows=todos.isError?[]:todos.data?.pages.flatMap(page=>page.todos) ?? [];
   const currentTodo=todoRows.find(row=>row.id===selected);
   const rows=list.isError?[]:list.data?.pages.flatMap(page=>page.notifications) ?? [];
   const current=detail.isError?undefined:detail.data;
   const choose=(id:string)=>{attempted.current=null;read.reset();setSelected(id);};
+  // Each project says how much it holds, and the whole-scope option carries the
+  // same number the tabs used to show (AND-493): moving it here keeps one count
+  // instead of two copies. Zero draws no number, like the home badge.
+  const projectChoice=(value:string,asValue:boolean)=>{
+    const label=value?products.find(product=>product.id===value)?.name ?? value:t("messagesAllProjects");
+    const total=tab==="todos"?count.data?.todoCount:count.data?.unreadCount;
+    const amount=value?productCount(tab==="todos"?count.data?.todoByProduct:count.data?.unreadByProduct,value):total ?? 0;
+    return <span className="message-project-choice">
+      {asValue?<span className="single-select-text">{label}</span>:<span>{label}</span>}
+      {amount>0 && <small className="message-project-count"> · {amount>99?"99+":amount}</small>}
+    </span>;
+  };
   return <OverlayDialog className="message-center-layer" aria-labelledby="message-center-title" onClose={onClose}>
     <section className="message-center-panel">
       <header className="message-center-header">
@@ -65,13 +78,13 @@ export function MessageCenter({accountId,products,onClose,renderItem}:{
         {!compact && <button type="button" className="icon-button" data-initial-focus onClick={onClose} aria-label={t("close")}><X size={20}/></button>}
       </header>
       <div className="message-center-tabs" aria-label={t("attentionCategories")}>
-        <button type="button" className="secondary-button" aria-pressed={tab==="todos"} onClick={()=>{setTab("todos");setSelected(null);}}><ListTodo size={17}/>{t("attentionTodos")}{count.isSuccess && <small>{count.data.todoCount}</small>}</button>
-        <button type="button" className="secondary-button" aria-pressed={tab==="notifications"} onClick={()=>{setTab("notifications");setSelected(null);}}><Bell size={17}/>{t("attentionNotifications")}{count.isSuccess && <small>{count.data.unreadCount}</small>}</button>
+        <button type="button" className="secondary-button" aria-pressed={tab==="todos"} onClick={()=>{setTab("todos");setSelected(null);}}><ListTodo size={17}/>{t("attentionTodos")}</button>
+        <button type="button" className="secondary-button" aria-pressed={tab==="notifications"} onClick={()=>{setTab("notifications");setSelected(null);}}><Bell size={17}/>{t("attentionNotifications")}</button>
       </div>
       <div className={`message-center-body${compact && selected?" showing-detail":""}`}>
         {tab==="todos" ? <>
           <section className="message-list-pane" aria-label={t("attentionTodos")}>
-            <div className="message-list-tools"><Select aria-label={t("messagesProject")} value={productId} onChange={event=>{setProductId(event.target.value);setSelected(null);}}><option value="">{t("messagesAllProjects")}</option>{products.map(product=><option key={product.id} value={product.id}>{product.name}</option>)}</Select></div>
+            <div className="message-list-tools"><Select aria-label={t("messagesProject")} value={productId} onChange={event=>{setProductId(event.target.value);setSelected(null);}} renderValue={value=>projectChoice(value,true)} renderOption={value=>projectChoice(value,false)}><option value="">{t("messagesAllProjects")}</option>{products.map(product=><option key={product.id} value={product.id}>{product.name}</option>)}</Select></div>
             <div className="message-list-scroll">
               {todos.isPending && <p role="status">{t("messagesLoading")}</p>}
               {todos.isError && <p role="alert">{t("messagesLoadFailed")} <button type="button" className="secondary-button" onClick={()=>void todos.refetch()}>{t("retry")}</button></p>}
@@ -97,7 +110,7 @@ export function MessageCenter({accountId,products,onClose,renderItem}:{
               <button type="button" className="icon-button" disabled={!list.data || list.isError || allRead.isPending || !rows.some(row=>!row.readAt && !row.resolvedAt)} onClick={()=>allRead.mutate(list.data!.pages[0]!.throughSequence)} aria-label={t("messagesReadAll")} title={t("messagesReadAll")}><CheckCheck size={19}/></button>
             </div>
             <div className="message-list-filters">
-              <Select aria-label={t("messagesProject")} value={productId} onChange={event=>setProductId(event.target.value)}><option value="">{t("messagesAllProjects")}</option>{products.map(product=><option key={product.id} value={product.id}>{product.name}</option>)}</Select>
+              <Select aria-label={t("messagesProject")} value={productId} onChange={event=>setProductId(event.target.value)} renderValue={value=>projectChoice(value,true)} renderOption={value=>projectChoice(value,false)}><option value="">{t("messagesAllProjects")}</option>{products.map(product=><option key={product.id} value={product.id}>{product.name}</option>)}</Select>
               <Select aria-label={t("messagesType")} value={kind} onChange={event=>setKind(event.target.value as typeof kind)}><option value="">{t("messagesAllTypes")}</option>{kinds.map(value=><option key={value} value={value}>{t(labels[value])}</option>)}</Select>
             </div>
             {allRead.isError && <p role="alert">{t("messagesReadFailed")}</p>}

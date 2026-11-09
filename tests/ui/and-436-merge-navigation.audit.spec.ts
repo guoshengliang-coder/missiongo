@@ -1,3 +1,4 @@
+import { refreshFromConsoleStream } from "./polling";
 import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 
@@ -60,6 +61,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     await dialog.locator(".merge-row input").check();
     await dialog.getByRole("button", { name: "下一步：配置 Agent" }).click();
     if (stalePoll) {
+      await refreshFromConsoleStream(page);
       await page.clock.runFor(5_000);
       await expect.poll(() => beforeReads).toBeGreaterThan(1);
     }

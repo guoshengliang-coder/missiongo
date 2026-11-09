@@ -272,6 +272,7 @@ export function productIconUrl(product: Pick<Product, "id" | "updatedAt">): stri
  * workspace has none.
  */
 export interface Bootstrap {
+  readonly consoleCursor?: string;
   readonly user: AuthenticatedUser;
   readonly products: Product[];
   readonly productId: string | null;

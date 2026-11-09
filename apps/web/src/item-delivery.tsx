@@ -30,7 +30,6 @@ export function useItemDelivery(itemKey: string | null) {
     queryKey: ["delivery", itemKey],
     queryFn: () => api.getDelivery(itemKey!),
     enabled: Boolean(itemKey),
-    refetchInterval: 15_000,
   });
 }
 

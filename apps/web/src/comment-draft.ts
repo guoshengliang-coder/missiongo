@@ -1,4 +1,4 @@
-import {useCallback,useRef,useState} from "react";
+import {useCallback,useSyncExternalStore} from "react";
 import type {DraftMention} from "./comment-mentions";
 
 export interface CommentDraft {
@@ -48,19 +48,70 @@ export function saveCommentDraft(key:string|null,draft:CommentDraft,storage?:Dra
   }catch{return false;}
 }
 
-/** Persist at input time, before a route change or unload can discard the component. */
+interface DraftSnapshot {
+ readonly draft:CommentDraft; readonly failed:boolean; readonly files:readonly File[];
+ readonly sending:boolean; readonly revision:number; readonly failure:unknown;
+}
+interface CommentStore {
+ snapshot:DraftSnapshot;
+ uploaded:{current:Map<File,string>}; uploadIds:{current:Map<File,string>};
+ attempt:{current:{fingerprint:string;key:string}};
+ listeners:Set<()=>void>;
+}
+const stores=new Map<string,CommentStore>();
+function storeFor(key:string|null) {
+ const id=key ?? "";
+ let store=stores.get(id);
+ if(!store){const draft=readCommentDraft(key);store={snapshot:{draft,failed:false,files:[],sending:false,revision:0,failure:null},
+  uploaded:{current:new Map()},uploadIds:{current:new Map()},attempt:{current:draft.attempt ?? {fingerprint:"",key:""}},listeners:new Set()};stores.set(id,store);}
+ return store;
+}
+function publish(store:CommentStore,change:Partial<DraftSnapshot>) {
+ store.snapshot={...store.snapshot,...change};store.listeners.forEach(listener=>listener());
+}
+function useStore(key:string|null) {
+ const store=storeFor(key);
+ const subscribe=useCallback((listener:()=>void)=>{store.listeners.add(listener);return()=>{store.listeners.delete(listener);};},[store]);
+ const snapshot=useCallback(()=>store.snapshot,[store]);
+ return {store,snapshot:useSyncExternalStore(subscribe,snapshot,snapshot)};
+}
+const scopedKey=(accountId:string,itemKey:string,scope?:string)=>commentDraftKey(accountId,itemKey)+(scope?`:${scope}`:"");
+/** Text, files and the active send share one version across shell remounts. */
 export function useCommentDraft(accountId:string,itemKey:string|null,scope?:string) {
-  const key=itemKey && accountId?commentDraftKey(accountId,itemKey)+(scope?`:${scope}`:""):null;
-  const [state,setState]=useState(()=>({key,draft:readCommentDraft(key),failed:false}));
-  const current=state.key===key?state:{key,draft:readCommentDraft(key),failed:false};
-  if(state.key!==key)setState(current);
-  const ref=useRef(current);ref.current=current;
-  const update=useCallback((change:CommentDraft|((previous:CommentDraft)=>CommentDraft))=>{
-    const previous=ref.current.key===key?ref.current.draft:readCommentDraft(key);
-    const draft=typeof change==="function"?change(previous):change;
-    const failed=!saveCommentDraft(key,draft);
-    // A completed send from an old item may clear that item's draft, never the current one.
-    if(ref.current.key===key){ref.current={key,draft,failed};setState(ref.current);}
-  },[key]);
-  return {draft:current.draft,update,storageFailed:current.failed};
+ const key=itemKey && accountId?scopedKey(accountId,itemKey,scope):null;
+ const {store,snapshot}=useStore(key);
+ const update=useCallback((change:CommentDraft|((previous:CommentDraft)=>CommentDraft))=>{
+  if(!key)return;
+  const draft=typeof change==="function"?change(store.snapshot.draft):change;
+  publish(store,{draft,failed:!saveCommentDraft(key,draft),revision:store.snapshot.revision+1});
+ },[key,store]);
+ return {draft:snapshot.draft,update,storageFailed:snapshot.failed};
+}
+export function useCommentFiles(accountId:string,itemKey:string,scope?:string) {
+ const key=scopedKey(accountId,itemKey,scope);
+ const {store,snapshot}=useStore(key);
+ const setFiles=useCallback((files:readonly File[])=>{
+  const kept=new Set(files);
+  for(const file of store.uploaded.current.keys())if(!kept.has(file))store.uploaded.current.delete(file);
+  for(const file of store.uploadIds.current.keys())if(!kept.has(file))store.uploadIds.current.delete(file);
+  publish(store,{files,revision:store.snapshot.revision+1});
+ },[store]);
+ const beginSend=()=>{
+  if(store.snapshot.sending)throw new Error("Comment send already in progress");
+  const revision=store.snapshot.revision;publish(store,{sending:true,failure:null});return revision;
+ };
+ const saveAttempt=()=>{
+  const draft={...store.snapshot.draft,attempt:store.attempt.current};
+  publish(store,{draft,failed:!saveCommentDraft(key,draft)});
+ };
+ const finishSend=(revision:number,success:boolean,failure:unknown=null)=>{
+  if(success && store.snapshot.revision===revision){
+   store.uploaded.current.clear();store.uploadIds.current.clear();store.attempt.current={fingerprint:"",key:""};
+   publish(store,{draft:EMPTY_COMMENT_DRAFT,files:[],sending:false,failure:null,failed:!saveCommentDraft(key,EMPTY_COMMENT_DRAFT),revision:revision+1});
+   return true;
+  }
+  publish(store,{sending:false,failure});return false;
+ };
+ return {files:snapshot.files,setFiles,uploaded:store.uploaded,uploadIds:store.uploadIds,attempt:store.attempt,
+  sending:snapshot.sending,failure:snapshot.failure,beginSend,finishSend,saveAttempt};
 }

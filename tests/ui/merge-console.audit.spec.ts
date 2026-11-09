@@ -1,9 +1,9 @@
+import { refreshFromConsoleStream } from "./polling";
 import { expect, test } from "@playwright/test";
 import { AUDIT_SOURCE } from "./audit-page.mjs";
 
-test.beforeEach(async({page},info)=>{
-  if(info.title.includes("polling invalidates"))await page.clock.install({time:new Date("2026-11-08T08:00:00Z")});
-  else await page.clock.setFixedTime(new Date("2026-11-08T08:00:00Z"));
+test.beforeEach(async({page})=>{
+  await page.clock.setFixedTime(new Date("2026-11-08T08:00:00Z"));
 });
 
 for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const) {
@@ -352,7 +352,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
 
 });
 
-test("AND-447 polling invalidates a removed selection and permits deliberate reselection",async({page,request})=>{
+test("AND-447 SSE invalidates a removed selection and permits deliberate reselection",async({page,request})=>{
   const product=await(await request.post("/api/v1/products",{data:{name:"AND-447 stale",keyPrefix:"WZSTALE"}})).json();
   const now="2026-11-08T08:00:00Z";let removed=false,reads=0;
   const delivery={id:"stale",productId:product.id,sessionId:"dev",revision:"first",state:"confirmed",itemKeys:["ST-1"],head:"a".repeat(40),summary:"变化中的改动",validation:"回归说明",requiredArtifacts:["web"],pullRequestUrl:"https://github.com/example/project/pull/1",evidence:{checkedAt:now,source:"Fixture"}};
@@ -360,8 +360,8 @@ test("AND-447 polling invalidates a removed selection and permits deliberate res
   await page.goto(`/?product=${product.id}&console=agent`);await page.getByRole("button",{name:"待合并 1",exact:true}).click();
   const dialog=page.getByRole("dialog");await dialog.getByRole("button",{name:"全选可选内容"}).click();await dialog.getByRole("button",{name:"下一步：配置 Agent"}).click();
   removed=true;const before=reads;
-  // Advance the controlled timer; reloading would lose the selected revision.
-  await page.clock.fastForward(16_000);
+  // A changed version invalidates the selection without reloading the page.
+  await refreshFromConsoleStream(page);
   await expect.poll(()=>reads,{timeout:20000}).toBeGreaterThan(before);
   await expect(dialog.getByRole("alert")).toContainText("已选改动已变化");await expect(dialog.getByRole("button",{name:"开始处理",exact:true})).toBeDisabled();
   await dialog.getByRole("button",{name:"重新选择",exact:true}).click();

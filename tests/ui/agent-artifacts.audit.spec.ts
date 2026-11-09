@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
+import { advanceSessionDetailPoll } from "./polling";
 import { ARTIFACT_PREVIEW_POLICY, ARTIFACT_PREVIEW_SHELL } from "../../services/server/src/agent-artifacts";
 
 const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as { productId: string; detailKey: string };
@@ -91,6 +92,7 @@ for (const width of [375, 1440]) test(`historical artifacts preview, isolation, 
   await dialog.getByRole("button", { name: "关闭", exact: true }).click();
   missing = true;
   detail.messages[0]!.text += "\n[缺失原型](/tmp/fixture-output/missing.html)";
+  await advanceSessionDetailPoll(page);
   await page.getByRole("button", { name: "缺失原型", exact: true }).click();
   await expect(dialog.getByRole("alert")).toContainText("assets/missing.css");
   expect(new URL(page.url()).pathname).toBe("/");

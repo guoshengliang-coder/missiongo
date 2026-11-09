@@ -2,6 +2,7 @@ import { chooseOption } from "./select-helpers";
 import {readFileSync} from "node:fs";
 import {randomUUID} from "node:crypto";
 import {expect,test} from "@playwright/test";
+import { waitForNetworkQuiet } from "./polling";
 import {AUDIT_SOURCE} from "./audit-page.mjs";
 const fixture=JSON.parse(readFileSync(new URL("./.auth/fixture.json",import.meta.url),"utf8")) as {productId:string};
 for(const width of [375,1440])for(const theme of ["light","dark"] as const){
@@ -19,7 +20,7 @@ for(const width of [375,1440])for(const theme of ["light","dark"] as const){
    await page.goto(`/?statistics=1&statsProject=${productId}&statsPeriod=today`);
    await expect(page.getByRole("heading",{name:"产品统计",exact:true})).toBeVisible();
    await expect(page.locator(".statistics-metric").filter({has:page.getByRole("heading",{name:"新增条目",exact:true})}).getByRole("button")).toHaveText(String(data.aggregate.counts.created));
-   await page.waitForLoadState("networkidle");
+   await waitForNetworkQuiet(page);
    const audit=await page.evaluate(AUDIT_SOURCE) as {horizontalOverflow:number;text:Array<{fontSize:number;fontWeight:number;contrast:number;where:string;sample:string}>;targets:Array<{width:number;height:number;where:string}>};
    expect(audit.horizontalOverflow).toBeLessThanOrEqual(0);
    expect(audit.text.filter(x=>x.fontSize>0&&x.fontSize<11)).toEqual([]);
