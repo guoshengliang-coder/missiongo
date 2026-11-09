@@ -36,6 +36,7 @@ import type {
   TransitionAction,
   UpdateWorkItemInput,
   WorkItem,
+  WorkItemRow,
   WorkItemAttachment,
   WorkItemComment,
   WorkItemEvent,
@@ -44,7 +45,7 @@ import type {
 } from "./types";
 
 export interface WorkItemListPage {
-  readonly items: WorkItem[];
+  readonly items: WorkItemRow[];
   readonly nextBeforeSequence?: number;
   readonly summary: {
     /** Items matching the active type and search filters, across every status. */
@@ -273,7 +274,7 @@ export interface Bootstrap {
   readonly user: AuthenticatedUser;
   readonly products: Product[];
   readonly productId: string | null;
-  readonly items: WorkItem[];
+  readonly items: WorkItemRow[];
   readonly components: Component[];
   readonly summary?: WorkItemListPage["summary"];
   readonly nextBeforeSequence?: number;
@@ -346,7 +347,7 @@ export const api = {
     method: "POST", body: JSON.stringify({ productId, content }),
   }),
   getBootstrap: (productId: string | null, options: ListItemsOptions = {}) => {
-    const query = new URLSearchParams();
+    const query = new URLSearchParams({projection:"list"});
     if (productId) query.set("productId", productId);
     appendItemFilters(query, options, true);
     if (options.builder) query.set("builder", options.builder);
@@ -473,7 +474,7 @@ export const api = {
       body: JSON.stringify(input),
     }),
   listItems: (productId: string, options: ListItemsOptions = {}, signal?: AbortSignal) => {
-    const params = new URLSearchParams({ productId });
+    const params = new URLSearchParams({ productId,projection:"list" });
     appendItemFilters(params, options, true);
     if (options.builder) params.set("builder", options.builder);
     if (options.status) params.set("status", options.status);

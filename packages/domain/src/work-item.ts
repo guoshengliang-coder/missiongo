@@ -161,6 +161,18 @@ export interface WorkItemSnapshot {
   readonly updatedAt: string;
 }
 
+/** A list row is deliberately not a loaded detail snapshot. */
+export interface WorkItemListRow extends Omit<WorkItemSnapshot,"description"|"report"|"diagnosticSummary"|"attachments"> {
+  readonly projection: "list";
+  readonly listSummary: {
+    readonly overview: string;
+    readonly hasReproduction: boolean;
+    readonly diagnosticSummary: WorkItemDiagnosticSummary;
+    readonly attachmentCount: number;
+    readonly media: readonly WorkItemAttachment[];
+  };
+}
+
 const PRODUCT_PREFIX_PATTERN = /^[A-Z][A-Z0-9]{1,9}$/;
 
 export function createWorkItemKey(productPrefix: string, sequence: number): string {

@@ -1,3 +1,5 @@
+import { DISPLAY_PROJECTION_SCHEMA } from "./display-projection-schema.js";
+import { beforeDisplayProjection } from "../test-fixtures/before-display-projection.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -718,6 +720,7 @@ describe("external conversation archive migration (AND-337)", () => {
     const seeded = new MissionGoDatabase(path);
     const db = seeded.connection;
     const at = "2026-10-30T00:00:00.000Z";
+    beforeDisplayProjection(db);
     db.exec(`ALTER TABLE external_agent_sessions DROP COLUMN archive_reason;
       ALTER TABLE external_agent_sessions DROP COLUMN auto_archive_suppressed;
       ALTER TABLE external_agent_sessions DROP COLUMN product_id;
@@ -753,4 +756,26 @@ describe("external conversation archive migration (AND-337)", () => {
     expect(reopened.connection.prepare("SELECT archived_at FROM external_agent_sessions WHERE id='finished'").get()).toEqual({ archived_at: null });
     reopened.close();
   });
+});
+
+it("AND-484 upgrades an existing v1 projection without replacing source facts",async()=>{
+  const directory=await mkdtemp(join(tmpdir(),"missiongo-display-v2-"));temporaryDirectories.push(directory);
+  const path=join(directory,"db.sqlite"),initial=new MissionGoDatabase(path);initial.close();
+  const legacy=new DatabaseSync(path);beforeDisplayProjection(legacy);
+  legacy.exec(DISPLAY_PROJECTION_SCHEMA);
+  legacy.prepare("INSERT INTO schema_migrations VALUES (?,?)").run(202611090156,new Date().toISOString());
+  legacy.exec("INSERT INTO products(id,key_prefix,name,created_at,updated_at) VALUES ('p','VONE','Existing','2026-11-01','2026-11-01')");
+  const fact=JSON.stringify({id:"historic",sessionId:"source",state:"merged",receipt:"preserved"});
+  legacy.prepare("INSERT INTO merge_deliveries(id,product_id,account_id,client_id,request_key,state,data_json) VALUES ('historic','p','a','c','r','merged',?)").run(fact);
+  legacy.exec("DELETE FROM merge_display_dirty");legacy.close();
+  for(let pass=0;pass<2;pass++) {
+    const reopened=new MissionGoDatabase(path),db=reopened.connection;
+    try {
+      expect(db.prepare("SELECT data_json FROM merge_deliveries WHERE id='historic'").get()).toEqual({data_json:fact});
+      expect(db.prepare("SELECT kind,id FROM merge_display_dirty").all()).toContainEqual({kind:"delivery",id:"historic"});
+      expect(db.prepare("PRAGMA table_info(merge_delivery_projection)").all()).toContainEqual(expect.objectContaining({name:"expected_activity"}));
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE name='merge_delivery_projection_visible'").get()).toBeTruthy();
+      expect(db.prepare("SELECT sql FROM sqlite_master WHERE name='display_agent_session_messages_insert'").get()).toEqual(expect.objectContaining({sql:expect.stringContaining("'activity'")}));
+    }finally{reopened.close();}
+  }
 });

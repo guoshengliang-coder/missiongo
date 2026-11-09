@@ -446,7 +446,7 @@ export function createMissionGoMcpServer(
     },
     async ({ productId, status, type, limit, beforeSequence }, ctx) => {
       requireProductAccess(ctx, productId);
-      const items = store.listWorkItems({
+      const items = store.listWorkItemRows({
         productId,
         ...(status ? { status } : {}),
         ...(type ? { type } : {}),
