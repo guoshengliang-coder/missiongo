@@ -10,6 +10,8 @@ public protocol AgentAdapter: Sendable {
     var kind: String { get }
     /// `nil` when this agent is not installed on the machine.
     func detect() async -> String?
+    /// A failed probe may still identify an installed but unready agent.
+    func detectionReport() async -> DetectedAgent?
     /// Whether this adapter can safely accept a new dispatch right now.
     /// Temporary pressure must pause claiming, not turn queued work into a
     /// failed dispatch after the server has already handed it over.
@@ -36,6 +38,11 @@ public protocol AgentAdapter: Sendable {
 }
 
 public extension AgentAdapter {
+    func detectionReport() async -> DetectedAgent? {
+        guard let version = await detect() else { return nil }
+        return DetectedAgent(kind: kind, version: version)
+    }
+
     func historyPage(sessionRef: String, cursor: String) async throws -> AgentHistoryResult {
         throw AgentArtifactError.unsupported
     }

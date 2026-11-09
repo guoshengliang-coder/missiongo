@@ -15,7 +15,7 @@ import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, SessionStatusI
 import { MarkdownText } from "./markdown-text";
 import { AgentArtifactMarkdown } from "./agent-artifact-viewer";
 import { api } from "./api";
-import { activityLabelKey, agentSessionDetailRefetchInterval, formatAgentMessageTime, isWithdrawnCard, replyMirrorArrived, replyBlockedLabelKey, runWaitingLabelKey, sessionInlineError, sessionStatusDetail } from "./agent-session-view";
+import { activityLabelKey, latestAgentSessionCommand, sessionReplyPresentation, agentSessionDetailRefetchInterval, formatAgentMessageTime, isWithdrawnCard, replyMirrorArrived, replyBlockedLabelKey, runWaitingLabelKey, sessionInlineError, sessionStatusDetail } from "./agent-session-view";
 import { hasPendingPermissionQuestion } from "@missiongo/domain";
 import { AgentSessionQuestions } from "./agent-session-questions";
 import { useI18n } from "./i18n";
@@ -123,7 +123,10 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
     },
   });
   const questionPermission = Boolean(session.data && hasPendingPermissionQuestion(session.data.agentKind, history.messages.filter(message => !message.id.startsWith("history:"))));
-  const command = session.data?.command;
+  const submittedCommand = send.isSuccess && send.variables?.sessionId === sessionId ? send.data : undefined;
+  const command = latestAgentSessionCommand(session.data?.command, submittedCommand);
+  const replyPresentation = sessionReplyPresentation(session.data?.status ?? "idle", command,
+    send.isPending && send.variables?.sessionId === sessionId, session.data?.stopCommand);
   const canReply = session.data?.canReply === true;
   const mergePreparation = !questionPermission ? mergePreparationEvidence(session.data) : undefined;
   // A reply can go to any agent the console runs, so the delivery lines name
@@ -135,8 +138,8 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
     && (!pending || session.data.agentKind === "codex") && session.data.turnState?.waitingForInput === true;
   const backgroundOnly = session.data?.agentKind === "claude_code" && session.data.status === "active"
     && session.data.turnState?.turnActive === false && !waiting && session.data.activities.length > 0;
-  const visualStatus = waiting ? "idle" : session.data?.status ?? "idle";
-  const activityText = session.data
+  const visualStatus = replyPresentation?.visualStatus ?? (waiting ? "idle" : session.data?.status ?? "idle");
+  const activityText = replyPresentation ? t(replyPresentation.labelKey) : session.data
     ? t(activityLabelKey(session.data.status, command?.status === "queued"), { agent: agentName }) : "";
   const inlineError = session.data ? sessionInlineError(session.data.status, session.data.lastError) : undefined;
   const statusDetail = session.data ? sessionStatusDetail(session.data.status, session.data.lastError, activityText) : activityText;
@@ -201,7 +204,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                 <AgentOperationFeedback failures={feedback.failures} sessionId={sessionId} onDismiss={feedback.finish} />
                 <AgentStopFeedback stop={session.data.stopCommand ?? (command?.kind === "interrupt" ? command : undefined)}
                   latestCommand={command} turnActive={session.data.turnState?.turnActive ?? false} backgroundRunning={session.data.activities.length > 0} />
-              <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={waiting ? "waiting" : visualStatus} />} label={waiting
+              <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={replyPresentation?.iconStatus ?? (waiting ? "waiting" : visualStatus)} />} label={replyPresentation ? t(replyPresentation.labelKey) : waiting
                 ? t(questionPermission ? "agentRunApproval" : runWaitingLabelKey(session.data), { agent: agentName })
                 : backgroundOnly ? t("agentRunBackground") : session.data.status === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(session.data.status, t)}>
                 <p>{statusDetail}</p>
