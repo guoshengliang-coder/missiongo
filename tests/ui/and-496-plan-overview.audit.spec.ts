@@ -1,5 +1,6 @@
 import {readFileSync} from "node:fs";
 import {expect,test} from "@playwright/test";
+import { refreshFromConsoleStream } from "./polling";
 const fixture=JSON.parse(readFileSync(new URL("./.auth/fixture.json",import.meta.url),"utf8")) as {productId:string;detailKey:string};
 const stamp="2026-11-09T06:00:00Z",doc="11111111-1111-4111-8111-111111111111";
 const exact="原始结论：减少重复提醒，直接处理待办。\n\n| 问题 | 诊断 | 修改建议 |\n|---|---|---|\n| 重复提醒 | 两处列表重复 | 保留独立评论 |\n\n**范围与风险：** 只改站内，不改变外部通知。\n\n**授权边界：** 不授权发布。";
@@ -59,17 +60,20 @@ for(const surface of ["console","panel"] as const) for(const width of [320,1440]
   await page.screenshot({path:info.outputPath(`overview-${surface}-${width}-${theme}.png`)});
   // Refreshed single/invalid records must not leave empty groups or stale authority.
   if(surface==="console" && width===1440 && theme==="light") {
-    onlyOne=true;await page.clock.install();await page.clock.fastForward(6000);
+    const overviewResponse=()=>page.waitForResponse(response=>{
+      const url=new URL(response.url());
+      return url.pathname.endsWith("/plan-records")&&response.request().method()==="GET"&&url.searchParams.get("view")==="overview";
+    });
+    onlyOne=true;const refreshed=overviewResponse();await refreshFromConsoleStream(page);await refreshed;
     await expect(modal.locator('.agent-plan-version')).toHaveCount(1);
     await expect(modal.locator('.agent-plan-group > h3')).toHaveText(["当前有效方案"]);
     await expect(modal.locator('.agent-plan-history')).toHaveCount(0);
     await page.setViewportSize({width,height:1000});await scroller.evaluate(el=>el.scrollTop=0);
     await page.screenshot({path:info.outputPath("implemented-single-plan.png")});
-    invalid=true;await page.clock.fastForward(6000);
+    invalid=true;const invalidated=overviewResponse();await refreshFromConsoleStream(page);await invalidated;
     await expect(modal.locator('.agent-plan-group > h3')).toHaveText(["当前记录 · 无有效批准"]);
     await expect(modal).toContainText("历史批准，不授予当前版本执行权限");
-    fail=true;
-    for(let n=0;n<4;n++)await page.clock.fastForward(12000);
+    fail=true;const failed=overviewResponse();await refreshFromConsoleStream(page);await failed;
     await expect(modal).toContainText('原始结论');
     await expect(modal.locator('.inline-error')).toBeVisible();
     fail=false;await modal.getByRole('button',{name:'重试',exact:true}).click();
