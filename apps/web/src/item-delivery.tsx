@@ -152,7 +152,7 @@ function DeliveryExplanationNotice({explanation,identify=false}:{explanation:Del
     </div>
   </RecordDisclosure>;
   if (!explanation.missing.length && !explanation.missingArtifacts.length) return null;
-  return <div className="execution-record-body timeline-handover-evidence" role="status">
+  return <div className="execution-record-body delivery-explanation-notice" role="status">
     {identify && <p>{t("deliveryEvidenceFor",{id:explanation.developmentEventId})}</p>}
     {explanation.missing.map(gap=><p key={gap}>{t(gaps[gap])}</p>)}
     {explanation.missingArtifacts.length>0 && <p>{t("deliveryMissingArtifacts",{artifacts:explanation.missingArtifacts.join("、")})}</p>}
