@@ -109,6 +109,7 @@ missiongo-release deploy --candidates /path/to/refreshed-candidates.json --only-
 ## 部署前性能冒烟（AND-489）
 
 合并本功能后仍须在已授权的本机执行安装器，正式入口才会生效。本任务不自动安装或发布。
+统一安装器安装的版本化入口已自带性能钩子，后续升级不会抹掉它；首次仍需以下步骤配置私有备份目录。
 安装器只给统一入口的 check/deploy 既有 preflight 后增加门禁，生产部署和回滚脚本不变。
 它复用全机发布锁，保留 CI、干净主线和完整候选覆盖检查；锁忙、未知入口或部分安装直接拒绝。
 

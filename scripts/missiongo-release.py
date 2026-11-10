@@ -76,6 +76,15 @@ def main():
     if "--no-publish-apk" in args:
         preflight.append("--no-publish-apk")
     run(preflight, root)
+    # BEGIN RELEASE PERFORMANCE V1
+    performance_settings = json.loads((CONFIG / "release-coverage.json").read_text())
+    if not settings.get("backupsDir"):
+        raise ValueError("Install the release performance backup-directory setting first.")
+    smoke = root / "scripts/release-performance.mjs"
+    if not smoke.is_file():
+        raise ValueError("Candidate checkout lacks mandatory release performance support.")
+    run(["node", str(smoke), "--root", str(root), "--host", settings["host"], "--backups-dir", settings["backupsDir"], "--product-id", performance_settings["productId"]], root)
+    # END RELEASE PERFORMANCE V1
     if action == "check":
         return
     # Keep the lock while the repository's standard deployment runs.

@@ -2,11 +2,12 @@
 // Install the machine-wide release entry, lock and shared guards from this checkout.
 // Private target values (release-local.json, coverage binding) stay outside Git and are never written here.
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, linkSync, lstatSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { atomicInstallWrite } from "./enable-release-performance.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const TOOLS = [
@@ -64,29 +65,36 @@ export function install({ dryRun = false, home = homedir(), source = root, commi
   const manifestPath = join(config, "release-tools-manifest.json");
   const previous = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, "utf8")) : {};
   // globalRulesIdentical came from the earlier split install (repo rules identical to the installed copies).
-  const { sourceCommit: _commit, tools: previousTools = {}, globalRulesIdentical: _globalRulesIdentical, ...rest } = previous;
+  const { sourceCommit: _commit, tools: _previousTools = {}, globalRulesIdentical: _globalRulesIdentical, ...rest } = previous;
   if (Object.keys(rest).length) throw new Error(`Unknown release-tools manifest fields: ${Object.keys(rest).join(", ")}`);
   const manifest = { sourceCommit: commit, tools: Object.fromEntries(targets.map(target => [target.name, digest(target.text)])) };
   // Compare what is installed now, not what the last run wrote, so a manually reverted tool is reinstalled.
   const changed = targets.filter(target => {
     if (!existsSync(manifestPath) || !existsSync(target.path)) return true;
-    return digest(readFileSync(target.path, "utf8")) !== previousTools[target.name];
+    return digest(readFileSync(target.path, "utf8")) !== digest(target.text);
   });
   if (!dryRun) {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     mkdirSync(dirname(entryPath), { recursive: true });
     for (const target of changed) {
       const backup = `${target.path}.before-release-tools-in-repo`;
-      if (existsSync(target.path) && !existsSync(backup)) writeFileSync(backup, readFileSync(target.path), { flag: "wx", mode: 0o600 });
-      writeFileSync(target.path, target.text, { mode: target.path.endsWith(".sh") || target.name === "entry" ? 0o700 : 0o600 });
+      if (existsSync(target.path) && !existsSync(backup)) atomicInstallWrite(backup, readFileSync(target.path), { rename: linkSync });
+      atomicInstallWrite(target.path, target.text, { mode: target.path.endsWith(".sh") || target.name === "entry" ? 0o700 : 0o600 });
     }
-    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n", { mode: 0o600 });
+    atomicInstallWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
   }
   return { installed: !dryRun, sourceCommit: commit, changed: changed.map(target => target.name) };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
+    const entry = fileURLToPath(import.meta.url);
+    if (process.env.MISSIONGO_TOOLS_INSTALL_ENTRY !== entry) {
+      const result = spawnSync("python3", [join(root, "scripts/release-lock.py"), "--", process.execPath, entry, ...process.argv.slice(2)],
+        { stdio: "inherit", env: { ...process.env, MISSIONGO_TOOLS_INSTALL_ENTRY: entry } });
+      if (result.error) throw result.error;
+      process.exit(result.status ?? 1);
+    }
     const dryRun = process.argv.includes("--dry-run");
     const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
     execFileSync("git", ["merge-base", "--is-ancestor", "origin/main", "HEAD"], { cwd: root });

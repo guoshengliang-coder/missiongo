@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -96,6 +98,20 @@ test("a dry run reports changes without writing anything", () => {
   } finally { done(); }
 });
 
+test("an unchanged installed digest does not hide a newer source entry", () => {
+  const { source, home, done, target } = setup();
+  try {
+    install({ source, home, commit: "a".repeat(40), tools });
+    const updated = sources["missiongo-release.py"] + "# new mandatory gate\n";
+    writeFileSync(join(source, "scripts/missiongo-release.py"), updated);
+    assert.deepEqual(install({ source, home, commit: "b".repeat(40), tools, dryRun: true }).changed, ["entry"]);
+    assert.notEqual(readFileSync(target("entry"), "utf8"), updated);
+    assert.deepEqual(install({ source, home, commit: "b".repeat(40), tools }).changed, ["entry"]);
+    assert.equal(readFileSync(target("entry"), "utf8"), updated);
+    assert.deepEqual(install({ source, home, commit: "b".repeat(40), tools }).changed, []);
+  } finally { done(); }
+});
+
 test("the repository's own entry and deploy.sh pass the lock and guard checks", () => {
   const { source, home, done } = setup({ files: real });
   try {
@@ -144,4 +160,21 @@ test("refuses a manifest with fields it does not understand", () => {
   try {
     assert.throws(() => install({ source, home, commit: "d".repeat(40), tools, dryRun: true }), /Unknown release-tools manifest fields: pinned/);
   } finally { done(); }
+});
+
+test("the unified installer refuses the actual busy release lock before preflight or writes", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "release-install-lock-"));
+  const env = { ...process.env, XDG_CONFIG_HOME: directory, MISSIONGO_TOOLS_INSTALL_ENTRY: "" };
+  delete env.MISSIONGO_RELEASE_LOCK_FD;
+  const holder = spawn("python3", [join(repositoryScripts, "release-lock.py"), "--", process.execPath, "-e", "console.log('locked'); setInterval(()=>{},1000)"],
+    { env, stdio: ["ignore", "pipe", "pipe"] });
+  try {
+    await once(holder.stdout, "data");
+    const result = spawnSync(process.execPath, [join(repositoryScripts, "install-release-tools.mjs")], { env, encoding: "utf8", timeout: 5000 });
+    assert.equal(result.status, 75); assert.match(result.stderr, /already locked/);
+    assert.equal(existsSync(join(directory, "missiongo/release-tools-manifest.json")), false);
+  } finally {
+    const stopped = once(holder, "exit"); holder.kill(); await stopped;
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

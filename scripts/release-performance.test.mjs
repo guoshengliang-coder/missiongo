@@ -137,7 +137,11 @@ test("installed coordinator blocks both check and deploy before a production mar
     const checkout = join(dir, "checkout"), tools = join(dir, "config/missiongo/release-tools"), bin = join(dir, "bin"), marker = join(dir, "PRODUCTION");
     for (const path of [join(checkout, "scripts"), tools, bin]) mkdirSync(path, { recursive: true });
     writeFileSync(join(checkout, "product.json"), "{}"); writeFileSync(join(checkout, "scripts/deploy.sh"), "fixture");
-    const coordinator = join(dir, "coordinator.py"); writeFileSync(coordinator, upgradePerformanceCoordinator(base()));
+    const coordinator = join(dir, "coordinator.py");
+    const canonical = readFileSync(join(root, "scripts/missiongo-release.py"), "utf8");
+    assert.equal(upgradePerformanceCoordinator(canonical), canonical, "repository installs must retain the mandatory gate");
+    writeFileSync(coordinator, canonical);
+    writeFileSync(join(tools, "release_coverage_options.py"), "def coverage_options(args):\n    return args, ['--candidates', 'fixture']\n");
     const config = dirname(tools);
     writeFileSync(join(config, "release-local.json"), JSON.stringify({ host: "fixture", backupsDir: "/fixture/backups", currentLink: "/fixture/current", downloadsDir: "/fixture/downloads", envFile: "/fixture/env", origin: "http://fixture.invalid" }));
     writeFileSync(join(config, "release-coverage.json"), JSON.stringify({ productId: "fixture" }));
