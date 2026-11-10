@@ -7,7 +7,10 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { install, parseInstallArgs } from "./install-release-tools.mjs";
+import { install as installTools, parseInstallArgs } from "./install-release-tools.mjs";
+
+// Every unit fixture owns its configuration root, even when CI exports XDG.
+const install = options => installTools({ configHome: join(options.home, ".config"), ...options });
 
 const tools = {
   "release-lock.py": "release-lock.py",
@@ -219,4 +222,21 @@ test("a real isolated installation loads preflight and receipt with their module
       assert.equal(result.status, 0, result.stderr);
     }
   } finally { done(); }
+});
+
+
+test("production defaults still honor inherited XDG while fixtures stay isolated", () => {
+  const { source, home, done, target } = setup();
+  const before = process.env.XDG_CONFIG_HOME;
+  const configHome = join(home, "inherited-xdg");
+  try {
+    process.env.XDG_CONFIG_HOME = configHome;
+    installTools({ source, home, tools });
+    assert.equal(readFileSync(join(configHome, "missiongo/release-tools/release-ci.mjs"), "utf8"), sources["release-ci.mjs"]);
+    assert.equal(existsSync(target("release-ci.mjs")), false);
+  } finally {
+    if (before === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = before;
+    done();
+  }
 });
