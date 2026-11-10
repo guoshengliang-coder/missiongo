@@ -494,3 +494,27 @@ it("bounds progress reports on recent detail and serves older pages through the 
   expect((await f.get()).json().progressReports).toHaveLength(124); // Includes the original registration report.
   expect(f.db.prepare("SELECT COUNT(*) AS n FROM external_native_commands").get()).toEqual({n:0});
 });
+
+it("does not revive a plan when another mirror reuses its source ID for a later role",async()=>{
+  const f=await fixture();
+  const {synchronizeNativePlan}=await import("./native-plan-approval.js");
+  synchronizeNativePlan(f.store.database,"owner",f.id);
+  expect(f.db.prepare("SELECT json_extract(proposal_json, '$.nativeSourceId') AS source FROM implementation_plan_requests WHERE identity_key='dispatch:dispatch'").get()).toEqual({source:"plan"});
+  const offer=(await f.get()).json().planApproval;
+  expect(offer).toBeDefined();
+  const plan=f.messages[0]!;
+  const base=Date.parse(plan.occurredAt!);
+  f.dispatch.recordSnapshot({nodeId:"node",sessionId:f.id,status:"idle",messages:[plan,
+    {sourceId:"follow-up",role:"user",text:"Change this requirement",occurredAt:new Date(base+1000).toISOString()}]});
+  const external=new ExternalAgentSessionStore(f.store);
+  const mirror=external.register({accountId:"owner",clientId:"audit-mirror"},{agentKind:"codex",sessionRef:"thread",refKind:"native"},f.product.keyPrefix+"-1");
+  f.db.prepare("INSERT INTO external_native_messages(id,session_id,source_id,payload_json,position) VALUES ('audit-role-alias',?,?,?,0)")
+    .run(mirror,plan.sourceId,JSON.stringify({sourceId:plan.sourceId,role:"agent",text:"Later mirror message",occurredAt:new Date(base+2000).toISOString()}));
+  const recent=await f.app.inject({url:`/api/v1/agent-sessions/${f.id}?history=recent`,headers:f.headers});
+  expect(recent.statusCode,recent.body).toBe(200);
+  expect(recent.json().planApprovalStatus).toEqual({code:"not_approval"});
+  expect(recent.json().canApprovePlan).toBe(false);
+  expect((await f.approve(offer.revision)).statusCode).toBe(409);
+  expect(f.db.prepare("SELECT COUNT(*) AS n FROM agent_session_commands").get()).toEqual({n:0});
+  expect(f.db.prepare("SELECT COUNT(*) AS n FROM implementation_plan_approvals").get()).toEqual({n:0});
+});

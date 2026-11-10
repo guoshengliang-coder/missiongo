@@ -1,3 +1,4 @@
+import { mergeProgressReports } from "./agent-progress-history";
 import { useEffect,useRef,useState } from "react";
 import { api } from "./api";
 import { MarkdownText } from "./markdown-text";
@@ -16,11 +17,11 @@ export function AgentProgressReports({ session }: { session: AgentSession | unde
   useEffect(()=>{
     generation.current++;busy.current=false;
     setState(old=>old.id!==session?.id?old:({...old,
-      older:[...new Map([...old.older,...(session?.progressReports??[])].map(report=>[report.id,report])).values()],
+      older:mergeProgressReports(old.older,session?.progressReports??[]),
       next:undefined,loading:false,error:false}));
   },[session?.id,session?.progressReports?.at(-1)?.id]);
   const current=state.id===session?.id?state:undefined;
-  const reports=[...new Map([...(current?.older??[]),...(session?.progressReports??[])].map(report=>[report.id,report])).values()];
+  const reports=mergeProgressReports(current?.older??[],session?.progressReports??[]);
   const cursor=current?.next===undefined?session?.progressHistory?.nextCursor:current.next??undefined;
   const load=async()=>{
     if(!session || !cursor || busy.current)return;
@@ -29,7 +30,7 @@ export function AgentProgressReports({ session }: { session: AgentSession | unde
       const page=await api.getProgressReports(id,cursor);
       if(active.current!==id || generation.current!==run)return;
       if(page.nextCursor===cursor)throw new Error("Progress cursor did not advance");
-      setState(old=>old.id!==id?old:({...old,older:[...new Map([...page.progressReports,...old.older].map(report=>[report.id,report])).values()],next:page.nextCursor??null,loading:false,error:false}));
+      setState(old=>old.id!==id?old:({...old,older:mergeProgressReports(mergeProgressReports(old.older,session.progressReports??[]),page.progressReports,cursor.slice("reports:".length)),next:page.nextCursor??null,loading:false,error:false}));
     }catch{if(active.current===id && generation.current===run)setState(old=>({...old,loading:false,error:true}));}
     finally{if(active.current===id && generation.current===run)busy.current=false;}
   };

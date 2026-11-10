@@ -55,3 +55,33 @@ for (const width of [320,1440]) for (const surface of ["console","panel"] as con
     expect(await page.evaluate(()=>document.documentElement.scrollWidth-innerWidth)).toBeLessThanOrEqual(1);
   });
 }
+
+test("progress pages keep chronological order when a live update overlaps cached history",async({page})=>{
+  await page.setViewportSize({width:1440,height:900});
+  await page.clock.setFixedTime(new Date(stamp));
+  const id="progress-overlap";
+  let shifted=false;
+  const report=(n:number)=>({id:`progress-${n}`,text:`Audit progress ${n}`,occurredAt:stamp});
+  const summary={id,agentSessionId:id,productId:fixture.productId,sessionName:"Progress audit",agentKind:"codex",status:"idle",updatedAt:stamp,activityAt:stamp,createdAt:stamp,
+    nodeName:"Fixture",nodeConnectionState:"online",nodeRevoked:false,dispatchStatus:"launched",activities:[],settings:{},unread:false,canReply:true,canStop:true,canArchive:true,items:[],attention:{state:"not_needed"},needsAttention:false};
+  await page.route("**/api/v1/agent-sessions**",route=>{
+    const url=new URL(route.request().url());
+    if(url.pathname.endsWith("/progress-reports")){
+      const after=url.searchParams.get("cursor");
+      return route.fulfill({json:{progressReports:Array.from({length:10},(_,n)=>report(n+(after==="reports:progress-90"?80:81))),nextCursor:after==="reports:progress-90"?"reports:progress-80":"reports:progress-81"}});
+    }
+    if(route.request().method()!=="GET")return route.fulfill({status:204});
+    return route.fulfill({json:url.pathname==="/api/v1/agent-sessions"?{sessions:[summary]}:{...summary,
+      messages:[{id:"message",sourceId:"message",role:"agent",text:"Native answer",occurredAt:stamp}],
+      progressReports:Array.from({length:10},(_,n)=>report(n+(shifted?91:90))),progressHistory:{nextCursor:`reports:progress-${shifted?91:90}`}}});
+  });
+  await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
+  const progress=page.getByTestId("agent-progress-reports");
+  await progress.locator("summary").click();
+  await progress.getByRole("button",{name:"加载更早消息",exact:true}).click();
+  await expect(progress.locator("article")).toHaveCount(20);
+  shifted=true;await advanceSessionDetailPoll(page);
+  await expect(progress.locator("article")).toHaveCount(21);
+  await progress.getByRole("button",{name:"加载更早消息",exact:true}).click();
+  await expect(progress.locator("article p")).toHaveText(Array.from({length:21},(_,n)=>`Audit progress ${n+80}`));
+});

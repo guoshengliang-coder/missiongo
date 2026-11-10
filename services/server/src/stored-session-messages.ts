@@ -115,7 +115,10 @@ export class StoredSessionMessages {
     const add = (rows: Key[]) => rows.forEach(row => keys.set(row.id,row));
     add(this.select(sources,"WHERE role<>'user'",[],1));
     add(this.select(sources,"WHERE role='user'",[],1));
-    if (nativeSourceId) add(this.select(sources,"WHERE source_id=?",[nativeSourceId],1));
+    // Deduplication is by role/source ID, so an ID can still represent up to
+    // three roles across mirrors. Keep them all: assess() uses the first source
+    // occurrence and must also see any declined variant, not merely the newest.
+    if (nativeSourceId) add(this.select(sources,"WHERE source_id=?",[nativeSourceId],3));
     // Legacy source timestamps can disagree with position. The source-less
     // registered-plan check needs the maximum user timestamp, not just its tail.
     add(this.select(sources,"WHERE role='user'",[],1,"occurred_at DESC,priority DESC,position DESC,observed_at DESC,ordinal DESC"));
