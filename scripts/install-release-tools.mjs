@@ -43,10 +43,11 @@ export function install({ dryRun = false, home = homedir(), source = root, commi
   const entry = targets.find(target => target.name === "entry")?.text;
   if (entry !== undefined) {
     // The entry owns the lock. deploy.sh runs it under that lock and, with the entry,
-    // must name every other helper: the entry calls the CI checks, deploy the rest.
+    // must name every helper it or an agent relies on: the entry calls the CI checks,
+    // deploy the rest. release-ci-wait.mjs only serves agents and is never called by either.
     const deploy = targets.find(target => target.name === "deploy.sh")?.text ?? "";
     const references = (text, name) => new RegExp(`(?<![\\w.-])${name.replace(".", "\\.")}(?![\\w-])`).test(text);
-    const helpers = Object.keys(tools).filter(name => !["deploy.sh", "entry", "release-lock.py", "release_coverage_options.py"].includes(name));
+    const helpers = Object.keys(tools).filter(name => !["deploy.sh", "entry", "release-lock.py", "release_coverage_options.py", "release-ci-wait.mjs"].includes(name));
     const missing = [references(entry, "release-lock.py") ? null : "release-lock.py",
       ...helpers.filter(name => !references(entry, name) && !references(deploy, name))].filter(Boolean);
     if (missing.length) {
