@@ -1,3 +1,4 @@
+import { SessionSendRequests } from "./session-send-requests.js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { relative, resolve } from "node:path";
@@ -47,38 +48,51 @@ export class AgentSessionAttachments {
     this.rootPath = resolve(rootPath, external ? "external-sessions" : "agent-sessions");
   }
 
-  async upload(sessionId: string, accountId: string, encodedFilename: string, contentType: string, bytes: Buffer): Promise<AgentSessionAttachment> {
-    await this.pruneDrafts();
+  async upload(sessionId: string, accountId: string, encodedFilename: string, contentType: string, bytes: Buffer, requestKey?: string): Promise<AgentSessionAttachment> {
     const validated = validateUpload(encodedFilename, contentType, bytes);
     const kind = validated.rule.kind;
     // Work-item handoff files are not part of the agent chat attachment surface.
     if (kind === "archive" || validated.extension === ".html") {
       throw invalidInput("Unsupported agent session attachment extension.");
     }
-    const count = this.database.connection.prepare(
-      `SELECT COUNT(*) AS count FROM ${this.table} WHERE session_id = ? AND account_id = ? AND command_id IS NULL`,
-    ).get(sessionId, accountId) as unknown as { count: number };
-    if (count.count >= 10) throw invalidInput("A message can have at most 10 attachments.");
+    const requests = new SessionSendRequests(this.database);
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const payload = [validated.filename, validated.contentType, sha256];
+    const load = (id: string) => {
+      const row = this.database.connection.prepare(`SELECT * FROM ${this.table} WHERE session_id=? AND account_id=? AND id=?`)
+        .get(sessionId, accountId, id) as unknown as AttachmentRow | undefined;
+      return row ? publicAttachment(row) : undefined;
+    };
+    if (requestKey && requests.get(accountId, sessionId, "upload", requestKey)) {
+      return requests.run(accountId, sessionId, "upload", requestKey, payload, load, () => { throw notFound("Original upload"); });
+    }
+    await this.pruneDrafts();
     const id = randomUUID();
     const storageFilename = `${id}${validated.extension}`;
     const path = this.resolveStoredFile(storageFilename);
     await mkdir(this.rootPath, { recursive: true, mode: 0o700 });
     await writeFile(path, bytes, { flag: "wx", mode: 0o600 });
     const createdAt = new Date().toISOString();
-    const sha256 = createHash("sha256").update(bytes).digest("hex");
     try {
-      this.database.connection.prepare(
-        `INSERT INTO ${this.table}
-          (id, session_id, account_id, command_id, filename, storage_filename, kind, content_type, size_bytes, sha256, created_at)
-         VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(id, sessionId, accountId, validated.filename, storageFilename, kind,
-        validated.contentType, bytes.length, sha256, createdAt);
+      const result = requests.run(accountId, sessionId, "upload", requestKey, payload, load, () => {
+        const currentCount = this.database.connection.prepare(`SELECT COUNT(*) AS count FROM ${this.table} WHERE session_id=? AND account_id=? AND command_id IS NULL`)
+          .get(sessionId, accountId) as { count: number };
+        if (currentCount.count >= 10) throw invalidInput("A message can have at most 10 attachments.");
+        this.database.connection.prepare(
+          `INSERT INTO ${this.table}
+            (id, session_id, account_id, command_id, filename, storage_filename, kind, content_type, size_bytes, sha256, created_at)
+           VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(id, sessionId, accountId, validated.filename, storageFilename, kind,
+          validated.contentType, bytes.length, sha256, createdAt);
+        return { id, filename: validated.filename, kind,
+          contentType: validated.contentType, sizeBytes: bytes.length, sha256, createdAt };
+      });
+      if (result.id !== id) await unlink(path).catch(() => undefined);
+      return result;
     } catch (error) {
       await unlink(path).catch(() => undefined);
       throw error;
     }
-    return { id, filename: validated.filename, kind,
-      contentType: validated.contentType, sizeBytes: bytes.length, sha256, createdAt };
   }
 
   bind(sessionId: string, accountId: string, commandId: string, ids: readonly string[]): readonly AgentSessionAttachment[] {

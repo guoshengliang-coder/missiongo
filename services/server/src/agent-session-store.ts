@@ -1,3 +1,4 @@
+import { SessionSendRequests } from "./session-send-requests.js";
 import { observeMessageTimes, recordMessageTime } from "./session-message-clock.js";
 import { acknowledgeSessionUnread, observeSessionUnread } from "./session-unread.js";
 import { isConversationMessage } from "@missiongo/domain";
@@ -1253,7 +1254,7 @@ export class AgentSessionStore {
     ).run(sessionId, messageHash, now, revision, now, accountId);
   }
 
-  enqueue(accountId: string, sessionId: string, textValue: string, attachmentIds: readonly string[] = [], managedControl = false): AgentSessionCommand {
+  enqueue(accountId: string, sessionId: string, textValue: string, attachmentIds: readonly string[] = [], managedControl = false, requestKey?: string): AgentSessionCommand {
     const binding = this.database.connection.prepare("SELECT dispatch_id FROM agent_sessions s JOIN dispatches d ON d.id=s.dispatch_id WHERE s.id=? AND d.account_id=?")
       .get(sessionId,accountId) as {dispatch_id:string}|undefined;
     if (binding) assertDispatchExecution(this.database,binding.dispatch_id);
@@ -1273,33 +1274,42 @@ export class AgentSessionStore {
       throw conflict("agent_session_work_finished", "The linked work items are done; move them back to ready and dispatch again to rework them.");
     }
     if (session.archived_at) throw conflict("agent_session_archived", "Restore this session before replying.");
-    if (this.pendingCommand(sessionId)) {
-      throw conflict("agent_reply_pending", "This session has a pending or unconfirmed reply.");
-    }
-    const id = randomUUID();
-    const now = new Date().toISOString();
-    this.database.transaction(() => {
-      this.database.connection
-        .prepare(
-          `INSERT INTO agent_session_commands (id, session_id, account_id, text, status, created_at)
-           VALUES (?, ?, ?, ?, 'queued', ?)`,
-        )
-        .run(id, sessionId, accountId, text, now);
-      this.attachments?.bind(sessionId, accountId, id, attachmentIds);
-      recordMessageTime(this.database.connection, `dispatch:${binding!.dispatch_id}`, `command:${id}`, now);
-      this.database.connection
-        .prepare("UPDATE agent_sessions SET updated_at = ?, activity_at = ?, activity_repair_pending = 0 WHERE id = ?")
-        .run(now, now, sessionId);
-      this.database.connection
-        .prepare(
-          `UPDATE agent_session_attention
-           SET state = 'not_needed', kind = NULL, reason = NULL, model = NULL, updated_at = ?
-           WHERE session_id = ?`,
-        )
-        .run(now, sessionId);
+    return new SessionSendRequests(this.database).run<AgentSessionCommand>(accountId, sessionId, "command", requestKey,
+      [text, attachmentIds], id => this.commandById(sessionId, id), () => {
+        if (this.pendingCommand(sessionId)) {
+          throw conflict("agent_reply_pending", "This session has a pending or unconfirmed reply.");
+        }
+        const id = randomUUID();
+        const now = new Date().toISOString();
+        this.database.transaction(() => {
+          this.database.connection
+            .prepare(
+              `INSERT INTO agent_session_commands (id, session_id, account_id, text, status, created_at)
+               VALUES (?, ?, ?, ?, 'queued', ?)`,
+            )
+            .run(id, sessionId, accountId, text, now);
+          this.attachments?.bind(sessionId, accountId, id, attachmentIds);
+          recordMessageTime(this.database.connection, `dispatch:${binding!.dispatch_id}`, `command:${id}`, now);
+          this.database.connection
+            .prepare("UPDATE agent_sessions SET updated_at = ?, activity_at = ?, activity_repair_pending = 0 WHERE id = ?")
+            .run(now, now, sessionId);
+          this.database.connection
+            .prepare(
+              `UPDATE agent_session_attention
+               SET state = 'not_needed', kind = NULL, reason = NULL, model = NULL, updated_at = ?
+               WHERE session_id = ?`,
+            )
+            .run(now, sessionId);
+        });
+        return { id, kind: "message", text, status: "queued", createdAt: now,
+          ...(attachmentIds.length ? { attachments: this.attachments!.listForCommand(id) } : {}) };
     });
-    return { id, kind: "message", text, status: "queued", createdAt: now,
-      ...(attachmentIds.length ? { attachments: this.attachments!.listForCommand(id) } : {}) };
+  }
+
+  commandById(sessionId: string, commandId: string): AgentSessionCommand | undefined {
+    const row = this.database.connection.prepare("SELECT * FROM agent_session_commands WHERE session_id=? AND id=?")
+      .get(sessionId, commandId) as unknown as CommandRow | undefined;
+    return row ? this.mapCommand(row) : undefined;
   }
 
   belongsToNode(sessionId: string, nodeId: string): boolean {

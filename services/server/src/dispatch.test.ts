@@ -5233,3 +5233,59 @@ describe("AND-369 project conversations", () => {
   });
 
 });
+
+describe("AND-499 message submission identity", () => {
+  it("returns the original current command after lost acknowledgements and later commands", async () => {
+    const { app, cookie } = await signedInApp();
+    const { node, sessionId } = await launchedCodexSession(app, cookie);
+    const headers = { cookie };
+    const requestKey = "send-request-499-original";
+    const send = (text = "same deliberate text", key = requestKey) => app.inject({ method: "POST",
+      url: `/api/v1/agent-sessions/${sessionId}/commands`, headers, payload: { text, requestKey: key } });
+    const [first, duplicate] = await Promise.all([send(), send()]);
+    expect(first.statusCode, first.body).toBe(201);
+    expect(duplicate.json().id).toBe(first.json().id);
+    const id = first.json().id;
+    expect((await send("different")).statusCode).toBe(409);
+    for (const commandStatus of ["delivering", "delivered"]) {
+      expect((await app.inject({ method: "POST", url: `/api/v1/node/agent-sessions/${sessionId}/snapshot`,
+        headers: { authorization: `Bearer ${node.token}` }, payload: { status: "idle", messages: [], commandId: id, commandStatus } })).statusCode).toBe(204);
+    }
+    expect((await send()).json()).toMatchObject({ id, status: "delivered" });
+    const next = await send("same deliberate text", "send-request-499-next-key");
+    expect(next.statusCode, next.body).toBe(201);
+    expect(next.json().id).not.toBe(id);
+    const lookup = await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${sessionId}/send-requests/${requestKey}`, headers });
+    expect(lookup.statusCode).toBe(200);
+    expect(lookup.json().command).toMatchObject({ id, status: "delivered" });
+    expect((await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${sessionId}/send-requests/missing-request-key`, headers })).json()).toEqual({ command: null });
+    expect((await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${sessionId}/send-requests/${requestKey}` })).statusCode).toBe(401);
+    expect((await send("invalid", "bad")).statusCode).toBe(400);
+  });
+});
+
+it("AND-499 atomically binds ordinary attachments and rolls back a rejected submission", async () => {
+  const { app, cookie } = await signedInApp();
+  const { node, sessionId } = await launchedCodexSession(app, cookie);
+  app.missionGoStore.database.connection.prepare("UPDATE nodes SET supports_chat_attachments=1 WHERE id=?").run(node.nodeId);
+  const headers = { cookie };
+  const requestKey = "ordinary-attachment-request-499";
+  const send = (attachmentIds: string[]) => app.inject({ method: "POST", url: `/api/v1/agent-sessions/${sessionId}/commands`, headers,
+    payload: { text: "with attachment", attachmentIds, requestKey } });
+  expect((await send(["missing-upload"])).statusCode).toBe(404);
+  const lookup = () => app.inject({ method: "GET", url: `/api/v1/agent-sessions/${sessionId}/send-requests/${requestKey}`, headers });
+  expect((await lookup()).json()).toEqual({ command: null });
+  const upload = () => app.inject({ method: "POST", url: `/api/v1/agent-sessions/${sessionId}/attachments`,
+    headers: { cookie, "content-type": "application/octet-stream", "x-missiongo-filename": "reference.txt", "x-missiongo-content-type": "text/plain",
+      "x-missiongo-request-key": "ordinary-upload-request-499" }, payload: Buffer.from("reference") });
+  const [a, b] = await Promise.all([upload(), upload()]);
+  expect(a.statusCode, a.body).toBe(201);
+  expect(b.json().id).toBe(a.json().id);
+  const first = await send([a.json().id]);
+  expect(first.statusCode, first.body).toBe(201);
+  const retry = await send([a.json().id]);
+  expect(retry.statusCode, retry.body).toBe(201);
+  expect(retry.json()).toMatchObject({ id: first.json().id, attachments: [{ id: a.json().id }] });
+  expect((await lookup()).json().command.id).toBe(first.json().id);
+  expect((await upload()).json().id).toBe(a.json().id);
+});

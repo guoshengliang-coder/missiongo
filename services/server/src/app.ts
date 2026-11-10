@@ -1,3 +1,4 @@
+import { SessionSendRequests } from "./session-send-requests.js";
 import { ConsoleChanges } from "./console-changes.js";
 import { registerConsoleEvents } from "./console-events.js";
 import { PlanRecords } from "./plan-records.js";
@@ -3130,7 +3131,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       loadExternalSession(request, sessionId, true, true);
       const body = objectBody(request.body);
       const attachmentIds = stringArrayField(body, "attachmentIds") ?? [];
-      return reply.status(201).send(externalNativeStore.enqueue(requireAccountId(request), sessionId, stringField(body, "text", false) ?? "", attachmentIds));
+      return reply.status(201).send(externalNativeStore.enqueue(requireAccountId(request), sessionId, stringField(body, "text", false) ?? "", attachmentIds, stringField(body, "requestKey", false)));
     }
     const session = authorizedAgentSession(request, sessionId, true);
     if (session.productId && !session.replyable) throw conflict("agent_session_starting", "Wait for this conversation to start.");
@@ -3147,8 +3148,20 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       sessionId,
       stringField(body, "text", false) ?? "",
       attachmentIds,
+      false,
+      stringField(body, "requestKey", false),
     );
     return reply.status(201).send(command);
+  });
+
+  app.get("/api/v1/agent-sessions/:sessionId/send-requests/:requestKey", async request => {
+    const { sessionId, requestKey } = request.params as { sessionId: string; requestKey: string };
+    const external = externalSessionStore.has(sessionId);
+    if (external) loadExternalSession(request, sessionId);
+    else authorizedAgentSession(request, sessionId);
+    const prior = new SessionSendRequests(store.database).get(requireAccountId(request), sessionId, "command", requestKey);
+    const command = prior && (external ? externalNativeStore.commandById(sessionId, prior.id) : agentSessionStore.commandById(sessionId, prior.id));
+    return { command: command ?? null };
   });
 
   const sessionAttachments = (request: FastifyRequest, sessionId: string, operate = false) => {
@@ -3172,7 +3185,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (!Buffer.isBuffer(request.body)) throw invalidInput("Attachment body must be binary data.");
     const filename = headerText(request.headers["x-missiongo-filename"], "X-MissionGo-Filename");
     const contentType = headerText(request.headers["x-missiongo-content-type"], "X-MissionGo-Content-Type");
-    const attachment = await attachments.upload(sessionId, requireAccountId(request), filename, contentType, request.body);
+    const attachment = await attachments.upload(sessionId, requireAccountId(request), filename, contentType, request.body, typeof request.headers["x-missiongo-request-key"] === "string" ? request.headers["x-missiongo-request-key"] : undefined);
     return reply.status(201).send(attachment);
   });
 

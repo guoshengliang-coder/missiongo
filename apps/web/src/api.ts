@@ -666,22 +666,25 @@ export const api = {
     request<{ sessions: AgentSessionSummary[] }>(
       `/api/v1/agent-sessions${productId ? `?productId=${encodeURIComponent(productId)}` : ""}`,
     ),
-  sendAgentSessionCommand: (sessionId: string, text: string, attachmentIds: readonly string[] = []) =>
+  sendAgentSessionCommand: (sessionId: string, text: string, attachmentIds: readonly string[] = [], requestKey?: string) =>
     request<AgentSessionCommand>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/commands`, {
       method: "POST",
-      body: JSON.stringify({ text, ...(attachmentIds.length ? { attachmentIds } : {}) }),
+      body: JSON.stringify({ text, ...(attachmentIds.length ? { attachmentIds } : {}), ...(requestKey ? { requestKey } : {}) }),
     }),
+  getAgentSendRequest: (sessionId: string, requestKey: string) =>
+    request<{ command: AgentSessionCommand | null }>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/send-requests/${encodeURIComponent(requestKey)}`),
   approveAgentSessionPlan: (sessionId: string, revision: string) =>
     request<AgentPlanApprovalResult>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/plan-approval`, {
       method: "POST", body: JSON.stringify({ revision }),
     }),
-  uploadAgentSessionAttachment: async (sessionId: string, file: File) => {
+  uploadAgentSessionAttachment: async (sessionId: string, file: File, requestKey?: string) => {
     const response = await attachmentRequest(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/attachments`, {
       method: "POST",
       headers: {
         "content-type": "application/octet-stream",
         "x-missiongo-content-type": file.type || "application/octet-stream",
         "x-missiongo-filename": encodeURIComponent(file.name),
+        ...(requestKey ? { "x-missiongo-request-key": requestKey } : {}),
       },
       body: file,
     });
