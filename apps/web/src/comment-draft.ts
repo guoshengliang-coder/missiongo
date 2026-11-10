@@ -76,6 +76,13 @@ function useStore(key:string|null) {
  return {store,snapshot:useSyncExternalStore(subscribe,snapshot,snapshot)};
 }
 const scopedKey=(accountId:string,itemKey:string,scope?:string)=>commentDraftKey(accountId,itemKey)+(scope?`:${scope}`:"");
+/** A confirmed discard empties the in-memory store and the persisted draft. */
+export function discardCommentDraft(accountId:string,itemKey:string,scope?:string){
+ const key=scopedKey(accountId,itemKey,scope),store=storeFor(key);
+ store.uploaded.current.clear();store.uploadIds.current.clear();store.attempt.current={fingerprint:"",key:""};
+ publish(store,{draft:EMPTY_COMMENT_DRAFT,files:[],sending:false,failure:null,failed:false,revision:store.snapshot.revision+1});
+ try{localStorage.removeItem(key);}catch{}
+}
 /** Text, files and the active send share one version across shell remounts. */
 export function useCommentDraft(accountId:string,itemKey:string|null,scope?:string) {
  const key=itemKey && accountId?scopedKey(accountId,itemKey,scope):null;

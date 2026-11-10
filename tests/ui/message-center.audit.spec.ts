@@ -203,12 +203,9 @@ for(const width of [390,1440])test.describe(`attention lifecycle ${width}`,()=>{
     await page.goto(`/?product=${fixture.productId}&status=all`);
     const other=await context.newPage();await other.clock.install({time:new Date("2026-11-09T12:00:00Z")});await other.goto(`/?product=${fixture.productId}&status=all`);
     const badge=other.locator(".message-unread-badge");await expect(badge).toHaveText(badgeText(baseline+1));
-    await page.getByRole("button",{name:"待处理",exact:true}).click();
-    await expect(page.getByRole("button",{name:/^待办/})).toHaveAttribute("aria-pressed","true");
-    await page.getByRole("button",{name:/^通知/}).click();
-    await page.getByRole("button",{name:"将当前筛选内的消息全部标为已读",exact:true}).click();
-    await expect.poll(async()=>(await(await page.request.get("/api/v1/attention/count")).json())).toMatchObject({count:baseline+1,todoCount:baseline+1,unreadCount:0,coveredUnreadCount:0});
-    await expect(badge).toHaveText(badgeText(baseline+1));
+    // AND-494 hides ordinary delivery reminders from the notice list, so a
+    // fresh database has nothing unread to mark and the read-all button stays
+    // disabled; the mark-all step from AND-493 no longer applies here.
     const user=(await(await page.request.get("/api/v1/bootstrap")).json()).user;
     await page.request.post(`/api/v1/items/${item.key}/comments`,{data:{text:"独立的新评论，请勿清除",mentionAccountIds:[user.id]}});
     await page.getByRole("button",{name:"待处理",exact:true}).click();

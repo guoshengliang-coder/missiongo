@@ -5,6 +5,7 @@ import type { PersonalNotificationFilter, PersonalNotificationKind, PersonalTodo
 import { api } from "./api";
 import { useI18n } from "./i18n";
 import { productCount } from "./message-counts";
+import { discardCommentDraft } from "./comment-draft";
 import { OverlayDialog, useOverlay } from "./overlay";
 import { DialogDraftContext, useDialogDraftState } from "./dialog-state";
 import { useBeforeUnloadGuard } from "./unsaved-changes";
@@ -52,6 +53,7 @@ export function MessageCenter({accountId,products,onClose,renderItem}:{
   const drafts=useDialogDraftState();
   const [discard,setDiscard]=useState<{action:()=>void;focus:HTMLElement|null}|null>(null);
   const [waiting,setWaiting]=useState(false);
+  const [discardEpoch,setDiscardEpoch]=useState(0);
   useBeforeUnloadGuard(drafts.dirty || drafts.pending);
   useEffect(()=>{if(discard)document.querySelector<HTMLElement>(".message-center-layer [data-continue-editing]")?.focus();},[discard]);
   const navigate=(action:()=>void):boolean=>{
@@ -104,7 +106,7 @@ export function MessageCenter({accountId,products,onClose,renderItem}:{
   const rows=list.isError?[]:list.data?.pages.flatMap(page=>page.notifications) ?? [];
   const current=detail.isError?undefined:detail.data;
   const targetKey=relatedKey ?? (tab==="todos"?currentTodo?.itemKey:current?.itemKey);
-  const renderDetail=()=>targetKey && renderItem({key:targetKey,instanceKey:`${selectionToken}:${relatedKey ?? ""}`,
+  const renderDetail=()=>targetKey && renderItem({key:targetKey,instanceKey:`${selectionToken}:${relatedKey ?? ""}:${discardEpoch}`,
     commentId:relatedKey?null:current?.unavailable?null:current?.commentId ?? null,
     businessEventId:relatedKey?null:tab==="todos"?currentTodo?.businessEventId ?? null:current?.businessEventId ?? null,
     onReady:itemReady,navigate},()=>{back();},key=>{navigate(()=>setRelatedKey(key));});
@@ -134,7 +136,9 @@ export function MessageCenter({accountId,products,onClose,renderItem}:{
         <div className="form-footer"><button type="button" className="secondary-button" data-continue-editing onClick={()=>{
           const focus=discard.focus;setDiscard(null);requestAnimationFrame(()=>focus?.focus());
         }}>{t("continueEditing")}</button><button type="button" className="danger-button" onClick={()=>{
-          const action=discard.action;setDiscard(null);action();
+          const action=discard.action;
+          if(targetKey)discardCommentDraft(accountId,targetKey,(relatedKey?null:current?.unavailable?null:current?.commentId ?? null)===null?undefined:"messages");
+          setDiscard(null);setDiscardEpoch(epoch=>epoch+1);action();
         }}>{t("discardChanges")}</button></div>
       </div>}
       <div className="message-center-workspace" hidden={Boolean(discard)}>
