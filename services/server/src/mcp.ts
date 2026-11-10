@@ -21,6 +21,7 @@ import { transitionPolicy, itemRoles } from "./item-policy.js";
 import { releaseBatchSchema, releaseEvidenceSchema } from "./release-batch.js";
 import { deliveryRound } from "./delivery-round.js";
 import { deliveryExplanations } from "./delivery-explanation.js";
+import { ReleaseObservations } from "./release-observations.js";
 import { ExecutionRecoveryError, recoverExecutionAuthorization } from "./execution-authorization-recovery.js";
 import { commentAudienceSchema, commentCandidates } from "./comment-discussions.js";
 import { assertBuilderExecution, assertDispatchExecution, assertExecutionAuthorization } from "./builder-authority.js";
@@ -557,6 +558,8 @@ export function createMissionGoMcpServer(
         deliveries,
         deliveryExplanation: explanations.at(-1),
         deliveryExplanations: explanations,
+        // A collaboration grants one item's content, not its project's repository publication snapshots.
+        ...(productVisible ? { releaseObservationDiagnostics: new ReleaseObservations(store).diagnostics(item.productId,deliveries,explanations) } : {}),
         developmentEvidence: (() => { const e=store.getDevelopmentEvidence(item.key); return {
           developmentEventId:e.handover?.id,roundKey:e.roundKey,completion:e.completion,
           ...(e.completion?{evidenceDigest:evidenceDigest(e.completion)}:{}),

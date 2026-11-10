@@ -988,6 +988,9 @@ it("MCP only prepares drafts and reads narrow shared context under the current A
     "Private source context",
   );
   expect(linked.result?.structuredContent?.scopeNotice).toBeTruthy();
+  expect(linked.result?.structuredContent).not.toHaveProperty("releaseObservationDiagnostics");
+  const direct = await call(a, "get_item_context", { itemKey: source.key });
+  expect(direct.result?.structuredContent?.releaseObservationDiagnostics).toMatchObject({unverified:true,items:[],observations:[],total:0,truncated:false});
   // The linked read is item-scoped: the source project's module list is not
   // handed over with it.
   expect(linked.result?.structuredContent?.components ?? []).toEqual([]);
