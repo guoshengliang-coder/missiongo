@@ -87,6 +87,15 @@ test("supervisor deletes data on success, error and timeout and never accepts mi
     writeFileSync(worker, prefix + "fs.writeFileSync(path.join(dir,'result.json'),JSON.stringify({status:'passed'}));");
     assert.equal((await runReleasePerformance({ root: dir }, { worker })).status, "passed");
     assert.equal(existsSync(readFileSync(seen, "utf8")), false);
+    writeFileSync(worker, prefix + "fs.writeFileSync(path.join(dir,'result.json'),JSON.stringify({status:'passed',experiment:'release-fivefold-claim-next',httpTargets:[{name:'claim-next',status:'passed'}]}));");
+    const missed = await runReleasePerformance({ root: dir }, { worker });
+    assert.equal(missed.status, "invalid"); assert.equal(missed.diagnosticOutcome, "not_detected");
+    assert.equal(missed.measurementStatus, "passed");
+    writeFileSync(worker, prefix + "fs.writeFileSync(path.join(dir,'result.json'),JSON.stringify({status:'failed',experiment:'release-fivefold-claim-next',calibration:{valid:false},httpCalibration:{valid:true},httpTargets:[{name:'claim-next',status:'exceeded'}]}));process.exitCode=1;");
+    const invalidCalibration = await runReleasePerformance({ root: dir }, { worker });
+    assert.equal(invalidCalibration.status, "invalid");
+    assert.equal(invalidCalibration.diagnosticOutcome, "not_detected");
+    assert.equal(existsSync(readFileSync(seen, "utf8")), false);
     writeFileSync(worker, prefix + "process.exit(1);");
     assert.equal((await runReleasePerformance({ root: dir }, { worker })).status, "failed");
     assert.equal(existsSync(readFileSync(seen, "utf8")), false);
@@ -181,6 +190,11 @@ test("real smoke worker exercises authenticated HTTP on a synthetic backup and r
     `);
     const report = await runReleasePerformance({ root: resolveRoot(), host: "fixture", backupsDir: "/fixture/backups", productId }, { worker });
     assert.equal(report.cleaned, true);
+    assert.equal(report.node, process.version);
+    assert.equal(report.httpCalibration?.source, "loopback-health");
+    assert.equal(report.httpCalibration?.timingUnit, "wall-ms");
+    assert.equal(report.httpTargets.find(t => t.name === "claim-next").calibrationKind, "loopback-health-wall");
+    assert.equal(report.httpTargets.find(t => t.name === "claim-next-work").calibrationKind, "cpu+loopback-health-wall");
     assert.ok(report.cpuTargets?.length === 3, `Incomplete domain coverage: ${report.status}/${report.stage}/${report.smokeStep}/${report.code}`);
     assert.deepEqual(report.httpTargets.map(t => t.name), ["merge-deliveries", "item-list", "claim-next", "claim-next-work"]);
     assert.ok(report.idleMs >= 1900);

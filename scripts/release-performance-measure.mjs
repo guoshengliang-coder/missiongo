@@ -3,7 +3,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
-import { calibration, evaluateTarget } from "./performance-budget.mjs";
+import { calibration, evaluateTarget, releaseTargetCalibration } from "./performance-budget.mjs";
 import { sampleSync, sampleAsync } from "./performance-measurement.mjs";
 
 export async function measureBackup({ root, database, directory, productId, config }) {
@@ -75,6 +75,21 @@ export async function measureBackup({ root, database, directory, productId, conf
     sampleSync(baseline, config.baseline.iterations);
     const readings = Array.from({ length: config.samples }, () => sampleSync(baseline, config.baseline.iterations));
     const calibrated = { ...calibration(readings.map(v => v.cpuMs), config.baseline), wallSamplesMs: readings.map(v => v.wallMs) };
+    const health = async () => {
+      const response = await fetch(origin + "/health", { signal: AbortSignal.timeout(10_000) });
+      assert.equal(response.status, 200, "Calibration health status mismatch");
+      assert.equal((await response.json()).status, "ok", "Calibration health body mismatch");
+    };
+    const healthBudget = config.release.httpBaseline;
+    for (let i = 0; i < config.warmups; i++) await sampleAsync(health, healthBudget.iterations);
+    const healthSamples = [];
+    for (let i = 0; i < config.samples; i++) healthSamples.push(await sampleAsync(health, healthBudget.iterations));
+    const httpCalibration = { ...calibration(healthSamples, healthBudget), timingUnit: "wall-ms", source: "loopback-health" };
+    const scoreHttp = (name, samples, budget) => {
+      const selected = releaseTargetCalibration(name, config, calibrated, httpCalibration);
+      return { ...evaluateTarget(name, samples, budget, selected), calibrationScale: selected.scale,
+        calibrationKind: name === "claim-next" ? "loopback-health-wall" : name === "claim-next-work" ? "cpu+loopback-health-wall" : "product-read-cpu" };
+    };
     const cpuTargets = [];
     for (const [name, fn] of Object.entries(targets)) {
       const budget = config.targets[name];
@@ -86,15 +101,15 @@ export async function measureBackup({ root, database, directory, productId, conf
     const routes = { "merge-deliveries": () => http(`/api/v1/products/${encodeURIComponent(productId)}/merge-deliveries`),
       "item-list": () => http(`/api/v1/items?productId=${encodeURIComponent(productId)}&projection=list&limit=100`),
       "claim-next": () => http(claimPath, { claim: true, expected: 204 }) };
-    // CPU is the independent machine baseline; wall values have separately
-    // reviewed units/allowance. They are not interchangeable with CPU budgets.
+    // CPU is the independent machine baseline; transport-sensitive claims use
+    // the separately measured health baseline. Never calibrate on the target.
     const httpTargets = [];
     for (const [name, fn] of Object.entries(routes)) {
       const budget = config.release.httpTargets[name];
       for (let i = 0; i < config.warmups; i++) await sampleAsync(fn, budget.iterations);
       const samples = [];
       for (let i = 0; i < config.samples; i++) samples.push(await sampleAsync(fn, budget.iterations));
-      httpTargets.push(evaluateTarget(name, samples, budget, calibrated));
+      httpTargets.push(scoreHttp(name, samples, budget));
     }
     smokeStep = "work-claim";
     const workSamples = [], resetWork = () => db.prepare("UPDATE dispatches SET status='queued', delivered_at=NULL WHERE id=?").run(queued.id);
@@ -109,9 +124,9 @@ export async function measureBackup({ root, database, directory, productId, conf
       }
       workSamples.push(total / config.release.httpTargets["claim-next"].iterations);
     }
-    httpTargets.push(evaluateTarget("claim-next-work", workSamples, config.release.httpTargets["claim-next"], calibrated));
-    return { calibration: calibrated, cpuTargets, httpTargets, idleMs, initialClaimWorkMs,
+    httpTargets.push(scoreHttp("claim-next-work", workSamples, config.release.httpTargets["claim-next"]));
+    return { calibration: calibrated, httpCalibration, cpuTargets, httpTargets, idleMs, initialClaimWorkMs,
       coverage: { items: itemCount, batches: initial.batches.length, sessionProgress: Object.keys(initial.sessionProgress).length },
-      status: calibrated.valid && [...cpuTargets, ...httpTargets].every(t => t.status === "passed") ? "passed" : "failed" };
+      status: calibrated.valid && httpCalibration.valid && [...cpuTargets, ...httpTargets].every(t => t.status === "passed") ? "passed" : "failed" };
   } catch (error) { error.smokeStep = smokeStep; throw error; } finally { await app.close(); }
 }

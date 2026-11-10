@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { calibration, evaluateTarget, median, performanceExitCode, performanceMarkdown, validateBudget } from "./performance-budget.mjs";
+import { calibration, evaluateTarget, median, performanceExitCode, performanceMarkdown, validateBudget, releaseTargetCalibration } from "./performance-budget.mjs";
 
 const config = JSON.parse(readFileSync(new URL("../tests/performance/server-budgets.json", import.meta.url)));
 const samples = value => [value, value * 0.98, value * 1.02, value, value, value, value * 20];
@@ -50,7 +50,8 @@ test("versioned configuration rejects missing reasons, modes, targets and invali
     c => c.warmups = 0, c => c.baseline.referenceMs = 0, c => c.baseline.maxScale = 1000,
     c => c.shape.batches = 0, c => delete c.targets["merge-deliveries"], c => c.targets["item-list"].iterations = 0,
     c => delete c.release, c => c.release.maxDurationMs = 999999, c => c.release.timingUnit = "process-cpu-ms",
-    c => c.release.httpTargets["claim-next"].budgetMs = 0, c => delete c.release.httpTargets["item-list"],
+    c => c.release.version = 1, c => delete c.release.httpBaseline, c => c.release.claimWorkCpuShare = 1,
+    c => c.release.httpBaseline.referenceMs = 0, c => c.release.httpTargets["claim-next"].budgetMs = 0, c => delete c.release.httpTargets["item-list"],
     c => c.timingUnit = "wall-ms", c => c.maxCiDurationMs = 0, c => c.maxLocalDurationMs = 999999]) {
     const changed = structuredClone(config); edit(changed); assert.throws(() => validateBudget(changed));
   }
@@ -65,4 +66,23 @@ test("reports preserve all samples and show measured, effective and suggested bu
     shape: { items: 200, events: 40000, deliveries: 20, batches: 5 }, calibration: score(1), targets: [row],
     timings: { fixtureMs: 1, calibrationMs: 1, warmupMs: 1, samplesMs: 1, totalMs: 4 } });
   for (const text of ["advisory", "exceeded", "350.0", "100.0", "525.0", "do not block CI", "200 items", "40000 events"]) assert.ok(markdown.includes(text), text);
+});
+
+
+test("claim calibration distinguishes transport drift from SQLite CPU and still detects fivefold regressions", () => {
+  const budget = config.release.httpTargets["claim-next"];
+  for (const profile of [
+    { cpu: 1.6, http: 1.5, empty: 1.4, work: 3.5 },
+    { cpu: 1.6, http: 0.166, empty: 0.29, work: 0.7 },
+  ]) {
+    const cpu = { scale: profile.cpu, valid: true }, http = { scale: profile.http, valid: true };
+    for (const [name, value] of [["claim-next", profile.empty], ["claim-next-work", profile.work]]) {
+      const selected = releaseTargetCalibration(name, config, cpu, http);
+      assert.equal(evaluateTarget(name, samples(value), budget, selected).status, "passed");
+      assert.equal(evaluateTarget(name, samples(value * 5), budget, selected).status, "exceeded");
+      const invalid = releaseTargetCalibration(name, config, cpu, { ...http, valid: false });
+      assert.equal(evaluateTarget(name, samples(value), budget, invalid).status, "invalid");
+    }
+    assert.equal(releaseTargetCalibration("item-list", config, cpu, http), cpu);
+  }
 });

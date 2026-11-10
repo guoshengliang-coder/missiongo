@@ -29,7 +29,16 @@ export async function runReleasePerformance(settings, { worker = join(dirname(fi
     // Cleanup failures propagate, so a stale database can never return success.
     rmSync(directory, { recursive: true, force: true });
   }
-  if (report.experiment) { report.status = "failed"; report.reason = "Diagnostic experiments cannot authorize publication"; }
+  if (report.experiment) {
+    report.measurementStatus = report.status;
+    const target = /^release-fivefold-(.+)$/.exec(report.experiment)?.[1];
+    const selected = [...(report.cpuTargets ?? []), ...(report.httpTargets ?? [])].filter(row => row.name === target);
+    const detected = report.calibration?.valid === true && report.httpCalibration?.valid === true
+      && selected.some(row => row.status === "exceeded");
+    report.diagnosticOutcome = detected ? "detected" : "not_detected";
+    report.status = detected ? "failed" : "invalid";
+    report.reason = detected ? "Diagnostic regression detected; experiments cannot authorize publication" : "Diagnostic target did not exceed its budget; nonzero exit is not detection evidence";
+  }
   report.totalMs = performance.now() - started;
   report.cleaned = true;
   if (report.totalMs >= config.release.maxDurationMs) { report.status = "invalid"; report.reason = "Full smoke including cleanup exceeded the deadline"; }

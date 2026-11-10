@@ -24,10 +24,15 @@ export function validateBudget(config) {
   for (const target of Object.values(config.targets)) assert.ok(positive(target.budgetMs)
     && integer(target.iterations, 1, 10_000), "Invalid target budget");
   const r = config.release;
-  assert.ok(r?.version === 1 && r.timingUnit === "wall-ms" && r.maxDurationMs === 120000, "Invalid release performance contract");
+  assert.ok(r?.version === 2 && r.timingUnit === "wall-ms" && r.maxDurationMs === 120000, "Invalid release performance contract");
   assert.ok(typeof r.reason === "string" && r.reason.trim(), "Release budgets need a reason");
   assert.deepEqual(Object.keys(r.httpTargets).sort(), ["claim-next", "item-list", "merge-deliveries"]);
   for (const target of Object.values(r.httpTargets)) assert.ok(positive(target.budgetMs) && integer(target.iterations, 1, 100), "Invalid HTTP budget");
+  const h = r.httpBaseline;
+  assert.ok(h && positive(h.referenceMs) && integer(h.iterations, 10, 100)
+    && positive(h.minScale) && h.minScale <= 1 && h.maxScale >= 1 && h.maxScale <= 20
+    && positive(h.maxRelativeIqr) && h.maxRelativeIqr <= 1, "Invalid independent HTTP calibration");
+  assert.ok(positive(r.claimWorkCpuShare) && r.claimWorkCpuShare < 1, "Invalid work-claim calibration mix");
   return config;
 }
 
@@ -74,4 +79,16 @@ export function performanceMarkdown(report) {
     "Suggested budgets are diagnostic data for review, never an automatic update or permission to accept a regression.",
     `Stages ms: fixture ${f(report.timings.fixtureMs)}, calibration ${f(report.timings.calibrationMs)}, warmup ${f(report.timings.warmupMs)}, samples ${f(report.timings.samplesMs)}, total ${f(report.timings.totalMs)}.`,
     "Total is this performance process, not the full CI increment; add the HTTP contract and runner overhead when reviewing the <30s goal.", ""].join("\n");
+}
+
+
+// Empty claims are dominated by HTTP transport; using SQLite CPU calibration
+// hid fivefold regressions on Node 22.13's much faster transport. Work claims
+// also perform SQLite writes: keep an explicit reviewed CPU contribution.
+export function releaseTargetCalibration(name, config, cpu, http) {
+  if (name === "claim-next") return http;
+  if (name !== "claim-next-work") return cpu;
+  const share = config.release.claimWorkCpuShare;
+  return { scale: share * cpu.scale + (1 - share) * http.scale,
+    valid: cpu.valid && http.valid, cpuShare: share, cpuScale: cpu.scale, httpScale: http.scale };
 }

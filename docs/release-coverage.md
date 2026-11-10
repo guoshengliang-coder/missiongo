@@ -132,7 +132,9 @@ check/deploy 继续要求完整的 --candidates 清单；plan 与构建动作不
 报告只含代码/配置/备份摘要、聚合数量和计时，不含业务正文、账号或 token；备份不能上传到 CI 或条目。
 
 共享 CPU 预算沿用 tests/performance/server-budgets.json，与 AND-488 同值、同算法；
-HTTP wall 预算在同一配置显式区分单位。报告含实测值、有效与建议预算，建议不能自动放宽门禁。
+HTTP wall 预算在同一配置显式区分单位。merge/列表沿用 CPU 校准；空闲 claim 使用独立 /health HTTP 基线，
+有任务 claim 的尺度为 1/3 CPU 与 2/3 HTTP 混合。两份校准任一无效均阻断；报告列明各目标尺度及来源。
+报告含实测值、有效与建议预算，建议不能自动放宽门禁。
 claim-next 分别检查立即空闲、有受控任务和 2 秒长轮询；主动等待单独断言，不误判成处理耗时。
 诊断 5 倍实验只在本机授权范围运行，不计为正常通过证据。配置变化需重新积累 CI 观察证据，CI advisory 不变。
 

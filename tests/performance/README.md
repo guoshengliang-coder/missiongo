@@ -200,8 +200,10 @@ and observation window; `ciMode` remains advisory.
 
 The separate `release.httpTargets` entries are wall milliseconds for authenticated
 loopback HTTP, not CPU samples: merge 4ms, lightweight list+summary 25ms, and
-claim-next 3ms (empty and controlled work). Both units reuse the existing
-independent product-read calibration and median/target evaluation code. Initial
+claim-next 3ms (empty and controlled work). Merge/list retain the independent product-read CPU calibration; empty claim uses
+a separate loopback health wall baseline (1ms reference), and work claim combines
+1/3 CPU with 2/3 HTTP scale. Both reuse the existing median/calibration/target
+evaluation code. Initial
 backup measurements normalized to ~0.52–0.54 CPU ms merge / ~1.15–1.24 CPU ms full
 list, with HTTP ~2.3–2.6 / ~15.4–16.6 ms. Controlled work claim is heavier than an
 empty claim (~1.85 vs ~0.86–1.06 normalized wall ms), so its allowance includes that
@@ -228,3 +230,26 @@ they are bounded simulated regressions, not a reproduction of the old incident.
 They must fail because the selected target exceeds its budget, not because
 another target or preparation failed. Reports identify the experiment and cannot
 be treated as normal performance evidence. Never enable a mutation for a release.
+
+
+### Audited cross-runtime HTTP calibration
+
+Release configuration v2 keeps all target limits unchanged. Node 22.13's HTTP
+transport measured much faster than 22.23: a standalone health control was about
+0.166ms vs 1.52ms. Applying SQLite CPU scale to every HTTP target let a real 5x
+empty-claim experiment remain below budget on 22.13. That nonzero exit came only
+from the diagnostic-publication guard and was not detection evidence.
+
+The health endpoint is independent of the claim queue. Its seven grouped wall
+samples calibrate transport-sensitive empty claims. Work claims additionally do
+SQLite writes, so their reviewed effective scale is 1/3 product CPU + 2/3 health
+wall scale. Merge/list HTTP and synchronous CPU targets keep product CPU scale.
+Reports retain both raw calibrations and each target's calibration kind/scale;
+either invalid calibration blocks publication. No target calibrates against
+itself, no runtime automatically raises limits, and no Node-version allowlist is
+used. Configuration-digest changes restart the advisory observation window.
+
+Diagnostic reports now distinguish `measurementStatus` from `diagnosticOutcome`.
+Only a selected target actually `exceeded` with valid CPU and HTTP calibration
+counts as `detected`. A forced diagnostic refusal, another target's failure, or
+invalid measurement is not proof that the selected regression was caught.
