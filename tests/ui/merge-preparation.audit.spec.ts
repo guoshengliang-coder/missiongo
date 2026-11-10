@@ -26,7 +26,7 @@ for (const surface of ["console", "panel"] as const) for (const width of [320, 1
       return route.fulfill({ json: path === "/api/v1/agent-sessions" ? { sessions: [summary] } : { ...summary, messages: [...history, latest], command: currentCommand } });
     });
     await page.route("**/api/v1/items/*/dispatches", route => route.fulfill({ json: { dispatches: [{ id: summary.dispatchId, agentSessionId: id, agentKind: "codex", mode: "auto", nodeName: "Fixture", status: "launched", createdAt: stamp, itemKeys: [item.key] }] } }));
-    await page.route("**/merge-deliveries", route => route.fulfill({ json: { deliveries: [], batches: [], attentionSessionIds: registered ? [id] : [] } }));
+    await page.route(/\/merge-deliveries(?:\?.*)?$/, route => route.fulfill({ json: { deliveries: [], batches: [], attentionSessionIds: registered ? [id] : [] } }));
     const open = async () => {
       if (surface === "console") await page.goto(`/?product=${product.id}&console=agent&session=${id}`);
       else { await page.goto(`/?product=${product.id}&item=${item.key}`); await page.locator(".execution-history > summary").click(); await page.locator(".execution-record > summary").filter({ hasText: "Fixture" }).click(); await page.locator(".agent-session-toggle").click(); }

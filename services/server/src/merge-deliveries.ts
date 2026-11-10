@@ -332,18 +332,18 @@ export class MergeDeliveries {
       .map(d => d.sessionId))];
   }
   /** Hot reads query only persisted display rows. Actions always use live sources. */
-  list(productId: string, accountId: string) {
+  list(productId: string, accountId: string, sessionId?: string) {
     const now=Date.now();
     return (this.db.connection.prepare(`SELECT data_json,fresh_from,fresh_until,fresh_blocker FROM merge_delivery_projection
-      WHERE product_id=? AND account_id=? AND visible=1 ORDER BY sequence DESC`).all(productId,accountId) as
+      WHERE product_id=? AND account_id=? AND visible=1 ${sessionId ? "AND session_id=?" : ""} ORDER BY sequence DESC`).all(productId,accountId,...(sessionId ? [sessionId] : [])) as
       {data_json:string;fresh_from:number|null;fresh_until:number|null;fresh_blocker:string|null}[]).map(row=>{
       const value=JSON.parse(row.data_json) as ReturnType<MergeDeliveries["view"]>;
       if(row.fresh_until!==null && value.blocker!=="changed") value.blocker=now>=row.fresh_from! && now<=row.fresh_until ? row.fresh_blocker ?? undefined : "stale";
       return value;
     });
   }
-  batches(productId: string, accountId: string): ReturnType<MergeDeliveries["recomputeBatches"]> {
-    const rows=this.db.connection.prepare(`SELECT data_json,activity_json FROM merge_batch_projection WHERE product_id=? AND account_id=? ORDER BY sequence DESC LIMIT 20`).all(productId,accountId) as {data_json:string;activity_json:string}[];
+  batches(productId: string, accountId: string, sessionId?: string): ReturnType<MergeDeliveries["recomputeBatches"]> {
+    const rows=this.db.connection.prepare(`SELECT data_json,activity_json FROM merge_batch_projection WHERE product_id=? AND account_id=? ${sessionId ? "AND session_id=?" : ""} ORDER BY sequence DESC LIMIT 20`).all(productId,accountId,...(sessionId ? [sessionId] : [])) as {data_json:string;activity_json:string}[];
     type ActivityBoundary={sessionId:string;activity:string;sensitive:boolean};
     const boundaries=rows.map(row=>JSON.parse(row.activity_json) as Record<string,ActivityBoundary>);
     const sessionIds=[...new Set(boundaries.flatMap(entries=>Object.values(entries).map(entry=>entry.sessionId)))];
@@ -355,13 +355,13 @@ export class MergeDeliveries {
       return value;
     });
   }
-  attentionSessionIds(productId: string, accountId: string): string[] {
+  attentionSessionIds(productId: string, accountId: string, sessionId?: string): string[] {
     return (this.db.connection.prepare(`SELECT session_id FROM merge_delivery_projection WHERE product_id=? AND account_id=?
-      AND attention=1 GROUP BY session_id ORDER BY MAX(sequence) DESC`).all(productId,accountId) as {session_id:string}[]).map(row=>row.session_id);
+      AND attention=1 ${sessionId ? "AND session_id=?" : ""} GROUP BY session_id ORDER BY MAX(sequence) DESC`).all(productId,accountId,...(sessionId ? [sessionId] : [])) as {session_id:string}[]).map(row=>row.session_id);
   }
-  sessionProgress(productId: string, accountId: string): Record<string, SessionDeliveryStage> {
-    const rows=this.db.connection.prepare("SELECT session_id,stage,expires_at,expired_stage FROM merge_session_projection WHERE product_id=? AND account_id=?")
-      .all(productId,accountId) as {session_id:string;stage:SessionDeliveryStage;expires_at:number|null;expired_stage:SessionDeliveryStage|null}[];
+  sessionProgress(productId: string, accountId: string, sessionId?: string): Record<string, SessionDeliveryStage> {
+    const rows=this.db.connection.prepare(`SELECT session_id,stage,expires_at,expired_stage FROM merge_session_projection WHERE product_id=? AND account_id=? ${sessionId ? "AND session_id=?" : ""}`)
+      .all(productId,accountId,...(sessionId ? [sessionId] : [])) as {session_id:string;stage:SessionDeliveryStage;expires_at:number|null;expired_stage:SessionDeliveryStage|null}[];
     return Object.fromEntries(rows.map(row=>[row.session_id,row.expires_at!==null && Date.now()>=row.expires_at ? row.expired_stage! : row.stage]));
   }
   private refreshDisplay() {

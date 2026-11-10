@@ -413,10 +413,10 @@ export function AgentSessionConsole({
   }, [replySessionId, setReplyFor]);
   const sessionQuery = useQuery({
     queryKey: ["agent-session", selected?.agentSessionId],
-    queryFn: async ({ queryKey }) => {
+    queryFn: async ({ queryKey, signal }) => {
       const sessionId = queryKey[1] as string;
       const requestStarted = queryClient.getQueryData<AgentSession>(["agent-session", sessionId]);
-      const incoming = await api.getAgentSession(sessionId);
+      const incoming = await api.getAgentSession(sessionId, signal);
       return mergeAgentSessionSnapshot(
         requestStarted,
         queryClient.getQueryData<AgentSession>(["agent-session", sessionId]),

@@ -28,7 +28,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     const delivery = { id: "delivery", productId: fixture.productId, sessionId: "source", revision: "r1", state: "confirmed",
       itemKeys: ["EX-436"], head: "a".repeat(40), summary: "导航回归", validation: "Synthetic", requiredArtifacts: ["web"],
       pullRequestUrl: "https://github.com/example/project/pull/1", evidence: { checkedAt: stamp, source: "Fixture" } };
-    await page.route("**/merge-deliveries", route => route.fulfill({ json: { deliveries: created ? [] : [delivery], batches: created ? [batch] : [] } }));
+    await page.route(/\/merge-deliveries(?:\?.*)?$/, route => route.fulfill({ json: { deliveries: created ? [] : [delivery], batches: created ? [batch] : [] } }));
     await page.route("**/api/v1/nodes", route => route.fulfill({ json: { nodes: [{ id: "merge-node", name: "Fixture", online: true,
       supportsFreeSessions: true, agents: [{ kind: "codex", ready: true, planApprovalProtocol: 1, models: [] }],
       repos: [{ productId: fixture.productId, repoPath: "synthetic" }], repoCandidates: [], createdAt: stamp }] } }));

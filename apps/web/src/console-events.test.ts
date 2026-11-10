@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
-import { changeAffects, EventFrames, startConsoleEvents } from "./console-events";
+import { changeAffects, consoleConnectionSnapshot, EventFrames, startConsoleEvents } from "./console-events";
 const cleanup:(()=>void)[]=[];
 afterEach(()=>{cleanup.splice(0).forEach(fn=>fn());vi.unstubAllGlobals();vi.useRealTimers();});
 const settle=async()=>{for(let i=0;i<15;i++)await Promise.resolve();};
@@ -33,7 +33,7 @@ it("does no idle polling and coalesces duplicate invalidations into refreshed st
  vi.useFakeTimers();const f=fixture();const read=vi.fn().mockResolvedValue({version:1});
  const observer=new QueryObserver(f.client,{queryKey:["timeline","P-1"],queryFn:read,staleTime:Infinity});cleanup.push(observer.subscribe(()=>{}));await settle();
  f.send("hello",{epoch:"epoch",version:0},"");await settle();read.mockClear();
- vi.advanceTimersByTime(300_000);await settle();expect(read).not.toHaveBeenCalled();expect(f.fetcher).toHaveBeenCalledOnce();
+ for(let i=0;i<12;i++){vi.advanceTimersByTime(25_000);f.streams[0]!.enqueue(new TextEncoder().encode(": keepalive\n\n"));await settle();}expect(read).not.toHaveBeenCalled();expect(f.fetcher).toHaveBeenCalledOnce();
  read.mockResolvedValue({version:2});
  const resources=[{kind:"item",productId:"p",itemKey:"P-1"}];
  f.send("change",{version:1,resources},"epoch:1");f.send("change",{version:1,resources},"epoch:1");
@@ -104,8 +104,73 @@ it("ignores an obsolete unauthorized response when a newer connection is active"
  const fetcher=vi.fn<typeof fetch>().mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}))
   .mockResolvedValue(new Response(new ReadableStream(),{headers:{"content-type":"text/event-stream"}}));
  const stop=startConsoleEvents(f.client,fetcher,"epoch:0");cleanup.push(stop);
- f.windowTarget.dispatchEvent(new Event("online"));await settle();
+ f.documentTarget.visibilityState="hidden";f.documentTarget.dispatchEvent(new Event("visibilitychange"));
+ f.documentTarget.visibilityState="visible";f.documentTarget.dispatchEvent(new Event("visibilitychange"));await settle();
  f.client.setQueryData(["item","NEW-1"],"current snapshot");
  finish!(new Response(null,{status:401}));await settle();
  expect(f.client.getQueryData(["item","NEW-1"])).toBe("current snapshot");
+});
+
+it("keeps chat refreshes independent of a slow delivery and retries only failed reads without reporting disconnection",async()=>{
+ vi.useFakeTimers();const f=fixture();let release!:()=>void;
+ const delivery=vi.fn().mockResolvedValue("initial"),chat=vi.fn().mockResolvedValue("chat");
+ const d=new QueryObserver(f.client,{queryKey:["merge-deliveries","p"],queryFn:delivery,staleTime:Infinity});
+ const c=new QueryObserver(f.client,{queryKey:["agent-session","s"],queryFn:chat,staleTime:Infinity});
+ cleanup.push(d.subscribe(()=>{}),c.subscribe(()=>{}));await settle();chat.mockClear();delivery.mockClear();
+ delivery.mockImplementationOnce(()=>new Promise<string>(resolve=>{release=()=>resolve("delivery");})).mockRejectedValue(new Error("read unavailable"));
+ f.send("change",{resources:[{kind:"sessions"}]},"epoch:1");await settle();
+ f.send("change",{resources:[{kind:"sessions"}]},"epoch:2");await settle();
+ expect(chat).toHaveBeenCalledTimes(2);expect(delivery).toHaveBeenCalledOnce();expect(consoleConnectionSnapshot()).toBe("connected");
+ release();await settle();expect(delivery).toHaveBeenCalledTimes(2);expect(consoleConnectionSnapshot()).toBe("connected");
+ vi.advanceTimersByTime(1000);await settle();expect(delivery).toHaveBeenCalledTimes(3);expect(chat).toHaveBeenCalledTimes(2);
+});
+it("coalesces foreground/online/focus recovery without restarting a healthy stream or duplicating in-flight reads",async()=>{
+ vi.useFakeTimers();const f=fixture();let release!:(v:string)=>void;
+ const read=vi.fn().mockResolvedValue("cached");
+ const observer=new QueryObserver(f.client,{queryKey:["agent-session","s"],queryFn:read,staleTime:Infinity});cleanup.push(observer.subscribe(()=>{}));await settle();
+ f.client.setQueryData(["agent-session","s"],"cached",{updatedAt:Date.now()-120_000});
+ read.mockClear();read.mockImplementation(()=>new Promise<string>(resolve=>{release=resolve;}));
+ for(const event of ["focus","online","focus"])f.windowTarget.dispatchEvent(new Event(event));await settle();
+ expect(f.fetcher).toHaveBeenCalledOnce();expect(read).toHaveBeenCalledOnce();release("fresh");await settle();expect(read).toHaveBeenCalledOnce();
+});
+it("reconnects a silent open stream but never polls business reads",async()=>{
+ vi.useFakeTimers();const f=fixture();await settle();vi.advanceTimersByTime(60_000);await settle();
+ expect(consoleConnectionSnapshot()).toBe("disconnected");vi.advanceTimersByTime(1000);await settle();expect(f.fetcher).toHaveBeenCalledTimes(2);
+});
+it("bounds a stalled handshake and cleans up its deadline",async()=>{
+ vi.useFakeTimers();const f=fixture();cleanup.pop()!();
+ const fetcher=vi.fn<typeof fetch>().mockImplementation((_url,init)=>new Promise((_resolve,reject)=>init!.signal!.addEventListener("abort",()=>reject(new Error("aborted")))));
+ const stop=startConsoleEvents(f.client,fetcher,"epoch:0");cleanup.push(stop);
+ vi.advanceTimersByTime(15_000);await settle();expect(consoleConnectionSnapshot()).toBe("disconnected");
+ vi.advanceTimersByTime(1000);await settle();expect(fetcher).toHaveBeenCalledTimes(2);stop();
+ vi.advanceTimersByTime(60_000);await settle();expect(fetcher).toHaveBeenCalledTimes(2);
+});
+it("targets known conversation aliases and conservatively refreshes unknown identities",async()=>{
+ const f=fixture();f.client.setQueryData(["agent-sessions","p"],{sessions:[{id:"canonical",agentSessionId:"canonical",relatedSessionIds:["external","native"]},{id:"other"}]});
+ const current=vi.fn().mockResolvedValue("current"),other=vi.fn().mockResolvedValue("other");
+ const a=new QueryObserver(f.client,{queryKey:["agent-session","canonical"],queryFn:current,staleTime:Infinity});
+ const b=new QueryObserver(f.client,{queryKey:["agent-session","other"],queryFn:other,staleTime:Infinity});
+ cleanup.push(a.subscribe(()=>{}),b.subscribe(()=>{}));await settle();current.mockClear();other.mockClear();
+ f.send("change",{resources:[{kind:"sessions",resourceId:"external"}]},"epoch:1");await settle();
+ expect(current).toHaveBeenCalledOnce();expect(other).not.toHaveBeenCalled();
+ f.send("change",{resources:[{kind:"sessions",resourceId:"unknown"}]},"epoch:2");await settle();expect(other).toHaveBeenCalledOnce();
+});
+it("preempts a blocked read on access changes and ignores its late response",async()=>{
+ const f=fixture();let finish!:(value:string)=>void;
+ const read=vi.fn().mockResolvedValue("old");
+ const observer=new QueryObserver(f.client,{queryKey:["agent-session","s"],queryFn:read,staleTime:Infinity});cleanup.push(observer.subscribe(()=>{}));await settle();
+ read.mockImplementationOnce(()=>new Promise<string>(resolve=>{finish=resolve;})).mockResolvedValue("revoked");
+ f.send("change",{resources:[{kind:"sessions"}]},"epoch:1");await settle();
+ f.send("change",{resources:[{kind:"access"}]},"epoch:2");await settle();
+ expect(f.client.getQueryData(["agent-session","s"])).toBe("revoked");finish("late secret");await settle();
+ expect(f.client.getQueryData(["agent-session","s"])).toBe("revoked");
+});
+it("disposal cancels owned reads before a new lifecycle can reuse their keys",async()=>{
+ const f=fixture();let finish!:(value:string)=>void;
+ const read=vi.fn().mockResolvedValue("old");
+ const observer=new QueryObserver(f.client,{queryKey:["agent-session","s"],queryFn:read,staleTime:Infinity});const unsubscribe=observer.subscribe(()=>{});await settle();
+ read.mockImplementation(()=>new Promise<string>(resolve=>{finish=resolve;}));
+ f.send("change",{resources:[{kind:"sessions"}]},"epoch:1");await settle();
+ cleanup.pop()!();unsubscribe();f.client.setQueryData(["agent-session","s"],"new lifecycle");finish("late old content");await settle();
+ expect(f.client.getQueryData(["agent-session","s"])).toBe("new lifecycle");
 });
