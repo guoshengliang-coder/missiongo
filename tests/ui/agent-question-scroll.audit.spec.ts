@@ -48,7 +48,8 @@ async function stubSession(page: Page, replyControl?: { wait: Promise<void>; fai
       const text = JSON.parse(request.postData() ?? "{}").text as string;
       sent.push(text);
       await replyControl?.wait;
-      if (replyControl?.fail) return route.fulfill({ status: 503, contentType: "application/json",
+      // This branch proves editing after a definite rejection; 5xx submission is unknown.
+      if (replyControl?.fail) return route.fulfill({ status: 400, contentType: "application/json",
         body: JSON.stringify({ code: "request_failed", title: "Reply unavailable" }) });
       command = { id: "reply-command", kind: "message", text, status: "queued", createdAt: stamp };
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(command) });
