@@ -1708,7 +1708,7 @@ export function App() {
               await queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
               setNewSessionOpen(false);
               setNewSessionDraft(null);
-              afterOverlaysClose(() => openAgentSession(dispatch.agentSessionId!));
+              afterOverlaysClose(() => selectAgentSession(dispatch.agentSessionId!, true));
             }} /> : undefined}
           bulkMode={agentConsoleBulkMode}
           onBulkModeChange={setAgentConsoleBulkMode}
