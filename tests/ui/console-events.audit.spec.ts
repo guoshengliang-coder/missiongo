@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { refreshFromConsoleStream } from "./polling";
 import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 const fixture=JSON.parse(readFileSync(new URL("./.auth/fixture.json",import.meta.url),"utf8")) as {productId:string;detailKey:string};
 test.beforeEach(async({page})=>{await page.clock.install({time:new Date("2026-11-09T02:00:00Z")});});
 for(const width of [320,1440])test(`SSE refreshes comments, preserves drafts and stops idle business reads at ${width}`,async({page,request})=>{
@@ -13,16 +14,31 @@ for(const width of [320,1440])test(`SSE refreshes comments, preserves drafts and
  await comment.fill("保留未发送草稿");
  const reads:string[]=[];page.on("request",r=>{if(r.method()==="GET"&&r.url().includes("/api/v1/")&&!r.url().includes("/console/events"))reads.push(new URL(r.url()).pathname);});
  await page.clock.fastForward(1000);await page.waitForTimeout(300);reads.length=0;
+ // Leave transport time for the pause command; pausing at a sampled "now"
+ // races the still-running clock and can attempt to move it backwards.
+ await page.clock.pauseAt(await page.evaluate(()=>Date.now()+10_000));
  await page.clock.fastForward(180_000);await page.waitForTimeout(300);
  expect(reads).toEqual([]);
- const text=`SSE 新评论 ${width}`;
+ // Only the browser clock moved: the real server cannot send its 25s
+ // heartbeats during that jump. The 60s silence watchdog must reconnect.
+ // Finish that recovery before measuring a healthy stream's delivery latency;
+ // otherwise the 1s retry backoff is accidentally charged to the speed budget.
+ const banner=page.locator(".offline-banner");
+ await expect(banner).toContainText("实时更新连接已中断");
+ const reconnected=page.waitForResponse(r=>new URL(r.url()).pathname==="/api/v1/console/events" && r.ok());
+ await page.clock.fastForward(1000);await reconnected;
+ await expect(banner).toHaveCount(0);
+ expect(reads).toEqual([]);
+ await page.clock.resume();
+ const runId=randomUUID();
+ const text=`SSE 新评论 ${width} ${runId}`;
  const started=Date.now();
  const sent=await request.post(`/api/v1/items/${fixture.detailKey}/comments`,{data:{text}});expect(sent.ok()).toBe(true);
  await expect(page.locator(".detail-pane")).toContainText(text);
  expect(Date.now()-started).toBeLessThan(1000);
  await expect(comment).toHaveValue("保留未发送草稿");
  await page.context().setOffline(true);await page.waitForTimeout(200);
- const offlineText=`断线补拉 ${width}`;
+ const offlineText=`断线补拉 ${width} ${runId}`;
  const offline=await request.post(`/api/v1/items/${fixture.detailKey}/comments`,{data:{text:offlineText}});expect(offline.ok()).toBe(true);
  await page.context().setOffline(false);
  await page.clock.fastForward(1500);

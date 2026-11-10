@@ -53,7 +53,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
   currentSessionId.current = sessionId;
   const session = useQuery({
     queryKey: ["agent-session", sessionId],
-    queryFn: () => api.getAgentSession(sessionId),
+    queryFn: ({signal}) => api.getAgentSession(sessionId, signal),
     enabled: open,
     // The page-wide SSE subscription invalidates this shared session cache.
   });

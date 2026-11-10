@@ -247,3 +247,24 @@ describe("setProductAccounts", () => {
     ])).rejects.toMatchObject({ status: 403, code: "own_access_unchangeable" });
   });
 });
+
+describe("conversation request cancellation and deadline",()=>{
+ it("keeps the deadline when a query provides its own cancellation signal",async()=>{
+  const deadline=new AbortController(),parent=new AbortController();
+  const timeout=vi.spyOn(AbortSignal,"timeout").mockReturnValue(deadline.signal);
+  const fetcher=vi.fn<typeof fetch>().mockImplementation((_url,init)=>new Promise((_resolve,reject)=>init!.signal!.addEventListener("abort",()=>reject(init!.signal!.reason))));
+  vi.stubGlobal("fetch",fetcher);
+  try {
+   const pending=api.getAgentSession("s",parent.signal);
+   const assertion=expect(pending).rejects.toMatchObject({name:"TimeoutError"});
+   deadline.abort(new DOMException("Timed out","TimeoutError"));await assertion;
+   expect(timeout).toHaveBeenCalledWith(30_000);expect(parent.signal.aborted).toBe(false);
+  }finally{timeout.mockRestore();}
+ });
+ it("cancels the transport when the conversation observer is removed",async()=>{
+  const parent=new AbortController();let signal:AbortSignal|null|undefined;
+  vi.stubGlobal("fetch",vi.fn<typeof fetch>().mockImplementation((_url,init)=>{signal=init?.signal;return new Promise((_resolve,reject)=>signal!.addEventListener("abort",()=>reject(signal!.reason)));}));
+  const pending=api.getAgentSession("s",parent.signal),assertion=expect(pending).rejects.toMatchObject({name:"AbortError"});
+  parent.abort();await assertion;expect(signal?.aborted).toBe(true);
+ });
+});

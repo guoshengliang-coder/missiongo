@@ -27,6 +27,7 @@ export async function refreshFromConsoleStream(page: Page) {
       });
       return new Response(body, {status: response.status, headers: response.headers});
     };
+    window.dispatchEvent(new Event("offline"));
     window.dispatchEvent(new Event("online"));
   });
 }

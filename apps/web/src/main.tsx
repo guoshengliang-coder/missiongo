@@ -11,6 +11,7 @@ import { I18nProvider } from "./i18n";
 import { persistQueryCache, restorePersistedQueryCache } from "./query-persistence";
 import { hasUnsavedInput } from "./unsaved-changes";
 import { UpdateBanner } from "./UpdateBanner";
+import { retainSessionCache } from "./session-cache";
 import { startVersionWatch } from "./version-check";
 import "./styles.css";
 
@@ -26,6 +27,7 @@ const queryClient = new QueryClient({
 
 // Before the first render, so the previous screen is what paints rather than a
 // skeleton. Synchronous by design; see query-persistence.ts.
+retainSessionCache(queryClient);
 restorePersistedQueryCache(queryClient);
 persistQueryCache(queryClient);
 

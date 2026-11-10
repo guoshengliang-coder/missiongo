@@ -197,13 +197,31 @@ export class ApiError extends Error {
 const REQUEST_TIMEOUT_MS = 30_000;
 const TRANSFER_TIMEOUT_MS = 300_000;
 
+/** Compose cancellation without requiring AbortSignal.any (outside our browser baseline). */
+function requestSignal(milliseconds: number, parent?: AbortSignal | null): AbortSignal {
+  const fallback = new AbortController();
+  const deadline = typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(milliseconds) : fallback.signal;
+  if (deadline === fallback.signal) setTimeout(() => fallback.abort(new DOMException("Request timed out", "TimeoutError")), milliseconds);
+  if (!parent) return deadline;
+  const controller = new AbortController();
+  const cancel = () => controller.abort(parent.reason);
+  const expire = () => controller.abort(deadline.reason);
+  controller.signal.addEventListener("abort", () => {
+    parent.removeEventListener("abort", cancel); deadline.removeEventListener("abort", expire);
+  }, {once:true});
+  if (parent.aborted) cancel();
+  else if (deadline.aborted) expire();
+  else { parent.addEventListener("abort", cancel, {once:true}); deadline.addEventListener("abort", expire, {once:true}); }
+  return controller.signal;
+}
+
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (init.method && init.method !== "GET" && deploymentInProgress()) throw new ApiError(503, "deployment_in_progress", "Deployment in progress.");
   const response = await fetch(path, {
     ...init,
     credentials: "same-origin",
-    // A caller's own signal wins; otherwise this request ends on a deadline.
-    signal: init.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    // Cancellation and the deadline both remain effective.
+    signal: requestSignal(REQUEST_TIMEOUT_MS, init.signal),
     headers: {
       accept: "application/json",
       ...(init.body ? { "content-type": "application/json" } : {}),
@@ -227,7 +245,7 @@ async function attachmentRequest(path: string, init: RequestInit = {}): Promise<
   const response = await fetch(path, {
     ...init,
     credentials: "same-origin",
-    signal: init.signal ?? AbortSignal.timeout(TRANSFER_TIMEOUT_MS),
+    signal: requestSignal(TRANSFER_TIMEOUT_MS, init.signal),
     headers: {
       accept: "application/json",
       ...init.headers,
@@ -349,7 +367,7 @@ export const api = {
   generateTitle: (productId: string, content: string) => request<{ title: string }>("/api/v1/ai/title", {
     method: "POST", body: JSON.stringify({ productId, content }),
   }),
-  getBootstrap: (productId: string | null, options: ListItemsOptions = {}) => {
+  getBootstrap: (productId: string | null, options: ListItemsOptions = {}, signal?: AbortSignal) => {
     const query = new URLSearchParams({projection:"list"});
     if (productId) query.set("productId", productId);
     appendItemFilters(query, options, true);
@@ -359,7 +377,7 @@ export const api = {
     if (options.search) query.set("search", options.search);
     if (options.limit !== undefined) query.set("limit", String(options.limit));
     const suffix = query.size > 0 ? `?${query.toString()}` : "";
-    return request<Bootstrap>(`/api/v1/bootstrap${suffix}`);
+    return request<Bootstrap>(`/api/v1/bootstrap${suffix}`, signal ? {signal} : {});
   },
   getSession: () => request<AuthSession>("/api/v1/auth/session"),
   getManagedDecision: (id: string) => request<ManagedDecisionView>(`/api/v1/managed-decisions/${encodeURIComponent(id)}`),
@@ -652,8 +670,8 @@ export const api = {
     }),
   getAgentHistory: (sessionId: string, cursor: string) =>
     request<AgentHistoryPage>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/history?cursor=${encodeURIComponent(cursor)}`),
-  getAgentSession: (sessionId: string) =>
-    request<AgentSession>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}?history=recent`),
+  getAgentSession: (sessionId: string, signal?: AbortSignal) =>
+    request<AgentSession>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}?history=recent`, signal ? {signal} : {}),
   decideAgentApproval: (sessionId: string, approvalId: string, decision: string) =>
     request(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/approvals/${encodeURIComponent(approvalId)}/decision`, {
       method: "POST", body: JSON.stringify({ decision }),
@@ -662,9 +680,10 @@ export const api = {
     request(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/approvals/${encodeURIComponent(approvalId)}/retry`, {
       method: "POST", body: JSON.stringify({}),
     }),
-  listAgentSessions: (productId?: string) =>
+  listAgentSessions: (productId?: string, signal?: AbortSignal) =>
     request<{ sessions: AgentSessionSummary[] }>(
       `/api/v1/agent-sessions${productId ? `?productId=${encodeURIComponent(productId)}` : ""}`,
+      signal ? {signal} : {},
     ),
   sendAgentSessionCommand: (sessionId: string, text: string, attachmentIds: readonly string[] = []) =>
     request<AgentSessionCommand>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/commands`, {

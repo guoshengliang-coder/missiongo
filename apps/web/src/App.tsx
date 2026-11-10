@@ -1,3 +1,4 @@
+import { bootstrapCacheSeeder } from "./bootstrap-cache";
 import { useConsoleConnection, useConsoleEvents } from "./console-events";
 import { isItemListRow, type WorkItemRow } from "./types";
 import { inconsistentItemPage } from "./item-list-state";
@@ -171,7 +172,6 @@ import { StartWorkDialog } from "./start-work-dialog";
 import { cachedListSummary } from "./list-summary";
 import { applyConfirmedItemTransition } from "./confirmed-item-transition";
 import { useUnsavedChangesGuard } from "./unsaved-changes";
-import { useForegroundSync } from "./use-foreground-sync";
 import { canSelectForVerification, itemTransitionActions } from "./work-item-transitions";
 import {
   creatorLabel,
@@ -396,10 +396,6 @@ export function App() {
   const consoleReturnFocus = useRef<HTMLElement | null>(null);
   const previousAgentConsoleOpenRef = useRef(agentConsoleOpen);
 
-  // Coming back to the page re-reads what is on screen if it has gone stale
-  // (AND-192). The re-read stays invisible: AND-491 removed the topbar spinner,
-  // which wrapped into a second grid row and looked like a stray status.
-  useForegroundSync();
   const [listPaneWidth, setListPaneWidth] = useState(readListPaneWidth);
   const agentConsoleSinglePane = useMediaQuery("(max-width: 520px)");
   const agentConsoleLayout = agentConsoleSinglePane ? "single" : "wide";
@@ -839,7 +835,8 @@ export function App() {
     queryKey: ["bootstrap"],
     retry: false,
     staleTime: Infinity,
-    queryFn: async () => {
+    queryFn: async ({signal}) => {
+      const seedResource = bootstrapCacheSeeder(queryClient);
       let data;
       try {
         data = await api.getBootstrap(
@@ -852,8 +849,10 @@ export function App() {
             ...pickItemFilters(initialFilters),
             limit: ITEM_PAGE_SIZE,
           },
+          signal,
         );
       } catch (error) {
+        if (signal.aborted) throw error;
         // A refused session means the screen cached on this device belongs to
         // someone who is no longer signed in here. Evict the restored queries as
         // well as the copy on disk: clearing only the disk leaves them in memory,
@@ -866,14 +865,15 @@ export function App() {
         }
         throw error;
       }
+      if (signal.aborted) throw new DOMException("Cancelled bootstrap", "AbortError");
       // Seed the caches the rest of the screen reads from, here rather than in an
       // effect, so it happens before anything can observe this query as settled.
       // An effect would run a render too late, and the queries below would each
       // fire a request for data this response already carried.
-      queryClient.setQueryData(["products"], data.products);
+      seedResource(["products"], data.products);
       if (data.productId) {
-        queryClient.setQueryData(["components", data.productId, "with-archived"], data.components);
-        queryClient.setQueryData(
+        seedResource(["components", data.productId, "with-archived"], data.components);
+        seedResource(
           // Must match how itemsQuery builds its key below, trim included, or the
           // list mounts under a different key and refetches what we just seeded.
           ["items", data.productId, initialFilters.status, initialFilters.type, initialFilters.search.trim(), initialFilters.builder ?? "", itemFilterKey(initialFilters)],
@@ -930,7 +930,7 @@ export function App() {
   // request, and the header counts keep updating while the console is closed.
   const agentSessionsQuery = useQuery({
     queryKey: ["agent-sessions"],
-    queryFn: () => api.listAgentSessions(),
+    queryFn: ({signal}) => api.listAgentSessions(undefined, signal),
     enabled: bootstrapQuery.isSuccess && products.length > 0,
   });
   const draftAccountId = useRef<string | undefined>(undefined);

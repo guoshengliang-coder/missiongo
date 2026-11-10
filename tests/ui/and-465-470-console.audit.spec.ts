@@ -19,7 +19,7 @@ for (const viewport of [{width:320,theme:"dark"},{width:724,theme:"light"},{widt
         const row=rows.find(r=>r.id===path.split("/")[4])??rows[34]!;
         return route.fulfill({json:{...row,messages:[]}});
       });
-      await page.route("**/merge-deliveries",route=>route.fulfill({json:{deliveries:[],batches:[],sessionProgress:{[id]:phase}}}));
+      await page.route(/\/merge-deliveries(?:\?.*)?$/,route=>route.fulfill({json:{deliveries:[],batches:[],sessionProgress:{[id]:phase}}}));
       await page.clock.install();
       await page.goto(`/?product=${product.id}&console=agent&session=${id}&consoleFilter=attention`);
       if(viewport.width===320)await page.locator(".agent-console-conversation-back").click();
