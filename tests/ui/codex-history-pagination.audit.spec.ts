@@ -4,6 +4,7 @@ import { advanceSessionDetailPoll } from "./polling";
 
 const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as { productId: string; detailKey: string };
 const stamp = "2026-11-05T00:00:00.000Z";
+test.beforeEach(async({page})=>{await page.clock.setFixedTime(new Date("2026-11-09T02:00:00Z"));});
 const execution = { id: "legacy-tool", sourceId: "legacy-tool", role: "agent", phase: "execution", occurredAt: stamp, text: '{"aggregatedOutput":"INTERNAL_TOOL_PAYLOAD"}' };
 function message(n: number) {
   return { id: `message-${n}`, sourceId: `source-${n}`, role: "agent", occurredAt: stamp,
@@ -162,30 +163,83 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
   });
 }
 
-test("SSE reconnect fills a gap larger than the recent window using stored history only",async({page})=>{
+for(const width of [320,1440])for(const surface of ["console","panel"])for(const failedAttempt of [false,true])test(`SSE reconnect fills a gap larger than the recent window using stored history only (${surface} ${width}, retry=${failedAttempt})`,async({page})=>{
+ await page.setViewportSize({width,height:900});
  await page.clock.install({time:new Date("2026-11-09T02:00:00Z")});
- let shifted=false;const reads:string[]=[];
- const id="catchup-window",summary={id,agentSessionId:id,productId:fixture.productId,agentKind:"codex",status:"idle",updatedAt:stamp,activityAt:stamp,createdAt:stamp,
-  nodeName:"Fixture",nodeConnectionState:"online",nodeRevoked:false,dispatchStatus:"launched",activities:[],settings:{},unread:false,canReply:true,canStop:true,canArchive:true,items:[],attention:{state:"not_needed"},needsAttention:false};
+ let shifted=false,failed=false;const reads:string[]=[];
+ const id="catchup-window",summary={id,agentSessionId:id,dispatchId:"catchup-dispatch",productId:fixture.productId,agentKind:"codex",status:"idle",updatedAt:stamp,activityAt:stamp,createdAt:stamp,
+  nodeName:"Fixture",nodeConnectionState:"online",nodeRevoked:false,dispatchStatus:"launched",activities:[],settings:{},unread:false,canReply:true,canStop:true,canArchive:true,
+  items:[{key:fixture.detailKey,title:"Catch-up fixture",productId:fixture.productId}],attention:{state:"not_needed"},needsAttention:false};
  await page.route("**/api/v1/agent-sessions**",route=>{
   const url=new URL(route.request().url());
   if(url.pathname.endsWith("/history")) {
-   const cursor=url.searchParams.get("cursor")!;reads.push(cursor);
-   const start=cursor==="stored:message-150"?100:50;
-   return route.fulfill({json:{status:"ready",messages:Array.from({length:50},(_,n)=>message(n+start)),nextCursor:`stored:message-${start}`}});
+   const cursor=route.request().method()==="POST"?route.request().postDataJSON().cursor:url.searchParams.get("cursor")!;reads.push(cursor);
+   if(failedAttempt&&!failed){failed=true;return route.fulfill({status:503,json:{error:{code:"unavailable",message:"Transient gap read failure"}}});}
+   const start=Number(cursor.slice("stored:message-".length))-50;
+   return route.fulfill({json:{status:"ready",messages:Array.from({length:50},(_,n)=>message(n+start)),...(start?{nextCursor:`stored:message-${start}`}:{})}});
   }
   if(route.request().method()!=="GET")return route.fulfill({status:204});
   if(url.pathname==="/api/v1/agent-sessions")return route.fulfill({json:{sessions:[summary]}});
   return route.fulfill({json:{...summary,messages:Array.from({length:50},(_,n)=>message(n+(shifted?150:50))),history:{nextCursor:shifted?"stored:message-150":"stored:message-50"}}});
  });
- await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
+ await page.route("**/api/v1/items/*/dispatches",route=>route.fulfill({json:{dispatches:[{id:summary.dispatchId,agentSessionId:id,agentKind:"codex",mode:"plan",nodeName:"Fixture",status:"launched",createdAt:stamp,itemKeys:[fixture.detailKey]}]}}));
+ if(surface==="console")await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
+ else{
+  await page.goto(`/?product=${fixture.productId}&item=${fixture.detailKey}`);
+  await page.locator(".execution-history > summary").click();
+  await page.locator(".execution-record > summary").filter({hasText:"派单 · Fixture"}).click();
+  await page.locator(".agent-session-toggle").click();
+ }
+ const area=page.locator(surface==="console"?".agent-console-messages":".agent-session-messages");
  await expect(page.locator("[data-agent-message-id]")).toHaveCount(50);
- const reply=page.locator(".agent-console-reply textarea");await reply.fill("Keep the reconnect draft");
+ const reply=page.locator(surface==="console"?".agent-console-reply textarea":".agent-session-reply textarea");await reply.fill("Keep the reconnect draft");
  shifted=true;await advanceSessionDetailPoll(page);
+ if(failedAttempt){
+  await expect(area.getByRole("alert")).toBeVisible();
+  await expect(reply).toHaveValue("Keep the reconnect draft");
+  await page.getByRole("button",{name:"重试加载更早消息",exact:true}).click();
+ }
  await expect(page.locator("[data-agent-message-id]")).toHaveCount(150);
- expect(reads).toEqual(["stored:message-150","stored:message-100"]);
+ expect(reads).toEqual([...(failedAttempt?["stored:message-150"]:[]),"stored:message-150","stored:message-100"]);
  await expect(page.locator('[data-agent-message-id="agent:source-99"]')).toHaveCount(1);
  await expect(page.locator('[data-agent-message-id="agent:source-100"]')).toHaveCount(1);
  await expect(page.locator('[data-agent-message-id="agent:source-199"]')).toHaveCount(1);
  await expect(reply).toHaveValue("Keep the reconnect draft");
+ await page.getByRole("button",{name:"加载更早消息",exact:true}).click();
+ await expect(page.locator("[data-agent-message-id]")).toHaveCount(200);
+ expect(await page.locator("[data-agent-message-id]").evaluateAll(elements=>elements.map(element=>element.getAttribute("data-agent-message-id"))))
+  .toEqual(Array.from({length:200},(_,n)=>`agent:source-${n}`));
+ expect(reads.at(-1)).toBe("stored:message-50");
+ await expect(reply).toHaveValue("Keep the reconnect draft");
+});
+
+test("a formerly complete window keeps newly available source history discoverable after catch-up",async({page})=>{
+ await page.clock.install({time:new Date("2026-11-09T02:00:00Z")});
+ let shifted=false;const reads:string[]=[];
+ const id="new-source-history",summary={id,agentSessionId:id,productId:fixture.productId,agentKind:"codex",status:"idle",updatedAt:stamp,activityAt:stamp,createdAt:stamp,
+  nodeName:"Fixture",nodeConnectionState:"online",nodeRevoked:false,dispatchStatus:"launched",activities:[],settings:{},unread:false,canReply:true,canStop:true,canArchive:true,items:[],attention:{state:"not_needed"},needsAttention:false};
+ await page.route("**/api/v1/agent-sessions**",route=>{
+  const url=new URL(route.request().url());
+  if(url.pathname.endsWith("/history")){
+   const cursor=route.request().method()==="POST"?route.request().postDataJSON().cursor:url.searchParams.get("cursor")!;reads.push(cursor);
+   if(cursor==="source:new")return route.fulfill({json:{status:"ready",messages:Array.from({length:10},(_,n)=>({...message(n-10),historical:true}))}});
+   const start=Math.max(0,Number(cursor.slice("stored:message-".length))-50);
+   return route.fulfill({json:{status:"ready",messages:cursor==="stored:message-0"?[]:Array.from({length:50},(_,n)=>message(n+start)),nextCursor:start?`stored:message-${start}`:"source:new"}});
+  }
+  if(route.request().method()!=="GET")return route.fulfill({status:204});
+  if(url.pathname==="/api/v1/agent-sessions")return route.fulfill({json:{sessions:[summary]}});
+  return route.fulfill({json:{...summary,messages:Array.from({length:shifted?50:20},(_,n)=>message(n+(shifted?150:0))),...(shifted?{history:{nextCursor:"stored:message-150"}}:{})}});
+ });
+ await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
+ await expect(page.locator("[data-agent-message-id]")).toHaveCount(20);
+ shifted=true;await advanceSessionDetailPoll(page);
+ await expect(page.locator("[data-agent-message-id]")).toHaveCount(200);
+ expect(reads).toEqual(["stored:message-150","stored:message-100","stored:message-50"]);
+ await page.getByRole("button",{name:"加载更早消息",exact:true}).click();
+ expect(reads.at(-1)).toBe("stored:message-0");
+ await page.getByRole("button",{name:"加载更早消息",exact:true}).click();
+ await expect(page.locator("[data-agent-message-id]")).toHaveCount(210);
+ expect(reads.at(-1)).toBe("source:new");
+ expect(await page.locator("[data-agent-message-id]").evaluateAll(elements=>elements.map(element=>element.getAttribute("data-agent-message-id"))))
+  .toEqual(Array.from({length:210},(_,n)=>`agent:source-${n-10}`));
 });

@@ -115,3 +115,28 @@ it("keeps long-lived native identities readable beyond SQLite's compound-select 
   expect([...oldest.messages,...middle.messages,...recent.messages]).toEqual(f.dispatch.getForAccount("owner",f.id).messages);
   expect(oldest.nextCursor).toBeUndefined();
 });
+
+it("matches full-history precedence and current forms across the large mixed-source query path",()=>{
+  const f=fixture();
+  const native=f.external.register({accountId:"owner",clientId:"audit-large"},{agentKind:"codex",refKind:"native",sessionRef:"thread"},f.item.key);
+  let resumed=f.id;
+  for(let n=0;n<100;n++)resumed=f.create(`large-round-${n}`);
+  const question={title:"Still open",options:["Continue"],key:"large-question"};
+  for(const id of [f.id,resumed])f.dispatch.recordSnapshot({nodeId:"node",sessionId:id,status:"idle",messages:[
+    {sourceId:"request",role:"agent",text:"Authoritative closed form",questions:[{...question,withdrawn:true}]},
+    ...Array.from({length:123},(_,n)=>({sourceId:`mixed-${n}`,role:"agent" as const,text:`${id}-${n}`,occurredAt:n%2?f.now:"2025-01-01T00:00:00.000Z"})),
+  ]});
+  const insert=f.db.prepare("INSERT INTO external_native_messages(id,session_id,source_id,payload_json,position) VALUES (?,?,?,?,?)");
+  insert.run("large-request",native,"request",JSON.stringify({sourceId:"request",role:"agent",text:"Mirror open form",questions:[question]}),0);
+  for(let n=0;n<160;n++)insert.run(`large-external-${n}`,native,`mixed-${n}`,JSON.stringify({sourceId:`mixed-${n}`,role:"agent",text:`External ${n}`,occurredAt:n%3?f.now:"2099-01-01T00:00:00.000Z"}),n+1);
+  for(const id of [f.id,native,resumed]){
+    const group=f.console.members("owner",id);
+    expect(group.length).toBeGreaterThan(100);
+    const snapshot=id===native?f.external.getForAccount("owner",id):f.dispatch.getForAccount("owner",id);
+    const expected=f.console.withMessages("owner",id,snapshot,group).messages;
+    let cursor:string|undefined,pages=0;const all:typeof expected=[];
+    do{const page=f.messages.page(id,group,cursor);all.unshift(...page.messages);cursor=page.nextCursor;expect(++pages).toBeLessThan(10);}while(cursor);
+    expect(all).toEqual(expected);
+    expect(f.messages.currentRequests(id,group)).toEqual(id===native?[expected.find(message=>message.sourceId==="request")!]:[]);
+  }
+});
