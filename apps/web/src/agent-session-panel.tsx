@@ -111,7 +111,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
       await queryClient.invalidateQueries({ queryKey: ["agent-session", operation.sessionId] });
     },
   });
-  const questionPermission = Boolean(session.data && hasPendingPermissionQuestion(session.data.agentKind, history.messages.filter(message => !message.id.startsWith("history:"))));
+  const questionPermission = Boolean(session.data && hasPendingPermissionQuestion(session.data.agentKind, history.messages.filter(message => !message.historical && !message.id.startsWith("history:"))));
   const submittedCommand = send.isSuccess && send.variables?.sessionId === sessionId ? send.data : undefined;
   const command = latestAgentSessionCommand(session.data?.command, submittedCommand);
   const replyPresentation = sessionReplyPresentation(session.data?.status ?? "idle", command,
@@ -171,14 +171,14 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                         <small>{messageLabel(message.role, session.data.agentKind, t)}</small>
                         <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
                       </header>
-                      {(message.role === "user" ? <MarkdownText>{permissionReplyText(session.data.messages.flatMap(message => message.questions ?? []), message.text)}</MarkdownText> : <AgentArtifactMarkdown text={message.text} sessionId={sessionId} messageId={message.id} />)}
+                      {(message.role === "user" ? <MarkdownText>{permissionReplyText((session.data.currentRequests ?? session.data.messages).flatMap(message => message.questions ?? []), message.text)}</MarkdownText> : <AgentArtifactMarkdown text={message.text} sessionId={sessionId} messageId={message.id} />)}
                       {message.id === planMessages.planMessageId && <InlinePlanApproval onRequestChanges={()=>document.querySelector<HTMLTextAreaElement>(".agent-session-reply textarea")?.focus()} key={`${session.data.id}:${currentPlan(session.data)?.revision}`} session={session.data} blocked={questionPermission || pending || send.isPending} />}
                       {message.questions && (
                         <AgentSessionQuestions
                           questions={message.questions}
                           sessionId={sessionId}
                           sourceId={message.sourceId}
-                          historical={message.id.startsWith("history:")}
+                          historical={message.historical || message.id.startsWith("history:")}
                           agentKind={session.data.agentKind}
                           reply={reply}
                           canReply={canReply && !message.id.startsWith("history:") && !pending && !send.isPending}
@@ -254,8 +254,8 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                       rows={1}
                       maximumHeight={240}
                       submitOnEnter
-                      value={permissionReplyText(session.data.messages.flatMap(message => message.questions ?? []), reply)}
-                      onChange={(event) => setReply(permissionReplyText(session.data.messages.flatMap(message => message.questions ?? []), event.target.value, true))}
+                      value={permissionReplyText((session.data.currentRequests ?? session.data.messages).flatMap(message => message.questions ?? []), reply)}
+                      onChange={(event) => setReply(permissionReplyText((session.data.currentRequests ?? session.data.messages).flatMap(message => message.questions ?? []), event.target.value, true))}
                       placeholder={t("agentSessionReplyPlaceholder", {
                         agent: messageLabel("agent", session.data.agentKind, t),
                       })}

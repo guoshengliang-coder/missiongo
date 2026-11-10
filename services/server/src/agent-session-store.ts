@@ -712,7 +712,7 @@ export class AgentSessionStore {
     return new Set(rows.map(row => row.session_id));
   }
 
-  getForAccount(accountId: string, sessionId: string): AgentSessionSnapshot {
+  getForAccount(accountId: string, sessionId: string, includeMessages = true): AgentSessionSnapshot {
     this.failStuckDeliveringCommands();
     const row = this.database.connection
       .prepare(
@@ -728,7 +728,7 @@ export class AgentSessionStore {
         (SessionRow & { node_last_seen_at: string | null; node_revoked_at: string | null }) | undefined;
     if (!row) throw notFound("Agent session");
     const free = this.freeSession(row.dispatch_id);
-    const messages = this.database.connection
+    const messages = includeMessages ? this.database.connection
       .prepare(
         `SELECT id, source_id, turn_id, role, phase, text, questions_json, occurred_at
          FROM agent_session_messages WHERE session_id = ? AND (phase IS NULL OR phase <> 'execution') ORDER BY position, observed_at, rowid`,
@@ -736,7 +736,7 @@ export class AgentSessionStore {
       .all(sessionId) as unknown as Array<{
         id: string; source_id: string; turn_id: string | null; role: AgentMessageRole;
         phase: string | null; text: string; questions_json: string | null; occurred_at: string;
-      }>;
+      }> : [];
     const command = this.latestCommand(sessionId);
     const stopCommand = this.latestStop(sessionId);
     const turnState = JSON.parse(row.turn_state_json) as AgentSessionTurnState;
@@ -785,7 +785,8 @@ export class AgentSessionStore {
    * with each row so the boundary can make that decision without leaking a
    * title or preview first.
    */
-  listForAccount(accountId: string, limit = 100): readonly AgentSessionListItem[] {
+  listForAccount(accountId: string, limit = 100, selectedIds?: readonly string[]): readonly AgentSessionListItem[] {
+    if (selectedIds?.length === 0) return [];
     // Read paths are where the server's own timeout check runs (AND-184): no
     // resident timer, and the check happens exactly when somebody can see the
     // freed slot.
@@ -815,11 +816,12 @@ export class AgentSessionStore {
          LEFT JOIN session_message_clocks mc ON mc.session_key = 'dispatch:' || d.id
          JOIN nodes n ON n.id = d.node_id
          WHERE d.account_id = ?
+           ${selectedIds ? `AND d.id IN (SELECT value FROM json_each(?))` : ''}
            AND (s.id IS NOT NULL OR NOT EXISTS (SELECT 1 FROM free_session_starts f WHERE f.dispatch_id=d.id))
          ORDER BY COALESCE(mc.message_at, s.created_at, d.created_at) DESC, d.id DESC
          LIMIT ?`,
       )
-      .all(accountId, limit) as unknown as SessionListSettingsRow[];
+      .all(accountId, ...(selectedIds ? [JSON.stringify(selectedIds)] : []), limit) as unknown as SessionListSettingsRow[];
     // AND-383: every per-row lookup below used to run as its own statement
     // (items, latest message and command, attention, free starts, pending
     // natives, rounds, managed bindings, revocations, item completion) --
@@ -846,17 +848,14 @@ export class AgentSessionStore {
     const messageBySession = new Map<string, { id: string; source_id: string; role: AgentMessageRole; phase: string | null;
       text: string; questions_json: string | null }>();
     if (sessionIds.length) {
-      // The window-function form of this lookup sorted the whole message
-      // table per scan; idx_agent_session_messages_order turns each top-1
-      // into an index seek, which is an order of magnitude cheaper at a few
-      // hundred sessions.
-      const latestMessage = db.prepare(`SELECT id, source_id, role, phase, text, questions_json FROM agent_session_messages
-        WHERE session_id = ? AND (phase IS NULL OR phase <> 'execution') ORDER BY position DESC, observed_at DESC, rowid DESC LIMIT 1`);
-      for (const sessionId of sessionIds) {
-        const message = latestMessage.get(sessionId) as unknown as
-          { id: string; source_id: string; role: AgentMessageRole; phase: string | null; text: string; questions_json: string | null } | undefined;
-        if (message) messageBySession.set(sessionId, message);
-      }
+      // One statement, with an index seek for each selected session. Avoid both
+      // the old full-table window sort and one JS/SQLite round trip per row.
+      const messages = db.prepare(`SELECT session_id,id,source_id,role,phase,text,questions_json FROM agent_session_messages
+        WHERE rowid IN (SELECT (SELECT m.rowid FROM agent_session_messages m WHERE m.session_id=s.id
+          AND (m.phase IS NULL OR m.phase<>'execution') ORDER BY m.position DESC,m.observed_at DESC,m.rowid DESC LIMIT 1)
+          FROM agent_sessions s WHERE s.id IN (SELECT value FROM json_each(?)))`)
+        .all(JSON.stringify(sessionIds)) as unknown as Array<{session_id:string;id:string;source_id:string;role:AgentMessageRole;phase:string|null;text:string;questions_json:string|null}>;
+      for (const message of messages) messageBySession.set(message.session_id,message);
     }
     const commandBySession = new Map<string, CommandRow>();
     if (sessionIds.length) {
@@ -897,15 +896,20 @@ export class AgentSessionStore {
       : []);
     const roundByDispatch = new Map<string, number>();
     if (dispatchIds.length) {
-      const batch = db.prepare(`SELECT di.dispatch_id, COUNT(prior.id) AS earlier
-        FROM dispatch_items di
-        JOIN dispatches d ON d.id = di.dispatch_id
-        LEFT JOIN dispatch_items prior_item ON prior_item.item_id = di.item_id AND prior_item.dispatch_id <> d.id
-        LEFT JOIN dispatches prior ON prior.id = prior_item.dispatch_id
-          AND prior.created_at < d.created_at AND prior.status IN ('delivered', 'launched')
-        WHERE di.dispatch_id IN ${holes(dispatchIds)}
-        GROUP BY di.dispatch_id, di.item_id`)
-        .all(...dispatchIds) as unknown as Array<{ dispatch_id: string; earlier: number }>;
+      // Count each distinct timestamp bucket once. A self-join expanded N
+      // dispatches on the same item to N² rows before discarding equal/newer times.
+      const batch = db.prepare(`WITH item_times AS (
+        SELECT di.item_id,d.created_at,SUM(CASE WHEN d.status IN ('delivered','launched') THEN 1 ELSE 0 END) AS n
+        FROM dispatch_items di JOIN dispatches d ON d.id=di.dispatch_id
+        WHERE di.item_id IN (SELECT item_id FROM dispatch_items WHERE dispatch_id IN (SELECT value FROM json_each(?)))
+        GROUP BY di.item_id,d.created_at
+      ), counts AS (
+        SELECT item_id,created_at,COALESCE(SUM(n) OVER(PARTITION BY item_id ORDER BY created_at
+          ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0) AS earlier FROM item_times
+      ) SELECT di.dispatch_id,counts.earlier FROM dispatch_items di JOIN dispatches d ON d.id=di.dispatch_id
+        JOIN counts ON counts.item_id=di.item_id AND counts.created_at=d.created_at
+        WHERE di.dispatch_id IN (SELECT value FROM json_each(?))`)
+        .all(JSON.stringify(dispatchIds),JSON.stringify(dispatchIds)) as unknown as Array<{ dispatch_id: string; earlier: number }>;
       for (const round of batch) roundByDispatch.set(round.dispatch_id, Math.max(roundByDispatch.get(round.dispatch_id) ?? 0, round.earlier));
     }
     const bindingBySession = new Map<string, ManagedSessionBinding>();

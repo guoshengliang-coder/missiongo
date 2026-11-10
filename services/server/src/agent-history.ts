@@ -88,6 +88,11 @@ export class AgentHistory {
     return { messages: page, history: { ...(nextCursor ? { nextCursor } : {}), ...(source?.error ? { error: source.error } : {}) } };
   }
 
+  continuation(accountId: string, sessionId: string): HistoryState {
+    const source=this.source(accountId,sessionId);
+    return {...(source?.next_id ? {nextCursor:source.next_id} : {}),...(source?.error ? {error:source.error} : {})};
+  }
+
   available(accountId: string, sessionId: string) {
     const source=this.source(accountId,sessionId);
     if(!source) return {status:"unavailable",error:"unsupported_or_not_synchronized",cursors:[] as string[]};

@@ -59,7 +59,7 @@ export function AgentSessionQuestions({
         const permission = permissionPresentation(question);
         const label = question.key ?? question.header ?? question.title;
         const settled = question.answered !== undefined;
-        const disabled = !canReply || settled;
+        const disabled = !canReply || settled || historical;
         const chosen = questionAnswerValue(reply, question, count);
         const options = question.kind === "boolean"
           ? [t("agentSessionAnswerYes"), t("agentSessionAnswerNo")]

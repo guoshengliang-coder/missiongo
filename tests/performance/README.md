@@ -185,3 +185,36 @@ Only after reviewing that evidence, propose a separate PR changing `ciMode` to
 increment. Keep the existing required check names. This first implementation
 detects performance regressions in CI but deliberately does not block on thresholds.
 The real HTTP correctness contract blocks immediately.
+
+## Console session reads (AND-498)
+
+`node scripts/console-performance.mjs` measures the actual list, recent-detail and
+stored-history HTTP handlers through inject, including authorization and JSON
+serialization, with synthetic data only. It runs separately from the regression
+budget supervisor; existing budget values and CI advisory policy are unchanged.
+Build TypeScript first. Do not run a measurement concurrently with other builds
+or tests. The optional comparison exits nonzero unless **each** handler's median
+wall time improves by at least 50%; CPU time, SQL execution count, returned rows,
+response bytes and all seven warmed samples are retained, never substituted for
+one another. Missing/incomplete reports are not a pass.
+
+Use the same current runner for both checkouts (the baseline needs built types
+and its own dependencies):
+
+```sh
+node scripts/console-performance.mjs --source <baseline-checkout> --mirrors 40 --output <baseline-report.json>
+node scripts/console-performance.mjs --mirrors 40 --compare <baseline-report.json> --output <current-report.json>
+```
+
+Run a second pair with `--mirrors 0`. Both shapes have 200 dispatch conversations,
+one with 10,000 stored 1 KiB messages and 199 with 20 messages each. The mirrored
+shape adds 40 external records on those same conversations, including a complete
+10,000-message mirror of the target. The list must still return exactly 200
+merged conversations; both history endpoints must return exactly 50 messages.
+Fixtures use direct history seeding, not a single oversized node snapshot.
+
+Reports identify source SHA, dirty state, environment and shape; source paths,
+message payloads, credentials and SQL are not included. Row counts measure JS
+result rows (including statement execution results), not SQLite VM scan steps.
+These are local synthetic comparisons, not a production latency SLA or a claim
+that a screenshot's unidentified failed request has been reproduced.

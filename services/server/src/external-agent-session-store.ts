@@ -232,11 +232,11 @@ export class ExternalAgentSessionStore {
     return "stalled";
   }
 
-  getForAccount(accountId: string, sessionId: string): AgentSessionSnapshot {
+  getForAccount(accountId: string, sessionId: string, includeMessages = true): AgentSessionSnapshot {
     const row = this.row(accountId, sessionId);
-    const { nativeMessages, ...native } = new ExternalNativeSessionStore(this.store).overlay(accountId, sessionId);
+    const { nativeMessages, ...native } = new ExternalNativeSessionStore(this.store).overlay(accountId, sessionId, includeMessages, undefined, true);
     const proposal = new ImplementationPlans(this.store.database).proposal(accountId, `native:${row.client_id}:${row.agent_kind}:${row.ref_kind}:${row.session_ref}`);
-    const reports = this.db.prepare("SELECT id, item_key, status, text, created_at FROM external_agent_session_reports WHERE session_id = ? ORDER BY created_at, rowid")
+    const reports = this.db.prepare(`SELECT id, item_key, status, text, created_at FROM external_agent_session_reports WHERE session_id = ? ORDER BY created_at ${includeMessages ? "ASC" : "DESC"}, rowid ${includeMessages ? "ASC" : "DESC LIMIT 1"}`)
       .all(sessionId) as unknown as { id: string; item_key: string; status: ExternalProgressStatus; text: string | null; created_at: string }[];
     return {
       id: row.id, ...(row.product_id ? {productId:row.product_id} : {}), source: "external", agentKind: row.agent_kind, status: this.status(row),
@@ -252,11 +252,12 @@ export class ExternalAgentSessionStore {
     };
   }
 
-  listForAccount(accountId: string, limit = 100): AgentSessionListItem[] {
+  listForAccount(accountId: string, limit = 100, selectedIds?: readonly string[]): AgentSessionListItem[] {
+    if (selectedIds?.length === 0) return [];
     const plans = new ImplementationPlans(this.store.database);
     const requestIdentities = new Set((this.db.prepare("SELECT identity_key FROM implementation_plan_requests WHERE account_id=?").all(accountId) as {identity_key:string}[]).map(row=>row.identity_key));
-    const rows = this.db.prepare("SELECT s.*,COALESCE(mc.message_at,s.created_at) AS conversation_at FROM external_agent_sessions s LEFT JOIN session_message_clocks mc ON mc.session_key='external:'||s.id WHERE s.account_id = ? ORDER BY COALESCE(mc.message_at,s.created_at) DESC, s.id DESC LIMIT ?")
-      .all(accountId, limit) as unknown as SessionRow[];
+    const rows = this.db.prepare(`SELECT s.*,COALESCE(mc.message_at,s.created_at) AS conversation_at FROM external_agent_sessions s LEFT JOIN session_message_clocks mc ON mc.session_key='external:'||s.id WHERE s.account_id = ? ${selectedIds ? "AND s.id IN (SELECT value FROM json_each(?))" : ""} ORDER BY COALESCE(mc.message_at,s.created_at) DESC, s.id DESC LIMIT ?`)
+      .all(accountId, ...(selectedIds ? [JSON.stringify(selectedIds)] : []), limit) as unknown as SessionRow[];
     // AND-383: batch the per-row lookups (latest report, linked items) and
     // reuse one native-session store instead of allocating per row.
     const nativeStore = new ExternalNativeSessionStore(this.store);
@@ -281,8 +282,17 @@ export class ExternalAgentSessionStore {
         list.push({ key: item.item_key, title: item.title, productId: item.product_id, linkKind:item.link_kind });
       }
     }
+    const overlays=nativeStore.overlays(accountId,ids);
+    const pendingRows=this.db.prepare(`SELECT session_id,source_id,json_extract(payload_json,'$.questions') AS questions
+      FROM external_native_messages WHERE session_id IN (SELECT value FROM json_each(?))
+        AND json_extract(payload_json,'$.questions') IS NOT NULL AND COALESCE(json_extract(payload_json,'$.phase'),'')<>'execution'`)
+      .all(JSON.stringify(ids)) as {session_id:string;source_id:string;questions:string}[];
+    const pending=new Map<string,Array<{sourceId:string;questions:NonNullable<AgentSessionSnapshot["messages"][number]["questions"]>}>>();
+    for (const entry of pendingRows) {
+      const list=pending.get(entry.session_id)??[];list.push({sourceId:entry.source_id,questions:JSON.parse(entry.questions)});pending.set(entry.session_id,list);
+    }
     return rows.map((row) => {
-      const { nativeMessages, ...native } = nativeStore.overlay(accountId, row.id, false);
+      const { nativeMessages, ...native } = overlays.get(row.id)!;
       const latest = latestBySession.get(row.id);
       const identity = `native:${row.client_id}:${row.agent_kind}:${row.ref_kind}:${row.session_ref}`;
       const proposal = requestIdentities.has(identity) ? plans.proposal(accountId,identity) : undefined;
@@ -308,7 +318,7 @@ export class ExternalAgentSessionStore {
         unread: Boolean(row.unread_at && (!row.read_at || row.unread_at > row.read_at)),
         ...(row.unread_at ? { unreadAt: row.unread_at } : {}),
         ...native,
-        waitingForPermission: hasPendingPermissionQuestion(row.agent_kind, nativeMessages),
+        waitingForPermission: hasPendingPermissionQuestion(row.agent_kind, pending.get(row.id) ?? nativeMessages),
         ...(pendingApproval ? {attention:{state:row.dismissed_revision === proposal.revision ? "not_needed" as const : "needed" as const,
           kind:"approval" as const,reason:"方案等待批准，请审阅当前方案与验证目标。",revision:proposal.revision,
           ...(row.dismissed_revision === proposal.revision ? {dismissed:true} : {})},needsAttention:row.dismissed_revision !== proposal.revision,waitingForReply:row.dismissed_revision !== proposal.revision} : {}),
