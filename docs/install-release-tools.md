@@ -14,7 +14,7 @@ node scripts/install-release-tools.mjs             # 实际安装
 | 来源 `scripts/` | 目标 |
 | --- | --- |
 | `missiongo-release.py` | `~/.local/bin/missiongo-release` |
-| `deploy.sh`、`release-timing.sh`、`release-coverage-guard.sh` | `~/.config/missiongo/release-tools/` |
+| `deploy.sh`、`release-timing.sh`、`release-coverage-guard.sh`、`release-status.sh` | `~/.config/missiongo/release-tools/` |
 | `release-lock.py`、`release_coverage_options.py` | 同上 |
 | `release-preflight.mjs`、`release-receipt.mjs` | 同上 |
 | `release-ci.mjs`、`release-ci-wait.mjs` | 同上 |
@@ -23,8 +23,9 @@ node scripts/install-release-tools.mjs             # 实际安装
 
 - 只在 `HEAD` 包含 `origin/main` 且 `scripts/` 无未提交改动时运行；每个文件都必须在 `HEAD` 中存在。
 - 目标位置若已有非常规文件或符号链接则拒绝，不覆盖。
-- `deploy.sh` 必须仍调用全部共享守卫，入口必须仍经过 `release-lock.py` 加锁，否则拒绝安装。
-- 安装前检查 Python 与 bash 语法；写入前按 `release-tools-manifest.json` 比较磁盘上的实际内容，
+- `deploy.sh` 与入口合起来必须仍引用全部共享守卫，入口必须仍经过 `release-lock.py` 加锁，否则拒绝安装。
+  安装后的 `deploy.sh` 从 `$MISSIONGO_RELEASE_TOOLS` 调用收据与状态守卫，不读仓库工作区里的副本。
+- 安装前检查 Python 与 bash 语法；旧版清单里的 `globalRulesIdentical` 字段会被忽略，其他未知字段仍然拒绝；写入前按 `release-tools-manifest.json` 比较磁盘上的实际内容，
   只替换内容变化的文件，每个被替换的文件首次备份为 `<文件>.before-release-tools-in-repo`。
 - 私有目标参数（`release-local.json`、`release-coverage.json`、凭据与签名文件）不在仓库中，
   安装脚本不会创建或修改它们。

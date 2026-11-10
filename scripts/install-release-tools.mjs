@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const TOOLS = [
   "release-lock.py", "release_coverage_options.py", "release-preflight.mjs", "release-receipt.mjs",
-  "release-ci.mjs", "release-ci-wait.mjs", "release-coverage-guard.sh", "release-timing.sh", "deploy.sh",
+  "release-ci.mjs", "release-ci-wait.mjs", "release-coverage-guard.sh", "release-status.sh", "release-timing.sh", "deploy.sh",
 ];
 const ENTRY = "missiongo-release.py";
 
@@ -21,9 +21,16 @@ function checkSyntax(targets) {
     const source = text(name);
     if (source !== undefined) execFileSync("python3", ["-c", "import ast,sys; ast.parse(sys.stdin.read())"], { input: source, stdio: ["pipe", "pipe", "pipe"] });
   }
-  const entry = text("entry")?.replaceAll("\nfrom release_coverage_options import coverage_options", "");
-  if (entry !== undefined) execFileSync("python3", ["-c", "import ast,sys; ast.parse(sys.stdin.read())"], { input: entry, stdio: ["pipe", "pipe", "pipe"] });
+  const entry = text("entry");
   const deploy = text("deploy.sh");
+  // Shell helpers that do work during deploy are sourced; syntax-check what deploy actually parses.
+  for (const name of ["release-coverage-guard.sh", "release-status.sh", "release-timing.sh"]) {
+    const shell = text(name);
+    if (shell !== undefined) execFileSync("bash", ["-n"], { input: shell, stdio: ["pipe", "pipe", "pipe"] });
+  }
+  // The entry owns the lock, the CI checks run under it, and deploy.sh is executed
+  // rather than sourced; a Python prefix only parses the module-level path setup.
+  if (entry !== undefined) execFileSync("python3", ["-c", "import ast,sys; ast.parse('TOOLS = Path(__file__).resolve().parent\\n' + sys.stdin.read().split('\\n', 2)[2])"], { input: entry, stdio: ["pipe", "pipe", "pipe"] });
   // Every deploy line is a simple command, so appending a no-op keeps bash parsing it as a script without running it.
   if (deploy !== undefined) execFileSync("bash", ["-n"], { input: `${deploy}\n:;\n`, stdio: ["pipe", "pipe", "pipe"] });
 }
@@ -33,23 +40,30 @@ export function install({ dryRun = false, home = homedir(), source = root, commi
   const directory = join(config, "release-tools");
   const entryPath = join(home, ".local/bin/missiongo-release");
   const targets = Object.keys(tools).map(name => ({ name, path: name === "entry" ? entryPath : join(directory, name), text: readFileSync(join(source, "scripts", tools[name]), "utf8") }));
-  for (const path of targets.map(target => target.path)) {
-    if (existsSync(path) && (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink())) throw new Error(`${path} is not a regular file; the installation was preserved`);
-  }
   const entry = targets.find(target => target.name === "entry")?.text;
   if (entry !== undefined) {
-    // The entry owns the lock; deploy.sh is run by the entry and must still call every other helper.
+    // The entry owns the lock. deploy.sh runs it under that lock and, with the entry,
+    // must name every other helper: the entry calls the CI checks, deploy the rest.
     const deploy = targets.find(target => target.name === "deploy.sh")?.text ?? "";
+    const references = (text, name) => new RegExp(`(?<![\\w.-])${name.replace(".", "\\.")}(?![\\w-])`).test(text);
     const helpers = Object.keys(tools).filter(name => !["deploy.sh", "entry", "release-lock.py", "release_coverage_options.py"].includes(name));
-    if (!entry.includes("release-lock.py") || helpers.some(name => !deploy.includes(name))) {
-      throw new Error("The release entry or deploy.sh no longer carries the shared lock, CI and coverage guards; the installation was preserved");
+    const missing = [references(entry, "release-lock.py") ? null : "release-lock.py",
+      ...helpers.filter(name => !references(entry, name) && !references(deploy, name))].filter(Boolean);
+    if (missing.length) {
+      throw new Error(`The release entry or deploy.sh no longer carries the shared lock, CI and coverage guards (missing: ${missing.join(", ")}); the installation was preserved`);
     }
+  }
+  // Files are only inspected and parsed while a partial set is a test fixture; nothing
+  // is written until the real target paths are known to be plain regular files.
+  for (const path of targets.map(target => target.path)) {
+    if (existsSync(path) && (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink())) throw new Error(`${path} is not a regular file; the installation was preserved`);
   }
   checkSyntax(targets);
   const digest = value => createHash("sha256").update(value).digest("hex");
   const manifestPath = join(config, "release-tools-manifest.json");
   const previous = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, "utf8")) : {};
-  const { sourceCommit: _commit, tools: previousTools = {}, ...rest } = previous;
+  // globalRulesIdentical came from the earlier split install (repo rules identical to the installed copies).
+  const { sourceCommit: _commit, tools: previousTools = {}, globalRulesIdentical: _globalRulesIdentical, ...rest } = previous;
   if (Object.keys(rest).length) throw new Error(`Unknown release-tools manifest fields: ${Object.keys(rest).join(", ")}`);
   const manifest = { sourceCommit: commit, tools: Object.fromEntries(targets.map(target => [target.name, digest(target.text)])) };
   // Compare what is installed now, not what the last run wrote, so a manually reverted tool is reinstalled.

@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { install } from "./install-release-tools.mjs";
 
@@ -14,6 +15,7 @@ const tools = {
   "release-ci.mjs": "release-ci.mjs",
   "release-ci-wait.mjs": "release-ci-wait.mjs",
   "release-coverage-guard.sh": "release-coverage-guard.sh",
+  "release-status.sh": "release-status.sh",
   "release-timing.sh": "release-timing.sh",
   "deploy.sh": "deploy.sh",
   entry: "missiongo-release.py",
@@ -27,20 +29,25 @@ const sources = {
   "release-ci-wait.mjs": "",
   "release-coverage-guard.sh": "check_release_coverage() { :; }\n",
   "release-timing.sh": "release_timing() { :; }\n",
+  "release-status.sh": "release_status_begin() { :; }\n",
   "deploy.sh": "#!/usr/bin/env bash\nexec python3 release-lock.py -- bash deploy.sh \"$@\"\n"
-    + "source release-timing.sh\nsource release-coverage-guard.sh\n"
-    + "node release-preflight.mjs\nnode release-receipt.mjs\nnode release-ci-wait.mjs\nnode release-ci.mjs\n",
-  "missiongo-release.py": 'from release_coverage_options import coverage_options  # run under release-lock.py\nprint(coverage_options)\n',
+    + "source release-timing.sh\nsource release-coverage-guard.sh\nsource release-status.sh\n"
+    + "node release-preflight.mjs\nnode release-receipt.mjs\nnode release-ci-wait.mjs\n",
+  "missiongo-release.py": '"""Runs under release-lock.py; node release-ci.mjs runs the CI checks."""\nfrom release_coverage_options import coverage_options\n',
 };
 
-function setup({ previous = {}, stale = {} } = {}) {
+const repositoryScripts = join(dirname(fileURLToPath(import.meta.url)));
+const repositoryEntry = readFileSync(join(repositoryScripts, "missiongo-release.py"), "utf8");
+const real = { ...sources, "missiongo-release.py": repositoryEntry };
+
+function setup({ previous = {}, stale = {}, files = sources } = {}) {
   const source = mkdtempSync(join(tmpdir(), "release-tools-source-"));
   const home = mkdtempSync(join(tmpdir(), "release-tools-home-"));
   const directory = join(home, ".config/missiongo/release-tools");
   mkdirSync(join(source, "scripts"), { recursive: true });
   mkdirSync(directory, { recursive: true });
   mkdirSync(join(home, ".local/bin"), { recursive: true });
-  for (const [name, text] of Object.entries(sources)) writeFileSync(join(source, "scripts", name), text);
+  for (const [name, text] of Object.entries(files)) writeFileSync(join(source, "scripts", name), text);
   const target = name => name === "entry" ? join(home, ".local/bin/missiongo-release") : join(directory, name);
   for (const [name, text] of Object.entries(stale)) writeFileSync(target(name), text);
   if (Object.keys(previous).length) writeFileSync(join(home, ".config/missiongo/release-tools-manifest.json"), JSON.stringify(previous));
@@ -89,6 +96,13 @@ test("a dry run reports changes without writing anything", () => {
   } finally { done(); }
 });
 
+test("the repository's own entry and deploy.sh pass the lock and guard checks", () => {
+  const { source, home, done } = setup({ files: real });
+  try {
+    assert.doesNotThrow(() => install({ source, home, commit: "c".repeat(40), tools, dryRun: true }));
+  } finally { done(); }
+});
+
 test("refuses a deploy.sh or entry that lost the shared guards", () => {
   for (const [file, text] of [["deploy.sh", "#!/usr/bin/env bash\necho deploy\n"], ["missiongo-release.py", "print('no guards')\n"]]) {
     const { source, home, done } = setup();
@@ -97,6 +111,30 @@ test("refuses a deploy.sh or entry that lost the shared guards", () => {
       assert.throws(() => install({ source, home, commit: "c".repeat(40), tools, dryRun: true }), /no longer carries the shared/);
     } finally { done(); }
   }
+});
+
+test("accepts the earlier manifest that also recorded identical repository rules", () => {
+  const { source, home, done } = setup({ previous: { sourceCommit: "e".repeat(40), tools: {}, globalRulesIdentical: true } });
+  try {
+    assert.doesNotThrow(() => install({ source, home, commit: "d".repeat(40), tools, dryRun: true }));
+    const manifest = JSON.parse(readFileSync(join(home, ".config/missiongo/release-tools-manifest.json"), "utf8"));
+    assert.equal(manifest.globalRulesIdentical, true);
+  } finally { done(); }
+});
+
+test("names which item no longer references a shared guard", () => {
+  const { source, home, done } = setup();
+  try {
+    for (const [file, text, name] of [
+      ["deploy.sh", sources["deploy.sh"].replace("source release-coverage-guard.sh\n", ""), "release-coverage-guard.sh"],
+      ["deploy.sh", sources["deploy.sh"].replace("node release-ci-wait.mjs\n", ""), "release-ci-wait.mjs"],
+      ["missiongo-release.py", sources["missiongo-release.py"].replace("release-lock.py", ""), "release-lock.py"],
+    ]) {
+      writeFileSync(join(source, "scripts", file), text);
+      assert.throws(() => install({ source, home, commit: "c".repeat(40), tools, dryRun: true }), new RegExp(`missing: ${name.replace(".", "\\.")}`));
+      writeFileSync(join(source, "scripts", file), sources[file]);
+    }
+  } finally { done(); }
 });
 
 test("refuses a manifest with fields it does not understand", () => {

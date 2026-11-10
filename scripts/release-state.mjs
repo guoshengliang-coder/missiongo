@@ -159,13 +159,18 @@ export function bumpPatchVersions(origin = "origin/main", worktree = root) {
     const bumps = [];
     for (const [name, artifact] of Object.entries(ledger.artifacts)) {
       if (stateOf(name, origin, mirror).verdict !== "needs a version bump") continue;
-      const from = declaredVersion(artifact);
-      const to = bumpedPatch(from);
+      // Raise the merged declaration, not a stale checkout's: moving from the
+      // checked-out number could overwrite a newer version origin/main already has.
+      const from = declaredVersion(artifact, mirror);
       const path = join(worktree, artifact.versionFile);
-      writeFileSync(path, raiseVersion(artifact, readFileSync(path, "utf8"), to));
-      bumps.push({ artifact: name, from, to, file: artifact.versionFile });
+      const text = readFileSync(path, "utf8");
+      if (declaredVersion(artifact, worktree) !== from) {
+        throw new Error(`${artifact.versionFile} declares a different version in this worktree than in ${origin}; refresh it before bumping`);
+      }
+      bumps.push({ artifact: name, from, to: bumpedPatch(from), file: artifact.versionFile, path, text: raiseVersion(artifact, text, bumpedPatch(from)) });
     }
-    return bumps;
+    for (const { path, text } of bumps) writeFileSync(path, text);
+    return bumps.map(({ path: _path, text: _text, ...bump }) => bump);
   } finally {
     rmSync(mirror, { recursive: true, force: true });
   }

@@ -119,13 +119,22 @@ done
 case "$keep" in ""|*[!0-9]*) echo "--keep takes a non-negative integer." >&2; exit 1 ;; esac
 case "$notice_origin" in ""|https://*) ;; *) echo "--notice-origin requires an https URL." >&2; exit 1 ;; esac
 
+# Direct invocation is rejected with an explicit exit: a ${VAR:?} expansion
+# failure in `source` arguments is masked to exit 0 by the timing EXIT trap on
+# bash 3.2, which makes automation read a blocked deploy as success. Checked
+# before anything else runs, including the receipt snapshot below.
+if [ -z "${MISSIONGO_RELEASE_TOOLS:-}" ]; then
+  echo 'Deploy through missiongo-release; MISSIONGO_RELEASE_TOOLS is not set.' >&2
+  exit 1
+fi
+
 cd "$(dirname "$0")/.."
 [ -f deploy/docker-compose.yml ] || { echo "Run this from a MissionGo checkout." >&2; exit 1; }
 command -v rsync >/dev/null || { echo "rsync is required." >&2; exit 1; }
 command -v git >/dev/null || { echo "git is required." >&2; exit 1; }
 
 # BEGIN RELEASE TIMING
-source "${MISSIONGO_RELEASE_TOOLS:-$PWD/scripts}/release-timing.sh"
+source "${MISSIONGO_RELEASE_TOOLS}/release-timing.sh"
 release_timing_start
 release_timing_stage preflight
 # END RELEASE TIMING
@@ -215,15 +224,8 @@ remote() { ssh "$host" "$@"; }
 # Capture the live state before changing the symlink or the public APK. A later
 # checkout cannot reconstruct it reliably from released.json, which may already
 # describe artifacts staged locally for this deployment.
-before_snapshot="$(node scripts/release-receipt.mjs snapshot \
+before_snapshot="$(node "$MISSIONGO_RELEASE_TOOLS/release-receipt.mjs" snapshot \
   --host "$host" --current-link "$current_link" --downloads-dir "$downloads_dir")"
-# Direct invocation is rejected with an explicit exit: a ${VAR:?} expansion
-# failure in `source` arguments is masked to exit 0 by the timing EXIT trap on
-# bash 3.2, which makes automation read a blocked deploy as success.
-if [ -z "${MISSIONGO_RELEASE_TOOLS:-}" ]; then
-  echo 'Deploy through missiongo-release; MISSIONGO_RELEASE_TOOLS is not set.' >&2
-  exit 1
-fi
 source "${MISSIONGO_RELEASE_TOOLS}/release-coverage-guard.sh"
 check_release_coverage
 node scripts/web-version.mjs check --previous-json "$before_snapshot"
@@ -480,7 +482,7 @@ else
 fi
 
 # BEGIN RELEASE STATUS
-source "$PWD/scripts/release-status.sh"
+source "${MISSIONGO_RELEASE_TOOLS}/release-status.sh"
 deploy_finish() {
   local result="$1"
   release_status_finish "$result"
@@ -597,7 +599,7 @@ fi
 if [ -n "$notice_origin" ]; then release_timing_stage public_verification; else release_timing_skip public_verification; fi
 if [ -n "$notice_origin" ]; then
   echo "==> Release notice receipt (JSON)"
-  release_receipt="$(node scripts/release-receipt.mjs compare \
+  release_receipt="$(node "$MISSIONGO_RELEASE_TOOLS/release-receipt.mjs" compare \
     --host "$host" --current-link "$current_link" --downloads-dir "$downloads_dir" \
     --before-json "$before_snapshot" --origin "$notice_origin")" || {
     echo "Deployment finished, but the release receipt is unavailable; do not advance work items." >&2
