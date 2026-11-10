@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { withoutReleaseStatus } from "./enable-release-status.mjs";
+import { releaseStatusBlock, withoutReleaseStatus } from "./enable-release-status.mjs";
 import { installTiming, instrumentDeploy } from "./enable-release-timing.mjs";
 
 const scripts = dirname(fileURLToPath(import.meta.url));
@@ -73,6 +73,27 @@ test("instrumentation is idempotent, makes only additive hooks, and refuses unkn
   for (const source of [original.replace('echo "==> Pushing ${release}"', "unknown"), 'trap true EXIT\n' + original,
     instrumented.replace("release_timing_start\n", ""), original + "\nrelease_timing_stage upload\n"]) assert.throws(() => instrumentDeploy(source));
   execFileSync("bash", ["-n"], { input: instrumented });
+});
+
+test("a status switch without a recognisable block, or an unrecognised one, is refused rather than erased", () => {
+  // The switch as an entry that never had a timing stage ran it.
+  const switchless = 'echo "==> Rebuilding and restarting"\nremote "cd \'${target}/deploy\' && sudo env MISSIONGO_RELEASE=\'${commit}\' docker compose --env-file \'${env_file}\' up -d --build"';
+  const legacy = original.replace('release_timing_stage build_and_restart\necho "==> Rebuilding and restarting"', switchless);
+  // It is recognized as this entry's switch and the timing stage is put back.
+  assert.equal(instrumentDeploy(legacy), instrumentDeploy(original));
+  // An installation that was left half written or edited locally is not erased;
+  // a block that was never installed leaves the untimed switch as it is.
+  const head = "# BEGIN RELEASE STATUS\n", tail = "# END RELEASE STATUS";
+  for (const [name, source] of [
+    ["head only", actualDeploy.replace(releaseStatusBlock, head)],
+    ["tail only", actualDeploy.replace(releaseStatusBlock, tail)],
+    ["edited", actualDeploy.replace("release_status_begin", "release_status_begin # local edit")],
+    ["repeated", actualDeploy.replace(releaseStatusBlock, releaseStatusBlock + "\n" + releaseStatusBlock)],
+  ]) {
+    assert.throws(() => withoutReleaseStatus(source), /Partial/, name);
+    assert.throws(() => instrumentDeploy(source), /Partial/, name);
+  }
+  assert.equal(withoutReleaseStatus(legacy), legacy);
 });
 
 test("shared installer previews without writes, retains guards/customizations, backs up once and preserves unknown helper edits", t => {
