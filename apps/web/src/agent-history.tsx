@@ -1,3 +1,4 @@
+import { withCurrentRequests } from "./current-session-requests";
 import { catchUpStoredHistory, historyMessageKey } from "./agent-history-catchup";
 import { useQueryClient } from "@tanstack/react-query";
 import { waitForAgentHistory } from "./agent-history-result";
@@ -53,7 +54,7 @@ export function useAgentHistory(sessionId: string | null, session: AgentSession 
   }, [sessionId, session?.messages, session?.history?.nextCursor]);
   const current = state.id === sessionId ? state : undefined;
   const cursor = current?.next === undefined ? session?.history?.nextCursor : current.next ?? undefined;
-  const messages = useMemo(() => mergeMessages(current?.older ?? [], session?.messages ?? []), [current?.older, session?.messages]);
+  const messages = useMemo(() => withCurrentRequests(mergeMessages(current?.older ?? [], session?.messages ?? []), session?.currentRequests), [current?.older, session?.messages, session?.currentRequests]);
   const loadMore = useCallback(async () => {
     if (!sessionId || !cursor || busy.current) return;
     busy.current = true;

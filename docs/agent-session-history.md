@@ -58,3 +58,18 @@ Claude 节点不再从本地状态删除第 2,000 条之前的消息。消息首
 MCP `get_agent_history` 请求同一队列的源页，`get_agent_session` 合并已完成源页。读取不发送输入，不改变模式、执行阶段或批准。历史问题标记只读。消息原 ID 不变而正文或问题更新时，会话 consistencyDigest 也必须变化；超过已有总数保护时保留最近窗口并明确截断。
 
 验证覆盖三种来源、游标越权/循环/失效、离线与重试、源页合并、同 ID 更新、追加消息锚点稳定及历史问题不复活。真实三端、第三方网关与旧节点升级仍需实机验证。
+
+## 数据库内分页与当前请求（AND-498）
+
+- 会话详情按账号、目标 ID 和原生身份定向解析成员，再复用现有分组规则及摘要映射；节点歧义、项目/受管会话隔离和全组产品权限保持。列表继续返回完整可见集合，完整计数不靠截断提速。
+- `history=recent` 和 `stored:` 续页在 SQL 内选择最多 51 个轻量键（含一条续页探测），只读取当前页正文。跨来源先按请求通道优先选定 `role/sourceId` 的唯一记录，再按原顺序应用游标，避免时间不同的镜像在后续页面重现。普通窗口最多 50 条、约 512 KiB；单条超大正文仍完整保留，且游标能前进。
+- 索引只增加查找能力，不改写或删除源历史。旧 `stored:` 锚点保持可用；锚点缺失、来源重绑定或当前权限失效时返回明确错误，不能跨会话使用锚点。默认不带 `history=recent` 的旧详情调用保持完整读取兼容。
+- 当前表单通过独立 `currentRequests` 返回，不受普通聊天页大小限制。方案判断独立查询原方案、最新用户消息及最大用户时间，避免原方案或使其失效的输入落在旧页后恢复旧批准。该字段不创建或批准请求。
+- 控制台与条目内面板共用 `useAgentHistory`、`withCurrentRequests` 和 `AgentSessionQuestions`：窗口外当前表单只展示一次；未再列为当前的缓存表单保留原文、只读，不改写来源问题或复活旧输入。旧服务未提供该字段时保留原兼容行为。Codex 独立审批状态仍走原审批表和权限接口。
+- 外部进展记录保持独立于原生聊天：近期详情返回有界 `progressReports` 和可选 `progressHistory.nextCursor`。`GET /api/v1/agent-sessions/:sessionId/progress-reports?cursor=reports:<锚点>` 在同一全组授权后读取更早记录；每页最多 50 条、约 512 KiB，单条超限仍保留。旧完整详情与 MCP 完整读取不删减报告。
+- 两入口共用 `AgentProgressReports` 的原有展开区和主题组件加载旧进展，失败保留内容与重试，迟到响应不串会话。新进展推进窗口后从新窗口边界继续向前读取，保留已显示记录。附件描述仍从原附件通道读取，正文与进展分页不删除附件或其授权链路。
+
+实现与合成对照方法见 `tests/performance/README.md` 的 Console session reads；语义回归包括
+`stored-session-messages.test.ts`、`plan-approval-routes.test.ts`、`agent-console-sessions.test.ts`、
+`current-session-requests.test.ts` 以及 `and-498-session-history.audit.spec.ts`。
+本地合成性能结果不代表生产 SLA，真实节点跨版本同步及未知截图故障需分别核实。

@@ -518,6 +518,8 @@ export interface AgentSessionTurnState {
 }
 
 export interface AgentSessionMessage {
+  /** Client read-only marker for cached questions absent from currentRequests. */
+  readonly historical?: boolean;
   readonly id: string;
   readonly sourceId: string;
   readonly turnId?: string;
@@ -557,6 +559,7 @@ export interface AgentSessionAttachment {
 export interface AgentSession {
   readonly hasPlanRecords?: boolean;
   readonly progressReports?: ReadonlyArray<{ id: string; text: string; occurredAt: string }>;
+  readonly progressHistory?: {readonly nextCursor?: string};
   readonly history?: { readonly nextCursor?: string; readonly error?: string };
   readonly planApproval?: { readonly documentId?: string; readonly revision: string; readonly reason: string; readonly plan?: string; readonly validation?: string; readonly itemKeys?: readonly string[] } | undefined;
   readonly implementationPlan?: { readonly documentId?: string; readonly revision: string; readonly plan: string; readonly validation: string;
@@ -582,6 +585,7 @@ export interface AgentSession {
   readonly archivedAt?: string;
   readonly archivedSource?: "missiongo" | "source";
   readonly messages: readonly AgentSessionMessage[];
+  readonly currentRequests?: readonly AgentSessionMessage[];
   readonly attachmentMessages?: readonly {
     readonly commandId: string;
     readonly text: string;

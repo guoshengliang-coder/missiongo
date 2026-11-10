@@ -729,7 +729,7 @@ export function AgentSessionConsole({
       turnState, command: sessionQuery.data ? command : selected.command, stopCommand })
   );
   const approval = sessionQuery.data ? sessionQuery.data.approval : selected?.approval;
-  const questionPermission = Boolean(selected && hasPendingPermissionQuestion(selected.agentKind, visibleMessages.filter(message => !message.id.startsWith("history:"))));
+  const questionPermission = Boolean(selected && hasPendingPermissionQuestion(selected.agentKind, visibleMessages.filter(message => !message.historical && !message.id.startsWith("history:"))));
   const showPermissionApproval = questionPermission || Boolean(approval && (approvalNeedsAction(approval)
     || (approval.kind === "manual" && approval.status === "pending")));
   const planApproved = sessionQuery.data?.planApprovalState;
@@ -1326,7 +1326,7 @@ export function AgentSessionConsole({
                       </header>
                       {message.text && (selected.agentSessionId && ["agent", "plan"].includes(message.role)
                         ? <AgentArtifactMarkdown text={message.text} sessionId={selected.agentSessionId} messageId={message.id} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />
-                        : <MarkdownText>{permissionReplyText(sessionQuery.data?.messages.flatMap(message => message.questions ?? []) ?? [], message.text)}</MarkdownText>)}
+                        : <MarkdownText>{permissionReplyText((sessionQuery.data?.currentRequests ?? sessionQuery.data?.messages)?.flatMap(message => message.questions ?? []) ?? [], message.text)}</MarkdownText>)}
                       {message.attachmentData && selected.agentSessionId && <ChatAttachments sessionId={selected.agentSessionId} attachments={message.attachmentData} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />}
                       {message.id === planMessages.planMessageId && sessionQuery.data && <InlinePlanApproval onRequestChanges={()=>document.querySelector<HTMLTextAreaElement>(".agent-console-reply textarea")?.focus()} key={`${sessionQuery.data.id}:${currentPlan(sessionQuery.data)?.revision}`} session={sessionQuery.data} blocked={showPermissionApproval || pending || sendingSelected || cancellingSelected} />}
                       {message.questions && (
@@ -1334,7 +1334,7 @@ export function AgentSessionConsole({
                           questions={message.questions}
                           sessionId={selected.agentSessionId}
                           sourceId={message.sourceId}
-                          historical={message.id.startsWith("history:")}
+                          historical={message.historical || message.id.startsWith("history:")}
                           agentKind={selected.agentKind}
                           reply={reply}
                           canReply={selected.canReply && !message.id.startsWith("history:") && !pending && !sendingSelected && !cancellingSelected}
@@ -1394,7 +1394,7 @@ export function AgentSessionConsole({
                     <header className="agent-console-message-meta">
                       <time dateTime={outgoing.occurredAt}>{formatAgentMessageTime(outgoing.occurredAt, locale)}</time>
                     </header>
-                    <MarkdownText>{permissionReplyText(sessionQuery.data?.messages.flatMap(message => message.questions ?? []) ?? [], outgoing.text)}</MarkdownText>
+                    <MarkdownText>{permissionReplyText((sessionQuery.data?.currentRequests ?? sessionQuery.data?.messages)?.flatMap(message => message.questions ?? []) ?? [], outgoing.text)}</MarkdownText>
                     {command && command.id === outgoing.commandId && command.attachments && selected.agentSessionId
                       && <ChatAttachments sessionId={selected.agentSessionId} attachments={command.attachments} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />}
                     {sendingSelected && send.variables?.files.length ? <div className="agent-chat-draft-files">
@@ -1607,9 +1607,9 @@ export function AgentSessionConsole({
                     id={`agent-reply-${selected.id}`}
                     rows={1}
                     maximumHeight={240}
-                    value={permissionReplyText(sessionQuery.data?.messages.flatMap(message => message.questions ?? []) ?? [], reply)}
+                    value={permissionReplyText((sessionQuery.data?.currentRequests ?? sessionQuery.data?.messages)?.flatMap(message => message.questions ?? []) ?? [], reply)}
                     onChange={(event) => {
-                      setReply(permissionReplyText(sessionQuery.data?.messages.flatMap(message => message.questions ?? []) ?? [], event.target.value, true));
+                      setReply(permissionReplyText((sessionQuery.data?.currentRequests ?? sessionQuery.data?.messages)?.flatMap(message => message.questions ?? []) ?? [], event.target.value, true));
                       if (send.isError && send.variables?.sessionId === selected.agentSessionId) send.reset();
                     }}
                     placeholder={t("agentSessionReplyPlaceholder", { agent: agentLabel(selected, t) })}

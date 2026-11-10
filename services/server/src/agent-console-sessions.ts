@@ -7,22 +7,39 @@ import { conversationIdentityGroups } from "./conversation-identity.js";
 
 interface Preference { favorite: number; sequence: number }
 
-interface IdentityRow { id: string; agent: string; ref: string | null; node: string | null }
+interface IdentityRow { id: string; agent: string; ref: string | null; node: string | null; dispatchId?: string; isolated: number }
 
 /** A read-time projection: original records, OAuth ownership and control channels stay intact. */
 export class AgentConsoleSessions {
   constructor(private readonly store: MissionGoStore, private readonly dispatch: AgentSessionStore,
     private readonly external: ExternalAgentSessionStore) {}
 
-  groups(accountId: string): AgentSessionListItem[][] {
-    const db = this.store.database.connection;
-    const identities = db.prepare(`SELECT COALESCE(s.id, 'dispatch:' || d.id) AS id,
-      d.agent_kind AS agent, s.agent_session_ref AS ref, d.node_id AS node
+  private identities(accountId: string, target?: { id: string } | { agent: string; ref: string }): IdentityRow[] {
+    const ids = target && "id" in target;
+    const native = target && "ref" in target;
+    return this.store.database.connection.prepare(`SELECT COALESCE(s.id, 'dispatch:' || d.id) AS id,
+      d.id AS dispatchId,d.agent_kind AS agent,s.agent_session_ref AS ref,d.node_id AS node,
+      EXISTS(SELECT 1 FROM free_session_starts f WHERE f.dispatch_id=d.id)
+        OR EXISTS(SELECT 1 FROM managed_execution_intents m WHERE m.id=d.id) AS isolated
       FROM dispatches d LEFT JOIN agent_sessions s ON s.dispatch_id=d.id WHERE d.account_id=?
-      UNION ALL SELECT id,agent_kind,CASE WHEN ref_kind='native' THEN session_ref END,native_node_id
-      FROM external_agent_sessions WHERE account_id=?`).all(accountId, accountId) as unknown as IdentityRow[];
-    const rows = [...this.dispatch.listForAccount(accountId, identities.length + 1),
-      ...this.external.listForAccount(accountId, identities.length + 1)];
+      ${ids ? "AND d.id IN (SELECT dispatch_id FROM agent_sessions WHERE id=? UNION ALL SELECT id FROM dispatches WHERE id=? UNION ALL SELECT id FROM dispatches WHERE id=?)" : native ? "AND d.agent_kind=? AND s.agent_session_ref=?" : ""}
+      AND (s.id IS NOT NULL OR NOT EXISTS(SELECT 1 FROM free_session_starts f WHERE f.dispatch_id=d.id))
+      UNION ALL SELECT id,NULL,agent_kind,CASE WHEN ref_kind='native' THEN session_ref END,native_node_id,
+      product_id IS NOT NULL FROM external_agent_sessions WHERE account_id=?
+      ${ids ? "AND id=?" : native ? "AND agent_kind=? AND ref_kind='native' AND session_ref=?" : ""}`)
+      .all(accountId, ...(ids ? [target.id,target.id,target.id.replace(/^dispatch:/,"")] : native ? [target.agent,target.ref] : []),
+        accountId, ...(ids ? [target.id] : native ? [target.agent,target.ref] : [])) as unknown as IdentityRow[];
+  }
+
+  groups(accountId: string): AgentSessionListItem[][] {
+    return this.hydrate(accountId, this.identities(accountId));
+  }
+
+  private hydrate(accountId: string, identities: IdentityRow[]): AgentSessionListItem[][] {
+    const rows = [...this.dispatch.listForAccount(accountId, identities.length + 1,
+      identities.filter(row => row.dispatchId).map(row => row.dispatchId!)),
+      ...this.external.listForAccount(accountId, identities.length + 1,
+        identities.filter(row => !row.dispatchId).map(row => row.id))];
     const byId = new Map(rows.map((row) => [row.id, row]));
     const groups = conversationIdentityGroups(identities.filter(identity => byId.has(identity.id)).map((identity) => ({
       ...identity, isolated: Boolean(byId.get(identity.id)?.managedExecution || byId.get(identity.id)?.productId),
@@ -43,7 +60,11 @@ export class AgentConsoleSessions {
   }
 
   members(accountId: string, id: string): AgentSessionListItem[] {
-    const group = this.groups(accountId).find((group) => group.some((row) => row.id === id || row.dispatchId === id));
+    const target = this.identities(accountId, { id })[0];
+    if (!target) throw notFound("Agent session");
+    const identities = target.ref && !target.isolated
+      ? this.identities(accountId, { agent: target.agent, ref: target.ref }) : [target];
+    const group = this.hydrate(accountId, identities).find(group => group.some(row => row.id === target.id));
     if (!group) throw notFound("Agent session");
     return group;
   }
@@ -125,7 +146,7 @@ export class AgentConsoleSessions {
   // AND-383: a precomputed group from the caller's permission scan replaces the
   // second full groups() pass; members() stays the fallback for direct callers.
   withMessages(accountId: string, id: string, primary: AgentSessionSnapshot,
-    group: AgentSessionListItem[] = this.members(accountId, id)): AgentSessionSnapshot {
+    group: AgentSessionListItem[] = this.members(accountId, id), includeMessages = true): AgentSessionSnapshot {
     if (group.length === 1) return primary;
     const messages = new Map<string, AgentSessionSnapshot["messages"][number]>();
     const reports = new Map<string, NonNullable<AgentSessionSnapshot["progressReports"]>[number]>();
@@ -133,7 +154,7 @@ export class AgentConsoleSessions {
     const rows = [...group].sort((a, b) => Number(b.id === id) - Number(a.id === id));
     for (const row of rows) {
       const snapshot = row.id === id ? primary : row.source === "external"
-        ? this.external.getForAccount(accountId, row.id) : this.dispatch.getForAccount(accountId, row.id);
+        ? this.external.getForAccount(accountId, row.id, includeMessages) : this.dispatch.getForAccount(accountId, row.id, includeMessages);
       for (const report of snapshot.progressReports ?? []) reports.set(report.id, report);
       for (const message of snapshot.messages) {
         const key = JSON.stringify([message.role, message.sourceId ?? message.id]);
