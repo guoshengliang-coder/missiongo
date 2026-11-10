@@ -211,6 +211,17 @@ AI 写入的评论会成为下一次读取的上下文，所以来源必须可�
 - 旧控制台的检查 POST、交接 PUT、人工确认 POST 均返回 410 `status_checks_retired`。节点的检查/查找领取返回空任务，迟到上报返回 410，旧租约不能推进状态。权限校验仍生效。
 - 发布观察上传仅保存事实，不再排队。用户通过普通状态操作明确推进或退回卡片，最终验收只能由人决定。发布覆盖门禁和发布凭据校验继续执行。
 
+### 发布观察只读诊断（AND-501）
+
+`get_item_context.releaseObservationDiagnostics` 在调用者有对应产品直接读取权限时提供只读发布线索；单条跨产品协作读取省略该字段。旧服务未提供字段也不等于没有观察。不增加写权限，不恢复后台校正，不自动访问观察中的 URL。
+
+- `items` 取最近最多 20 份交付，保留每份 `developmentEventId`。`total`、`limit`、`truncated` 明确返回边界；原 `deliveries`、正式回执和时间线保持不变。
+- `status` 为 `historical`（依据不再适用）、`integration_missing`（未登记依据）、`repository_unavailable`（依据无仓库身份）、`not_found`（精确产品/仓库下无 production 观察）、`invalid_observation`（最新存储观察无法安全解析）、`read_failed`（读取失败）或 `available`。不从字段缺失、缺观察或读取错误推断实际未发布。
+- `available` 以 `observationId` 指向去重的 `observations`，只含 schemaVersion、id、repository、environment、observedAt 及受数量/长度约束的 releases（artifact/version/sourceCommit/proof）；不包含本机路径、节点凭据、上报账号等存储行字段。按精确产品、completion 对应仓库和 production 选择最新快照，不将旧产物与回滚快照拼接。历史依据不返回新快照。
+- 顶层 `unverified: true` 和 notice 强调仓库级观察不保证含该交付，也不证明链接可用、集成祖先关系或产物已核验。读取前后卡片、正式回执和时间线不变；必须由获授权发布端独立核实全部必需产物，再显式提交受限交接。
+
+收尾必须分别记录集成、本地打包、正式分发/部署和证据交接事实；部署成功、条目交接和通知送达分别核对。人工卡片移动不生成正式发布证明。缺证据、范围未知、权限不足及交接请求失败各自说明实际原因；GitLab 和其他产品沿用自身核验流程，不能照搬 MissionGo 的 GitHub 产物脚本。具体执行协议见 Skill 的“发布观察诊断与收尾”。
+
 ## 项目指标查询（AND-296）
 
 - `get_project_insights` 返回有权限且已开放 AI 访问的项目汇总，`list_project_insight_items` 返回指标对应的分页明细。productIds 缺省为可见的未归档产品；显式指定时逐项校验，不混入不可见项目。period 支持 yesterday/today/last7Days/last30Days/custom，timezone 默认 Asia/Shanghai；custom 起止日期均包含，最多 366 天。
