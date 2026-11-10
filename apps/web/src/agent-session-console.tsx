@@ -1,4 +1,4 @@
-import { SessionSender, SendUnconfirmed, type SendInput } from "./session-send";
+import { SessionSender, SendUnconfirmed, SendSuperseded, commandNotDelivered, sendAttemptHasDraft, type SendInput } from "./session-send";
 import { useSendAttempt, sendAttemptLocked, SessionSendFeedback } from "./session-send-feedback";
 import { useSelectedSessionScroll } from "./selected-session-scroll";
 import { AgentPlanRecords } from "./agent-plan-records";
@@ -459,7 +459,7 @@ export function AgentSessionConsole({
     },
     onSuccess: (created, input) => {
       if (!input.planApprovalRevision) void invalidateSessionDeliveries(queryClient,input.sessionId);
-      if (!input.planApprovalRevision && !input.preserveDraft) {
+      if (!input.planApprovalRevision && !input.preserveDraft && !("kind" in created && commandNotDelivered(created))) {
         setReplyFor(input.sessionId, current => current.trim() === input.text.trim() ? "" : current);
         setReplyFilesFor(input.sessionId, current => current.length === input.files.length && current.every((file, i) => file === input.files[i]) ? [] : current);
         setReplyFileErrorFor(input.sessionId, null);
@@ -475,6 +475,7 @@ export function AgentSessionConsole({
       ]);
     },
     onError: (_error, input) => {
+      if (_error instanceof SendSuperseded) return;
       if (input.planApprovalRevision) planApprovalLocks.current.delete(`${input.sessionId}:${input.planApprovalRevision}`);
       void queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] });
     },
@@ -690,7 +691,7 @@ export function AgentSessionConsole({
   };
   const sendAttempt = useSendAttempt(sender, selected?.agentSessionId ?? "");
   useEffect(() => {
-    if (sendAttempt && sendAttempt.phase !== "sent" && !sendAttempt.preserveDraft) {
+    if (sendAttempt && sendAttemptHasDraft(sendAttempt)) {
       setReplyFor(sendAttempt.sessionId, current => current || sendAttempt.text);
       setReplyFilesFor(sendAttempt.sessionId, current => current.length ? current : [...sendAttempt.files]);
     }
@@ -705,7 +706,7 @@ export function AgentSessionConsole({
     || command?.status === "delivery_unknown";
   const sendingSelected = sendAttemptLocked(sendAttempt) || (send.isPending && send.variables?.sessionId === selected?.agentSessionId);
   const sendInFlight = sendingSelected && sendAttempt?.phase !== "unconfirmed";
-  const failedRequest = !sendAttempt && send.isError && !(send.error instanceof SendUnconfirmed) && send.variables?.sessionId === selected?.agentSessionId
+  const failedRequest = !sendAttempt && send.isError && !(send.error instanceof SendUnconfirmed) && !(send.error instanceof SendSuperseded) && send.variables?.sessionId === selected?.agentSessionId
     ? { text: send.variables.text, occurredAt: send.variables.occurredAt, status: "failed" as const, error: localizedErrorText(send.error, t) }
     : undefined;
   const sendingRequest = sendingSelected && sendAttempt

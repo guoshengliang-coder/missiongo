@@ -5289,3 +5289,21 @@ it("AND-499 atomically binds ordinary attachments and rolls back a rejected subm
   expect((await lookup()).json().command.id).toBe(first.json().id);
   expect((await upload()).json().id).toBe(a.json().id);
 });
+
+it("AND-499 audit R2 replays a cancelled result without queueing it again", async () => {
+  const { app, cookie } = await signedInApp();
+  const { sessionId } = await launchedCodexSession(app, cookie);
+  const headers = { cookie }, requestKey = "cancelled-result-request-499";
+  const send = (key: string) => app.inject({ method: "POST", url: `/api/v1/agent-sessions/${sessionId}/commands`, headers,
+    payload: { text: "explicit work", requestKey: key } });
+  const original = (await send(requestKey)).json();
+  expect((await app.inject({ method: "POST", url: `/api/v1/agent-sessions/${sessionId}/commands/${original.id}/cancel`, headers })).statusCode).toBe(200);
+  expect((await send(requestKey)).json()).toMatchObject({ id: original.id, status: "cancelled" });
+  const lookup = await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${sessionId}/send-requests/${requestKey}`, headers });
+  expect(lookup.json().command.status).toBe("cancelled");
+  const rows = app.missionGoStore.database.connection.prepare("SELECT id,status FROM agent_session_commands WHERE session_id=?").all(sessionId);
+  expect(rows).toEqual([{ id: original.id, status: "cancelled" }]);
+  const next = await send("explicit-new-request-499");
+  expect(next.statusCode).toBe(201);
+  expect(next.json().id).not.toBe(original.id);
+});

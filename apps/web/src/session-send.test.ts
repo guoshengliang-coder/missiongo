@@ -66,7 +66,7 @@ it("late completion after page draft clear cannot recreate a cleared attempt", a
   f.transport.sendAgentSessionCommand.mockImplementation(() => new Promise(done => { resolve = done; }));
   const result = f.sender.send(f.input);
   await Promise.resolve();
-  f.sender.clear(); resolve(command); await result;
+  f.sender.clear(); resolve(command); await expect(result).rejects.toThrow();
   expect(f.sender.get("session")).toBeUndefined();
 });
 it("a definite validation rejection permits editing and a different request", async () => {
@@ -76,4 +76,66 @@ it("a definite validation rejection permits editing and a different request", as
   const key = f.sender.get("session")!.requestKey;
   await f.sender.send({ ...f.input, text: "corrected" });
   expect(f.sender.get("session")!.requestKey).not.toBe(key);
+});
+it("audit R1: clearing before the first microtask prevents any request", async () => {
+  const f = fixture();
+  const result = f.sender.send(f.input);
+  f.sender.clear();
+  await expect(result).rejects.toThrow();
+  expect(f.transport.sendAgentSessionCommand).not.toHaveBeenCalled();
+});
+it("audit R1: clearing during upload prevents the following command submission", async () => {
+  const f = fixture();
+  let resolve!: (value: { id: string }) => void;
+  f.transport.uploadAgentSessionAttachment.mockImplementation(() => new Promise(done => { resolve = done; }));
+  const result = f.sender.send({ ...f.input, files: [new File(["a"], "a.txt")] });
+  await Promise.resolve();
+  f.sender.clear(); resolve({ id: "old-upload" });
+  await expect(result).rejects.toThrow();
+  expect(f.transport.sendAgentSessionCommand).not.toHaveBeenCalled();
+});
+it("audit R1: explicit recovery from another surface retains a failed attempt's files", async () => {
+  const f = fixture();
+  const input = { ...f.input, files: [new File(["a"], "a.txt")] };
+  f.transport.uploadAgentSessionAttachment.mockRejectedValueOnce(new TypeError("upload failed"));
+  await expect(f.sender.send(input)).rejects.toThrow();
+  const key = f.sender.get("session")!.requestKey;
+  await f.sender.send({ ...f.input, recovery: "retry" });
+  expect(f.transport.uploadAgentSessionAttachment.mock.calls[1]![2]).toBe(`${key}-0`);
+  expect(f.transport.sendAgentSessionCommand.mock.calls[0]![2]).toEqual(["file-one"]);
+});
+
+it("audit R1: a delayed recovery click after success cannot create a new request", async () => {
+  const f = fixture(); await f.sender.send(f.input);
+  await f.sender.send({ ...f.input, recovery: "retry" });
+  expect(f.transport.sendAgentSessionCommand).toHaveBeenCalledTimes(1);
+});
+it.each(["cancelled", "failed"] as const)("audit R2: recovering a %s command keeps its draft and cannot count as delivered", async status => {
+  const f = fixture(), settled = vi.fn();
+  const sender = new SessionSender(f.transport, settled);
+  const file = new File(["a"], "a.txt"), input = { ...f.input, files: [file] };
+  f.transport.sendAgentSessionCommand.mockRejectedValueOnce(new TypeError("ack lost"));
+  f.transport.getAgentSendRequest.mockResolvedValue({ command: { ...command, status } });
+  expect((await sender.send(input)).status).toBe(status);
+  expect(settled).not.toHaveBeenCalled();
+  expect(sender.get("session")?.files).toEqual([file]);
+  const originalKey = sender.get("session")!.requestKey;
+  await sender.send(input); // a deliberate new send, not an automatic recovery
+  expect(f.transport.sendAgentSessionCommand.mock.calls[1]![3]).not.toBe(originalKey);
+});
+
+it("audit R3: a recovery action cannot create a request after its attempt is cleared", async () => {
+  const f = fixture(); await f.sender.send(f.input);
+  const previous = f.sender.get("session")!;
+  f.sender.clear();
+  await expect(f.sender.send({ ...previous, recovery: "retry" })).rejects.toThrow();
+  expect(f.transport.sendAgentSessionCommand).toHaveBeenCalledTimes(1);
+});
+it("audit R3: a stale recovery action cannot act on a later attempt in that session", async () => {
+  const f = fixture(); await f.sender.send(f.input);
+  const previous = f.sender.get("session")!;
+  f.transport.sendAgentSessionCommand.mockRejectedValueOnce(new TypeError("timeout"));
+  await expect(f.sender.send({ ...f.input, text: "new request" })).rejects.toBeInstanceOf(SendUnconfirmed);
+  await expect(f.sender.send({ ...previous, recovery: "retry" })).rejects.toThrow();
+  expect(f.transport.sendAgentSessionCommand).toHaveBeenCalledTimes(2);
 });

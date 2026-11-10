@@ -50,4 +50,9 @@ it.each([false, true])("deduplicates concurrent uploads and lost acknowledgement
   expect((await attachments.upload("session", "owner", "a.txt", "text/plain", bytes, "file-request-key-499")).id).toBe(first.id);
   await expect(attachments.upload("session", "owner", "a.txt", "text/plain", bytes, "file-request-new-499")).rejects.toThrow(/at most 10/);
   expect(await readdir(attachments.rootPath)).toHaveLength(10);
+  await attachments.removeDraft("session", "owner", first.id);
+  await expect(attachments.upload("session", "owner", "a.txt", "text/plain", bytes, "file-request-key-499")).rejects.toThrow(/not found/i);
+  expect(await readdir(attachments.rootPath)).toHaveLength(9);
+  await attachments.upload("session", "owner", "a.txt", "text/plain", bytes, "explicit-new-file-key-499");
+  expect(await readdir(attachments.rootPath)).toHaveLength(10);
 });

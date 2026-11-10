@@ -1,4 +1,5 @@
-import { SessionSender, SendUnconfirmed } from "./session-send";
+import { DraftChatFile } from "./agent-chat-draft-file";
+import { SessionSender, SendUnconfirmed, SendSuperseded, commandNotDelivered, sendAttemptHasDraft } from "./session-send";
 import { useSendAttempt, sendAttemptLocked, SessionSendFeedback, SessionSenderContext } from "./session-send-feedback";
 import { AgentPlanRecords } from "./agent-plan-records";
 import { mergePreparationEvidence } from "./merge-preparation";
@@ -10,7 +11,7 @@ import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-opera
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
 import { UnlinkedPlanRecord, InlinePlanApproval, inlinePlanTranscript, currentPlan } from "./agent-plan-content";
 import { AgentStopFeedback } from "./agent-stop-feedback.js";
-import { useState, useContext, useLayoutEffect, useRef, type FormEvent } from "react";
+import { useState, useContext, useEffect, useLayoutEffect, useRef, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, SessionStatusIcon, isHistoryLimited, AgentSessionError } from "./agent-session-feedback";
@@ -55,7 +56,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
   const sender = sharedSender ?? localSender;
   const [reply, setReply] = useState(() => {
     const attempt = sender.get(sessionId);
-    return attempt && attempt.phase !== "sent" && !attempt.preserveDraft ? attempt.text : "";
+    return sendAttemptHasDraft(attempt) ? attempt!.text : "";
   });
   const currentSessionId = useRef(sessionId);
   currentSessionId.current = sessionId;
@@ -82,15 +83,23 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
   }, [open, sessionId, history.messages, history.revision, session.data?.implementationPlan]);
   const sendAttempt = useSendAttempt(sender, sessionId);
   const sendLocked = sendAttemptLocked(sendAttempt);
+  const inheritedFiles = sendAttempt && sendAttemptHasDraft(sendAttempt) ? sendAttempt.files : [];
+  useEffect(() => {
+    if (sendAttemptHasDraft(sendAttempt)) setReply(current => current || sendAttempt!.text);
+  }, [sendAttempt?.requestKey]);
   const send = useMutation({
-    mutationFn: (input: { sessionId: string; text: string; preserveDraft?: boolean; recovery?: "check" | "retry" }) => sender.send({ ...input, files: [], occurredAt: new Date().toISOString() }),
+    mutationFn: (input: { sessionId: string; text: string; files?: readonly File[]; occurredAt?: string; preserveDraft?: boolean; recovery?: "check" | "retry" }) => {
+      const previous = sender.get(input.sessionId);
+      const files = input.files ?? (previous && sendAttemptHasDraft(previous) && !input.preserveDraft ? previous.files : []);
+      return sender.send({ ...input, files, occurredAt: input.occurredAt ?? new Date().toISOString() });
+    },
     onMutate: input => feedback.begin(input.sessionId, "send"),
-    onError: (error, _input, operation) => error instanceof SendUnconfirmed ? feedback.finish(operation) : feedback.fail(error, operation),
+    onError: (error, _input, operation) => error instanceof SendUnconfirmed || error instanceof SendSuperseded ? feedback.finish(operation) : feedback.fail(error, operation),
     onSuccess: async (_command, _input, operation) => {
       if (!operation) return;
       feedback.finish(operation);
       void invalidateSessionDeliveries(queryClient,operation.sessionId);
-      if (currentSessionId.current === operation.sessionId && !_input.preserveDraft) setReply(current => current.trim() === _input.text.trim() ? "" : current);
+      if (currentSessionId.current === operation.sessionId && !_input.preserveDraft && !commandNotDelivered(_command)) setReply(current => current.trim() === _input.text.trim() ? "" : current);
       await queryClient.invalidateQueries({ queryKey: ["agent-session", operation.sessionId] });
     },
   });
@@ -148,7 +157,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const text = reply.trim();
-    if (text && !pending && !sendBusy) send.mutate({ sessionId, text });
+    if ((text || inheritedFiles.length) && !pending && !sendBusy) send.mutate({ sessionId, text });
   };
 
   const planMessages = inlinePlanTranscript(history.messages.filter(message => !isWithdrawnCard(message)), session.data);
@@ -265,6 +274,9 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                   <SessionSendFeedback attempt={sendAttempt} recover={recovery => {
                     if (sendAttempt) send.mutate({ ...sendAttempt, recovery });
                   }} />
+                  {inheritedFiles.length > 0 && <div className="agent-chat-draft-files">
+                    {inheritedFiles.map((file, index) => <DraftChatFile key={`${file.name}-${index}`} file={file} disabled />)}
+                  </div>}
                   <form className="agent-session-reply" onSubmit={submit}>
                     <AutoGrowTextarea
                       rows={1}
@@ -277,7 +289,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                       })}
                       disabled={pending || sendBusy}
                     />
-                    <button type="submit" className="primary-button" disabled={!reply.trim() || pending || sendBusy}>
+                    <button type="submit" className="primary-button" disabled={(!reply.trim() && inheritedFiles.length === 0) || pending || sendBusy}>
                       {sendAttempt?.phase === "unconfirmed" ? t("agentSendUnconfirmedShort") : t(sendBusy ? "agentSessionSending" : "agentSessionSend")}
                     </button>
                   </form>
