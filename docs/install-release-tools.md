@@ -22,6 +22,8 @@ node scripts/install-release-tools.mjs             # 实际安装
 规则：
 
 - 只在 `HEAD` 包含 `origin/main` 且 `scripts/` 无未提交改动时运行；每个文件都必须在 `HEAD` 中存在。
+- 参数只接受无参数（安装）或单个 `--dry-run`；拼写错误、重复或未知选项在取锁及写入前拒绝。
+- 配置与锁统一使用绝对 `XDG_CONFIG_HOME`，未设置时使用 `~/.config`；入口仍位于 `~/.local/bin`。
 - CLI 在读取安装状态前取得同一共享发布锁，锁忙退出 75；不得与发布或其他安装同时写入。
 - 目标位置若已有非常规文件或符号链接则拒绝，不覆盖。
 - `deploy.sh` 与入口合起来必须仍引用全部共享守卫，入口必须仍经过 `release-lock.py` 加锁，否则拒绝安装。

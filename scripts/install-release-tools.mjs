@@ -2,6 +2,7 @@
 // Install the machine-wide release entry, lock and shared guards from this checkout.
 // Private target values (release-local.json, coverage binding) stay outside Git and are never written here.
 import { createHash } from "node:crypto";
+import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, linkSync, lstatSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -15,6 +16,12 @@ const TOOLS = [
   "release-ci.mjs", "release-ci-wait.mjs", "release-coverage-guard.sh", "release-status.sh", "release-timing.sh", "deploy.sh",
 ];
 const ENTRY = "missiongo-release.py";
+const DEFAULT_TOOLS = { ...Object.fromEntries(TOOLS.map(name => [name, name])), entry: ENTRY };
+
+export function parseInstallArgs(args) {
+  assert.ok(args.length === 0 || (args.length === 1 && args[0] === "--dry-run"), "Usage: install-release-tools.mjs [--dry-run]");
+  return args.length === 1;
+}
 
 function checkSyntax(targets) {
   const text = name => targets.find(target => target.name === name)?.text;
@@ -36,8 +43,9 @@ function checkSyntax(targets) {
   if (deploy !== undefined) execFileSync("bash", ["-n"], { input: `${deploy}\n:;\n`, stdio: ["pipe", "pipe", "pipe"] });
 }
 
-export function install({ dryRun = false, home = homedir(), source = root, commit = null, tools = TOOLS } = {}) {
-  const config = join(home, ".config/missiongo");
+export function install({ dryRun = false, home = homedir(), configHome = process.env.XDG_CONFIG_HOME ?? join(home, ".config"), source = root, commit = null, tools = DEFAULT_TOOLS } = {}) {
+  assert.ok(typeof configHome === "string" && configHome.startsWith("/"), "Configuration root must be absolute");
+  const config = join(configHome, "missiongo");
   const directory = join(config, "release-tools");
   const entryPath = join(home, ".local/bin/missiongo-release");
   const targets = Object.keys(tools).map(name => ({ name, path: name === "entry" ? entryPath : join(directory, name), text: readFileSync(join(source, "scripts", tools[name]), "utf8") }));
@@ -88,6 +96,9 @@ export function install({ dryRun = false, home = homedir(), source = root, commi
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
+    const dryRun = parseInstallArgs(process.argv.slice(2));
+    const configHome = process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config");
+    assert.ok(configHome.startsWith("/"), "Configuration root must be absolute");
     const entry = fileURLToPath(import.meta.url);
     if (process.env.MISSIONGO_TOOLS_INSTALL_ENTRY !== entry) {
       const result = spawnSync("python3", [join(root, "scripts/release-lock.py"), "--", process.execPath, entry, ...process.argv.slice(2)],
@@ -95,15 +106,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       if (result.error) throw result.error;
       process.exit(result.status ?? 1);
     }
-    const dryRun = process.argv.includes("--dry-run");
     const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
     execFileSync("git", ["merge-base", "--is-ancestor", "origin/main", "HEAD"], { cwd: root });
     if (execFileSync("git", ["status", "--porcelain", "--", "scripts"], { cwd: root, encoding: "utf8" }).trim()) {
       throw new Error("Release tools in scripts/ have uncommitted changes; commit them before installing");
     }
     for (const file of [...TOOLS, ENTRY]) execFileSync("git", ["cat-file", "-e", `${commit}:scripts/${file}`], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
-    const tools = { ...Object.fromEntries(TOOLS.map(name => [name, name])), entry: ENTRY };
-    console.log(JSON.stringify(install({ dryRun, commit, tools }), null, 2));
+    console.log(JSON.stringify(install({ dryRun, commit, configHome }), null, 2));
   } catch (error) { console.error(`Release tool installation failed: ${error.message}`); process.exitCode = 1; }
 }
 

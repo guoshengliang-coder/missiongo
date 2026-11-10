@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { install } from "./install-release-tools.mjs";
+import { install, parseInstallArgs } from "./install-release-tools.mjs";
 
 const tools = {
   "release-lock.py": "release-lock.py",
@@ -67,6 +67,35 @@ test("a first install writes every tool, the entry and their digests", () => {
     assert.equal(manifest.sourceCommit, "a".repeat(40));
     assert.deepEqual(Object.keys(manifest.tools).sort(), Object.keys(tools).sort());
     assert.ok(Object.values(manifest.tools).every(digest => /^[a-f0-9]{64}$/.test(digest)));
+  } finally { done(); }
+});
+
+test("custom config roots receive tools and manifests together, preserving the default root", () => {
+  const { source, home, done, target } = setup();
+  const configHome = join(home, "custom-config");
+  try {
+    install({ source, home, configHome, tools });
+    assert.equal(readFileSync(join(configHome, "missiongo/release-tools/release-ci.mjs"), "utf8"), sources["release-ci.mjs"]);
+    assert.ok(existsSync(join(configHome, "missiongo/release-tools-manifest.json")));
+    assert.equal(existsSync(target("release-ci.mjs")), false);
+    assert.equal(existsSync(join(home, ".config/missiongo/release-tools-manifest.json")), false);
+    assert.equal(readFileSync(target("entry"), "utf8"), sources["missiongo-release.py"]);
+  } finally { done(); }
+});
+
+test("installer arguments reject typos and duplicates instead of enabling writes", () => {
+  assert.equal(parseInstallArgs([]), false);
+  assert.equal(parseInstallArgs(["--dry-run"]), true);
+  for (const args of [["--dryrun"], ["--dry-run", "--dry-run"], ["--install"], ["unexpected"]]) {
+    assert.throws(() => parseInstallArgs(args), /Usage:/);
+  }
+});
+
+test("the public default tool set resolves real repository filenames", () => {
+  const { home, done } = setup();
+  try {
+    const result = install({ home, dryRun: true });
+    assert.deepEqual(result.changed.sort(), Object.keys(tools).sort());
   } finally { done(); }
 });
 
