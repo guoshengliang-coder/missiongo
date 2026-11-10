@@ -27,6 +27,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const isMain = process.argv[1] === fileURLToPath(import.meta.url);
 const ledger = JSON.parse(readFileSync(join(root, "released.json"), "utf8"));
 
 const args = process.argv.slice(2);
@@ -38,12 +39,12 @@ const recordArtifact = recordIndex === -1 ? null : args[recordIndex + 1];
 const commitIndex = args.indexOf("--commit");
 const recordCommit = commitIndex === -1 ? null : args[commitIndex + 1];
 
-if (recordArtifact && !ledger.artifacts[recordArtifact]) {
+if (isMain && recordArtifact && !ledger.artifacts[recordArtifact]) {
   console.error(`Unknown artifact: ${recordArtifact}`);
   process.exit(2);
 }
 
-if (checkArtifact && !ledger.artifacts[checkArtifact]) {
+if (isMain && checkArtifact && !ledger.artifacts[checkArtifact]) {
   console.error(`Unknown artifact: ${checkArtifact}`);
   console.error(`Known: ${Object.keys(ledger.artifacts).join(", ")}`);
   process.exit(2);
@@ -60,8 +61,8 @@ function declaredVersion({ versionFile, versionProperty, versionJsonPath }, work
 }
 
 // `origin` is what has actually merged; `worktree` holds the version declaration being judged.
-function stateOf(name, origin = "HEAD", worktree = root) {
-  const artifact = ledger.artifacts[name];
+function stateOf(name, origin = "HEAD", worktree = root, manifest = ledger, gitRoot = worktree) {
+  const artifact = manifest.artifacts[name];
   const current = declaredVersion(artifact, worktree);
   if (artifact.commit === null && artifact.version === null) {
     return { artifact: name, publishedVersion: null, currentVersion: current, publishedFrom: null,
@@ -72,13 +73,13 @@ function stateOf(name, origin = "HEAD", worktree = root) {
   // make every comparison below meaningless, so say so rather than guess.
   let known = true;
   try {
-    git(worktree, "cat-file", "-e", `${artifact.commit}^{commit}`);
+    git(gitRoot, "cat-file", "-e", `${artifact.commit}^{commit}`);
   } catch {
     known = false;
   }
 
   const changes = known
-    ? git(worktree, "log", "--oneline", `${artifact.commit}..${origin}`, "--", ...artifact.paths).split("\n").filter(Boolean)
+    ? git(gitRoot, "log", "--oneline", `${artifact.commit}..${origin}`, "--", ...artifact.paths).split("\n").filter(Boolean)
     : [];
   const changed = changes.length > 0;
   const bumped = current !== artifact.version;
@@ -102,7 +103,7 @@ function stateOf(name, origin = "HEAD", worktree = root) {
   };
 }
 
-if (recordArtifact) {
+if (isMain && recordArtifact) {
   const artifact = ledger.artifacts[recordArtifact];
   const commit = recordCommit ?? execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
   if (!/^[0-9a-f]{40}$/.test(commit)) {
@@ -146,37 +147,44 @@ function raiseVersion({ versionFile, versionProperty, versionJsonPath }, text, n
  * this checkout is raised again rather than shipped over. Changing only the
  * declaration leaves the worktree still needing a deliberate commit.
  */
-export function bumpPatchVersions(origin = "origin/main", worktree = root) {
-  if (worktree === root) git(root, "fetch", "--quiet", "origin", "main");
+export function planPatchVersions(origin = "origin/main", worktree = root) {
+  const manifest = JSON.parse(readFileSync(join(worktree, "released.json"), "utf8"));
   const mirror = mkdtempSync(join(tmpdir(), "release-bump-"));
   try {
-    // cwd of the mirror makes each relative versionFile resolve to its origin/main copy.
-    for (const file of new Set(Object.values(ledger.artifacts).map((artifact) => artifact.versionFile))) {
+    for (const file of new Set(Object.values(manifest.artifacts).map(artifact => artifact.versionFile))) {
       const copy = join(mirror, file);
       mkdirSync(dirname(copy), { recursive: true });
       writeFileSync(copy, git(worktree, "show", `${origin}:${file}`));
     }
     const bumps = [];
-    for (const [name, artifact] of Object.entries(ledger.artifacts)) {
-      if (stateOf(name, origin, mirror).verdict !== "needs a version bump") continue;
-      // Raise the merged declaration, not a stale checkout's: moving from the
-      // checked-out number could overwrite a newer version origin/main already has.
+    for (const [name, artifact] of Object.entries(manifest.artifacts)) {
+      if (stateOf(name, origin, mirror, manifest, worktree).verdict !== "needs a version bump") continue;
       const from = declaredVersion(artifact, mirror);
-      const path = join(worktree, artifact.versionFile);
-      const text = readFileSync(path, "utf8");
       if (declaredVersion(artifact, worktree) !== from) {
         throw new Error(`${artifact.versionFile} declares a different version in this worktree than in ${origin}; refresh it before bumping`);
       }
-      bumps.push({ artifact: name, from, to: bumpedPatch(from), file: artifact.versionFile, path, text: raiseVersion(artifact, text, bumpedPatch(from)) });
+      bumps.push({ artifact: name, from, to: bumpedPatch(from), file: artifact.versionFile });
     }
-    for (const { path, text } of bumps) writeFileSync(path, text);
-    return bumps.map(({ path: _path, text: _text, ...bump }) => bump);
+    return bumps;
   } finally {
     rmSync(mirror, { recursive: true, force: true });
   }
 }
 
-if (args.includes("--bump-patch")) {
+export function bumpPatchVersions(origin = "origin/main", worktree = root) {
+  if (worktree === root) git(root, "fetch", "--quiet", "origin", "main");
+  const manifest = JSON.parse(readFileSync(join(worktree, "released.json"), "utf8"));
+  const bumps = planPatchVersions(origin, worktree);
+  // Prepare every write before changing any declaration.
+  const writes = bumps.map(bump => {
+    const path = join(worktree, bump.file);
+    return { path, text: raiseVersion(manifest.artifacts[bump.artifact], readFileSync(path, "utf8"), bump.to) };
+  });
+  for (const { path, text } of writes) writeFileSync(path, text);
+  return bumps;
+}
+
+if (isMain && args.includes("--bump-patch")) {
   const bumps = bumpPatchVersions();
   for (const { artifact, from, to, file } of bumps) console.log(`${artifact}: ${from} -> ${to} (${file})`);
   console.log(bumps.length
@@ -230,6 +238,7 @@ async function webState(origin) {
   };
 }
 
+if (isMain) {
 const names = checkArtifact ? [checkArtifact] : Object.keys(ledger.artifacts);
 const states = names.map((name) => stateOf(name));
 if (!checkArtifact && deployedUrl) states.unshift(await webState(deployedUrl));
@@ -277,3 +286,5 @@ if (state.verdict === "up to date") {
   process.exit(1);
 }
 process.exit(0);
+
+}
