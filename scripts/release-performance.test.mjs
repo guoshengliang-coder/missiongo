@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { backupCommand, discoverBackupProgram, fetchBackup, validateManifest } from "./release-backup.mjs";
 import { runPerformanceGroup } from "./performance-watchdog.mjs";
@@ -167,13 +167,16 @@ test("real smoke worker exercises authenticated HTTP on a synthetic backup and r
     // Other script tests import the already-built dist concurrently. Keep this
     // HTTP/backup integration child on that build; the actual forced compiler
     // is exercised against poisoned output in release-performance-audit.test.
-    const worker = join(dir, "prebuilt-worker.mjs");
-    writeFileSync(worker, `import { registerHooks } from 'node:module';
-      registerHooks({load(url, context, nextLoad) {
-        const loaded=nextLoad(url, context);
-        return url.endsWith('/scripts/release-performance-build.mjs')
-          ? {...loaded, source:'export function compilePerformanceCandidate() {}'} : loaded;
-      }});
+    const worker = join(dir, "prebuilt-worker.mjs"), loader = join(dir, "prebuilt-loader.mjs");
+    writeFileSync(loader, `export async function load(url, context, nextLoad) {
+      const loaded=await nextLoad(url, context);
+      return url.endsWith('/scripts/release-performance-build.mjs')
+        ? {...loaded, source:'export function compilePerformanceCandidate() {}'} : loaded;
+    }`);
+    // module.register is available in the CI baseline (Node 22.13), whereas
+    // synchronous registerHooks only arrived in Node 22.15.
+    writeFileSync(worker, `import { register } from 'node:module';
+      register(${JSON.stringify(pathToFileURL(loader).href)}, import.meta.url);
       await import(${JSON.stringify(new URL("./release-performance-worker.mjs", import.meta.url).href)});
     `);
     const report = await runReleasePerformance({ root: resolveRoot(), host: "fixture", backupsDir: "/fixture/backups", productId }, { worker });

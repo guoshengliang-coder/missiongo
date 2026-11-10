@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { compilePerformanceCandidate } from "./release-performance-build.mjs";
 import { atomicInstallWrite } from "./enable-release-performance.mjs";
@@ -75,5 +75,25 @@ test("the actual transfer program validates opened file type and length before s
     const fifo = run("pipe.sqlite", bytes.length);
     assert.notEqual(fifo.status, 0); assert.equal(fifo.stdout.length, 0); assert.equal(fifo.error, undefined, "FIFO must reject without waiting for the global deadline");
     assert.equal(existsSync(file), true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test("diagnostic loader executes its mutation on the supported Node runtime", () => {
+  const dir = temporary();
+  try {
+    mkdirSync(join(dir, "scripts"));
+    const fixture = join(dir, "scripts/release-performance-measure.mjs");
+    writeFileSync(fixture, `export async function count() {
+      let calls=0;
+      const routes={"claim-next":async()=>{calls++;}};
+    // CPU is the independent machine baseline;
+      await routes["claim-next"](); return calls;
+    }`);
+    const code=`import {count} from ${JSON.stringify(pathToFileURL(fixture).href)}; console.log(await count());`;
+    const options = { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] };
+    assert.equal(execFileSync(process.execPath, ["--input-type=module", "-e", code], options).trim(), "1");
+    assert.equal(execFileSync(process.execPath, ["--import", join(root, "tests/performance/mutation-loader.mjs"), "--input-type=module", "-e", code],
+      { ...options, env: { ...process.env, PERFORMANCE_MUTATION: "release-fivefold-claim-next" } }).trim(), "5");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

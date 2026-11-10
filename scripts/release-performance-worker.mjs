@@ -27,7 +27,7 @@ try {
   const { measureBackup } = await import("./release-performance-measure.mjs");
   stage = "measure";
   const measurement = await measureBackup({ root, database: copied.database, directory, productId, config });
-  const result = { version: 1, head, dirty, configDigest: createHash("sha256").update(bytes).digest("hex"), backup: copied.backup,
+  const result = { version: 1, head, dirty, node: process.version, platform: process.platform, arch: process.arch, configDigest: createHash("sha256").update(bytes).digest("hex"), backup: copied.backup,
     measuredAt: new Date().toISOString(), experiment: process.env.PERFORMANCE_MUTATION ?? null, ...measurement, timings: { transferMs, prepareMs, measurementMs: performance.now() - started - transferMs - prepareMs } };
   writeFileSync(join(directory, "result.json"), JSON.stringify(result), { mode: 0o600 });
   process.exitCode = result.status === "passed" ? 0 : 1;
