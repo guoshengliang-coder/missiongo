@@ -21,9 +21,10 @@
 // this reads it.
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const ledger = JSON.parse(readFileSync(join(root, "released.json"), "utf8"));
@@ -48,19 +49,20 @@ if (checkArtifact && !ledger.artifacts[checkArtifact]) {
   process.exit(2);
 }
 
-const git = (...gitArgs) => execFileSync("git", gitArgs, { cwd: root, encoding: "utf8" }).trim();
+const git = (worktree, ...gitArgs) => execFileSync("git", gitArgs, { cwd: worktree, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 
-function declaredVersion({ versionFile, versionProperty, versionJsonPath }) {
-  const source = readFileSync(join(root, versionFile), "utf8");
+function declaredVersion({ versionFile, versionProperty, versionJsonPath }, worktree = root) {
+  const source = readFileSync(join(worktree, versionFile), "utf8");
   if (versionJsonPath) return versionJsonPath.split(".").reduce((value, key) => value[key], JSON.parse(source));
   const match = new RegExp(`^${versionProperty}=(.+)$`, "m").exec(source);
   if (!match) throw new Error(`${versionProperty} is not declared in ${versionFile}`);
   return match[1].trim();
 }
 
-function stateOf(name) {
+// `origin` is what has actually merged; `worktree` holds the version declaration being judged.
+function stateOf(name, origin = "HEAD", worktree = root) {
   const artifact = ledger.artifacts[name];
-  const current = declaredVersion(artifact);
+  const current = declaredVersion(artifact, worktree);
   if (artifact.commit === null && artifact.version === null) {
     return { artifact: name, publishedVersion: null, currentVersion: current, publishedFrom: null,
       commitsSince: 0, changed: true, bumped: true, verdict: "ready to publish", note: "No publication recorded yet" };
@@ -70,13 +72,13 @@ function stateOf(name) {
   // make every comparison below meaningless, so say so rather than guess.
   let known = true;
   try {
-    git("cat-file", "-e", `${artifact.commit}^{commit}`);
+    git(worktree, "cat-file", "-e", `${artifact.commit}^{commit}`);
   } catch {
     known = false;
   }
 
   const changes = known
-    ? git("log", "--oneline", `${artifact.commit}..HEAD`, "--", ...artifact.paths).split("\n").filter(Boolean)
+    ? git(worktree, "log", "--oneline", `${artifact.commit}..${origin}`, "--", ...artifact.paths).split("\n").filter(Boolean)
     : [];
   const changed = changes.length > 0;
   const bumped = current !== artifact.version;
@@ -116,6 +118,73 @@ if (recordArtifact) {
   process.exit(0);
 }
 
+// A patch bump needs a numeric version, and nothing else: major/minor belong to
+// a human. There is no automated history for anything else to follow.
+function bumpedPatch(version) {
+  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version) || !version.split(".").every((n) => Number.isSafeInteger(Number(n)))) {
+    throw new Error(`${version} is not a numeric major.minor.patch version, so only its patch component could be raised.`);
+  }
+  const [major, minor, patch] = version.split(".").map(Number);
+  return `${major}.${minor}.${patch + 1}`;
+}
+
+function raiseVersion({ versionFile, versionProperty, versionJsonPath }, text, next) {
+  if (!versionJsonPath) {
+    const line = new RegExp(`^${versionProperty}=.*$`, "m");
+    if (!line.test(text)) throw new Error(`${versionProperty} is not declared in ${versionFile}`);
+    return text.replace(line, `${versionProperty}=${next}`);
+  }
+  const product = JSON.parse(text);
+  const [group, key] = versionJsonPath.split(".");
+  if (key) product[group][key] = next; else product[group] = next;
+  return `${JSON.stringify(product, null, 2)}\n`;
+}
+
+/**
+ * One patch bump per release, not per PR. The baseline is origin/main, so a
+ * version a single PR already raised is left alone, and an uncommitted raise in
+ * this checkout is raised again rather than shipped over. Changing only the
+ * declaration leaves the worktree still needing a deliberate commit.
+ */
+export function bumpPatchVersions(origin = "origin/main", worktree = root) {
+  if (worktree === root) git(root, "fetch", "--quiet", "origin", "main");
+  const mirror = mkdtempSync(join(tmpdir(), "release-bump-"));
+  try {
+    // cwd of the mirror makes each relative versionFile resolve to its origin/main copy.
+    for (const file of new Set(Object.values(ledger.artifacts).map((artifact) => artifact.versionFile))) {
+      const copy = join(mirror, file);
+      mkdirSync(dirname(copy), { recursive: true });
+      writeFileSync(copy, git(worktree, "show", `${origin}:${file}`));
+    }
+    const bumps = [];
+    for (const [name, artifact] of Object.entries(ledger.artifacts)) {
+      if (stateOf(name, origin, mirror).verdict !== "needs a version bump") continue;
+      // Raise the merged declaration, not a stale checkout's: moving from the
+      // checked-out number could overwrite a newer version origin/main already has.
+      const from = declaredVersion(artifact, mirror);
+      const path = join(worktree, artifact.versionFile);
+      const text = readFileSync(path, "utf8");
+      if (declaredVersion(artifact, worktree) !== from) {
+        throw new Error(`${artifact.versionFile} declares a different version in this worktree than in ${origin}; refresh it before bumping`);
+      }
+      bumps.push({ artifact: name, from, to: bumpedPatch(from), file: artifact.versionFile, path, text: raiseVersion(artifact, text, bumpedPatch(from)) });
+    }
+    for (const { path, text } of bumps) writeFileSync(path, text);
+    return bumps.map(({ path: _path, text: _text, ...bump }) => bump);
+  } finally {
+    rmSync(mirror, { recursive: true, force: true });
+  }
+}
+
+if (args.includes("--bump-patch")) {
+  const bumps = bumpPatchVersions();
+  for (const { artifact, from, to, file } of bumps) console.log(`${artifact}: ${from} -> ${to} (${file})`);
+  console.log(bumps.length
+    ? "Version declarations raised. Commit them with client release notes before publishing."
+    : "origin/main already declares a new version for every changed artifact; nothing to raise.");
+  process.exit(0);
+}
+
 const deployedIndex = args.indexOf("--deployed");
 const deployedUrl = deployedIndex === -1 ? null : args[deployedIndex + 1];
 
@@ -133,7 +202,7 @@ async function webState(origin) {
   }
   let behind = [];
   try {
-    behind = git("log", "--oneline", `${release}..HEAD`, "--", "apps/web", "services", "packages", "deploy")
+    behind = git(root, "log", "--oneline", `${release}..HEAD`, "--", "apps/web", "services", "packages", "deploy")
       .split("\n").filter(Boolean);
   } catch {
     return { artifact: "web", publishedFrom: release, verdict: "unknown", note: "that commit is not in this repository" };
@@ -162,7 +231,7 @@ async function webState(origin) {
 }
 
 const names = checkArtifact ? [checkArtifact] : Object.keys(ledger.artifacts);
-const states = names.map(stateOf);
+const states = names.map((name) => stateOf(name));
 if (!checkArtifact && deployedUrl) states.unshift(await webState(deployedUrl));
 
 if (asJson) {

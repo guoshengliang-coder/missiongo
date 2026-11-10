@@ -13,22 +13,47 @@ export const priorDeploySwitch = `release_timing_stage build_and_restart
 echo "==> Rebuilding and restarting"
 # sudo drops the environment, so the value is handed over explicitly. The
 # server reports it on /health, which is how a running deployment names itself.
-remote "cd '\${target}/deploy' && sudo env MISSIONGO_RELEASE='\${commit}' docker compose --env-file '\${env_file}' up -d --build"`;
+remote "cd '\${target}/deploy' && sudo env MISSIONGO_RELEASE='\${commit}' docker compose --env-file '\${env_file}' up -d --no-build --wait --wait-timeout 180"`;
+const begin = "# BEGIN RELEASE STATUS", end = "# END RELEASE STATUS";
+const different = "Partial or different release status installation; preserved existing tools.";
+// The two markers of one installed block, refused when there is only one of them,
+// repeated, nested or belonging to no version this knows.
+export function installedBlock(source) {
+  const cut = source.indexOf(begin);
+  if (cut < 0) {
+    if (source.includes(end)) throw new Error(different);
+    return null;
+  }
+  const close = source.indexOf(end, cut + begin.length);
+  const block = close < 0 ? null : source.slice(cut, close + end.length);
+  const known = [releaseStatusBlock, previousReleaseStatusBlock].find(known => known === block);
+  if (!known || source.split(begin).length !== 2 || source.split(end).length !== 2) throw new Error(different);
+  return known;
+}
 export function withoutReleaseStatus(source) {
-  const known = [releaseStatusBlock, previousReleaseStatusBlock].find(block => source.includes(block));
-  if (!known) throw new Error("Partial or different release status installation; preserved existing tools.");
-  return source.replace(known, priorDeploySwitch);
+  const known = installedBlock(source);
+  // Both read back as the switch did before: one was running without timing, the
+  // other has its restart inside the block.
+  return known ? source.replace(known, priorDeploySwitch) : source;
 }
 export function upgradeReleaseStatusDeploy(source) {
   if (!source.includes("check_release_coverage") || !source.includes("release_timing_start")) throw new Error("Install existing coverage and timing guards first.");
-  if (source.includes("# BEGIN RELEASE STATUS")) {
-    if (source.match(/# BEGIN RELEASE STATUS[\s\S]*?# END RELEASE STATUS/g)?.length !== 1
-      || ![releaseStatusBlock, previousReleaseStatusBlock].some(block => source.includes(block))) throw new Error("Partial or different release status installation; preserved existing tools.");
-    return source.replace(previousReleaseStatusBlock, releaseStatusBlock);
-  }
-  const before = /release_timing_stage build_and_restart\necho "==> Rebuilding and restarting"[\s\S]*?remote "cd '\$\{target\}\/deploy' && sudo env MISSIONGO_RELEASE='\$\{commit\}' docker compose --env-file '\$\{env_file\}' up -d --build"/g;
-  if ([...source.matchAll(before)].length !== 1) throw new Error("Unknown deploy switch; preserved existing tools.");
-  const result = source.replace(before, releaseStatusBlock);
+  const known = installedBlock(source);
+  if (known) return known === previousReleaseStatusBlock ? source.replace(known, releaseStatusBlock) : source;
+  // The restart is matched as the lines it actually occupy: its echo, the
+  // free-text comment and the line that starts the containers. The timed entry
+  // carries one more line in front, the stage that was removed from this one.
+  const restart = 'echo "==> Rebuilding and restarting"\n', runs = ["up -d --build", "up -d --no-build --wait --wait-timeout 180"];
+  if (source.split(restart).length !== 2) throw new Error("Unknown deploy switch; preserved existing tools.");
+  const position = source.indexOf(restart) + restart.length, lines = source.slice(position).split("\n");
+  const run = line => line.startsWith("remote ") && runs.some(command => line.includes(" " + command + '"'));
+  const end = lines.findIndex(run);
+  if (end < 0 || lines.slice(0, end).some(line => !line.startsWith("#"))) throw new Error("Unknown deploy switch; preserved existing tools.");
+  // The blank line the old switch may have had after it belongs to the code that
+  // follows; the block takes the statement's place and keeps that separation.
+  const stop = position + lines.slice(0, end + 1).join("\n").length + 1, between = lines[end + 1] === "" ? "\n" : "\n\n", stage = "release_timing_stage build_and_restart\n";
+  const from = source.slice(0, source.indexOf(restart)).endsWith(stage) ? source.indexOf(restart) - stage.length : source.indexOf(restart);
+  const result = source.slice(0, from) + releaseStatusBlock + between + source.slice(Math.min(stop, source.length));
   execFileSync("bash", ["-n"], { input: result });
   return result;
 }

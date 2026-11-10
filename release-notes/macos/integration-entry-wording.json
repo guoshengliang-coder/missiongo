@@ -1,0 +1,9 @@
+{
+  "pullRequest": 550,
+  "items": [
+    {
+      "key": "AND-550",
+      "title": "统一待集成入口名称与 Agent 交付指令兼容规则，衔接 Skill 5.68.0"
+    }
+  ]
+}

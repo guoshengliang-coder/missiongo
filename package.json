@@ -25,6 +25,7 @@
     "publish:android-sdk": "./scripts/publish-android-sdk.sh",
     "publish:macos": "./scripts/publish-macos.sh",
     "release:state": "node ./scripts/release-state.mjs",
+    "release:bump-patch": "node ./scripts/release-state.mjs --bump-patch",
     "dev:server": "npm run dev --workspace @missiongo/server",
     "dev:web": "npm run dev --workspace @missiongo/web",
     "check": "npm run lint && npm run check:identity && npm run check:macos-contract && npm run check:android-contract && npm run check:migrations && npm run check:styles && npm run test && npm run typecheck && npm run build && npm run check:performance",
