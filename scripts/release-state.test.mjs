@@ -1,21 +1,21 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { bumpPatchVersions } from "./release-state.mjs";
+import { bumpPatchVersions, planPatchVersions } from "./release-state.mjs";
 
 const git = (root, ...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
 
-function repository({ android = "0.1.20", macos = "0.4.89", linux = "0.1.24" }) {
+function repository({ android = "0.1.20", macos = "0.4.89", linux = "0.1.24" } = {}) {
   const root = mkdtempSync(join(tmpdir(), "release-state-"));
   const write = (path, text) => { mkdirSync(join(root, path, ".."), { recursive: true }); writeFileSync(join(root, path), text); };
   const ledger = (macosCommit) => JSON.stringify({ artifacts: {
-    androidApp: { version: "0.1.20", commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", versionFile: "sdks/android-feedback/gradle.properties", versionProperty: "missiongoAndroidVersionName", paths: ["apps/android"] },
-    macosApp: { version: "0.4.89", commit: macosCommit, versionFile: "apps/macos/version.properties", versionProperty: "missiongoMacosVersion", paths: ["apps/macos"] },
-    linuxCli: { version: "0.1.24", commit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", versionFile: "product.json", versionJsonPath: "linuxNode.version", paths: ["apps/node"] },
+    androidApp: { version: "0.1.20", commit: macosCommit, versionFile: "sdks/android-feedback/gradle.properties", versionProperty: "missiongoAndroidVersionName", paths: ["apps/android", "sdks/android-feedback/gradle.properties"] },
+    macosApp: { version: macos, commit: macosCommit, versionFile: "apps/macos/version.properties", versionProperty: "missiongoMacosVersion", paths: ["apps/macos"] },
+    linuxCli: { version: "0.1.24", commit: macosCommit, versionFile: "product.json", versionJsonPath: "linuxNode.version", paths: ["apps/node"] },
   } }, null, 2);
   git(root, "init", "-q", "-b", "main");
   git(root, "config", "user.email", "test@example.com");
@@ -26,15 +26,18 @@ function repository({ android = "0.1.20", macos = "0.4.89", linux = "0.1.24" }) 
   write("released.json", ledger("cccccccccccccccccccccccccccccccccccccccc"));
   git(root, "add", "-A");
   git(root, "commit", "-q", "-m", "published");
+  write("released.json", ledger(git(root, "rev-parse", "HEAD")));
+  git(root, "commit", "-qam", "record publication");
   git(root, "update-ref", "refs/remotes/origin/main", "HEAD");
   return { root, write };
 }
 
 function merged(root, path) {
-  mkdirSync(join(root, path), { recursive: true });
-  writeFileSync(join(root, path, "change.txt"), `changed ${Date.now()}`);
+  if (existsSync(join(root, path)) && statSync(join(root, path)).isFile()) appendFileSync(join(root, path), "\n# merged source change\n");
+  else { mkdirSync(join(root, path), { recursive: true }); writeFileSync(join(root, path, "change.txt"), "merged source change"); }
   git(root, "add", "-A");
   git(root, "commit", "-q", "-m", "merged work");
+  git(root, "update-ref", "refs/remotes/origin/main", "HEAD");
 }
 
 test("raises only the patch component of artifacts that changed since origin/main", () => {
@@ -106,6 +109,23 @@ test("writes nothing when one artifact cannot be bumped", () => {
 test("treats an unresolvable baseline as unknown instead of raising blindly", () => {
   const { root } = repository();
   merged(root, "apps/macos");
+  const ledgerPath = join(root, "released.json");
+  const manifest = JSON.parse(readFileSync(ledgerPath, "utf8"));
+  manifest.artifacts.macosApp.commit = "f".repeat(40);
+  writeFileSync(ledgerPath, JSON.stringify(manifest));
   assert.deepEqual(bumpPatchVersions("origin/main", root), []);
   rmSync(root, { recursive: true, force: true });
+});
+
+
+test("planning reports patch gaps without changing declarations or the repository", () => {
+  const { root } = repository();
+  try {
+    merged(root, "apps/macos");
+    const before = git(root, "status", "--porcelain");
+    const text = readFileSync(join(root, "apps/macos/version.properties"), "utf8");
+    assert.deepEqual(planPatchVersions("origin/main", root), [{ artifact: "macosApp", from: "0.4.89", to: "0.4.90", file: "apps/macos/version.properties" }]);
+    assert.equal(readFileSync(join(root, "apps/macos/version.properties"), "utf8"), text);
+    assert.equal(git(root, "status", "--porcelain"), before);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

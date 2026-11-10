@@ -228,7 +228,7 @@ function main() {
     const gaps = planVersionGaps(root, live);
     mergeVersionGaps(coverage, gaps);
     // Only a hint: run `npm run release:bump-patch` in the planning checkout, never in this release worktree.
-    const patchBumps = releaseStateTools ? releaseStateTools.bumpPatchVersions("origin/main", root) : [];
+    const patchBumps = releaseStateTools ? releaseStateTools.planPatchVersions("origin/main", root) : [];
     const blocking = gaps.some(gap => gap.blocking);
     const next = blocking && patchBumps.length ? "npm run release:bump-patch, add client release notes, commit and push, then plan again" : undefined;
     console.log(JSON.stringify({ ...(patchBumps.length ? { patchBumps } : {}), ...(next ? { next } : {}) }, null, 2));
