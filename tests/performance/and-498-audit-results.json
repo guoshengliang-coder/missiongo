@@ -1,0 +1,903 @@
+{
+  "description": "Audit follow-up; same unchanged runner and original baseline, sequential clean-source measurements. Concurrent diagnostic excluded from acceptance.",
+  "baseline": [
+    {
+      "version": 1,
+      "status": "measured",
+      "measuredAt": "2026-11-10T07:01:51.904Z",
+      "head": "bc01562f6bc61ff0fd5cb0107443a5745c9ea9b2",
+      "dirty": false,
+      "node": "v22.23.2",
+      "platform": "darwin",
+      "arch": "arm64",
+      "shape": {
+        "sessions": 200,
+        "longHistory": 10000,
+        "otherHistory": 20,
+        "textBytes": 1024,
+        "mirrors": 0
+      },
+      "metrics": {
+        "list": {
+          "wallMs": 18.764374999999973,
+          "cpuMs": 20.588,
+          "queryCount": 621,
+          "rowsRead": 1002,
+          "responseBytes": 435196
+        },
+        "recent": {
+          "wallMs": 29.62341600000002,
+          "cpuMs": 36.554,
+          "queryCount": 299,
+          "rowsRead": 11036,
+          "responseBytes": 57240
+        },
+        "older": {
+          "wallMs": 29.12958300000014,
+          "cpuMs": 33.655,
+          "queryCount": 266,
+          "rowsRead": 11020,
+          "responseBytes": 56762
+        }
+      },
+      "samples": {
+        "list": [
+          {
+            "wallMs": 18.248500000000035,
+            "cpuMs": 17.806,
+            "queryCount": 621,
+            "rowsRead": 1002,
+            "responseBytes": 435196,
+            "sessions": 200
+          },
+          {
+            "wallMs": 19.772208999999975,
+            "cpuMs": 21.571,
+            "queryCount": 621,
+            "rowsRead": 1002,
+            "responseBytes": 435196,
+            "sessions": 200
+          },
+          {
+            "wallMs": 18.064959000000044,
+            "cpuMs": 18.219,
+            "queryCount": 621,
+            "rowsRead": 1002,
+            "responseBytes": 435196,
+            "sessions": 200
+          },
+          {
+            "wallMs": 18.048875000000066,
+            "cpuMs": 18.453,
+            "queryCount": 621,
+            "rowsRead": 1002,
+            "responseBytes": 435196,
+            "sessions": 200
+          },
+          {
+            "wallMs": 19.697541,
+            "cpuMs": 20.588,
+            "queryCount": 621,
+            "rowsRead": 1002,
+            "responseBytes": 435196,
+            "sessions": 200
+          },
+          {
+            "wallMs": 18.764374999999973,
+            "cpuMs": 23.177,
+            "queryCount": 621,
+            "rowsRead": 1002,
+            "responseBytes": 435196,
+            "sessions": 200
+          },
+          {
+            "wallMs": 19.934292000000028,
+            "cpuMs": 22.012,
+            "queryCount": 621,
+            "rowsRead": 1002,
+            "responseBytes": 435196,
+            "sessions": 200
+          }
+        ],
+        "recent": [
+          {
+            "wallMs": 30.82845800000007,
+            "cpuMs": 54.281,
+            "queryCount": 299,
+            "rowsRead": 11036,
+            "responseBytes": 57240,
+            "messages": 50
+          },
+          {
+            "wallMs": 29.62341600000002,
+            "cpuMs": 36.554,
+            "queryCount": 299,
+            "rowsRead": 11036,
+            "responseBytes": 57240,
+            "messages": 50
+          },
+          {
+            "wallMs": 28.419416999999953,
+            "cpuMs": 31.352,
+            "queryCount": 299,
+            "rowsRead": 11036,
+            "responseBytes": 57240,
+            "messages": 50
+          },
+          {
+            "wallMs": 28.527833999999984,
+            "cpuMs": 33.938,
+            "queryCount": 299,
+            "rowsRead": 11036,
+            "responseBytes": 57240,
+            "messages": 50
+          },
+          {
+            "wallMs": 29.787625000000048,
+            "cpuMs": 33.794,
+            "queryCount": 299,
+            "rowsRead": 11036,
+            "responseBytes": 57240,
+            "messages": 50
+          },
+          {
+            "wallMs": 29.98758299999986,
+            "cpuMs": 59.142,
+            "queryCount": 299,
+            "rowsRead": 11036,
+            "responseBytes": 57240,
+            "messages": 50
+          },
+          {
+            "wallMs": 29.29991700000005,
+            "cpuMs": 37.17,
+            "queryCount": 299,
+            "rowsRead": 11036,
+            "responseBytes": 57240,
+            "messages": 50
+          }
+        ],
+        "older": [
+          {
+            "wallMs": 29.97741700000006,
+            "cpuMs": 34.056,
+            "queryCount": 266,
+            "rowsRead": 11020,
+            "responseBytes": 56762,
+            "messages": 50
+          },
+          {
+            "wallMs": 29.075207999999975,
+            "cpuMs": 33.655,
+            "queryCount": 266,
+            "rowsRead": 11020,
+            "responseBytes": 56762,
+            "messages": 50
+          },
+          {
+            "wallMs": 29.12958300000014,
+            "cpuMs": 32.507,
+            "queryCount": 266,
+            "rowsRead": 11020,
+            "responseBytes": 56762,
+            "messages": 50
+          },
+          {
+            "wallMs": 27.953665999999885,
+            "cpuMs": 30.736,
+            "queryCount": 266,
+            "rowsRead": 11020,
+            "responseBytes": 56762,
+            "messages": 50
+          },
+          {
+            "wallMs": 32.29104100000018,
+            "cpuMs": 57.034,
+            "queryCount": 266,
+            "rowsRead": 11020,
+            "responseBytes": 56762,
+            "messages": 50
+          },
+          {
+            "wallMs": 29.617958000000044,
+            "cpuMs": 37.452,
+            "queryCount": 266,
+            "rowsRead": 11020,
+            "responseBytes": 56762,
+            "messages": 50
+          },
+          {
+            "wallMs": 27.111041999999998,
+            "cpuMs": 30.054,
+            "queryCount": 266,
+            "rowsRead": 11020,
+            "responseBytes": 56762,
+            "messages": 50
+          }
+        ]
+      }
+    },
+    {
+      "version": 1,
+      "status": "measured",
+      "measuredAt": "2026-11-10T07:01:55.105Z",
+      "head": "bc01562f6bc61ff0fd5cb0107443a5745c9ea9b2",
+      "dirty": false,
+      "node": "v22.23.2",
+      "platform": "darwin",
+      "arch": "arm64",
+      "shape": {
+        "sessions": 200,
+        "longHistory": 10000,
+        "otherHistory": 20,
+        "textBytes": 1024,
+        "mirrors": 40
+      },
+      "metrics": {
+        "list": {
+          "wallMs": 32.822917000000075,
+          "cpuMs": 33.488,
+          "queryCount": 1023,
+          "rowsRead": 1402,
+          "responseBytes": 440676
+        },
+        "recent": {
+          "wallMs": 81.07366699999989,
+          "cpuMs": 100.447,
+          "queryCount": 732,
+          "rowsRead": 21451,
+          "responseBytes": 57381
+        },
+        "older": {
+          "wallMs": 78.96870900000022,
+          "cpuMs": 87.186,
+          "queryCount": 683,
+          "rowsRead": 21428,
+          "responseBytes": 56762
+        }
+      },
+      "samples": {
+        "list": [
+          {
+            "wallMs": 34.183583,
+            "cpuMs": 31.377,
+            "queryCount": 1023,
+            "rowsRead": 1402,
+            "responseBytes": 440676,
+            "sessions": 200
+          },
+          {
+            "wallMs": 33.27499999999998,
+            "cpuMs": 50.488,
+            "queryCount": 1023,
+            "rowsRead": 1402,
+            "responseBytes": 440676,
+            "sessions": 200
+          },
+          {
+            "wallMs": 30.93187499999999,
+            "cpuMs": 31.623,
+            "queryCount": 1023,
+            "rowsRead": 1402,
+            "responseBytes": 440676,
+            "sessions": 200
+          },
+          {
+            "wallMs": 32.822917000000075,
+            "cpuMs": 32.764,
+            "queryCount": 1023,
+            "rowsRead": 1402,
+            "responseBytes": 440676,
+            "sessions": 200
+          },
+          {
+            "wallMs": 31.380750000000035,
+            "cpuMs": 37.971,
+            "queryCount": 1023,
+            "rowsRead": 1402,
+            "responseBytes": 440676,
+            "sessions": 200
+          },
+          {
+            "wallMs": 34.89729199999999,
+            "cpuMs": 35.28,
+            "queryCount": 1023,
+            "rowsRead": 1402,
+            "responseBytes": 440676,
+            "sessions": 200
+          },
+          {
+            "wallMs": 31.453624999999988,
+            "cpuMs": 33.488,
+            "queryCount": 1023,
+            "rowsRead": 1402,
+            "responseBytes": 440676,
+            "sessions": 200
+          }
+        ],
+        "recent": [
+          {
+            "wallMs": 84.21766699999989,
+            "cpuMs": 101.139,
+            "queryCount": 732,
+            "rowsRead": 21451,
+            "responseBytes": 57381,
+            "messages": 50
+          },
+          {
+            "wallMs": 86.94325000000003,
+            "cpuMs": 100.447,
+            "queryCount": 732,
+            "rowsRead": 21451,
+            "responseBytes": 57381,
+            "messages": 50
+          },
+          {
+            "wallMs": 87.21862499999997,
+            "cpuMs": 132.996,
+            "queryCount": 732,
+            "rowsRead": 21451,
+            "responseBytes": 57381,
+            "messages": 50
+          },
+          {
+            "wallMs": 80.74766599999998,
+            "cpuMs": 94.272,
+            "queryCount": 732,
+            "rowsRead": 21451,
+            "responseBytes": 57381,
+            "messages": 50
+          },
+          {
+            "wallMs": 79.13537499999984,
+            "cpuMs": 94.768,
+            "queryCount": 732,
+            "rowsRead": 21451,
+            "responseBytes": 57381,
+            "messages": 50
+          },
+          {
+            "wallMs": 81.07366699999989,
+            "cpuMs": 106.986,
+            "queryCount": 732,
+            "rowsRead": 21451,
+            "responseBytes": 57381,
+            "messages": 50
+          },
+          {
+            "wallMs": 76.1271670000001,
+            "cpuMs": 82.599,
+            "queryCount": 732,
+            "rowsRead": 21451,
+            "responseBytes": 57381,
+            "messages": 50
+          }
+        ],
+        "older": [
+          {
+            "wallMs": 81.34608400000002,
+            "cpuMs": 87.186,
+            "queryCount": 683,
+            "rowsRead": 21428,
+            "responseBytes": 56762,
+            "messages": 50
+          },
+          {
+            "wallMs": 80.41712499999994,
+            "cpuMs": 110.659,
+            "queryCount": 683,
+            "rowsRead": 21428,
+            "responseBytes": 56762,
+            "messages": 50
+          },
+          {
+            "wallMs": 76.39441599999986,
+            "cpuMs": 84.221,
+            "queryCount": 683,
+            "rowsRead": 21428,
+            "responseBytes": 56762,
+            "messages": 50
+          },
+          {
+            "wallMs": 78.96870900000022,
+            "cpuMs": 85.49,
+            "queryCount": 683,
+            "rowsRead": 21428,
+            "responseBytes": 56762,
+            "messages": 50
+          },
+          {
+            "wallMs": 77.34458399999994,
+            "cpuMs": 95.436,
+            "queryCount": 683,
+            "rowsRead": 21428,
+            "responseBytes": 56762,
+            "messages": 50
+          },
+          {
+            "wallMs": 77.4808750000002,
+            "cpuMs": 82.315,
+            "queryCount": 683,
+            "rowsRead": 21428,
+            "responseBytes": 56762,
+            "messages": 50
+          },
+          {
+            "wallMs": 80.43266700000004,
+            "cpuMs": 110.849,
+            "queryCount": 683,
+            "rowsRead": 21428,
+            "responseBytes": 56762,
+            "messages": 50
+          }
+        ]
+      }
+    }
+  ],
+  "current": [
+    {
+      "version": 1,
+      "status": "passed",
+      "measuredAt": "2026-11-10T07:41:44.386Z",
+      "head": "cd603c47840a6b860d729a2f7339d16f42c733ef",
+      "dirty": false,
+      "node": "v22.23.2",
+      "platform": "darwin",
+      "arch": "arm64",
+      "shape": {
+        "sessions": 200,
+        "longHistory": 10000,
+        "otherHistory": 20,
+        "textBytes": 1024,
+        "mirrors": 0
+      },
+      "metrics": {
+        "list": {
+          "wallMs": 7.843540999999959,
+          "cpuMs": 7.771,
+          "queryCount": 21,
+          "rowsRead": 1002,
+          "responseBytes": 435196
+        },
+        "recent": {
+          "wallMs": 2.1035419999999476,
+          "cpuMs": 2.033,
+          "queryCount": 155,
+          "rowsRead": 145,
+          "responseBytes": 57303
+        },
+        "older": {
+          "wallMs": 1.5844580000000406,
+          "cpuMs": 1.738,
+          "queryCount": 117,
+          "rowsRead": 128,
+          "responseBytes": 56762
+        }
+      },
+      "samples": {
+        "list": [
+          {
+            "wallMs": 9.408167000000049,
+            "cpuMs": 10.232,
+            "queryCount": 21,
+            "rowsRead": 1002,
+            "responseBytes": 435196,
+            "sessions": 200
+          },
+          {
+            "wallMs": 7.4413339999999835,
+            "cpuMs": 7.301,
+            "queryCount": 21,
+            "rowsRead": 1002,
+            "responseBytes": 435196,
+            "sessions": 200
+          },
+          {
+            "wallMs": 7.954791999999998,
+            "cpuMs": 7.342,
+            "queryCount": 21,
+            "rowsRead": 1002,
+            "responseBytes": 435196,
+            "sessions": 200
+          },
+          {
+            "wallMs": 7.843540999999959,
+            "cpuMs": 7.771,
+            "queryCount": 21,
+            "rowsRead": 1002,
+            "responseBytes": 435196,
+            "sessions": 200
+          },
+          {
+            "wallMs": 7.218833000000018,
+            "cpuMs": 7.587,
+            "queryCount": 21,
+            "rowsRead": 1002,
+            "responseBytes": 435196,
+            "sessions": 200
+          },
+          {
+            "wallMs": 8.190875000000005,
+            "cpuMs": 7.931,
+            "queryCount": 21,
+            "rowsRead": 1002,
+            "responseBytes": 435196,
+            "sessions": 200
+          },
+          {
+            "wallMs": 7.79262499999993,
+            "cpuMs": 14.401,
+            "queryCount": 21,
+            "rowsRead": 1002,
+            "responseBytes": 435196,
+            "sessions": 200
+          }
+        ],
+        "recent": [
+          {
+            "wallMs": 2.1035419999999476,
+            "cpuMs": 2.033,
+            "queryCount": 155,
+            "rowsRead": 145,
+            "responseBytes": 57303,
+            "messages": 50
+          },
+          {
+            "wallMs": 1.944749999999999,
+            "cpuMs": 1.914,
+            "queryCount": 155,
+            "rowsRead": 145,
+            "responseBytes": 57303,
+            "messages": 50
+          },
+          {
+            "wallMs": 2.0258340000000317,
+            "cpuMs": 1.994,
+            "queryCount": 155,
+            "rowsRead": 145,
+            "responseBytes": 57303,
+            "messages": 50
+          },
+          {
+            "wallMs": 2.0223330000000033,
+            "cpuMs": 1.947,
+            "queryCount": 155,
+            "rowsRead": 145,
+            "responseBytes": 57303,
+            "messages": 50
+          },
+          {
+            "wallMs": 2.186417000000006,
+            "cpuMs": 2.124,
+            "queryCount": 155,
+            "rowsRead": 145,
+            "responseBytes": 57303,
+            "messages": 50
+          },
+          {
+            "wallMs": 2.2537079999999605,
+            "cpuMs": 2.212,
+            "queryCount": 155,
+            "rowsRead": 145,
+            "responseBytes": 57303,
+            "messages": 50
+          },
+          {
+            "wallMs": 2.5571670000000495,
+            "cpuMs": 2.521,
+            "queryCount": 155,
+            "rowsRead": 145,
+            "responseBytes": 57303,
+            "messages": 50
+          }
+        ],
+        "older": [
+          {
+            "wallMs": 2.786583999999948,
+            "cpuMs": 2.92,
+            "queryCount": 117,
+            "rowsRead": 128,
+            "responseBytes": 56762,
+            "messages": 50
+          },
+          {
+            "wallMs": 1.7682920000000877,
+            "cpuMs": 1.738,
+            "queryCount": 117,
+            "rowsRead": 128,
+            "responseBytes": 56762,
+            "messages": 50
+          },
+          {
+            "wallMs": 1.5844580000000406,
+            "cpuMs": 1.555,
+            "queryCount": 117,
+            "rowsRead": 128,
+            "responseBytes": 56762,
+            "messages": 50
+          },
+          {
+            "wallMs": 1.587541999999985,
+            "cpuMs": 1.556,
+            "queryCount": 117,
+            "rowsRead": 128,
+            "responseBytes": 56762,
+            "messages": 50
+          },
+          {
+            "wallMs": 1.555833000000007,
+            "cpuMs": 2.435,
+            "queryCount": 117,
+            "rowsRead": 128,
+            "responseBytes": 56762,
+            "messages": 50
+          },
+          {
+            "wallMs": 1.5004159999999729,
+            "cpuMs": 1.954,
+            "queryCount": 117,
+            "rowsRead": 128,
+            "responseBytes": 56762,
+            "messages": 50
+          },
+          {
+            "wallMs": 1.450666999999953,
+            "cpuMs": 1.42,
+            "queryCount": 117,
+            "rowsRead": 128,
+            "responseBytes": 56762,
+            "messages": 50
+          }
+        ]
+      },
+      "baselineHead": "bc01562f6bc61ff0fd5cb0107443a5745c9ea9b2",
+      "improvement": {
+        "list": {
+          "wallFraction": 0.5819982813176581,
+          "cpuFraction": 0.6225471148241695
+        },
+        "recent": {
+          "wallFraction": 0.9289905661116211,
+          "cpuFraction": 0.944383651583958
+        },
+        "older": {
+          "wallFraction": 0.9456065677287576,
+          "cpuFraction": 0.9483583419997028
+        }
+      },
+      "targetMet": true
+    },
+    {
+      "version": 1,
+      "status": "passed",
+      "measuredAt": "2026-11-10T07:41:55.505Z",
+      "head": "cd603c47840a6b860d729a2f7339d16f42c733ef",
+      "dirty": false,
+      "node": "v22.23.2",
+      "platform": "darwin",
+      "arch": "arm64",
+      "shape": {
+        "sessions": 200,
+        "longHistory": 10000,
+        "otherHistory": 20,
+        "textBytes": 1024,
+        "mirrors": 40
+      },
+      "metrics": {
+        "list": {
+          "wallMs": 9.107709,
+          "cpuMs": 9.122,
+          "queryCount": 34,
+          "rowsRead": 1244,
+          "responseBytes": 440676
+        },
+        "recent": {
+          "wallMs": 23.29508300000009,
+          "cpuMs": 23.241,
+          "queryCount": 202,
+          "rowsRead": 171,
+          "responseBytes": 57423
+        },
+        "older": {
+          "wallMs": 10.02595899999983,
+          "cpuMs": 10.047,
+          "queryCount": 145,
+          "rowsRead": 145,
+          "responseBytes": 56762
+        }
+      },
+      "samples": {
+        "list": [
+          {
+            "wallMs": 9.107709,
+            "cpuMs": 9.122,
+            "queryCount": 34,
+            "rowsRead": 1244,
+            "responseBytes": 440676,
+            "sessions": 200
+          },
+          {
+            "wallMs": 9.810582999999951,
+            "cpuMs": 11.187,
+            "queryCount": 34,
+            "rowsRead": 1244,
+            "responseBytes": 440676,
+            "sessions": 200
+          },
+          {
+            "wallMs": 8.818208000000027,
+            "cpuMs": 8.666,
+            "queryCount": 34,
+            "rowsRead": 1244,
+            "responseBytes": 440676,
+            "sessions": 200
+          },
+          {
+            "wallMs": 9.696708999999942,
+            "cpuMs": 10.194,
+            "queryCount": 34,
+            "rowsRead": 1244,
+            "responseBytes": 440676,
+            "sessions": 200
+          },
+          {
+            "wallMs": 8.982499999999959,
+            "cpuMs": 8.53,
+            "queryCount": 34,
+            "rowsRead": 1244,
+            "responseBytes": 440676,
+            "sessions": 200
+          },
+          {
+            "wallMs": 10.283000000000015,
+            "cpuMs": 15.773,
+            "queryCount": 34,
+            "rowsRead": 1244,
+            "responseBytes": 440676,
+            "sessions": 200
+          },
+          {
+            "wallMs": 8.872749999999996,
+            "cpuMs": 8.608,
+            "queryCount": 34,
+            "rowsRead": 1244,
+            "responseBytes": 440676,
+            "sessions": 200
+          }
+        ],
+        "recent": [
+          {
+            "wallMs": 23.29508300000009,
+            "cpuMs": 23.241,
+            "queryCount": 202,
+            "rowsRead": 171,
+            "responseBytes": 57423,
+            "messages": 50
+          },
+          {
+            "wallMs": 22.86145799999997,
+            "cpuMs": 22.815,
+            "queryCount": 202,
+            "rowsRead": 171,
+            "responseBytes": 57423,
+            "messages": 50
+          },
+          {
+            "wallMs": 23.847624999999994,
+            "cpuMs": 23.801,
+            "queryCount": 202,
+            "rowsRead": 171,
+            "responseBytes": 57423,
+            "messages": 50
+          },
+          {
+            "wallMs": 22.67441699999995,
+            "cpuMs": 22.628,
+            "queryCount": 202,
+            "rowsRead": 171,
+            "responseBytes": 57423,
+            "messages": 50
+          },
+          {
+            "wallMs": 24.88820899999996,
+            "cpuMs": 24.993,
+            "queryCount": 202,
+            "rowsRead": 171,
+            "responseBytes": 57423,
+            "messages": 50
+          },
+          {
+            "wallMs": 22.46216699999991,
+            "cpuMs": 22.416,
+            "queryCount": 202,
+            "rowsRead": 171,
+            "responseBytes": 57423,
+            "messages": 50
+          },
+          {
+            "wallMs": 23.443250000000035,
+            "cpuMs": 23.397,
+            "queryCount": 202,
+            "rowsRead": 171,
+            "responseBytes": 57423,
+            "messages": 50
+          }
+        ],
+        "older": [
+          {
+            "wallMs": 10.02595899999983,
+            "cpuMs": 9.978,
+            "queryCount": 145,
+            "rowsRead": 145,
+            "responseBytes": 56762,
+            "messages": 50
+          },
+          {
+            "wallMs": 10.381708000000117,
+            "cpuMs": 11.774,
+            "queryCount": 145,
+            "rowsRead": 145,
+            "responseBytes": 56762,
+            "messages": 50
+          },
+          {
+            "wallMs": 10.092333000000053,
+            "cpuMs": 10.047,
+            "queryCount": 145,
+            "rowsRead": 145,
+            "responseBytes": 56762,
+            "messages": 50
+          },
+          {
+            "wallMs": 9.914708000000019,
+            "cpuMs": 9.866,
+            "queryCount": 145,
+            "rowsRead": 145,
+            "responseBytes": 56762,
+            "messages": 50
+          },
+          {
+            "wallMs": 9.99779199999989,
+            "cpuMs": 9.96,
+            "queryCount": 145,
+            "rowsRead": 145,
+            "responseBytes": 56762,
+            "messages": 50
+          },
+          {
+            "wallMs": 10.175291000000016,
+            "cpuMs": 11.938,
+            "queryCount": 145,
+            "rowsRead": 145,
+            "responseBytes": 56762,
+            "messages": 50
+          },
+          {
+            "wallMs": 9.910708000000113,
+            "cpuMs": 10.182,
+            "queryCount": 145,
+            "rowsRead": 145,
+            "responseBytes": 56762,
+            "messages": 50
+          }
+        ]
+      },
+      "baselineHead": "bc01562f6bc61ff0fd5cb0107443a5745c9ea9b2",
+      "improvement": {
+        "list": {
+          "wallFraction": 0.7225198174799644,
+          "cpuFraction": 0.7276039178213092
+        },
+        "recent": {
+          "wallFraction": 0.7126677025722776,
+          "cpuFraction": 0.7686242496042689
+        },
+        "older": {
+          "wallFraction": 0.8730388387126881,
+          "cpuFraction": 0.884763608836281
+        }
+      },
+      "targetMet": true
+    }
+  ]
+}

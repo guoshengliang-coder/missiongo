@@ -36,6 +36,11 @@ interface Row {
   native_settings_json: string | null;
   created_at: string;
 }
+interface NodeRow { name:string;last_seen_at:string|null;revoked_at:string|null }
+interface OverlayContext {
+  row:Row;node?:NodeRow;nativeMessages:Array<AgentSessionMessageInput & {id:string}>;
+  command?:AgentSessionCommand | undefined;workOpen:boolean;
+}
 type SettingsField = "mode" | "model" | "effort";
 interface SettingsState {
   revision: number; settled: number; desired?: AgentRunSettings;
@@ -147,10 +152,42 @@ export class ExternalNativeSessionStore {
   }
   beforeArchive(accountId: string, id: string): void { this.row(accountId, id); this.requireNoPending(id); }
 
-  overlay(accountId: string, id: string, includeMessages = true) {
-    const row = this.row(accountId, id);
+  /** Request-local list projection; never retain this across permission changes. */
+  overlays(accountId:string,ids:readonly string[]) {
+    const result=new Map<string,ReturnType<ExternalNativeSessionStore["overlay"]>>();
+    if (!ids.length) return result;
+    const selected=JSON.stringify(ids);
+    const rows=this.db.prepare(`SELECT s.*,s.product_id IS NOT NULL OR EXISTS(SELECT 1 FROM external_agent_session_items i
+      JOIN work_items w ON w.id=i.item_id WHERE i.session_id=s.id AND w.status<>'done') AS work_open
+      FROM external_agent_sessions s WHERE s.account_id=? AND s.id IN (SELECT value FROM json_each(?))`)
+      .all(accountId,selected) as unknown as Array<Row & {work_open:number}>;
+    const nodes=this.db.prepare(`SELECT id,COALESCE(nickname,name) AS name,last_seen_at,revoked_at FROM nodes WHERE account_id=?
+      AND id IN (SELECT native_node_id FROM external_agent_sessions WHERE account_id=? AND id IN (SELECT value FROM json_each(?)))`)
+      .all(accountId,accountId,selected) as unknown as Array<NodeRow & {id:string}>;
+    const nodeMap=new Map(nodes.map(node=>[node.id,node]));
+    const messages=this.db.prepare(`SELECT session_id,id,payload_json FROM external_native_messages WHERE rowid IN (
+      SELECT (SELECT m.rowid FROM external_native_messages m WHERE m.session_id=s.id
+        AND COALESCE(json_extract(m.payload_json,'$.phase'),'')<>'execution' ORDER BY m.position DESC,m.rowid DESC LIMIT 1)
+      FROM external_agent_sessions s WHERE s.account_id=? AND s.id IN (SELECT value FROM json_each(?)))`)
+      .all(accountId,selected) as {session_id:string;id:string;payload_json:string}[];
+    const messageMap=new Map(messages.map(row=>[row.session_id,[{...JSON.parse(row.payload_json),id:row.id}]]));
+    this.db.prepare(`UPDATE external_native_commands SET status='delivery_unknown',error='Delivery could not be confirmed. Check the original client before resolving.'
+      WHERE status='delivering' AND delivering_at<? AND session_id IN
+        (SELECT id FROM external_agent_sessions WHERE account_id=? AND id IN (SELECT value FROM json_each(?)))`)
+      .run(new Date(Date.now()-5*60_000).toISOString(),accountId,selected);
+    const commandIds=new Set((this.db.prepare(`SELECT DISTINCT session_id FROM external_native_commands
+      WHERE session_id IN (SELECT id FROM external_agent_sessions WHERE account_id=? AND id IN (SELECT value FROM json_each(?)))`)
+      .all(accountId,selected) as {session_id:string}[]).map(row=>row.session_id));
+    for (const row of rows) result.set(row.id,this.overlay(accountId,row.id,false,{row,
+      ...(row.native_node_id && nodeMap.has(row.native_node_id) ? {node:nodeMap.get(row.native_node_id)!} : {}),
+      nativeMessages:messageMap.get(row.id)??[],...(commandIds.has(row.id)?{command:this.command(row.id)}:{}),workOpen:Boolean(row.work_open)}));
+    return result;
+  }
+
+  overlay(accountId: string, id: string, includeMessages = true, context?:OverlayContext, includeAttachments = includeMessages) {
+    const row = context?.row ?? this.row(accountId, id);
     const snapshot = row.native_snapshot_json ? JSON.parse(row.native_snapshot_json) as NativeSnapshot : undefined;
-    const node = row.native_node_id ? this.db.prepare("SELECT COALESCE(nickname,name) AS name,last_seen_at,revoked_at FROM nodes WHERE id=? AND account_id=?")
+    const node = context ? context.node : row.native_node_id ? this.db.prepare("SELECT COALESCE(nickname,name) AS name,last_seen_at,revoked_at FROM nodes WHERE id=? AND account_id=?")
       .get(row.native_node_id, accountId) as { name: string; last_seen_at: string | null; revoked_at: string | null } | undefined : undefined;
     const online = node && !node.revoked_at && nodeConnectionState(node.last_seen_at ?? undefined) === "online";
     const health = snapshot ? sessionHealth(snapshot.status, row.native_node_id && !row.archived_at && !snapshot.sourceArchived ? snapshot.turnState : {}) : undefined;
@@ -162,15 +199,15 @@ export class ExternalNativeSessionStore {
       ...(row.native_node_id ? { nodeId: row.native_node_id } : {}), ...(node ? { nodeName: node.name } : {}),
       ...(row.native_synced_at ? { lastSyncedAt: row.native_synced_at } : {}),
     };
-    const nativeMessages = (this.db.prepare(includeMessages
+    const nativeMessages = context?.nativeMessages ?? (this.db.prepare(includeMessages
       ? "SELECT id,payload_json FROM external_native_messages WHERE session_id=? AND COALESCE(json_extract(payload_json,'$.phase'),'') <> 'execution' ORDER BY position,rowid"
       : "SELECT id,payload_json FROM external_native_messages WHERE session_id=? AND COALESCE(json_extract(payload_json,'$.phase'),'') <> 'execution' ORDER BY position DESC,rowid DESC LIMIT 1").all(id) as { id: string; payload_json: string }[])
       .map((message) => ({ ...JSON.parse(message.payload_json) as AgentSessionMessageInput, id: message.id }));
-    const command = this.command(id);
+    const command = context ? context.command : this.command(id);
     const revision = snapshot && row.native_node_id ? createHash("sha256").update(JSON.stringify([nativeMessages.at(-1), snapshot.status, snapshot.turnState.waitingForInput, snapshot.error])).digest("hex") : undefined;
     const needed = Boolean(revision && (snapshot?.turnState.waitingForInput || snapshot?.status === "failed" || snapshot?.error || health?.reason) && (health?.reason || row.dismissed_revision !== revision));
     const filesByCommand = new Map<string, AgentSessionAttachment[]>();
-    if (includeMessages) for (const { commandId, ...file } of this.attachments.listForSession(id)) {
+    if (includeAttachments) for (const { commandId, ...file } of this.attachments.listForSession(id)) {
       const files = filesByCommand.get(commandId) ?? [];
       files.push(file); filesByCommand.set(commandId, files);
     }
@@ -180,23 +217,23 @@ export class ExternalNativeSessionStore {
         return attachments ? [{ commandId: entry.id, text: entry.text, status: entry.status, createdAt: entry.created_at, attachments }] : [];
       }) : [];
     return { ...(nativeConnection ? { nativeConnection } : {}), nativeMessages, attachmentMessages,
-      settings: this.settings(row, snapshot, connected),
+      settings: this.settings(row, snapshot, connected, context?.workOpen),
       ...(snapshot ? { status: !row.native_node_id || !online ? "unavailable" as const : health!.status, turnState: snapshot.turnState, activities: snapshot.activities ?? [],
         ...(row.native_synced_at ? { updatedAt: row.native_synced_at } : {}),
         ...(health?.reason || snapshot.error ? { lastError: health?.reason ?? snapshot.error } : {}) } : {}),
-      ...(command ? { command } : {}), replyable: connected && !row.archived_at && this.workOpen(id),
+      ...(command ? { command } : {}), replyable: connected && !row.archived_at && (context ? context.workOpen : this.workOpen(id)),
       ...(revision ? { attention: { state: needed ? "needed" as const : "not_needed" as const, ...(!health?.reason ? { revision } : {}),
         ...(needed ? { kind: "action" as const, reason: health?.reason ?? snapshot?.error ?? nativeMessages.at(-1)?.text ?? "请查看原生会话。" } : {}),
         ...(row.dismissed_revision === revision && !health?.reason ? { dismissed: true } : {}) }, needsAttention: needed, waitingForReply: needed } : {}),
     };
   }
-  private settings(row: Row, snapshot: NativeSnapshot | undefined, connected: boolean): AgentSessionSettings {
+  private settings(row: Row, snapshot: NativeSnapshot | undefined, connected: boolean, workOpen?:boolean): AgentSessionSettings {
     const state = this.settingsState(row);
     const fields = snapshot?.settingsSupport ?? [];
     const values = { ...state.values, ...(snapshot?.mode ? { mode: snapshot.mode } : {}),
       ...(snapshot?.model ? { model: snapshot.model } : {}), ...(snapshot?.effort ? { effort: snapshot.effort } : {}) };
     return { ...values, mode: values.mode ?? "external", supportedFields: fields,
-      adjustable: connected && !row.archived_at && fields.length > 0 && this.workOpen(row.id),
+      adjustable: connected && !row.archived_at && fields.length > 0 && (workOpen ?? this.workOpen(row.id)),
       applyOn: row.agent_kind === "codex" ? "next_reply" : "idle",
       ...(!connected ? { unavailableReason: "connect" as const } : snapshot?.settingsSupport === undefined
         ? { unavailableReason: "upgrade" as const } : fields.length === 0 ? { unavailableReason: "source" as const } : {}),

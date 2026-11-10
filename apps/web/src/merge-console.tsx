@@ -24,20 +24,20 @@ interface Delivery {
 }
 export interface Batch {presentation?:MergeBatchPresentation;integration?:MergeIntegration;id:string;sessionId:string;state:string;deliveries:string[];publish:boolean;results:Record<string,{status:string;detail:string}>}
 const post=<T,>(path:string,body:unknown)=>request<T>(path,{method:"POST",body:JSON.stringify(body)});
-export const useDeliveries=(productId:string)=>useQuery({
-  queryKey:["merge-deliveries",productId],
-  queryFn:()=>request<{deliveries:Delivery[];batches:Batch[];attentionSessionIds?:string[];sessionProgress?:Record<string,MergeProgress>}>(`/api/v1/products/${encodeURIComponent(productId)}/merge-deliveries`),
+export const useDeliveries=(productId:string,sessionId?:string)=>useQuery({
+  queryKey:sessionId ? ["merge-deliveries",productId,sessionId] : ["merge-deliveries",productId],
+  queryFn:({signal})=>request<{deliveries:Delivery[];batches:Batch[];attentionSessionIds?:string[];sessionProgress?:Record<string,MergeProgress>}>(`/api/v1/products/${encodeURIComponent(productId)}/merge-deliveries${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ""}`,{signal}),
   enabled:Boolean(productId),
 });
 
-export function useMergeProgress(productId:string) {
-  const query=useDeliveries(productId);
+export function useMergeProgress(productId:string,sessionId?:string) {
+  const query=useDeliveries(productId,sessionId);
   const progress = deriveMergeProgress(productId,query.data?.deliveries??[],query.data?.batches??[]);
   return { ...progress, sessions: query.data?.sessionProgress ? new Map(Object.entries(query.data.sessionProgress)) : progress.sessions };
 }
 const stageLabels = {pending:"mergePending",merging:"mergeRunning",publishing:"sessionPublishing",publication_unknown:"sessionPublicationUnknown",publication_partial:"sessionPublicationPartial",merged:"sessionMerged",published:"sessionPublished",partial:"sessionMergePartial",blocked:"sessionMergeBlocked"} as const;
 export function SessionDeliveryNotice({productId,sessionId}:{productId:string;sessionId:string}) {
-  const {t}=useI18n(), progress=useMergeProgress(productId), state=progress.sessions.get(sessionId);
+  const {t}=useI18n(), progress=useMergeProgress(productId,sessionId), state=progress.sessions.get(sessionId);
   if(!state)return null;
   return <section role="status" className="merge-delivery-notice confirmed" data-session-delivery={state}>
     <span className="merge-delivery-icon" aria-hidden="true">{state==="publishing"||state==="published"?<CloudUpload size={21}/>:<GitMerge size={21}/>}</span>
@@ -56,7 +56,7 @@ const checkImpact=(blocker?:string)=>blocker==="changed"?"mergeChangedImpact":bl
 
 /** Only explicit, current offers replace generic completion attention. Approval and fault UI stays independent. */
 export function useDeliveryAttention(productId:string,sessionId:string) {
-  const query=useDeliveries(productId);
+  const query=useDeliveries(productId,sessionId);
   return Boolean(query.data?.attentionSessionIds?.includes(sessionId)
     || query.data?.deliveries.some(d=>d.sessionId===sessionId && d.blocker!=="changed"
       && ["proposed","confirmed"].includes(d.state)));
@@ -74,7 +74,7 @@ export async function invalidateSessionDeliveries(client:ReturnType<typeof useQu
 }
 
 export function DeliveryCards({productId,sessionId,blocked=false}:{productId:string;sessionId:string;blocked?:boolean}) {
-  const {t}=useI18n(),client=useQueryClient(),query=useDeliveries(productId);
+  const {t}=useI18n(),client=useQueryClient(),query=useDeliveries(productId,sessionId);
   const locks=useRef(new Set<string>());
   const mutation=useMutation({mutationFn:({d,decision}:{d:Delivery;decision:"confirm"|"withdraw"})=>
     post(`/api/v1/merge-deliveries/${d.id}/decision`,{revision:d.revision,decision}),
@@ -89,9 +89,9 @@ export function DeliveryCards({productId,sessionId,blocked=false}:{productId:str
   };
   const rows=query.data?.deliveries.filter(d=>d.sessionId===sessionId && d.blocker!=="changed"
     && d.state==="proposed")??[];
-  if(query.isError) return <p role="alert" className="inline-error">{t("mergeLoadError")} <button type="button" className="secondary-button" onClick={()=>void query.refetch()}>{t("retry")}</button></p>;
-  if(!rows.length) return <SessionDeliveryNotice productId={productId} sessionId={sessionId}/>;
-  return <div className="merge-delivery-notices">{rows.map(d=><section role="status" className={`merge-delivery-notice ${d.state==="confirmed"?"confirmed":"proposed"}`} key={d.id}>
+  const readError=query.isError ? <p role="alert" className="inline-error">{t("sessionDeliveryLoadError")} <button type="button" className="secondary-button" onClick={()=>void query.refetch()}>{t("retry")}</button></p> : null;
+  if(!rows.length) return <>{readError}<SessionDeliveryNotice productId={productId} sessionId={sessionId}/></>;
+  return <div className="merge-delivery-notices">{readError}{rows.map(d=><section role="status" className={`merge-delivery-notice ${d.state==="confirmed"?"confirmed":"proposed"}`} key={d.id}>
     <span className="merge-delivery-icon" aria-hidden="true">{d.state==="confirmed"?<GitMerge size={21}/>:<Plus size={18}/>}</span>
     <div className="merge-delivery-copy"><strong>{t(d.state==="confirmed"?"mergeConfirmed":d.reconfirmation?"mergeReoffer":"mergeOffer")}</strong>
       {d.state==="confirmed"&&<p>{t("mergeAutoWithdraw")}</p>}
@@ -109,7 +109,7 @@ export function DeliveryCards({productId,sessionId,blocked=false}:{productId:str
 
 /** Batch bookkeeping is deliberately outside the native transcript. */
 export function IntegrationDetails({productId,sessionId}:{productId:string;sessionId:string}) {
-  const {t}=useI18n(),query=useDeliveries(productId);
+  const {t}=useI18n(),query=useDeliveries(productId,sessionId);
   const [open,setOpen]=useState(false);
   useEffect(()=>setOpen(false),[productId,sessionId]);
   const batches=query.data?.batches.filter(batch=>batch.sessionId===sessionId)??[];

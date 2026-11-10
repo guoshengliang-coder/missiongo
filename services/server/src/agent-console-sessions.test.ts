@@ -242,3 +242,32 @@ it("uses the most recent explicit preference when previously separate mirrors ar
   f.db.prepare("UPDATE external_agent_sessions SET native_node_id='node' WHERE id=?").run(f.externalId);
   expect(f.console.getSummary("owner", f.sessionId).favorite).toBe(false);
 });
+
+it("preserves strict prior-time round counts across statuses, tied timestamps and multi-item dispatches",()=>{
+  const f=fixture();
+  const entries=[
+    ["old-launched","2026-10-12T00:00:00.000Z","launched"],
+    ["old-delivered","2026-10-12T00:00:00.000Z","delivered"],
+    ["old-failed","2026-10-12T01:00:00.000Z","failed"],
+    ["same-time","2026-10-13T02:00:00.000Z","launched"],
+    ["later","2026-10-14T00:00:00.000Z","launched"],
+  ];
+  for(const [id,time,status]of entries){
+    f.createDispatch(id!,id!);
+    f.db.prepare("UPDATE dispatches SET created_at=?,status=? WHERE id=?").run(time!,status!,id!);
+  }
+  const second=f.store.createWorkItem({productId:f.item.productId,title:"Second item",description:"",type:"task",priority:"normal"});
+  f.db.prepare("INSERT INTO dispatch_items(dispatch_id,item_id,position) VALUES ('dispatch',?,1)").run(second.id);
+  for(let n=0;n<3;n++){
+    const id=`second-item-${n}`;f.createDispatch(id,id);
+    f.db.prepare("UPDATE dispatches SET created_at='2026-10-11T00:00:00.000Z' WHERE id=?").run(id);
+    f.db.prepare("DELETE FROM dispatch_items WHERE dispatch_id=?").run(id);
+    f.db.prepare("INSERT INTO dispatch_items(dispatch_id,item_id,position) VALUES (?,?,0)").run(id,second.id);
+  }
+  const actual=new Map(f.dispatch.listForAccount("owner").map(row=>[row.dispatchId,row.round]));
+  for(const row of f.db.prepare(`SELECT d.id,COALESCE(MAX((SELECT COUNT(*) FROM dispatch_items previous
+    JOIN dispatches p ON p.id=previous.dispatch_id WHERE previous.item_id=di.item_id AND p.created_at<d.created_at
+    AND p.status IN ('delivered','launched'))),0)+1 AS expected FROM dispatches d JOIN dispatch_items di ON di.dispatch_id=d.id GROUP BY d.id`).all() as {id:string;expected:number}[]){
+    expect(actual.get(row.id),row.id).toBe(row.expected);
+  }
+});

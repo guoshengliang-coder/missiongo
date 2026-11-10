@@ -1108,3 +1108,30 @@ it("AND-484 query work should be bounded by live rows rather than retired histor
   console.log(JSON.stringify({audit:'retired-history-scan',rows:500000,results}));
   expect(f.merges.list(f.item.productId,f.owner.id)).toHaveLength(1);
 },60_000);
+
+describe("AND-497 scoped conversation delivery reads",()=>{
+ it("isolates session, account and project without changing the full list or freshness semantics",async()=>{
+  const f=await prepared();
+  const login=await f.app.inject({method:"POST",url:"/api/v1/auth/login",payload:{username:f.owner.email,password:"synthetic password"}});
+  const cookie=login.headers["set-cookie"]!.toString().split(";")[0]!;
+  const read=(sessionId:string,productId=f.item.productId)=>f.app.inject({method:"GET",url:`/api/v1/products/${productId}/merge-deliveries?sessionId=${encodeURIComponent(sessionId)}`,headers:{cookie}});
+  const own=await read(f.d.sessionId);expect(own.statusCode).toBe(200);expect(own.json().deliveries.map((d:{id:string})=>d.id)).toEqual([f.d.id]);
+  expect((await read("no-delivery")).json()).toEqual({deliveries:[],batches:[],attentionSessionIds:[],sessionProgress:{}});
+  expect(f.merges.list(f.item.productId,f.other.id,f.d.sessionId)).toEqual([]);
+  expect(f.merges.list(f.item.productId,f.owner.id)).toHaveLength(1);
+  const privateProduct=f.store.createProduct({name:"Private",keyPrefix:"PRIVATE",createdByAccountId:config.id});
+  expect((await read(f.d.sessionId,privateProduct.id)).statusCode).toBe(404);
+  expect((await read("")).statusCode).toBe(400);
+  new AgentSessionStore(f.store.database).enqueue(f.owner.id,f.projectSessionId,"Continue changing",[]);
+  expect((await read(f.d.sessionId)).json().deliveries).toEqual([]);
+ });
+ it("returns standalone offers and only the requested integration batch",async()=>{
+  const f=await fixture(),launched=f.launch("codex"),merges=new MergeDeliveries(f.store);
+  const d=merges.propose(f.owner.id,"original-client",{dispatchId:launched.dispatch.id},"standalone",{...proposal(f.item.key),itemKeys:[],productId:f.item.productId});
+  expect(merges.list(f.item.productId,f.owner.id,d.sessionId).map(row=>row.id)).toEqual([d.id]);
+  merges.decide(f.owner.id,d.id,d.revision,"confirm");
+  const batch=merges.start(f.owner.id,"batch",[{id:d.id,revision:d.revision}],{productId:f.item.productId,nodeId:launched.node.nodeId,agentKind:"codex",mode:"default"},false);
+  expect(merges.batches(f.item.productId,f.owner.id,batch.sessionId).map(row=>row.id)).toEqual([batch.id]);
+  expect(merges.batches(f.item.productId,f.owner.id,"unrelated")).toEqual([]);
+ });
+});

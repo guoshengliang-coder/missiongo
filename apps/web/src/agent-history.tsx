@@ -1,3 +1,4 @@
+import { withCurrentRequests } from "./current-session-requests";
 import { catchUpStoredHistory, historyMessageKey } from "./agent-history-catchup";
 import { useQueryClient } from "@tanstack/react-query";
 import { waitForAgentHistory } from "./agent-history-result";
@@ -21,41 +22,64 @@ export function useAgentHistory(sessionId: string | null, session: AgentSession 
     next: undefined as string | null | undefined, loading: false, error: false, revision: 0 });
   const generation = useRef(0);
   const windowGeneration = useRef(0);
-  const frontier = useRef<{ id:string; message:string } | null>(null);
+  const [windowRetry,retryWindow]=useState(0);
+  const frontier = useRef<{ id:string; message:string; nextCursor:string|undefined } | null>(null);
   const busy = useRef(false);
+  const bridging=useRef(false);
   const anchor = useRef<{ id: string; top: number } | null>(null);
   useEffect(() => {
-    generation.current++; windowGeneration.current++; frontier.current=null; busy.current = false; anchor.current = null;
+    generation.current++; windowGeneration.current++; frontier.current=null; busy.current = false; bridging.current=false; anchor.current = null;
     setState({ id: sessionId, older: [], next: undefined, loading: false, error: false, revision: 0 });
     return () => { generation.current++; };
   }, [sessionId]);
   useEffect(() => {
     if (!sessionId || !session) return;
     const run=++windowGeneration.current;
-    const previous=frontier.current?.id===sessionId ? frontier.current.message : undefined;
+    const previousWindow=frontier.current?.id===sessionId ? frontier.current : undefined;
+    const previous=previousWindow?.message;
     const last=session.messages.at(-1);
     const gap=Boolean(previous && last && !session.messages.some(message=>historyMessageKey(message)===previous)
       && session.history?.nextCursor?.startsWith("stored:"));
     const apply=(bridge:readonly AgentSessionMessage[])=>{
       if(run!==windowGeneration.current)return;
-      frontier.current=last?{id:sessionId,message:historyMessageKey(last)}:null;
-      setState(current=>current.id!==sessionId?current:({...current,loading:false,error:false,
-        older:mergeMessages(current.older,[...bridge,...session.messages])}));
+      // A recent window moving forward must not move the older-page boundary
+      // forward with it. The gap bridge only adds messages after our frontier;
+      // the previous window's cursor still names the unread history before it.
+      const advanced=previous && last && previous!==historyMessageKey(last);
+      frontier.current=last?{id:sessionId,message:historyMessageKey(last),nextCursor:session.history?.nextCursor}:null;
+      setState(current=>{
+        if(current.id!==sessionId)return current;
+        // A formerly complete stored window may acquire source history later.
+        // Keep that continuation discoverable rather than freezing a null end.
+        const earlier=previousWindow?.nextCursor??(session.history?.nextCursor?.startsWith("stored:") && current.older[0]
+          ? `stored:${current.older[0].id}` : session.history?.nextCursor);
+        return {...current,loading:false,error:false,next:current.next===undefined && advanced ? earlier : current.next,
+          older:mergeMessages(current.older,[...bridge,...session.messages])};
+      });
     };
-    if(!gap){apply([]);return;}
+    if(!gap){bridging.current=false;apply([]);return;}
+    bridging.current=true;
     setState(current=>({...current,loading:true,error:false}));
     void catchUpStoredHistory(session.history?.nextCursor,previous!,cursor=>{
       if(run!==windowGeneration.current)throw new Error("History window changed");
       return api.getAgentHistory(sessionId,cursor);
     })
-      .then(apply).catch(()=>{if(run===windowGeneration.current)setState(current=>({...current,loading:false,error:true}));});
-    return ()=>{windowGeneration.current++;};
-  }, [sessionId, session?.messages, session?.history?.nextCursor]);
+      .then(apply).catch(()=>{if(run===windowGeneration.current)setState(current=>({...current,loading:false,error:true}));})
+      .finally(()=>{if(run===windowGeneration.current)bridging.current=false;});
+    return ()=>{windowGeneration.current++;bridging.current=false;};
+  }, [sessionId, session?.messages, session?.history?.nextCursor, windowRetry]);
   const current = state.id === sessionId ? state : undefined;
   const cursor = current?.next === undefined ? session?.history?.nextCursor : current.next ?? undefined;
-  const messages = useMemo(() => mergeMessages(current?.older ?? [], session?.messages ?? []), [current?.older, session?.messages]);
+  const messages = useMemo(() => withCurrentRequests(mergeMessages(current?.older ?? [], session?.messages ?? []), session?.currentRequests), [current?.older, session?.messages, session?.currentRequests]);
   const loadMore = useCallback(async () => {
-    if (!sessionId || !cursor || busy.current) return;
+    if (!sessionId || !cursor || busy.current || bridging.current) return;
+    const previous=frontier.current?.id===sessionId?frontier.current.message:undefined;
+    if(current?.error && previous && session?.history?.nextCursor?.startsWith("stored:")
+      && !session.messages.some(message=>historyMessageKey(message)===previous)){
+      // Retry the failed bridge before paging beyond the cached prefix. A
+      // normal prepend here could put a newer range ahead of that prefix.
+      bridging.current=true;setState(previous=>({...previous,loading:true,error:false}));retryWindow(value=>value+1);return;
+    }
     busy.current = true;
     const run = generation.current;
     const box = container.current;
@@ -74,7 +98,7 @@ export function useAgentHistory(sessionId: string | null, session: AgentSession 
     } catch {
       if (generation.current === run) setState(previous => ({ ...previous, loading: false, error: true }));
     } finally { if (generation.current === run) busy.current = false; }
-  }, [client, container, cursor, sessionId]);
+  }, [client, container, cursor, sessionId, current?.error, session]);
   useLayoutEffect(() => {
     if (!anchor.current || !container.current) return;
     const element = [...container.current.querySelectorAll<HTMLElement>("[data-agent-message-id]")]
