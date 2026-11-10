@@ -2676,5 +2676,28 @@ export class MissionGoDatabase {
       });
     }
 
+    // AND-498: additive lookup/paging indexes; source histories remain authoritative.
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611100633").get()) {
+      this.transaction(() => {
+        this.connection.exec(`
+          CREATE INDEX session_native_lookup ON agent_sessions(agent_session_ref,agent_kind,dispatch_id);
+          CREATE INDEX external_session_native_lookup ON external_agent_sessions(account_id,agent_kind,ref_kind,session_ref);
+          CREATE INDEX external_messages_order ON external_native_messages(session_id,position);
+          CREATE INDEX session_messages_time ON agent_session_messages(session_id,occurred_at,position,observed_at);
+          CREATE INDEX session_messages_role ON agent_session_messages(session_id,role,position,observed_at);
+          CREATE INDEX session_messages_questions ON agent_session_messages(session_id) WHERE questions_json IS NOT NULL;
+          CREATE INDEX external_messages_time ON external_native_messages(session_id,
+            COALESCE(json_extract(payload_json,'$.occurredAt'),''),position,source_id,id,
+            json_extract(payload_json,'$.role'),json_extract(payload_json,'$.phase'));
+          CREATE INDEX external_messages_role ON external_native_messages(session_id,json_extract(payload_json,'$.role'),
+            COALESCE(json_extract(payload_json,'$.occurredAt'),''),position,source_id,id,json_extract(payload_json,'$.phase'));
+          CREATE INDEX external_messages_questions ON external_native_messages(session_id)
+            WHERE json_extract(payload_json,'$.questions') IS NOT NULL;
+        `);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+          .run(202611100633,new Date().toISOString());
+      });
+    }
+
   }
 }

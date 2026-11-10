@@ -27,7 +27,7 @@ async function mockSession(page: Page, kind: Kind, id = `and449-${kind}`) {
     await route.fulfill({ json: new URL(route.request().url()).pathname === "/api/v1/agent-sessions" ? { sessions: [common] } : detail });
   });
   if (kind === "integration") {
-    await page.route("**/merge-deliveries", route => route.fulfill({ json: {
+    await page.route(/\/merge-deliveries(?:\?.*)?$/, route => route.fulfill({ json: {
       deliveries: [{ id: "and449-delivery", productId: fixture.productId, sessionId: id, revision: "frozen", state: "batched",
         summary: "会话呈现调整", validation: "本地检查通过", itemKeys: [fixture.detailKey, "AND-448", "AND-445"],
         head: "a".repeat(40), requiredArtifacts: ["web"], pullRequestUrl: "https://example.test/pr/1",

@@ -75,19 +75,19 @@ async function fixture(external = false, initialMessages?: AgentSessionMessageIn
   return { app, headers, store, db, product, dispatch, id, get, offer, approve, provider, messages };
 }
 
-it.each([false, true])("reads the session group once per detail or plan records request (external=%s)", async (external) => {
+it.each([false, true])("locates only the requested group without an account-wide scan per detail or plan records request (external=%s)", async (external) => {
   const f = await fixture(external);
   const groups = vi.spyOn(AgentConsoleSessions.prototype, "groups");
   try {
     const detail = await f.get();
     expect(detail.statusCode, detail.body).toBe(200);
     expect(detail.json().hasPlanRecords).toBe(external);
-    expect(groups).toHaveBeenCalledTimes(1);
+    expect(groups).not.toHaveBeenCalled();
 
     groups.mockClear();
     const records = await f.app.inject({ url: `/api/v1/agent-sessions/${f.id}/plan-records`, headers: f.headers });
     expect(records.statusCode, records.body).toBe(200);
-    expect(groups).toHaveBeenCalledTimes(1);
+    expect(groups).not.toHaveBeenCalled();
   } finally {
     groups.mockRestore();
   }
@@ -454,4 +454,67 @@ it("does not revive a persisted native plan-mode progress proposal",async()=>{
   expect(detail.planApproval).toBeUndefined();
   const rows=(await f.app.inject({method:"GET",url:"/api/v1/agent-sessions",headers:f.headers})).json().sessions;
   expect(rows[0].attention.kind).not.toBe("approval");
+});
+
+it.each([false,true])("keeps current requests and registered plan context outside the recent history window (external=%s)",async(external)=>{
+  const f=await fixture(external);
+  const initial=f.messages[0]!;
+  const permission={sourceId:"old-request",role:"agent" as const,text:"Source request",questions:[{title:"Confirm source request",key:"授权请求 earlier",options:["Allow","Deny"]}]};
+  const messages=[permission,initial,{sourceId:"new-requirement",role:"user" as const,text:"Change the requirement"},
+    ...Array.from({length:120},(_,n)=>({sourceId:`later-${n}`,role:"agent" as const,text:`Later ${n}`}))].map(message=>({...message,occurredAt:new Date(Date.parse(initial.occurredAt!)+1000).toISOString()}));
+  if(external){
+    f.db.prepare("DELETE FROM external_native_messages WHERE session_id=?").run(f.id);
+    for(const [position,message]of messages.entries())f.db.prepare("INSERT INTO external_native_messages(id,session_id,source_id,payload_json,position) VALUES (?,?,?,?,?)")
+      .run(`scoped-${position}`,f.id,message.sourceId,JSON.stringify(message),position);
+  }else f.dispatch.recordSnapshot({nodeId:"node",sessionId:f.id,status:"idle",messages});
+  const recent=await f.app.inject({url:`/api/v1/agent-sessions/${f.id}?history=recent`,headers:f.headers});
+  expect(recent.statusCode,recent.body).toBe(200);
+  expect(recent.json().messages).toHaveLength(50);
+  expect(recent.json().messages.every((m:{sourceId:string})=>m.sourceId.startsWith("later-"))).toBe(true);
+  expect(recent.json().currentRequests).toMatchObject([{sourceId:"old-request"}]);
+  expect(recent.json().planApprovalStatus).toMatchObject({code:"not_approval"});
+  expect(recent.json().canApprovePlan).toBe(false);
+  const full=await f.get();
+  expect(full.json().messages).toHaveLength(messages.length);
+  expect(full.json().planApprovalStatus).toEqual(recent.json().planApprovalStatus);
+});
+
+it("bounds progress reports on recent detail and serves older pages through the same account authorization",async()=>{
+  const f=await fixture(true);
+  const insert=f.db.prepare(`INSERT INTO external_agent_session_reports(id,session_id,item_key,status,text,idempotency_key,digest,created_at)
+    VALUES (?,?,?,'working',?,?,?,?)`);
+  for(let n=0;n<123;n++)insert.run(`report-${n}`,f.id,"EX-1",`Report ${n}`,`report-${n}`,`synthetic-${n}`,"2026-11-10T00:00:00.000Z");
+  const recent=await f.app.inject({url:`/api/v1/agent-sessions/${f.id}?history=recent`,headers:f.headers});
+  expect(recent.statusCode,recent.body).toBe(200);
+  expect(recent.json().progressReports).toHaveLength(50);
+  const url=`/api/v1/agent-sessions/${f.id}/progress-reports?cursor=${encodeURIComponent(recent.json().progressHistory.nextCursor)}`;
+  const older=await f.app.inject({url,headers:f.headers});
+  expect(older.statusCode,older.body).toBe(200);expect(older.json().progressReports).toHaveLength(50);
+  expect((await f.app.inject({url})).statusCode).toBe(401);
+  expect((await f.get()).json().progressReports).toHaveLength(124); // Includes the original registration report.
+  expect(f.db.prepare("SELECT COUNT(*) AS n FROM external_native_commands").get()).toEqual({n:0});
+});
+
+it("does not revive a plan when another mirror reuses its source ID for a later role",async()=>{
+  const f=await fixture();
+  const {synchronizeNativePlan}=await import("./native-plan-approval.js");
+  synchronizeNativePlan(f.store.database,"owner",f.id);
+  expect(f.db.prepare("SELECT json_extract(proposal_json, '$.nativeSourceId') AS source FROM implementation_plan_requests WHERE identity_key='dispatch:dispatch'").get()).toEqual({source:"plan"});
+  const offer=(await f.get()).json().planApproval;
+  expect(offer).toBeDefined();
+  const plan=f.messages[0]!;
+  const base=Date.parse(plan.occurredAt!);
+  f.dispatch.recordSnapshot({nodeId:"node",sessionId:f.id,status:"idle",messages:[plan,
+    {sourceId:"follow-up",role:"user",text:"Change this requirement",occurredAt:new Date(base+1000).toISOString()}]});
+  const external=new ExternalAgentSessionStore(f.store);
+  const mirror=external.register({accountId:"owner",clientId:"audit-mirror"},{agentKind:"codex",sessionRef:"thread",refKind:"native"},f.product.keyPrefix+"-1");
+  f.db.prepare("INSERT INTO external_native_messages(id,session_id,source_id,payload_json,position) VALUES ('audit-role-alias',?,?,?,0)")
+    .run(mirror,plan.sourceId,JSON.stringify({sourceId:plan.sourceId,role:"agent",text:"Later mirror message",occurredAt:new Date(base+2000).toISOString()}));
+  const recent=await f.app.inject({url:`/api/v1/agent-sessions/${f.id}?history=recent`,headers:f.headers});
+  expect(recent.statusCode,recent.body).toBe(200);
+  expect(recent.json().planApprovalStatus).toEqual({code:"not_approval"});
+  expect(recent.json().canApprovePlan).toBe(false);
+  expect((await f.approve(offer.revision)).statusCode).toBe(409);
+  expect(f.db.prepare("SELECT COUNT(*) AS n FROM agent_session_commands").get()).toEqual({n:0});
+  expect(f.db.prepare("SELECT COUNT(*) AS n FROM implementation_plan_approvals").get()).toEqual({n:0});
 });

@@ -234,6 +234,17 @@ describe("database migrations", () => {
     beforeCollaboration(legacy);
     beforeManagedExecution(legacy);
     legacy.exec(`
+      -- Reconstruct the pre-occurrence-time schema, including removal of newer indexes.
+      DROP INDEX session_native_lookup;
+      DROP INDEX external_session_native_lookup;
+      DROP INDEX external_messages_order;
+      DROP INDEX session_messages_time;
+      DROP INDEX session_messages_role;
+      DROP INDEX session_messages_questions;
+      DROP INDEX external_messages_time;
+      DROP INDEX external_messages_role;
+      DROP INDEX external_messages_questions;
+      DELETE FROM schema_migrations WHERE version=202611100633;
       ALTER TABLE agent_session_messages DROP COLUMN occurred_at;
       DELETE FROM schema_migrations WHERE version = 202609220501;
     `);

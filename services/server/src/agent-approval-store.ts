@@ -78,8 +78,8 @@ export class AgentApprovalStore {
   constructor(private readonly database: MissionGoDatabase) {}
 
   /** Source permission prompts override text classifiers and queued chat replies. */
-  withAttention<T extends Pick<AgentSessionListItem, "id" | "agentKind" | "archivedAt">>(session: T): T & { approval?: AgentApproval } {
-    const approval = session.agentKind === "codex" ? this.get(session.id) : undefined;
+  withAttention<T extends Pick<AgentSessionListItem, "id" | "agentKind" | "archivedAt">>(session: T, approvals?: ReadonlyMap<string,AgentApproval>): T & { approval?: AgentApproval } {
+    const approval = session.agentKind === "codex" ? (approvals ? approvals.get(session.id) : this.get(session.id)) : undefined;
     if (!approval) return session;
     const needed = !session.archivedAt && (approval.kind === "manual"
       ? (approval.status === "pending" && !approval.decision) || ["unavailable", "reconnecting"].includes(approval.status)
@@ -90,6 +90,12 @@ export class AgentApprovalStore {
         kind: approval.requestKind === "question" ? "answer" as const : "approval" as const,
         reason: approval.reason ?? attentionFallback(approval), revision: `approval:${approval.id}` },
     } : {}) };
+  }
+
+  forSessions(sessionIds: readonly string[]): ReadonlyMap<string,AgentApproval> {
+    const rows=this.database.connection.prepare("SELECT * FROM agent_session_approvals WHERE session_id IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify(sessionIds)) as unknown as ApprovalRow[];
+    return new Map(rows.map(row=>[row.session_id,publicApproval(row)]));
   }
 
   get(sessionId: string): AgentApproval | undefined {
