@@ -93,8 +93,10 @@ describe("item-scoped observation diagnostics", () => {
  it("isolates repository, product and environment, including GitLab subgroups and GitHub", () => {
   const s=setup(),item=delivery(s);
   s.upload(s.observation({environment:"staging"}));
-  s.upload(s.observation({repository:`${repository}/subgroup`}));
+  const subgroup=s.observation({repository:`${repository}/subgroup`});s.upload(subgroup);
   expect(read(s,item.key).items[0]!.status).toBe("not_found");
+  const subgroupItem=delivery(s,{completion:{...completion,url:`${repository}/subgroup/-/merge_requests/14`}});
+  expect(read(s,subgroupItem.key)).toMatchObject({items:[{status:"available",observationId:subgroup.id}],observations:[subgroup]});
   const fact=s.observation();s.upload(fact);
   const rows=store.getDeliveryRecords(item.key),explanations=deliveryExplanations(store,item.key,rows);
   const other=store.createProduct({name:"Other",keyPrefix:"OTH"});
