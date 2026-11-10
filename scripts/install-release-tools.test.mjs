@@ -32,7 +32,7 @@ const sources = {
   "release-status.sh": "release_status_begin() { :; }\n",
   "deploy.sh": "#!/usr/bin/env bash\nexec python3 release-lock.py -- bash deploy.sh \"$@\"\n"
     + "source release-timing.sh\nsource release-coverage-guard.sh\nsource release-status.sh\n"
-    + "node release-preflight.mjs\nnode release-receipt.mjs\nnode release-ci-wait.mjs\n",
+    + "node release-preflight.mjs\nnode release-receipt.mjs\n",
   "missiongo-release.py": '"""Runs under release-lock.py; node release-ci.mjs runs the CI checks."""\nfrom release_coverage_options import coverage_options\n',
 };
 
@@ -127,13 +127,15 @@ test("names which item no longer references a shared guard", () => {
   try {
     for (const [file, text, name] of [
       ["deploy.sh", sources["deploy.sh"].replace("source release-coverage-guard.sh\n", ""), "release-coverage-guard.sh"],
-      ["deploy.sh", sources["deploy.sh"].replace("node release-ci-wait.mjs\n", ""), "release-ci-wait.mjs"],
+      ["deploy.sh", sources["deploy.sh"].replace("node release-receipt.mjs\n", ""), "release-receipt.mjs"],
       ["missiongo-release.py", sources["missiongo-release.py"].replace("release-lock.py", ""), "release-lock.py"],
     ]) {
       writeFileSync(join(source, "scripts", file), text);
       assert.throws(() => install({ source, home, commit: "c".repeat(40), tools, dryRun: true }), new RegExp(`missing: ${name.replace(".", "\\.")}`));
       writeFileSync(join(source, "scripts", file), sources[file]);
     }
+    // The CI wait script only serves agents, so neither file has to name it.
+    assert.doesNotThrow(() => install({ source, home, commit: "c".repeat(40), tools, dryRun: true }));
   } finally { done(); }
 });
 
