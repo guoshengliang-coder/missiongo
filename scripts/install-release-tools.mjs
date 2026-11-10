@@ -6,17 +6,20 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, linkSync, lstatSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { atomicInstallWrite } from "./enable-release-performance.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const TOOLS = [
   "release-lock.py", "release_coverage_options.py", "release-preflight.mjs", "release-receipt.mjs",
-  "release-ci.mjs", "release-ci-wait.mjs", "release-coverage-guard.sh", "release-status.sh", "release-timing.sh", "deploy.sh",
+  "release-ci.mjs", "release-ci-wait.mjs", "linux-release-tools.mjs", "handover-evidence.mjs",
+  "release-coverage.mjs", "release-candidates.mjs", "release-coverage-guard.sh", "release-status.sh", "release-timing.sh", "deploy.sh",
 ];
 const ENTRY = "missiongo-release.py";
-const DEFAULT_TOOLS = { ...Object.fromEntries(TOOLS.map(name => [name, name])), entry: ENTRY };
+const DEFAULT_TOOLS = { ...Object.fromEntries(TOOLS.map(name => [name, name])),
+  // Install the implementation, not the repo-relative forwarding module.
+  "handover-evidence.mjs": "../apps/web/public/downloads/missiongo-handover.mjs", entry: ENTRY };
 
 export function parseInstallArgs(args) {
   assert.ok(args.length === 0 || (args.length === 1 && args[0] === "--dry-run"), "Usage: install-release-tools.mjs [--dry-run]");
@@ -57,8 +60,18 @@ export function install({ dryRun = false, home = homedir(), configHome = process
     const deploy = targets.find(target => target.name === "deploy.sh")?.text ?? "";
     const references = (text, name) => new RegExp(`(?<![\\w.-])${name.replace(".", "\\.")}(?![\\w-])`).test(text);
     const helpers = Object.keys(tools).filter(name => !["deploy.sh", "entry", "release-lock.py", "release_coverage_options.py", "release-ci-wait.mjs"].includes(name));
+    // A guard may import a helper rather than call it from the coordinator.
+    // Follow only references reachable from the entry and deployment script.
+    let reachable = entry + "\n" + deploy;
+    const included = new Set();
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const target of targets) if (!included.has(target.name) && references(reachable, target.name)) {
+        included.add(target.name); reachable += "\n" + target.text; changed = true;
+      }
+    }
     const missing = [references(entry, "release-lock.py") ? null : "release-lock.py",
-      ...helpers.filter(name => !references(entry, name) && !references(deploy, name))].filter(Boolean);
+      ...helpers.filter(name => !included.has(name))].filter(Boolean);
     if (missing.length) {
       throw new Error(`The release entry or deploy.sh no longer carries the shared lock, CI and coverage guards (missing: ${missing.join(", ")}); the installation was preserved`);
     }
@@ -108,10 +121,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     }
     const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
     execFileSync("git", ["merge-base", "--is-ancestor", "origin/main", "HEAD"], { cwd: root });
-    if (execFileSync("git", ["status", "--porcelain", "--", "scripts"], { cwd: root, encoding: "utf8" }).trim()) {
+    if (execFileSync("git", ["status", "--porcelain", "--", "scripts", "apps/web/public/downloads/missiongo-handover.mjs"], { cwd: root, encoding: "utf8" }).trim()) {
       throw new Error("Release tools in scripts/ have uncommitted changes; commit them before installing");
     }
-    for (const file of [...TOOLS, ENTRY]) execFileSync("git", ["cat-file", "-e", `${commit}:scripts/${file}`], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+    for (const file of Object.values(DEFAULT_TOOLS)) execFileSync("git", ["cat-file", "-e", `${commit}:${relative(root, join(root, "scripts", file))}`], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
     console.log(JSON.stringify(install({ dryRun, commit, configHome }), null, 2));
   } catch (error) { console.error(`Release tool installation failed: ${error.message}`); process.exitCode = 1; }
 }

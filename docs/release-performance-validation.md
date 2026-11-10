@@ -136,3 +136,21 @@ CLI 已先取得同一 OS 锁，实际持锁子进程实验验证忙锁退出 75
 已统一安装配置与共享锁的 XDG 根目录，要求绝对路径；CLI 仅接受无参数安装或单个 --dry-run，
 其他参数在取锁/写入前拒绝；CLI 和导出函数共用同一默认文件映射。
 预算、120 秒、生产部署/回滚逻辑和前两轮补修保持；结果及本地提交详见最终固定审计记录。
+
+## Integration repair: installed module dependencies
+
+The batch integration reproduced a real `missiongo-release plan` startup failure:
+`release-receipt.mjs` could not load its installed Linux helper. An isolated
+installation also failed to load preflight/receipt because their transitive
+modules were omitted, and installing the repository handover forwarding module
+would still point outside the installed tools directory.
+
+The installer now includes Linux, coverage, candidate and handover dependencies,
+using the self-contained public handover implementation under its installed name.
+Guard reachability follows references from the coordinator/deploy through installed
+modules; the original lock and guard rejection tests remain. All source files,
+including the public implementation, must be tracked and clean at installation.
+The new isolated-install test imports both actual installed modules and failed
+before the repair; all 14 installer tests pass afterward. This does not constitute
+production deployment or formal installation evidence; final batch checks and the
+actual installation remain separate.

@@ -40,3 +40,8 @@ node scripts/install-release-tools.mjs             # 实际安装
 版本化入口自带阻断式性能冒烟，统一安装/升级不会移除它。首次安装后仍须按
 `docs/release-coverage.md` 的性能安装步骤配置私有备份目录；未配置时 check/deploy 明确拒绝。
 升级比较当前源码，而不是只与旧清单比较，避免新门禁未写入却更新了清单摘要。
+
+The installation also carries the transitive Linux, coverage, candidate and
+handover modules used by preflight/receipt. The public handover implementation is
+installed as `handover-evidence.mjs`; its repository-relative forwarding module is
+not copied. The public implementation must be tracked and clean alongside scripts.

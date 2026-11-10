@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { install, parseInstallArgs } from "./install-release-tools.mjs";
 
@@ -95,7 +95,7 @@ test("the public default tool set resolves real repository filenames", () => {
   const { home, done } = setup();
   try {
     const result = install({ home, dryRun: true });
-    assert.deepEqual(result.changed.sort(), Object.keys(tools).sort());
+    assert.deepEqual(result.changed.sort(), [...Object.keys(tools), "linux-release-tools.mjs", "handover-evidence.mjs", "release-coverage.mjs", "release-candidates.mjs"].sort());
   } finally { done(); }
 });
 
@@ -206,4 +206,17 @@ test("the unified installer refuses the actual busy release lock before prefligh
     const stopped = once(holder, "exit"); holder.kill(); await stopped;
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+
+test("a real isolated installation loads preflight and receipt with their module dependencies", () => {
+  const { home, done } = setup();
+  try {
+    install({ home });
+    const directory = join(home, ".config/missiongo/release-tools");
+    for (const name of ["release-preflight.mjs", "release-receipt.mjs"]) {
+      const result = spawnSync(process.execPath, ["--input-type=module", "-e", `await import(${JSON.stringify(pathToFileURL(join(directory, name)).href)})`], { encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+    }
+  } finally { done(); }
 });
