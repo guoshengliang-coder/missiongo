@@ -23,6 +23,11 @@ export function validateBudget(config) {
   assert.deepEqual(Object.keys(config.targets).sort(), ["item-list", "item-summary", "merge-deliveries"]);
   for (const target of Object.values(config.targets)) assert.ok(positive(target.budgetMs)
     && integer(target.iterations, 1, 10_000), "Invalid target budget");
+  const r = config.release;
+  assert.ok(r?.version === 1 && r.timingUnit === "wall-ms" && r.maxDurationMs === 120000, "Invalid release performance contract");
+  assert.ok(typeof r.reason === "string" && r.reason.trim(), "Release budgets need a reason");
+  assert.deepEqual(Object.keys(r.httpTargets).sort(), ["claim-next", "item-list", "merge-deliveries"]);
+  for (const target of Object.values(r.httpTargets)) assert.ok(positive(target.budgetMs) && integer(target.iterations, 1, 100), "Invalid HTTP budget");
   return config;
 }
 
