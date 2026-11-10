@@ -81,3 +81,21 @@ test("refuses to guess a patch for versions that are not major.minor.patch", () 
   assert.throws(() => bumpPatchVersions("origin/main", root), /not a numeric major\.minor\.patch version/);
   rmSync(root, { recursive: true, force: true });
 });
+
+test("raises an uncommitted raise again instead of shipping it over", () => {
+  const { root } = repository();
+  merged(root, "apps/macos");
+  // origin/main already carries the merged work; the checked-out declaration is behind it.
+  git(root, "update-ref", "refs/remotes/origin/main", "HEAD");
+  writeFileSync(join(root, "apps/macos/version.properties"), "missiongoMacosVersion=0.4.88\n");
+  assert.deepEqual(bumpPatchVersions("origin/main", root), [{ artifact: "macosApp", from: "0.4.88", to: "0.4.89", file: "apps/macos/version.properties" }]);
+  assert.match(readFileSync(join(root, "apps/macos/version.properties"), "utf8"), /^missiongoMacosVersion=0\.4\.89$/m);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("treats an unresolvable baseline as unknown instead of raising blindly", () => {
+  const { root } = repository();
+  merged(root, "apps/macos");
+  assert.deepEqual(bumpPatchVersions("origin/main", root), []);
+  rmSync(root, { recursive: true, force: true });
+});
