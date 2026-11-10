@@ -151,6 +151,27 @@ test("the repository's own entry and deploy.sh pass the lock and guard checks", 
   } finally { done(); }
 });
 
+test("installed deploy enters the coordinator checkout before running Git guards", () => {
+  const files = { ...real, "deploy.sh": readFileSync(join(repositoryScripts, "deploy.sh"), "utf8"),
+    "release-timing.sh": "release_timing_start() { :; }\nrelease_timing_stage() { :; }\n" };
+  const { source, home, done } = setup({ files });
+  try {
+    install({ source, home, commit: "c".repeat(40), tools });
+    const checkout = join(home, "candidate checkout"), bin = join(home, "bin"), captured = join(home, "git-cwd");
+    mkdirSync(join(checkout, "deploy"), { recursive: true });
+    writeFileSync(join(checkout, "deploy/docker-compose.yml"), "services: {}\n");
+    mkdirSync(bin);
+    // Stop at the first Git guard: no SSH, backup or production command can run.
+    writeFileSync(join(bin, "git"), '#!/bin/sh\npwd > "$CAPTURE_GIT_CWD"\nexit 1\n', { mode: 0o700 });
+    const result = spawnSync("bash", [join(home, ".config/missiongo/release-tools/deploy.sh"), "--host", "fixture", "--env-file", "/fixture/env"],
+      { cwd: home, encoding: "utf8", timeout: 5000, env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`,
+        MISSIONGO_RELEASE_ROOT: checkout, MISSIONGO_RELEASE_TOOLS: join(home, ".config/missiongo/release-tools"), CAPTURE_GIT_CWD: captured } });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Not a git checkout/);
+    assert.equal(readFileSync(captured, "utf8").trim(), checkout);
+  } finally { done(); }
+});
+
 test("refuses a deploy.sh or entry that lost the shared guards", () => {
   for (const [file, text] of [["deploy.sh", "#!/usr/bin/env bash\necho deploy\n"], ["missiongo-release.py", "print('no guards')\n"]]) {
     const { source, home, done } = setup();
