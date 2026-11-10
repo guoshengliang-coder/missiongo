@@ -1,9 +1,16 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { MissionGoStore } from "./store.js";
-import type { CompletionReference } from "@missiongo/contracts";
+import type { CompletionReference, DeliveryExplanation } from "@missiongo/contracts";
 import { conflict, invalidInput, notFound } from "./errors.js";
 import { isReleaseArtifactId, MAX_RELEASE_ARTIFACTS } from "./types.js";
+
+export const MAX_OBSERVATION_DIAGNOSTICS = 20;
+type ObservationDiagnostic = {
+  developmentEventId: string;
+  status: "historical" | "integration_missing" | "repository_unavailable" | "not_found" | "invalid_observation" | "read_failed" | "available";
+  observationId?: string;
+};
 
 const sha = z.string().regex(/^[a-f0-9]{40}$/);
 const https = z.string().max(2000).refine(value => {
@@ -41,6 +48,51 @@ export class ReleaseObservations {
       WHERE product_id=? AND repository=? AND environment='production' ORDER BY observed_at DESC LIMIT 1`)
       .get(productId,repository) as {payload_json:string} | undefined;
     return row ? JSON.parse(row.payload_json) as ReleaseObservation : undefined;
+  }
+
+  /** Locator hints only. No network access, coverage assertion, receipt or status write. */
+  diagnostics(productId: string, deliveries: ReturnType<MissionGoStore["getDeliveryRecords"]>, explanations: readonly DeliveryExplanation[]) {
+    const current = new Set(explanations.filter(row => row.applicability === "current").map(row => row.developmentEventId));
+    const entries: Array<{id: string; completion?: CompletionReference | undefined}> = [...deliveries];
+    const known = new Set(entries.map(row => row.id));
+    for (const explanation of explanations) if (!known.has(explanation.developmentEventId)) {
+      entries.push({id: explanation.developmentEventId});
+      known.add(explanation.developmentEventId);
+    }
+    const observations = new Map<string, ReleaseObservation>();
+    const byRepository = new Map<string, { status: "not_found" | "invalid_observation" | "read_failed" | "available"; observationId?: string }>();
+    const items: ObservationDiagnostic[] = entries.slice(-MAX_OBSERVATION_DIAGNOSTICS).map(delivery => {
+      const base = { developmentEventId: delivery.id };
+      if (!current.has(delivery.id)) return { ...base, status: "historical" };
+      if (!delivery.completion) return { ...base, status: "integration_missing" };
+      const repository = completionRepository(delivery.completion);
+      if (!repository) return { ...base, status: "repository_unavailable" };
+      let result = byRepository.get(repository);
+      if (!result) {
+        try {
+          const raw = this.latest(productId, delivery.completion);
+          const parsed = releaseObservationSchema.safeParse(raw);
+          if (raw === undefined) result = { status: "not_found" };
+          else if (!parsed.success || parsed.data.repository !== repository || parsed.data.environment !== "production") result = { status: "invalid_observation" };
+          else {
+            // Project onto the bounded public schema; never expose row metadata or extra JSON fields.
+            observations.set(parsed.data.id, parsed.data);
+            result = { status: "available", observationId: parsed.data.id };
+          }
+        } catch (error) {
+          // Neither malformed JSON nor a failed read proves that publication is missing.
+          result = { status: error instanceof SyntaxError ? "invalid_observation" : "read_failed" };
+        }
+        byRepository.set(repository, result);
+      }
+      return { ...base, ...result };
+    });
+    return {
+      unverified: true,
+      notice: "Untrusted repository-level observations, not verified delivery coverage. Independently verify integration and every required artifact before explicit handover. Reading never changes item status.",
+      items, observations: [...observations.values()], total: entries.length,
+      limit: MAX_OBSERVATION_DIAGNOSTICS, truncated: entries.length > items.length,
+    };
   }
   upload(productId: string, repoPath: string, raw: unknown, source: {nodeId:string;accountId:string}) {
     const parsed = releaseObservationSchema.safeParse(raw);
