@@ -132,7 +132,7 @@ test("the instrumented deploy refuses a failed preflight before any remote actio
   const marker = join(root, "remote-write");
   for (const name of ["ssh", "rsync"]) writeFileSync(join(bin, name), '#!/bin/sh\ntouch "$TIMING_REMOTE_MARKER"\n', { mode: 0o700 });
   const r = spawnSync("/bin/bash", [join(tools, "deploy.sh"), "--host", "fixture", "--env-file", "/fixture/env"], {
-    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, MISSIONGO_RELEASE_TOOLS: tools, MISSIONGO_RELEASE_TIMING_DIR: timings, TIMING_REMOTE_MARKER: marker }, encoding: "utf8", timeout: 10_000,
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, MISSIONGO_RELEASE_ROOT: root, MISSIONGO_RELEASE_TOOLS: tools, MISSIONGO_RELEASE_TIMING_DIR: timings, TIMING_REMOTE_MARKER: marker }, encoding: "utf8", timeout: 10_000,
   });
   assert.equal(r.status, 1, r.stderr); assert.equal(existsSync(marker), false);
   assert.equal(report(timings).stages[0].name, "preflight"); assert.equal(report(timings).stages[0].status, "failed");

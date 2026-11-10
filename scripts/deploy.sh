@@ -128,7 +128,9 @@ if [ -z "${MISSIONGO_RELEASE_TOOLS:-}" ]; then
   exit 1
 fi
 
-cd "$(dirname "$0")/.."
+# The installed script lives outside the checkout. The coordinator supplies the
+# exact clean worktree that passed its lock, CI, coverage and performance gates.
+cd "${MISSIONGO_RELEASE_ROOT:?Deploy through missiongo-release with a target worktree.}"
 [ -f deploy/docker-compose.yml ] || { echo "Run this from a MissionGo checkout." >&2; exit 1; }
 command -v rsync >/dev/null || { echo "rsync is required." >&2; exit 1; }
 command -v git >/dev/null || { echo "git is required." >&2; exit 1; }
