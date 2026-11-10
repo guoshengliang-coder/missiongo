@@ -28,7 +28,7 @@ export async function serverFixture(shape) {
         const keys = [];
         let identity;
         for (let index = 0; index < shape.itemsPerDelivery; index++) {
-          const item = store.createWorkItem({ productId: product.id, title: `Synthetic ${number}-${index}`, description: "Synthetic payload",
+          const item = store.createWorkItem({ productId: product.id, title: `Synthetic ${number}-${index}`, description: "Synthetic item body. ".repeat(Math.ceil(shape.payloadBytes * 4 / 21)),
             type: "task", priority: "normal", status: "ready", environment: { platform: "server" } });
           items.push(item); keys.push(item.key);
           // Use the real claim protocol to ensure list eligibility does not

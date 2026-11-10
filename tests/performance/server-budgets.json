@@ -4,15 +4,64 @@
   "timingUnit": "process-cpu-ms",
   "maxCiDurationMs": 25000,
   "maxLocalDurationMs": 120000,
-  "reason": "AND-488 initial synthetic baseline, not a production SLA. Observe at least seven days before a reviewed blocking change.",
-  "baselineEvidence": "Initial Node 22.23.2 darwin-arm64 low-contention wall samples: product ~0.006ms, merge ~825ms, list ~88ms, summary ~0.027ms. Later wall-only calibration misclassified scheduler contention; score process CPU user+system and retain wall samples. Keep the same initial budgets (not raised for that failure), subject to CPU-time validation and at least one advisory week. This 200x200 associated fixture exceeds the illustrative 100-150ms budget.",
-  "shape": { "batches": 5, "deliveriesPerBatch": 4, "itemsPerDelivery": 10, "eventsPerItem": 200, "payloadBytes": 1024 },
+  "reason": "AND-489 rebaseline after materialized display projections; retain 200 items x 200 events, increase associated batches and representative item bodies; keep CI advisory.",
+  "baselineEvidence": "AND-489 rebaseline after persisted display reads. Initial latest-backup pilot: normalized CPU merge 0.523-0.542ms, full item list 1.154-1.243ms, summary 0.028-0.029ms; HTTP merge 2.32-2.61ms, list 15.42-16.55ms, empty claim 0.86-1.06ms; controlled work claim ~1.85ms. Budgets retain explicit headroom and must reject isolated fivefold experiments. Synthetic fixture remains 200x200 with representative 4KiB item bodies and ten historical/active batches. Keep CI advisory and restart configuration-specific observation evidence.",
+  "shape": {
+    "batches": 10,
+    "deliveriesPerBatch": 2,
+    "itemsPerDelivery": 10,
+    "eventsPerItem": 200,
+    "payloadBytes": 1024
+  },
   "samples": 7,
   "warmups": 1,
-  "baseline": { "referenceMs": 0.006, "iterations": 10000, "minScale": 0.1, "maxScale": 10, "maxRelativeIqr": 0.5 },
+  "baseline": {
+    "referenceMs": 0.006,
+    "iterations": 10000,
+    "minScale": 0.1,
+    "maxScale": 10,
+    "maxRelativeIqr": 0.5
+  },
   "targets": {
-    "merge-deliveries": { "budgetMs": 1250, "iterations": 1 },
-    "item-list": { "budgetMs": 140, "iterations": 1 },
-    "item-summary": { "budgetMs": 0.09, "iterations": 100 }
+    "merge-deliveries": {
+      "budgetMs": 0.8,
+      "iterations": 100
+    },
+    "item-list": {
+      "budgetMs": 2,
+      "iterations": 100
+    },
+    "item-summary": {
+      "budgetMs": 0.09,
+      "iterations": 100
+    }
+  },
+  "release": {
+    "version": 2,
+    "maxDurationMs": 120000,
+    "timingUnit": "wall-ms",
+    "reason": "AND-489 audited calibration: merge/list HTTP retain independent product CPU scale; empty claim uses independent loopback health wall scale; work claim combines 1/3 CPU and 2/3 transport. Node 22.13 has a substantially faster HTTP transport than Node 22.23. No target budget increased.",
+    "httpTargets": {
+      "merge-deliveries": {
+        "budgetMs": 4,
+        "iterations": 10
+      },
+      "item-list": {
+        "budgetMs": 25,
+        "iterations": 10
+      },
+      "claim-next": {
+        "budgetMs": 3,
+        "iterations": 20
+      }
+    },
+    "httpBaseline": {
+      "referenceMs": 1,
+      "iterations": 20,
+      "minScale": 0.05,
+      "maxScale": 10,
+      "maxRelativeIqr": 0.5
+    },
+    "claimWorkCpuShare": 0.3333333333333333
   }
 }

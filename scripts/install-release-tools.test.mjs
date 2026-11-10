@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { install } from "./install-release-tools.mjs";
+import { install as installTools, parseInstallArgs } from "./install-release-tools.mjs";
+
+// Every unit fixture owns its configuration root, even when CI exports XDG.
+const install = options => installTools({ configHome: join(options.home, ".config"), ...options });
 
 const tools = {
   "release-lock.py": "release-lock.py",
@@ -68,6 +73,35 @@ test("a first install writes every tool, the entry and their digests", () => {
   } finally { done(); }
 });
 
+test("custom config roots receive tools and manifests together, preserving the default root", () => {
+  const { source, home, done, target } = setup();
+  const configHome = join(home, "custom-config");
+  try {
+    install({ source, home, configHome, tools });
+    assert.equal(readFileSync(join(configHome, "missiongo/release-tools/release-ci.mjs"), "utf8"), sources["release-ci.mjs"]);
+    assert.ok(existsSync(join(configHome, "missiongo/release-tools-manifest.json")));
+    assert.equal(existsSync(target("release-ci.mjs")), false);
+    assert.equal(existsSync(join(home, ".config/missiongo/release-tools-manifest.json")), false);
+    assert.equal(readFileSync(target("entry"), "utf8"), sources["missiongo-release.py"]);
+  } finally { done(); }
+});
+
+test("installer arguments reject typos and duplicates instead of enabling writes", () => {
+  assert.equal(parseInstallArgs([]), false);
+  assert.equal(parseInstallArgs(["--dry-run"]), true);
+  for (const args of [["--dryrun"], ["--dry-run", "--dry-run"], ["--install"], ["unexpected"]]) {
+    assert.throws(() => parseInstallArgs(args), /Usage:/);
+  }
+});
+
+test("the public default tool set resolves real repository filenames", () => {
+  const { home, done } = setup();
+  try {
+    const result = install({ home, dryRun: true });
+    assert.deepEqual(result.changed.sort(), [...Object.keys(tools), "linux-release-tools.mjs", "handover-evidence.mjs", "release-coverage.mjs", "release-candidates.mjs"].sort());
+  } finally { done(); }
+});
+
 test("installs only tools whose digest changed and backs up each replaced file once", () => {
   const { source, home, done, target } = setup({ stale: { "release-ci.mjs": "old cii", entry: "old entry" } });
   try {
@@ -93,6 +127,20 @@ test("a dry run reports changes without writing anything", () => {
     assert.deepEqual(install({ source, home, commit: "b".repeat(40), tools, dryRun: true }).changed.sort(), Object.keys(tools).sort());
     assert.equal(existsSync(target("deploy.sh")), false);
     assert.equal(existsSync(join(home, ".config/missiongo/release-tools-manifest.json")), false);
+  } finally { done(); }
+});
+
+test("an unchanged installed digest does not hide a newer source entry", () => {
+  const { source, home, done, target } = setup();
+  try {
+    install({ source, home, commit: "a".repeat(40), tools });
+    const updated = sources["missiongo-release.py"] + "# new mandatory gate\n";
+    writeFileSync(join(source, "scripts/missiongo-release.py"), updated);
+    assert.deepEqual(install({ source, home, commit: "b".repeat(40), tools, dryRun: true }).changed, ["entry"]);
+    assert.notEqual(readFileSync(target("entry"), "utf8"), updated);
+    assert.deepEqual(install({ source, home, commit: "b".repeat(40), tools }).changed, ["entry"]);
+    assert.equal(readFileSync(target("entry"), "utf8"), updated);
+    assert.deepEqual(install({ source, home, commit: "b".repeat(40), tools }).changed, []);
   } finally { done(); }
 });
 
@@ -144,4 +192,51 @@ test("refuses a manifest with fields it does not understand", () => {
   try {
     assert.throws(() => install({ source, home, commit: "d".repeat(40), tools, dryRun: true }), /Unknown release-tools manifest fields: pinned/);
   } finally { done(); }
+});
+
+test("the unified installer refuses the actual busy release lock before preflight or writes", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "release-install-lock-"));
+  const env = { ...process.env, XDG_CONFIG_HOME: directory, MISSIONGO_TOOLS_INSTALL_ENTRY: "" };
+  delete env.MISSIONGO_RELEASE_LOCK_FD;
+  const holder = spawn("python3", [join(repositoryScripts, "release-lock.py"), "--", process.execPath, "-e", "console.log('locked'); setInterval(()=>{},1000)"],
+    { env, stdio: ["ignore", "pipe", "pipe"] });
+  try {
+    await once(holder.stdout, "data");
+    const result = spawnSync(process.execPath, [join(repositoryScripts, "install-release-tools.mjs")], { env, encoding: "utf8", timeout: 5000 });
+    assert.equal(result.status, 75); assert.match(result.stderr, /already locked/);
+    assert.equal(existsSync(join(directory, "missiongo/release-tools-manifest.json")), false);
+  } finally {
+    const stopped = once(holder, "exit"); holder.kill(); await stopped;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+
+test("a real isolated installation loads preflight and receipt with their module dependencies", () => {
+  const { home, done } = setup();
+  try {
+    install({ home });
+    const directory = join(home, ".config/missiongo/release-tools");
+    for (const name of ["release-preflight.mjs", "release-receipt.mjs"]) {
+      const result = spawnSync(process.execPath, ["--input-type=module", "-e", `await import(${JSON.stringify(pathToFileURL(join(directory, name)).href)})`], { encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+    }
+  } finally { done(); }
+});
+
+
+test("production defaults still honor inherited XDG while fixtures stay isolated", () => {
+  const { source, home, done, target } = setup();
+  const before = process.env.XDG_CONFIG_HOME;
+  const configHome = join(home, "inherited-xdg");
+  try {
+    process.env.XDG_CONFIG_HOME = configHome;
+    installTools({ source, home, tools });
+    assert.equal(readFileSync(join(configHome, "missiongo/release-tools/release-ci.mjs"), "utf8"), sources["release-ci.mjs"]);
+    assert.equal(existsSync(target("release-ci.mjs")), false);
+  } finally {
+    if (before === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = before;
+    done();
+  }
 });

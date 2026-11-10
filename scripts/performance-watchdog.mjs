@@ -6,3 +6,24 @@ export function runPerformanceChild(args, timeoutMs, options = {}) {
   return { status: child.status, timedOut: child.error?.code === "ETIMEDOUT", failed: Boolean(child.error) || Boolean(child.signal),
     signal: child.signal, error: child.error?.code ?? null };
 }
+
+/** Bound a whole worker group, including SSH/build grandchildren. The caller
+ * owns temporary files and removes them after this promise settles. */
+export async function runPerformanceGroup(args, timeoutMs, options = {}) {
+  const { spawn } = await import("node:child_process");
+  return new Promise(resolve => {
+    const child = spawn(process.execPath, args, { ...options, detached: true });
+    let timedOut = false, cancelled = false, failed = false;
+    const kill = () => { try { process.kill(-child.pid, "SIGKILL"); } catch (e) { if (e.code !== "ESRCH") failed = true; } };
+    const stop = () => { cancelled = true; kill(); };
+    const timer = setTimeout(() => { timedOut = true; kill(); }, timeoutMs);
+    process.once("SIGINT", stop); process.once("SIGTERM", stop);
+    child.once("error", () => { failed = true; });
+    child.once("close", (status, signal) => {
+      clearTimeout(timer); process.removeListener("SIGINT", stop); process.removeListener("SIGTERM", stop);
+      // Also kill a descendant that survived a worker's early exit.
+      kill();
+      resolve({ status, signal, timedOut, cancelled, failed });
+    });
+  });
+}

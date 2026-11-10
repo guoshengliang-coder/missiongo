@@ -22,13 +22,26 @@ node scripts/install-release-tools.mjs             # 实际安装
 规则：
 
 - 只在 `HEAD` 包含 `origin/main` 且 `scripts/` 无未提交改动时运行；每个文件都必须在 `HEAD` 中存在。
+- 参数只接受无参数（安装）或单个 `--dry-run`；拼写错误、重复或未知选项在取锁及写入前拒绝。
+- 配置与锁统一使用绝对 `XDG_CONFIG_HOME`，未设置时使用 `~/.config`；入口仍位于 `~/.local/bin`。
+- CLI 在读取安装状态前取得同一共享发布锁，锁忙退出 75；不得与发布或其他安装同时写入。
 - 目标位置若已有非常规文件或符号链接则拒绝，不覆盖。
 - `deploy.sh` 与入口合起来必须仍引用全部共享守卫，入口必须仍经过 `release-lock.py` 加锁，否则拒绝安装。
   安装后的 `deploy.sh` 从 `$MISSIONGO_RELEASE_TOOLS` 调用收据与状态守卫，不读仓库工作区里的副本。
-- 安装前检查 Python 与 bash 语法；旧版清单里的 `globalRulesIdentical` 字段会被忽略，其他未知字段仍然拒绝；写入前按 `release-tools-manifest.json` 比较磁盘上的实际内容，
+- 安装前检查 Python 与 bash 语法；旧版清单里的 `globalRulesIdentical` 字段会被忽略，其他未知字段仍然拒绝；写入前比较仓库源文件与磁盘上的实际内容，
   只替换内容变化的文件，每个被替换的文件首次备份为 `<文件>.before-release-tools-in-repo`。
+  单文件完整写入并 fsync 后原子替换，备份发布不覆盖已有文件；中途失败可重试，不宣称多文件事务回滚。
 - 私有目标参数（`release-local.json`、`release-coverage.json`、凭据与签名文件）不在仓库中，
   安装脚本不会创建或修改它们。
 
 仓库 `scripts/deploy.sh` 直接运行会要求 `MISSIONGO_RELEASE_TOOLS`，避免绕过统一入口；
 发布一律通过 `missiongo-release check|deploy --candidates ...` 执行。
+
+版本化入口自带阻断式性能冒烟，统一安装/升级不会移除它。首次安装后仍须按
+`docs/release-coverage.md` 的性能安装步骤配置私有备份目录；未配置时 check/deploy 明确拒绝。
+升级比较当前源码，而不是只与旧清单比较，避免新门禁未写入却更新了清单摘要。
+
+The installation also carries the transitive Linux, coverage, candidate and
+handover modules used by preflight/receipt. The public handover implementation is
+installed as `handover-evidence.mjs`; its repository-relative forwarding module is
+not copied. The public implementation must be tracked and clean alongside scripts.

@@ -1,6 +1,7 @@
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { sampleSync as sample } from "./performance-measurement.mjs";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
@@ -26,13 +27,6 @@ try {
   const fixtureStarted = performance.now();
   fixture = await serverFixture(config.shape);
   const fixtureMs = performance.now() - fixtureStarted;
-  const sample = (fn, iterations) => {
-    const before = performance.now();
-    const cpu = process.cpuUsage();
-    for (let i = 0; i < iterations; i++) fn();
-    const used = process.cpuUsage(cpu);
-    return { cpuMs: (used.user + used.system) / 1000 / iterations, wallMs: (performance.now() - before) / iterations };
-  };
   // Baseline is independent of all measured targets; warm it before scoring.
   sample(fixture.baseline, config.baseline.iterations);
   const calibrationStarted = performance.now();
