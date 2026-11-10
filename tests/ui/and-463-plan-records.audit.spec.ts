@@ -9,11 +9,11 @@ for(const surface of ["console","panel"] as const) for(const width of [320,1440]
   const id="records-test";let synced=false,approved=false,revision="v2";
   const summary={id,agentSessionId:id,dispatchId:"records-dispatch",agentKind:"codex",status:"idle",updatedAt:stamp,createdAt:stamp,activityAt:stamp,nodeName:"Fixture",nodeId:"fixture",nodeConnectionState:"online",nodeRevoked:false,mode:"plan",dispatchStatus:"launched",activities:[],settings:{},unread:false,canReply:true,canRetry:false,canStop:false,canArchive:true,items:[{key:fixture.detailKey,title:"Plans",productId:fixture.productId}],attention:{state:"needed",kind:"approval",reason:"待审"},needsAttention:true};
   const source="方案摘要\n\n[完整方案](/?planDocument="+doc+")";
-  const records=[{id:2,revision:"v2",keys:[fixture.detailKey],kind:"proposal",current:true,effective:false,scopeValid:true,legacy:false,version:2,documentId:doc,submittedAt:stamp},
+  const records=[{id:2,revision:"v2",keys:[fixture.detailKey],kind:"proposal",current:true,pending:true,effective:false,scopeValid:true,legacy:false,version:2,documentId:doc,submittedAt:stamp},
    {id:1,revision:"v1",keys:[fixture.detailKey],kind:"proposal",current:false,effective:false,scopeValid:true,legacy:true,version:1,approval:{source:"web",approvedAt:stamp}}];
   await page.route("**/api/v1/agent-sessions**",route=>{
    const url=new URL(route.request().url()),path=url.pathname;
-   if(path.endsWith("/plan-records")){const key=url.searchParams.get("recordId");return route.fulfill({json:{historyIncomplete:true,records:key?records.filter(r=>r.id===Number(key)).map(r=>({...r,markdown:"## 固定版本原文\n\n版本 "+r.version+" 的完整范围。\n\n"+"保留验证与授权边界。\n\n".repeat(30),sha256:"a".repeat(64)})):records}})}
+   if(path.endsWith("/plan-records")){const key=url.searchParams.get("recordId");return route.fulfill({json:{historyIncomplete:true,hasHistory:true,records:url.searchParams.get("view")==="overview"?records.filter(r=>r.current):key?records.filter(r=>r.id===Number(key)).map(r=>({...r,markdown:"## 固定版本原文\n\n版本 "+r.version+" 的完整范围。\n\n"+"保留验证与授权边界。\n\n".repeat(30),sha256:"a".repeat(64)})):records}})}
    if(path==="/api/v1/agent-sessions")return route.fulfill({json:{sessions:[summary]}});
    if(route.request().method()!=="GET")return route.fulfill({status:204});
    const plan={revision,documentId:doc,plan:source,validation:"",itemKeys:[fixture.detailKey],approved,valid:true};
@@ -40,8 +40,9 @@ for(const surface of ["console","panel"] as const) for(const width of [320,1440]
   const reply=page.locator(surface==="console"?".agent-console-reply textarea":".agent-session-reply textarea");await reply.fill("保留草稿");
   const entry=page.getByRole("button",{name:"方案与审批",exact:true});await entry.click();
   const modal=page.getByRole("dialog",{name:"方案与审批",exact:true});await expect(modal).toBeVisible();
+  await modal.getByText("历史记录",{exact:true}).click();
   await expect(modal).toContainText("历史批准，不授予当前版本执行权限");await expect(modal.getByRole("button",{name:"批准",exact:true})).toHaveCount(0);
-  const old=modal.getByRole("button",{name:"查看版本原文",exact:true}).nth(1);await old.click();
+  const old=modal.locator(".agent-plan-history-row").getByRole("button",{name:"查看版本原文",exact:true});await old.click();
   await expect(modal).toContainText("版本 1 的完整范围");
   for(const scale of ["small","medium","large"]){await page.evaluate(scale=>{document.documentElement.dataset.fontScale=scale;document.documentElement.dataset.consoleFontScale=scale;},scale);expect(await page.evaluate(()=>document.documentElement.scrollWidth-innerWidth)).toBeLessThanOrEqual(1);}
   await page.screenshot({path:info.outputPath(`history-${surface}-${width}-${theme}.png`)});

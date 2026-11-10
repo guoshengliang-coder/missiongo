@@ -2887,7 +2887,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const records=new PlanRecords(store);
     const accountId=requireAccountId(request);
     const identities=records.identities(accountId,members);
-    const query=request.query as {before?:string;recordId?:string};
+    const query=request.query as {before?:string;recordId?:string;view?:string};
+    if(query.view!==undefined && query.view!=="overview") throw invalidInput("Invalid plan record view.");
+    if(query.view && (query.before || query.recordId)) throw invalidInput("Overview does not accept a history cursor.");
     const integer=(value:string|undefined)=>{
       if(value===undefined) return undefined;
       const parsed=Number(value);
@@ -2895,6 +2897,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       return parsed;
     };
     reply.header("Cache-Control","private, no-store");
+    if(query.view==="overview") return records.overview(accountId,identities,key=>requireItemPermission(request,key));
     return records.read(accountId,identities,key=>requireItemPermission(request,key),
       {before:integer(query.before),recordId:integer(query.recordId)});
   });

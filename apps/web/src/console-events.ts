@@ -20,7 +20,7 @@ export function changeAffects(key: QueryKey, change: ChangeResource): boolean {
    && (root!=="merge-deliveries" || !change.productId || key[1]===change.productId);
   case "products": return ["products","components","builders","items","item","item-filter-options","collaboration-targets","collaboration-grants","collaboration-directory"].includes(root);
   case "personal": return ["personal-todos","personal-attention","personal-notifications"].includes(root);
-  case "plan": return ["agent-plan-records","agent-plan-record","plan-records","plan-record","agent-sessions","agent-session"].includes(root);
+  case "plan": return ["agent-plan-records","agent-plan-record","plan-records","plan-record","plan-overview","agent-sessions","agent-session"].includes(root);
   case "artifact": return ["artifact-state","artifact-bundle"].includes(root) && key[1]===change.resourceId;
   case "history": return ["agent-session","agent-history-result"].includes(root) && key[1]===change.resourceId;
   case "admin": return allConfig.has(root);

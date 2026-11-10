@@ -3484,10 +3484,31 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .agent-operation-diagnostic p, .agent-operation-diagnostic small { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* AND-463: source messages remain untouched; formal records share one reading surface. */
-.agent-plan-details { min-width: 0; }
-.agent-plan-screen { max-height: 60dvh; overflow: auto; overflow-wrap: anywhere; }
-.agent-plan-version { padding-block: 16px; border-bottom: 1px solid var(--line); }
+/* AND-496: the header and body have one bounded reading surface. */
+.agent-plan-modal .modal { display: flex; flex-direction: column; overflow: hidden; }
+.agent-plan-modal .modal > header { flex: 0 0 auto; }
+.agent-plan-modal .modal-content, .agent-plan-modal .modal-fields { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.agent-plan-details { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.agent-plan-screen { min-width: 0; min-height: 0; max-height: 65dvh; overflow: auto; overflow-wrap: anywhere; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.agent-plan-scroll-hint { flex: 0 0 auto; margin: 8px 0 0; text-align: center; color: var(--muted); font-size: var(--text-xs); }
+.agent-plan-group { margin-bottom: 24px; }
+.agent-plan-group > h3 { margin: 0 0 12px; font-size: var(--text-md); }
+.agent-plan-version { padding: 16px; margin-bottom: 12px; border: 1px solid var(--line); border-radius: var(--radius-md); }
+.agent-plan-card-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.agent-plan-card-heading h3 { margin: 0; font-size: var(--text-lg); }
+.agent-plan-state { padding: 4px 8px; font-size: var(--text-xs); border-radius: var(--radius-xs); background: var(--badge-bg); color: var(--muted); }
+.agent-plan-state.effective { background: var(--status-done-bg); color: var(--status-done-fg); }
+.agent-plan-state.pending { background: var(--warn-bg); color: var(--warn-text); }
+.agent-plan-card-footer, .agent-plan-parent-reference { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding-top: 12px; margin-top: 12px; border-top: 1px solid var(--line); font-size: var(--text-sm); }
+.agent-plan-card-footer p { margin: 0; }
+.agent-plan-reading-toolbar { position: sticky; top: 0; padding-bottom: 12px; background: var(--surface-strong); }
+.agent-plan-history { border-top: 1px solid var(--line); padding-top: 12px; }
+.agent-plan-history > summary { min-height: 44px; align-content: center; cursor: pointer; font-size: var(--text-md); font-weight: 650; }
+.agent-plan-history-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; padding-block: 12px; border-top: 1px solid var(--line); }
+.agent-plan-history-row h4 { margin: 0; font-size: var(--text-md); }
+.agent-plan-history-row p { margin-block: 4px; }
 .agent-plan-details .account-note { overflow-wrap: anywhere; }
+.agent-plan-details .text-button { min-height: 44px; }
 .agent-session-head { flex-wrap: wrap; }
 .agent-plan-record > a, .agent-plan-record > details > summary { min-height: 44px; align-content: center; }
 .agent-plan-record > a { display: inline-flex; align-items: center; }
