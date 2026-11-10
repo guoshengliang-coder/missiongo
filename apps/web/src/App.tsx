@@ -1,3 +1,4 @@
+import { bootstrapCacheSeeder } from "./bootstrap-cache";
 import { useConsoleConnection, useConsoleEvents } from "./console-events";
 import { isItemListRow, type WorkItemRow } from "./types";
 import { inconsistentItemPage } from "./item-list-state";
@@ -835,6 +836,7 @@ export function App() {
     retry: false,
     staleTime: Infinity,
     queryFn: async ({signal}) => {
+      const seedResource = bootstrapCacheSeeder(queryClient);
       let data;
       try {
         data = await api.getBootstrap(
@@ -868,10 +870,10 @@ export function App() {
       // effect, so it happens before anything can observe this query as settled.
       // An effect would run a render too late, and the queries below would each
       // fire a request for data this response already carried.
-      queryClient.setQueryData(["products"], data.products);
+      seedResource(["products"], data.products);
       if (data.productId) {
-        queryClient.setQueryData(["components", data.productId, "with-archived"], data.components);
-        queryClient.setQueryData(
+        seedResource(["components", data.productId, "with-archived"], data.components);
+        seedResource(
           // Must match how itemsQuery builds its key below, trim included, or the
           // list mounts under a different key and refetches what we just seeded.
           ["items", data.productId, initialFilters.status, initialFilters.type, initialFilters.search.trim(), initialFilters.builder ?? "", itemFilterKey(initialFilters)],

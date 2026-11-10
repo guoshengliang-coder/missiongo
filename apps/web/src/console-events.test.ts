@@ -1,3 +1,5 @@
+import { bootstrapCacheSeeder } from "./bootstrap-cache";
+import { consoleRefresh } from "./console-refresh";
 import { afterEach, expect, it, vi } from "vitest";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { changeAffects, consoleConnectionSnapshot, EventFrames, startConsoleEvents } from "./console-events";
@@ -173,4 +175,54 @@ it("disposal cancels owned reads before a new lifecycle can reuse their keys",as
  f.send("change",{resources:[{kind:"sessions"}]},"epoch:1");await settle();
  cleanup.pop()!();unsubscribe();f.client.setQueryData(["agent-session","s"],"new lifecycle");finish("late old content");await settle();
  expect(f.client.getQueryData(["agent-session","s"])).toBe("new lifecycle");
+});
+
+it("audit: a late bootstrap must not overwrite a newer resource snapshot",async()=>{
+ const f=fixture();let finish!:()=>void;let serverVersion=0;
+ const key=["products"];
+ const products=new QueryObserver(f.client,{queryKey:key,initialData:0,staleTime:Infinity,queryFn:async()=>++serverVersion});
+ const bootstrap=new QueryObserver(f.client,{queryKey:["bootstrap"],initialData:"initial bootstrap",staleTime:Infinity,queryFn:async()=>{
+  const seed=bootstrapCacheSeeder(f.client);
+  const captured=serverVersion;
+  await new Promise<void>(resolve=>{finish=resolve;});
+  // Same cache seeding performed by App.tsx after getBootstrap resolves.
+  seed(key,captured);return "bootstrap";
+ }});
+ cleanup.push(products.subscribe(()=>{}),bootstrap.subscribe(()=>{}));
+ const refresh=consoleRefresh(f.client,()=>{});cleanup.push(refresh.stop);
+ await refresh.reset();await settle();
+ expect(f.client.getQueryData(key)).toBe(1);
+ finish();await settle();
+ expect(f.client.getQueryData(key)).toBe(1);
+});
+it("audit: a newly merged identity must refresh the existing canonical transcript",async()=>{
+ const f=fixture();
+ const old={sessions:[{id:"a",agentSessionId:"a"},{id:"b",agentSessionId:"b"}]};
+ const merged={sessions:[{id:"a",agentSessionId:"a",relatedSessionIds:["a","b"]}]};
+ const list=new QueryObserver(f.client,{queryKey:["agent-sessions"],initialData:old,staleTime:Infinity,queryFn:async()=>merged});
+ const read=vi.fn().mockResolvedValue("merged transcript");
+ const detail=new QueryObserver(f.client,{queryKey:["agent-session","a"],initialData:"old transcript",staleTime:Infinity,queryFn:read});
+ cleanup.push(list.subscribe(()=>{}),detail.subscribe(()=>{}));await settle();
+ f.send("change",{resources:[{kind:"sessions",resourceId:"b"}]},"epoch:1");await settle();
+ expect(f.client.getQueryData(["agent-sessions"])).toEqual(merged);
+ expect(f.client.getQueryData(["agent-session","a"])).toBe("merged transcript");
+});
+it("reconciles identity after an independent list retry and preserves stable-list targeting",async()=>{
+ vi.useFakeTimers();const f=fixture();let fail=true;
+ f.client.setQueryData(["agent-sessions"],{sessions:[{id:"a"},{id:"b"}]});
+ const list=new QueryObserver(f.client,{queryKey:["agent-sessions"],staleTime:Infinity,queryFn:async()=>{
+  if(fail)throw new Error("temporary list failure");return {sessions:[{id:"a",relatedSessionIds:["a","b"]}]};
+ }});
+ const read=vi.fn().mockResolvedValue("merged");const detail=new QueryObserver(f.client,{queryKey:["agent-session","a"],initialData:"old",staleTime:Infinity,queryFn:read});
+ const delivery=vi.fn().mockResolvedValue("offer");const scoped=new QueryObserver(f.client,{queryKey:["merge-deliveries","p","a"],initialData:"old offer",staleTime:Infinity,queryFn:delivery});
+ cleanup.push(list.subscribe(()=>{}),detail.subscribe(()=>{}),scoped.subscribe(()=>{}));
+ f.send("change",{resources:[{kind:"sessions",resourceId:"b"}]},"epoch:1");await settle();expect(read).not.toHaveBeenCalled();
+ fail=false;vi.advanceTimersByTime(1000);await settle();expect(read).toHaveBeenCalledOnce();expect(delivery).toHaveBeenCalledOnce();
+ f.client.setQueryData(["agent-sessions"],{sessions:[{id:"a",relatedSessionIds:["b","a"],latestMessage:"activity only"}]});await settle();expect(read).toHaveBeenCalledOnce();
+});
+it("a stopped refresh scheduler does not accept new invalidations",async()=>{
+ const f=fixture();f.client.setQueryData(["agent-session","a"],"cached");
+ const refresh=consoleRefresh(f.client,()=>{});refresh.stop();
+ const invalidation=vi.spyOn(f.client,"invalidateQueries");refresh.add(f.client.getQueryCache().getAll());await settle();
+ expect(invalidation).not.toHaveBeenCalled();
 });

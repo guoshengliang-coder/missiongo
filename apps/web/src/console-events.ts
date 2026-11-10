@@ -2,6 +2,7 @@ import type { ConsoleChangeResource } from "@missiongo/contracts";
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import { consoleRefresh } from "./console-refresh";
+import { changedSessionIdentities, type SessionIdentityPage } from "./session-identities";
 import { foregroundSyncTargets } from "./foreground-sync";
 import { checkReleaseStatus } from "./release-status";
 
@@ -73,6 +74,19 @@ export function startConsoleEvents(client:QueryClient, fetcher:typeof fetch=(inp
  let generation=0,connected=false,connecting=false;
  let cursor=initialCursor,pendingCursor=initialCursor,retry=0;
  const refresh=consoleRefresh(client,()=>{if(pendingCursor)cursor=pendingCursor;});
+ const identityPages=new Map(client.getQueryCache().findAll({queryKey:["agent-sessions"]}).map(q=>[q.queryHash,q.state.data as SessionIdentityPage | undefined]));
+ const unsubscribeIdentities=client.getQueryCache().subscribe(event=>{
+  if(stopped || event.query.queryKey[0]!=="agent-sessions")return;
+  if(event.type==="added"){identityPages.set(event.query.queryHash,event.query.state.data as SessionIdentityPage | undefined);return;}
+  if(event.type==="removed"){identityPages.delete(event.query.queryHash);return;}
+  if(event.type!=="updated" || event.action.type!=="success")return;
+  const next=event.query.state.data as SessionIdentityPage | undefined;
+  const changed=changedSessionIdentities(identityPages.get(event.query.queryHash),next);
+  identityPages.set(event.query.queryHash,next);
+  if(changed.size)refresh.add(client.getQueryCache().findAll({predicate:q=>
+   q.queryKey[0]==="agent-session" && changed.has(String(q.queryKey[1])) ||
+   q.queryKey[0]==="merge-deliveries" && q.queryKey.length>2 && changed.has(String(q.queryKey[2]))}));
+ });
  const enqueue=(resources:ChangeResource[],id:string,full=false)=>{
   const previous=pendingCursor.split(":"),incoming=id.split(":");
   if(!full && previous[0]===incoming[0] && Number(incoming[1])<=Number(previous[1]))return;
@@ -124,6 +138,7 @@ export function startConsoleEvents(client:QueryClient, fetcher:typeof fetch=(inp
   } finally {clearTimeout(watchdog);}
  };
  const foreground=()=>{
+  if(stopped)return;
   if(String(document.visibilityState)==="hidden"){generation++;connected=false;connecting=false;controller?.abort();if(timer)clearTimeout(timer);timer=undefined;return;}
   if(timer)clearTimeout(timer);timer=undefined;
   refresh.resume();
@@ -135,7 +150,7 @@ export function startConsoleEvents(client:QueryClient, fetcher:typeof fetch=(inp
  const offline=()=>{generation++;connecting=false;connected=false;if(timer)clearTimeout(timer);timer=undefined;controller?.abort();setConnection("disconnected");};
  document.addEventListener("visibilitychange",foreground);window.addEventListener("online",foreground);window.addEventListener("offline",offline);window.addEventListener("focus",foreground);
  void connect();
- return ()=>{stopped=true;generation++;controller?.abort();if(timer)clearTimeout(timer);refresh.stop();
+ return ()=>{stopped=true;unsubscribeIdentities();generation++;controller?.abort();if(timer)clearTimeout(timer);refresh.stop();
   document.removeEventListener("visibilitychange",foreground);window.removeEventListener("online",foreground);window.removeEventListener("offline",offline);window.removeEventListener("focus",foreground);};
 }
 export function useConsoleEvents(client:QueryClient,accountId:string|undefined,initialCursor?:string) {

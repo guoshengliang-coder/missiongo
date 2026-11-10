@@ -31,6 +31,7 @@ export function consoleRefresh(client: QueryClient, idle: () => void) {
     }
   };
   const add = (queries: Query[], onlyMissing = false) => {
+    if (stopped) return;
     const priority = (query: Query) => query.queryKey[0] === "bootstrap" ? 0 : query.queryKey[0] === "agent-session" ? 1 : 2;
     for (const query of [...queries].sort((a,b) => priority(a) - priority(b))) {
       if (onlyMissing && tasks.has(query.queryHash)) continue;
