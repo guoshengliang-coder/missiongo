@@ -384,6 +384,7 @@ final class NodeLoopTests: XCTestCase {
             let loop = NodeLoop(api: api, adapters: [adapter], fallbackNodeName: "Fixture", timing: snapshotTiming(), log: { _ in })
             let task = Task { try await loop.run() }
             await waitUntil { adapter.started.current }
+            let reportsBeforeStop = api.sessionReports.current.count
             api.sessionList.withLock { $0 = [NodeAgentSession(id: "target", agentKind: "codex", sessionRef: "thread", status: "active",
                 command: AgentSessionCommand(id: "stop", kind: "interrupt", text: "stop", turnId: "old-turn"))] }
             await waitUntil({ api.sessionReports.current.contains { $0.1.commandStatus == "delivered" } }, timeout: 0.5)
@@ -396,7 +397,7 @@ final class NodeLoopTests: XCTestCase {
             task.cancel(); try await task.value
             XCTAssertTrue(stoppedBeforeReadFinished, "stop must bypass the blocked \(blockedId) read")
             XCTAssertEqual(adapter.interruptions.current, ["stop"])
-            XCTAssertFalse(api.sessionReports.current.contains { $0.0 == "target" && $0.1.commandId == nil && $0.1.status == "active" },
+            XCTAssertFalse(api.sessionReports.current.dropFirst(reportsBeforeStop).contains { $0.0 == "target" && $0.1.commandId == nil && $0.1.status == "active" },
                 "a mirror fetched before the stop must not restore stale running state")
         }
     }

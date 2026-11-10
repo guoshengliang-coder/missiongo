@@ -31,6 +31,13 @@ export class API {
     }
     return response.status === 204 ? undefined : response.json();
   }
+  async controlChanges(cursor?: string, waitMs = 25_000): Promise<{cursor: string} | undefined> {
+    try {
+      const reply = await this.call("GET", `/api/v1/node/control-changes?waitMs=${waitMs}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+      if (reply.protocol !== 1 || typeof reply.cursor !== "string") throw new Error("Invalid node control protocol");
+      return reply;
+    } catch (error) { if (error instanceof APIError && error.status === 404) return; throw error; }
+  }
   async login(config: Config, name: string, display: (url: string, code: string) => void): Promise<Config> {
     const client = object(await this.call("POST", "/oauth/register", {
       client_name: `${typeof PRODUCT_NAME === "string" ? PRODUCT_NAME : "Headless"} Linux CLI`, grant_types: ["urn:ietf:params:oauth:grant-type:device_code"], token_endpoint_auth_method: "none",

@@ -34,8 +34,24 @@ export function socketPath(root: string, dispatchId: string): string {
   if (Buffer.byteLength(path) > 103) throw new Error("Node state path is too long for a Unix socket; set MISSIONGO_NODE_HOME to a shorter private directory");
   return path;
 }
-export async function hostCall(root: string, dispatchId: string, session?: Session): Promise<Snapshot> {
-  return callHost<Snapshot>(root, dispatchId, "/sync", session ?? {});
+class HostHTTPError extends Error { constructor(readonly status: number) { super("Local host rejected request"); } }
+const hostProtocols = new Map<string, boolean>();
+export async function hostCall(root: string, dispatchId: string, session?: Session, lane: "combined" | "observation" | "control" = "combined"): Promise<Snapshot> {
+  if (lane === "combined") return callHost<Snapshot>(root, dispatchId, "/sync", session ?? {});
+  const key = root + ":" + dispatchId;
+  let modern = hostProtocols.get(key);
+  if (modern === undefined) {
+    try {
+      const capabilities = await callHost<{protocol: number}>(root, dispatchId, "/capabilities", {});
+      if (capabilities.protocol !== 1) throw new Error("Unsupported host control protocol");
+      modern = true;
+    }
+    catch (error) { if (!(error instanceof HostHTTPError) || error.status !== 404) throw error; modern = false; }
+    hostProtocols.set(key, modern);
+  }
+  // Capability negotiation has no side effect. Never fallback after an input
+  // request's unknown outcome, and never restart a surviving old host.
+  return callHost<Snapshot>(root, dispatchId, modern ? lane === "control" ? "/control" : "/observe" : "/sync", session ?? {});
 }
 export async function hostHistoryCall(root: string, dispatchId: string, sessionRef: string, cursor: string): Promise<HistoryResult> {
   return callHost<HistoryResult>(root, dispatchId, "/history", { sessionRef, cursor });
@@ -57,7 +73,7 @@ async function callHost<T>(root: string, dispatchId: string, path: string, body:
       let text = ""; response.setEncoding("utf8"); response.on("data", (part: string) => {
         text += part; if (text.length > 32 * 1024 * 1024) client.destroy(new Error("Oversized host snapshot"));
       });
-      response.on("end", () => { try { if (response.statusCode !== 200) throw new Error("Local host rejected request"); resolve(JSON.parse(text)); } catch (error) { reject(error); } });
+      response.on("end", () => { try { if (response.statusCode !== 200) throw new HostHTTPError(response.statusCode ?? 500); resolve(JSON.parse(text)); } catch (error) { reject(error); } });
     });
     client.on("timeout", () => client.destroy(new Error("Local host response timed out")));
     client.on("error", reject); client.end(JSON.stringify(body));
@@ -82,11 +98,27 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
   // No deleting stale sockets or reusing hosts with a different native identity.
   if (existsSync(socket)) throw new Error("Host socket already exists");
   let queue = Promise.resolve();
+  let controlEpoch = 0;
   const decisions = new Set<string>();
   const server = createServer((req, res) => {
     let body = "";
     req.setEncoding("utf8"); req.on("data", (part: string) => { body += part; if (body.length > 1024 * 1024) req.destroy(); });
     req.on("end", () => {
+      if (req.method === "POST" && req.url === "/capabilities") {
+        res.writeHead(200, {"Content-Type":"application/json"}).end(JSON.stringify({protocol:1})); return;
+      }
+      if (req.method === "POST" && req.url === "/observe") {
+        const epoch = controlEpoch;
+        void (async () => {
+          try {
+            const session = JSON.parse(body) as Session;
+            if (!adapter || !launchFinished || state.phase !== "launched" || session.sessionRef !== state.sessionRef) throw new Error("Native session identity mismatch");
+            const snapshot = boundedSnapshot(await adapter.snapshot());
+            if (epoch === controlEpoch) { state.snapshot = snapshot; persist(); }
+            res.writeHead(200, {"Content-Type":"application/json"}).end(JSON.stringify(snapshot));
+          } catch { res.writeHead(409).end(); }
+        })(); return;
+      }
       // History reads do not enter the command queue or write its journal.
       if (req.method === "POST" && req.url === "/history") {
         void (async () => {
@@ -99,9 +131,10 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
         return;
       }
       queue = queue.then(async () => {
-        if (req.method !== "POST" || req.url !== "/sync") { res.writeHead(404).end(); return; }
+        if (req.method !== "POST" || !["/sync", "/control"].includes(req.url ?? "")) { res.writeHead(404).end(); return; }
         try {
           const session = JSON.parse(body) as Session;
+          controlEpoch++;
           if (!adapter || !launchFinished || state.phase !== "launched") { res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(state.snapshot)); return; }
           if (session.sessionRef && session.sessionRef !== state.sessionRef) throw new Error("Native session identity mismatch");
           if (session.desiredSettings && session.desiredSettings.revision > (state.snapshot.settingsRevision ?? 0)) {
@@ -168,9 +201,13 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
             if (outcome.error) state.snapshot.commandError = outcome.error; else delete state.snapshot.commandError;
           }
           let snapshot: Snapshot;
-          try { snapshot = boundedSnapshot(stopSnapshot ?? await adapter.snapshot()); }
+          try { snapshot = boundedSnapshot(stopSnapshot ?? (req.url === "/control"
+            ? adapter.controlSnapshot ? await adapter.controlSnapshot() : { ...state.snapshot, messages: [] }
+            : await adapter.snapshot())); }
           catch (error) {
-            if (command?.kind !== "interrupt") throw error;
+            if (req.url !== "/control" && command?.kind !== "interrupt") throw error;
+            // The durable command outcome is already known. An observation
+            // failure must not hide that receipt or replay the native input.
             snapshot = { status: "unavailable", messages: [], error: safeError(error) };
           }
           if (!snapshot.error) delete state.snapshot.error;

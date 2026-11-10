@@ -648,6 +648,7 @@ public protocol OpenCodeControlling: Sendable {
     /// The session's status, mirrored messages and — when the session ended
     /// badly at the source — a person-readable reason for that status.
     /// `failed` means the session is over and will not recover by itself.
+    func controlSnapshot(id: String) async throws -> OpenCodeSessionSnapshot
     func snapshot(id: String) async throws -> OpenCodeSessionSnapshot
     func historyPage(id: String, cursor: String) async throws -> AgentHistoryResult
     func stopState(id: String) async throws -> OpenCodeStopState
@@ -675,6 +676,7 @@ public protocol OpenCodeControlling: Sendable {
 }
 
 public extension OpenCodeControlling {
+    func controlSnapshot(id: String) async throws -> OpenCodeSessionSnapshot { try await snapshot(id: id) }
     func cancelForm(id: String, formID: String) async throws { throw AgentArtifactError.unsupported }
     func stopState(id: String) async throws -> OpenCodeStopState {
         let value = try await snapshot(id: id)
@@ -809,6 +811,14 @@ public struct OpenCodeHTTPControl: OpenCodeControlling {
         guard next != cursor else { throw LaunchError("OpenCode 历史游标未推进。") }
         let messages = try OpenCodeProtocol.messages(["data": Array(entries.reversed())])
         return AgentHistoryResult(messages: messages, nextCursor: next)
+    }
+
+    public func controlSnapshot(id: String) async throws -> OpenCodeSessionSnapshot {
+        let details = try await call("GET", "/api/session/\(encoded(id))")
+        let active = try await call("GET", "/api/session/active")
+        let running = (active["data"] as? [String: Any])?[id] != nil
+        let outcome = (try? OpenCodeProtocol.data(details))?["outcome"] as? String
+        return OpenCodeSessionSnapshot(running ? "active" : outcome == "failed" ? "failed" : "idle", [], nil)
     }
 
     public func snapshot(id: String) async throws -> OpenCodeSessionSnapshot {
@@ -1096,7 +1106,8 @@ public struct OpenCodeLauncher: AgentAdapter {
 
     public func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
         if session.command?.kind == "interrupt" { return await synchronizeInterrupt(session) }
-        let snapshot = try await control.snapshot(id: session.sessionRef)
+        let snapshot = try await (session.syncPurpose == .control
+            ? control.controlSnapshot(id: session.sessionRef) : control.snapshot(id: session.sessionRef))
         var execution = snapshot.execution
         // A pending choice is not in the message log: OpenCode blocks on a form
         // or a permission endpoint until it is answered there. Attach the
@@ -1291,7 +1302,7 @@ public struct OpenCodeLauncher: AgentAdapter {
         var deliveredMessages = messages + answeredTrace
         var deliveredStatus = snapshot.status
         var deliveredWaiting = waitingForInput
-        if let refreshed = try? await control.snapshot(id: session.sessionRef) {
+        if session.syncPurpose != .control, let refreshed = try? await control.snapshot(id: session.sessionRef) {
             // A re-read that cannot re-ask falls back to this poll's earlier
             // answer, never to "none": settling by absence (AND-239) would
             // otherwise read the fallback as if every card had been cleared.

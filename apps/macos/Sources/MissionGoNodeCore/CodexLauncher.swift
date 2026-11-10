@@ -648,6 +648,9 @@ public struct CodexLauncher: AgentAdapter {
     }
 
     private func readSnapshot(_ session: NodeAgentSession) async throws -> CodexThreadSnapshot {
+        if session.syncPurpose == .control {
+            return try await control.readControlStatus(socketPath: location.controlSocketPath, threadId: session.sessionRef)
+        }
         if session.externalBindingGeneration != nil {
             return try await control.readExternalThread(socketPath: location.controlSocketPath, threadId: session.sessionRef)
         }
@@ -691,6 +694,26 @@ public struct CodexLauncher: AgentAdapter {
     }
 
     public func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport {
+        if session.syncPurpose == .observation {
+            let snapshot = try await readSnapshot(session)
+            let observing = snapshot.status == "active" || snapshot.waitingOnApproval || snapshot.waitingOnUserInput
+            var approval = session.externalBindingGeneration == nil
+                ? control.existingApprovalSnapshot(socketPath: location.controlSocketPath, threadId: session.sessionRef) : nil
+            if observing { approval = approvalSnapshot(session, observing: true) }
+            else if session.externalBindingGeneration == nil && !["pending", "inProgress", "reconnecting"].contains(approval?.status ?? "") {
+                control.stopObservingApprovals(threadId: session.sessionRef)
+            }
+            let unloaded = session.externalBindingGeneration != nil && snapshot.runtimeStatus == "notLoaded"
+            return AgentSessionReport(status: unloaded ? "unavailable" : snapshot.status, messages: snapshot.messages,
+                error: unloaded ? "原生历史已同步；当前控制通道未加载此会话，请在原 Codex 客户端打开后重试。" : nil,
+                sourceArchived: snapshot.archived, activityAt: snapshot.activityAt,
+                turnActive: snapshot.status == "active", waitingForInput: snapshot.waitingOnApproval || snapshot.waitingOnUserInput)
+                .reportingExecution(activities: snapshot.execution.activities, revision: snapshot.execution.revision,
+                    turnStartedAt: snapshot.execution.turnStartedAt, lastOutputAt: snapshot.execution.lastOutputAt)
+                .reportingApproval(approval).reportingHistory(snapshot.history)
+                .reportingFailure(snapshot.failure).reportingSettings(model: snapshot.model, effort: snapshot.reasoningEffort,
+                    settingsRevision: nil, settingsError: nil)
+        }
         failureReplyReservations.withLock { reservations in
             if reservations[session.id] != session.command?.id { reservations[session.id] = nil }
         }
@@ -1100,7 +1123,8 @@ public struct CodexLauncher: AgentAdapter {
         // the delivery confirmation. The status keeps its contracts — a send
         // means the turn has begun, a steer keeps the active turn it joined —
         // because a re-read racing the turn's own start would say idle.
-        let deliveredMessages = ((try? await readSnapshot(session))?.messages) ?? snapshot.messages
+        let deliveredMessages = session.syncPurpose == .control ? snapshot.messages
+            : ((try? await readSnapshot(session))?.messages) ?? snapshot.messages
         return AgentSessionReport(
             status: "active",
             messages: deliveredMessages,

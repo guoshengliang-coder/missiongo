@@ -1,3 +1,4 @@
+import { SessionWorkQueue, SessionUploadGate, SnapshotReports, SnapshotHealth, ControlReports, hasControlWork, observationSession } from "./session-work.js";
 import { sessionName } from "./session-name.js";
 import { probeClaudeCapabilities } from "./claude-capabilities.js";
 import { spawn } from "node:child_process";
@@ -92,30 +93,85 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
       savePrivate(join(directory, "reported.json"), { reportedAt: new Date().toISOString() });
     }
   }
-  async function sessions(): Promise<void> {
-    await recoverResults();
-    const result = await api.call("GET", "/api/v1/node/agent-sessions");
-    for (const session of result.sessions as Session[]) {
-      if (!session.dispatchId) continue;
+  let separated = false;
+  let controlCursor: string | undefined;
+  let taskError: unknown;
+  const failedTask = (error: unknown) => {
+    if (signal.aborted) return;
+    log(safeError(error));
+    savePrivate(healthPath, {state: error instanceof APIError && [401,403].includes(error.status) ? "credential_revoked" : "degraded", checkedAt:new Date().toISOString()});
+    if (error instanceof APIError && [401,403].includes(error.status)) { taskError = error; shutdown.abort(); }
+  };
+  const mirrors = new SessionWorkQueue(failedTask);
+  const controls = new SessionWorkQueue(failedTask);
+  const stops = new SessionWorkQueue(failedTask);
+  const uploads = new SessionUploadGate();
+  const reported = new SnapshotReports();
+  const health = new SnapshotHealth();
+  const epochs = new Map<string, number>();
+  const controlling = new Map<string, number>();
+  const controlReports = new ControlReports();
+  const submitControl = (session: Session) => (session.command?.kind === "interrupt" ? stops : controls)
+    .submit(session.id, () => synchronize(session, "control"));
+  async function synchronize(session: Session, lane: "combined" | "observation" | "control"): Promise<void> {
+    if (!session.dispatchId || signal.aborted) return;
+    const epoch = epochs.get(session.id) ?? 0;
+    const control = lane === "control";
+    if (lane === "observation" && controlling.has(session.id)) return;
+    if (control) { epochs.set(session.id, epoch + 1); controlling.set(session.id, (controlling.get(session.id) ?? 0) + 1); }
+    const post = (snapshot: Snapshot) => uploads.run(session.id, async () => {
+      if (control) snapshot = controlReports.record(session.id, epoch + 1, snapshot);
+      if (lane === "observation" && (controlling.has(session.id) || epoch !== (epochs.get(session.id) ?? 0))) return;
+      const key = session.id + ":" + lane;
+      const hash = reported.fingerprint(snapshot);
+      if (lane !== "control" && !reported.needed(key, hash)) return;
+      try { await api.call("POST", `/api/v1/node/agent-sessions/${encodeURIComponent(session.id)}/snapshot`, snapshot); reported.confirm(key, hash); }
+      catch (error) { reported.failed(key); throw error; }
+    });
+    try {
       let snapshot: Snapshot;
       try {
+        // Complete the server reservation before handing an input to the
+        // detached host. A lost reservation response never starts input.
         if (session.approvalRetry?.status === "queued") {
           await api.call("POST", `/api/v1/node/agent-sessions/${encodeURIComponent(session.id)}/snapshot`, {
             status: "active", messages: [], approvalRetryId: session.approvalRetry.id, approvalRetryStatus: "delivering",
           });
         }
-        // Reserve the command on the server BEFORE the detached host can send input.
         if (session.command?.status === "queued") {
           await api.call("POST", `/api/v1/node/agent-sessions/${encodeURIComponent(session.id)}/snapshot`, {
             status: "active", messages: [], commandId: session.command.id, commandStatus: "delivering",
           });
         }
-        snapshot = await hostCall(root, session.dispatchId, session);
-      } catch (error) { snapshot = { status: "unavailable", messages: [], error: safeError(error),
-        ...(session.command ? { commandId: session.command.id, commandStatus: session.command.kind === "interrupt" ? "failed" : "delivery_unknown",
-          commandError: session.command.kind === "interrupt" ? "停止尚未确认：节点未取得执行结果，请核实来源后重试。" : safeError(error) } : {}) }; }
-      await api.call("POST", `/api/v1/node/agent-sessions/${encodeURIComponent(session.id)}/snapshot`, snapshot);
+        snapshot = await hostCall(root, session.dispatchId, session, lane);
+      } catch (error) {
+        if (error instanceof APIError) throw error;
+        snapshot = {status: "unavailable", messages: [], error: safeError(error),
+          ...(session.command ? {commandId: session.command.id, commandStatus: session.command.kind === "interrupt" ? "failed" : "delivery_unknown",
+            commandError: session.command.kind === "interrupt" ? "停止尚未确认：节点未取得执行结果，请核实来源后重试。" : safeError(error)} : {})};
+      }
+      await post(lane === "control" ? snapshot : health.observe(session.id, snapshot));
+    } finally {
+      if (control) { const remaining = (controlling.get(session.id) ?? 1) - 1;
+        if (remaining) controlling.set(session.id, remaining); else controlling.delete(session.id); }
     }
+  }
+  async function sessions(): Promise<void> {
+    const result = await api.call("GET", "/api/v1/node/agent-sessions");
+    for (const session of result.sessions as Session[]) {
+      if (!session.dispatchId) continue;
+      const observed = separated ? observationSession(session) : session;
+      mirrors.submit(session.id, () => synchronize(observed, separated ? "observation" : "combined"));
+    }
+  }
+  async function controlChanges(): Promise<void> {
+    if (!separated) return;
+    const change = await api.controlChanges(controlCursor);
+    if (change) controlCursor = change.cursor;
+    const sessions: Session[] = (await api.call("GET", "/api/v1/node/agent-sessions")).sessions;
+    for (const session of sessions) if (hasControlWork(session)) submitControl(session);
+    // An old server or rolling downgrade needs the legacy cadence, not a spin.
+    if (!change) await pause(2000);
   }
   async function history(): Promise<void> {
     let jobs: WireHistoryJob[];
@@ -144,8 +200,15 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
       savePrivate(healthPath, { state: "online", checkedAt: new Date().toISOString(), pid: process.pid, agents });
     };
     await heartbeat();
+    const initial = await api.controlChanges(undefined, 0);
+    separated = initial !== undefined; controlCursor = initial?.cursor;
+    if (separated) {
+      const initialSessions: Session[] = (await api.call("GET", "/api/v1/node/agent-sessions")).sessions;
+      for (const session of initialSessions) if (hasControlWork(session)) submitControl(session);
+    }
     const loops = [
-      retry(heartbeat, 30_000), retry(sessions, 2000), retry(history, 2000), retry(() => completeImageArtifacts(root, api), 2000),
+      retry(heartbeat, 30_000), retry(recoverResults, 1000), retry(sessions, 2000),
+      ...(separated ? [retry(controlChanges, 0)] : []), retry(history, 2000), retry(() => completeImageArtifacts(root, api), 2000),
       retry(async () => {
         const active = await api.call("GET", "/api/v1/node/agent-sessions");
         if (active.sessions.filter((s: Session) => s.occupiesExecutionSlot).length >= 10) return;
@@ -166,6 +229,7 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
       }, 1000),
     ];
     try { await Promise.all(loops); }
-    finally { shutdown.abort(); await Promise.allSettled(loops); }
+    finally { shutdown.abort(); await Promise.allSettled(loops); await Promise.all([mirrors.finish(), controls.finish(), stops.finish()]); }
+    if (taskError) throw taskError;
   } finally { savePrivate(healthPath, { state: "stopped", checkedAt: new Date().toISOString() }); }
 }

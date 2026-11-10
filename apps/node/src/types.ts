@@ -43,6 +43,7 @@ export interface Snapshot {
   status: "active" | "idle" | "suspended" | "stalled" | "unavailable" | "failed";
   messages: Message[]; activities?: { id: string; title: string; detail?: string }[];
   stopConfirmed?: boolean;
+  observedAt?: string; lastProgressAt?: string;
   mode?: string; turnActive?: boolean; waitingForInput?: boolean; error?: string; model?: string; effort?: string;
   approval?: Approval; commandId?: string; commandStatus?: string; commandError?: string;
   sourceArchived?: boolean; sourceRestored?: boolean; sourceArchiveError?: string;
@@ -60,6 +61,7 @@ export interface Adapter {
   start(prompt: string): Promise<string>;
   stop(command: Command): Promise<Snapshot>;
   snapshot(): Promise<Snapshot>;
+  controlSnapshot?(): Promise<Snapshot>;
   historyPage?(cursor: string): Promise<{ messages: Message[]; nextCursor?: string; error?: string }>;
   /** controlOnly permits answers to existing native requests, never a new prompt. */
   deliver(command: Command, options?: { controlOnly: boolean }): Promise<void>;

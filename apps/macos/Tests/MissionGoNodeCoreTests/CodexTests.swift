@@ -1983,6 +1983,11 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertEqual(report.status, "unavailable")
         XCTAssertEqual(report.messages.first?.text, "History")
         XCTAssertEqual(report.commandStatus, "failed")
+        let observed = try await launcher.synchronize(NodeAgentSession(id: "s", sessionRef: "thread-1", status: "idle",
+            externalBindingGeneration: 1).forSync(.observation))
+        XCTAssertEqual(observed.status, "unavailable")
+        XCTAssertEqual(observed.messages.first?.text, "History")
+        XCTAssertNil(observed.commandId)
     }
 
     func testRestartNeverReplaysAJournaledExactTurnStop() async throws {

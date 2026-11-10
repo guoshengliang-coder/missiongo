@@ -167,6 +167,13 @@ export class CodexAdapter implements Adapter {
         type:"workspaceWrite",writableRoots:[this.job.repoPath,worktreePath(this.job)],networkAccess:false,excludeTmpdirEnvVar:false,excludeSlashTmp:false},
       collaborationMode:{mode:"default",settings:{model:this.model,reasoning_effort:this.job.effort ?? null,developer_instructions:null}} };
   }
+  async controlSnapshot(): Promise<Snapshot> {
+    const {thread, lastTurn} = await this.runtime();
+    const active = thread.status?.type === "active" || lastTurn?.status === "inProgress";
+    const approval = this.pending.values().next().value?.snapshot ?? this.lastApproval;
+    return {status: active ? "active" : lastTurn?.status === "failed" ? "failed" : "idle", messages: [], turnActive: active,
+      waitingForInput: approval?.status === "pending", ...(approval ? {approval} : {})};
+  }
   async snapshot(): Promise<Snapshot> {
     if (this.closed) return { status: "unavailable", messages: [], error: "Codex control host disconnected; no automatic restart", ...(this.lastApproval ? { approval: this.lastApproval } : {}) };
     const { thread, lastTurn } = await this.runtime();

@@ -575,7 +575,37 @@ public struct AgentSessionCommand: Codable, Equatable, Sendable {
     }
 }
 
+public enum SessionSyncPurpose: Sendable { case combined, observation, control }
+public struct NodeControlChange: Decodable, Sendable {
+    public let cursor: String
+    public let protocolVersion: Int
+    private enum CodingKeys: String, CodingKey { case cursor; case protocolVersion = "protocol" }
+    public init(cursor: String) { self.cursor = cursor; self.protocolVersion = 1 }
+}
+
 public struct NodeAgentSession: Codable, Equatable, Sendable {
+    // Local dispatch policy, deliberately excluded from the wire contract.
+    public var syncPurpose: SessionSyncPurpose = .combined
+    public var hasControlWork: Bool {
+        command != nil || approvalDecision != nil || approvalRetry != nil || pendingSettings != nil
+            || archiveInSource || restoreInSource || lifecycle == "close" || managedExecution?.stopRequested == true
+    }
+    public func forSync(_ purpose: SessionSyncPurpose) -> NodeAgentSession {
+        var copy = NodeAgentSession(id: id, managedExecution: managedExecution, dispatchId: dispatchId,
+            agentKind: agentKind, sessionRef: sessionRef, status: status,
+            lifecycle: purpose == .observation ? "keep" : lifecycle, occupiesExecutionSlot: occupiesExecutionSlot,
+            command: purpose == .observation ? nil : command,
+            approvalDecision: purpose == .observation ? nil : approvalDecision,
+            approvalRetry: purpose == .observation ? nil : approvalRetry, approvalReviewMode: approvalReviewMode,
+            archiveInSource: purpose != .observation && archiveInSource,
+            restoreInSource: purpose != .observation && restoreInSource,
+            desiredSettings: purpose == .observation ? nil : desiredSettings,
+            appliedSettingsRevision: appliedSettingsRevision,
+            externalBindingGeneration: externalBindingGeneration, externalAutoConnect: externalAutoConnect)
+        copy.syncPurpose = purpose
+        return copy
+    }
+
     public let externalAutoConnect: Bool
     /// Present only for an explicitly connected external conversation.
     public let externalBindingGeneration: Int?
@@ -1653,6 +1683,17 @@ public struct APIClient: Sendable {
         let response = try await send("POST", "/api/v1/node/agent-artifacts/\(APIClient.encodePathComponent(id))",
             body: result, bearer: try nodeToken(), timeout: 120, gzipBody: true)
         try requireSuccess(response, operation: "保存会话产物")
+    }
+
+    public func waitForAgentControl(cursor: String?, waitMs: Int) async throws -> NodeControlChange? {
+        let query = "?waitMs=\(max(0, min(waitMs, 25000)))" + (cursor.map { "&cursor=\(APIClient.encodePathComponent($0))" } ?? "")
+        let response = try await send("GET", "/api/v1/node/control-changes" + query,
+            body: Optional<String>.none, bearer: try nodeToken(), timeout: 35)
+        if response.status == 404 { return nil }
+        try requireSuccess(response, operation: "等待节点控制请求")
+        let change: NodeControlChange = try decode(response, operation: "等待节点控制请求")
+        guard change.protocolVersion == 1 else { throw LaunchError("节点控制协议版本不受支持。") }
+        return change
     }
 
     public func listAgentSessions() async throws -> [NodeAgentSession] {

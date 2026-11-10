@@ -273,6 +273,10 @@ describe("Claude native control", () => {
     expect(await adapter.start("approval requested")).toMatch(/^[0-9a-f-]+$/); await delay(30);
     let snapshot = await adapter.snapshot(); expect(snapshot.waitingForInput).toBe(true);
     expect(snapshot.messages.at(-1)?.questions?.[0]?.key).toBe("授权请求 claude-native-1");
+    const control = await adapter.controlSnapshot();
+    expect(control.waitingForInput).toBe(true);
+    expect(control.messages.at(-1)?.questions?.[0]?.key).toBe("授权请求 claude-native-1");
+    expect(control.messages.every(message => message.sourceId.startsWith("request-") || message.sourceId.startsWith("permission-"))).toBe(true);
     await adapter.deliver({ id: "reply-deny", status: "queued", text: "授权请求 claude-native-1: 拒绝" }); await delay(30);
     snapshot = await adapter.snapshot(); expect(snapshot.messages.some((m) => m.text === "deny")).toBe(true); expect(snapshot.waitingForInput).toBe(false);
     await adapter.deliver({ id: "reply-next", status: "queued", text: "continue" });

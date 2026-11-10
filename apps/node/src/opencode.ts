@@ -80,6 +80,11 @@ export class OpenCodeAdapter implements Adapter {
       await this.api.call("POST", `${this.path}/prompt`, { prompt: { text }, delivery: "queue" });
     }
   }
+  async controlSnapshot(): Promise<Snapshot> {
+    const details = await this.api.call("GET", this.path);
+    const active = (await this.api.call("GET", "/api/session/active")).data?.[this.ref] !== undefined;
+    return {status: active ? "active" : details.data?.outcome === "failed" ? "failed" : "idle", messages: [], turnActive:active};
+  }
   async snapshot(): Promise<Snapshot> {
     const details = await this.api.call("GET", this.path);
     const messages: Message[] = [];
