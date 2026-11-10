@@ -43,7 +43,11 @@ export function NewSessionDraft({ draft, projectName, onChange, onBack, onConfig
   const catalogUnavailable = Boolean(!draft.requestKey && !models && (config.model || config.effort));
   const modeIssue = draft.requestKey ? undefined : modeProblem(config.agentKind, config.mode, node?.agents.find(agent => agent.kind === config.agentKind)?.modes, config.model);
   const configBlocked = modelUnavailable || catalogUnavailable || Boolean(modeIssue);
-  const send = useMutation({ mutationFn: async () => {
+  const submitLock = useRef(false);
+  const [phase, setPhase] = useState<"preparing" | "uploading" | "starting">("preparing");
+  const [uploadIndex, setUploadIndex] = useState(0);
+  const send = useMutation({ onSettled: () => { submitLock.current = false; }, mutationFn: async () => {
+    setPhase("preparing");
     let sending = { ...draft, config, requestKey: draft.requestKey ?? crypto.randomUUID(), uploaded: [...(draft.uploaded ?? [])] };
     onChange(sending);
     let dispatch = sending.dispatch;
@@ -65,10 +69,12 @@ export function NewSessionDraft({ draft, projectName, onChange, onBack, onConfig
     onChange(sending);
     if (!dispatch.agentSessionId) throw new Error(t("somethingWentWrong"));
     for (let index = sending.uploaded.length; index < sending.files.length; index++) {
-      const attachment = await api.uploadAgentSessionAttachment(dispatch.agentSessionId, sending.files[index]!);
+      setPhase("uploading"); setUploadIndex(index + 1);
+      const attachment = await api.uploadAgentSessionAttachment(dispatch.agentSessionId, sending.files[index]!, `${sending.requestKey}-${index}`);
       sending = { ...sending, uploaded: [...sending.uploaded, attachment.id] };
       onChange(sending);
     }
+    setPhase("starting");
     const started = await api.startProjectConversation(dispatch.id, sending.uploaded);
     await onStarted(started);
   } });
@@ -99,7 +105,7 @@ export function NewSessionDraft({ draft, projectName, onChange, onBack, onConfig
     </header>
     <div className="agent-console-empty agent-console-empty-conversation"><MessageSquare size={24} /><p>{t("newSessionEmpty")}</p></div>
     <footer className="agent-console-reply">
-      <form onSubmit={event => { event.preventDefault(); if (!send.isPending && !configBlocked && (!draft.files.length || draft.config.canAttach) && (draft.text.trim() || draft.files.length)) send.mutate(); }} {...dropHandlers}>
+      <form onSubmit={event => { event.preventDefault(); if (!submitLock.current && !send.isPending && !configBlocked && (!draft.files.length || draft.config.canAttach) && (draft.text.trim() || draft.files.length)) { submitLock.current = true; send.mutate(); } }} {...dropHandlers}>
         {isDraggingFiles && <FileDropOverlay remaining={10 - draft.files.length} />}
         <AutoGrowTextarea autoFocus submitOnEnter rows={2} value={draft.text} maxLength={20000} disabled={locked}
           aria-label={t("agentSessionReplyPlaceholder", { agent: agentName })}
@@ -111,6 +117,9 @@ export function NewSessionDraft({ draft, projectName, onChange, onBack, onConfig
         {draft.files.length > 0 && !draft.config.canAttach && <p className="inline-error" role="alert">{t("agentChatNodeUpdate")}</p>}
         {fileError && <p className="inline-error" role="alert">{fileError}</p>}
         {send.isError && <p className="inline-error" role="alert">{errorText}</p>}
+        {send.isPending && <p className="agent-session-muted" role="status">{phase === "uploading"
+          ? t("agentSendUploading", { current: uploadIndex, total: draft.files.length })
+          : t(phase === "preparing" ? "agentSendPreparing" : "agentSendStarting")}</p>}
         {modelUnavailable && <p className="inline-error" role="alert">{t("dispatchModelUnavailable", { model: config.model! })}</p>}
         {catalogUnavailable && <p className="inline-error" role="alert">{t("dispatchModelUnsupported")}</p>}
         {modeIssue && <p className="inline-error" role="alert">{t(modeIssue)}</p>}

@@ -1,3 +1,6 @@
+import { DraftChatFile } from "./agent-chat-draft-file";
+import { SessionSender, SendUnconfirmed, SendSuperseded, commandNotDelivered, sendAttemptHasDraft } from "./session-send";
+import { useSendAttempt, sendAttemptLocked, SessionSendFeedback, SessionSenderContext } from "./session-send-feedback";
 import { AgentPlanRecords } from "./agent-plan-records";
 import { mergePreparationEvidence } from "./merge-preparation";
 import { MergePreparationNotice } from "./merge-preparation-notice";
@@ -8,7 +11,7 @@ import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-opera
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
 import { UnlinkedPlanRecord, InlinePlanApproval, inlinePlanTranscript, currentPlan } from "./agent-plan-content";
 import { AgentStopFeedback } from "./agent-stop-feedback.js";
-import { useState, useLayoutEffect, useRef, type FormEvent } from "react";
+import { useState, useContext, useEffect, useLayoutEffect, useRef, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, SessionStatusIcon, isHistoryLimited, AgentSessionError } from "./agent-session-feedback";
@@ -48,7 +51,13 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
   const { locale, t } = useI18n();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
-  const [reply, setReply] = useState("");
+  const [localSender] = useState(() => new SessionSender());
+  const sharedSender = useContext(SessionSenderContext);
+  const sender = sharedSender ?? localSender;
+  const [reply, setReply] = useState(() => {
+    const attempt = sender.get(sessionId);
+    return sendAttemptHasDraft(attempt) ? attempt!.text : "";
+  });
   const currentSessionId = useRef(sessionId);
   currentSessionId.current = sessionId;
   const session = useQuery({
@@ -72,18 +81,29 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
     const box = messagesRef.current;
     if (open && box && followLatest.current && !prepended) box.scrollTop = box.scrollHeight;
   }, [open, sessionId, history.messages, history.revision, session.data?.implementationPlan]);
+  const sendAttempt = useSendAttempt(sender, sessionId);
+  const sendLocked = sendAttemptLocked(sendAttempt);
+  const inheritedFiles = sendAttempt && sendAttemptHasDraft(sendAttempt) ? sendAttempt.files : [];
+  useEffect(() => {
+    if (sendAttemptHasDraft(sendAttempt)) setReply(current => current || sendAttempt!.text);
+  }, [sendAttempt?.requestKey]);
   const send = useMutation({
-    mutationFn: (input: { sessionId: string; text: string; preserveDraft?: true }) => api.sendAgentSessionCommand(input.sessionId, input.text),
+    mutationFn: (input: { sessionId: string; text: string; files?: readonly File[]; occurredAt?: string; preserveDraft?: boolean; recovery?: "check" | "retry" }) => {
+      const previous = sender.get(input.sessionId);
+      const files = input.files ?? (previous && sendAttemptHasDraft(previous) && !input.preserveDraft ? previous.files : []);
+      return sender.send({ ...input, files, occurredAt: input.occurredAt ?? new Date().toISOString() });
+    },
     onMutate: input => feedback.begin(input.sessionId, "send"),
-    onError: (error, _input, operation) => feedback.fail(error, operation),
+    onError: (error, _input, operation) => error instanceof SendUnconfirmed || error instanceof SendSuperseded ? feedback.finish(operation) : feedback.fail(error, operation),
     onSuccess: async (_command, _input, operation) => {
       if (!operation) return;
       feedback.finish(operation);
       void invalidateSessionDeliveries(queryClient,operation.sessionId);
-      if (currentSessionId.current === operation.sessionId && !_input.preserveDraft) setReply("");
+      if (currentSessionId.current === operation.sessionId && !_input.preserveDraft && !commandNotDelivered(_command)) setReply(current => current.trim() === _input.text.trim() ? "" : current);
       await queryClient.invalidateQueries({ queryKey: ["agent-session", operation.sessionId] });
     },
   });
+  const sendBusy = send.isPending || sendLocked;
   const cancel = useMutation({
     mutationFn: ({ sessionId: originalSessionId, commandId }: { sessionId: string; commandId: string; text: string }) =>
       api.cancelAgentSessionCommand(originalSessionId, commandId),
@@ -112,10 +132,12 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
     },
   });
   const questionPermission = Boolean(session.data && hasPendingPermissionQuestion(session.data.agentKind, history.messages.filter(message => !message.historical && !message.id.startsWith("history:"))));
-  const submittedCommand = send.isSuccess && send.variables?.sessionId === sessionId ? send.data : undefined;
+  const submittedCommand = sendAttempt?.command ?? (send.isSuccess && send.variables?.sessionId === sessionId ? send.data : undefined);
   const command = latestAgentSessionCommand(session.data?.command, submittedCommand);
-  const replyPresentation = sessionReplyPresentation(session.data?.status ?? "idle", command,
-    send.isPending && send.variables?.sessionId === sessionId, session.data?.stopCommand);
+  const replyPresentation = sendAttempt?.phase === "unconfirmed"
+    ? { labelKey: "agentSendUnconfirmedShort" as const, iconStatus: "waiting" as const, visualStatus: "idle" as const }
+    : sessionReplyPresentation(session.data?.status ?? "idle", command,
+      sendLocked || (send.isPending && send.variables?.sessionId === sessionId), session.data?.stopCommand);
   const canReply = session.data?.canReply === true;
   const mergePreparation = !questionPermission ? mergePreparationEvidence(session.data) : undefined;
   // A reply can go to any agent the console runs, so the delivery lines name
@@ -135,7 +157,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const text = reply.trim();
-    if (text && !pending && !send.isPending) send.mutate({ sessionId, text });
+    if ((text || inheritedFiles.length) && !pending && !sendBusy) send.mutate({ sessionId, text });
   };
 
   const planMessages = inlinePlanTranscript(history.messages.filter(message => !isWithdrawnCard(message)), session.data);
@@ -172,7 +194,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                         <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
                       </header>
                       {(message.role === "user" ? <MarkdownText>{permissionReplyText((session.data.currentRequests ?? session.data.messages).flatMap(message => message.questions ?? []), message.text)}</MarkdownText> : <AgentArtifactMarkdown text={message.text} sessionId={sessionId} messageId={message.id} />)}
-                      {message.id === planMessages.planMessageId && <InlinePlanApproval onRequestChanges={()=>document.querySelector<HTMLTextAreaElement>(".agent-session-reply textarea")?.focus()} key={`${session.data.id}:${currentPlan(session.data)?.revision}`} session={session.data} blocked={questionPermission || pending || send.isPending} />}
+                      {message.id === planMessages.planMessageId && <InlinePlanApproval onRequestChanges={()=>document.querySelector<HTMLTextAreaElement>(".agent-session-reply textarea")?.focus()} key={`${session.data.id}:${currentPlan(session.data)?.revision}`} session={session.data} blocked={questionPermission || pending || sendBusy} />}
                       {message.questions && (
                         <AgentSessionQuestions
                           questions={message.questions}
@@ -181,14 +203,14 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                           historical={message.historical || message.id.startsWith("history:")}
                           agentKind={session.data.agentKind}
                           reply={reply}
-                          canReply={canReply && !message.id.startsWith("history:") && !pending && !send.isPending}
+                          canReply={canReply && !message.id.startsWith("history:") && !pending && !sendBusy}
                           onChange={setReply}
                         />                      )}
                     </article>
                   );
                 })}
               </div>
-              {!planMessages.planMessageId && <UnlinkedPlanRecord session={session.data} blocked={questionPermission || pending || send.isPending} />}
+              {!planMessages.planMessageId && <UnlinkedPlanRecord session={session.data} blocked={questionPermission || pending || sendBusy} />}
               <div className="agent-run-status" aria-label={t("agentRunFeedback")}>
                 <AgentOperationFeedback failures={feedback.failures} sessionId={sessionId} onDismiss={feedback.finish} />
                 <AgentStopFeedback stop={session.data.stopCommand ?? (command?.kind === "interrupt" ? command : undefined)}
@@ -203,7 +225,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                     <ul>{session.data.activities.map((activity) => (
                       <li key={activity.id}>{activity.title}
                         {activity.startedAt && <small> · {t("agentSessionBackgroundElapsed", { duration: Math.max(0, Math.floor((Date.now() - Date.parse(activity.startedAt)) / 60_000)) + "m" })}</small>}
-                        {canReply && !pending && !send.isPending && <button type="button" className="text-button"
+                        {canReply && !pending && !sendBusy && <button type="button" className="text-button"
                           onClick={() => setReply(t("agentSessionStopTaskMessage", { title: activity.title, id: activity.id }))}>
                           {t("agentSessionRequestTaskStop")}
                         </button>}
@@ -244,11 +266,17 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                 </div>
               )}
               {mergePreparation && <MergePreparationNotice key={mergePreparation.key} productId={productId}
-                session={session.data} evidence={mergePreparation} blocked={pending || send.isPending}
+                session={session.data} evidence={mergePreparation} blocked={pending || sendBusy}
                 send={text => send.mutateAsync({ sessionId, text, preserveDraft: true })} />}
-              <DeliveryCards productId={productId} sessionId={sessionId} blocked={pending || send.isPending} />
+              <DeliveryCards productId={productId} sessionId={sessionId} blocked={pending || sendBusy} />
               {canReply ? (
                 <>
+                  <SessionSendFeedback attempt={sendAttempt} recover={recovery => {
+                    if (sendAttempt) send.mutate({ ...sendAttempt, recovery });
+                  }} />
+                  {inheritedFiles.length > 0 && <div className="agent-chat-draft-files">
+                    {inheritedFiles.map((file, index) => <DraftChatFile key={`${file.name}-${index}`} file={file} disabled />)}
+                  </div>}
                   <form className="agent-session-reply" onSubmit={submit}>
                     <AutoGrowTextarea
                       rows={1}
@@ -259,10 +287,10 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                       placeholder={t("agentSessionReplyPlaceholder", {
                         agent: messageLabel("agent", session.data.agentKind, t),
                       })}
-                      disabled={pending || send.isPending}
+                      disabled={pending || sendBusy}
                     />
-                    <button type="submit" className="primary-button" disabled={!reply.trim() || pending || send.isPending}>
-                      {send.isPending ? t("agentSessionSending") : t("agentSessionSend")}
+                    <button type="submit" className="primary-button" disabled={(!reply.trim() && inheritedFiles.length === 0) || pending || sendBusy}>
+                      {sendAttempt?.phase === "unconfirmed" ? t("agentSendUnconfirmedShort") : t(sendBusy ? "agentSessionSending" : "agentSessionSend")}
                     </button>
                   </form>
                 </>

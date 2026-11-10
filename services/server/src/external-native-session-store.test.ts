@@ -509,3 +509,18 @@ it("syncs unloaded Codex history read-only and enables replies only after a load
   expect(f.native.overlay("owner",f.id).replyable).toBe(true);
   expect(f.native.overlay("owner",f.id).nativeMessages).toHaveLength(2);
 });
+
+it("AND-499 reuses an external send key before and after delivery, rejecting changed content", () => {
+  const f = fixture(); f.native.connect("owner", f.id, "node"); f.report();
+  const key = "external-send-request-499";
+  const first = f.native.enqueue("owner", f.id, "Same text", [], key);
+  expect(f.native.enqueue("owner", f.id, "Same text", [], key).id).toBe(first.id);
+  expect(() => f.native.enqueue("owner", f.id, "Changed", [], key)).toThrow(/different content/);
+  f.report({ commandId: first.id, commandStatus: "delivering" });
+  f.report({ commandId: first.id, commandStatus: "delivered" });
+  expect(f.native.enqueue("owner", f.id, "Same text", [], key)).toMatchObject({ id: first.id, status: "delivered" });
+  const next = f.native.enqueue("owner", f.id, "Same text", [], "external-send-request-next");
+  expect(next.id).not.toBe(first.id);
+  expect(f.native.commandById(f.id, first.id)?.id).toBe(first.id);
+  expect(f.native.commandById("other-session", first.id)).toBeUndefined();
+});

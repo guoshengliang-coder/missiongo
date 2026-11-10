@@ -77,7 +77,8 @@ for (const width of [320,1440]) for (const theme of ["light","dark"] as const) f
     canReply:true,canRetry:false,canStop:false,canArchive:true,attention:{state:"needed",kind:"instruction",reason:"Review completed delivery",revision:"attention-turn",handledByDelivery:true},needsAttention:false,items:[{key:item.key,title:item.title,productId:product.id}]};
   await page.route("**/api/v1/agent-sessions**",route=>{
     if(route.request().method()==="POST" && new URL(route.request().url()).pathname.endsWith("/commands")) {
-      if(rejectSend)return route.fulfill({status:503,json:{title:"Synthetic rejected send"}});
+      // A definite rejection permits editing; unknown 5xx outcomes stay locked.
+      if(rejectSend)return route.fulfill({status:400,json:{title:"Synthetic rejected send"}});
       blocker="changed";
       return route.fulfill({json:{id:"new-input",sessionId:id,kind:"message",text:"Keep this unsent draft",status:"delivered",createdAt:stamp}});
     }
@@ -117,7 +118,7 @@ for (const width of [320,1440]) for (const theme of ["light","dark"] as const) f
   await page.screenshot({path:testInfo.outputPath("confirmed-label.png"),fullPage:true});
   await expect(draft).toHaveValue("Keep this unsent draft");
   const submit=page.locator(surface==="console"?".agent-console-reply button[type=submit]":".agent-session-reply button[type=submit]");
-  await Promise.all([page.waitForResponse(r=>r.url().endsWith("/commands")&&r.request().method()==="POST"&&r.status()===503),submit.click()]);
+  await Promise.all([page.waitForResponse(r=>r.url().endsWith("/commands")&&r.request().method()==="POST"&&r.status()===400),submit.click()]);
   await expect(submit).toBeEnabled();
   await expect(draft).toHaveValue("Keep this unsent draft");await expect(card).toBeVisible();
   rejectSend=false;await submit.click();await expect(card).toHaveCount(0);await expect(badge).toHaveCount(0);await expect(draft).toBeVisible();

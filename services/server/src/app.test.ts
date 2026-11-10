@@ -1261,10 +1261,10 @@ describe("Commenting over MCP", () => {
       const result = await upload(name);
       expect(result.statusCode, result.body).toBe(201); files.push(result.json());
     }
-    const enqueue = (ids: string[]) => app.inject({ method: "POST", url: `/api/v1/agent-sessions/${id}/commands`, headers,
-      payload: { text: "", attachmentIds: ids } });
+    const enqueue = (ids: string[], requestKey?: string) => app.inject({ method: "POST", url: `/api/v1/agent-sessions/${id}/commands`, headers,
+      payload: { text: "", attachmentIds: ids, ...(requestKey ? { requestKey } : {}) } });
     expect((await enqueue([files[0].id, files[0].id])).statusCode).toBe(400);
-    const attached = await enqueue(files.map(file => file.id));
+    const attached = await enqueue(files.map(file => file.id), "external-attachment-request-499");
     expect(attached.statusCode, attached.body).toBe(201);
     const attachmentCommand = attached.json();
     expect(attachmentCommand.attachments).toHaveLength(4);
@@ -1283,6 +1283,12 @@ describe("Commenting over MCP", () => {
     expect(history.attachmentMessages).toMatchObject([{ commandId: attachmentCommand.id, text: "", attachments: files }]);
     expect((await app.inject({ method: "GET", url: contentUrl, headers: nodeHeaders })).statusCode).toBe(404);
     expect((await enqueue(files.map(file => file.id))).statusCode).toBe(400);
+    const repeated = await enqueue(files.map(file => file.id), "external-attachment-request-499");
+    expect(repeated.statusCode).toBe(201);
+    expect(repeated.json().id).toBe(attachmentCommand.id);
+    const recovered = await app.inject({ method: "GET", url: `/api/v1/agent-sessions/${id}/send-requests/external-attachment-request-499`, headers });
+    expect(recovered.statusCode).toBe(200);
+    expect(recovered.json().command).toMatchObject({ id: attachmentCommand.id, status: "delivered", attachments: files });
     const draft = (await upload("draft.txt")).json();
     expect((await app.inject({ method: "DELETE", url: `/api/v1/agent-sessions/${id}/attachments/${draft.id}`, headers })).statusCode).toBe(204);
     expect((await enqueue([draft.id])).statusCode).toBe(404);

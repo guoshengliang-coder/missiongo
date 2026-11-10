@@ -1,3 +1,4 @@
+import { SessionSendRequests } from "./session-send-requests.js";
 import { observeMessageTimes, recordMessageTime } from "./session-message-clock.js";
 import { observeSessionUnread } from "./session-unread.js";
 import { isConversationMessage } from "@missiongo/domain";
@@ -97,9 +98,11 @@ export class ExternalNativeSessionStore {
       WHERE session_id=? AND status='delivering' AND (delivering_at < ? OR (? IS NOT NULL AND worker_id <> ?))`)
       .run(id, new Date(Date.now() - 5 * 60_000).toISOString(), workerId ?? null, workerId ?? null);
   }
-  private command(id: string): AgentSessionCommand | undefined {
+  private command(id: string, commandId?: string): AgentSessionCommand | undefined {
     this.expireCommands(id);
-    const row = this.db.prepare("SELECT * FROM external_native_commands WHERE session_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(id) as CommandRow | undefined;
+    const row = (commandId
+      ? this.db.prepare("SELECT * FROM external_native_commands WHERE session_id=? AND id=?").get(id, commandId)
+      : this.db.prepare("SELECT * FROM external_native_commands WHERE session_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(id)) as CommandRow | undefined;
     const attachments = row ? this.attachments.listForCommand(row.id) : [];
     return row ? { id: row.id, kind: "message", text: row.text,
       ...(new ImplementationPlans(this.store.database).commandRevision(row.id) ? { planApprovalRevision: new ImplementationPlans(this.store.database).commandRevision(row.id) } : {}), status: row.status, createdAt: row.created_at,
@@ -269,22 +272,26 @@ export class ExternalNativeSessionStore {
       return this.overlay(accountId, id, false).settings;
     });
   }
-  enqueue(accountId: string, id: string, textValue: string, attachmentIds: readonly string[] = []): AgentSessionCommand {
+  enqueue(accountId: string, id: string, textValue: string, attachmentIds: readonly string[] = [], requestKey?: string): AgentSessionCommand {
     assertExternalExecution(this.store.database,id);
     const text = textValue.trim();
     if ((!text && !attachmentIds.length) || text.length > 20_000) throw invalidInput("Reply text or attachments are required (at most 20000 characters).");
     if (attachmentIds.length && !this.supportsAttachments(accountId, id)) throw conflict("agent_node_attachments_unsupported", "Update the MissionGo node before sending attachments.");
     return this.store.database.transaction(() => {
       if (!this.overlay(accountId, id, false).replyable) throw conflict("external_native_not_ready", "Connect the native conversation and wait for a successful node sync before replying.");
-      this.requireNoPending(id);
-      const commandId = randomUUID(); const now = new Date().toISOString();
-      this.db.prepare("INSERT INTO external_native_commands(id,session_id,text,status,created_at) VALUES (?,?,?,'queued',?)").run(commandId, id, text, now);
-      this.attachments.bind(id, accountId, commandId, attachmentIds);
-      recordMessageTime(this.db, `external:${id}`, `command:${commandId}`, now);
-      this.db.prepare("UPDATE external_agent_sessions SET activity_at=? WHERE id=?").run(now, id);
-      return this.command(id)!;
+      return new SessionSendRequests(this.store.database).run(accountId, id, "command", requestKey,
+        [text, attachmentIds], commandId => this.command(id, commandId), () => {
+          this.requireNoPending(id);
+          const commandId = randomUUID(); const now = new Date().toISOString();
+          this.db.prepare("INSERT INTO external_native_commands(id,session_id,text,status,created_at) VALUES (?,?,?,'queued',?)").run(commandId, id, text, now);
+          this.attachments.bind(id, accountId, commandId, attachmentIds);
+          recordMessageTime(this.db, `external:${id}`, `command:${commandId}`, now);
+          this.db.prepare("UPDATE external_agent_sessions SET activity_at=? WHERE id=?").run(now, id);
+          return this.command(id)!;
+      });
     });
   }
+  commandById(id: string, commandId: string): AgentSessionCommand | undefined { return this.command(id, commandId); }
   cancel(accountId: string, id: string, commandId: string): AgentSessionCommand {
     return this.store.database.transaction(() => {
       this.row(accountId, id);

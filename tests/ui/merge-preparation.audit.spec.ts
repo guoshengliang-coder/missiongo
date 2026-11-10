@@ -19,7 +19,8 @@ for (const surface of ["console", "panel"] as const) for (const width of [320, 1
       if (route.request().method() === "POST" && path.endsWith("/commands")) {
         commands++; const body = route.request().postDataJSON();
         expect(body.text).toContain("06a98a04"); expect(body.text).toContain("不要执行合并或发布"); expect(body.text).toContain("我授权推送");
-        if (reject) return route.fulfill({ status: 503, json: { title: "Synthetic send failure" } });
+        // Definite rejection keeps the guide retryable; 5xx requires result recovery.
+        if (reject) return route.fulfill({ status: 400, json: { title: "Synthetic send failure" } });
         currentCommand = { id: "submitted", kind: "message", text: body.text, status: "queued", createdAt: "2026-11-08T10:45:00.000Z" };
         return route.fulfill({ json: currentCommand });
       }

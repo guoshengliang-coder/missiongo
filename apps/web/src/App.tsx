@@ -1,3 +1,4 @@
+import { SessionSenderContext } from "./session-send-feedback";
 import { bootstrapCacheSeeder } from "./bootstrap-cache";
 import { useConsoleConnection, useConsoleEvents } from "./console-events";
 import { isItemListRow, type WorkItemRow } from "./types";
@@ -1312,6 +1313,7 @@ export function App() {
   if (statisticsOpen && !selectedItemKey) return <Suspense fallback={<BootSkeleton />}><StatisticsCenter accountId={bootstrapQuery.data?.user.id} products={products} onClose={closeStatistics} onOpenItem={(key,productId)=>{setSelectedProductId(productId);openItemPage(key);}} /></Suspense>;
 
   return (
+    <SessionSenderContext.Provider value={consoleDrafts.sender}>
     <div className={`app-shell ${agentConsoleOpen ? "agent-console-open" : ""} ${
       agentConsoleOpen && agentConsoleSinglePane && (agentConversationOpen || newSessionOpen) ? "agent-conversation-open" : ""
     }`}>
@@ -1896,6 +1898,7 @@ export function App() {
       )}
       {notice && <div className="toast" role="status"><Check size={16} /> {notice}<button onClick={() => setNotice(null)} aria-label={t("dismiss")}><X size={14} /></button></div>}
     </div>
+    </SessionSenderContext.Provider>
   );
 }
 

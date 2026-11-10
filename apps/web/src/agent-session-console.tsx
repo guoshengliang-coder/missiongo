@@ -1,3 +1,5 @@
+import { SessionSender, SendUnconfirmed, SendSuperseded, commandNotDelivered, sendAttemptHasDraft, type SendInput } from "./session-send";
+import { useSendAttempt, sendAttemptLocked, SessionSendFeedback } from "./session-send-feedback";
 import { useSelectedSessionScroll } from "./selected-session-scroll";
 import { AgentPlanRecords } from "./agent-plan-records";
 import { mergePreparationEvidence } from "./merge-preparation";
@@ -98,7 +100,7 @@ import { useI18n } from "./i18n";
 import { localizedErrorText } from "./error-text";
 import { MarkdownText } from "./markdown-text";
 import { AgentArtifactMarkdown } from "./agent-artifact-viewer";
-import type { AgentSession, AgentSessionAttachment, AgentSessionStatus, AgentSessionSummary, WorkItemAttachment } from "./types";
+import type { AgentSession, AgentSessionStatus, AgentSessionSummary, WorkItemAttachment } from "./types";
 import { AutoGrowTextarea } from "./auto-grow-textarea";
 import { mergeChatFiles } from "./agent-chat-files";
 import { FileDropOverlay } from "./file-drop-overlay";
@@ -192,8 +194,16 @@ export function useAgentConsoleDrafts() {
   const [replyDrafts, setReplyDrafts] = useState<Readonly<Record<string, string>>>({});
   const [replyFileDrafts, setReplyFileDrafts] = useState<Readonly<Record<string, File[]>>>({});
   const [replyFileErrors, setReplyFileErrors] = useState<Readonly<Record<string, string | null>>>({});
-  const clear = useCallback(() => { setReplyDrafts({}); setReplyFileDrafts({}); setReplyFileErrors({}); }, []);
-  return { replyDrafts, setReplyDrafts, replyFileDrafts, setReplyFileDrafts, replyFileErrors, setReplyFileErrors, clear };
+  const [sender] = useState(() => new SessionSender(undefined, input => {
+    if (input.preserveDraft) return;
+    setReplyDrafts(current => current[input.sessionId]?.trim() === input.text.trim() ? { ...current, [input.sessionId]: "" } : current);
+    setReplyFileDrafts(current => {
+      const files = current[input.sessionId];
+      return files?.length === input.files.length && files.every((file, i) => file === input.files[i]) ? { ...current, [input.sessionId]: [] } : current;
+    });
+  }));
+  const clear = useCallback(() => { sender.clear(); setReplyDrafts({}); setReplyFileDrafts({}); setReplyFileErrors({}); }, [sender]);
+  return { sender, replyDrafts, setReplyDrafts, replyFileDrafts, setReplyFileDrafts, replyFileErrors, setReplyFileErrors, clear };
 }
 
 export function AgentSessionConsole({
@@ -242,7 +252,7 @@ export function AgentSessionConsole({
   const [filter, setFilter] = useState<AgentSessionFilter>(initialFilter ?? DEFAULT_AGENT_SESSION_FILTER);
   const [agentFilter, setAgentFilter] = useState<AgentKindFilter>(DEFAULT_AGENT_KIND_FILTER);
   const [association, setAssociation] = useState<AgentAssociationFilter>("all");
-  const { replyDrafts, setReplyDrafts, replyFileDrafts, setReplyFileDrafts, replyFileErrors, setReplyFileErrors } = drafts;
+  const { sender, replyDrafts, setReplyDrafts, replyFileDrafts, setReplyFileDrafts, replyFileErrors, setReplyFileErrors } = drafts;
   const [clock, setClock] = useState(Date.now);
   useEffect(() => {
     const timer = window.setInterval(() => setClock(Date.now()), 15_000);
@@ -443,22 +453,15 @@ export function AgentSessionConsole({
   const operationSessionId = selected?.agentSessionId ?? selected?.id ?? "";
   const planApprovalLocks = useRef(new Set<string>());
   const send = useMutation({
-    mutationFn: async ({ sessionId, text, files, planApprovalRevision }: { sessionId: string; text: string; files: readonly File[]; occurredAt: string; planApprovalRevision?: string; preserveDraft?: boolean }) => {
-      if (planApprovalRevision) return api.approveAgentSessionPlan(sessionId, planApprovalRevision);
-      const uploaded: AgentSessionAttachment[] = [];
-      try {
-        for (const file of files) uploaded.push(await api.uploadAgentSessionAttachment(sessionId, file));
-        return await api.sendAgentSessionCommand(sessionId, text, uploaded.map((attachment) => attachment.id));
-      } catch (error) {
-        await Promise.allSettled(uploaded.map((attachment) => api.deleteAgentSessionAttachment(sessionId, attachment.id)));
-        throw error;
-      }
+    mutationFn: async (input: SendInput & { planApprovalRevision?: string }) => {
+      if (input.planApprovalRevision) return api.approveAgentSessionPlan(input.sessionId, input.planApprovalRevision);
+      return sender.send(input);
     },
     onSuccess: (created, input) => {
       if (!input.planApprovalRevision) void invalidateSessionDeliveries(queryClient,input.sessionId);
-      if (!input.planApprovalRevision && !input.preserveDraft) {
-        setReplyFor(input.sessionId, "");
-        setReplyFilesFor(input.sessionId, []);
+      if (!input.planApprovalRevision && !input.preserveDraft && !("kind" in created && commandNotDelivered(created))) {
+        setReplyFor(input.sessionId, current => current.trim() === input.text.trim() ? "" : current);
+        setReplyFilesFor(input.sessionId, current => current.length === input.files.length && current.every((file, i) => file === input.files[i]) ? [] : current);
         setReplyFileErrorFor(input.sessionId, null);
       }
       queryClient.setQueryData<AgentSession>(["agent-session", input.sessionId], (current) => current
@@ -472,6 +475,7 @@ export function AgentSessionConsole({
       ]);
     },
     onError: (_error, input) => {
+      if (_error instanceof SendSuperseded) return;
       if (input.planApprovalRevision) planApprovalLocks.current.delete(`${input.sessionId}:${input.planApprovalRevision}`);
       void queryClient.invalidateQueries({ queryKey: ["agent-session", input.sessionId] });
     },
@@ -685,20 +689,28 @@ export function AgentSessionConsole({
     approvalRetryLocks.current.add(key);
     retryApproval.mutate({ sessionId, approvalId });
   };
-  const submittedCommand = send.isSuccess && send.variables?.sessionId === selected?.agentSessionId && "id" in send.data
+  const sendAttempt = useSendAttempt(sender, selected?.agentSessionId ?? "");
+  useEffect(() => {
+    if (sendAttempt && sendAttemptHasDraft(sendAttempt)) {
+      setReplyFor(sendAttempt.sessionId, current => current || sendAttempt.text);
+      setReplyFilesFor(sendAttempt.sessionId, current => current.length ? current : [...sendAttempt.files]);
+    }
+  }, [sendAttempt?.requestKey]);
+  const submittedCommand = sendAttempt?.command ?? (send.isSuccess && send.variables?.sessionId === selected?.agentSessionId && "id" in send.data
     ? send.data
-    : undefined;
+    : undefined);
   const command = latestAgentSessionCommand(sessionQuery.data?.command, submittedCommand);
   const stopCommand = sessionQuery.data?.stopCommand ?? selected?.stopCommand ?? (command?.kind === "interrupt" ? command : undefined);
   const stopPending = stopCommand?.status === "queued" || stopCommand?.status === "delivering" || stopCommand?.status === "delivery_unknown";
   const pending = command?.status === "queued" || command?.status === "delivering"
     || command?.status === "delivery_unknown";
-  const sendingSelected = send.isPending && send.variables?.sessionId === selected?.agentSessionId;
-  const failedRequest = send.isError && send.variables?.sessionId === selected?.agentSessionId
+  const sendingSelected = sendAttemptLocked(sendAttempt) || (send.isPending && send.variables?.sessionId === selected?.agentSessionId);
+  const sendInFlight = sendingSelected && sendAttempt?.phase !== "unconfirmed";
+  const failedRequest = !sendAttempt && send.isError && !(send.error instanceof SendUnconfirmed) && !(send.error instanceof SendSuperseded) && send.variables?.sessionId === selected?.agentSessionId
     ? { text: send.variables.text, occurredAt: send.variables.occurredAt, status: "failed" as const, error: localizedErrorText(send.error, t) }
     : undefined;
-  const sendingRequest = sendingSelected
-    ? { text: send.variables.text, occurredAt: send.variables.occurredAt, status: "sending" as const }
+  const sendingRequest = sendingSelected && sendAttempt
+    ? { text: sendAttempt.text, occurredAt: sendAttempt.occurredAt, status: "sending" as const }
     : failedRequest;
   const history = useAgentHistory(selected?.agentSessionId ?? null, sessionQuery.data, messagesRef);
   const previousHistoryRevision = useRef(0);
@@ -714,7 +726,9 @@ export function AgentSessionConsole({
     sendingSelected,
     Boolean(sessionQuery.data?.turnState?.observedAt),
   );
-  const replyPresentation = sessionReplyPresentation(sessionQuery.data?.status ?? selected?.status ?? "unavailable", command, sendingSelected, stopCommand);
+  const replyPresentation = sendAttempt?.phase === "unconfirmed"
+    ? { labelKey: "agentSendUnconfirmedShort" as const, iconStatus: "waiting" as const, visualStatus: "idle" as const }
+    : sessionReplyPresentation(sessionQuery.data?.status ?? selected?.status ?? "unavailable", command, sendInFlight, stopCommand);
   const messages = projectConversationMessages(history.messages, Boolean(selected?.productId));
   const attachmentMessages = sessionQuery.data?.attachmentMessages ?? [];
   const visibleMessages = agentChatMessages(messages, attachmentMessages, outgoing?.commandId);
@@ -1397,12 +1411,12 @@ export function AgentSessionConsole({
                     <MarkdownText>{permissionReplyText((sessionQuery.data?.currentRequests ?? sessionQuery.data?.messages)?.flatMap(message => message.questions ?? []) ?? [], outgoing.text)}</MarkdownText>
                     {command && command.id === outgoing.commandId && command.attachments && selected.agentSessionId
                       && <ChatAttachments sessionId={selected.agentSessionId} attachments={command.attachments} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />}
-                    {sendingSelected && send.variables?.files.length ? <div className="agent-chat-draft-files">
-                      {send.variables.files.map((file, index) => <DraftChatFile key={`${file.name}-${index}`} file={file} disabled />)}
+                    {sendingSelected && sendAttempt?.files.length ? <div className="agent-chat-draft-files">
+                      {sendAttempt.files.map((file, index) => <DraftChatFile key={`${file.name}-${index}`} file={file} disabled />)}
                     </div> : null}
                   </article>
-                    <AgentReplyFeedback status={outgoing.status} cancelling={cancellingSelected}
-                      onEdit={outgoing.commandId && selected.canReply ? () => cancel.mutate({ sessionId: selected.agentSessionId!, commandId: outgoing.commandId!, text: outgoing.text }) : undefined} />
+                    {!sendingSelected && <AgentReplyFeedback status={outgoing.status} cancelling={cancellingSelected}
+                      onEdit={outgoing.commandId && selected.canReply ? () => cancel.mutate({ sessionId: selected.agentSessionId!, commandId: outgoing.commandId!, text: outgoing.text }) : undefined} />}
                     {(outgoing.status === "failed" || outgoing.status === "delivery_unknown") && (
                     <footer className="agent-console-message-delivery" role="alert">
                       <CircleAlert size={14} />
@@ -1620,6 +1634,9 @@ export function AgentSessionConsole({
                       onRemove={() => setReplyFiles((current) => current.filter((_, fileIndex) => fileIndex !== index))} />)}
                   </div>}
                   {replyFileError && <p className="inline-error" role="alert">{replyFileError}</p>}
+                  <SessionSendFeedback attempt={sendAttempt} recover={recovery => {
+                    if (sendAttempt) send.mutate({ ...sendAttempt, recovery });
+                  }} />
                   <div className="agent-console-reply-actions">
                     <AgentSessionQuickSettings session={selected} />
                     <div className="agent-chat-send-actions">
@@ -1632,9 +1649,9 @@ export function AgentSessionConsole({
                         onClick={() => fileInputRef.current?.click()}><Plus size={18} /></button>}
                       <button type="submit" className="primary-button agent-chat-icon-button"
                         disabled={!selected.canReply || (!reply.trim() && replyFiles.length === 0) || (replyFiles.length > 0 && !sessionQuery.data?.canAttach) || pending || sendingSelected || cancellingSelected}
-                        title={sendingSelected ? t("agentSessionSending") : t("agentSessionSend")}
-                        aria-label={sendingSelected ? t("agentSessionSending") : t("agentSessionSend")}>
-                        {sendingSelected ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />}
+                        title={sendAttempt?.phase === "unconfirmed" ? t("agentSendUnconfirmedShort") : t(sendInFlight ? "agentSessionSending" : "agentSessionSend")}
+                        aria-label={sendAttempt?.phase === "unconfirmed" ? t("agentSendUnconfirmedShort") : t(sendInFlight ? "agentSessionSending" : "agentSessionSend")}>
+                        {sendInFlight ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />}
                       </button>
                     </div>
                   </div>
