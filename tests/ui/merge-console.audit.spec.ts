@@ -118,7 +118,7 @@ for (const width of [320,1440]) for (const theme of ["light","dark"] as const) f
   await page.screenshot({path:testInfo.outputPath("confirmed-label.png"),fullPage:true});
   await expect(draft).toHaveValue("Keep this unsent draft");
   const submit=page.locator(surface==="console"?".agent-console-reply button[type=submit]":".agent-session-reply button[type=submit]");
-  await Promise.all([page.waitForResponse(r=>r.url().endsWith("/commands")&&r.request().method()==="POST"&&r.status()===503),submit.click()]);
+  await Promise.all([page.waitForResponse(r=>r.url().endsWith("/commands")&&r.request().method()==="POST"&&r.status()===400),submit.click()]);
   await expect(submit).toBeEnabled();
   await expect(draft).toHaveValue("Keep this unsent draft");await expect(card).toBeVisible();
   rejectSend=false;await submit.click();await expect(card).toHaveCount(0);await expect(badge).toHaveCount(0);await expect(draft).toBeVisible();
