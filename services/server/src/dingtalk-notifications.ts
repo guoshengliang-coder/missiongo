@@ -41,12 +41,13 @@ function identifier(value: unknown, label: string): string {
 }
 /** Called inside the status transaction, never from HTTP hooks or a history scan. */
 export function enqueueVerificationNotification(database: MissionGoDatabase, eventId: string, itemId: string, productId: string, accountId: string | undefined, at: string): void {
-  const notificationId = accountId ? enqueuePersonalNotification(database,{itemId,productId,accountId,kind:"verification",businessEventId:eventId,createdAt:at}) : undefined;
+  // Verification already has an authoritative personal todo. Keep the external
+  // channel independent; do not create a second in-app reminder.
   const enabled = database.connection.prepare("SELECT enabled FROM dingtalk_projects WHERE product_id=?").get(productId) as {enabled:number} | undefined;
   database.connection.prepare(`INSERT INTO dingtalk_notifications
     (id,event_id,item_id,account_id,kind,status,reason,next_at,created_at,updated_at,personal_notification_id)
     VALUES (?,?,?,?,'verification',?,?,?,?,?,?)`).run(randomUUID(),eventId,itemId,accountId ?? null,
-      enabled?.enabled ? "queued" : "skipped",enabled?.enabled ? "" : "项目未开启通知",at,at,at,notificationId ?? null);
+      enabled?.enabled ? "queued" : "skipped",enabled?.enabled ? "" : "项目未开启通知",at,at,at,null);
 }
 
 /** Business decisions notify responsible people; a missing proposer falls back to project administrators. */

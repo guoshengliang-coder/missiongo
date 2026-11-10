@@ -14,9 +14,13 @@ export interface PersonalNotification {
   /** Superseded/completed business prompt, independent of whether it was read. */
   resolvedAt: string | null;
   commentId: string | null;
+  /** Exact source transition for in-context navigation (optional for older servers). */
+  businessEventId?: string | null;
   unavailable: boolean;
 }
 export interface PersonalTodo {
+  /** Current verification round; absent on older servers or imported history. */
+  businessEventId?: string | null;
   id: string;
   sequence: number;
   kind: "verification";

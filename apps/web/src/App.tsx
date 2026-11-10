@@ -1746,9 +1746,9 @@ export function App() {
       )}
 
       {messageCenterOpen && <MessageCenter accountId={bootstrapQuery.data?.user.id ?? ""} products={products} onClose={()=>setMessageCenterOpen(false)}
-        renderItem={(key,commentId,close,open)=><DetailPane accountId={bootstrapQuery.data?.user.id ?? ""} itemKey={key} initialCommentId={commentId} openInEdit={false}
+        renderItem={(target,close,open)=><DetailPane key={target.instanceKey} accountId={bootstrapQuery.data?.user.id ?? ""} itemKey={target.key} initialCommentId={target.commentId} initialEventId={target.businessEventId} onAttentionReady={target.onReady} openInEdit={false}
           onClose={close} onItemLoaded={()=>{}} onNotice={setNotice} onOpenItem={open} onStartWork={setStartWorkItem} onTakeOver={item=>setDispatchBatch([item])}
-          onOpenConsoleSession={id=>{setMessageCenterOpen(false);afterOverlaysClose(()=>openAgentSession(id));}} />} />}
+          onOpenConsoleSession={id=>{target.navigate(()=>{setMessageCenterOpen(false);afterOverlaysClose(()=>openAgentSession(id));});}} />} />}
       {captureOpen && selectedProduct && (
         <Modal title={t("captureWork")} subtitle={t("addToProduct", { product: selectedProduct.name })} onClose={closeCapture}>
           <CaptureForm
@@ -2508,6 +2508,7 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork, openInitially = f
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ACTIVE_DISPATCHES_QUERY_KEY }),
         queryClient.invalidateQueries({ queryKey: ["dispatches", updated.key] }),
+        queryClient.invalidateQueries({ queryKey: ["personal-notifications"] }),
       ]);
       onNotice(t("itemMoved", { key: updated.key, status: statusLabel(updated.status) }));
     },
@@ -2641,6 +2642,8 @@ function quickActionLabel(status: WorkItemStatus, t: ReturnType<typeof useI18n>[
 function DetailPane({
   accountId,
   initialCommentId,
+  initialEventId,
+  onAttentionReady,
   itemKey,
   openInEdit,
   onClose,
@@ -2653,6 +2656,8 @@ function DetailPane({
 }: {
   accountId:string;
   initialCommentId?: string | null;
+  initialEventId?: string | null;
+  onAttentionReady?: (() => void) | undefined;
   itemKey: string | null;
   openInEdit: boolean;
   onClose: () => void;
@@ -2688,12 +2693,13 @@ function DetailPane({
   const [commentFiltersOpen,setCommentFiltersOpen]=useState(false);
   const [revealedCommentId,setRevealedCommentId]=useState<string|null>(null);
   const [timelineView,setTimelineView]=useState<"all"|"discussion">("all");
-  const timelineEntries=filterDiscussionTimeline(timelineQuery.data?.events ?? [],timelineView,commentCategories,revealedCommentId);
+  const [revealedEventId,setRevealedEventId]=useState<string|null>(null);
+  const timelineEntries=filterDiscussionTimeline(timelineQuery.data?.events ?? [],timelineView,commentCategories,revealedCommentId,revealedEventId);
   const [focusedCommentId,setFocusedCommentId]=useState<string|null>(null);
   const replyUnavailable=Boolean(commentDraft.replyToCommentId && timelineQuery.isSuccess && !replyTo);
   const locateComment=(id:string)=>{setTimelineView("discussion");setRevealedCommentId(id);setFocusedCommentId(id);};
   const clearCommentReveal=()=>{
-    setRevealedCommentId(null);setFocusedCommentId(null);
+    setRevealedCommentId(null);setFocusedCommentId(null);setRevealedEventId(null);
     const url=new URL(window.location.href);
     if(initialCommentId===undefined && url.searchParams.get("item")===itemKey && url.searchParams.has("comment")){url.searchParams.delete("comment");history.replaceState(history.state,"",url);}
   };
@@ -2719,6 +2725,34 @@ function DetailPane({
     if(initialCommentId===undefined && !event.payload.withdrawnAt)updateCommentDraft(current=>({...current,replyToCommentId:event.id}));
     setTimelineView("discussion");setRevealedCommentId(commentId);setFocusedCommentId(commentId);
   },[accountId,itemKey,initialCommentId,timelineQuery.data,updateCommentDraft]);
+  const handledEventLink=useRef("");
+  useEffect(()=>{
+    handledEventLink.current="";setRevealedEventId(null);
+  },[itemKey,initialEventId]);
+  useEffect(()=>{
+    if(!initialEventId || !timelineQuery.isSuccess || !itemQuery.isSuccess || handledEventLink.current===`${itemKey}:${initialEventId}`)return;
+    if(timelineQuery.data.events.some(event=>event.id===initialEventId)){
+      handledEventLink.current=`${itemKey}:${initialEventId}`;
+      setTimelineView("all");setRevealedEventId(initialEventId);
+    }
+  },[itemKey,initialEventId,timelineQuery.isSuccess,timelineQuery.data,itemQuery.isSuccess]);
+  useEffect(()=>{
+    if(!revealedEventId)return;
+    const frame=requestAnimationFrame(()=>{
+      const target=detailPaneRef.current?.querySelector<HTMLElement>(`[data-event-id="${CSS.escape(revealedEventId)}"]`);
+      target?.scrollIntoView({block:"center"});target?.focus({preventScroll:true});
+    });
+    return ()=>cancelAnimationFrame(frame);
+  },[revealedEventId,timelineView]);
+  useEffect(()=>{
+    if(!itemQuery.isSuccess || !timelineQuery.isSuccess || itemQuery.isFetching || timelineQuery.isFetching)return;
+    // A successful render (including a missing/withdrawn target notice) is the
+    // read boundary. A failed item/timeline request must not clear unread.
+    const frame=requestAnimationFrame(()=>onAttentionReady?.());
+    return ()=>cancelAnimationFrame(frame);
+  },[itemQuery.isSuccess,timelineQuery.isSuccess,itemQuery.isFetching,timelineQuery.isFetching,itemKey,initialCommentId,initialEventId,onAttentionReady]);
+  const attentionTargetMissing=Boolean((initialEventId || initialCommentId) && timelineQuery.isSuccess
+    && !timelineQuery.data.events.some(event=>event.id===(initialEventId || initialCommentId)));
   // History and current-stage attention arrive together, so an error always
   // belongs to the dispatch whose target and console link the header shows.
   const dispatchesQuery = useQuery({
@@ -2802,6 +2836,7 @@ function DetailPane({
       queryClient.invalidateQueries({ queryKey: ["dingtalk-notifications", itemKey] }),
       queryClient.invalidateQueries({ queryKey: ["comment-dingtalk-notifications", itemKey] }),
       queryClient.invalidateQueries({ queryKey: ["items"] }),
+      queryClient.invalidateQueries({ queryKey: ["personal-notifications"] }),
     ]);
   };
 
@@ -2817,6 +2852,7 @@ function DetailPane({
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ACTIVE_DISPATCHES_QUERY_KEY }),
         queryClient.invalidateQueries({ queryKey: ["dispatches", updated.key] }),
+        queryClient.invalidateQueries({ queryKey: ["personal-notifications"] }),
       ]);
       onNotice(t("itemMoved", { key: updated.key, status: statusLabel(updated.status) }));
     },
@@ -2831,6 +2867,8 @@ function DetailPane({
     },
     onError: (error) => onNotice(errorMessage(error, t("somethingWentWrong"))),
   });
+
+  useDialogDraft(false,transitionMutation.isPending);
 
   if (!itemKey) {
     return null;
@@ -2898,6 +2936,7 @@ function DetailPane({
     : dispatchStatusKey ? t(dispatchStatusKey) : null);
   return (
     <section className="detail-pane" ref={detailPaneRef}>
+      {attentionTargetMissing && <p className="message-reason" role="status">{t("messageTargetMissing")}</p>}
       <div className="detail-toolbar" ref={toolbarRef} data-overflow={toolbarOverflow}>
         <BackButton className="detail-back-button" onClick={onClose} label={t("backToList")} />
         <code>{item.key}</code>
@@ -3105,7 +3144,7 @@ function DetailPane({
                 {filterStorageFailed && <p role="alert">{t("commentFilterSaveFailed")}</p>}
                 <button type="button" className="secondary-button" onClick={()=>{updateCommentCategories(COMMENT_CATEGORIES);clearCommentReveal();}}>{t("commentFilterReset")}</button>
               </Modal>}
-              {revealedCommentId && <p className="comment-filter-reveal" role="status">{t("commentFilterRevealed")} <button type="button" className="text-button" onClick={clearCommentReveal}>{t("commentFilterRestore")}</button></p>}
+              {(revealedCommentId || revealedEventId) && <p className="comment-filter-reveal" role="status">{t(revealedEventId?"messageEventRevealed":"commentFilterRevealed")} <button type="button" className="text-button" onClick={clearCommentReveal}>{t("commentFilterRestore")}</button></p>}
               {timelineQuery.isLoading && <LoaderCircle className="spin" size={18} />}
               {timelineQuery.isError && <div role="alert"><p>{t("commentFilterLoadFailed")}</p><button type="button" className="secondary-button" onClick={()=>void timelineQuery.refetch()}>{t("retry")}</button></div>}
               {timelineQuery.isSuccess && !timelineEntries.length && <div className="comment-filter-empty">
@@ -3116,7 +3155,8 @@ function DetailPane({
               <div className="timeline">
                 {timelineEntries.map(({ id, event, count, filenames, replies, visibleCommentIds }) => (
                   <div
-                    className={`timeline-event${event.actorKind === "agent" ? " timeline-event--agent" : ""}${event.eventType === "comment_added" ? " timeline-event--comment" : ""}`}
+                    data-event-id={event.id} tabIndex={event.id===revealedEventId?-1:undefined}
+                    className={`timeline-event${event.id===revealedEventId?" timeline-event--focused":""}${event.actorKind === "agent" ? " timeline-event--agent" : ""}${event.eventType === "comment_added" ? " timeline-event--comment" : ""}`}
                     key={id}
                   >
                     <span className="timeline-dot" />
