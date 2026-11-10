@@ -37,14 +37,25 @@ for directory in root.iterdir():
 if not found: raise ValueError('no complete backup')
 print(json.dumps(max(found,key=lambda x:x['createdAt'])))
 `;
-const transferProgram = `import os,pathlib,shutil,stat,sys
+export const transferProgram = `# MISSIONGO_BACKUP_TRANSFER_V1
+import os,pathlib,stat,sys
 root=pathlib.Path(sys.argv[1]); directory=root/sys.argv[2]; path=directory/sys.argv[3]
+expected=int(sys.argv[4])
+if expected<=0: raise ValueError('invalid expected size')
 if root.is_symlink() or directory.is_symlink() or path.is_symlink(): raise ValueError('symlink')
 if path.resolve().parent.parent != root.resolve(): raise ValueError('path escape')
-fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
 with os.fdopen(fd,'rb') as f:
- if not stat.S_ISREG(os.fstat(f.fileno()).st_mode): raise ValueError('not regular')
- shutil.copyfileobj(f,sys.stdout.buffer)
+ info=os.fstat(f.fileno())
+ if not stat.S_ISREG(info.st_mode): raise ValueError('not regular')
+ if info.st_size!=expected: raise ValueError('backup size changed')
+ remaining=expected
+ while remaining:
+  data=f.read(min(1024*1024,remaining))
+  if not data: raise ValueError('backup truncated')
+  sys.stdout.buffer.write(data)
+  remaining-=len(data)
+ if f.read(1): raise ValueError('backup grew')
 `;
 export function backupCommand(program, args) {
   return ["sudo", "-n", "python3", "-c", quote(program), ...args.map(quote)].join(" ");
@@ -56,7 +67,7 @@ export function fetchBackup({ host, backupsDir, directory, ssh = "ssh" }) {
   const raw = execFileSync(ssh, [...sshArgs, backupCommand(discoverBackupProgram, [backupsDir])], { encoding: "utf8", maxBuffer: 65536, stdio: ["ignore", "pipe", "ignore"] });
   const manifest = validateManifest(JSON.parse(raw));
   const original = join(directory, "snapshot.sqlite"), fd = openSync(original, "wx", 0o600);
-  try { execFileSync(ssh, [...sshArgs, backupCommand(transferProgram, [backupsDir, manifest.directory, manifest.database.filename])], { stdio: ["ignore", fd, "ignore"] }); }
+  try { execFileSync(ssh, [...sshArgs, backupCommand(transferProgram, [backupsDir, manifest.directory, manifest.database.filename, String(manifest.database.sizeBytes)])], { stdio: ["ignore", fd, "ignore"] }); }
   finally { closeSync(fd); }
   assert.equal(lstatSync(original).size, manifest.database.sizeBytes, "Backup size mismatch");
   const digest = createHash("sha256").update(readFileSync(original)).digest("hex");

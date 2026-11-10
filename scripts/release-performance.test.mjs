@@ -41,7 +41,7 @@ test("remote discovery reads complete regular backups and orders by creation tim
     // Fake SSH executes neither sudo nor any network: output bytes go directly
     // to a file descriptor, never into an exception or a tool response.
     const ssh = join(dir, "ssh");
-    writeFileSync(ssh, `#!/usr/bin/env python3\nimport sys\nif 'shutil.copyfileobj' in sys.argv[-1]: sys.stdout.buffer.write(${JSON.stringify(bytes.toString())}.encode())\nelse: print(${JSON.stringify(JSON.stringify(m))})\n`, { mode: 0o700 });
+    writeFileSync(ssh, `#!/usr/bin/env python3\nimport sys\nif 'MISSIONGO_BACKUP_TRANSFER_V1' in sys.argv[-1]: sys.stdout.buffer.write(${JSON.stringify(bytes.toString())}.encode())\nelse: print(${JSON.stringify(JSON.stringify(m))})\n`, { mode: 0o700 });
     const destination = join(dir, "copy"); mkdirSync(destination);
     const result = fetchBackup({ host: "fixture", backupsDir: dir, directory: destination, ssh });
     assert.equal(readFileSync(result.database, "utf8"), bytes.toString());
@@ -162,9 +162,21 @@ test("real smoke worker exercises authenticated HTTP on a synthetic backup and r
     const productId = fixture.store.listProducts()[0].id;
     await fixture.app.close(); fixture = undefined;
     const bytes = readFileSync(db), m = manifest(bytes), ssh = join(dir, "ssh");
-    writeFileSync(ssh, `#!/usr/bin/env python3\nimport sys,shutil\nif 'shutil.copyfileobj' in sys.argv[-1]:\n with open(${JSON.stringify(db)},'rb') as f: shutil.copyfileobj(f,sys.stdout.buffer)\nelse: print(${JSON.stringify(JSON.stringify(m))})\n`, { mode: 0o700 });
+    writeFileSync(ssh, `#!/usr/bin/env python3\nimport sys,shutil\nif 'MISSIONGO_BACKUP_TRANSFER_V1' in sys.argv[-1]:\n with open(${JSON.stringify(db)},'rb') as f: shutil.copyfileobj(f,sys.stdout.buffer)\nelse: print(${JSON.stringify(JSON.stringify(m))})\n`, { mode: 0o700 });
     process.env.PATH = dir + ":" + previousPath;
-    const report = await runReleasePerformance({ root: resolveRoot(), host: "fixture", backupsDir: "/fixture/backups", productId });
+    // Other script tests import the already-built dist concurrently. Keep this
+    // HTTP/backup integration child on that build; the actual forced compiler
+    // is exercised against poisoned output in release-performance-audit.test.
+    const worker = join(dir, "prebuilt-worker.mjs");
+    writeFileSync(worker, `import { registerHooks } from 'node:module';
+      registerHooks({load(url, context, nextLoad) {
+        const loaded=nextLoad(url, context);
+        return url.endsWith('/scripts/release-performance-build.mjs')
+          ? {...loaded, source:'export function compilePerformanceCandidate() {}'} : loaded;
+      }});
+      await import(${JSON.stringify(new URL("./release-performance-worker.mjs", import.meta.url).href)});
+    `);
+    const report = await runReleasePerformance({ root: resolveRoot(), host: "fixture", backupsDir: "/fixture/backups", productId }, { worker });
     assert.equal(report.cleaned, true);
     assert.ok(report.cpuTargets?.length === 3, `Incomplete domain coverage: ${report.status}/${report.stage}/${report.smokeStep}/${report.code}`);
     assert.deepEqual(report.httpTargets.map(t => t.name), ["merge-deliveries", "item-list", "claim-next", "claim-next-work"]);

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { closeSync, existsSync, fsyncSync, linkSync, lstatSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,6 +33,18 @@ export function upgradePerformanceCoordinator(source) {
   return source.replace(anchor, after);
 }
 function regular(path) { assert.ok(!lstatSync(path).isSymbolicLink() && lstatSync(path).isFile(), "Expected regular installation file"); }
+// Write failures affect only a private sibling; the live file is replaced
+// after a complete write. Tests inject partial writes/rename failures here.
+export function atomicInstallWrite(path, text, { mode = 0o600, write = writeFileSync, rename = renameSync } = {}) {
+  const temporary = `${path}.performance-${process.pid}-${randomUUID()}`;
+  // Open outside the cleanup block: EEXIST must preserve a file we do not own.
+  const descriptor = openSync(temporary, "wx", mode);
+  try {
+    try { write(descriptor, text); fsyncSync(descriptor); }
+    finally { closeSync(descriptor); }
+    rename(temporary, path);
+  } finally { rmSync(temporary, { force: true }); }
+}
 export function installPerformance({ home = homedir(), configHome = process.env.XDG_CONFIG_HOME ?? join(home, ".config"), backupsDir, install = false } = {}) {
   assert.ok(typeof backupsDir === "string" && backupsDir.startsWith("/") && !backupsDir.includes("\0"), "Provide the private backup directory");
   const config = join(configHome, "missiongo"), tools = join(config, "release-tools");
@@ -46,16 +58,14 @@ export function installPerformance({ home = homedir(), configHome = process.env.
   const settingsAfter = JSON.stringify(settings, null, 2) + "\n";
   execFileSync("python3", ["-c", "import ast,sys; ast.parse(sys.stdin.read())"], { input: after, stdio: "pipe" });
   if (install) {
-    for (const [path, old] of [[entry, before], [local, settingsBefore]]) if (!existsSync(`${path}.before-release-performance`)) writeFileSync(`${path}.before-release-performance`, old, { flag: "wx", mode: 0o600 });
+    for (const [path, old] of [[entry, before], [local, settingsBefore]]) if (!existsSync(`${path}.before-release-performance`)) atomicInstallWrite(`${path}.before-release-performance`, old, { rename: linkSync });
     // Dependencies/settings become visible before the entry point, under the
     // same machine-wide lock as every existing installer and publication.
-    writeFileSync(local, settingsAfter, { mode: 0o600 });
+    atomicInstallWrite(local, settingsAfter);
     if (after !== before) {
-      const temporary = `${entry}.performance-${process.pid}`;
-      writeFileSync(temporary, after, { flag: "wx", mode: lstatSync(entry).mode & 0o777 });
-      renameSync(temporary, entry);
+      atomicInstallWrite(entry, after, { mode: lstatSync(entry).mode & 0o777 });
     }
-    writeFileSync(manifest, JSON.stringify({ version: 1, coordinatorSha256: hash(after) }) + "\n", { mode: 0o600 });
+    atomicInstallWrite(manifest, JSON.stringify({ version: 1, coordinatorSha256: hash(after) }) + "\n");
   }
   return { installed: install, changed: after !== before || settingsBefore !== settingsAfter, coordinatorSha256: hash(after) };
 }

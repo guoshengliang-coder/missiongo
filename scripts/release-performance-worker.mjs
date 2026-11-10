@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { validateBudget } from "./performance-budget.mjs";
 import { fetchBackup } from "./release-backup.mjs";
+import { compilePerformanceCandidate } from "./release-performance-build.mjs";
 import { restrictToLoopback } from "./release-performance-network.mjs";
 
 const [directory, settingsPath] = process.argv.slice(2), started = performance.now();
@@ -20,7 +21,7 @@ try {
   const transferMs = performance.now() - started;
   // Build this candidate, never trust another checkout's or an old dist tree.
   stage = "compile";
-  execFileSync("npm", ["run", "build:types"], { cwd: root, stdio: "ignore" });
+  compilePerformanceCandidate(root);
   const prepareMs = performance.now() - started - transferMs;
   restrictToLoopback();
   const { measureBackup } = await import("./release-performance-measure.mjs");
