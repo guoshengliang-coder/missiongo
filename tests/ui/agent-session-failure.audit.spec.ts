@@ -126,6 +126,34 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
   });
 }
 
+for (const surface of ["console", "panel"] as const) for (const kind of ["history", "code-only"] as const) {
+  test(`failure details stay honest with ${kind} fallback in ${surface}`, async ({ page }) => {
+    await page.clock.setFixedTime(new Date(stamp));
+    const structured = kind === "code-only" ? { code: "codex_sandbox_error", turnId: "safe-turn" } : undefined;
+    const lastError = kind === "history" ? "codex_history_limited: synthetic-history-read-error" : "codex_sandbox_error";
+    const current = { ...detail, command: undefined, failure: structured, lastError };
+    await page.route("**/api/v1/agent-sessions**", route => route.fulfill({ json:
+      new URL(route.request().url()).pathname === "/api/v1/agent-sessions"
+        ? { sessions: [{ ...summary, failure: structured, lastError }] } : current }));
+    await page.route("**/api/v1/items/*/dispatches", route => route.fulfill({ json: { dispatches: [{
+      id: summary.dispatchId, agentSessionId: id, agentKind: "codex", mode: "auto", nodeName: "Fixture", status: "launched", createdAt: stamp, itemKeys: [fixture.detailKey],
+    }] } }));
+    if (surface === "console") await page.goto(url);
+    else {
+      await page.goto(`/?product=${fixture.productId}&item=${fixture.detailKey}`);
+      await page.locator(".execution-history > summary").click();
+      await page.locator(".execution-record > summary").filter({ hasText: "派单 · Fixture" }).click();
+      await page.locator(".agent-session-toggle").click();
+    }
+    const card = page.locator(".agent-console-failure");
+    await expect(card).toContainText(kind === "history" ? "执行节点未提供具体原因" : "沙箱执行异常");
+    await card.locator("summary").click();
+    await expect(card.locator("pre")).toContainText("Codex 未提供本次失败的技术详情");
+    await expect(card.locator("pre")).not.toContainText("synthetic-history-read-error");
+    if (kind === "history") await expect(page.getByText("历史同步受限，当前显示最近消息或上次同步内容。运行状态已单独查询，完整历史请在原客户端查看。", { exact: true })).toBeVisible();
+  });
+}
+
 for (const outcome of ["delivered", "failed", "delivery_unknown"] as const) {
   test(`phone manually continues after a model failure: ${outcome}`, async ({ browser }) => {
     const context = await browser.newContext({ baseURL: WEB_ORIGIN, viewport: { width: 375, height: 812 },

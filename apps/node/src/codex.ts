@@ -203,7 +203,9 @@ export class CodexAdapter implements Adapter {
       mode:normalizeAgentMode("codex",this.job.mode), waitingForInput: approval?.status === "pending", ...(approval ? { approval } : {}) };
   }
   private failureFor(turn: Wire | undefined, active: boolean): Snapshot["failure"] {
-    if (active || turn?.status !== "failed") { this.terminalFailure = undefined; return undefined; }
+    // Reads can overlap history loading and observe an earlier turn state.
+    // Only native lifecycle events may retire this bounded event cache.
+    if (active || turn?.status !== "failed") return undefined;
     return codexTurnFailure(turn) ?? (typeof turn.id === "string" && this.terminalFailure?.turnId === turn.id ? this.terminalFailure : undefined);
   }
   private async runtime(): Promise<{ thread: Wire; lastTurn: Wire | undefined }> {

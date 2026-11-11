@@ -20,6 +20,19 @@ describe("failure card", () => {
     expect(legacy.summary).toBe("agentFailureUnknown");
     expect(failureDiagnostic(legacy, "")).not.toContain("secret");
   });
+  it("does not mislabel independent history-read errors as a Codex failure reason", () => {
+    for (const error of ["codex_history_limited: unreadable items", "agent_history_limited: history truncated"]) {
+      const view = sessionFailureView("failed", undefined, error)!;
+      expect(view.summary).toBe("agentFailureMissing");
+      expect(view.detail).toBeUndefined();
+    }
+  });
+  it("keeps a structured failure without details honest when storage repeats its code in lastError", () => {
+    const view = sessionFailureView("failed", { code: "codex_sandbox_error", turnId: "turn-safe" }, "codex_sandbox_error")!;
+    expect(view.summary).toBe("agentFailureSandbox");
+    expect(view.detail).toBeUndefined();
+    expect(failureDiagnostic(view, "No details from source")).toContain("No details from source");
+  });
   it("directs every recovery branch to the execution node without guessing its platform", () => {
     for (const language of ["en", "zh-CN"] as const) {
       for (const failure of [undefined, ...CODEX_SESSION_FAILURE_CODES.map(code => ({ code }))]) {

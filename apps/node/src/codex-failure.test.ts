@@ -1,10 +1,11 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { codexTurnFailure } from "./codex-failure.js";
 import { CodexAdapter } from "./codex.js";
+import type { Wire } from "./types.js";
 
 it.each([
   ["contextWindowExceeded", "codex_context_window_exceeded"], ["sessionBudgetExceeded", "codex_session_budget_exceeded"],
@@ -41,7 +42,7 @@ it("keeps missing details honest and only exports bounded, redacted public field
 });
 
 const adapters: CodexAdapter[] = [], roots: string[] = [];
-afterEach(async () => { for (const adapter of adapters.splice(0)) await adapter.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(async () => { vi.restoreAllMocks(); for (const adapter of adapters.splice(0)) await adapter.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 it("reports metadata and terminal events in both snapshot lanes, clears on recovery, and never replays input", async () => {
   const root = mkdtempSync(join(tmpdir(), "mg-failure-")); roots.push(root);
   const executable = fileURLToPath(new URL("./fixtures/agent.cjs", import.meta.url)); chmodSync(executable, 0o755);
@@ -67,4 +68,27 @@ it("reports metadata and terminal events in both snapshot lanes, clears on recov
   await adapter.deliver({ id: "recovery", status: "delivering", text: "recovery fixture" });
   expect(await adapter.snapshot()).toMatchObject({ status: "idle", failure: undefined });
   expect((await adapter.controlSnapshot()).failure).toBeUndefined();
+});
+
+it("a slow pre-failure mirror cannot erase the terminal event needed by later controls", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mg-failure-race-")); roots.push(root);
+  const executable = fileURLToPath(new URL("./fixtures/agent.cjs", import.meta.url)); chmodSync(executable, 0o755);
+  const adapter = new CodexAdapter({ dispatchId: "race", itemKeys: [], freeSession: true, agentKind: "codex", repoPath: root, mode: "auto" }, executable);
+  adapters.push(adapter);
+  await adapter.start("transient fixture");
+  const rpc = (adapter as unknown as { rpc: { call(method: string, params?: unknown): Promise<Wire> } }).rpc;
+  const original = rpc.call.bind(rpc);
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<Wire>();
+  vi.spyOn(rpc, "call").mockImplementation((method, params) => {
+    if (method === "thread/items/list") { entered.resolve(); return release.promise; }
+    return original(method, params);
+  });
+  const oldMirror = adapter.snapshot();
+  try {
+    await entered.promise;
+    await adapter.deliver({ id: "fail-during-history", status: "delivering", text: "failure event fixture" });
+    expect((await adapter.controlSnapshot()).failure?.code).toBe("codex_server_error");
+  } finally { release.resolve({ data: [], nextCursor: null }); }
+  expect((await oldMirror).status).toBe("active");
+  expect((await adapter.controlSnapshot()).failure).toMatchObject({ code: "codex_server_error", turnId: "turn-failure-event-fixture" });
 });
