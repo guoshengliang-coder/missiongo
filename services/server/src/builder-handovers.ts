@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { isNodeOnline } from "@missiongo/domain";
 import { AccountStore } from "./accounts-store.js";
 import { latestBuilderHandover, type BuilderHandover } from "./builder-authority.js";
-import { itemExecutionBlockers } from "./item-execution-blockers.js";
+import { executionBlocksTakeover, itemExecutionBlockers } from "./item-execution-blockers.js";
 import { conflict, invalidInput } from "./errors.js";
 import type { MissionGoStore } from "./store.js";
 
@@ -40,14 +40,22 @@ export class BuilderHandovers {
   }
 
   private external(itemId: string): Array<{ id: string }> {
-    // Progress "completed" alone is not a physical stop proof for a connected native session.
+    // Scope and revoke every handling relationship, including closed history. Activity is assessed separately.
     return this.db.prepare(`SELECT s.id FROM external_agent_sessions s JOIN external_agent_session_items i ON i.session_id=s.id
-      WHERE i.item_id=? AND i.link_kind='handling' AND (json_extract(s.native_snapshot_json,'$.status') IN ('active','stalled','unavailable')
-        OR EXISTS (SELECT 1 FROM external_native_commands c WHERE c.session_id=s.id AND c.status IN ('queued','delivering','delivery_unknown'))
-        OR NOT EXISTS (SELECT 1 FROM work_item_events e WHERE e.item_id=i.item_id
-          AND e.created_at>=s.created_at AND e.to_status IN ('development_complete','pending_verification','done','cancelled')))
+      WHERE i.item_id=? AND i.link_kind='handling'
       AND NOT EXISTS (SELECT 1 FROM builder_revoked_external_sessions r WHERE r.session_id=s.id)`)
       .all(itemId) as Array<{ id: string }>;
+  }
+
+  private externalScopeShared(itemId: string, sessionId: string): boolean {
+    return Boolean(this.db.prepare(`SELECT 1 FROM external_agent_session_items WHERE session_id=? AND item_id<>?
+      UNION ALL SELECT 1 FROM external_agent_sessions current JOIN agent_sessions other
+      ON other.node_id=current.native_node_id AND other.agent_kind=current.agent_kind AND other.agent_session_ref=current.session_ref
+      JOIN dispatch_items i ON i.dispatch_id=other.dispatch_id WHERE current.id=? AND i.item_id<>?
+      UNION ALL SELECT 1 FROM external_agent_sessions current JOIN external_agent_sessions other
+      ON other.native_node_id=current.native_node_id AND other.agent_kind=current.agent_kind AND other.session_ref=current.session_ref
+      JOIN external_agent_session_items i ON i.session_id=other.id WHERE current.id=? AND i.item_id<>? LIMIT 1`)
+      .get(sessionId,itemId,sessionId,itemId,sessionId,itemId));
   }
 
   start(itemKey: string, accountId: string, targetId: string | null, expectedId: unknown, note: string) {
@@ -65,7 +73,7 @@ export class BuilderHandovers {
         WHERE item_id=? AND invalidated_at IS NULL`).all(item.id) as {source:string;execution_id:string}[])
         .map(row=>`${row.source}:${row.execution_id}`).filter(id=>!blockers.has(id)));
       const executions = this.executions(item.id).filter(row=>!confirmed.has(`dispatch:${row.id}`));
-      const external = this.external(item.id).filter(row=>!confirmed.has(`external:${row.id}`));
+      const external = this.external(item.id);
       // Preflight the whole scope before cancelling even one queue or revoking one authorization.
       for (const execution of executions) {
         const scope = this.db.prepare("SELECT COUNT(*) AS count FROM dispatch_items WHERE dispatch_id=?").get(execution.id) as {count:number};
@@ -82,8 +90,8 @@ export class BuilderHandovers {
         }
       }
       for (const session of external) {
-        if (this.db.prepare("SELECT 1 FROM external_agent_session_items WHERE session_id=? AND item_id<>? LIMIT 1").get(session.id,item.id)) {
-          throw conflict("builder_handover_multi_item","此任务属于多条目外部会话，不能单独自动转交。请先拆分执行范围或另行安排整组交接。");
+        if (this.externalScopeShared(item.id,session.id)) {
+          throw conflict("builder_handover_multi_item","此任务属于多条目外部会话，或同一原生会话关联了其他条目，不能单独自动转交。请先拆分执行范围或另行安排整组交接。");
         }
       }
       if (this.db.prepare(`SELECT 1 FROM managed_runs r JOIN managed_stages s ON s.run_id=r.id,json_each(r.scope_json,'$.itemKeys') i
@@ -134,11 +142,30 @@ export class BuilderHandovers {
     this.store.recordDeliveryEvent(item.item_key,handover.initiated_by,"builder_handover_blocked",{handoverId:handover.id,reason});
   }
 
+  /** Historical uncertainty is a risk, not proof of activity. Never fabricate a physical stop. */
+  private checkExternal(handover: BuilderHandover): boolean {
+    const active = new Set(itemExecutionBlockers(this.store.database,handover.item_id)
+      .filter(row=>row.source === "external" && executionBlocksTakeover(row)).map(row=>row.executionId));
+    const rows = this.db.prepare("SELECT session_id FROM builder_revoked_external_sessions WHERE handover_id=?")
+      .all(handover.id) as {session_id:string}[];
+    const update = this.db.prepare("UPDATE builder_revoked_external_sessions SET requires_stop=? WHERE handover_id=? AND session_id=?");
+    let blocked = false;
+    for (const row of rows) {
+      if (this.externalScopeShared(handover.item_id,row.session_id)) {
+        this.block(handover,"外部会话关联了其他条目，不能单独自动转交。请先核对执行范围，再安排整组交接。");
+        return false;
+      }
+      const requiresStop = active.has(row.session_id);
+      update.run(requiresStop ? 1 : 0,handover.id,row.session_id);
+      blocked ||= requiresStop;
+    }
+    if (blocked) this.block(handover,"外部会话仍有实际活动或待处理命令。请由原操作者在原会话处理后重试交接；执行授权已冻结，不能启动接手任务。");
+    return !blocked;
+  }
+
   private stop(id: string) {
     const handover = this.db.prepare("SELECT * FROM builder_handovers WHERE id=?").get(id) as unknown as BuilderHandover;
-    if (this.db.prepare("SELECT 1 FROM builder_revoked_external_sessions WHERE handover_id=? AND requires_stop=1").get(id)) {
-      this.block(handover,"外部会话没有可核实的停止控制通道，无法确认已停止。执行授权已冻结，不能启动接手任务。"); return;
-    }
+    if (!this.checkExternal(handover)) return;
     if (this.db.prepare(`SELECT 1 FROM ai_executions WHERE item_id=? AND status IN ('created','running','waiting_for_human')
       UNION ALL SELECT 1 FROM managed_runs r JOIN managed_stages s ON s.run_id=r.id,json_each(r.scope_json,'$.itemKeys') i
       JOIN work_items w ON w.item_key=i.value WHERE w.id=? AND s.status IN ('ready','running','waiting_for_human','unknown') LIMIT 1`)
@@ -185,6 +212,8 @@ export class BuilderHandovers {
     this.store.database.transaction(() => {
       const handover = this.db.prepare("SELECT * FROM builder_handovers WHERE id=?").get(id) as unknown as BuilderHandover|undefined;
       if (!handover || handover.status !== "stopping") return;
+      // A historical external source can become active while a dispatch stop is in flight.
+      if (!this.checkExternal(handover)) return;
       const rows = this.db.prepare(`SELECT d.status AS dispatch_status,s.status AS session_status,s.updated_at,s.turn_state_json,
         c.status AS command_status,c.delivered_at,n.last_seen_at,n.revoked_at FROM builder_revoked_dispatches r
         JOIN dispatches d ON d.id=r.dispatch_id JOIN nodes n ON n.id=d.node_id LEFT JOIN agent_sessions s ON s.dispatch_id=d.id

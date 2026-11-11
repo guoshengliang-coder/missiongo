@@ -274,7 +274,7 @@ it("reuses only a still-valid item-scoped human stop check during Builder handov
   const result=new BuilderHandovers(f.store).start(item.key,f.accountId,target.id,f.accountId,"Continue rework with another Builder");
   expect(result).toMatchObject({builderAccountId:target.id,builderHandover:{status:"completed"}});
   const another=f.create();expect((await f.confirm(another.item.key)).statusCode).toBe(200);
-  f.snapshot(another.sessionId,"active",true);f.snapshot(another.sessionId,"unavailable");
+  f.snapshot(another.sessionId,"active",true);
   expect(new BuilderHandovers(f.store).start(another.item.key,f.accountId,target.id,f.accountId,"New activity needs another check"))
     .toMatchObject({builderAccountId:f.accountId,builderHandover:{status:"blocked"}});
 });

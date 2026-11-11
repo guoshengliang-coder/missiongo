@@ -7,6 +7,7 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
   test.describe(`${width}px ${theme} Builder delivery`,()=>{
     test.use({viewport:{width,height:1000},hasTouch:width===375,isMobile:width===375,colorScheme:theme});
     test("configures a module, assigns and hands over execution, transfers Builder and filters the list",async({page,request})=>{
+      await page.clock.setFixedTime(new Date("2026-11-11T04:00:00Z"));
       const suffix=`${width}${theme[0]}`;
       const user=(await (await request.get("/api/v1/auth/session")).json()).user;
       const product=await (await request.post("/api/v1/products",{data:{name:`Builder ${suffix}`,keyPrefix:`BD${suffix.toUpperCase()}`}})).json();
@@ -75,6 +76,8 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
       expect(await panel.evaluate(node=>node.scrollWidth>node.clientWidth)).toBe(false);
       await page.locator(".detail-toolbar .detail-more-menu > summary").click();
       await page.getByRole("button",{name:"转交 Builder",exact:true}).click();
+      await expect(page.getByRole("dialog")).toContainText("外部会话仍有实际活动或待处理命令时继续阻断");
+      await expect(page.getByRole("dialog")).toContainText("不表示旧设备进程已停止");
       await chooseOption(page.getByLabel("新的 Builder",{exact:true}), member.id);
       await page.getByLabel("交接说明",{exact:true}).fill("Take responsibility through verification");
       await page.getByRole("button",{name:"确认转交",exact:true}).click();

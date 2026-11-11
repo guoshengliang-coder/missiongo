@@ -371,6 +371,8 @@ JS 中的 `useMediaQuery` 必须使用与 CSS 相同的断点值。
 - 接手事务一次留存条目级历史关系、撤销旧执行凭据。旧会话恢复只显示历史活动，不恢复条目操作权；其他条目保持隔离。
 - 复用 `Modal`、`Select` 及现有草稿/请求保护；不增加 CSS 豁免。验证见 `execution-stop.audit.spec.ts`、`agent-handoff.audit.spec.ts`、服务端执行与迁移测试。原生设备实际停止不在本功能保证范围内。
 
+Builder 转交（AND-510）对外部来源复用实际活动判定：历史记录无当前活动或待处理命令时可转交，实际活动仍阻断。`TransferBuilderModal` 与 `BuilderHandoverNotice` 在转交前及完成后说明旧授权失效不等于旧进程停止、外部副作用不能撤销；受阻时说明重试会在原交接内重新核对证据，不自动启动 Agent。原派单停止回执、多条目及托管执行保护保留。沿用现有容器、令牌与本地化，不新增解锁入口或样式豁免；验证见 `builder-handover.audit.spec.ts`、`builder-delivery.audit.spec.ts` 及 [行为与边界](and-510-builder-handover.md)。
+
 ### 会话消息反馈与图片产物（AND-371）
 
 - 消息正文与投递反馈分层：时间置于顶部，底部只显示发送中、排队中、送达中或已送达待执行。送达不能表示已经执行；失败与送达不确定继续明确展示恢复操作。
