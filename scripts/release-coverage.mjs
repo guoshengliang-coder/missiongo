@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // No MissionGo token is needed: the authenticated MCP client supplies all pages.
+import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { releaseCandidatesFromPages } from "./release-candidates.mjs";
+import { candidateIdentity, readReleaseSelection, releaseCandidatesFromPages } from "./release-candidates.mjs";
 import { repositoryIdentity } from "./handover-evidence.mjs";
 
 const SHA = /^[a-f0-9]{40}$/;
@@ -53,27 +54,34 @@ export function integrationFacts(candidate, repository, root) {
 }
 
 /** artifacts must come from the existing hash/provenance preflight, or verified public receipt. */
-export function planReleaseCoverage(input, { productId, repository, head, artifacts, scope = { mode: "all" }, now = Date.now(), receipt = false }, resolve, ancestor) {
+export function planReleaseCoverage(input, { productId, repository, head, artifacts, scope = { mode: "all" }, now = Date.now(), receipt = false, selection, selectionDigest }, resolve, ancestor) {
   const snapshot = releaseCandidatesFromPages(input, { coverage: true, now, ...(receipt ? { maxAgeMs: Number.MAX_SAFE_INTEGER } : {}) });
   if (!productId || snapshot.productId !== productId) throw new Error("Candidate product differs from the configured release product");
   if (!SHA.test(head ?? "")) throw new Error("A full planned release commit is required");
   if (!Array.isArray(artifacts)) throw new Error("Validated artifact provenance is required");
   if (scope.mode !== "all" && scope.mode !== "selected") throw new Error("Invalid release scope");
   if (scope.mode === "selected") scope = releaseScope(scope.artifacts?.join(","), scope.reason);
+  const ledger=readReleaseSelection(selection,snapshot,repository,head,selectionDigest);
+  const dispositions=new Map(ledger?.entries.map(e=>[e.identity,e]) ?? []);
   const available = new Map(artifacts.map(artifact => [artifact.artifact, artifact]));
   const facts = new Map();
   const items = [];
   const required = new Set();
   for (const candidate of snapshot.candidates) {
     if (candidate.kind!=="delivery" && !/^[A-Z][A-Z0-9]*-[1-9][0-9]*$/.test(candidate?.itemKey ?? "")) throw new Error("Invalid candidate item key");
-    const row = { ...(candidate.kind==="delivery" ? {kind:"delivery",deliveryId:candidate.deliveryId,title:candidate.title,pullRequestUrl:candidate.pullRequestUrl} : {itemKey:candidate.itemKey}), requiredArtifacts: candidate.requiredArtifacts ?? null };
+    const row = { ...(candidate.kind==="delivery" ? {kind:"delivery",deliveryId:candidate.deliveryId,title:candidate.title,pullRequestUrl:candidate.pullRequestUrl} : {itemKey:candidate.itemKey,developmentEventId:candidate.developmentEventId,expectedRevision:candidate.expectedRevision,roundKey:candidate.roundKey}), requiredArtifacts: candidate.requiredArtifacts ?? null };
+    const disposition=dispositions.get(candidateIdentity(candidate));
+    if(disposition && ["historical_gap","deferred"].includes(disposition.disposition)) {
+      items.push({...row,status:"excluded",disposition,warning:disposition.disposition==="historical_gap" ? "Historical evidence remains missing; no publication or acceptance is implied" : "User deferred this delivery; merged code may still be in deployed artifacts"});continue;
+    }
     let integration;
     try {
       const key = JSON.stringify(candidate.completion ?? candidate.pullRequestUrl ?? candidate.itemKey);
       if (!facts.has(key)) facts.set(key, resolve(candidate));
       integration = facts.get(key);
     } catch (error) { items.push({ ...row, status: "integration_unverified", reason: error.message }); continue; }
-    if (integration?.state === "unmerged") { items.push({ ...row, status: "waiting_merge" }); continue; }
+    if (integration?.state === "unmerged") { items.push({ ...row, status: "waiting_merge", ...(disposition ? {disposition} : {}) }); continue; }
+    if(disposition?.disposition==="unmerged") throw new Error("Excluded unmerged candidate changed; review the release selection again");
     if (integration?.state !== "merged" || !SHA.test(integration.mergeCommit ?? "")) { items.push({ ...row, status: "integration_unverified", reason: "Integration evidence is incomplete" }); continue; }
     row.mergeCommit = integration.mergeCommit;
     if (!Array.isArray(row.requiredArtifacts) || !row.requiredArtifacts.length || new Set(row.requiredArtifacts).size !== row.requiredArtifacts.length || row.requiredArtifacts.some(a => typeof a !== "string" || !/^[a-z][A-Za-z0-9_-]{0,49}$/.test(a))) {
@@ -96,7 +104,7 @@ export function planReleaseCoverage(input, { productId, repository, head, artifa
     } catch (error) { items.push({ ...base, status: "integration_unverified", reason: error.message }); }
   }
   const blocked = items.filter(item => ["missing_artifacts", "scope_unknown", "integration_unverified"].includes(item.status));
-  return { schemaVersion: 1, productId, repository, plannedCommit: head, snapshotAt: snapshot.snapshotAt, scope,
+  return { schemaVersion: 1, productId, repository, plannedCommit: head, snapshotAt: snapshot.snapshotAt, scope, ...(ledger ? {selection:ledger} : {}),
     requiredArtifacts: [...required].sort(), items, noReleaseItems: snapshot.noReleaseItems, noReleaseDeliveries:snapshot.noReleaseDeliveries,
     ready: blocked.length === 0, fullCoverage: blocked.length === 0 && items.every(item => ["ready", "waiting_merge"].includes(item.status)) };
 }
@@ -109,13 +117,15 @@ export function assertReleaseCoverage(plan) {
   throw new Error(`Release coverage incomplete: ${details.join("; ")}`);
 }
 
-export function coverageForCheckout({ root, config, candidates, artifacts, live, onlyArtifacts, scopeReason, receipt, now }) {
+export function coverageForCheckout({ root, config, candidates, artifacts, live, onlyArtifacts, scopeReason, receipt, now, selection, selectionDigest, planning = false }) {
+  if(selection !== undefined && !planning && !selectionDigest) throw new Error("Executable release selection requires --selection-digest from the reviewed plan");
   const repository = repositoryIdentity(git(root, "config", "--get", "remote.origin.url"));
   if (config?.schemaVersion !== 1 || typeof config.productId !== "string" || repository.toLowerCase() !== config.repository?.toLowerCase()) throw new Error("Release coverage configuration must bind this repository to its MissionGo product");
   const head = receipt?.deployedCommit ?? git(root, "rev-parse", "HEAD");
   const scope = releaseScope(onlyArtifacts, scopeReason);
-  const plan = planReleaseCoverage(candidates, { productId: config.productId, repository, head, artifacts, scope, ...(now ? { now } : {}), receipt: !!receipt },
+  const plan = planReleaseCoverage(candidates, { productId: config.productId, repository, head, artifacts, scope, selection, selectionDigest, ...(now ? { now } : {}), receipt: !!receipt },
     candidate => integrationFacts(candidate, repository, root), (older, newer) => commitContains(root, older, newer));
+  if(receipt) plan.receiptDigest=createHash("sha256").update(JSON.stringify(receipt)).digest("hex");
   plan.scopeConflicts = [];
   if (scope.mode === "selected") {
     const previous = receipt?.previous ?? live;
@@ -147,7 +157,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     const receipt = JSON.parse(value("--receipt-json") ?? readFileSync(value("--receipt"), "utf8"));
     if (receipt.schemaVersion !== 1) throw new Error("Invalid public release receipt");
     const options = { root: value("--root") ?? process.cwd(), config: JSON.parse(readFileSync(value("--coverage-config"), "utf8")),
-      candidates: JSON.parse(readFileSync(value("--candidates"), "utf8")), artifacts: receiptArtifacts(receipt), receipt };
+      candidates: JSON.parse(readFileSync(value("--candidates"), "utf8")), selection: value("--selection") ? JSON.parse(readFileSync(value("--selection"),"utf8")) : undefined, selectionDigest:value("--selection-digest"), artifacts: receiptArtifacts(receipt), receipt };
     const actual = coverageForCheckout(options);
     const selected = value("--only-artifacts") === undefined ? actual : coverageForCheckout({ ...options, onlyArtifacts: value("--only-artifacts"), scopeReason: value("--scope-reason") });
     console.log(JSON.stringify({ ...actual, requestedScope: selected.scope, selectedScopeReady: selected.ready }, null, 2));

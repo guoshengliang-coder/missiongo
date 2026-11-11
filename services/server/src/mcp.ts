@@ -1,3 +1,4 @@
+import { nonReleaseSupplementSchema } from "./non-release-evidence.js";
 import { deliveryValidationSchema, evidenceDigest } from "./non-release-evidence.js";
 import { PlanDocuments } from "./plan-documents.js";
 import { NativeHumanConfirmations } from "./native-human-confirmation.js";
@@ -140,7 +141,7 @@ function accountAccess(ctx: ServerContext): McpAccountAccess {
  */
 export const WRITE_TOOLS_BY_TIER: Readonly<Record<McpWriteTier, readonly string[]>> = {
   none: [],
-  comments: ["request_collaboration_approval", "request_merge_reconciliation_approval", "request_managed_decision_approval", "request_merge_reconciliation", "apply_merge_reconciliation", "record_merge_combined_validation", "propose_merge_delivery", "refresh_merge_delivery", "report_merge_batch", "finish_merge_batch", "record_merge_integration", "prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "prepare_plan_document", "request_plan_approval", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_non_release_for_verification", "submit_for_verification", "submit_release_batch", "supplement_release_evidence", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
+  comments: ["request_collaboration_approval", "request_merge_reconciliation_approval", "request_managed_decision_approval", "request_merge_reconciliation", "apply_merge_reconciliation", "record_merge_combined_validation", "propose_merge_delivery", "refresh_merge_delivery", "report_merge_batch", "finish_merge_batch", "record_merge_integration", "prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "prepare_plan_document", "request_plan_approval", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_non_release_for_verification", "submit_for_verification", "submit_release_batch", "supplement_release_evidence", "supplement_non_release_evidence", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
 };
 
 /**
@@ -359,6 +360,7 @@ export function createMissionGoMcpServer(
           supportsParallelDevelopment: true,
           supportsContinuousDeliveries: true,
           supportsNonReleaseHandover: true,
+          supportsNonReleaseEvidenceSupplement: true,
           supportsPlanDocuments: true,
           supportsMergeBatches: true,
           supportsMergeReconciliation: true,
@@ -1719,6 +1721,22 @@ export function createMissionGoMcpServer(
       if (options.canOperate && !options.canOperate(access.accountId, input.productId)) throw new Error("Product operation is not permitted.");
       const { completion, pullRequestUrl, ...candidate } = input;
       return textResult(store.supplementReleaseEvidence({ ...candidate, completion:normalizeCompletion({completion,pullRequestUrl}), attribution:{accountId:access.accountId,clientId:access.clientId ?? ""} }));
+    },
+  );
+
+  server.registerTool(
+    "supplement_non_release_evidence",
+    {
+      title:"Supplement historical local no-release evidence",
+      description:"Only for a user-named historical local-tool delivery in development_complete or pending_verification. Independently verify file changes, installation and validation in the declared target. Bind the exact product, revision, development event and round; require explicit no-release scope. Product view/operate/AI and write permissions are required, not the original developer identity. Append only missing local proof, preserve human state, Builder, round and events. Conflicts and stale evidence are refused. This does not publish, accept work, read local files or install on other nodes.",
+      inputSchema:nonReleaseSupplementSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async(input,ctx)=>{
+      requireWriteScope(ctx);requireAccessibleProduct(ctx,input.productId);requireItemAccess(ctx,store,input.itemKey);
+      const access=accountAccess(ctx);
+      if(options.canOperate && !options.canOperate(access.accountId,input.productId))throw new Error("Product operation is not permitted.");
+      return textResult(store.supplementNonReleaseEvidence({...input,attribution:{accountId:access.accountId,clientId:access.clientId??""}}));
     },
   );
 

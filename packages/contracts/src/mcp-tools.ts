@@ -62,6 +62,7 @@ export const MCP_TOOL_DEFINITIONS = [
   { name: "submit_for_verification", access: "write", purpose: "Hand published work over for a person to verify, recording evidence for every required artifact." },
   { name: "submit_release_batch", access: "write", purpose: "Hand a verified product release batch to verification with frozen candidate revisions and rounds, independently of developer sessions." },
   { name: "supplement_release_evidence", access: "write", purpose: "Append missing verified integration and complete release scope through the current authorized product conversation, preserving human events and frozen candidate checks." },
+  { name: "supplement_non_release_evidence", access: "write", purpose: "Append historical local-tool no-release proof with product authority, preserving human status and exact delivery identity." },
   { name: "create_item", access: "write", purpose: "Record a follow-up split off from another item, or an independent item in a product, after the user approved its content (including the product) in the session." },
   { name: "upload_attachment_chunk", access: "write", purpose: "Stage a bounded chunk of a user-approved attachment in an authorized product." },
   { name: "prepare_attachment_upload", access: "write", purpose: "Authorize direct raw-byte upload for one user-approved file without passing bytes through model context." },

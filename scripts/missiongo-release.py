@@ -50,7 +50,7 @@ def main():
     common = (root / git(root, "rev-parse", "--git-common-dir")).resolve()
     if root.resolve() == common.parent:
         raise ValueError("Deploy/check must use an isolated release worktree.")
-    args, coverage_args = coverage_options(sys.argv[2:])
+    args, coverage_args = coverage_options(sys.argv[2:], planning=action == "plan")
     coverage_config = CONFIG / "release-coverage.json"
     if not coverage_config.is_file():
         raise ValueError("Install release coverage with its MissionGo product/repository binding first.")
@@ -90,7 +90,7 @@ def main():
     # Keep the lock while the repository's standard deployment runs.
     os.environ["MISSIONGO_RELEASE_CANDIDATES"] = coverage_args[coverage_args.index("--candidates") + 1]
     os.environ["MISSIONGO_RELEASE_COVERAGE_CONFIG"] = str(coverage_config)
-    for flag, key in [("--only-artifacts", "MISSIONGO_RELEASE_ONLY_ARTIFACTS"), ("--scope-reason", "MISSIONGO_RELEASE_SCOPE_REASON")]:
+    for flag, key in [("--only-artifacts", "MISSIONGO_RELEASE_ONLY_ARTIFACTS"), ("--scope-reason", "MISSIONGO_RELEASE_SCOPE_REASON"), ("--selection", "MISSIONGO_RELEASE_SELECTION"), ("--selection-digest", "MISSIONGO_RELEASE_SELECTION_DIGEST")]:
         if flag in coverage_args:
             os.environ[key] = coverage_args[coverage_args.index(flag) + 1]
         else:

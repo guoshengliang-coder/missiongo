@@ -48,7 +48,7 @@ function explain(store:MissionGoStore,itemKey:string,events:ReturnType<MissionGo
     row.toStatus === "pending_verification" && !row.payload.developmentEventId && row.payload.roundKey === evidence.roundKey);
   const published = new Set(receipts.filter(row => row.eventType === "release_evidence_added" || row.toStatus === "pending_verification")
     .flatMap(row => Array.isArray(row.payload.releases) ? row.payload.releases : []).map(row => row.artifact));
-  if (scope.requiredArtifacts?.length === 0 && !receipts.some(row => row.payload.reason === "non_release_submitted")) missing.push("no_release_verification");
+  if (scope.requiredArtifacts?.length === 0 && !receipts.some(row => ["non_release_submitted","non_release_supplemented"].includes(String(row.payload.reason)))) missing.push("no_release_verification");
   return {developmentEventId:event.id,roundKey:evidence.roundKey,applicability:"current",missing,
     missingArtifacts:(scope.requiredArtifacts ?? []).filter(artifact => !published.has(artifact))};
 }

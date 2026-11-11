@@ -261,3 +261,98 @@ describe("AND-417/418 current-conversation evidence repair", () => {
     expect(f.store.getTimeline(item.key).some(e=>e.eventType==="delivery_evidence_added")).toBe(false);
   });
 });
+
+
+const localProof={kind:"local_change" as const,evidence:{version:1 as const,target:"Synthetic local tool node",summary:"Installed verified tool update",
+  files:[{name:"tools/release.mjs",beforeSha256:"a".repeat(64),afterSha256:"b".repeat(64),sizeBytes:42}],rollback:"Restore verified previous digest",
+  validation:{checks:[{name:"Installation",method:"Compare target file digest",result:"passed" as const,evidence:"Installed digest matches afterSha256"}],remainingVerification:["Human review"],limitations:["Only the declared synthetic node"]}}};
+async function supplementFixture(pending=true) {
+  const f=await fixture(),item=await f.add(["web"],true);
+  if(pending)f.store.transitionWorkItem({itemKey:item.key,actor:"human",to:"pending_verification",reason:"release_verified",attribution:{accountId:config.id}});
+  const e=f.store.getDevelopmentEvidence(item.key);
+  const request={productId:f.product.id,itemKey:item.key,expectedRevision:f.store.getWorkItem(item.key).revision!,developmentEventId:e.handover!.id,
+    roundKey:e.roundKey!,completion:localProof,requiredArtifacts:[],noReleaseReason:"Local tool only; no product distribution",idempotencyKey:randomUUID()};
+  return {...f,item,request};
+}
+describe("AND-504 historical local proof",()=>{
+  it.each([false,true])("appends independent evidence preserving human state (pending=%s)",async pending=>{
+    const f=await supplementFixture(pending),before=f.store.getWorkItem(f.item.key),history=f.store.getTimeline(f.item.key);
+    const result=await f.call("supplement_non_release_evidence",f.request);
+    expect(result.isError,JSON.stringify(result)).toBeFalsy();
+    const after=f.store.getWorkItem(f.item.key),events=f.store.getTimeline(f.item.key);
+    expect(after).toMatchObject({status:before.status,builderAccountId:before.builderAccountId,contentVersion:before.contentVersion});
+    expect(events.slice(0,history.length)).toEqual(history);
+    expect(events.slice(history.length).every(e=>e.eventType==="delivery_evidence_added"&&e.toStatus===undefined)).toBe(true);
+    expect(events.at(-1)).toMatchObject({accountId:f.publisher.id,payload:{reason:"non_release_supplemented",authorizationBasis:"product_non_release_evidence",preservedStatus:before.status,completion:localProof}});
+    const context=(await f.call("get_item_context",{itemKey:f.item.key})).structuredContent;
+    expect(context.developmentEvidence).toMatchObject({completion:localProof,requiredArtifacts:[],noReleaseReason:f.request.noReleaseReason});
+    expect(context.deliveryExplanations[0].missing).not.toContain("no_release_verification");
+    expect((await f.call("list_release_candidates",{productId:f.product.id,includeUnscoped:true})).structuredContent.candidates).toEqual([]);
+    expect((await f.call("supplement_non_release_evidence",f.request)).structuredContent.alreadyRecorded).toBe(true);
+    expect(f.store.getTimeline(f.item.key)).toEqual(events);
+    const conflict=structuredClone(f.request);conflict.expectedRevision=after.revision!;conflict.idempotencyKey=randomUUID();conflict.completion.evidence.target="Other node";
+    expect((await f.call("supplement_non_release_evidence",conflict)).isError).toBe(true);
+    expect(f.store.getTimeline(f.item.key)).toEqual(events);
+    expect((await f.call("supplement_non_release_evidence",{...f.request,noReleaseReason:"Changed"})).isError).toBe(true);
+    f.store.transitionWorkItem({itemKey:f.item.key,actor:"human",to:"ready",reason:pending?"verification_failed":"manual_override",note:"Synthetic rework",attribution:{accountId:config.id}});
+    expect((await f.call("supplement_non_release_evidence",f.request)).structuredContent.item.status).toBe("ready");
+    expect(f.store.getWorkItem(f.item.key).status).toBe("ready");
+  });
+  it.each(["read","operate","ai","foreign","revision","event","round","content","builder","done","held","identity","absolute","duplicate","unknown","missingReason"])("rejects %s without partial writes",async kind=>{
+    const f=await supplementFixture(kind!=="content");const request:Record<string,unknown>=structuredClone(f.request);
+    if(kind==="operate")f.grant(false,true);if(kind==="ai")f.grant(true,false);
+    if(kind==="foreign")request.productId=f.store.createProduct({name:"Other",keyPrefix:"OTH",createdByAccountId:config.id}).id;
+    if(kind==="revision")request.expectedRevision=1;if(kind==="event")request.developmentEventId=randomUUID();if(kind==="round")request.roundKey=randomUUID();
+    if(kind==="content"){f.store.updateWorkItem(f.item.key,{description:"Changed scope",attribution:{accountId:config.id}});request.expectedRevision=f.store.getWorkItem(f.item.key).revision;}
+    if(kind==="builder"){
+      f.store.database.connection.prepare("INSERT INTO work_item_events (id,item_id,event_type,actor_kind,payload_json,created_at,timeline_seq) SELECT ?,?,'builder_changed','human',?,?,COALESCE(MAX(timeline_seq),0)+1 FROM work_item_events WHERE item_id=?")
+        .run(randomUUID(),f.item.id,JSON.stringify({from:f.developer.id,to:f.publisher.id}),new Date().toISOString(),f.item.id);
+    }
+    if(kind==="done")f.store.transitionWorkItem({itemKey:f.item.key,actor:"human",to:"done",reason:"verification_passed",attribution:{accountId:config.id}});
+    if(kind==="held")f.store.transitionWorkItem({itemKey:f.item.key,actor:"human",to:"on_hold",reason:"manual_override",executionDisposition:"keep_running",note:"Synthetic hold",attribution:{accountId:config.id}});
+    if(kind==="identity")request.dispatchId=randomUUID();
+    if(kind==="absolute")request.completion={...localProof,evidence:{...localProof.evidence,files:[{...localProof.evidence.files[0],name:"/private/tool"}]}};
+    if(kind==="duplicate")request.completion={...localProof,evidence:{...localProof.evidence,files:[localProof.evidence.files[0],localProof.evidence.files[0]]}};
+    if(kind==="unknown")request.requiredArtifacts=["web"];if(kind==="missingReason")request.noReleaseReason="";
+    const before=f.store.getWorkItem(f.item.key),events=f.store.getTimeline(f.item.key);
+    const result=await f.call("supplement_non_release_evidence",request,f.publisher.id,kind==="read"?["missiongo:read"]:undefined);
+    expect(result.isError||result.error,JSON.stringify(result)).toBeTruthy();expect(f.store.getWorkItem(f.item.key)).toEqual(before);expect(f.store.getTimeline(f.item.key)).toEqual(events);
+  });
+  it("binds the requested historical delivery instead of the latest integration",async()=>{
+    const f=await supplementFixture();
+    f.store.submitDevelopmentComplete({itemKey:f.item.key,completion,requiredArtifacts:["web"],idempotencyKey:randomUUID(),attribution:{accountId:f.developer.id}});
+    f.request.expectedRevision=f.store.getWorkItem(f.item.key).revision!;
+    const result=await f.call("supplement_non_release_evidence",f.request);expect(result.isError,JSON.stringify(result)).toBeFalsy();
+    const records=f.store.getDeliveryRecords(f.item.key);
+    expect(records).toHaveLength(2);expect(records[0]).toMatchObject({id:f.request.developmentEventId,completion:localProof,requiredArtifacts:[]});
+    expect(records[1]).toMatchObject({completion,requiredArtifacts:["web"],published:false});
+    const latest=f.store.getDevelopmentEvidence(f.item.key);expect(latest.completion).toEqual(completion);
+    const fresh={...f.request,expectedRevision:f.store.getWorkItem(f.item.key).revision!,idempotencyKey:randomUUID()};
+    const before=f.store.getTimeline(f.item.key);expect((await f.call("supplement_non_release_evidence",fresh)).structuredContent.alreadyRecorded).toBe(true);
+    expect(f.store.getTimeline(f.item.key)).toEqual(before);
+  });
+  it("audit R2: successful replays still require current product authority and never create developer claims",async()=>{
+    const f=await supplementFixture(),db=f.store.database.connection;
+    const counts=()=>({claims:db.prepare("SELECT count(*) AS n FROM mcp_agent_claim_receipts").get(),authorizations:db.prepare("SELECT count(*) AS n FROM builder_execution_authorizations").get()});
+    const before=counts();
+    expect((await f.call("supplement_non_release_evidence",f.request)).isError).toBeFalsy();
+    expect(counts()).toEqual(before);
+    const history=f.store.getTimeline(f.item.key),item=f.store.getWorkItem(f.item.key);
+    f.grant(false,true);
+    const denied=await f.call("supplement_non_release_evidence",f.request);
+    expect(denied.isError||denied.error).toBeTruthy();
+    expect(f.store.getTimeline(f.item.key)).toEqual(history);expect(f.store.getWorkItem(f.item.key)).toEqual(item);expect(counts()).toEqual(before);
+    f.grant(true,true);
+    expect((await f.call("supplement_non_release_evidence",f.request)).structuredContent.alreadyRecorded).toBe(true);
+    expect(f.store.getTimeline(f.item.key)).toEqual(history);expect(counts()).toEqual(before);
+  });
+  it("rejects known Git/product scope and keeps failure evidence honest",async()=>{
+    const f=await fixture(),item=await f.add(["web"]),e=f.store.getDevelopmentEvidence(item.key);
+    const request={productId:f.product.id,itemKey:item.key,expectedRevision:f.store.getWorkItem(item.key).revision!,developmentEventId:e.handover!.id,roundKey:e.roundKey!,completion:localProof,requiredArtifacts:[],noReleaseReason:"Local",idempotencyKey:randomUUID()};
+    expect((await f.call("supplement_non_release_evidence",request)).isError).toBe(true);
+    const g=await supplementFixture(),failed=structuredClone(g.request);failed.completion.evidence.validation.checks[0].result="failed" as "passed";
+    const result=await g.call("supplement_non_release_evidence",failed);expect(result.isError,JSON.stringify(result)).toBeFalsy();
+    expect(g.store.getTimeline(g.item.key).at(-1)!.payload.validation).toMatchObject({checks:[{result:"failed"}]});
+    expect(g.store.getWorkItem(g.item.key).status).toBe("pending_verification");
+  });
+});

@@ -17,7 +17,7 @@ const base = () => readFileSync(join(root, "scripts/fixtures/coverage-coordinato
   .replace('    args = sys.argv[2:]', '    args, coverage_args = coverage_options(sys.argv[2:])')
   .replace('    if "--no-publish-apk" in args:', '    preflight.extend(coverage_args)\n    if "--no-publish-apk" in args:')
   .replace('    # Keep the lock', '    os.environ["MISSIONGO_RELEASE_CANDIDATES"] = "fixture"\n    # Keep the lock')
-  .replace('def main():', 'def coverage_options(args):\n    return args, []\n\n\ndef main():');
+  .replace('def main():', 'def coverage_options(args, *, planning=False):\n    return args, []\n\n\ndef main():');
 const manifest = bytes => ({ formatVersion: 1, directory: "missiongo-20260101T000000Z", createdAt: "2026-01-01T00:00:00.000Z",
   database: { filename: "missiongo.sqlite", sizeBytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") } });
 
@@ -141,7 +141,7 @@ test("installed coordinator blocks both check and deploy before a production mar
     const canonical = readFileSync(join(root, "scripts/missiongo-release.py"), "utf8");
     assert.equal(upgradePerformanceCoordinator(canonical), canonical, "repository installs must retain the mandatory gate");
     writeFileSync(coordinator, canonical);
-    writeFileSync(join(tools, "release_coverage_options.py"), "def coverage_options(args):\n    return args, ['--candidates', 'fixture']\n");
+    writeFileSync(join(tools, "release_coverage_options.py"), "def coverage_options(args, *, planning=False):\n    return args, ['--candidates', 'fixture']\n");
     const config = dirname(tools);
     writeFileSync(join(config, "release-local.json"), JSON.stringify({ host: "fixture", backupsDir: "/fixture/backups", currentLink: "/fixture/current", downloadsDir: "/fixture/downloads", envFile: "/fixture/env", origin: "http://fixture.invalid" }));
     writeFileSync(join(config, "release-coverage.json"), JSON.stringify({ productId: "fixture" }));
