@@ -172,3 +172,22 @@ test("standalone release handover generates delivery receipts without work-item 
   const missing=matchCandidates({...receipt,publicEvidence:{checks:{web:true,macosApp:false}}},[candidate],()=>({mergeCommit:merge}),()=>true);
   assert.equal(missing.deliveries,undefined);assert.equal(missing.skipped[0].deliveryId,candidate.deliveryId);
 });
+
+
+test("AND-503 post-release handover keeps exclusions and cannot reuse a changed selection", async()=>{
+  const {createReleaseSelection,releaseCandidatesFromPages}=await import("./release-candidates.mjs");
+  const {matchReleaseSelection}=await import("./release-notices.mjs");
+  const commit="a".repeat(40),repository="https://github.com/owner/repo";
+  const rows=[{itemKey:"AND-1",completion:{kind:"commit",commit,targetBranch:"main"},requiredArtifacts:["web"]},
+    {itemKey:"AND-451"},{itemKey:"AND-2",completion:{kind:"commit",commit,targetBranch:"main"},requiredArtifacts:["web"]}];
+  const snapshot=releaseCandidatesFromPages({pages:[{requestedBeforeSequence:null,productId:"product",coverageVersion:2,generatedAt:new Date().toISOString(),candidates:rows,noReleaseItems:[],noReleaseDeliveries:[]}]},{coverage:true});
+  const selection=createReleaseSelection(snapshot,repository,commit);
+  selection.entries[1]={...selection.entries[1],disposition:"historical_gap",reason:"Unrelated local tool needs proof"};
+  selection.entries[2]={...selection.entries[2],disposition:"deferred",reason:"User postponed",authorization:"User said defer AND-2"};
+  const receipt={schemaVersion:1,deployedCommit:commit,current:{web:{version:"1",commit,clean:true,ciPassed:true}},publicEvidence:{checks:{web:true}}};
+  const report=matchReleaseSelection(receipt,snapshot,selection,repository,()=>{throw Error("commit needs no PR lookup");},()=>true);
+  assert.deepEqual(report.comments.map(c=>c.itemKey),["AND-1"]);assert.equal(report.selection.entries.length,3);
+  assert.equal(report.selection.entries.find(e=>e.identity.startsWith("AND-451:")).disposition,"historical_gap");
+  assert.throws(()=>matchReleaseSelection({...receipt,deployedCommit:"b".repeat(40)},snapshot,selection,repository,()=>null),/selection changed/);
+  assert.throws(()=>matchReleaseSelection(receipt,{...snapshot,candidates:[...rows,{itemKey:"AND-3"}]},selection,repository,()=>null),/selection changed/);
+});

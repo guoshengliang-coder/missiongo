@@ -5,7 +5,7 @@ from pathlib import Path
 def coverage_options(arguments):
     values = {}
     remaining = []
-    flags = {"--candidates", "--only-artifacts", "--scope-reason"}
+    flags = {"--candidates", "--only-artifacts", "--scope-reason", "--selection"}
     index = 0
     while index < len(arguments):
         flag = arguments[index]
@@ -25,7 +25,12 @@ def coverage_options(arguments):
     if not candidates.is_file():
         raise ValueError("Release candidate file is missing")
     values["--candidates"] = str(candidates)
+    if "--selection" in values:
+        selection = Path(values["--selection"]).resolve()
+        if not selection.is_file():
+            raise ValueError("Release selection file is missing")
+        values["--selection"] = str(selection)
     if ("--only-artifacts" in values) != ("--scope-reason" in values) or "--scope-reason" in values and not values["--scope-reason"].strip():
         raise ValueError("Partial release needs --only-artifacts and --scope-reason from explicit user scope")
-    coverage = [part for flag in ("--candidates", "--only-artifacts", "--scope-reason") if flag in values for part in (flag, values[flag])]
+    coverage = [part for flag in ("--candidates", "--only-artifacts", "--scope-reason", "--selection") if flag in values for part in (flag, values[flag])]
     return remaining, coverage

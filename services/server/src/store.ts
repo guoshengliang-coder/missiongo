@@ -7,7 +7,7 @@ import { assertTransitionPolicy, assertReleaseBatchTransition, itemRoles } from 
 import { resolveCommentAudience, enqueueCommentNotifications } from "./comment-discussions.js";
 import { assertBuilderExecution, assertDispatchExecution, latestBuilderHandover, hasOngoingItemExecution, hasBlockingItemExecution, hasPriorProcessing } from "./builder-authority.js";
 import { completionPayload, normalizeCompletion, sameCompletion } from "./completion.js";
-import { deliveryValidationSchema, evidenceDigest, type NonReleaseVerification } from "./non-release-evidence.js";
+import { deliveryValidationSchema, evidenceDigest, type NonReleaseVerification, nonReleaseSupplementSchema, type NonReleaseSupplement } from "./non-release-evidence.js";
 import { deliveryRound } from "./delivery-round.js";
 import { enqueueDecisionNotifications, enqueueVerificationNotification } from "./dingtalk-notifications.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -1822,7 +1822,7 @@ export class MissionGoStore {
         if(release && typeof release==="object" && "artifact" in release) artifacts.set(release.artifact,release);
       }
       const releases=[...artifacts.values()];
-      const noReleaseVerified=events.some(e=>e.payload.developmentEventId===event.id && e.payload.reason==="non_release_submitted");
+      const noReleaseVerified=events.some(e=>e.payload.developmentEventId===event.id && ["non_release_submitted","non_release_supplemented"].includes(String(e.payload.reason)));
       const published=scope.requiredArtifacts!==null && (scope.requiredArtifacts.length===0 ? noReleaseVerified : scope.requiredArtifacts.every(a=>artifacts.has(a)));
       return {id:event.id,createdAt:event.createdAt,roundKey:round,completion:evidence.completion,...scope,releases,published,
         status:published ? "published" as const : releases.length ? "partial" as const : "awaiting_release" as const};
@@ -1998,6 +1998,48 @@ export class MissionGoStore {
         completion, requiredArtifacts:[...input.requiredArtifacts] });
       this.saveIdempotentResult(id, "release_evidence", {digest}, new Date().toISOString());
       return { item: this.getWorkItem(item.key), alreadyRecorded: false };
+    });
+  }
+
+  /** Append historical local installation proof without claiming or replaying a transition. */
+  supplementNonReleaseEvidence(raw: NonReleaseSupplement) {
+    const {attribution:_attribution,...fields}=raw;
+    const parsed=nonReleaseSupplementSchema.parse(fields);
+    const input={...parsed,attribution:raw.attribution};
+    this.assertReleaseOperator(input.productId,input.attribution.accountId);
+    this.assertWorkItemWritable(input.itemKey);
+    const completion=normalizeCompletion({completion:input.completion});
+    const key=evidenceDigest(["non_release_supplement",input.attribution.accountId,input.attribution.clientId,input.productId,input.idempotencyKey]);
+    const digest=evidenceDigest(input);
+    return this.database.transaction(()=>{
+      const item=this.getWorkItem(input.itemKey);
+      if(item.productId!==input.productId)throw invalidInput("Evidence must belong to the authorized product.");
+      const previous=this.getIdempotentResult<{digest:string}>(key,"non_release_supplement");
+      if(previous) {
+        if(previous.digest!==digest)throw conflict("idempotency_conflict","Evidence request changed; verify again.");
+        return {item,alreadyRecorded:true};
+      }
+      this.assertReleaseCandidate(input,true);
+      const timeline=this.getTimeline(item.key).filter(event=>!event.historySourceKey);
+      const resolved=this.getDevelopmentEvidence(item.key,input.developmentEventId,timeline);
+      const scope=this.getDevelopmentReleaseDecision(item.key,input.developmentEventId,timeline);
+      const receipts=timeline.filter(event=>event.payload.developmentEventId===input.developmentEventId
+        || event.toStatus==="pending_verification" && !event.payload.developmentEventId && event.payload.roundKey===input.roundKey);
+      if(receipts.some(event=>Array.isArray(event.payload.releases)&&event.payload.releases.length)
+        || resolved.completion && !sameCompletion(resolved.completion,completion)
+        || scope.requiredArtifacts!==null && scope.requiredArtifacts.length!==0
+        || scope.noReleaseReason && scope.noReleaseReason!==input.noReleaseReason)throw conflict("delivery_evidence_conflict","Existing delivery or publication proof conflicts with local no-release evidence.");
+      const existing=receipts.find(event=>event.payload.reason==="non_release_supplemented");
+      if(!existing) {
+        const now=new Date().toISOString();
+        this.insertEvent(item.id,"delivery_evidence_added","agent",null,null,{...completionPayload(completion),
+          requiredArtifacts:[],noReleaseReason:input.noReleaseReason,validation:input.completion.evidence.validation,
+          developmentEventId:input.developmentEventId,roundKey:input.roundKey,evidenceDigest:evidenceDigest(completion),
+          reason:"non_release_supplemented",authorizationBasis:"product_non_release_evidence",preservedStatus:item.status,requestId:input.idempotencyKey},now,input.attribution);
+        this.database.connection.prepare("UPDATE work_items SET revision=revision+1,updated_at=? WHERE id=?").run(now,item.id);
+      }
+      this.saveIdempotentResult(key,"non_release_supplement",{digest},new Date().toISOString());
+      return {item:this.getWorkItem(item.key),alreadyRecorded:Boolean(existing)};
     });
   }
 

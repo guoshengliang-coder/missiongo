@@ -325,3 +325,16 @@ Codex、Claude Code、OpenCode 共用内容完整性契约。`request_plan_appro
 文档方案 request_plan_approval 带 documentId、完全相同的 plan 和空 validation，详细验证在文档中。原会话批准入口绑定此版本，读取不批准，原生与 Web 复用同一决定。append_comment 的 planDocumentId 将获批原文归档为 Markdown 附件及摘要评论，重试去重；普通 free 评论也支持 attachmentIds。该限定归档属于已批准任务交付，不要求用户再次逐文件授权，不扩大一般附件上传范围。
 
 原范围补修可 prepare_plan_document(parentDocumentId) 生成本轮诊断记录，不产生新批准；实质变更须生成独立方案审阅。跨轮次旧待审文档失效，已批准方案只在现有范围和授权有效时复用。通用 get_review_content 及旧文本审批保持原有完整内容要求；不得把非文档方案静默缩写。
+
+
+### 历史本机工具补证（AND-504）
+
+`supportsNonReleaseEvidenceSupplement` 表示服务端理解此能力，仍须核对当前连接 writeTools 包含 `supplement_non_release_evidence`。
+此工具要求产品 view/operate/ai 与 missiongo:write，面向用户明确点名的单项历史本机工具交付，不借原开发身份、不领取、不改卡片状态。
+请求严格绑定 productId、itemKey、expectedRevision、developmentEventId、roundKey，completion 必须为 local_change v1，requiredArtifacts=[]，noReleaseReason 非空，idempotencyKey 稳定。
+本机证据沿用安全相对资源名、前后摘要、结果大小、目标环境、回退、实际安装检查和验证限制；服务端不读取或执行本机文件，不验证 Git/安装事实，不支持任意 SQL 或字段写入。
+
+仅 development_complete 或 pending_verification 且原轮次、内容和 Builder 仍有效时追加。正式发布或已存在的不同完成依据、发布范围/无需发布原因、目标文件证据冲突均拒绝。缺开发事件/轮次锚点不能伪造补齐；done、取消、暂缓、打回/重开均不覆盖。
+追加 delivery_evidence_added 事件，reason=non_release_supplemented，记录 product_non_release_evidence 授权、精确开发事件、规范化摘要、验证和 preservedStatus；不产生正式发布凭据，不改变人工状态、Builder、处理轮次或既有事件。
+事务保护全部写入；同键同内容返回当前状态不重复，异内容拒绝，旧成功重放不恢复人工打回。原开发身份交接及正式发布补证入口保持独立。
+get_item_context、逐份 deliveries、deliveryExplanations 及无需发布候选原因读取补证结果，现有时间线 DeliveryEvidence 复用展示失败、未运行和限制；补证不意味着验收通过或其他节点已安装。

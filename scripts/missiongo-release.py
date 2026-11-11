@@ -90,7 +90,7 @@ def main():
     # Keep the lock while the repository's standard deployment runs.
     os.environ["MISSIONGO_RELEASE_CANDIDATES"] = coverage_args[coverage_args.index("--candidates") + 1]
     os.environ["MISSIONGO_RELEASE_COVERAGE_CONFIG"] = str(coverage_config)
-    for flag, key in [("--only-artifacts", "MISSIONGO_RELEASE_ONLY_ARTIFACTS"), ("--scope-reason", "MISSIONGO_RELEASE_SCOPE_REASON")]:
+    for flag, key in [("--only-artifacts", "MISSIONGO_RELEASE_ONLY_ARTIFACTS"), ("--scope-reason", "MISSIONGO_RELEASE_SCOPE_REASON"), ("--selection", "MISSIONGO_RELEASE_SELECTION")]:
         if flag in coverage_args:
             os.environ[key] = coverage_args[coverage_args.index(flag) + 1]
         else:

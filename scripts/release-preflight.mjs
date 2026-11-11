@@ -222,6 +222,7 @@ function main() {
   const coverage = coverageForCheckout({ root, live,
     config: JSON.parse(readFileSync(value("--coverage-config"), "utf8")),
     candidates: JSON.parse(readFileSync(value("--candidates"), "utf8")),
+    selection: value("--selection") ? JSON.parse(readFileSync(value("--selection"),"utf8")) : undefined,
     artifacts: [{ artifact: "web", version: JSON.parse(readFileSync(join(root, "product.json"), "utf8")).web.version, sourceCommit: git(root, "rev-parse", "HEAD") }, ...report],
     onlyArtifacts: value("--only-artifacts") ?? undefined, scopeReason: value("--scope-reason") ?? undefined });
   if (argv.includes("--coverage-plan")) {

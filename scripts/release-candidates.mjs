@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 export function candidateIdentity(candidate) {
   if (candidate?.kind === "delivery") {
     if (!/^[a-f0-9-]{36}$/.test(candidate.deliveryId ?? "") || !/^[a-f0-9]{64}$/.test(candidate.expectedRevision ?? "")) throw new Error("Invalid standalone delivery identity");
@@ -56,4 +60,49 @@ export function releaseCandidatesFromPages(input, { coverage = false, now = Date
   }
   if (expectedCursor !== null) throw new Error("Release candidate scan stopped before the final page");
   return { productId, candidates, ...(coverage ? { noReleaseItems, noReleaseDeliveries, snapshotAt: new Date(snapshotAt).toISOString() } : {}) };
+}
+
+// A separate, complete disposition ledger. Never edit the authenticated pages.
+const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object"
+  ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+const digest = value => createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
+export function releaseSelectionDigest(snapshot) {
+  return digest({ productId:snapshot.productId,
+    candidates:[...snapshot.candidates].sort((a,b)=>candidateIdentity(a).localeCompare(candidateIdentity(b))),
+    noReleaseItems:[...snapshot.noReleaseItems].sort((a,b)=>a.itemKey.localeCompare(b.itemKey)),
+    noReleaseDeliveries:[...snapshot.noReleaseDeliveries].sort((a,b)=>a.deliveryId.localeCompare(b.deliveryId)) });
+}
+export function createReleaseSelection(snapshot, repository, head) {
+  if (!/^https:\/\/github\.com\/[^/]+\/[^/]+$/.test(repository ?? "") || !/^[a-f0-9]{40}$/.test(head ?? "")) throw new Error("Selection requires an exact repository and planned commit");
+  return {schemaVersion:1,productId:snapshot.productId,repository,plannedCommit:head,candidatesDigest:releaseSelectionDigest(snapshot),
+    entries:snapshot.candidates.map(candidate=>({identity:candidateIdentity(candidate),disposition:"include",reason:"Default: include verified integrated work"}))};
+}
+export function readReleaseSelection(selection, snapshot, repository, head) {
+  if (!selection) return undefined;
+  const expected=createReleaseSelection(snapshot,repository,head);
+  if (Object.keys(selection).some(key=>!["schemaVersion","productId","repository","plannedCommit","candidatesDigest","entries"].includes(key)) || selection.schemaVersion!==1 || selection.productId!==expected.productId || selection.repository!==repository
+    || selection.plannedCommit!==head || selection.candidatesDigest!==expected.candidatesDigest || !Array.isArray(selection.entries)
+    || selection.entries.length!==snapshot.candidates.length) throw new Error("Release selection changed: refresh the complete candidates and review every disposition again");
+  const entries=new Map(), candidates=new Map(snapshot.candidates.map(c=>[candidateIdentity(c),c]));
+  for (const entry of selection.entries) {
+    const candidate=candidates.get(entry?.identity);
+    if(!candidate || entries.has(entry.identity) || !["include","unmerged","historical_gap","deferred"].includes(entry.disposition)
+      || typeof entry.reason!=="string" || !entry.reason.trim() || entry.reason.length>4000
+      || Object.keys(entry).some(key=>!["identity","disposition","reason","authorization"].includes(key))) throw new Error("Invalid or incomplete release disposition");
+    if(entry.disposition==="deferred" && (typeof entry.authorization!=="string" || !entry.authorization.trim() || entry.authorization.length>4000)) throw new Error("Deferring integrated work requires the explicit user instruction");
+    const missingReference=!candidate.completion && !candidate.pullRequestUrl;
+    const missingScope=candidate.requiredArtifacts===undefined || candidate.requiredArtifacts===null;
+    if(entry.disposition==="historical_gap" && !missingReference && !missingScope) throw new Error("Known integrated work cannot be excluded as a historical gap");
+    entries.set(entry.identity,entry);
+  }
+  return { ...expected, entries:[...entries.values()].sort((a,b)=>a.identity.localeCompare(b.identity)), digest:digest(selection) };
+}
+
+if(process.argv[1] && fileURLToPath(import.meta.url)===process.argv[1]) {
+  try {
+    const args=process.argv.slice(2),value=flag=>args[args.indexOf(flag)+1];
+    if(!args.includes("--create-selection") || !["--candidates","--repository","--head","--output"].every(flag=>args.includes(flag))) throw new Error("Use --create-selection --candidates <full pages> --repository <GitHub repository> --head <SHA> --output <new file>");
+    const snapshot=releaseCandidatesFromPages(JSON.parse(readFileSync(value("--candidates"),"utf8")),{coverage:true});
+    writeFileSync(value("--output"),JSON.stringify(createReleaseSelection(snapshot,value("--repository"),value("--head")),null,2)+"\n",{flag:"wx",mode:0o600});
+  } catch(error) { console.error(error.message);process.exitCode=1; }
 }

@@ -45,7 +45,7 @@ export function upgradeCoverageTools(files) {
     const environment = [
       '    os.environ["MISSIONGO_RELEASE_CANDIDATES"] = coverage_args[coverage_args.index("--candidates") + 1]',
       '    os.environ["MISSIONGO_RELEASE_COVERAGE_CONFIG"] = str(coverage_config)',
-      '    for flag, key in [("--only-artifacts", "MISSIONGO_RELEASE_ONLY_ARTIFACTS"), ("--scope-reason", "MISSIONGO_RELEASE_SCOPE_REASON")]:',
+      '    for flag, key in [("--only-artifacts", "MISSIONGO_RELEASE_ONLY_ARTIFACTS"), ("--scope-reason", "MISSIONGO_RELEASE_SCOPE_REASON"), ("--selection", "MISSIONGO_RELEASE_SELECTION")]:',
       '        if flag in coverage_args:',
       '            os.environ[key] = coverage_args[coverage_args.index(flag) + 1]',
       '        else:',
@@ -62,6 +62,7 @@ export function upgradeCoverageTools(files) {
       '  const coverage = coverageForCheckout({ root, live,',
       '    config: JSON.parse(readFileSync(value("--coverage-config"), "utf8")),',
       '    candidates: JSON.parse(readFileSync(value("--candidates"), "utf8")),',
+      '    selection: value("--selection") ? JSON.parse(readFileSync(value("--selection"),"utf8")) : undefined,',
       '    artifacts: [{ artifact: "web", version: JSON.parse(readFileSync(join(root, "product.json"), "utf8")).web.version, sourceCommit: git(root, "rev-parse", "HEAD") }, ...report],',
       '    onlyArtifacts: value("--only-artifacts") ?? undefined, scopeReason: value("--scope-reason") ?? undefined });',
       '  console.log(JSON.stringify({ artifacts: report, coverage }, null, 2));',
@@ -73,6 +74,13 @@ export function upgradeCoverageTools(files) {
     const previous = 'node "$RELEASE_TOOLS/release-preflight.mjs" --root "$PWD" --snapshot "$before_snapshot" --host "$host" --current-link "$current_link" ${artifact_options[@]+"${artifact_options[@]}"}';
     result.deploy = replaceOnce(result.deploy, previous, 'source "$RELEASE_TOOLS/release-coverage-guard.sh"\ncheck_release_coverage');
     result.deploy = withCoverageReceipt(result.deploy, 'node "$RELEASE_TOOLS/release-receipt.mjs"');
+  }
+  if(!result.coordinator.includes("MISSIONGO_RELEASE_SELECTION")) {
+    result.coordinator=replaceOnce(result.coordinator,'("--scope-reason", "MISSIONGO_RELEASE_SCOPE_REASON")]', '("--scope-reason", "MISSIONGO_RELEASE_SCOPE_REASON"), ("--selection", "MISSIONGO_RELEASE_SELECTION")]');
+  }
+  if(!result.preflight.includes('value("--selection")')) {
+    result.preflight=replaceOnce(result.preflight,'    candidates: JSON.parse(readFileSync(value("--candidates"), "utf8")),',
+      '    candidates: JSON.parse(readFileSync(value("--candidates"), "utf8")),\n    selection: value("--selection") ? JSON.parse(readFileSync(value("--selection"),"utf8")) : undefined,');
   }
   for (const [key, fragments] of Object.entries({
     coordinator: ['args, coverage_args = coverage_options(sys.argv[2:])', 'preflight.extend(coverage_args)', 'os.environ["MISSIONGO_RELEASE_CANDIDATES"]', '"--coverage-plan"'],

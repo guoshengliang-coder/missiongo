@@ -29,3 +29,14 @@ export type NonReleaseVerification = {
   validation:import("@missiongo/contracts").DeliveryValidation; idempotencyKey:string;
   attribution?:import("./types.js").EventAttribution;
 };
+
+/** Product-scoped historical proof, deliberately without execution identity fields. */
+export const nonReleaseSupplementSchema = z.object({
+  productId:z.string().min(1).max(200),itemKey:z.string().regex(/^[A-Z][A-Z0-9]*-[1-9][0-9]*$/),
+  expectedRevision:z.number().int().positive(),developmentEventId:z.string().uuid(),roundKey:z.string().uuid(),
+  completion:z.object({kind:z.literal("local_change"),evidence:localChangeEvidenceSchema}).strict(),
+  requiredArtifacts:z.array(z.never()).length(0),noReleaseReason:text,idempotencyKey:z.string().min(1).max(200),
+}).strict();
+export type NonReleaseSupplement = z.infer<typeof nonReleaseSupplementSchema> & {
+  attribution:{accountId:string;clientId:string};
+};

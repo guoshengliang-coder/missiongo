@@ -8,7 +8,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { releaseCandidatesFromPages } from "./release-candidates.mjs";
+import { candidateIdentity, readReleaseSelection, releaseCandidatesFromPages } from "./release-candidates.mjs";
 export { releaseCandidatesFromPages } from "./release-candidates.mjs";
 
 const ARTIFACT_NAMES = {
@@ -202,6 +202,15 @@ export function withVerifiedEvidence(productId, candidates, evidence) {
 }
 
 
+/** Reconciliation consumes exactly the same frozen dispositions as deployment. */
+export function matchReleaseSelection(receipt,snapshot,selection,repository,resolvePr,ancestor=isAncestor) {
+  const ledger=readReleaseSelection(selection,snapshot,repository,receipt.deployedCommit);
+  const included=new Set(ledger?.entries.filter(e=>e.disposition==="include").map(e=>e.identity));
+  const selected=ledger ? snapshot.candidates.filter(c=>included.has(candidateIdentity(c))) : snapshot.candidates;
+  return {...matchCandidates(receipt,selected,resolvePr,ancestor),...(ledger ? {selection:ledger} : {})};
+}
+
+
 function main() {
   const args = process.argv.slice(2);
   const receiptIndex = args.indexOf("--receipt");
@@ -212,17 +221,22 @@ function main() {
   const receipt = JSON.parse(readFileSync(args[receiptIndex + 1], "utf8"));
   const candidateResult = JSON.parse(readFileSync(args[candidatesIndex + 1], "utf8"));
   if (receipt.schemaVersion !== 1) throw new Error("Invalid release receipt");
-  const { productId, candidates: originalCandidates } = releaseCandidatesFromPages(candidateResult);
+  const selectionIndex=args.indexOf("--selection");
+  if(selectionIndex>=0 && !args[selectionIndex+1])throw new Error("Missing release selection file");
+  const selection=selectionIndex>=0 ? JSON.parse(readFileSync(args[selectionIndex+1],"utf8")) : undefined;
+  const snapshot=releaseCandidatesFromPages(candidateResult,selection ? {coverage:true,maxAgeMs:Number.MAX_SAFE_INTEGER} : {});
+  const {productId,candidates:originalCandidates}=snapshot;
   const evidenceIndex = args.indexOf("--verified-evidence");
   if (evidenceIndex >= 0 && !args[evidenceIndex + 1]) throw new Error("Missing verified evidence file");
   const evidence = evidenceIndex >= 0 ? JSON.parse(readFileSync(args[evidenceIndex + 1], "utf8")) : undefined;
+  if(selection && evidence)throw new Error("Refresh service evidence and review selection before combining historical supplements with a frozen release");
   const candidates = evidence ? withVerifiedEvidence(productId, originalCandidates, evidence) : originalCandidates;
   if (!isAncestor(receipt.deployedCommit, git("rev-parse", "HEAD"))) {
     throw new Error("The deployed commit is not in this checkout; use the repository that was deployed");
   }
   const repository = gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner");
-  const matched = matchCandidates(receipt, candidates, (url) => pullRequestFacts(url, repository));
-  process.stdout.write(`${JSON.stringify({ comments: matched.comments, ...(matched.deliveries ? {deliveries:matched.deliveries} : {}), ...releaseBatches(productId, candidates, matched), ...(evidence ? { verifiedEvidence: evidence } : {}) }, null, 2)}\n`);
+  const {selection:ledger,...matched}=matchReleaseSelection(receipt,{...snapshot,candidates},selection,`https://github.com/${repository}`,(url)=>pullRequestFacts(url,repository));
+  process.stdout.write(`${JSON.stringify({ ...(ledger ? {selection:ledger,receiptDigest:createHash("sha256").update(JSON.stringify(receipt)).digest("hex")} : {}), comments: matched.comments, ...(matched.deliveries ? {deliveries:matched.deliveries} : {}), ...releaseBatches(productId, candidates, matched), ...(evidence ? { verifiedEvidence: evidence } : {}) }, null, 2)}\n`);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

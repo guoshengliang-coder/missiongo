@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import { createReleaseSelection, releaseCandidatesFromPages } from "./release-candidates.mjs";
 import { installCoverage, upgradeCoverageTools } from "./enable-release-coverage.mjs";
 
 const scripts = dirname(fileURLToPath(import.meta.url));
@@ -118,6 +119,30 @@ test("installed coordinator and deploy guard reject incomplete coverage before a
     const direct = spawnSync("bash", [join(tools, "deploy.sh")], { cwd: root, env: { ...env, MISSIONGO_RELEASE_ROOT: root, MISSIONGO_RELEASE_TOOLS: tools,
       MISSIONGO_RELEASE_CANDIDATES: candidatesPath, MISSIONGO_RELEASE_COVERAGE_CONFIG: join(config, "release-coverage.json") }, encoding: "utf8" });
     assert.notEqual(direct.status, 0); assert.equal(existsSync(marker), false, "the deploy script also blocks without relying on the coordinator's earlier result");
+    // Full snapshot stays intact: known updates are explicitly deferred by user,
+    // one unrelated legacy gap is retained as a warning, and ready Web work proceeds.
+    const originalPages=JSON.parse(readFileSync(candidatesPath,"utf8"));
+    const withLegacy=structuredClone(originalPages);
+    withLegacy.pages[0].candidates.push({itemKey:"AND-451",expectedRevision:1},
+      {itemKey:"AND-504",completion:{kind:"commit",commit:merge,targetBranch:"main"},requiredArtifacts:["web"]});
+    writeFileSync(candidatesPath,JSON.stringify(withLegacy));
+    const selection=createReleaseSelection(releaseCandidatesFromPages(withLegacy,{coverage:true}),"https://github.com/owner/repo",head);
+    for(const e of selection.entries) {
+      if(e.identity.startsWith("AND-451:")){e.disposition="historical_gap";e.reason="Historical local proof missing; unrelated to this release";}
+      else if(!e.identity.startsWith("AND-504:")){e.disposition="deferred";e.reason="User postponed this delivery";e.authorization="User explicitly asked to ship only the new Web delivery";}
+    }
+    const selectionPath=join(directory,"selection.json");writeFileSync(selectionPath,JSON.stringify(selection));
+    const scoped=run("deploy","--candidates",candidatesPath,"--selection",selectionPath);
+    assert.equal(scoped.status,0,scoped.stderr);assert.equal(existsSync(marker),true);
+    const scopedReport=JSON.parse(scoped.stdout.slice(scoped.stdout.lastIndexOf('\n{\n  "schemaVersion"')));
+    assert.equal(scopedReport.selectedScopeReady,true);assert.equal(scopedReport.fullCoverage,false);
+    assert.deepEqual(scopedReport.selection.entries.map(e=>e.disposition).sort(),["deferred","deferred","historical_gap","include"]);
+    assert.match(scopedReport.receiptDigest,/^[a-f0-9]{64}$/);
+    rmSync(marker);
+    withLegacy.pages[0].candidates.push({itemKey:"AND-505"});writeFileSync(candidatesPath,JSON.stringify(withLegacy));
+    const stale=run("deploy","--candidates",candidatesPath,"--selection",selectionPath);
+    assert.notEqual(stale.status,0);assert.match(stale.stderr,/selection changed/);assert.equal(existsSync(marker),false);
+    writeFileSync(candidatesPath,JSON.stringify(originalPages));
     const injection = join(directory, "must-not-execute");
     const selectedReason = `User explicitly selected Web only; $(touch ${injection})`;
     const selected = run("deploy", "--candidates", candidatesPath, "--only-artifacts", "web", "--scope-reason", selectedReason);

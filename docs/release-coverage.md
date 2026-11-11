@@ -141,3 +141,31 @@ claim-next 分别检查立即空闲、有受控任务和 2 秒长轮询；主动
 
 本地 runner 通过、全机安装、正式 check 通过、实际部署及人工验收是独立事实；
 未经实际入口和完整 CI/候选条件验证，不声称生产发布已被保护或正常生产发布已通过。
+
+
+## 逐交付冻结范围（AND-503）
+
+全量发现与本次交付承诺分开；原始 MCP 分页文件不得过滤或改写。未提供范围文件时继续原有严格全量检查。
+使用当前 checkout 的工具生成默认全部纳入的独立文件（仓库地址和 HEAD 使用本机已核实值）：
+
+```sh
+node scripts/release-candidates.mjs --create-selection --candidates /path/to/full-pages.json --repository <GitHub-repository-URL> --head <full-planned-SHA> --output /path/to/new-selection.json
+missiongo-release plan --candidates /path/to/full-pages.json --selection /path/to/new-selection.json
+```
+
+生成命令使用独占创建，不覆盖既有文件；文件存放在工作区外。人工或获授权执行会话审阅全量候选后逐项记录：
+
+| disposition | 行为与约束 |
+|---|---|
+| include | 默认纳入，来源、HEAD祖先、必需产物、制品来源仍严格校验 |
+| unmerged | reason 记录实时未合并依据；运行时再次核实，已合并或读取失败不能跳过 |
+| historical_gap | 仅缺少集成引用或发布范围的历史记录；reason 说明为什么不属于当前交付及待补证事项；保留可见告警 |
+| deferred | 暂不交付须非空 reason 和 authorization（用户明确决定原文），不能由执行者自行排除已知更新 |
+
+条目 identity 为 itemKey:developmentEventId，旧缺事件记录为 itemKey:legacy，无条目为 delivery:deliveryId。
+全部候选恰好出现一次；产品、仓库、计划提交、完整候选内容摘要必须匹配。新候选、删除、版本或范围变化均拒绝旧文件；刷新 generatedAt 不改变同内容摘要，但部署全部分页仍不得过期。
+逻辑排除不能从构建中移除已合并代码；它只限制本次交付承诺和交接，不证明该功能没有上线。选中产物的质量、来源、CI、迁移、备份、健康和恢复门禁均不变。
+
+check、deploy 使用同一 `--selection`，部署前真实快照和部署后对账继续校验。已安装旧工具不会因 Git 合并而自动升级：后续获授权安装需运行版本化 install-release-tools 或 coverage 安装器，未知修改保护和发布锁保持。
+部署日志需完整落盘；JSON 对账保留完整 selection 与 digest，并关联 receiptDigest。随后执行 `release-notices.mjs --receipt <receipt> --candidates <same-full-pages> --selection <same-selection>`，只为 include 且实际公开产物满足全部要求的交付生成交接；排除理由仍在 selection 中。
+HEAD 改变（包括版本或账本提交）后重新生成并审阅范围，不能通过改旧文件的 plannedCommit 来伪装已核查；旧原始页与范围文件连同发布回执保留为工作区外审计资料，不提交动态业务数据。

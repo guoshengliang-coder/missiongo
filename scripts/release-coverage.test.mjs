@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { releaseCandidatesFromPages } from "./release-candidates.mjs";
+import { candidateIdentity, createReleaseSelection, readReleaseSelection, releaseCandidatesFromPages } from "./release-candidates.mjs";
 import { assertReleaseCoverage, planReleaseCoverage, receiptArtifacts, releaseScope } from "./release-coverage.mjs";
 
 const old = "a".repeat(40), merge = "b".repeat(40), head = "c".repeat(40);
@@ -84,4 +84,47 @@ test("standalone deliveries share full coverage and cannot disappear through old
   assert.throws(()=>plan(input([standalone])),/coverageVersion=2/);
   assert.throws(()=>plan({...data,pages:[{...data.pages[0],nextBeforeSequence:4}]}),/final page/);
   assert.throws(()=>plan(input([standalone,standalone],{coverageVersion:2,noReleaseDeliveries:[]})),/repeat/);
+});
+
+
+const selectionFor = data => createReleaseSelection(releaseCandidatesFromPages(data,{coverage:true,now}),options.repository,head);
+test("AND-503 explicit complete dispositions isolate historical gaps without weakening included work",()=>{
+  const data=input([{...candidate("AND-399",["web"]),pullRequestUrl:"https://github.com/owner/repo/pull/399",developmentEventId:"unmerged"},{itemKey:"AND-451",expectedRevision:4},candidate("AND-503",["web"])]);
+  const frozen=JSON.stringify(data),selection=selectionFor(data);
+  selection.entries[0]={...selection.entries[0],disposition:"unmerged",reason:"Live PR is OPEN"};
+  selection.entries[1]={...selection.entries[1],disposition:"historical_gap",reason:"Legacy local tool: missing scope; separate proof is required"};
+  const resolver=c=>c.itemKey==="AND-399" ? {state:"unmerged"} : resolve(c);
+  const report=plan(data,{selection},resolver);
+  assert.equal(report.ready,true);assert.equal(report.fullCoverage,false);
+  assert.deepEqual(report.items.map(r=>r.status),["waiting_merge","excluded","ready"]);
+  assert.match(report.items[1].warning,/missing/);assert.equal(JSON.stringify(data),frozen);
+  assert.throws(()=>plan(data,{selection},resolve),/unmerged candidate changed/);
+  assert.equal(plan(data,{},resolver).ready,false,"old default stays fail closed");
+  const missing=plan(data,{selection,artifacts:[]},resolver);
+  assert.equal(missing.ready,false);assert.equal(missing.items[2].status,"missing_artifacts");
+  assert.throws(()=>assertReleaseCoverage(missing),/AND-503/);
+});
+test("AND-503 new, changed, duplicate and incomplete selections are rejected",()=>{
+  const data=input([candidate("AND-1",["web"])]),selection=selectionFor(data);
+  const valid=()=>readReleaseSelection(selection,releaseCandidatesFromPages(data,{coverage:true,now}),options.repository,head);
+  assert.equal(valid().entries.length,1);
+  data.pages[0].generatedAt=new Date(now+1000).toISOString();assert.equal(valid().entries.length,1,"timestamp refresh alone does not change content");
+  for(const changed of [{...selection,plannedCommit:old},{...selection,productId:"other"},{...selection,entries:[]},{...selection,candidatesDigest:"f".repeat(64)}])assert.throws(()=>plan(data,{selection:changed}));
+  for(const mutate of [c=>c.push(candidate("AND-2")),c=>c[0].expectedRevision=8,c=>c[0].requiredArtifacts=["macosApp"],c=>c[0].completion={kind:"commit",commit:old}]) {
+    const copy=structuredClone(data);mutate(copy.pages[0].candidates);assert.throws(()=>plan(copy,{selection}),/selection changed/);
+  }
+  const gap=structuredClone(selection);gap.entries[0].disposition="historical_gap";assert.throws(()=>plan(data,{selection:gap}),/Known integrated work/);
+  const deferred=structuredClone(selection);deferred.entries[0].disposition="deferred";assert.throws(()=>plan(data,{selection:deferred}),/explicit user instruction/);
+  deferred.entries[0].authorization="User explicitly postponed this delivery";
+  assert.equal(plan(data,{selection:deferred}).items[0].status,"excluded");
+  deferred.entries[0].reason="";assert.throws(()=>plan(data,{selection:deferred}),/disposition/);
+});
+test("AND-503 selection identities preserve multiple deliveries and standalone records",()=>{
+  const a={...candidate("AND-1",["web"]),developmentEventId:"first"},b={...a,developmentEventId:"second"};
+  const d={kind:"delivery",deliveryId:"12345678-1234-4234-8234-123456789abc",expectedRevision:"a".repeat(64),requiredArtifacts:["web"],completion:{kind:"commit",commit:merge}};
+  const data=input([a,b,d],{coverageVersion:2,noReleaseDeliveries:[]}),selection=selectionFor(data);
+  assert.equal(new Set(selection.entries.map(e=>e.identity)).size,3);assert.equal(candidateIdentity(d),`delivery:${d.deliveryId}`);
+  selection.entries[1]={...selection.entries[1],disposition:"deferred",reason:"Separate delivery deferred",authorization:"User postponed second delivery only"};
+  const report=plan(data,{selection});assert.deepEqual(report.items.map(r=>r.status),["ready","excluded","ready"]);
+  selection.entries[1]=selection.entries[0];assert.throws(()=>plan(data,{selection}),/disposition/);
 });
