@@ -20,6 +20,12 @@ export async function measureBackup({ root, database, directory, productId, conf
   let smokeStep = "scope";
   try {
     const store = app.missionGoStore, db = store.database.connection;
+    // Leave room for the immutable snapshot, working database and its journals.
+    // The supervisor additionally watches the whole ephemeral tree, including startup.
+    const pageSize = Number(db.prepare("PRAGMA page_size").get().page_size);
+    const maxPages = Math.floor((config.release.maxTempBytes - config.release.maxBackupBytes - 1024 * 1024) / 3 / pageSize);
+    const actual = db.prepare(`PRAGMA max_page_count=${maxPages}`).get().max_page_count;
+    assert.ok(Number(actual) <= maxPages, "Working database resource limit exceeded");
     store.getProduct(productId);
     // Preserve a real associated account's visibility. A new account would make
     // historical merge reads trivially empty and falsely fast.

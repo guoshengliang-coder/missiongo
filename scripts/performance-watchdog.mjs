@@ -12,18 +12,24 @@ export function runPerformanceChild(args, timeoutMs, options = {}) {
 export async function runPerformanceGroup(args, timeoutMs, options = {}) {
   const { spawn } = await import("node:child_process");
   return new Promise(resolve => {
-    const child = spawn(process.execPath, args, { ...options, detached: true });
-    let timedOut = false, cancelled = false, failed = false;
+    const { monitor, pollMs = 25, ...spawnOptions } = options;
+    const child = spawn(process.execPath, args, { ...spawnOptions, detached: true });
+    let timedOut = false, cancelled = false, failed = false, violation = null;
     const kill = () => { try { process.kill(-child.pid, "SIGKILL"); } catch (e) { if (e.code !== "ESRCH") failed = true; } };
     const stop = () => { cancelled = true; kill(); };
+    const poll = monitor ? setInterval(() => {
+      try { violation = monitor() ?? null; }
+      catch { violation = { kind: "resource", reason: "Temporary resource inspection failed" }; }
+      if (violation) { clearInterval(poll); kill(); }
+    }, pollMs) : null;
     const timer = setTimeout(() => { timedOut = true; kill(); }, timeoutMs);
     process.once("SIGINT", stop); process.once("SIGTERM", stop);
     child.once("error", () => { failed = true; });
     child.once("close", (status, signal) => {
-      clearTimeout(timer); process.removeListener("SIGINT", stop); process.removeListener("SIGTERM", stop);
+      clearTimeout(timer); clearInterval(poll); process.removeListener("SIGINT", stop); process.removeListener("SIGTERM", stop);
       // Also kill a descendant that survived a worker's early exit.
       kill();
-      resolve({ status, signal, timedOut, cancelled, failed });
+      resolve({ status, signal, timedOut, cancelled, failed, violation });
     });
   });
 }

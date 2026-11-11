@@ -69,7 +69,7 @@ def main():
         raise ValueError("HEAD must equal the latest origin/main.")
     run(["node", str(TOOLS / "release-ci.mjs"), commit], root)
     run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", settings["host"], "true"], root)
-    if any(arg.startswith(("--host", "--env-file", "--current-link", "--downloads-dir", "--releases-dir", "--allow-dirty", "--skip-ci-check", "--skip-backup", "--notice-origin")) for arg in args):
+    if any(arg.startswith(("--host", "--env-file", "--current-link", "--downloads-dir", "--releases-dir", "--backups-dir", "--data-dir", "--allow-dirty", "--skip-ci-check", "--skip-backup", "--notice-origin")) for arg in args):
         raise ValueError("Use the documented target and normal guards; overrides are not accepted by the shared entry point.")
     preflight = ["node", str(TOOLS / "release-preflight.mjs"), "--root", str(root), "--host", settings["host"], "--current-link", settings["currentLink"], "--downloads-dir", settings["downloadsDir"]]
     preflight.extend(coverage_args)
@@ -98,7 +98,10 @@ def main():
     os.environ["MISSIONGO_RELEASE_ROOT"] = str(root)
     os.environ["MISSIONGO_RELEASE_TOOLS"] = str(TOOLS)
     script = TOOLS / "deploy.sh"
-    os.execv(str(script), [str(script), "--host", settings["host"], "--env-file", settings["envFile"], "--notice-origin", settings["origin"], *args])
+    os.execv(str(script), [str(script), "--host", settings["host"],
+        "--env-file", settings["envFile"], "--notice-origin", settings["origin"],
+        "--current-link", settings["currentLink"], "--downloads-dir", settings["downloadsDir"],
+        "--backups-dir", settings["backupsDir"], *args])
 
 
 if __name__ == "__main__":

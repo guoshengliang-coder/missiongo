@@ -8,6 +8,16 @@ const samples = value => [value, value * 0.98, value * 1.02, value, value, value
 const score = scale => calibration(samples(config.baseline.referenceMs * scale), config.baseline);
 const budget = { budgetMs: 100, iterations: 1 };
 
+test("the observed CI claim-work overrun remains a release rejection", () => {
+  const selected = releaseTargetCalibration("claim-next-work", config,
+    { valid: true, scale: 2.5922666667 }, { valid: true, scale: 0.597067 });
+  const row = evaluateTarget("claim-next-work", samples(3.81326555), config.release.httpTargets["claim-next"], selected);
+  assert.equal(row.status, "exceeded");
+  assert.equal(performanceExitCode("blocking", [row]), 1);
+  assert.equal(performanceExitCode("advisory", [row]), 0);
+  assert.equal(row.status, "exceeded");
+});
+
 test("whole-machine drift rescales the budget while isolated 5x regressions fail", () => {
   for (const scale of [0.25, 1, 2, 4]) {
     const calibrated = score(scale);

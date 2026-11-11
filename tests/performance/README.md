@@ -234,7 +234,7 @@ be treated as normal performance evidence. Never enable a mutation for a release
 
 ### Audited cross-runtime HTTP calibration
 
-Release configuration v2 keeps all target limits unchanged. Node 22.13's HTTP
+The calibration introduced in release configuration v2 is retained in v3; all target limits stay unchanged. Node 22.13's HTTP
 transport measured much faster than 22.23: a standalone health control was about
 0.166ms vs 1.52ms. Applying SQLite CPU scale to every HTTP target let a real 5x
 empty-claim experiment remain below budget on 22.13. That nonzero exit came only
@@ -286,3 +286,34 @@ message payloads, credentials and SQL are not included. Row counts measure JS
 result rows (including statement execution results), not SQLite VM scan steps.
 These are local synthetic comparisons, not a production latency SLA or a claim
 that a screenshot's unidentified failed request has been reproduced.
+
+
+### AND-505 stage and resource contract (release v3)
+
+Preparation (discovery, compressed transfer, validation, forced compilation) has
+120 seconds; measurement, including app initialization, has 120 seconds; cleanup
+has 5 seconds. The full smoke is bounded at 245 seconds. CPU/HTTP target thresholds,
+independent calibration and CI advisory mode are unchanged. Changing the config
+digest starts a new configuration-specific observation window.
+
+The SSH-side Python compressor reads an existing regular backup only. Gzip data
+is streamed through a byte limit, decompressor and original-content SHA-256 meter
+into a private file. The manifest length and hash must match before a working
+copy exists. Backups above 512MiB are refused before transmission. No archive or
+persistent DB cache is created. The working SQLite page limit reserves room for
+snapshot/journals; the parent additionally samples the complete temporary tree
+every 25ms and kills the group above 2GiB. Sampling has a detection interval; it
+is not an OS filesystem quota. Candidate build output is outside this data cap.
+
+Reports contain per-stage status/duration, last failed stage, failureKind,
+explicit limits, observed peak temporary bytes and actual cleanup outcome.
+Preparation failure is not application regression; invalid calibration and
+actual exceeded targets remain blocking. Cleanup failure or an exceeded cleanup
+deadline cannot become success. Uncatchable termination/power loss is outside
+the cleanup guarantee; residual private data is never reused as a cache.
+
+`release-performance-stages.test.mjs` covers malformed gzip, bounded decompression,
+hash/length failures, 125MiB synthetic streaming, stage deadlines, overflow,
+cancellation, descendant termination and cleanup failure. No real backups or
+credentials enter these tests. The installed-entry rehearsal runs serially after
+the script suite; it uses 20 historical batches / 400 items (within the reviewed synthetic shape bounds) so fivefold projection experiments are meaningful on both Node runtimes. The ordinary CI fixture and all target budgets are unchanged. See `docs/install-release-tools.md`.

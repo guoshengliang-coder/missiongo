@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
+import { gunzipSync } from "node:zlib";
 import { compilePerformanceCandidate } from "./release-performance-build.mjs";
 import { atomicInstallWrite } from "./enable-release-performance.mjs";
 import { transferProgram } from "./release-backup.mjs";
@@ -63,7 +64,7 @@ test("the actual transfer program validates opened file type and length before s
     const file = join(folder, "missiongo.sqlite"), bytes = Buffer.alloc(128, 7); writeFileSync(file, bytes);
     const run = (filename, expected) => spawnSync("python3", ["-c", transferProgram, dir, name, filename, String(expected)], { timeout: 5000 });
     const valid = run("missiongo.sqlite", bytes.length);
-    assert.equal(valid.status, 0); assert.deepEqual(valid.stdout, bytes);
+    assert.equal(valid.status, 0); assert.deepEqual(gunzipSync(valid.stdout), bytes);
     for (const expected of [1, bytes.length + 1, 0]) {
       const mismatch = run("missiongo.sqlite", expected);
       assert.notEqual(mismatch.status, 0); assert.equal(mismatch.stdout.length, 0);

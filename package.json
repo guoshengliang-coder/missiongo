@@ -38,7 +38,7 @@
     "check:styles": "node ./scripts/check-styles.mjs",
     "lint": "oxlint .",
     "test": "npm run build:types && npm run test:scripts && npm run test --workspaces --if-present",
-    "test:scripts": "node --test scripts/*.test.mjs",
+    "test:scripts": "node --test scripts/*.test.mjs && node --test tests/release/installed-entry.e2e.mjs",
     "test:ui": "playwright test --project=audit",
     "test:ui:visual": "playwright test --project=visual",
     "typecheck": "tsc -b --pretty false",
