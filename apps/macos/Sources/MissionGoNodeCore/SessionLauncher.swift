@@ -26,6 +26,7 @@ public protocol AgentAdapter: Sendable {
     /// Mirrors an already launched session and, when it is idle, delivers the
     /// one reply the server has queued for it.
     func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport
+    func discardCommandReservation(sessionId: String, commandId: String)
     /// Read the exact transcript without delivering input, restoring or launching a session.
     func historyPage(sessionRef: String, cursor: String) async throws -> AgentHistoryResult
     func artifactMessages(sessionRef: String, sourceId: String) async throws -> [AgentSessionMessage]
@@ -38,6 +39,7 @@ public protocol AgentAdapter: Sendable {
 }
 
 public extension AgentAdapter {
+    func discardCommandReservation(sessionId: String, commandId: String) {}
     func detectionReport() async -> DetectedAgent? {
         guard let version = await detect() else { return nil }
         return DetectedAgent(kind: kind, version: version)

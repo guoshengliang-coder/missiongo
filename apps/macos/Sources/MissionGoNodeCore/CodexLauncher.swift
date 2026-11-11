@@ -454,6 +454,9 @@ public struct CodexLauncher: AgentAdapter {
     // Failed-turn recovery and limited-history reads cannot prove an old
     // delivery was absent. Only a local, single-use reservation may send it.
     private let failureReplyReservations = Locked<[String: String]>([:])
+    public func discardCommandReservation(sessionId: String, commandId: String) {
+        failureReplyReservations.withLock { if $0[sessionId] == commandId { $0.removeValue(forKey: sessionId) } }
+    }
     private let approvalRetryReservations = Locked<[String: String]>([:])
     let control: CodexControl
     let resources: CodexResourceChecking

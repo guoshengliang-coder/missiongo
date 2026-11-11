@@ -76,7 +76,7 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
       catch (error) {
         if (signal.aborted) return;
         log(safeError(error));
-        savePrivate(healthPath, { state: error instanceof APIError && error.status === 401 ? "credential_revoked" : "degraded", checkedAt: new Date().toISOString() });
+        savePrivate(healthPath, { state: error instanceof APIError && [401,403].includes(error.status) ? "credential_revoked" : "degraded", checkedAt: new Date().toISOString() });
         if (error instanceof APIError && [401, 403].includes(error.status)) throw error;
       }
       await pause(ms).catch(() => {});
@@ -94,6 +94,7 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
     }
   }
   let separated = false;
+  let modernControl = true;
   let controlCursor: string | undefined;
   let taskError: unknown;
   const failedTask = (error: unknown) => {
@@ -122,6 +123,8 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
     const post = (snapshot: Snapshot) => uploads.run(session.id, async () => {
       if (control) snapshot = controlReports.record(session.id, epoch + 1, snapshot);
       if (lane === "observation" && (controlling.has(session.id) || epoch !== (epochs.get(session.id) ?? 0))) return;
+      if (control) reported.failed(session.id + ":observation");
+      if (lane !== "control") snapshot = health.observe(session.id, snapshot);
       const key = session.id + ":" + lane;
       const hash = reported.fingerprint(snapshot);
       if (lane !== "control" && !reported.needed(key, hash)) return;
@@ -143,14 +146,14 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
             status: "active", messages: [], commandId: session.command.id, commandStatus: "delivering",
           });
         }
-        snapshot = await hostCall(root, session.dispatchId, session, lane);
+        snapshot = await hostCall(root, session.dispatchId, session, lane === "control" && !modernControl ? "combined" : lane);
       } catch (error) {
         if (error instanceof APIError) throw error;
         snapshot = {status: "unavailable", messages: [], error: safeError(error),
           ...(session.command ? {commandId: session.command.id, commandStatus: session.command.kind === "interrupt" ? "failed" : "delivery_unknown",
             commandError: session.command.kind === "interrupt" ? "停止尚未确认：节点未取得执行结果，请核实来源后重试。" : safeError(error)} : {})};
       }
-      await post(lane === "control" ? snapshot : health.observe(session.id, snapshot));
+      await post(snapshot);
     } finally {
       if (control) { const remaining = (controlling.get(session.id) ?? 1) - 1;
         if (remaining) controlling.set(session.id, remaining); else controlling.delete(session.id); }
@@ -167,6 +170,7 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
   async function controlChanges(): Promise<void> {
     if (!separated) return;
     const change = await api.controlChanges(controlCursor);
+    modernControl = change !== undefined;
     if (change) controlCursor = change.cursor;
     const sessions: Session[] = (await api.call("GET", "/api/v1/node/agent-sessions")).sessions;
     for (const session of sessions) if (hasControlWork(session)) submitControl(session);
@@ -231,5 +235,11 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
     try { await Promise.all(loops); }
     finally { shutdown.abort(); await Promise.allSettled(loops); await Promise.all([mirrors.finish(), controls.finish(), stops.finish()]); }
     if (taskError) throw taskError;
-  } finally { savePrivate(healthPath, { state: "stopped", checkedAt: new Date().toISOString() }); }
+  } catch (error) {
+    taskError = error;
+    throw error;
+  } finally {
+    savePrivate(healthPath, { state: taskError instanceof APIError && [401,403].includes(taskError.status)
+      ? "credential_revoked" : "stopped", checkedAt: new Date().toISOString() });
+  }
 }

@@ -2503,6 +2503,23 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertTrue(control.steerings.current.isEmpty)
     }
 
+    func testRejectedReservationCannotAuthorizeLimitedHistoryInput() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = CodexThreadSnapshot(status: "idle", messages: [])
+        control.snapshot.historyLimited = true
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        let queued = NodeAgentSession(id: "s1", sessionRef: "thread-1", status: "idle",
+            command: AgentSessionCommand(id: "new", text: "Continue", status: "queued"))
+        let reservation = try await launcher.synchronize(queued)
+        XCTAssertEqual(reservation.commandStatus, "delivering")
+        launcher.discardCommandReservation(sessionId: "s1", commandId: "new")
+        let result = try await launcher.synchronize(NodeAgentSession(id: "s1", sessionRef: "thread-1", status: "idle",
+            command: AgentSessionCommand(id: "new", text: "Continue", status: "delivering")))
+        XCTAssertEqual(result.commandStatus, "delivery_unknown")
+        XCTAssertTrue(control.replies.current.isEmpty)
+    }
+
     func testAnIdleThreadReservesThenDeliversTheQueuedWebReply() async throws {
         let control = RecordingControl(threadId: "thread-1")
         control.snapshot = CodexThreadSnapshot(

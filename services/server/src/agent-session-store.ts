@@ -1644,6 +1644,7 @@ export class AgentSessionStore {
   }
 
   recordSnapshot(input: {
+    controlReservation?: boolean;
     nodeId: string;
     sessionId: string;
     status: AgentSessionStatus;
@@ -1757,7 +1758,7 @@ export class AgentSessionStore {
     // Permissions need not be the last message: OpenCode can append ordinary
     // forms after them. Derive once during ingestion, not by scanning history
     // on every list poll. A failed empty snapshot retains the last known state.
-    const permissionState = ["claude_code", "opencode"].includes(session.agent_kind) && (!input.error || input.messages.length)
+    const permissionState = ["claude_code", "opencode"].includes(session.agent_kind) && (!input.controlReservation || input.messages.length) && (!input.error || input.messages.length)
       ? { waitingForPermission: hasPendingPermissionQuestion(session.agent_kind, input.messages) } : {};
     // A failed source read may synthesize turnActive=false. Keep the last
     // trustworthy execution state so recovery of the same turn is not progress

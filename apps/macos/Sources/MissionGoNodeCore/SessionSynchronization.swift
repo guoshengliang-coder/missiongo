@@ -8,6 +8,13 @@ actor SessionSynchronization {
     private var uploading = Set<String>()
     private var waiters: [String: [CheckedContinuation<Void, Never>]] = [:]
 
+    private var changedMirrors = Set<String>()
+    func invalidateMirror(_ id: String) { changedMirrors.insert(id) }
+    func consumeMirrorInvalidation(_ id: String) -> Bool { changedMirrors.remove(id) != nil }
+    private var reservations = Set<String>()
+    func reserved(_ key: String) -> Bool { reservations.contains(key) }
+    func confirmReservation(_ key: String) { reservations.insert(key) }
+
     private var controlStates: [String: (epoch: Int, report: AgentSessionReport)] = [:]
     private var resultEpochs: [String: Int] = [:]
     @discardableResult

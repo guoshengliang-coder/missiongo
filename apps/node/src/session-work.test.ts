@@ -70,3 +70,17 @@ it("retries an older input receipt without restoring its pre-stop running state"
   // A genuinely new input after the stop may start a new turn.
   expect(reports.record("s",4,{...old,commandId:"new"}).status).toBe("active");
 });
+
+it("rejects a settled command's successful HTTP response as a new delivery reservation",async()=>{
+  vi.spyOn(globalThis,"fetch").mockImplementation(async input=>String(input).includes("control-changes")
+    ? Response.json({protocol:1,reservationProtocol:1,cursor:"fixture"})
+    : new Response(null,{status:204,headers:{"x-missiongo-command-status":"delivered"}}));
+  const api=new API("https://example.test");await api.controlChanges(undefined,0);
+  await expect(api.call("POST","/api/v1/node/agent-sessions/session/snapshot",{status:"idle",messages:[],commandId:"command",commandStatus:"delivering"}))
+    .rejects.toMatchObject({status:409});
+});
+
+it("uses the legacy lane when control v1 does not advertise reservation proofs", async()=>{
+  vi.spyOn(globalThis,"fetch").mockResolvedValue(Response.json({protocol:1,cursor:"fixture"}));
+  expect(await new API("https://example.test").controlChanges(undefined,0)).toBeUndefined();
+});

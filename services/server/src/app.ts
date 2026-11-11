@@ -3600,7 +3600,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const cursor = await nodeControlChanges.wait(node.nodeId, query.cursor, Math.min(ms, 25000), abort.signal);
       requireNode(request); // Revocation while waiting must not disclose work.
       reply.header("cache-control", "no-store");
-      return {protocol: 1, cursor};
+      return {protocol: 1, reservationProtocol: 1, cursor};
     } finally { request.raw.socket.removeListener("close", disconnected); }
   });
 
@@ -3779,6 +3779,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         agentHistory.observe(node.accountId, node.nodeId, sessionId, body.history);
         synchronizeNativePlan(store.database,node.accountId,sessionId);
         resumeApprovedPlan(node.accountId,sessionId);
+        if (commandStatus === "delivering") reply.header("X-MissionGo-Command-Status", "delivering");
         return reply.status(204).send();
       }
       const projectSession = store.database.connection.prepare(`SELECT f.product_id FROM free_session_starts f
@@ -3791,6 +3792,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       }
       const settingsRevision = settingsRevisionValue as number | undefined;
       agentSessionStore.recordSnapshot({
+        controlReservation: commandStatus === "delivering" || body.approvalRetryStatus === "delivering",
         nodeId: node.nodeId,
         sessionId,
         status,
@@ -3860,6 +3862,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       synchronizeNativePlan(store.database,node.accountId,sessionId);
       resumeApprovedPlan(node.accountId,sessionId);
       scheduleAttentionClassification(sessionId);
+      if (commandStatus === "delivering") reply.header("X-MissionGo-Command-Status",
+        agentSessionStore.commandById(sessionId, stringField(body, "commandId")!)?.status ?? "missing");
+      if (body.approvalRetryStatus === "delivering") reply.header("X-MissionGo-Retry-Status",
+        agentApprovalStore.pendingForNode(sessionId).approvalRetry?.status ?? "settled");
       return reply.status(204).send();
     },
   );

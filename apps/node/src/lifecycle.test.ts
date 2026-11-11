@@ -60,20 +60,20 @@ it.each([false,true])("reconnects the original detached host and never replays a
     if (path === "/downloads/missiongo-skill/SKILL.md") return new Response("---\nname: missiongo\nversion: 1.0.0\n---\nFixture only");
     if (path.endsWith("/node/control-changes")) {
       if (!modern) return Response.json({error:{code:"not_found"}}, {status:404});
-      await delay(25); return Response.json({protocol:1,cursor:"fixture"});
+      await delay(25); return Response.json({protocol:1,reservationProtocol:1,cursor:"fixture"});
     }
     if (path.endsWith("/node/heartbeat")) return Response.json({ repos: [{ productId: "product", repoPath: directory }], expectedSkillVersion: "1.0.0" });
     if (path.endsWith("/node/agent-artifacts")) return Response.json({ jobs: [] });
     if (path.endsWith("/node/agent-history")) return Response.json({ jobs: [] });
     if (path.endsWith("/claim-next")) {
       if (!claimed) { claimed = true; return Response.json(dispatch); }
-      await delay(25); return new Response(null, { status: 204 });
+      await delay(25); return new Response(null, { status: 204, headers: {"x-missiongo-command-status":"delivering","x-missiongo-retry-status":"delivering"} });
     }
     if (path.endsWith("/permit-start")) return Response.json({ allowed: true });
-    if (path.endsWith("/result")) { ref = body.sessionRef; return new Response(null, { status: 204 }); }
+    if (path.endsWith("/result")) { ref = body.sessionRef; return new Response(null, { status: 204, headers: {"x-missiongo-command-status":"delivering","x-missiongo-retry-status":"delivering"} }); }
     if (path.endsWith("/node/agent-sessions")) return Response.json({ sessions: ref ? [{ id: "session", dispatchId: "cycle", agentKind: "claude_code", sessionRef: ref, occupiesExecutionSlot: false,
       ...(!delivered || replay ? { command: { id: "reply-unique", status: "queued", text: "single reply" } } : {}) }] : [] });
-    if (path.endsWith("/snapshot")) { if (body.commandStatus === "delivered") { delivered++; replay = false; } return new Response(null, { status: 204 }); }
+    if (path.endsWith("/snapshot")) { if (body.commandStatus === "delivered") { delivered++; replay = false; } return new Response(null, { status: 204, headers: {"x-missiongo-command-status":"delivering","x-missiongo-retry-status":"delivering"} }); }
     throw new Error(`Unexpected test route: ${path}`);
   });
   const logs: string[] = [];
@@ -127,3 +127,11 @@ it("delivers input through the real detached host while its full native history 
   const turns=readFileSync(events,"utf8").trim().split("\n").map(line=>JSON.parse(line));
   expect(turns.filter(event=>event.method==="turn/start"&&event.params.clientUserMessageId==="command-once")).toHaveLength(1);
 },15_000);
+
+it.each([401,403])("preserves revoked credentials in node health after HTTP %s shutdown", async status => {
+  const directory = realpathSync(mkdtempSync("/tmp/mg-revoked-")); scratch.push(directory);
+  saveConfig(directory, {...loadConfig(directory), server:"https://missiongo.example.com", token:"fixture", agents:{}});
+  vi.spyOn(globalThis,"fetch").mockResolvedValue(Response.json({error:{code:"node_revoked"}}, {status}));
+  await expect(runNode(directory, "unused", new AbortController().signal, () => {})).rejects.toMatchObject({status});
+  expect(readPrivate<{state:string}>(join(directory,"status.json"))?.state).toBe("credential_revoked");
+});

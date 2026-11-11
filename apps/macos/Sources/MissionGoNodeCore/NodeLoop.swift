@@ -604,6 +604,7 @@ public final class NodeLoop: @unchecked Sendable {
         let awaiting = Locked<[String: (commandId: String, report: AgentSessionReport)]>([:])
         let rejected = Locked<[String: Date]>([:])
         var first = true
+        var modern = true
         while !stop.isStopped {
             do {
                 if !first {
@@ -612,15 +613,17 @@ public final class NodeLoop: @unchecked Sendable {
                         // Continue the separated lanes with the legacy cadence.
                         await stop.sleep(timing.sessionInterval)
                         first = true
+                        modern = false
                         continue
                     }
+                    modern = true
                     controlCursor.withLock { $0 = change.cursor }
                 }
                 first = false
                 let sessions = try await api.listAgentSessions()
                 noteSuccess("等待节点控制请求出错")
                 for session in sessions where session.hasControlWork {
-                    let control = session.forSync(.control)
+                    let control = session.forSync(modern ? .control : .combined)
                     let lane = session.command?.kind == "interrupt" && session.managedExecution == nil ? stops : queue
                     await lane.submit(session.id) {
                         guard !stop.isStopped else { return }
@@ -712,6 +715,11 @@ public final class NodeLoop: @unchecked Sendable {
                 command: binding.stopRequested ? nil : session.command)
             session.syncPurpose = purpose
         }
+        let reservationScope = session.externalBindingGeneration.map { "\(session.id):external:\($0)" } ?? session.id
+        if let command = session.command, command.status == "queued",
+           await sessionSynchronization.reserved(reservationScope + ":command:" + command.id) { return }
+        if let retry = session.approvalRetry, retry.status == "queued",
+           await sessionSynchronization.reserved(reservationScope + ":retry:" + retry.id) { return }
         if let deadline = rejectedUntil.current[session.id], deadline > Date(), session.command?.kind != "interrupt" { return }
         guard let adapter = self.adapters.first(where: { $0.kind == session.agentKind }) else {
             // The integration was turned off on this Mac (or the app no longer
@@ -745,15 +753,13 @@ public final class NodeLoop: @unchecked Sendable {
                 prepared.syncPurpose = session.syncPurpose
                 do {
                     let sourceReport = try await adapter.synchronize(prepared)
-                    let healthKey = session.externalBindingGeneration.map { "\(session.id):external:\($0)" } ?? session.id
                     // A failed observation is not evidence of source progress.
                     if let command = session.command, command.kind == "interrupt", sourceReport.commandId == nil {
                         report = AgentSessionReport(status: sourceReport.status, messages: sourceReport.messages,
                             error: sourceReport.error, commandId: command.id, commandStatus: "failed",
                             commandError: "停止尚未确认：\(sourceReport.error ?? "节点未能执行停止请求，请在来源客户端核实。")")
                     } else {
-                        report = sourceReport.status == "unavailable" || session.syncPurpose == .control ? sourceReport
-                            : self.sessionHealth.observe(sourceReport, key: healthKey)
+                        report = sourceReport
                     }
                 } catch {
                     // After the command reached Codex, a transport
@@ -812,6 +818,10 @@ public final class NodeLoop: @unchecked Sendable {
                 return
             }
         }
+        if session.syncPurpose != .control, report.status != "unavailable" {
+            let healthKey = session.externalBindingGeneration.map { "\(session.id):external:\($0)" } ?? session.id
+            report = self.sessionHealth.observe(report, key: healthKey)
+        }
         if let controlEpoch {
             report = await sessionSynchronization.controlReport(report, id: session.id, epoch: controlEpoch)
         }
@@ -845,6 +855,11 @@ public final class NodeLoop: @unchecked Sendable {
         // A reconnect clears the server snapshot even when the native transcript
         // is unchanged. Its new generation must receive its own first report.
         let reportKey = session.externalBindingGeneration.map { "\(session.id):external:\($0)" } ?? session.id
+        if session.syncPurpose == .control {
+            await sessionSynchronization.invalidateMirror(session.id)
+        } else if await sessionSynchronization.consumeMirrorInvalidation(session.id) {
+            _ = reported.withLock { $0.removeValue(forKey: reportKey) }
+        }
         if let fingerprint, reported.current[reportKey] == fingerprint { return }
         // Codex and OpenCode both hand the reply to the agent before this
         // upload confirms it: a lost HTTP response must not turn into a second
@@ -872,9 +887,18 @@ public final class NodeLoop: @unchecked Sendable {
             } else {
                 try await self.api.reportAgentSession(sessionId: session.id, report: report)
             }
+            if let id = report.commandId, report.commandStatus == "delivering" {
+                await sessionSynchronization.confirmReservation(reportKey + ":command:" + id)
+            }
+            if let id = report.approvalRetryId, report.approvalRetryStatus == "delivering" {
+                await sessionSynchronization.confirmReservation(reportKey + ":retry:" + id)
+            }
             self.noteSuccess("同步 Agent 会话 \(session.id) 出错")
             _ = rejectedUntil.withLock { $0.removeValue(forKey: session.id) }
         } catch {
+            if let id = report.commandId, report.commandStatus == "delivering" {
+                adapters.first(where: { $0.kind == session.agentKind })?.discardCommandReservation(sessionId: session.id, commandId: id)
+            }
             // A lost response might have accepted this newer snapshot. If the
             // local transcript returns to the previously confirmed contents,
             // that old fingerprint must not suppress the recovery upload.
@@ -892,7 +916,7 @@ public final class NodeLoop: @unchecked Sendable {
             }
             if let apiError = error as? APIError,
                case let .http(_, status, _) = apiError,
-               (400..<500).contains(status) {
+               (400..<500).contains(status), status != 409 {
                 rejectedUntil.withLock { $0[session.id] = Date().addingTimeInterval(60) }
                 self.handle(error, what: "同步 Agent 会话 \(session.id) 出错", stop: stop, fatal: fatal)
                 self.log("同步 Agent 会话 \(session.id) 被拒绝（HTTP \(status)）；该会话 60 秒后重试，其余会话继续同步：\(error.localizedDescription)")
