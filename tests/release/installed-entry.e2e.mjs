@@ -9,11 +9,11 @@ import { test } from "node:test";
 import { backupCommand, discoverBackupProgram, transferProgram } from "../../scripts/release-backup.mjs";
 import { createReleaseSelection, releaseCandidatesFromPages } from "../../scripts/release-candidates.mjs";
 import { serverFixture } from "../performance/server-fixture.mjs";
+import { fixtureGit as git } from "./fixture-git.mjs";
 
 // Serialized after the script suite: execute the real compiler and performance
 // worker, without racing the other tests that import generated dist files.
 const source = realpathSync(fileURLToPath(new URL("../../", import.meta.url)));
-const git = (root, ...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 const commit = root => {
   git(root, "add", "."); git(root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "fixture");
   return git(root, "rev-parse", "HEAD");
@@ -176,14 +176,14 @@ test("installed real entry plans read-only, retains gates, detects historical mu
     save(join(f.checkout, "product.json"), noBump);
     writeFileSync(join(f.checkout, "apps/web/fixture-runtime.txt"), "changed runtime");
     const versionHead = commit(f.checkout); git(f.checkout, "update-ref", "refs/remotes/origin/main", versionHead);
-    const versionFailure = f.run("deploy"); assert.notEqual(versionFailure.status, 0); assert.match(versionFailure.stderr, /Web changed since/);
+    const versionFailure = f.run("deploy"); assert.notEqual(versionFailure.status, 0); assert.match(versionFailure.stderr, /Web changed since/, versionFailure.stdout + versionFailure.stderr);
     assert.equal(existsSync(f.boundary), false);
     git(f.checkout, "switch", "--detach", f.head); git(f.checkout, "update-ref", "refs/remotes/origin/main", f.head);
     // Negative control 3: reproduce the installed-directory-as-root defect.
     const deployPath = join(f.tools, "deploy.sh"), originalDeploy = readFileSync(deployPath, "utf8");
     assert.ok(originalDeploy.includes('cd "${MISSIONGO_RELEASE_ROOT:'));
     writeFileSync(deployPath, originalDeploy.replace(/^cd "\$\{MISSIONGO_RELEASE_ROOT[^\n]+$/m, `cd '${f.tools}'`));
-    const wrongRoot = f.run("deploy"); assert.notEqual(wrongRoot.status, 0); assert.match(wrongRoot.stderr, /MissionGo checkout/); assert.equal(existsSync(f.boundary), false);
+    const wrongRoot = f.run("deploy"); assert.notEqual(wrongRoot.status, 0); assert.match(wrongRoot.stderr, /MissionGo checkout/, wrongRoot.stdout + wrongRoot.stderr); assert.equal(existsSync(f.boundary), false);
     writeFileSync(deployPath, originalDeploy);
     const rehearsal = f.run("deploy", "--selection", f.selectionPath, "--selection-digest", pin, "--only-artifacts", "web,androidSdk", "--scope-reason", "User chose Web and SDK");
     assert.notEqual(rehearsal.status, 0); assert.match(rehearsal.stdout, /Pushing/, rehearsal.stderr); assert.equal(readFileSync(f.boundary, "utf8"), "write refused");
@@ -204,7 +204,9 @@ test("installed real entry plans read-only, retains gates, detects historical mu
       const report = JSON.parse(diagnostic.stdout);
       assert.equal(report.diagnosticOutcome, "detected", JSON.stringify({target,status:report.status,reason:report.reason,calibration:report.calibration,httpCalibration:report.httpCalibration,cpuTargets:report.cpuTargets,httpTargets:report.httpTargets}));
       assert.equal(report.cleaned, true);
-      t.diagnostic(JSON.stringify({ target, outcome: report.diagnosticOutcome, cleaned: report.cleaned,
+      assert.equal(report.measurementStatus, "failed", "The ordinary measurement must reject the regression before the diagnostic publication guard");
+      assert.equal(report.failureKind, "regression");
+      t.diagnostic(JSON.stringify({ target, outcome: report.diagnosticOutcome, measurementStatus: report.measurementStatus, cleaned: report.cleaned,
         results: [...report.cpuTargets, ...report.httpTargets].filter(row => row.name === target)
           .map(({ name, status, medianMs, effectiveBudgetMs, normalizedMs }) => ({ name, status, medianMs, effectiveBudgetMs, normalizedMs })) }));
       assert.ok([...report.cpuTargets, ...report.httpTargets].some(row => row.name === target && row.status === "exceeded"));

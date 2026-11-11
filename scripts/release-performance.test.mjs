@@ -83,7 +83,7 @@ test("supervisor deletes data on success, error and timeout and never accepts mi
     mkdirSync(join(dir, "tests/performance"), { recursive: true });
     copyFileSync(join(root, "tests/performance/server-budgets.json"), join(dir, "tests/performance/server-budgets.json"));
     const worker = join(dir, "worker.mjs"), seen = join(dir, "seen");
-    const prefix = `import fs from 'node:fs'; import path from 'node:path'; const dir=process.argv[2]; fs.writeFileSync(${JSON.stringify(seen)},dir); fs.writeFileSync(path.join(dir,'sensitive.sqlite'),'SENSITIVE');`;
+    const prefix = `import fs from 'node:fs'; import path from 'node:path'; import {stageRecorder} from ${JSON.stringify(new URL("./release-performance-stages.mjs", import.meta.url).href)}; const dir=process.argv[2]; const recorder=stageRecorder(dir); for(const name of ['settings','discovery','transfer','validation','compile','measurement']) recorder.start(name); recorder.finish(); fs.writeFileSync(${JSON.stringify(seen)},dir); fs.writeFileSync(path.join(dir,'sensitive.sqlite'),'SENSITIVE');`;
     writeFileSync(worker, prefix + "fs.writeFileSync(path.join(dir,'result.json'),JSON.stringify({status:'passed'}));");
     assert.equal((await runReleasePerformance({ root: dir }, { worker })).status, "passed");
     assert.equal(existsSync(readFileSync(seen, "utf8")), false);

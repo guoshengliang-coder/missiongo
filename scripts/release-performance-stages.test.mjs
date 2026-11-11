@@ -90,7 +90,7 @@ test("stage deadlines distinguish preparation from measurement and cleanup failu
       let clock = 0, seen;
       const report = await runReleasePerformance({ root: dir }, { now: () => clock, runGroup: async (args, _, options) => {
         seen = args.at(-2);
-        const recorder = stageRecorder(seen); recorder.start(stage);
+        const recorder = stageRecorder(seen, { now: () => clock }); recorder.start(stage);
         options.monitor(); clock = 120001;
         const violation = options.monitor();
         assert.equal(violation.kind, stage === "measurement" ? "measurement" : "preparation");
