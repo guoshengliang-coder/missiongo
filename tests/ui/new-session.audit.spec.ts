@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { solidPng } from "../../scripts/seed-ui-fixture.mjs";
+import { openConsoleSearch } from "./console-helpers";
 
 for (const width of [375, 768, 1440]) {
   test(`project conversation retains a local draft and retries first send once at ${width}px`, async ({ page, request }, testInfo) => {
@@ -57,6 +58,22 @@ for (const width of [375, 768, 1440]) {
     const draft = page.locator(".agent-console-reply textarea");
     await expect(draft).toBeVisible();
     await draft.fill("先讨论这个方案");
+    if (width === 768) {
+      await openConsoleSearch(page);
+      const search = page.locator(".agent-console-search input");
+      await search.fill("过滤");
+      await search.press("Escape");
+      await expect(page.locator(".agent-console-topbar-more > summary")).toBeFocused();
+      await expect(draft).toHaveValue("先讨论这个方案");
+      await openConsoleSearch(page);
+      await expect(search).toHaveValue("过滤");
+      await search.fill("");
+      await search.press("Escape");
+      // The mocked clock queues the search's focus-restoring rAF; without
+      // awaiting it here, that focus lands on the summary later and the
+      // more-panel Select's onBlur closes its menu mid-interaction.
+      await expect(page.locator(".agent-console-topbar-more > summary")).toBeFocused();
+    }
     const replyBar = page.locator(".agent-console-reply");
     await replyBar.getByRole("combobox", { name: "模型", exact: true }).click();
     await page.getByRole("option", { name: "Draft Beta", exact: true }).click();

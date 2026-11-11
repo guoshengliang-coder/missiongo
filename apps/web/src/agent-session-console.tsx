@@ -17,9 +17,11 @@ import type { ReactNode } from "react";
 import { OverlayDialog } from "./overlay";
 import { WebVersion } from "./web-version";
 import { Select } from "./select";
+import { Modal } from "./modal";
+import { useMediaQuery } from "./use-media-query";
 import { BackButton } from "./back-button";
 import { useConfirm } from "./confirm-dialog";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type FormEvent } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
@@ -27,6 +29,7 @@ import {
   BellRing,
   Bot,
   CircleAlert,
+  ChevronDown,
   Image as ImageIcon,
   LoaderCircle,
   MessageSquare,
@@ -252,6 +255,10 @@ export function AgentSessionConsole({
   const [filter, setFilter] = useState<AgentSessionFilter>(initialFilter ?? DEFAULT_AGENT_SESSION_FILTER);
   const [agentFilter, setAgentFilter] = useState<AgentKindFilter>(DEFAULT_AGENT_KIND_FILTER);
   const [association, setAssociation] = useState<AgentAssociationFilter>("all");
+  const compact = useMediaQuery("(max-width: 1023px)");
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const compactFilterValueId = useId();
+  useEffect(() => { if (!compact) setFiltersOpen(false); }, [compact]);
   const { sender, replyDrafts, setReplyDrafts, replyFileDrafts, setReplyFileDrafts, replyFileErrors, setReplyFileErrors } = drafts;
   const [clock, setClock] = useState(Date.now);
   useEffect(() => {
@@ -1010,6 +1017,26 @@ export function AgentSessionConsole({
     </div>
   </div>;
 
+  const associationControl = (
+    <Select aria-label={t("agentConsoleAssociationFilter")} value={association} fitContent
+      renderValue={value => t(ASSOCIATION_OPTION_LABELS[value as AgentAssociationFilter])}
+      renderOption={value => <span className="agent-console-option">
+        <span>{t(ASSOCIATION_OPTION_LABELS[value as AgentAssociationFilter])}</span>
+        {renderOptionCounts(optionCounts.association[value as AgentAssociationFilter])}
+      </span>}
+      onChange={event => {
+        const next = event.target.value as AgentAssociationFilter;
+        setAssociation(next);
+        if (selectedId && !productSessions.some(session => session.id === selectedId
+          && agentSessionMatches(session, filter, agentFilter, search, next))) onSelectSession(null, false);
+      }}>
+      <option value="all">{t("agentConsoleAssociationAll")}</option>
+      <option value="unlinked">{t("agentConsoleAssociationUnlinked")}</option>
+      <option value="linked">{t("agentConsoleAssociationLinked")}</option>
+      <option value="integration">{t("agentConsoleAssociationIntegration")}</option>
+    </Select>
+  );
+
   const otherProjectHint = (otherProjectCounts.attention > 0 || otherProjectCounts.unread > 0) && (
     <p className="agent-console-other-projects" role="status">
       <span>{t("agentConsoleOtherProjects")}</span>
@@ -1031,27 +1058,13 @@ export function AgentSessionConsole({
       <section className="agent-console-list" aria-label={t("agentConsoleSessions")}>
         {unavailableSessionId && <p className="inline-error" role="alert">{t("agentConsoleUnavailableLink")}</p>}
         {otherProjectHint}
-        <div className="agent-console-mobile-filters" aria-label={t("agentConsoleFilters")}>
-          {navigation}
-        </div>
         <div className="agent-console-list-controls">
-          <Select aria-label={t("agentConsoleAssociationFilter")} value={association} fitContent
-            renderValue={value => t(ASSOCIATION_OPTION_LABELS[value as AgentAssociationFilter])}
-            renderOption={value => <span className="agent-console-option">
-              <span>{t(ASSOCIATION_OPTION_LABELS[value as AgentAssociationFilter])}</span>
-              {renderOptionCounts(optionCounts.association[value as AgentAssociationFilter])}
-            </span>}
-            onChange={event => {
-              const next = event.target.value as AgentAssociationFilter;
-              setAssociation(next);
-              if (selectedId && !productSessions.some(session => session.id === selectedId
-                && agentSessionMatches(session, filter, agentFilter, search, next))) onSelectSession(null, false);
-            }}>
-            <option value="all">{t("agentConsoleAssociationAll")}</option>
-            <option value="unlinked">{t("agentConsoleAssociationUnlinked")}</option>
-            <option value="linked">{t("agentConsoleAssociationLinked")}</option>
-            <option value="integration">{t("agentConsoleAssociationIntegration")}</option>
-          </Select>
+          {compact ? <button type="button" className="single-select agent-console-combined-filter"
+            aria-label={t("agentConsoleFilters")} aria-describedby={compactFilterValueId} aria-haspopup="dialog" aria-expanded={filtersOpen}
+            onClick={() => setFiltersOpen(true)}>
+            <span className="single-select-value"><span className="single-select-text" id={compactFilterValueId}>{filters.find(entry => entry.key === filter)?.label}{association !== "all" && ` · ${t(ASSOCIATION_OPTION_LABELS[association])}`}</span></span>
+            <ChevronDown className="single-select-arrow" size={16} />
+          </button> : associationControl}
           <label className="agent-console-agent-filter">
             <span>{t("agentConsoleAgentFilter")}</span>
             <Select
@@ -1072,6 +1085,20 @@ export function AgentSessionConsole({
             </Select>
           </label>
         </div>
+        {compact && filtersOpen && <Modal title={t("agentConsoleFilters")} subtitle="" onClose={() => setFiltersOpen(false)}>
+          <label>{t("agentConsoleStateFilter")}
+            <Select aria-label={t("agentConsoleStateFilter")} value={filter} fitContent
+              renderOption={value => {
+                const entry = filters.find(option => option.key === value)!;
+                return <span className="agent-console-option"><span>{entry.label}</span>
+                  {sessionsLoaded && <span className="agent-console-option-counts">{entry.unread ? <em className="agent-console-filter-unread" title={t("agentConsoleUnreadCount", { count: entry.unread })}>{entry.unread}</em> : null}{entry.count}</span>}
+                </span>;
+              }} onChange={event => chooseFilter(event.target.value as AgentSessionFilter)}>
+              {filters.map(entry => <option key={entry.key} value={entry.key}>{entry.label}</option>)}
+            </Select>
+          </label>
+          <label>{t("agentConsoleAssociationFilter")}{associationControl}</label>
+        </Modal>}
         {bulkMode && bulkAvailable && (
           <div className="agent-console-bulk-actions" role="group" aria-label={t("agentConsoleBulkMode")}>
             <label className="agent-console-bulk-select-all">

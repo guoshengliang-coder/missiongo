@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openConversationFilters, closeConversationFilters, openConsoleSearch } from "./console-helpers";
 
 for (const width of [320, 768, 1023, 1024, 1440]) for (const theme of ["light", "dark"] as const) {
   test.describe(`${width}px ${theme}`, () => {
@@ -43,33 +44,42 @@ for (const width of [320, 768, 1023, 1024, 1440]) for (const theme of ["light", 
     });
     await page.goto(`/?product=${productId}&console=agent`);
     const rows = page.locator(".agent-console-session");
+    await openConversationFilters(page);
     const association = page.getByRole("combobox", { name: "会话类型筛选", exact: true });
     await expect(association).toHaveAttribute("data-value", "all");
     await expect(rows).toHaveCount(2);
     // AND-426: options carry the count the list will hold when picked.
+    await openConversationFilters(page);
     await association.click();
     const allOption = page.getByRole("option", { name: /^全部/ });
     await expect(allOption).toHaveAccessibleName(/2 个运行中，共 2 个会话/);
     await expect(page.getByRole("option", { name: /^非派单会话/ })).toHaveAccessibleName(/1 个运行中，共 1 个会话/);
     await allOption.click();
+    await closeConversationFilters(page);
     const agentFilterBox = page.getByRole("combobox", { name: "Agent 筛选", exact: true });
     await agentFilterBox.click();
     await expect(page.getByRole("option", { name: /^Codex/ })).toHaveAccessibleName(/2 个运行中，共 2 个会话/);
     await page.keyboard.press("Escape");
     await expect(agentFilterBox).toHaveText("全部 Agent");
+    await openConversationFilters(page);
     await association.click();
     await page.getByRole("option", { name: /^非派单会话/ }).click();
+    await closeConversationFilters(page);
     await expect(rows).toHaveCount(1);
-    await expect(association).toHaveText("非派单会话");
+    await expect(width <= 1023 ? page.locator(".agent-console-combined-filter") : association).toContainText("非派单会话");
     await expect(rows).toContainText("项目讨论");
+    await openConversationFilters(page);
     await association.click();
     await page.getByRole("option", { name: /^派单会话/ }).click();
+    await closeConversationFilters(page);
     await expect(rows).toHaveCount(1);
     await expect(rows).toContainText("RW-1");
+    await openConversationFilters(page);
     await association.click();
     await page.getByRole("option", { name: /^全部/ }).click();
+    await closeConversationFilters(page);
     const search = page.locator(".agent-console-search input");
-    if (width <= 1023) await page.locator(".agent-console-search-trigger").click();
+    if (width <= 1023) await openConsoleSearch(page);
     await expect(search).toBeVisible();
     await search.fill("项目讨论");
     const searchBox = await search.boundingBox();
@@ -80,9 +90,9 @@ for (const width of [320, 768, 1023, 1024, 1440]) for (const theme of ["light", 
     await page.screenshot({ path: testInfo.outputPath(`and369-search-${width}-${theme}.png`) });
     if (width <= 1023) {
       await page.locator(".agent-console-search-close").click();
-      await expect(page.locator(".agent-console-search-trigger")).toBeFocused();
+      await expect(page.locator(".agent-console-topbar-more > summary")).toBeFocused();
       await expect(rows).toHaveCount(1);
-      await page.locator(".agent-console-search-trigger").click();
+      await openConsoleSearch(page);
       await expect(search).toHaveValue("项目讨论");
     }
     await search.fill("");

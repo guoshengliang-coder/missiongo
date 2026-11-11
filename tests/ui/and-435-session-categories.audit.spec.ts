@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { AUDIT_SOURCE } from "./audit-page.mjs";
+import { openConversationFilters, closeConversationFilters, chooseSessionStatus } from "./console-helpers";
 
 for (const width of [320,1440]) for (const theme of ["light","dark"] as const) {
   test.describe(`${width} ${theme}`,()=>{
@@ -53,11 +54,11 @@ for (const width of [320,1440]) for (const theme of ["light","dark"] as const) {
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       }
       await page.screenshot({ path: testInfo.outputPath("all-categories.png"), fullPage: true });
-      await filter.click();
+      await openConversationFilters(page);await filter.click();
       await expect(page.getByRole("option",{name:/^全部/})).toHaveAccessibleName(/1 个运行中，共 3 个会话/);
       const integrationOption=page.getByRole("option",{name:/^集成会话/});
       await expect(integrationOption).toHaveAccessibleName(/1 个运行中，共 1 个会话/);
-      await integrationOption.click();await expect(list).toHaveCount(1);await expect(list).toContainText("SC-2 · 集成任务");
+      await integrationOption.click();await closeConversationFilters(page);await expect(list).toHaveCount(1);await expect(list).toContainText("SC-2 · 集成任务");
       await list.click();await expect(page.locator(".agent-console-heading [data-session-category]")).toHaveText("集成会话");
       await assertHeaderPalette("integration");
       const reply=page.locator(".agent-console-reply textarea");await reply.fill("集成草稿");
@@ -71,7 +72,7 @@ for (const width of [320,1440]) for (const theme of ["light","dark"] as const) {
       await page.screenshot({path:testInfo.outputPath("integration-category.png"),fullPage:true});
       const back=page.getByRole("button",{name:"返回会话列表",exact:true});
       if(width===320)await back.click();
-      await filter.click();await page.getByRole("option",{name:/^派单会话/}).click();
+      await openConversationFilters(page);await filter.click();await page.getByRole("option",{name:/^派单会话/}).click();await closeConversationFilters(page);
       await expect(list).toHaveCount(1);await list.click();await expect(page.locator('.agent-console-heading [data-session-category="linked"]')).toHaveText("派单会话");await expect(reply).toHaveValue("");await reply.fill("研发草稿");
       const linkedPalette = await page.locator('.agent-console-heading [data-session-category="linked"]').evaluate(badge => {
         const style = getComputedStyle(badge);
@@ -82,13 +83,13 @@ for (const width of [320,1440]) for (const theme of ["light","dark"] as const) {
       await expect(list.locator('[data-session-category="linked"]')).toHaveCount(0);
       await page.screenshot({path:testInfo.outputPath("dispatched-detail.png"),fullPage:true});
       if(width===320)await back.click();
-      await filter.click();await page.getByRole("option",{name:/^非派单会话/}).click();await expect(list).toHaveCount(1);
+      await openConversationFilters(page);await filter.click();await page.getByRole("option",{name:/^非派单会话/}).click();await closeConversationFilters(page);await expect(list).toHaveCount(1);
       await expect(list).toContainText("集成会话同名普通讨论");
       await list.click();await assertHeaderPalette("unlinked");
       if(width===320)await back.click();
-      await filter.click();await page.getByRole("option",{name:/^集成会话/}).click();await list.click();await expect(reply).toHaveValue("集成草稿");
+      await openConversationFilters(page);await filter.click();await page.getByRole("option",{name:/^集成会话/}).click();await closeConversationFilters(page);await list.click();await expect(reply).toHaveValue("集成草稿");
       if(width===320)await back.click();
-      await page.getByRole("button",{name:/已归档/}).first().click();
+      if(width===320)await chooseSessionStatus(page,"archived");else await page.getByRole("button",{name:/已归档/}).first().click();
       await expect(list).toHaveCount(1);await expect(list).toContainText("历史批次");
       await expect(list.locator('[data-session-category="integration"]')).toHaveText("集成会话");
     });

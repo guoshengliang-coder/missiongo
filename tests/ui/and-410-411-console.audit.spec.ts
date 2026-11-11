@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 import { advanceSessionListPoll, advanceSessionDetailPoll } from "./polling";
 import { chooseOption } from "./select-helpers";
+import { openConversationFilters, closeConversationFilters } from "./console-helpers";
 
 const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as { productId: string };
 let other: { id: string; name: string };
@@ -43,11 +44,11 @@ for (const dark of [false, true]) for (const scale of ["small", "medium", "large
       if (path.endsWith("/read")) { row!.unread = false; await route.fulfill({ status: 204 }); return; }
       if (path.endsWith("/commands")) {
         sent++; row!.needsAttention = false; row!.attention.state = "not_needed";
-        await route.fulfill({ status: 201, json: { id: "sent", kind: "message", status: "delivered", text: "回答", createdAt: new Date().toISOString() } }); return;
+        await route.fulfill({ status: 201, json: { id: "sent", kind: "message", status: "delivered", text: "回答", createdAt: "2026-11-08T10:00:00.000Z" } }); return;
       }
       await route.fulfill({ json: path === "/api/v1/agent-sessions" ? { sessions } : { ...row, messages: [{ id: "ask", role: "agent", text: "请回答问题", occurredAt: row!.createdAt }], canResolveDelivery: false } });
     });
-    await page.clock.install();
+    await page.clock.install({ time: new Date("2026-11-08T10:00:00Z") });
     await page.goto(`/?product=${fixture.productId}&console=agent`);
     const nav = page.locator(".agent-console-filters");
     const pending = nav.getByRole("button", { name: /^待我处理/ });
@@ -105,21 +106,28 @@ for (const dark of [false, true]) for (const scale of ["small", "medium", "large
 
     for (const width of [320, 520, 521, 1023, 1024, 1280, 1440]) {
       await page.setViewportSize({ width, height: 900 });
-      const visibleNav = page.locator(width <= 1023 ? ".agent-console-mobile-filters" : ".agent-console-filters");
-      await expect(visibleNav.getByRole("group", { name: "当前项目", exact: true })).toBeVisible();
-      await expect(visibleNav.getByRole("group", { name: "所有项目", exact: true })).toHaveCount(0);
+      const visibleNav = page.locator(".agent-console-filters");
+      if (width > 1023) {
+        await expect(visibleNav.getByRole("group", { name: "当前项目", exact: true })).toBeVisible();
+        await expect(visibleNav.getByRole("group", { name: "所有项目", exact: true })).toHaveCount(0);
+      }
       await expect(hint).toBeVisible();
       const hintAtWidth = await hint.boundingBox();
-      const filterBarAtWidth = await page.locator(width <= 1023 ? ".agent-console-mobile-filters" : ".agent-console-list-controls").boundingBox();
+      const filterBarAtWidth = await page.locator(".agent-console-list-controls").boundingBox();
       expect(hintAtWidth!.y).toBeLessThan(filterBarAtWidth!.y);
-      for (const label of ["待我处理", "未读会话", "运行中", "全部会话", "异常", "已归档"]) {
-        const button = visibleNav.getByRole("button", { name: new RegExp(`^${label}`) });
-        await button.scrollIntoViewIfNeeded();
-        await expect(button).toBeVisible();
-        const box = await button.boundingBox();
-        expect(box!.height).toBeGreaterThanOrEqual(44);
-        expect(await button.evaluate(element => parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThanOrEqual(11);
+      if (width <= 1023) {
+        await openConversationFilters(page);
+        await page.getByRole("combobox", { name: "会话状态筛选", exact: true }).click();
       }
+      for (const label of ["待我处理", "未读会话", "运行中", "全部会话", "异常", "已归档"]) {
+        const control = width <= 1023 ? page.getByRole("option", { name: new RegExp(`^${label}`) }) : visibleNav.getByRole("button", { name: new RegExp(`^${label}`) });
+        await control.scrollIntoViewIfNeeded();
+        await expect(control).toBeVisible();
+        const box = await control.boundingBox();
+        expect(box!.height).toBeGreaterThanOrEqual(44);
+        expect(await control.evaluate(element => parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThanOrEqual(11);
+      }
+      if (width <= 1023) { await page.keyboard.press("Escape"); await closeConversationFilters(page); }
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await visibleNav.locator(".agent-console-filter-items").evaluateAll(rows => rows.forEach(row => { row.scrollLeft = 0; }));
       if (width === 320 || width === 1440) await page.screenshot({ path: test.info().outputPath(`navigation-${width}.png`) });
@@ -144,7 +152,7 @@ test.describe("cross-project hint", () => {
       if (path.endsWith("/read")) { row!.unread = false; await route.fulfill({ status: 204 }); return; }
       await route.fulfill({ json: path === "/api/v1/agent-sessions" ? { sessions } : { ...row, messages: [], canResolveDelivery: false } });
     });
-    await page.clock.install();
+    await page.clock.install({ time: new Date("2026-11-08T10:00:00Z") });
     await page.goto(`/?product=${fixture.productId}&console=agent`);
     const hint = page.locator(".agent-console-other-projects");
     await expect(hint).toContainText("其他项目：待我处理 1");
@@ -176,7 +184,7 @@ for (const phone of [false, true]) test(`cancellation race stays in its session 
   const a = summary("撤回竞态", fixture.productId, false);
   const b = summary("另一会话", fixture.productId, false);
   let phase = "queued";
-  const command = () => ({ id: phase === "continued" ? "next" : "first", kind: "message", text: "继续", status: phase === "queued" ? "queued" : "delivered", createdAt: phase === "continued" ? new Date().toISOString() : a.createdAt });
+  const command = () => ({ id: phase === "continued" ? "next" : "first", kind: "message", text: "继续", status: phase === "queued" ? "queued" : "delivered", createdAt: phase === "continued" ? "2026-11-08T10:00:00.000Z" : a.createdAt });
   let cancelCalls = 0;
   let sends = 0;
   await page.route("**/api/v1/agent-sessions**", async route => {
@@ -191,7 +199,7 @@ for (const phone of [false, true]) test(`cancellation race stays in its session 
     await route.fulfill({ json: path === "/api/v1/agent-sessions" ? { sessions: [a, b] }
       : { ...(isA ? a : b), command: isA ? command() : undefined, messages: [{ id: "message", role: "agent", text: "已有会话正文", occurredAt: a.createdAt }], canResolveDelivery: false } });
   });
-  await page.clock.install();
+  await page.clock.install({ time: new Date("2026-11-08T10:00:00Z") });
   await page.goto(`/?product=${fixture.productId}&console=agent&session=${encodeURIComponent(a.id)}`);
   await page.getByRole("button", { name: "撤回编辑", exact: true }).click();
   const feedback = page.getByLabel("会话操作反馈");
@@ -226,7 +234,7 @@ test("a late recall failure belongs to its original conversation", async ({ page
       await new Promise<void>(resolve => { release = resolve; });
       await route.fulfill({ status: 409, json: { code: "agent_reply_not_pending", title: "Only a queued reply can be cancelled." } }); return;
     }
-    if (path.endsWith("/commands")) { await route.fulfill({ status: 201, json: { id: "b-send", kind: "message", text: "独立回复", status: "delivered", createdAt: new Date().toISOString() } }); return; }
+    if (path.endsWith("/commands")) { await route.fulfill({ status: 201, json: { id: "b-send", kind: "message", text: "独立回复", status: "delivered", createdAt: "2026-11-08T10:00:00.000Z" } }); return; }
     if (route.request().method() !== "GET") { await route.fulfill({ status: 204 }); return; }
     const isA = path.includes(encodeURIComponent(a.id));
     await route.fulfill({ json: path === "/api/v1/agent-sessions" ? { sessions: [a, b] } : {
@@ -251,7 +259,7 @@ test("embedded item conversation shares recall recovery and visible run feedback
   const { detailKey } = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as { detailKey: string };
   let phase = "queued";
   const a = summary("embedded-recall", fixture.productId, false);
-  const command = () => ({ id: phase === "continued" ? "next" : "first", kind: "message", text: "继续", status: phase === "queued" ? "queued" : "delivered", createdAt: phase === "continued" ? new Date().toISOString() : a.createdAt });
+  const command = () => ({ id: phase === "continued" ? "next" : "first", kind: "message", text: "继续", status: phase === "queued" ? "queued" : "delivered", createdAt: phase === "continued" ? "2026-11-08T10:00:00.000Z" : a.createdAt });
   await page.route(`**/api/v1/items/${detailKey}/dispatches`, route => route.fulfill({ json: { dispatches: [{
     id: a.dispatchId, agentSessionId: a.id, nodeName: "Fixture", agentKind: "codex", mode: "auto", status: "launched", itemKeys: [detailKey], createdAt: a.createdAt,
   }] } }));

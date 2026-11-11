@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 import { WEB_ORIGIN } from "./fixture.mjs";
 import { AUDIT_SOURCE } from "./audit-page.mjs";
+import { chooseSessionStatus } from "./console-helpers";
 
 const fixture = JSON.parse(readFileSync(fileURLToPath(new URL("./.auth/fixture.json", import.meta.url)), "utf8")) as { productId: string };
 const id = "console-recovery-fixture";
@@ -70,8 +71,12 @@ for (const theme of ["light", "dark"] as const) for (const phone of [false, true
     expect(audit.text.filter((text) => text.contrast < (text.fontSize >= 24 || (text.fontSize >= 18.66 && text.fontWeight >= 700) ? 3 : 4.5))).toEqual([]);
     await recovery.screenshot({ path: testInfo.outputPath(`recovery-${theme}-${phone ? "phone" : "desktop"}.png`) });
     await page.screenshot({ path: testInfo.outputPath(`console-${phone ? "375x812" : "1440x900"}-${theme}.png`) });
-    if (phone) await page.getByRole("button", { name: "返回会话列表" }).click();
-    await page.getByRole("button", { name: /^异常/ }).click();
+    if (phone) {
+      await page.getByRole("button", { name: "返回会话列表" }).click();
+      // The compact console keeps the status filter in the combined-filter
+      // dialog; the desktop aside still exposes the filter buttons directly.
+      await chooseSessionStatus(page, "failed");
+    } else await page.getByRole("button", { name: /^异常/ }).click();
     await expect(page.locator(".dispatch-health")).toHaveCount(0);
     expect(healthRequests).toBe(0);
     await context.close();
