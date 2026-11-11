@@ -71,6 +71,17 @@ it("retries an older input receipt without restoring its pre-stop running state"
   expect(reports.record("s",4,{...old,commandId:"new"}).status).toBe("active");
 });
 
+it("keeps the latest failure on late receipts and drops it after recovery",()=>{
+  const reports=new ControlReports();
+  const old:Snapshot={status:"active",messages:[],commandId:"old",commandStatus:"delivered"};
+  reports.record("s",1,old);
+  const failure={code:"codex_server_error" as const,turnId:"failed-turn",detail:"Safe diagnostic"};
+  reports.record("s",2,{status:"failed",messages:[],failure,commandId:"failed",commandStatus:"delivered"});
+  expect(reports.record("s",3,old)).toMatchObject({status:"failed",failure});
+  reports.record("s",4,{status:"idle",messages:[],commandId:"recovered",commandStatus:"delivered"});
+  expect(reports.record("s",5,old).failure).toBeUndefined();
+});
+
 it("rejects a settled command's successful HTTP response as a new delivery reservation",async()=>{
   vi.spyOn(globalThis,"fetch").mockImplementation(async input=>String(input).includes("control-changes")
     ? Response.json({protocol:1,reservationProtocol:1,cursor:"fixture"})

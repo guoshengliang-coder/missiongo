@@ -1,5 +1,6 @@
 import { parseCodexSessionFailure, redactSessionDiagnostic, type CodexSessionFailure } from "@missiongo/domain";
 import type { MessageKey } from "./i18n";
+import { isHistoryLimited } from "./agent-session-feedback";
 
 const copyByCode: Record<CodexSessionFailure["code"], readonly [MessageKey, MessageKey]> = {
   codex_context_window_exceeded: ["agentFailureContext", "agentFailureNewSession"],
@@ -18,7 +19,10 @@ const copyByCode: Record<CodexSessionFailure["code"], readonly [MessageKey, Mess
 export function sessionFailureView(status: string, failure?: CodexSessionFailure, legacyError?: string) {
   if (status !== "failed") return undefined;
   const safe = parseCodexSessionFailure(failure);
-  const detail = safe?.detail ?? (legacyError ? redactSessionDiagnostic(legacyError) : undefined);
+  // Structured storage also puts the stable code in lastError when detail is
+  // absent. History-read warnings are independent of the native turn failure.
+  const detail = safe ? safe.detail
+    : legacyError && !isHistoryLimited(legacyError) ? redactSessionDiagnostic(legacyError) : undefined;
   const code = safe?.code ?? (detail ? "codex_turn_failed" : "codex_failure_detail_unavailable");
   const [summary, recovery] = safe ? copyByCode[safe.code]
     : detail ? copyByCode.codex_turn_failed : ["agentFailureMissing", "agentFailureMissingRecovery"] as const;

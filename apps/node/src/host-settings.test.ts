@@ -20,6 +20,34 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+it("the Codex host persists safe failures and removes them when a new turn recovers", async () => {
+  const root = mkdtempSync("/tmp/mg-host-failure-"); roots.push(root);
+  const fixture = fileURLToPath(new URL("./fixtures/agent.cjs", import.meta.url)); chmodSync(fixture, 0o755);
+  const codexConfig = join(root, "codex");
+  privateDir(join(codexConfig, "skills/missiongo"));
+  writeFileSync(join(codexConfig, "skills/missiongo/SKILL.md"), "---\nversion: 1.0.0\n---\nFixture only", { mode: 0o600 });
+  saveConfig(root, { installationId: "fixture", server: "https://missiongo.example.com", agents: { codex: { executable: fixture } } });
+  const dispatch = { dispatchId: "failure", agentKind: "codex", repoPath: root, freeSession: true, itemKeys: [], mode: "auto" };
+  const statePath = join(hostDirectory(root, "failure"), "state.json");
+  savePrivate(statePath, { dispatch, pid: 0, phase: "starting", sessionName: "Failure fixture", snapshot: { status: "idle", messages: [] }, commands: {} });
+  const script = `import {runHost} from ${JSON.stringify(new URL("./host.ts", import.meta.url).href)}; await runHost(process.argv[1], process.argv[2]);`;
+  const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx/esm"), "--input-type=module", "-e", script, root, "failure"], {
+    detached: true, stdio: "ignore", env: { ...process.env, CODEX_HOME: codexConfig },
+  }); hosts.push(child);
+  for (let n = 0; n < 200 && readPrivate<HostState>(statePath)?.phase === "starting"; n++) await delay(25);
+  const state = readPrivate<HostState>(statePath)!;
+  expect(state.phase).toBe("launched");
+  const session: Session = { id: "session", agentKind: "codex", sessionRef: state.sessionRef! };
+  const failed = await hostCall(root, "failure", { ...session, command: { id: "fail", status: "delivering", text: "failure metadata fixture" } }, "control");
+  expect(failed).toMatchObject({ status: "failed", failure: { code: "codex_server_error", httpStatusCode: 502 } });
+  expect(JSON.stringify(readPrivate<HostState>(statePath)?.snapshot)).not.toContain("fixture-secret");
+  expect((await hostCall(root, "failure", session, "observation")).failure).toEqual(failed.failure);
+  const recovered = await hostCall(root, "failure", { ...session, command: { id: "recover", status: "delivering", text: "recovery fixture" } }, "control");
+  expect(recovered.status).toBe("idle"); expect(recovered.failure).toBeUndefined();
+  expect((await hostCall(root, "failure", session, "observation")).failure).toBeUndefined();
+  expect(readPrivate<HostState>(statePath)?.snapshot.failure).toBeUndefined();
+}, 15_000);
+
 it("the detached host blocks failed settings on every poll, preserves stop, and accepts a newer confirmed revision", async () => {
   const root = mkdtempSync("/tmp/mg-host-settings-"); roots.push(root);
   const fixture = fileURLToPath(new URL("./fixtures/agent.cjs", import.meta.url)); chmodSync(fixture, 0o755);

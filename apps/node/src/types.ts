@@ -1,4 +1,4 @@
-import type { AgentKind } from "@missiongo/domain";
+import type { AgentKind, CodexSessionFailure } from "@missiongo/domain";
 
 export type Kind = Exclude<AgentKind, "hermes">;
 export interface Dispatch {
@@ -40,6 +40,7 @@ export interface Session {
   appliedSettingsRevision?: number; archiveInSource?: boolean; restoreInSource?: boolean;
 }
 export interface Snapshot {
+  failure?: CodexSessionFailure | undefined;
   status: "active" | "idle" | "suspended" | "stalled" | "unavailable" | "failed";
   messages: Message[]; activities?: { id: string; title: string; detail?: string }[];
   stopConfirmed?: boolean;

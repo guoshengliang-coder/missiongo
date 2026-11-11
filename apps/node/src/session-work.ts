@@ -82,6 +82,8 @@ export class ControlReports {
     const latest = this.latest.get(id);
     if (latest && latest.epoch > observed) {
       const result: Snapshot = {status:latest.snapshot.status, messages:[],
+        ...(latest.snapshot.failure ? {failure:latest.snapshot.failure} : {}),
+        ...(latest.snapshot.error ? {error:latest.snapshot.error} : {}),
         ...(snapshot.settingsRevision === undefined ? {} : {settingsRevision:snapshot.settingsRevision}),
         ...(snapshot.settingsError === undefined ? {} : {settingsError:snapshot.settingsError}),
         ...(snapshot.sourceArchived === undefined ? {} : {sourceArchived:snapshot.sourceArchived}),
