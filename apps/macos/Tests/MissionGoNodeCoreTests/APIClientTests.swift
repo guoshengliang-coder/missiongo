@@ -2,6 +2,28 @@ import XCTest
 @testable import MissionGoNodeCore
 
 final class APIClientTests: XCTestCase {
+    func testControlReservationRequiresActualDeliveringReceipt() async throws {
+        StubURLProtocol.install { request, _ in
+            if request.url!.path.hasSuffix("control-changes") {
+                return .response(status: 200, body: #"{"protocol":1,"reservationProtocol":1,"cursor":"fixture"}"#)
+            }
+            return .response(status: 204, body: "", headers: ["X-MissionGo-Command-Status": "delivered"])
+        }
+        let api = client()
+        let negotiated = try await api.waitForAgentControl(cursor: nil, waitMs: 0)
+        XCTAssertNotNil(negotiated)
+        do {
+            try await api.reportAgentSession(sessionId: "session", report: AgentSessionReport(status: "idle", messages: [], commandId: "command", commandStatus: "delivering"))
+            XCTFail("A settled command must not grant a new reservation")
+        } catch let APIError.http(_, status, _) { XCTAssertEqual(status, 409) }
+    }
+
+    func testControlWithoutReservationProofUsesLegacyProtocol() async throws {
+        StubURLProtocol.install { _, _ in .response(status: 200, body: #"{"protocol":1,"cursor":"fixture"}"#) }
+        let change = try await client().waitForAgentControl(cursor: nil, waitMs: 0)
+        XCTAssertNil(change)
+    }
+
     func testManagedTerminalHTTPReceiptSealsDurableEvidenceAcrossRestart() async throws {
         guard let wire = ProcessInfo.processInfo.environment["MANAGED_WIRE_FIXTURE"] else { throw XCTSkip("Generate actual HTTP fixtures first") }
         struct Wire: Decodable {

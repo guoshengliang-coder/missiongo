@@ -575,7 +575,38 @@ public struct AgentSessionCommand: Codable, Equatable, Sendable {
     }
 }
 
+public enum SessionSyncPurpose: Sendable { case combined, observation, control }
+public struct NodeControlChange: Decodable, Sendable {
+    public let cursor: String
+    public let protocolVersion: Int
+    public let reservationProtocol: Int?
+    private enum CodingKeys: String, CodingKey { case cursor, reservationProtocol; case protocolVersion = "protocol" }
+    public init(cursor: String) { self.cursor = cursor; self.protocolVersion = 1; self.reservationProtocol = 1 }
+}
+
 public struct NodeAgentSession: Codable, Equatable, Sendable {
+    // Local dispatch policy, deliberately excluded from the wire contract.
+    public var syncPurpose: SessionSyncPurpose = .combined
+    public var hasControlWork: Bool {
+        command != nil || approvalDecision != nil || approvalRetry != nil || pendingSettings != nil
+            || archiveInSource || restoreInSource || lifecycle == "close" || managedExecution?.stopRequested == true
+    }
+    public func forSync(_ purpose: SessionSyncPurpose) -> NodeAgentSession {
+        var copy = NodeAgentSession(id: id, managedExecution: managedExecution, dispatchId: dispatchId,
+            agentKind: agentKind, sessionRef: sessionRef, status: status,
+            lifecycle: purpose == .observation ? "keep" : lifecycle, occupiesExecutionSlot: occupiesExecutionSlot,
+            command: purpose == .observation ? nil : command,
+            approvalDecision: purpose == .observation ? nil : approvalDecision,
+            approvalRetry: purpose == .observation ? nil : approvalRetry, approvalReviewMode: approvalReviewMode,
+            archiveInSource: purpose != .observation && archiveInSource,
+            restoreInSource: purpose != .observation && restoreInSource,
+            desiredSettings: purpose == .observation ? nil : desiredSettings,
+            appliedSettingsRevision: appliedSettingsRevision,
+            externalBindingGeneration: externalBindingGeneration, externalAutoConnect: externalAutoConnect)
+        copy.syncPurpose = purpose
+        return copy
+    }
+
     public let externalAutoConnect: Bool
     /// Present only for an explicitly connected external conversation.
     public let externalBindingGeneration: Int?
@@ -1342,6 +1373,12 @@ public func normalizeServerUrl(_ value: String) -> String {
 struct HTTPResponse {
     let status: Int
     let body: Data
+    let commandReservationStatus: String?
+    let retryReservationStatus: String?
+    init(status: Int, body: Data, commandReservationStatus: String? = nil, retryReservationStatus: String? = nil) {
+        self.status = status; self.body = body
+        self.commandReservationStatus = commandReservationStatus; self.retryReservationStatus = retryReservationStatus
+    }
 
     var text: String {
         return String(data: body, encoding: .utf8) ?? ""
@@ -1362,7 +1399,7 @@ struct HTTPTransport: Sendable {
             guard let http = response as? HTTPURLResponse else {
                 throw APIError.invalidResponse("\(host) 返回的不是 HTTP 响应。")
             }
-            return HTTPResponse(status: http.statusCode, body: data)
+            return HTTPResponse(status: http.statusCode, body: data, commandReservationStatus: http.value(forHTTPHeaderField: "X-MissionGo-Command-Status"), retryReservationStatus: http.value(forHTTPHeaderField: "X-MissionGo-Retry-Status"))
         } catch let error as APIError {
             throw error
         } catch let error as URLError {
@@ -1421,6 +1458,7 @@ func isSuccess(_ status: Int) -> Bool {
 // MARK: - Client
 
 public struct APIClient: Sendable {
+    private let strictReservations = Locked(false)
     public static let requestTimeout: TimeInterval = 15
     public static let defaultClaimWaitMs = 25_000
 
@@ -1655,6 +1693,18 @@ public struct APIClient: Sendable {
         try requireSuccess(response, operation: "保存会话产物")
     }
 
+    public func waitForAgentControl(cursor: String?, waitMs: Int) async throws -> NodeControlChange? {
+        let query = "?waitMs=\(max(0, min(waitMs, 25000)))" + (cursor.map { "&cursor=\(APIClient.encodePathComponent($0))" } ?? "")
+        let response = try await send("GET", "/api/v1/node/control-changes" + query,
+            body: Optional<String>.none, bearer: try nodeToken(), timeout: 35)
+        if response.status == 404 { strictReservations.withLock { $0 = false }; return nil }
+        try requireSuccess(response, operation: "等待节点控制请求")
+        let change: NodeControlChange = try decode(response, operation: "等待节点控制请求")
+        guard change.protocolVersion == 1 else { throw LaunchError("节点控制协议版本不受支持。") }
+        strictReservations.withLock { $0 = change.reservationProtocol == 1 }
+        return strictReservations.current ? change : nil
+    }
+
     public func listAgentSessions() async throws -> [NodeAgentSession] {
         try await agentSessions(interruptsOnly: false)
     }
@@ -1690,12 +1740,20 @@ public struct APIClient: Sendable {
         return response.body
     }
 
+    private func confirmReservation(_ response: HTTPResponse, report: AgentSessionReport) throws {
+        if strictReservations.current && ((report.commandStatus == "delivering" && response.commandReservationStatus != "delivering")
+            || (report.approvalRetryStatus == "delivering" && response.retryReservationStatus != "delivering")) {
+            throw APIError.http(operation: "确认投递预约", status: 409, detail: "投递预约未确认，请刷新命令状态。")
+        }
+    }
+
     public func reportAgentSession(sessionId: String, report: AgentSessionReport) async throws {
         let path = "/api/v1/node/agent-sessions/\(APIClient.encodePathComponent(sessionId))/snapshot"
         let response = try await send(
             "POST", path, body: try APIClient.uploadableSnapshot(report), bearer: try nodeToken(), gzipBody: true
         )
         try requireSuccess(response, operation: "同步 Agent 会话")
+        try confirmReservation(response, report: report)
     }
 
     public func reportExternalAgentSession(sessionId: String, generation: Int, report: AgentSessionReport) async throws {
@@ -1703,6 +1761,7 @@ public struct APIClient: Sendable {
         let response = try await send("POST", path, body: try APIClient.uploadableSnapshot(report), bearer: try nodeToken(), gzipBody: true,
             extraHeaders: ["X-MissionGo-External-Attachments": "1", "X-MissionGo-External-Generation": String(generation), "X-MissionGo-External-Worker": externalWorkerId])
         try requireSuccess(response, operation: "同步外部 Agent 会话")
+        try confirmReservation(response, report: report)
     }
 
     public func reportAutomaticExternalSession(sessionId: String, generation: Int, nativeSessionRef: String, report: AgentSessionReport) async throws {

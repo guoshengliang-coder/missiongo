@@ -905,6 +905,12 @@ final class ClaudeSessionSynchronizationTests: XCTestCase {
             ),
             to: ClaudeHostStore.statePath(root: root, sessionRef: sessionRef)
         )
+        let observed = try await launcher.synchronize(NodeAgentSession(id: "server-session", agentKind: "claude_code",
+            sessionRef: sessionRef, status: "idle").forSync(.observation))
+        XCTAssertEqual(observed.status, "suspended")
+        XCTAssertEqual(observed.messages, [message])
+        XCTAssertEqual(try ClaudeHostFiles.readState(ClaudeHostStore.statePath(root: root, sessionRef: sessionRef)).hostPid, Int32.max,
+            "observation must not rewrite or restart the dead host")
         let report = try await launcher.synchronize(NodeAgentSession(
             id: "server-session",
             agentKind: "claude_code",

@@ -21,6 +21,7 @@ public protocol CodexControl: Sendable {
     func startManagedThread(_ request: CodexThreadRequest) async throws -> ManagedRuntimeReceipt
     func readThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
     /// Reads runtime state without loading the transcript or resuming the thread.
+    func readControlStatus(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
     func readThreadStatus(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
     func readExternalThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
     func readArtifactThread(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot
@@ -82,6 +83,9 @@ public extension CodexControl {
         throw CodexControlError.rpc(method: "thread/read", message: "这个 Codex 控制器不支持读取会话。")
     }
 
+    func readControlStatus(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
+        try await readThreadStatus(socketPath: socketPath, threadId: threadId)
+    }
     func readThreadStatus(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
         try await readThread(socketPath: socketPath, threadId: threadId)
     }
@@ -887,11 +891,15 @@ public struct CodexAppServerControl: CodexControl {
         // Exact identity is checked by readThread. Reading history does not grant input.
         try await readThread(socketPath: socketPath, threadId: threadId, includeExecutionItems: false, checkArchiveList: false)
     }
+    public func readControlStatus(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
+        try await readThread(socketPath: socketPath, threadId: threadId, includeExecutionItems: false,
+            checkArchiveList: false, includeTurns: false, controlTurn: true, timeoutOverride: min(readTimeout, 3))
+    }
     public func readThreadStatus(socketPath: String, threadId: String) async throws -> CodexThreadSnapshot {
         try await readThread(socketPath: socketPath, threadId: threadId, includeExecutionItems: false,
             checkArchiveList: false, includeTurns: false, timeoutOverride: min(readTimeout, 3))
     }
-    private func readThread(socketPath: String, threadId: String, includeExecutionItems: Bool, checkArchiveList: Bool = true, requireLoaded: Bool = false, includeTurns: Bool = true, timeoutOverride: TimeInterval? = nil) async throws -> CodexThreadSnapshot {
+    private func readThread(socketPath: String, threadId: String, includeExecutionItems: Bool, checkArchiveList: Bool = true, requireLoaded: Bool = false, includeTurns: Bool = true, controlTurn: Bool = false, timeoutOverride: TimeInterval? = nil) async throws -> CodexThreadSnapshot {
         let timeout = timeoutOverride ?? self.readTimeout
         let archiveCache = self.archiveCache
         let successfulReads = self.successfulReads
@@ -920,12 +928,18 @@ public struct CodexAppServerControl: CodexControl {
                             return CodexThreadSnapshot(status: "unavailable", messages: [], archived: true)
                         }
                         stage = "thread/read"
-                        let result = try channel.call("thread/read", CodexProtocol.threadReadParams(threadId: threadId, includeTurns: includeTurns))
+                        var result = try channel.call("thread/read", CodexProtocol.threadReadParams(threadId: threadId, includeTurns: includeTurns))
+                        if controlTurn, var thread = result["thread"] as? [String: Any], thread["id"] as? String == threadId {
+                            let page = try channel.call("thread/turns/list", ["threadId": threadId, "limit": 1, "sortDirection": "desc", "itemsView": "notLoaded"])
+                            guard let turns = page["data"] as? [[String: Any]] else { throw CodexControlError.invalidResponse(method: "thread/turns/list") }
+                            thread["turns"] = turns; result["thread"] = thread
+                        }
                         if !checkArchiveList, (result["thread"] as? [String: Any])?["id"] as? String != threadId {
                             throw CodexControlError.invalidResponse(method: "thread/read identity")
                         }
                         if requireLoaded { try Self.requireExternalRuntime(result, threadId: threadId) }
-                        let snapshot = try CodexProtocol.threadSnapshot(fromRead: result, includeExecutionItems: includeExecutionItems)
+                        var snapshot = try CodexProtocol.threadSnapshot(fromRead: result, includeExecutionItems: includeExecutionItems)
+                        if controlTurn { snapshot.historyLimited = true }
                         if includeTurns {
                             successfulReads.withLock { values in
                                 values[threadId] = Date()

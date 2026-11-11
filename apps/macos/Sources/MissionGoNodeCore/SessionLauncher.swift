@@ -26,6 +26,7 @@ public protocol AgentAdapter: Sendable {
     /// Mirrors an already launched session and, when it is idle, delivers the
     /// one reply the server has queued for it.
     func synchronize(_ session: NodeAgentSession) async throws -> AgentSessionReport
+    func discardCommandReservation(sessionId: String, commandId: String)
     /// Read the exact transcript without delivering input, restoring or launching a session.
     func historyPage(sessionRef: String, cursor: String) async throws -> AgentHistoryResult
     func artifactMessages(sessionRef: String, sourceId: String) async throws -> [AgentSessionMessage]
@@ -38,6 +39,7 @@ public protocol AgentAdapter: Sendable {
 }
 
 public extension AgentAdapter {
+    func discardCommandReservation(sessionId: String, commandId: String) {}
     func detectionReport() async -> DetectedAgent? {
         guard let version = await detect() else { return nil }
         return DetectedAgent(kind: kind, version: version)
@@ -836,6 +838,16 @@ public struct SessionLauncher: AgentAdapter {
         // state format. Restore reliable choices on every read so its report
         // cannot reopen settled cards in the server's saved transcript.
         state.messages = AgentSessionAnswerTrace.markingAnswered(state.messages)
+        if session.syncPurpose == .observation {
+            let running = state.hostPid.map { ClaudeHostProcess.isClaudeHost($0,
+                servingConfigPath: ClaudeHostStore.configPath(root: sessionsDirectory, sessionRef: session.sessionRef)) }
+                ?? (state.status != "suspended")
+            let suspended = !running && state.sessionUrl == nil && state.status != "failed"
+            return AgentSessionReport(status: running ? state.status : suspended ? "suspended" : "unavailable",
+                messages: state.messages, activities: running ? state.activities : [],
+                error: running ? state.error : suspended ? "Claude Code 会话宿主已停止；下次明确回复时可恢复。" : "原 Claude 宿主不可用，请在来源客户端核实。",
+                sessionUrl: state.sessionUrl, activityAt: SessionLauncher.activityTimestamp(state.lastProgressAt))
+        }
         if session.restoreInSource {
             if let hostPid = state.hostPid,
                ClaudeHostProcess.isClaudeHost(

@@ -16,6 +16,7 @@ export class APIError extends Error {
   constructor(readonly status: number, readonly code: string) { super(`MissionGo request failed: HTTP ${status} (${code})`); }
 }
 export class API {
+  private strictReservations = false;
   constructor(readonly server: string, readonly token?: string, readonly signal?: AbortSignal) { serverOrigin(server); }
   async call(method: string, path: string, body?: unknown, token = this.token, timeout = 40_000): Promise<any> {
     if (!path.startsWith("/") || path.startsWith("//")) throw new Error("Invalid API path");
@@ -29,7 +30,21 @@ export class API {
       const data = await response.json().catch(() => ({})) as { error?: { code?: string } | string };
       throw new APIError(response.status, typeof data.error === "string" ? data.error : data.error?.code ?? "request_failed");
     }
+    if (this.strictReservations && method === "POST" && /^\/api\/v1\/node\/agent-sessions\/[^/]+\/snapshot$/.test(path)) {
+      const report = body as {commandStatus?: string; approvalRetryStatus?: string} | undefined;
+      if ((report?.commandStatus === "delivering" && response.headers.get("x-missiongo-command-status") !== "delivering")
+        || (report?.approvalRetryStatus === "delivering" && response.headers.get("x-missiongo-retry-status") !== "delivering"))
+        throw new APIError(409, "reservation_not_confirmed");
+    }
     return response.status === 204 ? undefined : response.json();
+  }
+  async controlChanges(cursor?: string, waitMs = 25_000): Promise<{cursor: string} | undefined> {
+    try {
+      const reply = await this.call("GET", `/api/v1/node/control-changes?waitMs=${waitMs}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+      if (reply.protocol !== 1 || typeof reply.cursor !== "string") throw new Error("Invalid node control protocol");
+      this.strictReservations = reply.reservationProtocol === 1;
+      return this.strictReservations ? reply : undefined;
+    } catch (error) { if (error instanceof APIError && error.status === 404) { this.strictReservations = false; return; } throw error; }
   }
   async login(config: Config, name: string, display: (url: string, code: string) => void): Promise<Config> {
     const client = object(await this.call("POST", "/oauth/register", {

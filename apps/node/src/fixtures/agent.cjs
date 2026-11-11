@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Isolated wire-protocol fixture: no network, model requests, or real credentials.
 const { createInterface } = require("node:readline");
-const { appendFileSync } = require("node:fs");
+const { appendFileSync, existsSync } = require("node:fs");
 const args = process.argv.slice(2);
 if (args.includes("--version")) { console.log("fixture 1.0.0"); process.exit(0); }
 const codex = args[0] === "app-server";
@@ -10,6 +10,7 @@ const emit = (data) => process.stdout.write(JSON.stringify(data) + "\n");
 let turn = { id: "turn-1", status: "completed", items: [] };
 let ref = "thread-1";
 let policy;
+let failControlObservation = false;
 let claudeMode = args[args.indexOf("--permission-mode") + 1];
 createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line);
@@ -32,11 +33,19 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       capabilities: { canComment: !process.env.FAKE_READ_ONLY, writeTools: process.env.FAKE_READ_ONLY ? [] : ["claim_item", "append_comment"] },
       skill: { expectedVersion: process.env.FAKE_SKILL_STALE ? "2.0.0" : "1.0.0" },
     } } });
-    else if (message.method === "thread/read") emit({ id: message.id, result: { thread: { id: ref, turns: [turn] } } });
+    else if (message.method === "thread/read") {
+      if (failControlObservation) { failControlObservation = false; emit({id:message.id,error:{code:-32000,message:"Synthetic observation failure"}}); }
+      else emit({ id: message.id, result: { thread: { id: ref, turns: [turn] } } });
+    }
     else if (message.method === "thread/turns/list") emit({ id: message.id, result: { data: [{ ...turn, items: [], itemsView: "notLoaded" }], nextCursor: null } });
-    else if (message.method === "thread/items/list") emit({ id: message.id, result: { data: [...turn.items].reverse().map(item => ({ turnId: turn.id, item })), nextCursor: null } });
+    else if (message.method === "thread/items/list") {
+      const reply = () => emit({ id: message.id, result: { data: [...turn.items].reverse().map(item => ({ turnId: turn.id, item })), nextCursor: null } });
+      if (process.env.TEST_HISTORY_GATE && existsSync(process.env.TEST_HISTORY_GATE)) setTimeout(reply, 2000);
+      else reply();
+    }
     else if (["turn/start", "turn/steer"].includes(message.method)) {
       turn.items.push({ id: `user-${turn.items.length}`, type: "userMessage", content: message.params.input });
+      if (process.env.TEST_FAIL_CONTROL_OBSERVATION && message.params.clientUserMessageId === "command-once") failControlObservation = true;
       emit({ id: message.id, result: { turn } });
       if (message.params.input[0].text.includes("auto-denied")) emit({ method: "item/autoApprovalReview/completed", params: {
         threadId: ref, turnId: turn.id, reviewId: "review-1", startedAtMs: Date.now(), review: { status: "denied", rationale: "fixture denied" }, action: { type: "command", command: "echo test" },

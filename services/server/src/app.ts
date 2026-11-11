@@ -1,5 +1,6 @@
 import { SessionSendRequests } from "./session-send-requests.js";
 import { StoredSessionMessages } from "./stored-session-messages.js";
+import { NodeControlChanges } from "./node-control-changes.js";
 import { ConsoleChanges } from "./console-changes.js";
 import { registerConsoleEvents } from "./console-events.js";
 import { PlanRecords } from "./plan-records.js";
@@ -980,6 +981,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
 
   const consoleChanges = new ConsoleChanges(store.database);
+  const nodeControlChanges = new NodeControlChanges(store.database);
+  app.addHook("preClose", async () => { nodeControlChanges.close(); });
   let consoleStreams: ReturnType<typeof registerConsoleEvents> | undefined;
   app.decorate("missionGoStore", store);
   app.decorate("missionGoAccounts", accountStore);
@@ -988,6 +991,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     await widgetPush.close();
     await dingtalk.close();
     await mcpHandler?.close();
+    nodeControlChanges.close();
     consoleChanges.close();
     store.close();
   });
@@ -3583,6 +3587,23 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (typeof worker !== "string" || !/^[A-Za-z0-9_-]{16,100}$/.test(worker)) throw invalidInput("An external worker ID is required.");
     return worker;
   };
+  app.get("/api/v1/node/control-changes", async (request, reply) => {
+    const node = requireNode(request);
+    const query = request.query as {cursor?: string; waitMs?: string};
+    if (query.cursor && query.cursor.length > 100) throw invalidInput("Invalid control cursor.");
+    const ms = Number(query.waitMs ?? 25000);
+    if (!Number.isFinite(ms) || ms < 0) throw invalidInput("Invalid control wait.");
+    const abort = new AbortController();
+    const disconnected = () => abort.abort();
+    request.raw.socket.once("close", disconnected);
+    try {
+      const cursor = await nodeControlChanges.wait(node.nodeId, query.cursor, Math.min(ms, 25000), abort.signal);
+      requireNode(request); // Revocation while waiting must not disclose work.
+      reply.header("cache-control", "no-store");
+      return {protocol: 1, reservationProtocol: 1, cursor};
+    } finally { request.raw.socket.removeListener("close", disconnected); }
+  });
+
   app.get("/api/v1/node/agent-sessions", async (request) => {
     const node = requireNode(request);
     const interruptsOnly = (request.query as { interruptsOnly?: string }).interruptsOnly === "1";
@@ -3758,6 +3779,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         agentHistory.observe(node.accountId, node.nodeId, sessionId, body.history);
         synchronizeNativePlan(store.database,node.accountId,sessionId);
         resumeApprovedPlan(node.accountId,sessionId);
+        if (commandStatus === "delivering") reply.header("X-MissionGo-Command-Status", "delivering");
         return reply.status(204).send();
       }
       const projectSession = store.database.connection.prepare(`SELECT f.product_id FROM free_session_starts f
@@ -3770,6 +3792,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       }
       const settingsRevision = settingsRevisionValue as number | undefined;
       agentSessionStore.recordSnapshot({
+        controlReservation: commandStatus === "delivering" || body.approvalRetryStatus === "delivering",
         nodeId: node.nodeId,
         sessionId,
         status,
@@ -3839,6 +3862,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       synchronizeNativePlan(store.database,node.accountId,sessionId);
       resumeApprovedPlan(node.accountId,sessionId);
       scheduleAttentionClassification(sessionId);
+      if (commandStatus === "delivering") reply.header("X-MissionGo-Command-Status",
+        agentSessionStore.commandById(sessionId, stringField(body, "commandId")!)?.status ?? "missing");
+      if (body.approvalRetryStatus === "delivering") reply.header("X-MissionGo-Retry-Status",
+        agentApprovalStore.pendingForNode(sessionId).approvalRetry?.status ?? "settled");
       return reply.status(204).send();
     },
   );

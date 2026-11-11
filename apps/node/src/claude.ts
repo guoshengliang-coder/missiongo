@@ -184,6 +184,13 @@ export class ClaudeAdapter implements Adapter {
     this.state.status = "active"; this.state.turnActive = true;
   }
   async historyPage(cursor: string) { return transcriptHistory(this.state.messages,cursor); }
+  async controlSnapshot(): Promise<Snapshot> {
+    const snapshot = await this.snapshot();
+    // Request cards and their answer traces are control data. Ordinary source
+    // prose travels only on the independent mirror lane.
+    return {...snapshot, messages:snapshot.messages.filter(message =>
+      message.sourceId.startsWith("request-") || message.sourceId.startsWith("permission-"))};
+  }
   async snapshot(): Promise<Snapshot> {
     const page=transcriptHistory(this.state.messages);
     const messages = [...page.messages];

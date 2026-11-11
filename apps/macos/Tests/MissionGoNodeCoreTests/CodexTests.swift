@@ -1983,6 +1983,11 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertEqual(report.status, "unavailable")
         XCTAssertEqual(report.messages.first?.text, "History")
         XCTAssertEqual(report.commandStatus, "failed")
+        let observed = try await launcher.synchronize(NodeAgentSession(id: "s", sessionRef: "thread-1", status: "idle",
+            externalBindingGeneration: 1).forSync(.observation))
+        XCTAssertEqual(observed.status, "unavailable")
+        XCTAssertEqual(observed.messages.first?.text, "History")
+        XCTAssertNil(observed.commandId)
     }
 
     func testRestartNeverReplaysAJournaledExactTurnStop() async throws {
@@ -2496,6 +2501,23 @@ final class CodexLauncherTests: XCTestCase {
             command: AgentSessionCommand(id: "next", text: "Continue")))
         XCTAssertNil(waiting.commandStatus)
         XCTAssertTrue(control.steerings.current.isEmpty)
+    }
+
+    func testRejectedReservationCannotAuthorizeLimitedHistoryInput() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = CodexThreadSnapshot(status: "idle", messages: [])
+        control.snapshot.historyLimited = true
+        let launcher = CodexLauncher(environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control)
+        let queued = NodeAgentSession(id: "s1", sessionRef: "thread-1", status: "idle",
+            command: AgentSessionCommand(id: "new", text: "Continue", status: "queued"))
+        let reservation = try await launcher.synchronize(queued)
+        XCTAssertEqual(reservation.commandStatus, "delivering")
+        launcher.discardCommandReservation(sessionId: "s1", commandId: "new")
+        let result = try await launcher.synchronize(NodeAgentSession(id: "s1", sessionRef: "thread-1", status: "idle",
+            command: AgentSessionCommand(id: "new", text: "Continue", status: "delivering")))
+        XCTAssertEqual(result.commandStatus, "delivery_unknown")
+        XCTAssertTrue(control.replies.current.isEmpty)
     }
 
     func testAnIdleThreadReservesThenDeliversTheQueuedWebReply() async throws {
