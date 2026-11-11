@@ -342,6 +342,7 @@ export function App() {
   const [agentConsoleBulkMode, setAgentConsoleBulkMode] = useState(false);
   const [agentConsoleBulkAvailable, setAgentConsoleBulkAvailable] = useState(false);
   const agentConsoleMoreRef = useRef<HTMLDetailsElement>(null);
+  const agentConsoleMoreTriggerRef = useRef<HTMLElement>(null);
   const [newSessionConfigOpen, setNewSessionConfigOpen] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [newSessionPending, setNewSessionPending] = useState(false);
@@ -366,6 +367,13 @@ export function App() {
   const sidebarTriggerRef = useRef<HTMLButtonElement>(null);
   const [agentConsoleSearch, setAgentConsoleSearch] = useState("");
   const [agentConsoleSearchOpen, setAgentConsoleSearchOpen] = useState(false);
+  const changeAgentConsoleSearchOpen = useCallback((open: boolean) => {
+    const menu = agentConsoleMoreRef.current;
+    if (open && menu?.open) {
+      afterTopOverlayCloses(() => setAgentConsoleSearchOpen(true));
+      menu.removeAttribute("open");
+    } else setAgentConsoleSearchOpen(open);
+  }, []);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [messageCenterOpen,setMessageCenterOpen]=useState(false);
   const searchTriggerRef=useRef<HTMLButtonElement>(null);
@@ -399,6 +407,7 @@ export function App() {
 
   const [listPaneWidth, setListPaneWidth] = useState(readListPaneWidth);
   const agentConsoleSinglePane = useMediaQuery("(max-width: 520px)");
+  const agentConsoleCompact = useMediaQuery("(max-width: 1023px)");
   const agentConsoleLayout = agentConsoleSinglePane ? "single" : "wide";
 
   const applyListPaneWidth = useCallback((width: number) => {
@@ -1335,6 +1344,7 @@ export function App() {
             selectedProductId={selectedProductId}
             unreadCounts={agentConsoleOpen && products.length > 0 ? unreadCounts.byProduct : undefined}
             unreadCountsLoaded={agentSessionsQuery.data !== undefined}
+            compactConsole={agentConsoleOpen && agentConsoleCompact}
             onSelect={(productId) => {
               agentConsoleMoreRef.current?.removeAttribute("open");
               if (newSessionPending) return;
@@ -1380,7 +1390,7 @@ export function App() {
           </button>
         )}
         {agentConsoleOpen && <AgentConsoleSearch value={agentConsoleSearch} onChange={setAgentConsoleSearch}
-          open={agentConsoleSearchOpen} onOpenChange={setAgentConsoleSearchOpen} />}
+          open={agentConsoleSearchOpen} onOpenChange={changeAgentConsoleSearchOpen} returnFocusRef={agentConsoleMoreTriggerRef} />}
         {agentConsoleOpen && (
           <div className="agent-console-topbar-actions has-bulk">
             {newSessionProducts.length > 0 && <button type="button" className="secondary-button agent-console-topbar-new" disabled={newSessionPending}
@@ -1407,8 +1417,12 @@ export function App() {
               <RefreshCw className={agentConsoleRefreshing ? "spin" : ""} size={18} />
             </button>
             <OverlayMenu className="agent-console-topbar-more" ref={agentConsoleMoreRef}>
-                <summary className="secondary-button" aria-label={t("moreActions")} title={t("moreActions")}><MoreVertical size={18} /></summary>
+                <summary ref={agentConsoleMoreTriggerRef} className="secondary-button" aria-label={t("moreActions")} title={t("moreActions")}><MoreVertical size={18} /></summary>
                 <div className="agent-console-topbar-more-menu">
+                  {agentConsoleCompact && <>
+                    <button type="button" onClick={() => changeAgentConsoleSearchOpen(true)}><Search size={16} />{t("agentConsoleSearchAction")}</button>
+                    <div className="agent-console-menu-divider" />
+                  </>}
                   {newSessionProducts.length > 0 && <button type="button" disabled={newSessionPending} onClick={beginNewSession}><Plus size={16} />{t(newSessionDraft ? "newSessionResume" : "newSession")}</button>}
                   {agentConsoleBulkAvailable && !agentConversationOpen && !newSessionOpen && <button type="button" onClick={() => {
                     agentConsoleMoreRef.current?.removeAttribute("open");
@@ -2155,26 +2169,28 @@ function ItemRow({
 }
 /** Product metadata uses the same combobox interaction and popup as forms. */
 function ProductSwitcher({
-  products, selectedProductId, unreadCounts, unreadCountsLoaded, onSelect,
+  products, selectedProductId, unreadCounts, unreadCountsLoaded, compactConsole = false, onSelect,
 }: {
   products: readonly Product[];
   selectedProductId: string;
   unreadCounts: ReadonlyMap<string, number> | undefined;
   unreadCountsLoaded: boolean;
+  compactConsole?: boolean;
   onSelect: (productId: string) => void;
 }) {
   const { t } = useI18n();
   const content = (id: string, expanded: boolean) => {
     const product = products.find(entry => entry.id === id);
     if (!product) return null;
+    const unread = unreadCounts?.get(id) ?? 0;
     return <>
       <ProductBadge product={product} />
       {expanded
         ? <span className="product-switcher-option"><strong>{product.name}</strong><small>{product.keyPrefix}</small></span>
         : <span className="product-switcher-name">{product.name}</span>}
-      {unreadCounts && unreadCountsLoaded && <small className="agent-unread-badge"
+      {unreadCounts && unreadCountsLoaded && (!compactConsole || expanded || unread > 0) && <small className="agent-unread-badge"
         aria-label={t("agentConsoleUnreadCount", { count: unreadCounts.get(id) ?? 0 })}>
-        {unreadCounts.get(id) ?? 0}
+        {compactConsole && !expanded && unread > 99 ? "99+" : unread}
       </small>}
     </>;
   };

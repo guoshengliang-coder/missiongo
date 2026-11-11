@@ -66,7 +66,7 @@ for (const width of [375, 480, 680, 1440]) for (const theme of ["light", "dark"]
       await page.screenshot({ path: test.info().outputPath("workspace.png") });
       await page.goto(`/?product=${fixture.productId}&console=agent`);
       const select = page.locator(".agent-console-agent-filter .single-select");
-      const search = page.getByRole("combobox", { name: "会话类型筛选", exact: true });
+      const search = width <= 1023 ? page.locator(".agent-console-combined-filter") : page.getByRole("combobox", { name: "会话类型筛选", exact: true });
       await expect(select).toBeVisible();
       expect(Math.abs((await select.boundingBox())!.height - (await search.boundingBox())!.height)).toBeLessThanOrEqual(1);
       const switcher = page.locator(".product-switcher");

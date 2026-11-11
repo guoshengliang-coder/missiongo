@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { fileURLToPath } from "node:url";
 import { advanceSessionListPoll } from "./polling";
+import { openConversationFilters, closeConversationFilters } from "./console-helpers";
 
 function sessions(productId: string) {
   const stamp = "2026-11-08T10:00:00Z";
@@ -54,6 +55,7 @@ for (const width of [320, 520, 521, 1023, 1024, 1440, 1847]) for (const theme of
       const association = page.getByRole("combobox", { name: "会话类型筛选", exact: true });
       const agent = page.getByRole("combobox", { name: "Agent 筛选", exact: true });
       for (const control of [association, agent]) {
+        if (control === association) await openConversationFilters(page);
         await control.click();
         const menu = page.getByRole("listbox");
         await expect(menu.getByRole("option").first()).toHaveAccessibleName(/3 个运行中，共 44 个会话/);
@@ -67,6 +69,7 @@ for (const width of [320, 520, 521, 1023, 1024, 1440, 1847]) for (const theme of
         if (width === 1847) await page.screenshot({ path: testInfo.outputPath(control === association ? "association.png" : "agent.png") });
         await page.keyboard.press("Escape");
         await expect(control).toBeFocused();
+        await closeConversationFilters(page);
       }
       expect(errors).toEqual([]);
     });
@@ -133,6 +136,9 @@ test("AND-459 zero, active, archived and changing counts retain their list scope
   await expect.poll(async () => (await menu.boundingBox())!.width).toBeGreaterThan(before);
   await menuFits(page, menu);
   await page.setViewportSize({ width: 320, height: 500 });
+  await expect(menu).toHaveCount(0);
+  await openConversationFilters(page);
+  await association.click();
   await menuFits(page, menu);
   await menu.getByRole("option", { name: /^全部/ }).click();
   await expect(list).toHaveCount(100);

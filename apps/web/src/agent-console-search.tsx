@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, type RefObject } from "react";
 import { ArrowLeft, Search, X } from "lucide-react";
 import { useI18n } from "./i18n";
 import { useOverlay } from "./overlay";
 import { useMediaQuery } from "./use-media-query";
 
 /** One search value for desktop and the compact topbar, independent of item search. */
-export function AgentConsoleSearch({ value, onChange, open, onOpenChange }: {
+export function AgentConsoleSearch({ value, onChange, open, onOpenChange, returnFocusRef }: {
+  returnFocusRef?: RefObject<HTMLElement | null>;
   value: string; onChange: (value: string) => void; open: boolean; onOpenChange: (open: boolean) => void;
 }) {
   const { t } = useI18n();
@@ -14,8 +15,11 @@ export function AgentConsoleSearch({ value, onChange, open, onOpenChange }: {
   const trigger = useRef<HTMLButtonElement>(null);
   const close = useCallback(() => {
     onOpenChange(false);
-    requestAnimationFrame(() => trigger.current?.focus({ preventScroll: true }));
-  }, [onOpenChange]);
+    requestAnimationFrame(() => {
+      const target = compact ? returnFocusRef?.current ?? trigger.current : trigger.current;
+      target?.focus({ preventScroll: true });
+    });
+  }, [compact, onOpenChange, returnFocusRef]);
   useOverlay(compact && open, close);
   useEffect(() => {
     if (open) input.current?.focus();

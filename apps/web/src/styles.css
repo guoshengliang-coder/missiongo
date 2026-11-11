@@ -3512,3 +3512,21 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .agent-session-head { flex-wrap: wrap; }
 .agent-plan-record > a, .agent-plan-record > details > summary { min-height: 44px; align-content: center; }
 .agent-plan-record > a { display: inline-flex; align-items: center; }
+
+/* AND-509: compact console keeps navigation/actions and filters on two rows. */
+.agent-console-menu-divider { height: 1px; margin: 5px 0; background: var(--line); }
+@media (max-width: 1023px) {
+  .topbar.agent-console-topbar { grid-template-columns: auto minmax(0, 1fr) auto; gap: 6px; }
+  .agent-console-topbar .agent-console-search-slot:not(.expanded) { display: none; }
+  .agent-console-topbar-actions.has-bulk > :not(.agent-console-topbar-more) { display: none; }
+  .agent-console-topbar-actions.has-bulk > .agent-console-topbar-more { display: block; }
+  .agent-console-projects { gap: 6px; }
+  .agent-console-projects .product-switcher-wrap { flex: 1; }
+  :root .agent-console-projects button.single-select.product-switcher { width: 100%; padding-inline: 8px; gap: 6px; }
+  .agent-console-projects .single-select-value { overflow: visible; gap: 4px; }
+  .agent-console-projects .agent-unread-badge { padding-inline: 3px; }
+  .agent-console-projects .product-switcher-name { flex: 1; }
+  .agent-console-projects .product-badge { flex-shrink: 0; }
+  .agent-console-topbar-more-menu button { min-height: 44px; }
+  .agent-console-combined-filter { width: 100%; }
+}
