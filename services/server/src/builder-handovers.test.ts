@@ -6,6 +6,7 @@ import { createAiAccessToken, hashPassword } from "./admin-auth.js";
 import { DispatchStore } from "./dispatch-store.js";
 import { AgentSessionStore } from "./agent-session-store.js";
 import { BuilderHandovers } from "./builder-handovers.js";
+import { assertExternalExecution } from "./builder-authority.js";
 import { ExternalAgentSessionStore } from "./external-agent-session-store.js";
 import type { FastifyInstance } from "fastify";
 
@@ -50,6 +51,12 @@ async function fixture() {
     sessions.recordSnapshot({nodeId:aNode.nodeId,sessionId,status,messages:[],turnState:{turnActive:status === "active"},commandId,commandStatus});
     handovers.forSession(sessionId);
   };
+  const external=new ExternalAgentSessionStore(store), externalAccess={accountId:a.id,clientId:"test-client"};
+  const externalSession=(key:string)=>external.register(externalAccess,{agentKind:"codex",sessionRef:randomUUID(),refKind:"native"},key);
+  const externalSnapshot=(id:string,status:string,turnActive=false,fresh=true)=>{
+    db.prepare("UPDATE external_agent_sessions SET native_node_id=?,native_snapshot_json=?,native_synced_at=? WHERE id=?")
+      .run(aNode.nodeId,JSON.stringify({status,turnState:{turnActive}}),new Date(Date.now()-(fresh ? 0 : 600_000)).toISOString(),id);
+  };
   const mcp=async(account:typeof a,name:string,args:Record<string,unknown>,clientId="handover-test-client")=>{
     const token=createAiAccessToken(config,{id:account.id,username:account.email,role:account.role},accounts.credentialsStamp(account),clientId,["missiongo:read","missiongo:write"]).token;
     if(name==="claim_item") approvedClaimFixture(store,token,args);
@@ -59,7 +66,7 @@ async function fixture() {
       ? response.body.split("\n").find(line=>line.startsWith("data: "))!.slice(6) : response.body;
     return JSON.parse(payload).result as {isError?:boolean;structuredContent?:Record<string,unknown>};
   };
-  return {app,mcp,store,accounts,db,a,b,product,aCookie,bCookie,adminCookie,dispatches,sessions,handovers,aNode,bNode,item,dispatch,launch,start,transfer,stopCommand,snapshot};
+  return {app,mcp,store,accounts,db,a,b,product,aCookie,bCookie,adminCookie,dispatches,sessions,handovers,aNode,bNode,item,dispatch,launch,start,transfer,stopCommand,snapshot,external,externalAccess,externalSession,externalSnapshot};
 }
 
 describe("Builder execution handover",()=>{
@@ -150,18 +157,110 @@ describe("Builder execution handover",()=>{
     expect(()=>f.dispatch([one.key],f.a.id,f.aNode.nodeId,true)).not.toThrow();
     expect(()=>f.dispatch([one.key],f.b.id,f.bNode.nodeId,false)).not.toThrow();
   });
-  it("blocks uncontrollable external sessions and protects multi-item external scopes before mutation",async()=>{
+  it("transfers tracking history without claiming to stop it and protects multi-item external scopes before mutation",async()=>{
     const f=await fixture(),one=f.item(),two=f.item(),external=new ExternalAgentSessionStore(f.store);
     const access={accountId:f.a.id,clientId:"test-client"};
     f.start(one.key);
     const id=external.register(access,{agentKind:"codex",sessionRef:randomUUID(),refKind:"tracking"},one.key);
-    expect(f.transfer(one.key).builderHandover).toMatchObject({status:"blocked",reason:expect.stringContaining("外部会话")});
+    const original=f.db.prepare("SELECT * FROM external_agent_sessions WHERE id=?").get(id);
+    expect(f.transfer(one.key)).toMatchObject({status:"in_progress",builderAccountId:f.b.id,builderHandover:{status:"completed"}});
+    expect(f.db.prepare("SELECT * FROM external_agent_sessions WHERE id=?").get(id)).toEqual(original);
+    expect(f.db.prepare("SELECT requires_stop FROM builder_revoked_external_sessions WHERE session_id=?").get(id)).toMatchObject({requires_stop:0});
+    expect(f.store.getTimeline(one.key).filter(row=>row.eventType==="execution_stop_confirmed")).toEqual([]);
+    expect(()=>external.register(access,{agentKind:"codex",sessionRef:(original as {session_ref:string}).session_ref,refKind:"tracking"},one.key)).toThrow();
     f.start(two.key);
     const other=external.register(access,{agentKind:"codex",sessionRef:randomUUID(),refKind:"tracking"},two.key);
     const three=f.item();f.start(three.key);
     external.register(access,{agentKind:"codex",sessionRef:(f.db.prepare("SELECT session_ref FROM external_agent_sessions WHERE id=?").get(other) as {session_ref:string}).session_ref,refKind:"tracking"},three.key);
     expect(()=>f.transfer(two.key,f.b.id,f.a.id)).toThrow(/多条目/);
     expect(id).toBeTruthy();
+  });
+
+  it.each(["idle","suspended","unavailable","failed","stale-active","offline-active"])("transfers %s external history while preserving its observations",async state=>{
+    const f=await fixture(),item=f.item();f.start(item.key);
+    const id=f.externalSession(item.key);
+    f.externalSnapshot(id,state.endsWith("active") ? "active" : state,state.endsWith("active"),state!=="stale-active");
+    if(state==="offline-active") f.db.prepare("UPDATE nodes SET last_seen_at=NULL WHERE id=?").run(f.aNode.nodeId);
+    const before=f.db.prepare("SELECT native_snapshot_json,progress_status FROM external_agent_sessions WHERE id=?").get(id);
+    expect(f.transfer(item.key)).toMatchObject({status:"in_progress",builderAccountId:f.b.id,builderHandover:{status:"completed"}});
+    expect(f.db.prepare("SELECT native_snapshot_json,progress_status FROM external_agent_sessions WHERE id=?").get(id)).toEqual(before);
+    expect(()=>assertExternalExecution(f.store.database,id)).toThrow(/失效/);
+  });
+
+  it.each(["active","stalled","turnActive","queued","delivering","delivery_unknown"])("keeps %s external activity blocked even after a completion report",async state=>{
+    const f=await fixture(),item=f.item();f.start(item.key);
+    const id=f.externalSession(item.key);
+    f.externalSnapshot(id,state==="turnActive" ? "idle" : ["active","stalled"].includes(state) ? state : "unavailable",state==="turnActive");
+    f.external.report(f.externalAccess,id,item.key,"completed","Progress is not physical stop proof",randomUUID());
+    if(["queued","delivering","delivery_unknown"].includes(state)) f.db.prepare("INSERT INTO external_native_commands(id,session_id,text,status,created_at) VALUES (?,?,?,?,?)")
+      .run(randomUUID(),id,"Pending work",state,new Date().toISOString());
+    const result=f.transfer(item.key);
+    expect(result).toMatchObject({builderAccountId:f.a.id,builderHandover:{status:"blocked",reason:expect.stringContaining("实际活动或待处理命令")}});
+    expect(f.handovers.retry(item.key,result.builderHandover!.id).builderHandover?.status).toBe("blocked");
+  });
+
+  it("retries the original blocked external handover using current evidence without automatic recovery",async()=>{
+    const f=await fixture(),item=f.item();f.start(item.key);
+    const id=f.externalSession(item.key);f.externalSnapshot(id,"active",true);
+    const blocked=f.transfer(item.key),handoverId=blocked.builderHandover!.id;
+    f.externalSnapshot(id,"unavailable");
+    // Existing blocked handovers retain requires_stop=1, including those created before this fix.
+    expect(f.db.prepare("SELECT requires_stop FROM builder_revoked_external_sessions WHERE session_id=?").get(id)).toMatchObject({requires_stop:1});
+    f.handovers.reconcile(handoverId);
+    expect(f.store.getWorkItem(item.key).builderHandover?.status).toBe("blocked");
+    f.accounts.replacePermissions(f.b.id,[{productId:f.product.id,canView:true,canOperate:false,canUseAi:true}]);
+    expect(()=>f.handovers.retry(item.key,handoverId)).toThrow(/操作权限/);
+    expect(f.store.getWorkItem(item.key).builderAccountId).toBe(f.a.id);
+    f.accounts.replacePermissions(f.b.id,[{productId:f.product.id,canView:true,canOperate:true,canUseAi:true}]);
+    expect(f.handovers.retry(item.key,handoverId)).toMatchObject({builderAccountId:f.b.id,builderHandover:{id:handoverId,status:"completed"}});
+    expect(()=>f.handovers.retry(item.key,handoverId)).toThrow(/已变更/);
+    expect(f.store.getTimeline(item.key).filter(row=>row.eventType==="builder_changed" && row.payload.handoverId===handoverId)).toHaveLength(1);
+    f.handovers.start(item.key,"admin",f.a.id,f.b.id,"Return Builder");
+    expect(()=>f.external.register(f.externalAccess,{agentKind:"codex",sessionRef:(f.db.prepare("SELECT session_ref FROM external_agent_sessions WHERE id=?").get(id) as {session_ref:string}).session_ref,refKind:"native"},item.key)).toThrow();
+  });
+
+  it("rechecks external activity before completing an in-flight dispatch stop",async()=>{
+    const f=await fixture(),item=f.item(),{d,sessionId}=f.launch([item.key]);f.start(item.key);
+    const id=f.externalSession(item.key);f.externalSnapshot(id,"idle");
+    const started=f.transfer(item.key);expect(started.builderHandover?.status).toBe("stopping");
+    f.externalSnapshot(id,"active",true);
+    f.snapshot(sessionId,f.stopCommand(d.id));
+    expect(f.store.getWorkItem(item.key)).toMatchObject({builderAccountId:f.a.id,builderHandover:{status:"blocked"}});
+    f.externalSnapshot(id,"idle");
+    expect(f.handovers.retry(item.key,started.builderHandover!.id)).toMatchObject({builderAccountId:f.b.id,builderHandover:{status:"completed"}});
+  });
+
+  it("preflights closed external history and native mirrors before revoking any shared scope",async()=>{
+    const f=await fixture(),one=f.item(),two=f.item();f.start(one.key);f.start(two.key);
+    const id=f.externalSession(one.key);
+    const ref=(f.db.prepare("SELECT session_ref FROM external_agent_sessions WHERE id=?").get(id) as {session_ref:string}).session_ref;
+    f.external.register(f.externalAccess,{agentKind:"codex",sessionRef:ref,refKind:"native"},two.key);
+    f.external.report(f.externalAccess,id,one.key,"completed","History completed",randomUUID());
+    f.store.transitionWorkItem({itemKey:one.key,to:"development_complete",actor:"human",reason:"manual_override",note:"Fixture integration",attribution:{accountId:"admin"}});
+    expect(()=>f.transfer(one.key)).toThrow(/多条目/);
+    expect(f.db.prepare("SELECT COUNT(*) AS count FROM builder_revoked_external_sessions").get()).toMatchObject({count:0});
+
+    const other=f.item(),{sessionId}=f.launch([other.key]);
+    const single=f.item();f.start(single.key);
+    const mirror=f.externalSession(single.key);
+    const source=f.db.prepare("SELECT agent_session_ref FROM agent_sessions WHERE id=?").get(sessionId) as {agent_session_ref:string};
+    f.db.prepare("UPDATE external_agent_sessions SET native_node_id=?,agent_kind='opencode',session_ref=? WHERE id=?").run(f.aNode.nodeId,source.agent_session_ref,mirror);
+    expect(()=>f.transfer(single.key)).toThrow(/同一原生会话/);
+    expect(f.db.prepare("SELECT COUNT(*) AS count FROM builder_handovers").get()).toMatchObject({count:0});
+    expect(f.store.getWorkItem(single.key).builderAccountId).toBe(f.a.id);
+  });
+
+  it("keeps a legacy blocked handover blocked when its external source now shares another item",async()=>{
+    const f=await fixture(),item=f.item();f.start(item.key);
+    const id=f.externalSession(item.key);f.externalSnapshot(id,"active",true);
+    const blocked=f.transfer(item.key);
+    const other=f.item();
+    // Simulate an older stored relationship or a source mirror learned after the original preflight.
+    f.db.prepare("INSERT INTO external_agent_session_items(session_id,item_id,link_kind) VALUES (?,?,'handling')").run(id,other.id);
+    f.externalSnapshot(id,"idle");
+    expect(f.handovers.retry(item.key,blocked.builderHandover!.id))
+      .toMatchObject({builderAccountId:f.a.id,builderHandover:{status:"blocked",reason:expect.stringContaining("关联了其他条目")}});
+    expect(f.store.getWorkItem(other.key).builderAccountId).toBeUndefined();
   });
   it("validates operate and AI permissions before any change, and detects a stale concurrent transfer",async()=>{
     const f=await fixture(),item=f.item(),d=f.dispatch([item.key]);

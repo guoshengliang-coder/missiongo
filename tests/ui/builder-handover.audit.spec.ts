@@ -6,6 +6,7 @@ for (const viewport of [{name:"desktop",width:1440,height:900},{name:"phone",wid
   test.describe(`${viewport.name} ${theme}`,()=>{
     test.use({viewport:{width:viewport.width,height:viewport.height},hasTouch:viewport.name === "phone",isMobile:viewport.name === "phone",colorScheme:theme});
   test(`Builder handover progress and explicit recovery`,async({page,request})=>{
+    await page.clock.setFixedTime(new Date("2026-11-11T04:00:00Z"));
     const suffix=Date.now().toString(36)+viewport.name+theme;
     const product=await (await request.post("/api/v1/products",{data:{name:`Handover ${suffix}`,keyPrefix:`HO${viewport.name[0]!.toUpperCase()}${theme[0]!.toUpperCase()}${Date.now().toString(36).slice(-4).toUpperCase()}`}})).json();
     const item=await (await request.post("/api/v1/items",{data:{productId:product.id,status:"ready",type:"task",priority:"normal",title:"First pickup and handover",description:"Check explicit recovery",environment:{platform:"web"}}})).json();
@@ -26,6 +27,8 @@ for (const viewport of [{name:"desktop",width:1440,height:900},{name:"phone",wid
     await page.goto(`/?product=${product.id}&status=in_progress&item=${item.key}`);
     const notice=page.getByRole("status").filter({has:page.getByText("交接受阻",{exact:true})});
     await expect(notice).toContainText("旧执行节点离线");
+    await expect(notice).toContainText("重试会在本次交接内重新核对当前证据");
+    await expect(notice).toContainText("不表示旧设备进程已停止");
     await expect(page.getByRole("button",{name:"选择机器和 Agent 接手",exact:true})).toHaveCount(0);
     const retryButton=page.getByRole("button",{name:"重试交接",exact:true});
     expect((await retryButton.boundingBox())!.height).toBeGreaterThanOrEqual(44);
@@ -35,6 +38,7 @@ for (const viewport of [{name:"desktop",width:1440,height:900},{name:"phone",wid
     status="completed";await page.reload();
     const completed=page.getByRole("status").filter({has:page.getByText("交接完成",{exact:true})});
     await expect(completed).toContainText("条目状态和历史成果已保留");
+    await expect(completed).toContainText("外部历史记录无实际活动或待处理命令时可转交");
     await expect(page.getByRole("button",{name:"重试交接",exact:true})).toHaveCount(0);
     await completed.screenshot({path:test.info().outputPath("handover-completed.png")});
     await page.screenshot({path:test.info().outputPath(`${viewport.name}-${theme}.png`)});
