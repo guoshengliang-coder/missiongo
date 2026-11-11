@@ -24,7 +24,10 @@ export function validateBudget(config) {
   for (const target of Object.values(config.targets)) assert.ok(positive(target.budgetMs)
     && integer(target.iterations, 1, 10_000), "Invalid target budget");
   const r = config.release;
-  assert.ok(r?.version === 2 && r.timingUnit === "wall-ms" && r.maxDurationMs === 120000, "Invalid release performance contract");
+  assert.ok(r?.version === 3 && r.timingUnit === "wall-ms" && r.maxDurationMs === 245000, "Invalid release performance contract");
+  assert.ok(r.preparationMs === 120000 && r.measurementMs === 120000 && r.cleanupMs === 5000
+    && r.maxDurationMs === r.preparationMs + r.measurementMs + r.cleanupMs, "Invalid release stage deadlines");
+  assert.ok(r.maxBackupBytes === 512 * 1024 * 1024 && r.maxTempBytes === 2 * 1024 * 1024 * 1024, "Invalid release resource limits");
   assert.ok(typeof r.reason === "string" && r.reason.trim(), "Release budgets need a reason");
   assert.deepEqual(Object.keys(r.httpTargets).sort(), ["claim-next", "item-list", "merge-deliveries"]);
   for (const target of Object.values(r.httpTargets)) assert.ok(positive(target.budgetMs) && integer(target.iterations, 1, 100), "Invalid HTTP budget");

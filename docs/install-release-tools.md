@@ -45,3 +45,28 @@ The installation also carries the transitive Linux, coverage, candidate and
 handover modules used by preflight/receipt. The public handover implementation is
 installed as `handover-evidence.mjs`; its repository-relative forwarding module is
 not copied. The public implementation must be tracked and clean alongside scripts.
+
+
+## 安装后正式入口的安全演练（AND-506）
+
+`npm run test:scripts` 先运行脚本单测，再串行运行
+`node --test tests/release/installed-entry.e2e.mjs`。后者从临时Git仓库/worktree
+执行真实安装CLI，安装完整工具集，再从含空格的worktree子目录调用安装后的
+status、plan、check和deploy。真实编译和性能测量仅使用合成备份；不会改动全机安装。
+串行是为避免性能计时及生成dist与其他脚本测试互相影响。
+
+外部SSH、GitHub和rsync由受控代理提供响应，未知命令拒绝，不使用真实目标或凭据。
+锁、CI、覆盖、版本和性能的正式代码均保留，不用替换模块来伪造通过。
+演练检查完整规划输出以及版本/账本未写入、候选/选择摘要/局部范围参数传递、
+真实忙锁和各门禁失败退出；向临时副本注入缺间接模块、导入提前退出及旧路径定位
+缺陷，证明测试能抓住三类历史回归。
+
+成功check不能触发生产动作。deploy演练在首次rsync写入边界由代理拒绝，
+断言边界只到达一次、没有后续备份或容器更新。禁止跳过备份/CI及脏目录的参数仍拒绝。
+这不是生产部署、真实备份或真实网络性能证据，也没有新增生产跳过门禁开关。
+本地需要允许loopback监听；沙箱禁止监听时应明确报告环境限制。
+
+演练还发现并修复私有路径传递缺口：协调入口将已配置的currentLink、downloadsDir和backupsDir
+显式传给installed deploy，不再让后者使用不同默认值。命令行覆盖这些路径以及data-dir仍拒绝；
+不允许通过参数跳过备份、CI或工作区检查。逐目标五倍退化实验使用20个历史批次、400个条目的
+受控数据，目标须实际超预算才记detected；保护性非零退出不算检出。

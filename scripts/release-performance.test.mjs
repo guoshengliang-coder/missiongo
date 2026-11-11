@@ -30,7 +30,7 @@ test("manifest validation rejects unsafe names, invalid digests, size and future
   assert.ok(backupCommand("program", ["/path with ' quote"]).includes("'\\''"));
 });
 
-test("remote discovery reads complete regular backups and orders by creation time", () => {
+test("remote discovery reads complete regular backups and orders by creation time", async () => {
   const dir = temp();
   try {
     const bytes = Buffer.from("SQLite fixture"), m = manifest(bytes);
@@ -41,17 +41,17 @@ test("remote discovery reads complete regular backups and orders by creation tim
     // Fake SSH executes neither sudo nor any network: output bytes go directly
     // to a file descriptor, never into an exception or a tool response.
     const ssh = join(dir, "ssh");
-    writeFileSync(ssh, `#!/usr/bin/env python3\nimport sys\nif 'MISSIONGO_BACKUP_TRANSFER_V1' in sys.argv[-1]: sys.stdout.buffer.write(${JSON.stringify(bytes.toString())}.encode())\nelse: print(${JSON.stringify(JSON.stringify(m))})\n`, { mode: 0o700 });
+    writeFileSync(ssh, `#!/usr/bin/env python3\nimport sys,gzip\nif 'MISSIONGO_BACKUP_TRANSFER_V2' in sys.argv[-1]: sys.stdout.buffer.write(gzip.compress(${JSON.stringify(bytes.toString())}.encode()))\nelse: print(${JSON.stringify(JSON.stringify(m))})\n`, { mode: 0o700 });
     const destination = join(dir, "copy"); mkdirSync(destination);
-    const result = fetchBackup({ host: "fixture", backupsDir: dir, directory: destination, ssh });
+    const result = await fetchBackup({ host: "fixture", backupsDir: dir, directory: destination, ssh });
     assert.equal(readFileSync(result.database, "utf8"), bytes.toString());
     writeFileSync(ssh, readFileSync(ssh, "utf8").replace(JSON.stringify(bytes.toString()), '"CORRUPT"'));
     const bad = join(dir, "bad"); mkdirSync(bad);
-    assert.throws(() => fetchBackup({ host: "fixture", backupsDir: dir, directory: bad, ssh }), /size mismatch/);
+    await assert.rejects(() => fetchBackup({ host: "fixture", backupsDir: dir, directory: bad, ssh }), /size mismatch/);
     const sameSize = Buffer.alloc(bytes.length, "x").toString();
     writeFileSync(ssh, readFileSync(ssh, "utf8").replace('"CORRUPT"', JSON.stringify(sameSize)));
     const tampered = join(dir, "tampered"); mkdirSync(tampered);
-    assert.throws(() => fetchBackup({ host: "fixture", backupsDir: dir, directory: tampered, ssh }), /digest mismatch/);
+    await assert.rejects(() => fetchBackup({ host: "fixture", backupsDir: dir, directory: tampered, ssh }), /digest mismatch/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -175,7 +175,7 @@ test("real smoke worker exercises authenticated HTTP on a synthetic backup and r
     const productId = fixture.store.listProducts()[0].id;
     await fixture.app.close(); fixture = undefined;
     const bytes = readFileSync(db), m = manifest(bytes), ssh = join(dir, "ssh");
-    writeFileSync(ssh, `#!/usr/bin/env python3\nimport sys,shutil\nif 'MISSIONGO_BACKUP_TRANSFER_V1' in sys.argv[-1]:\n with open(${JSON.stringify(db)},'rb') as f: shutil.copyfileobj(f,sys.stdout.buffer)\nelse: print(${JSON.stringify(JSON.stringify(m))})\n`, { mode: 0o700 });
+    writeFileSync(ssh, `#!/usr/bin/env python3\nimport sys,shutil,gzip\nif 'MISSIONGO_BACKUP_TRANSFER_V2' in sys.argv[-1]:\n with open(${JSON.stringify(db)},'rb') as f: \n  with gzip.GzipFile(fileobj=sys.stdout.buffer,mode='wb') as out: shutil.copyfileobj(f,out)\nelse: print(${JSON.stringify(JSON.stringify(m))})\n`, { mode: 0o700 });
     process.env.PATH = dir + ":" + previousPath;
     // Other script tests import the already-built dist concurrently. Keep this
     // HTTP/backup integration child on that build; the actual forced compiler
@@ -194,7 +194,7 @@ test("real smoke worker exercises authenticated HTTP on a synthetic backup and r
     `);
     const report = await runReleasePerformance({ root: resolveRoot(), host: "fixture", backupsDir: "/fixture/backups", productId }, { worker });
     assert.equal(report.cleaned, true);
-    assert.equal(report.node, process.version);
+    assert.equal(report.node, process.version, JSON.stringify(report));
     assert.equal(report.httpCalibration?.source, "loopback-health");
     assert.equal(report.httpCalibration?.timingUnit, "wall-ms");
     assert.equal(report.httpTargets.find(t => t.name === "claim-next").calibrationKind, "loopback-health-wall");
