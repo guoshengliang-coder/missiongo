@@ -8,8 +8,8 @@
   ],
   "artifacts": {
     "linuxCli": {
-      "version": "0.1.25",
-      "commit": "b6bea12c45f94926023e148d7031e3f50da2b83f",
+      "version": "0.1.26",
+      "commit": "0cff1e4c69bb1ea235f07dfdcce512391b4eedef",
       "versionFile": "product.json",
       "versionJsonPath": "linuxNode.version",
       "paths": [
@@ -17,7 +17,7 @@
         "packages/domain",
         "scripts/build-node.mjs"
       ],
-      "sha256": "ce47fdf2f19ce3d18f567304d11b4a0bc9f4d1d46c9b1b5703abed34b103888a"
+      "sha256": "f768c85ee3f52129a775ba98a8749d7d1a1378e5e39ae97cdbd693afd389661e"
     },
     "androidApp": {
       "version": "0.1.21",
@@ -39,8 +39,8 @@
       ]
     },
     "macosApp": {
-      "version": "0.4.91",
-      "commit": "0bc594a6cc412230ea25fdbe14fd6453047e1602",
+      "version": "0.4.92",
+      "commit": "cab812ed1654047db4b1537a5055803cd5d14264",
       "versionFile": "apps/macos/version.properties",
       "versionProperty": "missiongoMacosVersion",
       "paths": [
