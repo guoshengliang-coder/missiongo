@@ -14,7 +14,10 @@ export async function serverFixture(shape) {
     const product = store.createProduct({ name: "Synthetic budget", keyPrefix: "PERF", createdByAccountId: accountId });
     const merges = new MergeDeliveries(store), dispatches = new DispatchStore(store.database);
     const node = dispatches.registerNode({ accountId, installationId: "budget-node", name: "Synthetic" });
-    dispatches.recordHeartbeat(node.nodeId, [{ kind: "codex", ready: true, planApprovalProtocol: 1 }], [], "*", { supportsFreeSessions: true });
+    // Large shapes build history for longer than the 90s node-online window;
+    // a real node keeps heartbeating, so refresh before every batch starts.
+    const heartbeat = () => dispatches.recordHeartbeat(node.nodeId, [{ kind: "codex", ready: true, planApprovalProtocol: 1 }], [], "*", { supportsFreeSessions: true });
+    heartbeat();
     dispatches.replaceOwnRepos(node.nodeId, [{ productId: product.id, repoPath: "/synthetic/budget" }]);
     const account = app.missionGoAccounts.getAccount(accountId);
     const token = createAiAccessToken(config, { id: accountId, username: account.email, role: account.role },
@@ -54,6 +57,7 @@ export async function serverFixture(shape) {
         merges.decide(accountId, d.id, d.revision, "confirm");
         selected.push({ id: d.id, revision: d.revision }); groups.push({ d, keys, number }); deliveries.push(d);
       }
+      heartbeat();
       const batch = merges.start(accountId, `batch-${batchIndex}`, selected,
         { productId: product.id, nodeId: node.nodeId, agentKind: "codex", mode: "default" }, true);
       batches.push(batch);
