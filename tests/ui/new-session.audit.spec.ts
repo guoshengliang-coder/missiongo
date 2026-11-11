@@ -69,6 +69,10 @@ for (const width of [375, 768, 1440]) {
       await expect(search).toHaveValue("过滤");
       await search.fill("");
       await search.press("Escape");
+      // The mocked clock queues the search's focus-restoring rAF; without
+      // awaiting it here, that focus lands on the summary later and the
+      // more-panel Select's onBlur closes its menu mid-interaction.
+      await expect(page.locator(".agent-console-topbar-more > summary")).toBeFocused();
     }
     const replyBar = page.locator(".agent-console-reply");
     await replyBar.getByRole("combobox", { name: "模型", exact: true }).click();
