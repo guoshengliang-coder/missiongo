@@ -44,6 +44,21 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       else reply();
     }
     else if (["turn/start", "turn/steer"].includes(message.method)) {
+      const prompt = message.params.input[0].text;
+      if (prompt.startsWith("failure ")) {
+        const error = { message: "Synthetic failure token=fixture-secret /tmp/private/source.log", codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 502 } }, additionalDetails: "must-not-upload" };
+        turn = { id: `turn-${prompt.replaceAll(" ", "-")}`, status: "failed", items: [], error: prompt === "failure event fixture" || prompt === "failure missing fixture" ? null : error };
+        if (prompt === "failure event fixture") {
+          emit({ method: "error", params: { threadId: ref, turnId: turn.id, error, willRetry: false } });
+          emit({ method: "turn/completed", params: { threadId: ref, turn } });
+        }
+      } else if (prompt === "transient fixture") {
+        turn = { id: "turn-transient", status: "inProgress", items: [] };
+        emit({ method: "error", params: { threadId: ref, turnId: turn.id, error: { message: "Temporary failure", codexErrorInfo: "internalServerError" }, willRetry: true } });
+      } else if (prompt === "recovery fixture") {
+        turn = { id: "turn-recovered", status: "completed", items: [] };
+        emit({ method: "turn/completed", params: { threadId: ref, turn } });
+      }
       turn.items.push({ id: `user-${turn.items.length}`, type: "userMessage", content: message.params.input });
       if (process.env.TEST_FAIL_CONTROL_OBSERVATION && message.params.clientUserMessageId === "command-once") failControlObservation = true;
       emit({ id: message.id, result: { turn } });

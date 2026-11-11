@@ -1,6 +1,7 @@
 import { messageTimestamp } from "./message-time.js";
 import { sessionName } from "./session-name.js";
 import { codexHistory } from "./codex-history.js";
+import { codexTurnFailure } from "./codex-failure.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { JsonProcess } from "./process.js";
@@ -54,6 +55,7 @@ export class CodexAdapter implements Adapter {
   private closed = false;
   private lastApproval: Approval | undefined;
   private lastMessages: Message[] = [];
+  private terminalFailure: Snapshot["failure"];
   constructor(private job: Dispatch, executable: string, private localSkillVersion?: string) {
     this.rpc = new JsonProcess(executable, ["app-server"], job.repoPath);
     this.rpc.onClose = () => {
@@ -66,6 +68,11 @@ export class CodexAdapter implements Adapter {
   }
   private request(event: Wire): void {
     if (event.params?.threadId !== this.ref) return;
+    if (event.method === "turn/started") this.terminalFailure = undefined;
+    if (event.method === "error" && event.params.willRetry === false) {
+      this.terminalFailure = codexTurnFailure({ id: event.params.turnId, error: event.params.error });
+      return;
+    }
     if (["item/autoApprovalReview/started", "item/autoApprovalReview/completed"].includes(event.method)) {
       const p = object(event.params);
       if (typeof p.reviewId === "string" && typeof p.turnId === "string" && p.review?.status && p.action) {
@@ -76,6 +83,9 @@ export class CodexAdapter implements Adapter {
       return;
     }
     if (event.method === "turn/completed") {
+      const turn = event.params.turn;
+      this.terminalFailure = turn?.status === "failed"
+        ? codexTurnFailure(turn) ?? (typeof turn.id === "string" && this.terminalFailure?.turnId === turn.id ? this.terminalFailure : undefined) : undefined;
       for (const [key, pending] of this.pending) if (pending.snapshot.turnId === event.params.turn?.id) {
         pending.snapshot.status = "resolved"; this.lastApproval = pending.snapshot; this.pending.delete(key);
       }
@@ -172,6 +182,7 @@ export class CodexAdapter implements Adapter {
     const active = thread.status?.type === "active" || lastTurn?.status === "inProgress";
     const approval = this.pending.values().next().value?.snapshot ?? this.lastApproval;
     return {status: active ? "active" : lastTurn?.status === "failed" ? "failed" : "idle", messages: [], turnActive: active,
+      failure: this.failureFor(lastTurn, active),
       waitingForInput: approval?.status === "pending", ...(approval ? {approval} : {})};
   }
   async snapshot(): Promise<Snapshot> {
@@ -187,8 +198,13 @@ export class CodexAdapter implements Adapter {
         ...(page.error ? { error: page.error } : {}) };
     } catch { history = { complete: false, error: "unavailable" }; }
     return { status: active ? "active" : lastTurn?.status === "failed" ? "failed" : "idle", messages: this.lastMessages, turnActive: active, history,
+      failure: this.failureFor(lastTurn, active),
       ...(history.error ? { error: "codex_history_limited: visible item history could not be read" } : {}),
       mode:normalizeAgentMode("codex",this.job.mode), waitingForInput: approval?.status === "pending", ...(approval ? { approval } : {}) };
+  }
+  private failureFor(turn: Wire | undefined, active: boolean): Snapshot["failure"] {
+    if (active || turn?.status !== "failed") { this.terminalFailure = undefined; return undefined; }
+    return codexTurnFailure(turn) ?? (typeof turn.id === "string" && this.terminalFailure?.turnId === turn.id ? this.terminalFailure : undefined);
   }
   private async runtime(): Promise<{ thread: Wire; lastTurn: Wire | undefined }> {
     const { thread } = await this.rpc.call("thread/read", { threadId: this.ref, includeTurns: false });

@@ -1,3 +1,4 @@
+import { AgentSessionFailureNotice } from "./agent-session-failure-notice";
 import { DraftChatFile } from "./agent-chat-draft-file";
 import { SessionSender, SendUnconfirmed, SendSuperseded, commandNotDelivered, sendAttemptHasDraft } from "./session-send";
 import { useSendAttempt, sendAttemptLocked, SessionSendFeedback, SessionSenderContext } from "./session-send-feedback";
@@ -152,6 +153,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
   const visualStatus = replyPresentation?.visualStatus ?? (waiting ? "idle" : session.data?.status ?? "idle");
   const activityText = replyPresentation ? t(replyPresentation.labelKey) : session.data
     ? t(activityLabelKey(session.data.status, command?.status === "queued"), { agent: agentName }) : "";
+  const codexFailed = session.data?.agentKind === "codex" && session.data.status === "failed";
   const inlineError = session.data ? sessionInlineError(session.data.status, session.data.lastError) : undefined;
   const statusDetail = session.data ? sessionStatusDetail(session.data.status, session.data.lastError, activityText) : activityText;
   const submit = (event: FormEvent) => {
@@ -238,8 +240,9 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                 )}
               </AgentRunDetails>
               </div>
+              {codexFailed && <AgentSessionFailureNotice status={session.data.status} failure={session.data.failure} legacyError={session.data.lastError} />}
               <AgentHistoryNotice error={session.data.lastError} />
-              {inlineError && !isHistoryLimited(inlineError) && <AgentSessionError error={inlineError} onRetry={()=>void session.refetch()} />}
+              {!codexFailed && inlineError && !isHistoryLimited(inlineError) && <AgentSessionError error={inlineError} onRetry={()=>void session.refetch()} />}
               {command?.kind === "message" && !(command.status === "delivered"
                 && replyMirrorArrived(command, history.messages, session.data.attachmentMessages ?? [])) && (
                 <div className={`agent-session-command agent-session-command-${command.status}`}>

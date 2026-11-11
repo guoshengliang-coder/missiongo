@@ -211,6 +211,7 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
             snapshot = { status: "unavailable", messages: [], error: safeError(error) };
           }
           if (!snapshot.error) delete state.snapshot.error;
+          if (!snapshot.failure) delete state.snapshot.failure;
           if (!snapshot.approval) delete state.snapshot.approval;
           state.snapshot = { ...state.snapshot, ...snapshot }; persist();
           res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(state.snapshot));

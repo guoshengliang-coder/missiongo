@@ -4,7 +4,7 @@ import { expect, test } from "@playwright/test";
 import { WEB_ORIGIN } from "./fixture.mjs";
 import { advanceSessionDetailPoll } from "./polling";
 
-const fixture = JSON.parse(readFileSync(fileURLToPath(new URL("./.auth/fixture.json", import.meta.url)), "utf8")) as { productId: string };
+const fixture = JSON.parse(readFileSync(fileURLToPath(new URL("./.auth/fixture.json", import.meta.url)), "utf8")) as { productId: string; detailKey: string };
 const id = "hg193-failure-fixture";
 const stamp = "2026-10-01T15:00:00.000Z";
 const url = `/?product=${fixture.productId}&console=agent&session=${id}`;
@@ -27,6 +27,7 @@ for (const theme of ["light", "dark"]) for (const language of ["zh-CN", "en"]) {
     const context = await browser.newContext({ baseURL: WEB_ORIGIN, viewport: { width: 353, height: 757 }, isMobile: true, hasTouch: true,
       colorScheme: theme as "light" | "dark", storageState: "./tests/ui/.auth/state.json" });
     const page = await context.newPage();
+    await page.clock.setFixedTime(new Date(stamp));
     await page.addInitScript((locale) => {
       localStorage.setItem("missiongo.locale", locale);
       Object.defineProperty(navigator, "clipboard", { value: { writeText: async (text: string) => {
@@ -72,24 +73,65 @@ for (const theme of ["light", "dark"]) for (const language of ["zh-CN", "en"]) {
   });
 }
 
-test("old Mac without error details shows an honest fallback", async ({ page }) => {
+test("old Linux node without error details shows an honest platform-neutral fallback", async ({ page }) => {
+  await page.clock.setFixedTime(new Date(stamp));
   await page.route("**/api/v1/agent-sessions**", async (route) => {
     const body = new URL(route.request().url()).pathname === "/api/v1/agent-sessions"
-      ? { sessions: [{ ...summary, failure: undefined }] } : { ...detail, failure: undefined };
+      ? { sessions: [{ ...summary, nodeName: "Fixture Ubuntu", failure: undefined }] } : { ...detail, failure: undefined };
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   });
   await page.goto(url);
   const card = page.locator(".agent-console-failure");
   await expect(card).toContainText("codex_failure_detail_unavailable");
-  await expect(card).toContainText("Mac 未提供具体原因");
-  await expect(card).toContainText("更新 MissionGo Mac 客户端");
+  await expect(card).toContainText("执行节点未提供具体原因");
+  await expect(card).toContainText("更新该节点的 MissionGo 客户端");
+  await expect(card).not.toContainText("Mac");
 });
+
+for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const) {
+  test(`item panel shares safe Linux diagnostics and clears after recovery: ${width} ${theme}`, async ({ page }, testInfo) => {
+    await page.clock.setFixedTime(new Date(stamp));
+    await page.setViewportSize({ width, height: 900 });
+    await page.emulateMedia({ colorScheme: theme });
+    const linuxSummary = { ...summary, nodeName: "Fixture Ubuntu" };
+    let current: unknown = { ...detail, command: undefined };
+    const writes: string[] = [];
+    await page.route("**/api/v1/agent-sessions**", async route => {
+      if (route.request().method() !== "GET") writes.push(route.request().method());
+      await route.fulfill({ json: new URL(route.request().url()).pathname === "/api/v1/agent-sessions" ? { sessions: [linuxSummary] } : current });
+    });
+    await page.route("**/api/v1/items/*/dispatches", route => route.fulfill({ json: { dispatches: [{
+      id: summary.dispatchId, agentSessionId: id, agentKind: "codex", mode: "auto", nodeName: "Fixture Ubuntu", status: "launched", createdAt: stamp, itemKeys: [fixture.detailKey],
+    }] } }));
+    const open = async () => {
+      await page.goto(`/?product=${fixture.productId}&item=${fixture.detailKey}`);
+      await page.locator(".execution-history > summary").click();
+      await page.locator(".execution-record > summary").filter({ hasText: "派单 · Fixture Ubuntu" }).click();
+      await page.locator(".agent-session-toggle").click();
+    };
+    await open();
+    const card = page.locator(".agent-session-panel .agent-console-failure");
+    await expect(card).toHaveCount(1);
+    await expect(card).toContainText("执行节点");
+    await expect(card).not.toContainText("Mac");
+    await card.locator("summary").click();
+    await expect(card.locator("pre")).toContainText("turn: turn-failed");
+    for (const secret of ["synthetic-private-value", "example.invalid", "/Users/fixture"]) expect(await card.innerText()).not.toContain(secret);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`linux-failure-panel-${width}-${theme}.png`) });
+    current = { ...detail, status: "idle", failure: undefined, command: undefined };
+    await open(); // A stale failed list does not revive the card.
+    await expect(card).toHaveCount(0);
+    expect(writes).toEqual([]);
+  });
+}
 
 for (const outcome of ["delivered", "failed", "delivery_unknown"] as const) {
   test(`phone manually continues after a model failure: ${outcome}`, async ({ browser }) => {
     const context = await browser.newContext({ baseURL: WEB_ORIGIN, viewport: { width: 375, height: 812 },
       isMobile: true, hasTouch: true, storageState: "./tests/ui/.auth/state.json" });
     const page = await context.newPage();
+    await page.clock.setFixedTime(new Date(stamp));
     await page.addInitScript(() => localStorage.setItem("missiongo.locale", "zh-CN"));
     const temporary = { code: "codex_server_error", turnId: "old-turn" };
     let current: Record<string, unknown> = { ...detail, failure: temporary, command: undefined, canResolveDelivery: true };

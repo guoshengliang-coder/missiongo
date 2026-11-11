@@ -20,6 +20,17 @@ describe("failure card", () => {
     expect(legacy.summary).toBe("agentFailureUnknown");
     expect(failureDiagnostic(legacy, "")).not.toContain("secret");
   });
+  it("directs every recovery branch to the execution node without guessing its platform", () => {
+    for (const language of ["en", "zh-CN"] as const) {
+      for (const failure of [undefined, ...CODEX_SESSION_FAILURE_CODES.map(code => ({ code }))]) {
+        const view = sessionFailureView("failed", failure)!;
+        const copy = translate(language, view.summary) + translate(language, view.recovery);
+        expect(copy).not.toMatch(/Mac|macOS|Linux|Windows/);
+      }
+      const missing = sessionFailureView("failed")!;
+      expect(translate(language, missing.recovery)).toContain(language === "en" ? "that node" : "该节点");
+    }
+  });
   it.each(["codex_server_error", "codex_connection_failed", "codex_rate_limit_exceeded"] as const)("offers manual continuation for %s", (code) => {
     const view = sessionFailureView("failed", { code })!;
     expect(translate("zh-CN", view.recovery)).toContain("输入新消息并手动发送");
