@@ -30,6 +30,22 @@ const completePlan = result => {
   return plan;
 };
 
+async function syntheticBackup(directory, name, shape) {
+  const backups = join(directory, name), backupName = "missiongo-20260101T000000Z", backupDir = join(backups, backupName);
+  mkdirSync(backupDir, { recursive: true });
+  const synthetic = await serverFixture(shape);
+  const db = join(backupDir, "missiongo.sqlite");
+  let productId;
+  try {
+    synthetic.store.database.connection.exec(`VACUUM INTO '${db.replaceAll("'", "''")}'`);
+    productId = synthetic.store.listProducts()[0].id;
+  } finally { await synthetic.app.close(); }
+  const bytes = readFileSync(db), metadata = { formatVersion: 1, directory: backupName, createdAt: "2026-01-01T00:00:00Z",
+    database: { filename: "missiongo.sqlite", sizeBytes: bytes.length, sha256: digest(bytes) } };
+  save(join(backupDir, "manifest.json"), metadata);
+  return { backups, productId, metadata };
+}
+
 async function fixture() {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), "and506-installed-")));
   const primary = join(directory, "primary"), checkout = join(directory, "candidate checkout"), home = join(directory, "home");
@@ -69,14 +85,11 @@ async function fixture() {
   for (const [ext, bytes] of [["pom", "<version>1.0.0</version>"], ["aar", "fixture archive"]]) {
     const path = join(maven, `missiongo-feedback-1.0.0.${ext}`); writeFileSync(path, bytes); writeFileSync(path + ".sha256", digest(bytes));
   }
-  const synthetic = await serverFixture({ batches: 20, deliveriesPerBatch: 2, itemsPerDelivery: 10, eventsPerItem: 200, payloadBytes: 1024 });
-  const backups = join(directory, "backups"), backupName = "missiongo-20260101T000000Z", backupDir = join(backups, backupName);
-  mkdirSync(backupDir, { recursive: true });
-  const db = join(backupDir, "missiongo.sqlite"); synthetic.store.database.connection.exec(`VACUUM INTO '${db.replaceAll("'", "''")}'`);
-  const productId = synthetic.store.listProducts()[0].id;
-  await synthetic.app.close();
-  const bytes = readFileSync(db), metadata = { formatVersion: 1, directory: backupName, createdAt: "2026-01-01T00:00:00Z", database: { filename: "missiongo.sqlite", sizeBytes: bytes.length, sha256: digest(bytes) } };
-  save(join(backupDir, "manifest.json"), metadata);
+  // Functional installation coverage needs a full page and real associated
+  // history, not a hardware SLA. Keep the large regression corpus separate.
+  const normal = await syntheticBackup(directory, "functional-backups", { batches: 5, deliveriesPerBatch: 2, itemsPerDelivery: 10, eventsPerItem: 10, payloadBytes: 128 });
+  const regression = await syntheticBackup(directory, "regression-backups", { batches: 20, deliveriesPerBatch: 2, itemsPerDelivery: 10, eventsPerItem: 200, payloadBytes: 1024 });
+  const { backups, productId } = normal;
   const configHome = join(home, ".config"), config = join(configHome, "missiongo"), tools = join(config, "release-tools");
   const installed = spawnSync(process.execPath, [join(checkout, "scripts/install-release-tools.mjs")], {
     cwd: checkout, env: { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: configHome }, encoding: "utf8",
@@ -104,8 +117,11 @@ async function fixture() {
     "/fixture/live/apps/web/public/downloads/missiongo-macos-latest.release": `version=1.0.0\nsha256=${hash}\nsource_dirty=false\nsource_commit=${old}\n`,
     "/fixture/live/apps/web/public/downloads/missiongo-macos-latest.json": JSON.stringify({ version: "1.0.0", sha256: hash }),
   };
-  const discovery = backupCommand(discoverBackupProgram, [backups]);
-  const transfer = backupCommand(transferProgram, [backups, metadata.directory, metadata.database.filename, String(bytes.length)]);
+  const backupCommands = Object.fromEntries([normal, regression].flatMap(({ backups, metadata }) => [
+    [backupCommand(discoverBackupProgram, [backups]), { kind: "discovery", args: ["-c", discoverBackupProgram, backups] }],
+    [backupCommand(transferProgram, [backups, metadata.directory, metadata.database.filename, String(metadata.database.sizeBytes)]),
+      { kind: "transfer", args: ["-c", transferProgram, backups, metadata.directory, metadata.database.filename, String(metadata.database.sizeBytes)] }],
+  ]));
   const exact = {
     "true": "", "date +%Y%m%d-%H%M%S": "20260101-000000",
     "if [ -e '/fixture/current' ]; then readlink -f '/fixture/current'; fi": "/fixture/live",
@@ -114,8 +130,8 @@ async function fixture() {
     ...Object.fromEntries(["/fixture/downloads/MissionGo-Android-1.0.0-1.apk", "/fixture/live/apps/web/public/downloads/missiongo-macos-latest.zip", "/fixture/live/apps/web/public/maven/io/missiongo/missiongo-feedback/1.0.0/missiongo-feedback-1.0.0.pom"].map(path => [`sha256sum ${quote(path)} 2>/dev/null | cut -d ' ' -f 1`, path.endsWith(".pom") ? digest("<version>1.0.0</version>") : hash])),
   };
   writeFileSync(join(bin, "ssh"), header + `const command=args.at(-2)==='date'&&args.at(-1)==='+%Y%m%d-%H%M%S'?'date +%Y%m%d-%H%M%S':args.at(-1);if(!args.includes('fixture'))process.exit(92);const exact=${JSON.stringify(exact)};
-if(command===${JSON.stringify(discovery)}){if(state.backupFailure)process.exit(93);const r=cp.spawnSync('python3',['-c',${JSON.stringify(discoverBackupProgram)},${JSON.stringify(backups)}],{stdio:'inherit'});process.exit(r.status??1);}
-if(command===${JSON.stringify(transfer)}){const r=cp.spawnSync('python3',['-c',${JSON.stringify(transferProgram)},${JSON.stringify(backups)},${JSON.stringify(metadata.directory)},${JSON.stringify(metadata.database.filename)},${JSON.stringify(String(bytes.length))}],{stdio:'inherit'});process.exit(r.status??1);}
+const backupCommands=${JSON.stringify(backupCommands)};
+if(Object.hasOwn(backupCommands,command)){const job=backupCommands[command];if(job.kind==='discovery'&&state.backupFailure)process.exit(93);const r=cp.spawnSync('python3',job.args,{stdio:'inherit'});process.exit(r.status??1);}
 if(Object.hasOwn(exact,command)){process.stdout.write(exact[command]);process.exit(0);}
 if(command.startsWith("if [ -s '/fixture/current/apps/web/public/downloads/missiongo-linux-latest.tgz' ]; then cat "))process.exit(0);
 if(command.startsWith("if [ -f '/fixture/current/apps/web/public/maven/")&&command.includes('Published Maven coordinate differs:'))process.exit(0);
@@ -126,7 +142,7 @@ console.error('UNEXPECTED_REMOTE_COMMAND');process.exit(92);`, { mode: 0o700 });
   const env = { PATH: `${bin}:${process.env.PATH}`, HOME: home, XDG_CONFIG_HOME: configHome, TMPDIR: directory, LANG: "en_US.UTF-8" };
   const entry = join(home, ".local/bin/missiongo-release");
   const run = (action, ...args) => spawnSync("python3", [entry, action, "--candidates", candidatesPath, ...args], { cwd: join(checkout, "scripts"), env, encoding: "utf8", timeout: 250_000, maxBuffer: 4 * 1024 * 1024 });
-  return { directory, checkout, entry, tools, env, head, old, statePath, candidatesPath, candidates, selectionPath, boundary, tracePath, run, productId, backups, done: () => rmSync(directory, { recursive: true, force: true }) };
+  return { directory, checkout, entry, tools, env, head, old, statePath, candidatesPath, candidates, selectionPath, boundary, tracePath, run, productId, backups, regression, done: () => rmSync(directory, { recursive: true, force: true }) };
 }
 
 test("installed real entry plans read-only, retains gates, detects historical mutations and rehearses to first write", { timeout: 240_000 }, async t => {
@@ -195,11 +211,33 @@ test("installed real entry plans read-only, retains gates, detects historical mu
     assert.equal(trace.some(t => t.tool === "ssh" && /docker|sudo mkdir|VACUUM/.test(t.args.at(-1))), false);
     assert.equal(readdirSync(f.directory).some(n => n.startsWith("missiongo-perf-")), false);
     assert.equal(git(f.checkout, "status", "--porcelain"), "");
+    const runLargeSmoke = target => spawnSync(process.execPath, [
+      ...(target ? ["--import", join(f.checkout, "tests/performance/mutation-loader.mjs")] : []),
+      join(f.checkout, "scripts/release-performance.mjs"), "--root", f.checkout, "--host", "fixture",
+      "--backups-dir", f.regression.backups, "--product-id", f.regression.productId], {
+      cwd: f.checkout, env: target ? { ...f.env, PERFORMANCE_MUTATION: "release-fivefold-" + target } : f.env,
+      encoding: "utf8", timeout: 245_000,
+    });
+    // Observe the large corpus without making its hardware-dependent absolute
+    // timings an extra CI blocking policy. The actual release CLI must still
+    // return nonzero for every exceeded/invalid measurement. Setup/contract/
+    // cleanup failures remain test failures, never advisory observations.
+    const baselineRun = runLargeSmoke(), baseline = JSON.parse(baselineRun.stdout);
+    assert.equal(baseline.cleaned, true);
+    assert.equal(baseline.cpuTargets?.length, 3); assert.equal(baseline.httpTargets?.length, 4);
+    assert.equal(baseline.coverage?.items, 400);
+    assert.ok(baseline.status === "passed" || baseline.failureKind === "regression" || baseline.failureKind === "measurement", JSON.stringify(baseline));
+    const passed = baseline.calibration?.valid === true && baseline.httpCalibration?.valid === true
+      && [...baseline.cpuTargets, ...baseline.httpTargets].every(target => target.status === "passed");
+    assert.equal(baseline.status, passed ? "passed" : "failed", "A passed label cannot hide an exceeded target or invalid calibration");
+    assert.equal(baselineRun.status, passed ? 0 : 1, "The real release CLI must reject a failed measurement");
+    const ciPolicy = JSON.parse(readFileSync(join(f.checkout, "tests/performance/server-budgets.json"))).ciMode;
+    if (ciPolicy === "blocking") assert.ok(passed, JSON.stringify(baseline));
+    t.diagnostic(JSON.stringify({ observation: "large-unmutated-corpus", ciPolicy, measurement: baseline.status,
+      releaseGate: baselineRun.status === 0 ? "passed" : "rejected", cleaned: baseline.cleaned,
+      targets: [...baseline.cpuTargets, ...baseline.httpTargets].map(({ name, status, medianMs, effectiveBudgetMs }) => ({ name, status, medianMs, effectiveBudgetMs })) }));
     for (const target of ["merge-deliveries", "item-list", "claim-next"]) {
-      const diagnostic = spawnSync(process.execPath, ["--import", join(f.checkout, "tests/performance/mutation-loader.mjs"),
-        join(f.checkout, "scripts/release-performance.mjs"), "--root", f.checkout, "--host", "fixture", "--backups-dir", f.backups, "--product-id", f.productId], {
-        cwd: f.checkout, env: { ...f.env, PERFORMANCE_MUTATION: "release-fivefold-" + target }, encoding: "utf8", timeout: 245_000,
-      });
+      const diagnostic = runLargeSmoke(target);
       assert.equal(diagnostic.status, 1, diagnostic.stderr);
       const report = JSON.parse(diagnostic.stdout);
       assert.equal(report.diagnosticOutcome, "detected", JSON.stringify({target,status:report.status,reason:report.reason,calibration:report.calibration,httpCalibration:report.httpCalibration,cpuTargets:report.cpuTargets,httpTargets:report.httpTargets}));
