@@ -6,7 +6,7 @@ check_release_coverage() {
     --candidates "${MISSIONGO_RELEASE_CANDIDATES:?Missing complete release candidates}")
   [ "$publish_apk" -eq 1 ] || coverage_args+=(--no-publish-apk)
   if [ -n "${MISSIONGO_RELEASE_SELECTION:-}" ]; then
-    coverage_args+=(--selection "$MISSIONGO_RELEASE_SELECTION")
+    coverage_args+=(--selection "$MISSIONGO_RELEASE_SELECTION" --selection-digest "${MISSIONGO_RELEASE_SELECTION_DIGEST:?Missing reviewed selection digest}")
   fi
   if [ -n "${MISSIONGO_RELEASE_ONLY_ARTIFACTS:-}" ]; then
     coverage_args+=(--only-artifacts "$MISSIONGO_RELEASE_ONLY_ARTIFACTS" --scope-reason "${MISSIONGO_RELEASE_SCOPE_REASON:?Missing explicit user scope}")
@@ -20,7 +20,7 @@ reconcile_release_coverage() {
     --coverage-config "${MISSIONGO_RELEASE_COVERAGE_CONFIG:?Missing product/repository binding}"
     --candidates "${MISSIONGO_RELEASE_CANDIDATES:?Missing complete release candidates}")
   if [ -n "${MISSIONGO_RELEASE_SELECTION:-}" ]; then
-    coverage_args+=(--selection "$MISSIONGO_RELEASE_SELECTION")
+    coverage_args+=(--selection "$MISSIONGO_RELEASE_SELECTION" --selection-digest "${MISSIONGO_RELEASE_SELECTION_DIGEST:?Missing reviewed selection digest}")
   fi
   if [ -n "${MISSIONGO_RELEASE_ONLY_ARTIFACTS:-}" ]; then
     coverage_args+=(--only-artifacts "$MISSIONGO_RELEASE_ONLY_ARTIFACTS" --scope-reason "${MISSIONGO_RELEASE_SCOPE_REASON:?Missing explicit user scope}")

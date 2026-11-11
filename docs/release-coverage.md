@@ -166,6 +166,9 @@ missiongo-release plan --candidates /path/to/full-pages.json --selection /path/t
 全部候选恰好出现一次；产品、仓库、计划提交、完整候选内容摘要必须匹配。新候选、删除、版本或范围变化均拒绝旧文件；刷新 generatedAt 不改变同内容摘要，但部署全部分页仍不得过期。
 逻辑排除不能从构建中移除已合并代码；它只限制本次交付承诺和交接，不证明该功能没有上线。选中产物的质量、来源、CI、迁移、备份、健康和恢复门禁均不变。
 
-check、deploy 使用同一 `--selection`，部署前真实快照和部署后对账继续校验。已安装旧工具不会因 Git 合并而自动升级：后续获授权安装需运行版本化 install-release-tools 或 coverage 安装器，未知修改保护和发布锁保持。
-部署日志需完整落盘；JSON 对账保留完整 selection 与 digest，并关联 receiptDigest。随后执行 `release-notices.mjs --receipt <receipt> --candidates <same-full-pages> --selection <same-selection>`，只为 include 且实际公开产物满足全部要求的交付生成交接；排除理由仍在 selection 中。
+check、deploy 使用同一 `--selection`，并必须携带 plan 输出中 `coverage.selection.digest` 对应的 `--selection-digest <SHA-256>`；发布后 release-notices 同样必须带原摘要。摘要绑定全部处置、理由与用户决定，变更后须重新规划，不能沿用旧摘要。显式 null、false 或非对象清单拒绝，不退回默认全量发布。部署前真实快照和部署后对账继续校验。已安装旧工具不会因 Git 合并而自动升级：后续获授权安装需运行版本化 install-release-tools 或 coverage 安装器，未知修改保护和发布锁保持。
+部署日志需完整落盘；JSON 对账保留完整 selection 与 digest，并关联 receiptDigest。随后执行 `release-notices.mjs --receipt <receipt> --candidates <same-full-pages> --selection <same-selection> --selection-digest <reviewed-digest>`，只为 include 且实际公开产物满足全部要求的交付生成交接；排除理由仍在 selection 中。
 HEAD 改变（包括版本或账本提交）后重新生成并审阅范围，不能通过改旧文件的 plannedCommit 来伪装已核查；旧原始页与范围文件连同发布回执保留为工作区外审计资料，不提交动态业务数据。
+
+
+范围摘要是内容一致性检查，不是人工批准或新的发布授权。仅 plan 允许首次传入范围文件而不带摘要以供审阅；执行与交接缺摘要、摘要改变或摘要无对应文件均拒绝。摘要原样穿过 coordinator 和 deploy guard，避免检查后改写处置被后续阶段静默采用。

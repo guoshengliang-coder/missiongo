@@ -21,7 +21,8 @@ const hook = [
   '    # END RELEASE PERFORMANCE V1',
 ].join("\n");
 export function upgradePerformanceCoordinator(source) {
-  for (const guard of ['"release-lock.py"', 'coverage_options(sys.argv[2:])', 'git(root, "fetch", "--quiet", "origin", "main")', '"HEAD must equal the latest origin/main."', '"release-ci.mjs"', 'preflight.extend(coverage_args)', '"MISSIONGO_RELEASE_CANDIDATES"']) {
+  assert.ok(['coverage_options(sys.argv[2:])', 'coverage_options(sys.argv[2:], planning=action == "plan")'].some(call=>source.includes(call)), "Unsupported coverage options contract; existing guards preserved");
+  for (const guard of ['"release-lock.py"', 'git(root, "fetch", "--quiet", "origin", "main")', '"HEAD must equal the latest origin/main."', '"release-ci.mjs"', 'preflight.extend(coverage_args)', '"MISSIONGO_RELEASE_CANDIDATES"']) {
     assert.ok(source.includes(guard), "Unsupported coordinator; existing guards preserved");
   }
   const after = '    run(preflight, root)\n' + hook + '\n    if action == "check":';

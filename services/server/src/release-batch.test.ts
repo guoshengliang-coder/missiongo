@@ -331,6 +331,21 @@ describe("AND-504 historical local proof",()=>{
     const before=f.store.getTimeline(f.item.key);expect((await f.call("supplement_non_release_evidence",fresh)).structuredContent.alreadyRecorded).toBe(true);
     expect(f.store.getTimeline(f.item.key)).toEqual(before);
   });
+  it("audit R2: successful replays still require current product authority and never create developer claims",async()=>{
+    const f=await supplementFixture(),db=f.store.database.connection;
+    const counts=()=>({claims:db.prepare("SELECT count(*) AS n FROM mcp_agent_claim_receipts").get(),authorizations:db.prepare("SELECT count(*) AS n FROM builder_execution_authorizations").get()});
+    const before=counts();
+    expect((await f.call("supplement_non_release_evidence",f.request)).isError).toBeFalsy();
+    expect(counts()).toEqual(before);
+    const history=f.store.getTimeline(f.item.key),item=f.store.getWorkItem(f.item.key);
+    f.grant(false,true);
+    const denied=await f.call("supplement_non_release_evidence",f.request);
+    expect(denied.isError||denied.error).toBeTruthy();
+    expect(f.store.getTimeline(f.item.key)).toEqual(history);expect(f.store.getWorkItem(f.item.key)).toEqual(item);expect(counts()).toEqual(before);
+    f.grant(true,true);
+    expect((await f.call("supplement_non_release_evidence",f.request)).structuredContent.alreadyRecorded).toBe(true);
+    expect(f.store.getTimeline(f.item.key)).toEqual(history);expect(counts()).toEqual(before);
+  });
   it("rejects known Git/product scope and keeps failure evidence honest",async()=>{
     const f=await fixture(),item=await f.add(["web"]),e=f.store.getDevelopmentEvidence(item.key);
     const request={productId:f.product.id,itemKey:item.key,expectedRevision:f.store.getWorkItem(item.key).revision!,developmentEventId:e.handover!.id,roundKey:e.roundKey!,completion:localProof,requiredArtifacts:[],noReleaseReason:"Local",idempotencyKey:randomUUID()};

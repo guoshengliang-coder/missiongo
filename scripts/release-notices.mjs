@@ -203,8 +203,8 @@ export function withVerifiedEvidence(productId, candidates, evidence) {
 
 
 /** Reconciliation consumes exactly the same frozen dispositions as deployment. */
-export function matchReleaseSelection(receipt,snapshot,selection,repository,resolvePr,ancestor=isAncestor) {
-  const ledger=readReleaseSelection(selection,snapshot,repository,receipt.deployedCommit);
+export function matchReleaseSelection(receipt,snapshot,selection,repository,resolvePr,ancestor=isAncestor,selectionDigest) {
+  const ledger=readReleaseSelection(selection,snapshot,repository,receipt.deployedCommit,selectionDigest);
   const included=new Set(ledger?.entries.filter(e=>e.disposition==="include").map(e=>e.identity));
   const selected=ledger ? snapshot.candidates.filter(c=>included.has(candidateIdentity(c))) : snapshot.candidates;
   return {...matchCandidates(receipt,selected,resolvePr,ancestor),...(ledger ? {selection:ledger} : {})};
@@ -224,7 +224,10 @@ function main() {
   const selectionIndex=args.indexOf("--selection");
   if(selectionIndex>=0 && !args[selectionIndex+1])throw new Error("Missing release selection file");
   const selection=selectionIndex>=0 ? JSON.parse(readFileSync(args[selectionIndex+1],"utf8")) : undefined;
-  const snapshot=releaseCandidatesFromPages(candidateResult,selection ? {coverage:true,maxAgeMs:Number.MAX_SAFE_INTEGER} : {});
+  const digestIndex=args.indexOf("--selection-digest");
+  const selectionDigest=digestIndex>=0 ? args[digestIndex+1] : undefined;
+  if(selectionIndex>=0 && !selectionDigest)throw new Error("Release handover requires --selection-digest from the reviewed plan");
+  const snapshot=releaseCandidatesFromPages(candidateResult,selection !== undefined ? {coverage:true,maxAgeMs:Number.MAX_SAFE_INTEGER} : {});
   const {productId,candidates:originalCandidates}=snapshot;
   const evidenceIndex = args.indexOf("--verified-evidence");
   if (evidenceIndex >= 0 && !args[evidenceIndex + 1]) throw new Error("Missing verified evidence file");
@@ -235,7 +238,7 @@ function main() {
     throw new Error("The deployed commit is not in this checkout; use the repository that was deployed");
   }
   const repository = gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner");
-  const {selection:ledger,...matched}=matchReleaseSelection(receipt,{...snapshot,candidates},selection,`https://github.com/${repository}`,(url)=>pullRequestFacts(url,repository));
+  const {selection:ledger,...matched}=matchReleaseSelection(receipt,{...snapshot,candidates},selection,`https://github.com/${repository}`,(url)=>pullRequestFacts(url,repository),isAncestor,selectionDigest);
   process.stdout.write(`${JSON.stringify({ ...(ledger ? {selection:ledger,receiptDigest:createHash("sha256").update(JSON.stringify(receipt)).digest("hex")} : {}), comments: matched.comments, ...(matched.deliveries ? {deliveries:matched.deliveries} : {}), ...releaseBatches(productId, candidates, matched), ...(evidence ? { verifiedEvidence: evidence } : {}) }, null, 2)}\n`);
 }
 

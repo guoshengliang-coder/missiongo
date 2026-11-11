@@ -128,3 +128,15 @@ test("AND-503 selection identities preserve multiple deliveries and standalone r
   const report=plan(data,{selection});assert.deepEqual(report.items.map(r=>r.status),["ready","excluded","ready"]);
   selection.entries[1]=selection.entries[0];assert.throws(()=>plan(data,{selection}),/disposition/);
 });
+
+
+test("audit R1: explicit invalid manifests fail closed and disposition changes invalidate the reviewed digest",()=>{
+  const data=input([candidate("AND-1",["web"])]),snapshot=releaseCandidatesFromPages(data,{coverage:true,now});
+  const selection=selectionFor(data),reviewed=readReleaseSelection(selection,snapshot,options.repository,head).digest;
+  for(const invalid of [null,false,0,"",[],"invalid"])assert.throws(()=>plan(data,{selection:invalid}),/Invalid release selection object/);
+  assert.equal(plan(data,{selection,selectionDigest:reviewed}).ready,true);
+  selection.entries[0]={...selection.entries[0],disposition:"deferred",reason:"Scope changed after plan",authorization:"Synthetic explicit instruction"};
+  assert.throws(()=>plan(data,{selection,selectionDigest:reviewed}),/selection digest changed/);
+  assert.throws(()=>plan(data,{selectionDigest:reviewed}),/requires its selection/);
+  assert.throws(()=>plan(data,{selection,selectionDigest:"not-a-sha"}),/selection digest changed/);
+});

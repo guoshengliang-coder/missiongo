@@ -186,6 +186,10 @@ test("AND-503 post-release handover keeps exclusions and cannot reuse a changed 
   selection.entries[2]={...selection.entries[2],disposition:"deferred",reason:"User postponed",authorization:"User said defer AND-2"};
   const receipt={schemaVersion:1,deployedCommit:commit,current:{web:{version:"1",commit,clean:true,ciPassed:true}},publicEvidence:{checks:{web:true}}};
   const report=matchReleaseSelection(receipt,snapshot,selection,repository,()=>{throw Error("commit needs no PR lookup");},()=>true);
+  const pin=report.selection.digest;
+  const changed=structuredClone(selection);changed.entries[0]={...changed.entries[0],disposition:"deferred",reason:"Changed",authorization:"Synthetic instruction"};
+  assert.throws(()=>matchReleaseSelection(receipt,snapshot,changed,repository,()=>null,()=>true,pin),/selection digest changed/);
+  assert.throws(()=>matchReleaseSelection(receipt,snapshot,null,repository,()=>null),/Invalid release selection object/);
   assert.deepEqual(report.comments.map(c=>c.itemKey),["AND-1"]);assert.equal(report.selection.entries.length,3);
   assert.equal(report.selection.entries.find(e=>e.identity.startsWith("AND-451:")).disposition,"historical_gap");
   assert.throws(()=>matchReleaseSelection({...receipt,deployedCommit:"b".repeat(40)},snapshot,selection,repository,()=>null),/selection changed/);

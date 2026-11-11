@@ -77,8 +77,14 @@ export function createReleaseSelection(snapshot, repository, head) {
   return {schemaVersion:1,productId:snapshot.productId,repository,plannedCommit:head,candidatesDigest:releaseSelectionDigest(snapshot),
     entries:snapshot.candidates.map(candidate=>({identity:candidateIdentity(candidate),disposition:"include",reason:"Default: include verified integrated work"}))};
 }
-export function readReleaseSelection(selection, snapshot, repository, head) {
-  if (!selection) return undefined;
+export function readReleaseSelection(selection, snapshot, repository, head, expectedDigest) {
+  if (selection === undefined) {
+    if(expectedDigest !== undefined) throw new Error("A selection digest requires its selection file");
+    return undefined;
+  }
+  if(!selection || typeof selection !== "object" || Array.isArray(selection)) throw new Error("Invalid release selection object; explicit selection must not fall back to a full release");
+  const actualDigest=digest(selection);
+  if(expectedDigest !== undefined && (!/^[a-f0-9]{64}$/.test(expectedDigest) || expectedDigest !== actualDigest)) throw new Error("Release selection digest changed; re-plan and review the current dispositions");
   const expected=createReleaseSelection(snapshot,repository,head);
   if (Object.keys(selection).some(key=>!["schemaVersion","productId","repository","plannedCommit","candidatesDigest","entries"].includes(key)) || selection.schemaVersion!==1 || selection.productId!==expected.productId || selection.repository!==repository
     || selection.plannedCommit!==head || selection.candidatesDigest!==expected.candidatesDigest || !Array.isArray(selection.entries)
@@ -95,7 +101,7 @@ export function readReleaseSelection(selection, snapshot, repository, head) {
     if(entry.disposition==="historical_gap" && !missingReference && !missingScope) throw new Error("Known integrated work cannot be excluded as a historical gap");
     entries.set(entry.identity,entry);
   }
-  return { ...expected, entries:[...entries.values()].sort((a,b)=>a.identity.localeCompare(b.identity)), digest:digest(selection) };
+  return { ...expected, entries:[...entries.values()].sort((a,b)=>a.identity.localeCompare(b.identity)), digest:actualDigest };
 }
 
 if(process.argv[1] && fileURLToPath(import.meta.url)===process.argv[1]) {
