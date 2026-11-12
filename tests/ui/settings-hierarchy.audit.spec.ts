@@ -17,7 +17,7 @@ for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const)
     test("groups primary navigation, drills into Agent and product modules and keeps their scopes clear", async ({ page }) => {
       await page.goto(`/settings?product=${fixture.productId}`);
       const nav = page.getByRole("navigation", { name: "设置", exact: true });
-      await expect(nav.getByRole("button")).toHaveText(["资料与安全", "显示", "Agent 配置", "产品配置", "账号与权限", "产品管理员", "模型", "钉钉集成"]);
+      await expect(nav.getByRole("button")).toHaveText(["资料与安全", "显示", "Agent 配置", "常用指令", "产品配置", "账号与权限", "产品管理员", "模型", "钉钉集成"]);
       await nav.getByRole("button", { name: "Agent 配置", exact: true }).click();
       await expect(page.getByRole("heading", { level: 1 })).toHaveText("Agent 配置");
       await expect(page.locator(".settings-hub-row strong")).toHaveText(["连接与授权", "执行设备", "派单默认值"]);

@@ -8,9 +8,10 @@ for (const kind of ["codex", "claude_code", "opencode"] as const) {
   for (const width of [375, 1440]) {
     for (const theme of ["light", "dark"] as const) {
       test(`external attachment ${kind} ${width}px ${theme}`, async ({ page }) => {
+        await page.clock.setFixedTime(new Date("2026-10-30T15:30:00Z"));
         await page.setViewportSize({ width, height: width === 375 ? 812 : 900 });
         await page.emulateMedia({ colorScheme: theme });
-        const stamp = new Date().toISOString();
+        const stamp = "2026-10-30T15:30:00Z";
         let failUpload = true;
         let command: AgentSessionCommand | undefined;
         const uploads: AgentSessionAttachment[] = [];
@@ -53,8 +54,17 @@ for (const kind of ["codex", "claude_code", "opencode"] as const) {
         });
         const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
         await page.goto(`/?product=${fixture.productId}&console=agent&session=external-files`);
-        await expect(page.getByRole("button", { name: "添加图片、文件或视频", exact: true })).toBeEnabled();
-        await page.locator('.agent-console-reply input[type="file"]').setInputFiles([
+        const addMenu = page.locator('.agent-console-reply .common-command-add > summary');
+        await expect(addMenu).toHaveAttribute("aria-disabled", "false");
+        await addMenu.click();
+        await expect(page.getByRole("button", { name: "上传图片", exact: true })).toBeEnabled();
+        const upload = page.getByRole("button", { name: "上传文件", exact: true });
+        await expect(upload).toBeEnabled();
+        const chooserReady = page.waitForEvent("filechooser");
+        await upload.click();
+        const chooser = await chooserReady;
+        await expect(page.locator('.agent-console-reply .common-command-add')).not.toHaveAttribute("open", "");
+        await chooser.setFiles([
           { name: "reference.png", mimeType: "image/png", buffer: png },
           { name: "reference.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4 fixture") },
         ]);
@@ -80,7 +90,7 @@ for (const kind of ["codex", "claude_code", "opencode"] as const) {
         await expect(page.locator(".selected-media-lightbox .zoomable-image")).toBeVisible();
         await page.keyboard.press("Escape");
         await expect(page.locator(".agent-chat-image-open")).toBeFocused();
-        const picker = await page.getByRole("button", { name: "添加图片、文件或视频", exact: true }).boundingBox();
+        const picker = await addMenu.boundingBox();
         expect(picker!.width).toBeGreaterThanOrEqual(44); expect(picker!.height).toBeGreaterThanOrEqual(44);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
         await page.screenshot({ path: test.info().outputPath(`external-files-${kind}-${width}-${theme}.png`) });

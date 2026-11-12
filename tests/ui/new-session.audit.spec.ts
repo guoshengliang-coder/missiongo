@@ -58,6 +58,20 @@ for (const width of [375, 768, 1440]) {
     const draft = page.locator(".agent-console-reply textarea");
     await expect(draft).toBeVisible();
     await draft.fill("先讨论这个方案");
+    await page.route("**/api/v1/common-commands", route => route.fulfill({ json: { revision: 1, commands: [{ id: "draft-instruction", content: "补充调查", name: "", favorite: false }] } }));
+    await page.locator(".common-command-add summary").click();
+    await page.getByRole("button", { name: "常用指令", exact: true }).click();
+    await page.getByRole("button", { name: "管理指令", exact: true }).click();
+    await expect(page).toHaveURL(/\/settings\/common-commands/);
+    await page.locator(".settings-page-header button").click();
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await expect(draft).toHaveValue("先讨论这个方案");
+    await page.locator(".common-command-choice").click();
+    await expect(draft).toHaveValue("先讨论这个方案\n补充调查");
+    await expect(page.getByRole("button", { name: "撤销", exact: true })).toHaveCount(1);
+    await page.getByRole("button", { name: "撤销", exact: true }).click();
+    await expect(draft).toHaveValue("先讨论这个方案");
+
     if (width === 768) {
       await openConsoleSearch(page);
       const search = page.locator(".agent-console-search input");

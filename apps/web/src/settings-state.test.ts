@@ -23,7 +23,7 @@ describe("settings URLs", () => {
 describe("settings V2 hierarchy", () => {
   it("round-trips module, device and account details without changing workspace context", () => {
     for (const route of [
-      { section: "agent" as const }, { section: "products" as const },
+      { section: "common-commands" as const }, { section: "agent" as const }, { section: "products" as const },
       { section: "project-admins" as const }, { section: "project-admins" as const, productId:"a/b" },
       { section: "builders" as const, productId:"a/b" },
       { section: "overview" as const, productId: "a/b" },

@@ -1,3 +1,4 @@
+import { CommonCommandSettings, useCommonCommands } from "./common-commands";
 import { CollaborationSettings } from "./collaboration";
 import { BackButton } from "./back-button";
 import { DingTalkSettingsPage, DingTalkProjectSettings } from "./dingtalk-settings";
@@ -19,7 +20,7 @@ import { SettingsDraftProvider, type SettingsLeaveGuard } from "./settings-draft
 import { PRODUCT_SETTINGS, type SettingsRoute, type SettingsSection, type ProductSettingsSection } from "./settings-state";
 
 const LABELS: Record<SettingsSection, MessageKey> = {
-  dingtalk:"settingsDingTalk",notifications:"settingsNotifications",
+  "common-commands":"commonCommands", dingtalk:"settingsDingTalk",notifications:"settingsNotifications",
   "project-admins": "settingsProjectAdministrators", builders: "settingsBuilderAllocation",
   agent: "settingsAgent", products: "settingsProducts", overview: "settingsProductOverview",
   index: "settingsEntry", collaboration:"collaborationTitle", profile: "settingsProfile", display: "displaySettings", connections: "settingsConnections",
@@ -46,6 +47,7 @@ export function SettingsPage({ route, user, products, canUseAi, navigate, guard,
   renderProduct: (product: Product, section: ProductSettingsSection) => ReactNode; renderNewProduct: () => ReactNode;
 }) {
   const { t } = useI18n();
+  const commands = useCommonCommands();
   const content = useRef<HTMLElement>(null);
   const shell = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -73,7 +75,7 @@ export function SettingsPage({ route, user, products, canUseAi, navigate, guard,
   const canManage = isAdmin || owned.length > 0;
   const active = inProduct ? "products" : inAgent ? "agent" : route.section === "access" ? "accounts" : route.section;
   const groups = [
-    { label: "settingsPersonal" as const, sections: ["profile", "display", "agent"] as SettingsSection[] },
+    { label: "settingsPersonal" as const, sections: ["profile", "display", "agent", "common-commands"] as SettingsSection[] },
     { label: "settingsProduct" as const, sections: ["products"] as SettingsSection[] },
     ...(canManage ? [{ label: "settingsSystem" as const, sections: ["accounts", ...(isAdmin ? ["project-admins", "ai", "dingtalk"] as const : [])] as SettingsSection[] }] : []),
   ];
@@ -138,7 +140,7 @@ export function SettingsPage({ route, user, products, canUseAi, navigate, guard,
     <SettingsDraftProvider guard={guard}>
       <div ref={shell} className={`settings-page ${route.section === "index" ? "settings-directory" : "settings-detail"}`}>
         <header className="settings-page-header">
-          <BackButton label={upLabel} onClick={() => navigate(up)} />
+          <BackButton label={route.section === "common-commands" && commands?.returning ? t("commandBackPicker") : upLabel} onClick={() => navigate(route.section === "common-commands" && commands?.returning ? null : up)} />
           <strong>{t("settingsEntry")}</strong>
         </header>
         <div className="settings-page-layout">
@@ -156,12 +158,14 @@ export function SettingsPage({ route, user, products, canUseAi, navigate, guard,
           }}>
             <header className="settings-page-title">
               <div>{scope && <p>{scope}</p>}<h1>{product && route.productId ? `${product.name} · ${title}` : title}</h1></div>
+              {route.section === "common-commands" && <button type="button" className="primary-button" onClick={()=>commands?.edit()}><Plus size={17}/>{t("commandNew")}</button>}
 
             </header>
             <div className="settings-page-body" key={`${route.section}:${product?.id ?? ""}:${route.nodeId ?? ""}:${route.componentId ?? ""}:${route.accountId ?? ""}`}>
               {catalogQuery.isPending && (route.productId && !product || route.section === "accounts" && !isAdmin) ? <p role="status">{t("settingsLoading")}</p>
                 : !allowed ? <p role="alert">{t("settingsUnavailable")}</p>
                 : route.section === "profile" ? <AccountSettings user={user} products={products} onLoggedOut={onLoggedOut} />
+                : route.section === "common-commands" ? <CommonCommandSettings />
                 : route.section === "display" ? <DisplaySettings user={user} />
                 : route.section === "dingtalk" ? <DingTalkSettingsPage />
                 : route.section === "collaboration" && product ? <CollaborationSettings product={product} products={catalog} canManage={isAdmin || Boolean(product.access?.isProjectAdmin)} />

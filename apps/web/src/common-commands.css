@@ -1,0 +1,48 @@
+.common-command-picker .modal-header-actions { gap: 2px; }
+.common-command-picker .modal > header { align-items: center; gap: 4px; }
+.common-command-picker .modal > header > div:first-child { flex: 1; min-width: 0; }
+.common-command-picker .modal h2 { font-size: var(--text-xl); }
+.common-command-list { max-height: 58dvh; overflow-y: auto; overscroll-behavior: contain; display: grid; gap: 12px; }
+.common-command-list > div { display: grid; gap: 12px; }
+.common-command-list .sidebar-label { margin: 0; }
+.common-command-choice { width: 100%; display: flex; align-items: center; gap: 10px; padding: 13px; text-align: left; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); cursor: pointer; font: inherit; min-height: 52px; }
+.common-command-choice > span { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; }
+.common-command-choice svg { flex-shrink: 0; color: var(--muted); }
+.common-command-choice small { display: block; margin-top: 7px; color: var(--muted); font-size: var(--text-sm); }
+@media (hover: hover) { .common-command-choice:hover { background: var(--row-hover); border-color: var(--line-dark); } }
+.common-command-choice:active { background: var(--surface-inset); }
+.common-command-name-toggle { justify-self: start; padding-left: 0; }
+.modal .dialog-form .common-command-checkbox { display: flex; flex-direction: row; align-items: center; gap: 9px; min-height: 44px; font-weight: 400; }
+.modal .dialog-form .common-command-checkbox input { width: 18px; height: 18px; min-height: 18px; padding: 0; margin: 0; flex: 0 0 18px; accent-color: var(--mint-dark); }
+.common-command-management { max-width: 760px; }
+.common-command-text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; line-height: 1.65; }
+.common-command-manager-head { justify-content: flex-end; margin-bottom: 20px; }
+.common-command-tools { display: flex; align-items: center; gap: 2px; margin-top: 10px; padding-top: 7px; border-top: 1px solid var(--line); }
+.common-command-tools > span { flex: 1; }
+.common-command-tools [aria-pressed="true"] { color: var(--mint-dark); }
+.common-command-tools button:disabled { opacity: .45; cursor: default; }
+.common-command-add { position: relative; }
+.common-command-add > summary { cursor: pointer; list-style: none; }
+.common-command-add summary::-webkit-details-marker, .common-command-message-menu summary::-webkit-details-marker { display: none; }
+.common-command-add > .detail-more-menu-popover { top: auto; bottom: calc(100% + 7px); min-width: 190px; }
+.common-command-add .detail-more-menu-popover button, .common-command-message-menu .detail-more-menu-popover button { gap: 9px; min-height: 44px; }
+.common-command-undo { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: var(--text-sm); }
+.common-command-notice { position: fixed; z-index: 150; bottom: calc(24px + var(--safe-bottom)); left: 50%; transform: translateX(-50%); max-width: calc(100% - 32px); padding: 12px 16px; color: var(--ink); background: var(--surface-strong); border: 1px solid var(--line); border-radius: var(--radius-md); box-shadow: var(--shadow); font-size: var(--text-md); }
+.common-command-message-menu { position: relative; flex: 0 0 18px; width: 18px; margin-right: -6px; line-height: 1; }
+.common-command-message-menu > summary { display: flex; align-items: flex-end; width: 18px; height: 16px; min-height: 16px; padding: 0; list-style: none; color: var(--muted); cursor: pointer; position: relative; }
+.common-command-message-menu > summary::before { content: ""; position: absolute; top: -14px; left: 0; width: 44px; height: 44px; }
+.agent-console-message-user:has(.common-command-message-menu) { padding-top: 8px; }
+.agent-console-message-user .agent-console-message-meta:has(.common-command-message-menu), .agent-session-message-user .agent-session-message-meta:has(.common-command-message-menu) { align-items: flex-end; justify-content: flex-end; gap: 4px; min-height: 16px; line-height: 16px; }
+.common-command-message-menu .detail-more-menu-popover { min-width: 190px; line-height: normal; }
+.common-command-mobile-actions { display: grid; gap: 10px; }
+.common-command-mobile-actions > button { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 52px; padding: 0 14px; color: var(--ink); background: var(--surface-strong); border: 1px solid var(--line); border-radius: var(--radius-md); font: inherit; cursor: pointer; }
+@media (hover: hover) and (pointer: fine) {
+ .common-command-message-menu > summary { opacity: 0; }
+ article:hover .common-command-message-menu > summary, .common-command-message-menu > summary:focus-visible, .common-command-message-menu[open] > summary { opacity: 1; }
+}
+@media (pointer: coarse) {
+ .common-command-message-menu { height: 16px; }
+ .common-command-message-menu > summary { position: absolute; left: -2px; bottom: -4px; width: 44px; height: 44px; min-height: 44px; align-items: center; justify-content: flex-start; padding-left: 2px; }
+ .common-command-message-menu > summary > svg { transform: translateY(10px); }
+ .common-command-message-menu > summary::before { display: none; }
+}
