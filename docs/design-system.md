@@ -727,3 +727,9 @@ AND-480 文案与详情布局补修：按用户审阅后的选择，运行卡片
 账号私有指令复用 `CommonCommandProvider`、`CommonCommandMenu`、`CommandEditor`、`CommonCommandSettings` 和 `CommandMessageMenu`，覆盖控制台、新会话及条目内会话。选择弹层保留搜索、收藏分组、整行点击，管理与新增位于头部；输入框无常驻快捷栏，选择列表无逐行收藏或底部提交。总设置中的管理页无搜索，编辑才使用显式保存。
 
 沿用 `Modal`、`OverlayMenu`、设置路由、草稿保护和主题令牌，不扩大样式豁免。消息横向三点与时间紧凑对齐，触屏常驻可达、桌面悬停与焦点可达；长按不取代系统文字选择。按账号事件同步，冲突保留草稿和最新内容，不自动覆盖或发送。交互、数据及验证边界见 [实现说明](and-512-common-commands.md)。
+
+### 待集成交付阶段
+
+- 共用 `PendingMergeButton`、`QueueFacts`、`MergeDialog` 与 `QueueHistory`。待合并、待发布为可执行交付；证据或授权异常单列“待核对”，保留详情入口并禁止进入执行选择。主角标仅累计前两类，列表“全部”包含待核对。
+- 已失效的历史处理轮次归入只读交付历史，明确后续返工；精确证据绑定的无需发布交接显示“无需发布／已交接”。旧发布证据不覆盖新轮次，缺证据不冒充已发布。分类与计数不改变条目阶段或人工验收。
+- 服务端回归见 `merge-deliveries.test.ts`；界面复查见 `and-511-integration-queue.audit.spec.ts`，包括明暗主题、320px/桌面、待核对详情、禁用执行与历史返回。

@@ -228,7 +228,7 @@ export class MergeDeliveries {
     const releases:NonNullable<IntegrationQueueFacts["releases"]>=[];
     const origin=d.batchId?this.read<Batch>("merge_batches",d.batchId):undefined,merged=origin?.results[d.id];
     const merge=origin&&merged?.status==="merged"&&merged.commit?{batchId:origin.id,head:merged.head,commit:merged.commit}:undefined;
-    let blocker:string|undefined=merge?undefined:"合并事实待核实，请核对原批次。",complete=true;
+    let blocker:string|undefined=merge?undefined:"合并事实待核实，请核对原批次。",complete=true,historical=false,currentPending=false;
     if(!d.itemKeys.length) {
       for(const receipt of d.releaseReceipts??[])for(const r of receipt.releases){published.add(r.artifact);releases.push(r);}
       complete=d.requiredArtifacts.length?d.requiredArtifacts.every(a=>published.has(a)):Boolean(d.noReleaseReason&&origin?.state==="finished");
@@ -236,8 +236,12 @@ export class MergeDeliveries {
       const byArtifact=new Map<string,boolean>();
       for(const key of d.itemKeys) {
         const item=this.store.getWorkItem(key);
-        const record=this.store.getDeliveryRecords(key).find(r=>r.completion&&sameCompletion(r.completion,{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`}));
-        blocker??=this.itemBlocker(d,key,true);
+        const record=this.store.getDeliveryRecords(key,true).find(r=>r.completion&&sameCompletion(r.completion,{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`}));
+        const oldRound=Boolean(record && record.roundKey!==deliveryRound(this.db,this.store.workItemId(key)));
+        historical ||= oldRound;
+        if(!oldRound && (!record || !record.published))currentPending=true;
+        // Old rounds remain auditable, but can never be selected for a new handover.
+        if(!oldRound)blocker??=this.itemBlocker(d,key,true);
         if(!record){blocker??="缺少本轮交付证据，请核对原交付。";complete=false;continue;}
         releases.push(...record.releases);
         records.push({itemKey:key,developmentEventId:record.id,roundKey:record.roundKey,expectedRevision:item.revision??0});
@@ -249,14 +253,15 @@ export class MergeDeliveries {
     }
     const pending=d.requiredArtifacts.filter(a=>!published.has(a));
     if(!d.requiredArtifacts.length&&!d.noReleaseReason)blocker??="发布范围待核实。";
-    // Preserve facts despite later chat input; content/round/permission changes remain explicit blockers.
-    return {stage:complete&&!blocker?"history":"release",...(merge?{merge}:{}),releases,...(blocker?{blocker}:{}),publishedArtifacts:[...published],pendingArtifacts:pending,records};
+    if(historical&&currentPending)blocker??="交付包含历史与当前轮次，请逐项核对；旧交付不能覆盖。";
+    // Preserve receipts, while separating obsolete rounds and unresolved evidence.
+    return {stage:historical&&!currentPending&&merge?"history":historical||blocker?"review":complete?"history":"release",...(historical?{resolution:"historical" as const}:complete&&!d.requiredArtifacts.length?{resolution:"not_required" as const}:{}),...(merge?{merge}:{}),releases,...(blocker?{blocker}:{}),publishedArtifacts:[...published],pendingArtifacts:pending,records};
   }
-  queue(productId:string,accountId:string,stage:"all"|"merge"|"release"|"history"="all",beforeSequence?:number,limit=50) {
+  queue(productId:string,accountId:string,stage:"all"|"merge"|"release"|"review"|"history"="all",beforeSequence?:number,limit=50) {
     const page=(kind:string)=>this.db.connection.prepare(`SELECT sequence,data_json FROM merge_delivery_projection WHERE product_id=? AND account_id=?
       AND json_extract(data_json,'$.queue.stage')=? AND (? IS NULL OR sequence<?) ORDER BY sequence DESC LIMIT ?`)
       .all(productId,accountId,kind,beforeSequence??null,beforeSequence??null,limit) as {sequence:number;data_json:string}[];
-    const rows=(stage==="all"?[...page("merge"),...page("release")].sort((a,b)=>b.sequence-a.sequence).slice(0,limit):page(stage));
+    const rows=(stage==="all"?[...page("merge"),...page("release"),...page("review")].sort((a,b)=>b.sequence-a.sequence).slice(0,limit):page(stage));
     const counts=Object.fromEntries((this.db.connection.prepare(`SELECT json_extract(data_json,'$.queue.stage') AS stage,count(*) AS count FROM merge_delivery_projection
       WHERE product_id=? AND account_id=? AND json_extract(data_json,'$.queue.stage') IS NOT NULL GROUP BY json_extract(data_json,'$.queue.stage')`).all(productId,accountId) as {stage:string;count:number}[]).map(r=>[r.stage,r.count]));
     return {deliveries:rows.map(r=>JSON.parse(r.data_json) as ReturnType<MergeDeliveries["view"]>&{queue:IntegrationQueueFacts}),counts,
@@ -267,7 +272,7 @@ export class MergeDeliveries {
     const rows=selection.map(row=>{
       const d=this.read<Delivery>("merge_deliveries",row.id);
       const facts=this.queueFacts(d,this.view(d).blocker);
-      if(d.accountId!==accountId||d.productId!==productId||d.revision!==row.revision||!facts||facts.stage==="history"||facts.blocker)throw changed();
+      if(d.accountId!==accountId||d.productId!==productId||d.revision!==row.revision||!facts||["history","review"].includes(facts.stage)||facts.blocker)throw changed();
       return d;
     });
     if(new Set(rows.map(d=>d.repository)).size!==1||new Set(rows.map(d=>d.targetBranch)).size!==1)throw changed();
