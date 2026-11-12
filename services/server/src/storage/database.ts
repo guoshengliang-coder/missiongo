@@ -2718,5 +2718,13 @@ export class MissionGoDatabase {
       });
     }
 
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611120900").get()) {
+      this.transaction(() => {
+        // Reclassify the display projection only; immutable deliveries and item events stay intact.
+        this.connection.exec("INSERT OR IGNORE INTO merge_display_dirty(kind,id) SELECT 'delivery',id FROM merge_deliveries");
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202611120900,new Date().toISOString());
+      });
+    }
+
   }
 }

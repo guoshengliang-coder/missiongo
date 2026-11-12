@@ -18,7 +18,8 @@ export type SessionDeliveryStage = "pending" | "merging" | "publishing" | "publi
 
 export type IntegrationActionMode = "merge_only" | "merge_and_publish" | "publish_only";
 export interface IntegrationQueueFacts {
-  stage: "merge" | "release" | "history";
+  stage: "merge" | "release" | "review" | "history";
+  resolution?: "historical" | "not_required";
   merge?:{batchId:string;head:string;commit:string};
   releases?:{artifact:string;version:string;sourceCommit:string}[];
   blocker?: string;

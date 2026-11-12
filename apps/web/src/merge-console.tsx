@@ -31,9 +31,9 @@ function useIntegrationQueue(productId:string,stage="all") {
 }
 function QueueFacts({d}:{d:Delivery}) {
   const {t}=useI18n(),q=(d as QueueDelivery).queue;if(!q)return null;
-  return <><span className="item-handler-badge" data-merge-progress={q.stage==="merge"?"pending":q.stage==="history"?"published":"merged"}>{t(q.stage==="merge"?"queueMerge":q.stage==="history"?"queuePublished":"queueRelease")}</span>
+  return <><span className="item-handler-badge" data-merge-progress={q.stage==="merge"?"pending":q.stage==="history"?"published":"merged"}>{t(q.stage==="merge"?"queueMerge":q.stage==="review"?"queueReview":q.stage==="history"?(q.resolution==="historical"?"queueHistorical":q.resolution==="not_required"?"queueNotRequired":"queuePublished"):"queueRelease")}</span>
     {q.publishedArtifacts.length>0&&<small>{t("queuePublishedArtifacts")}: {q.publishedArtifacts.map(artifactName).join(" / ")}</small>}
-    {q.pendingArtifacts.length>0&&<small>{t("queuePendingArtifacts")}: {q.pendingArtifacts.map(artifactName).join(" / ")}</small>}
+    {q.stage!=="history"&&q.pendingArtifacts.length>0&&<small>{t("queuePendingArtifacts")}: {q.pendingArtifacts.map(artifactName).join(" / ")}</small>}
     {q.blocker&&<small className="integration-attention">{q.blocker}</small>}</>;
 }
 function QueueHistory({productId,onClose}:{productId:string;onClose:()=>void}) {
@@ -233,14 +233,14 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
   const locked=start.isPending||openSession.isPending||Boolean(frozen.current);
   const active=createdBatch??query.data?.batches.find(b=>b.state==="active");
   const candidates=queue.data?.pages.flatMap(p=>p.deliveries)??[];
-  const selectable=candidates.filter(d=>d.blocker!=="changed"&&!d.queue.blocker);
+  const selectable=candidates.filter(d=>d.blocker!=="changed"&&!d.queue.blocker&&d.queue.stage!=="review");
   const allSelected=selectable.length>0&&selectable.every(d=>selected[d.id]===d.revision);
   const selectedCount=Object.keys(selected).length;
   const mergeCount=chosen.filter(d=>d.queue.stage==="merge").length;
   const releaseCount=chosen.length-mergeCount;
   const extraScope=scope.data?.candidates.filter(c=>!c.selected)??[];
   const extraGroups=new Set(extraScope.map(c=>JSON.stringify(c.completion??c.identity))).size;
-  const selectedValid=selection.every(({id,revision})=>chosen.some(d=>d.id===id&&d.revision===revision&&d.blocker!=="changed"&&!d.queue.blocker));
+  const selectedValid=selection.every(({id,revision})=>chosen.some(d=>d.id===id&&d.revision===revision&&d.blocker!=="changed"&&!d.queue.blocker&&d.queue.stage!=="review"));
   const detailCurrent=detail?catalog.current.get(detail.id):undefined;
   const modeIssue=config?modeProblem(config.agentKind,config.mode,node?.agents.find(a=>a.kind===config.agentKind)?.modes,config.model):undefined;
   const modelUnavailable=Boolean(config?.model && (!models || !models.some(m=>m.id===config.model)));
@@ -256,12 +256,12 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
       {active&&<section role="status" className="merge-active-notice"><TriangleAlert size={22} aria-hidden="true"/><div><strong>{t("mergeActiveTitle")}</strong><p>{t("mergeActiveShort")}</p><small>{t("mergeActiveTimeout")}</small></div><button type="button" className="secondary-button" disabled={openSession.isPending} onClick={()=>openSession.mutate(active.sessionId)}>{t("mergeOpenSession")}</button></section>}
       <div hidden={step!==1} className="merge-selection-step">
       <div className="merge-queue-tabs"><div className="merge-actions" role="group" aria-label={t("queueStages")}>
-        {(["all","merge","release"] as const).map(value=><button type="button" className="secondary-button" aria-pressed={stage===value} disabled={locked} key={value} onClick={()=>setStage(value)}>{t(value==="all"?"queueAll":value==="merge"?"queueMerge":"queueRelease")} {value==="all"?(queue.data?.pages[0]?.counts.merge??0)+(queue.data?.pages[0]?.counts.release??0):queue.data?.pages[0]?.counts[value]??0}</button>)}
+        {(["all","merge","release","review"] as const).map(value=><button type="button" className="secondary-button" aria-pressed={stage===value} disabled={locked} key={value} onClick={()=>setStage(value)}>{t(value==="all"?"queueAll":value==="merge"?"queueMerge":value==="review"?"queueReview":"queueRelease")} {value==="all"?(queue.data?.pages[0]?.counts.merge??0)+(queue.data?.pages[0]?.counts.release??0)+(queue.data?.pages[0]?.counts.review??0):queue.data?.pages[0]?.counts[value]??0}</button>)}
       </div></div>
       <div className="merge-selection-toolbar"><span className="help-label"><strong>{t(selectedCount?"mergeSelectedGroups":"mergeContentTitle",{count:selectedCount})}</strong>{step===1&&<HelpHint title={t("mergeContentTitle")}><p>{t("mergeSelectionHelp")}</p><p>{t("mergeNeedsCheckHelp")}</p></HelpHint>}</span><button type="button" className="secondary-button" disabled={locked||!selectable.length} onClick={()=>setSelected(prev=>{const next={...prev};for(const d of selectable)if(allSelected)delete next[d.id];else next[d.id]=d.revision;return next;})}>{t(allSelected?"mergeDeselectAll":"mergeSelectAll")}</button></div>
       {queue.isSuccess&&!candidates.length&&<section className="merge-empty"><Files size={28} aria-hidden="true"/><strong>{t("mergeEmptyTitle")}</strong><p>{t(active?"mergeEmptyActive":"mergeEmpty")}</p></section>}
       <div className="merge-list">{candidates.map(d=><div className="merge-row" key={d.id}>
-        <label><input type="checkbox" checked={Boolean(selected[d.id])} disabled={locked||((d.blocker==="changed"||Boolean(d.queue.blocker))&&!selected[d.id])}
+        <label><input type="checkbox" checked={Boolean(selected[d.id])} disabled={locked||((d.blocker==="changed"||Boolean(d.queue.blocker)||d.queue.stage==="review")&&!selected[d.id])}
           onChange={e=>setSelected(prev=>{const next={...prev};if(e.target.checked)next[d.id]=d.revision;else delete next[d.id];return next;})}/>
           <span><strong>{d.summary}</strong><small>{d.itemKeys.join(" · ") || `PR #${d.pullRequestUrl.split("/").at(-1)}`}</small><small>{t("mergeAffected")}: {d.requiredArtifacts.map(a=>a==="web"?"Web":a==="macosApp"?"macOS":a==="androidApp"?"Android":a).join(" / ") || d.noReleaseReason}</small><QueueFacts d={d}/>{["failed","conflicting","dependency","changed"].includes(d.blocker??"")&&<span className="merge-check" data-check={d.blocker}><strong>{t(checkLabel(d.blocker))}</strong><small>{t(checkImpact(d.blocker))}</small></span>}</span></label>
         <button type="button" className="text-button merge-detail-button" onClick={()=>setDetail(d)}>{t("mergeDetails")}</button>

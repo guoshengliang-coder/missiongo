@@ -2569,10 +2569,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.get("/api/v1/products/:productId/integration-queue",async request=>{
     const {productId}=request.params as {productId:string};requireProductPermission(request,productId,"view");
     const q=request.query as {stage?:string;beforeSequence?:string};
-    if(q.stage&&!['all','merge','release','history'].includes(q.stage))throw invalidInput("Invalid queue stage.");
+    if(q.stage&&!['all','merge','release','review','history'].includes(q.stage))throw invalidInput("Invalid queue stage.");
     const before=q.beforeSequence===undefined?undefined:Number(q.beforeSequence);
     if(before!==undefined&&(!Number.isSafeInteger(before)||before<1))throw invalidInput("Invalid queue cursor.");
-    return merges.queue(productId,requireAccountId(request),q.stage as 'all'|'merge'|'release'|'history'|undefined,before);
+    return merges.queue(productId,requireAccountId(request),q.stage as 'all'|'merge'|'release'|'review'|'history'|undefined,before);
   });
   app.post("/api/v1/products/:productId/integration-preview",async request=>{
     const {productId}=request.params as {productId:string};requireProductPermission(request,productId,"view");requireProductPermission(request,productId,"operate");requireProductPermission(request,productId,"ai");

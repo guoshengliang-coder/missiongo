@@ -82,6 +82,10 @@ for (const width of [375,1440]) for (const theme of ["light","dark"] as const) {
       await page.getByLabel("交接说明",{exact:true}).fill("Take responsibility through verification");
       await page.getByRole("button",{name:"确认转交",exact:true}).click();
       await expect(eyebrow).toContainText(`Builder builder-${suffix}`);
+      // The handover mutation updates item data before the modal's history.back
+      // completes. Settle that navigation before starting the next document load.
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+      await expect.poll(() => page.evaluate(() => history.state?.["missiongo:dialogs"]?.length ?? 0)).toBe(0);
       const stored=await (await request.get(`/api/v1/items/${item.key}`)).json();expect(stored.status).toBe("ready");
       await page.goto(`/?product=${product.id}&status=ready&builder=mine`);await expect(page.locator(".item-row")).toHaveCount(0);
       await chooseOption(page.getByRole("combobox",{name:"Builder",exact:true}), member.id);await expect(page.locator(".item-row")).toHaveCount(1);

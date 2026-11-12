@@ -116,3 +116,40 @@ test('AND-511 already merged selection offers publication only and blocks an unk
   recovered=true;await dialog.getByRole('button',{name:'上一步',exact:true}).click();await dialog.getByRole('button',{name:'下一步：配置 Agent'}).click();
   await expect(dialog.getByRole('button',{name:'开始处理',exact:true})).toBeEnabled();
 });
+
+for(const width of [320,1440])for(const theme of ['light','dark'] as const) {
+  test(`queue lifecycle review and history ${width} ${theme}`,async({page,request},testInfo)=>{
+    await page.setViewportSize({width,height:900});await page.emulateMedia({colorScheme:theme});
+    const product=await(await request.post('/api/v1/products',{data:{name:`Lifecycle ${width} ${theme}`,keyPrefix:`L${width}${theme[0]!.toUpperCase()}`}})).json();
+    const row=(id:string,stage:string,resolution?:string)=>({id,productId:product.id,sessionId:'source',revision:id,state:'merged',summary:id,itemKeys:[],head:'a'.repeat(40),validation:'Synthetic evidence',requiredArtifacts:['web'],pullRequestUrl:'https://github.com/example/project/pull/1',evidence:{checkedAt:'2026-11-12T00:00:00Z',source:'Fixture'},queue:{stage,resolution,publishedArtifacts:[],pendingArtifacts:['web'],records:[],...(stage==='review'?{blocker:'缺少本轮交付证据，请核对原交付。'}:{})}});
+    await page.route(/\/merge-deliveries(?:\?.*)?$/,route=>route.fulfill({json:{deliveries:[],batches:[]}}));
+    await page.route('**/integration-queue?**',route=>{
+      const stage=new URL(route.request().url()).searchParams.get('stage');
+      return route.fulfill({json:{deliveries:stage==='history'?[row('AND-435 historical','history','historical'),row('AND-450 no release','history','not_required')]:stage==='release'||stage==='merge'?[]:[row('Missing receipt','review')],counts:{review:1,history:2}}});
+    });
+    await page.goto(`/?product=${product.id}&console=agent`);
+    await page.getByRole('button',{name:'待集成 0',exact:true}).click();
+    const dialog=page.getByRole('dialog');
+    await expect(dialog.getByRole('button',{name:'全部 1',exact:true})).toBeVisible();
+    await dialog.getByRole('button',{name:'待核对 1',exact:true}).click();
+    await expect(dialog.locator('.merge-row input')).toBeDisabled();
+    await expect(dialog.getByRole('button',{name:'全选可选内容',exact:true})).toBeDisabled();
+    await expect(dialog.getByRole('button',{name:'下一步：配置 Agent',exact:true})).toBeDisabled();
+    await dialog.getByRole('button',{name:'查看改动与验证详情',exact:true}).click();
+    await expect(page.getByRole('dialog').last()).toContainText('Synthetic evidence');
+    await page.keyboard.press('Escape');
+    await dialog.getByRole('button',{name:'交付历史',exact:true}).click();
+    const history=page.getByRole('dialog').last();
+    await expect(history.getByText('历史轮次 · 后续已返工',{exact:true})).toBeVisible();
+    await expect(history.getByText('无需发布／已交接',{exact:true})).toBeVisible();
+    await expect(history.getByText('待发布产物: Web',{exact:true})).toHaveCount(0);
+    await page.screenshot({path:testInfo.outputPath(`lifecycle-${width}-${theme}.png`),fullPage:true});
+    await page.keyboard.press('Escape');
+    await expect(dialog.getByRole('button',{name:'待核对 1',exact:true})).toHaveAttribute('aria-pressed','true');
+    await page.evaluate(()=>document.documentElement.dataset.fontScale='large');
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+    const audit=await page.evaluate(AUDIT_SOURCE) as {text:{fontSize:number;contrast:number;fontWeight:number}[]};
+    expect(audit.text.filter(r=>r.fontSize>0&&r.fontSize<11)).toEqual([]);
+    expect(audit.text.filter(r=>r.contrast<(r.fontSize>=24||r.fontWeight>=700&&r.fontSize>=18.66?3:4.5))).toEqual([]);
+  });
+}

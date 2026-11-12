@@ -1810,21 +1810,45 @@ export class MissionGoStore {
   }
 
   /** Each integration is an immutable delivery in one handling round, not a new business status. */
-  getDeliveryRecords(itemKey: string) {
+  getDeliveryRecords(itemKey: string, includeHistorical = false) {
     const rowId=this.workItemId(itemKey),round=deliveryRound(this.database,rowId);
     const events=this.getTimeline(itemKey).filter(e=>!e.historySourceKey);
-    return events.filter(e=>(e.eventType==="delivery_recorded" || e.eventType==="status_changed" && e.toStatus==="development_complete") && e.payload.roundKey===round).map(event=>{
-      const evidence=this.getDevelopmentEvidence(itemKey,event.id,events),scope=this.getDevelopmentReleaseDecision(itemKey,event.id,events);
+    return events.filter(e=>(e.eventType==="delivery_recorded" || e.eventType==="status_changed" && e.toStatus==="development_complete") && (includeHistorical || e.payload.roundKey===round)).map(event=>{
+      const eventRound=event.payload.roundKey as string|null;
+      const scopedEvents=events.filter(e=>e.id===event.id || e.eventType==="delivery_evidence_added" && e.payload.developmentEventId===event.id && e.payload.roundKey===eventRound);
+      const last=scopedEvents.at(-1)!;
+      const scope={requiredArtifacts:Array.isArray(last.payload.requiredArtifacts) && last.payload.requiredArtifacts.every((a):a is string=>typeof a==="string" && isReleaseArtifactId(a)) ? last.payload.requiredArtifacts : null,
+        ...(typeof last.payload.noReleaseReason==="string"?{noReleaseReason:last.payload.noReleaseReason}:{})};
+      let completion:ReturnType<typeof normalizeCompletion>|undefined;
+      try { completion=normalizeCompletion(last.payload); } catch { completion=undefined; }
+      // Legacy receipts lack an event ID. Bind only a matching completion to the
+      // latest preceding development event in the same round; never borrow a new round.
+      const bound=(e:WorkItemEventSnapshot)=>{
+        if(e.payload.roundKey!==eventRound)return false;
+        if(e.payload.developmentEventId)return e.payload.developmentEventId===event.id;
+        if(event.eventType!=="status_changed" || e.eventType!=="status_changed")return false;
+        const preceding=events.slice(0,events.indexOf(e)).filter(v=>(v.eventType==="delivery_recorded" || v.eventType==="status_changed" && v.toStatus==="development_complete") && v.payload.roundKey===eventRound);
+        if(preceding.at(-1)?.id!==event.id)return false;
+        try{return Boolean(completion && sameCompletion(normalizeCompletion(e.payload),completion));}catch{
+          // Earliest no-release transitions stored neither ID nor completion.
+          // Only a unique, revision-adjacent formal handover can identify its target.
+          return !e.payload.completion && !e.payload.pullRequestUrl && e.actorKind==="agent"
+            && e.payload.reason==="non_release_submitted" && e.fromStatus==="development_complete" && e.toStatus==="pending_verification"
+            && preceding.length===1 && scope.requiredArtifacts?.length===0 && Boolean(scope.noReleaseReason)
+            && typeof event.payload.contentVersion==="number" && e.payload.contentVersion===event.payload.contentVersion
+            && typeof event.payload.resultRevision==="number" && e.payload.revision===event.payload.resultRevision;
+        }
+      };
       const receipts=events.filter(e=>(e.eventType==="release_evidence_added" || e.eventType==="status_changed" && e.toStatus==="pending_verification") &&
-        (e.payload.developmentEventId===event.id || !e.payload.developmentEventId && event.eventType==="status_changed" && e.payload.roundKey===round));
+        bound(e));
       const artifacts=new Map<string,{artifact:string;version:string;sourceCommit:string}>();
       for(const receipt of receipts) for(const release of (Array.isArray(receipt.payload.releases) ? receipt.payload.releases : [])) {
         if(release && typeof release==="object" && "artifact" in release) artifacts.set(release.artifact,release);
       }
       const releases=[...artifacts.values()];
-      const noReleaseVerified=events.some(e=>e.payload.developmentEventId===event.id && ["non_release_submitted","non_release_supplemented"].includes(String(e.payload.reason)));
+      const noReleaseVerified=events.some(e=>bound(e) && ["non_release_submitted","non_release_supplemented"].includes(String(e.payload.reason)));
       const published=scope.requiredArtifacts!==null && (scope.requiredArtifacts.length===0 ? noReleaseVerified : scope.requiredArtifacts.every(a=>artifacts.has(a)));
-      return {id:event.id,createdAt:event.createdAt,roundKey:round,completion:evidence.completion,...scope,releases,published,
+      return {id:event.id,createdAt:event.createdAt,roundKey:eventRound,completion,...scope,releases,published,
         status:published ? "published" as const : releases.length ? "partial" as const : "awaiting_release" as const};
     });
   }

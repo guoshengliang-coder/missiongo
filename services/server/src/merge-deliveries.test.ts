@@ -312,6 +312,61 @@ describe("planned integration batches",()=>{
     const merged=(id:string,head="a".repeat(40))=>f.merges.report(f.owner.id,b.dispatchId,b.id,id,{status:"merged",head,commit:"c".repeat(40),detail:"Verified real merge in synthetic fixture"});
     return {...f,b,deliveries,current,act,plan,check,merged};
   }
+  it("archives a published old round without borrowing its receipt for rework (AND-501/435)",async()=>{
+    const f=await batchFixture(),d=f.deliveries[0]!;
+    f.act(f.plan);f.check(d.id);f.merged(d.id);
+    const event=f.store.getDeliveryRecords(f.item.key)[0]!;
+    f.store.submitForVerification({itemKey:f.item.key,developmentEventId:event.id,completion:event.completion!,
+      releases:[{artifact:"web",version:"old",sourceCommit:"e".repeat(40)}],deployedCommit:"e".repeat(40),receiptDigest:"f".repeat(64),idempotencyKey:"old-release"});
+    f.store.transitionWorkItem({itemKey:f.item.key,actor:"human",to:"ready",reason:"verification_failed",note:"Rework",attribution:{accountId:config.id}});
+    const before=f.store.getTimeline(f.item.key);
+    expect(f.merges.queue(f.item.productId,f.owner.id).deliveries).toEqual([]);
+    expect(f.merges.queue(f.item.productId,f.owner.id,"history").deliveries[0]!.queue).toMatchObject({stage:"history",resolution:"historical",publishedArtifacts:["web"]});
+    expect(f.store.getDeliveryRecords(f.item.key)).toEqual([]);
+    expect(f.store.getWorkItem(f.item.key).status).toBe("ready");
+    expect(f.store.getTimeline(f.item.key)).toEqual(before);
+    expect(()=>f.merges.publicationPreview(f.owner.id,f.item.productId,[{id:d.id,revision:d.revision}])).toThrow();
+  });
+  it("recognizes an exact legacy no-release handover without a development event ID (AND-450)",async()=>{
+    const f=await batchFixture(1,true),d=f.deliveries[0]!;
+    f.act(f.plan);f.check(d.id);f.merged(d.id);
+    const e=f.store.getDevelopmentEvidence(f.item.key),item=f.store.getWorkItem(f.item.key);
+    f.store.submitNonReleaseForVerification({itemKey:item.key,completion:e.completion!,expectedRevision:item.revision,
+      developmentEventId:e.handover!.id,roundKey:e.roundKey!,evidenceDigest:e.handover!.payload.evidenceDigest as string,
+      validation:{checks:[{name:"No release",method:"Synthetic tools",result:"passed",evidence:"Bound event"}],remainingVerification:[],limitations:[]},
+      idempotencyKey:"legacy-no-release",attribution:{accountId:f.owner.id}});
+    // Reproduce the early persisted receipt shape, using only this isolated fixture DB.
+    const receipt=f.store.getTimeline(item.key).find(v=>v.payload.reason==="non_release_submitted")!;
+    const legacy={...receipt.payload};delete legacy.developmentEventId;
+    f.db.prepare("UPDATE work_item_events SET payload_json=? WHERE id=?").run(JSON.stringify(legacy),receipt.id);
+    f.db.prepare("INSERT OR IGNORE INTO merge_display_dirty(kind,id) VALUES ('item',?)").run(item.id);
+    expect(f.store.getDeliveryRecords(item.key)[0]!.published).toBe(true);
+    expect(f.merges.queue(item.productId,f.owner.id).deliveries).toEqual([]);
+    expect(f.merges.queue(item.productId,f.owner.id,"history").deliveries[0]!.queue).toMatchObject({resolution:"not_required"});
+    // The actual AND-450 receipt also lacks a completion reference.
+    delete legacy.completion;delete legacy.pullRequestUrl;
+    f.db.prepare("UPDATE work_item_events SET payload_json=? WHERE id=?").run(JSON.stringify(legacy),receipt.id);
+    expect(f.store.getDeliveryRecords(item.key)[0]!.published).toBe(true);
+    const validRevision=legacy.revision;
+    legacy.revision=-1;
+    f.db.prepare("UPDATE work_item_events SET payload_json=? WHERE id=?").run(JSON.stringify(legacy),receipt.id);
+    expect(f.store.getDeliveryRecords(item.key)[0]!.published).toBe(false);
+    legacy.revision=validRevision;legacy.roundKey="different-round";
+    f.db.prepare("UPDATE work_item_events SET payload_json=? WHERE id=?").run(JSON.stringify(legacy),receipt.id);
+    expect(f.store.getDeliveryRecords(item.key)[0]!.published).toBe(false);
+  });
+  it("separates missing evidence into review and refuses publication selection",async()=>{
+    const f=await batchFixture(),d=f.deliveries[0]!;
+    f.act(f.plan);f.check(d.id);f.merged(d.id);
+    const e=f.store.getDeliveryRecords(f.item.key)[0]!;
+    // Simulate a historical import that lost its exact integration identity.
+    f.db.prepare("UPDATE work_item_events SET payload_json=json_remove(payload_json,'$.completion','$.pullRequestUrl') WHERE id=?").run(e.id);
+    f.db.prepare("INSERT OR IGNORE INTO merge_display_dirty(kind,id) VALUES ('item',?)").run(f.item.id);
+    const q=f.merges.queue(f.item.productId,f.owner.id);
+    expect(q.counts.review).toBe(1);expect(q.counts.release??0).toBe(0);
+    expect(q.deliveries[0]!.queue).toMatchObject({stage:"review",blocker:expect.any(String)});
+    expect(()=>f.merges.publicationPreview(f.owner.id,f.item.productId,[{id:d.id,revision:d.revision}])).toThrow();
+  });
   it("AND-469 shares current stages and preserves history when a new input clears completion",async()=>{
     const f=await batchFixture(), d=f.deliveries[0]!;
     const progress=()=>f.merges.sessionProgress(f.item.productId,f.owner.id);
@@ -1276,6 +1331,21 @@ describe("AND-511 two-step integration queue",()=>{
       expect(reopened.missionGoStore.database.connection.prepare("SELECT data_json FROM merge_deliveries WHERE id=?").get(f.d.id)).toEqual(original);
       expect(reopened.missionGoStore.database.connection.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version=202611120007").get()).toMatchObject({count:1});
     }finally{await reopened?.close();rmSync(dir,{recursive:true,force:true});}
+  });
+  it("reclassifies existing cached queue rows on lifecycle upgrade without changing source evidence",async()=>{
+    const dir=mkdtempSync(join(tmpdir(),"queue-lifecycle-upgrade-")),path=join(dir,"data.sqlite");
+    let reopened:ReturnType<typeof buildApp>|undefined;
+    try {
+      const f=await mergedProject(["web"],path);
+      const original=f.db.prepare("SELECT data_json FROM merge_deliveries WHERE id=?").get(f.d.id);
+      f.db.exec("DELETE FROM schema_migrations WHERE version=202611120900");
+      f.db.prepare("UPDATE merge_delivery_projection SET data_json=json_set(data_json,'$.queue.stage','history')").run();
+      await f.app.close();
+      reopened=buildApp({databasePath:path,adminAccount:config,writeTools:"comments",statusCheckTime:false});
+      expect(new MergeDeliveries(reopened.missionGoStore).queue(f.item.productId,f.owner.id).counts.release).toBe(1);
+      expect(reopened.missionGoStore.database.connection.prepare("SELECT data_json FROM merge_deliveries WHERE id=?").get(f.d.id)).toEqual(original);
+      expect(reopened.missionGoStore.database.connection.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version=202611120900").get()).toMatchObject({count:1});
+    } finally {await reopened?.close();rmSync(dir,{recursive:true,force:true});}
   });
   it("requires receipts for unselected but reviewed extra coverage before completing publication",async()=>{
     const f=await mergedProject(["web"]);
