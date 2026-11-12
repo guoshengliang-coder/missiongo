@@ -1,3 +1,4 @@
+import type { SQLInputValue, StatementSync } from "node:sqlite";
 import { releaseCandidatePage } from "./release-candidate-page.js";
 import type { IntegrationActionMode, IntegrationQueueFacts, PublicationScope, PublicationScopeRow } from "@missiongo/contracts";
 import { assertDispatchExecution, assertExternalExecution } from "./builder-authority.js";
@@ -79,6 +80,15 @@ export class MergeDeliveries {
     this.db.registerProjectionWriter("merge-display-v1", () => this.store.withProjectionReads(() => this.refreshDisplay()));
   }
   private get db() { return this.store.database; }
+  // Only the eight fixed hot-read query shapes are retained, never result rows
+  // or caller parameters. Every invocation executes against the current DB.
+  private readonly displayQueries=new Map<string,StatementSync["all"]>();
+  private displayRows(sql:string,...parameters:SQLInputValue[]) {
+    let query=this.displayQueries.get(sql);
+    if(!query){query=this.db.connection.prepare(sql).all;this.displayQueries.set(sql,query);}
+    return query(...parameters);
+  }
+
   private read<T>(table: "merge_deliveries" | "merge_batches", id: string): T {
     const row = this.db.connection.prepare(`SELECT data_json FROM ${table} WHERE id=?`).get(id) as {data_json:string}|undefined;
     if (!row) throw notFound("Merge record");
@@ -465,8 +475,8 @@ export class MergeDeliveries {
   /** Hot reads query only persisted display rows. Actions always use live sources. */
   list(productId: string, accountId: string, sessionId?: string) {
     const now=Date.now();
-    return (this.db.connection.prepare(`SELECT data_json,fresh_from,fresh_until,fresh_blocker FROM merge_delivery_projection
-      WHERE product_id=? AND account_id=? AND visible=1 ${sessionId ? "AND session_id=?" : ""} ORDER BY sequence DESC`).all(productId,accountId,...(sessionId ? [sessionId] : [])) as
+    return (this.displayRows(`SELECT data_json,fresh_from,fresh_until,fresh_blocker FROM merge_delivery_projection
+      WHERE product_id=? AND account_id=? AND visible=1 ${sessionId ? "AND session_id=?" : ""} ORDER BY sequence DESC`,productId,accountId,...(sessionId ? [sessionId] : [])) as
       {data_json:string;fresh_from:number|null;fresh_until:number|null;fresh_blocker:string|null}[]).map(row=>{
       const {queue:_queue,...value}=JSON.parse(row.data_json) as ReturnType<MergeDeliveries["view"]> & {queue?:IntegrationQueueFacts};
       if(row.fresh_until!==null && value.blocker!=="changed") value.blocker=now>=row.fresh_from! && now<=row.fresh_until ? row.fresh_blocker ?? undefined : "stale";
@@ -474,7 +484,7 @@ export class MergeDeliveries {
     });
   }
   batches(productId: string, accountId: string, sessionId?: string): ReturnType<MergeDeliveries["recomputeBatches"]> {
-    const rows=this.db.connection.prepare(`SELECT data_json,activity_json FROM merge_batch_projection WHERE product_id=? AND account_id=? ${sessionId ? "AND session_id=?" : ""} ORDER BY sequence DESC LIMIT 20`).all(productId,accountId,...(sessionId ? [sessionId] : [])) as {data_json:string;activity_json:string}[];
+    const rows=this.displayRows(`SELECT data_json,activity_json FROM merge_batch_projection WHERE product_id=? AND account_id=? ${sessionId ? "AND session_id=?" : ""} ORDER BY sequence DESC LIMIT 20`,productId,accountId,...(sessionId ? [sessionId] : [])) as {data_json:string;activity_json:string}[];
     type ActivityBoundary={sessionId:string;activity:string;sensitive:boolean};
     const values=rows.map(row=>JSON.parse(row.data_json) as ReturnType<MergeDeliveries["recomputeBatches"]>[number]);
     // Formal receipts and non-pending history cannot be invalidated by later
@@ -493,13 +503,16 @@ export class MergeDeliveries {
     });
   }
   attentionSessionIds(productId: string, accountId: string, sessionId?: string): string[] {
-    return (this.db.connection.prepare(`SELECT session_id FROM merge_delivery_projection WHERE product_id=? AND account_id=?
-      AND attention=1 ${sessionId ? "AND session_id=?" : ""} GROUP BY session_id ORDER BY MAX(sequence) DESC`).all(productId,accountId,...(sessionId ? [sessionId] : [])) as {session_id:string}[]).map(row=>row.session_id);
+    return (this.displayRows(`SELECT session_id FROM merge_delivery_projection WHERE product_id=? AND account_id=?
+      AND attention=1 ${sessionId ? "AND session_id=?" : ""} GROUP BY session_id ORDER BY MAX(sequence) DESC`,productId,accountId,...(sessionId ? [sessionId] : [])) as {session_id:string}[]).map(row=>row.session_id);
   }
   sessionProgress(productId: string, accountId: string, sessionId?: string): Record<string, SessionDeliveryStage> {
-    const rows=this.db.connection.prepare(`SELECT session_id,stage,expires_at,expired_stage FROM merge_session_projection WHERE product_id=? AND account_id=? ${sessionId ? "AND session_id=?" : ""}`)
-      .all(productId,accountId,...(sessionId ? [sessionId] : [])) as {session_id:string;stage:SessionDeliveryStage;expires_at:number|null;expired_stage:SessionDeliveryStage|null}[];
-    return Object.fromEntries(rows.map(row=>[row.session_id,row.expires_at!==null && Date.now()>=row.expires_at ? row.expired_stage! : row.stage]));
+    // Aggregate in SQLite so large session histories cross the native boundary
+    // as one JSON value, while retaining the same live expiry and scope filters.
+    const rows=this.displayRows(`SELECT json_group_object(session_id,
+      CASE WHEN expires_at IS NOT NULL AND ?>=expires_at THEN expired_stage ELSE stage END) AS data_json
+      FROM merge_session_projection WHERE product_id=? AND account_id=? ${sessionId ? "AND session_id=?" : ""}`,Date.now(),productId,accountId,...(sessionId ? [sessionId] : [])) as {data_json:string}[];
+    return JSON.parse(rows[0]!.data_json) as Record<string,SessionDeliveryStage>;
   }
   private refreshDisplay() {
     this.displayReads=new Map();
