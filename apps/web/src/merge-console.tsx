@@ -292,13 +292,13 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
       {needsDispatchFallback&&defaults.isError&&<p role="alert" className="inline-error">{t("dispatchDefaultsUnavailable")} <button type="button" className="secondary-button" onClick={()=>void defaults.refetch()}>{t("retry")}</button></p>}
       {integrationDefaults.isError&&<p role="alert" className="inline-error">{t("mergeDefaultsUnavailable")} <button type="button" className="secondary-button" onClick={()=>void integrationDefaults.refetch()}>{t("retry")}</button></p>}
       {differsFromDefaults&&<div className="help-option"><label><input type="checkbox" checked={saveAsDefault} disabled={locked} onChange={e=>setSaveDefaultsFor(e.target.checked?defaultsKey:null)}/><span>{t("mergeDefault")}</span></label><HelpHint title={t("mergeDefault")}><p>{t("mergeDefaultHelp")}</p></HelpHint></div>}
-      {hasMerge&&<div className="help-option"><label><input type="checkbox" checked={publish} disabled={locked} onChange={e=>setPublish(e.target.checked)}/><span>{t("mergePublish")}</span></label><HelpHint title={t("mergePublish")}><p>{t("mergePublishHelp")}</p></HelpHint><small className="integration-note">{t(effectivePublish?"mergeAndPublish":"queueSelectedMerge",{count:mergeCount})}</small></div>}
+      {hasMerge&&<div className="help-option"><label><input type="checkbox" checked={publish} disabled={locked} onChange={e=>setPublish(e.target.checked)}/><span>{t("mergePublish")}</span></label><HelpHint title={t("mergePublish")}><p>{t("mergePublishHelp")}</p></HelpHint></div>}
       {!hasMerge&&<p>{t(hasArtifacts?"queuePublishOnly":"queueNonRelease")}</p>}
-      {(effectivePublish||!hasMerge)&&<section className="merge-scope merge-processing-scope"><div className="help-label"><h3>{t("queueProcessingScope")}</h3><HelpHint title={t("queueProcessingScope")}><p>{t("queueProcessingScopeHelp")}</p>{effectivePublish&&<p>{t("queueScopeHelp")}</p>}</HelpHint></div>
-        <details className="merge-selection-summary"><summary><span>{t("queueSelectedCount",{count:selectedCount})}</span><span>{t("queueView")}</span></summary>
+      <section className="merge-scope merge-processing-scope"><div className="help-label"><h3>{t("queueProcessingScope")}</h3><HelpHint title={t("queueProcessingScope")}><p>{t("queueProcessingScopeHelp")}</p>{effectivePublish&&<p>{t("queueScopeHelp")}</p>}</HelpHint></div>
+        {hasMerge&&!effectivePublish?<p className="merge-stage-summary">{t("queueSelectedMerge",{count:mergeCount})}</p>:<><details className="merge-selection-summary"><summary><span>{t("queueSelectedCount",{count:selectedCount})}</span><span>{t("queueView")}</span></summary>
           {chosen.map(d=><p key={d.id}><strong>{d.summary}</strong><br/>{d.itemKeys.join(" · ")||`PR #${d.pullRequestUrl.split("/").at(-1)}`} · {t(d.queue.stage==="merge"?"queueMerge":"queueRelease")}</p>)}
         </details>
-        <p className="integration-note merge-stage-summary">{mergeCount>0&&<span>{t("queueMergeCount",{count:mergeCount})}</span>}{mergeCount>0&&releaseCount>0&&" · "}{releaseCount>0&&<span>{t("queueMergedCount",{count:releaseCount})}</span>}</p>
+        <p className="integration-note merge-stage-summary">{mergeCount>0&&<span>{t("queueMergeCount",{count:mergeCount})}</span>}{mergeCount>0&&releaseCount>0&&" · "}{releaseCount>0&&<span>{t("queueMergedCount",{count:releaseCount})}</span>}</p></>}
         {effectivePublish&&<><h4>{t("queuePublicationScope")}</h4>
         {scope.isPending?<p role="status">{t("queueScopeLoading")}</p>:scope.isError?<p role="alert" className="inline-error">{t("queueScopeError")} <button type="button" className="secondary-button" onClick={()=>void scope.refetch()}>{t("retry")}</button></p>:scope.data&&<>
           <p>{scope.data.requiredArtifacts.map(artifactName).join(" / ")}</p>
@@ -308,7 +308,7 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
           <details><summary>{t("queueScopeDetails")}</summary>{scope.data.candidates.map(c=><p key={c.identity}>{c.title} · {c.requiredArtifacts?.map(artifactName).join(" / ")}</p>)}</details>
         </>}
         </>}
-      </section>}
+      </section>
       </div>}
       {start.isError&&<p role="alert" className="inline-error">{start.error instanceof ApiError && start.error.status<500 ? start.error.message : t("mergeStartError")}</p>}
       {active&&<p className="merge-next-blocked">{t("mergeBlockedNext")}</p>}
