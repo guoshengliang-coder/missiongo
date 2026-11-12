@@ -259,6 +259,7 @@ export class MergeDeliveries {
         if(knownRound)records.push({itemKey:key,developmentEventId:record.id,roundKey:record.roundKey,expectedRevision:item.revision??0});
         complete=complete&&record.published;
         if(record.requiredArtifacts===null)blocker??="发布范围待核实。";
+        if(record.requiredArtifacts?.length===0 && !record.published)blocker??="无需发布交接证据待核实，请核对原交付。";
         for(const a of record.requiredArtifacts??d.requiredArtifacts)byArtifact.set(a,(byArtifact.get(a)??true)&&record.releases.some(r=>r.artifact===a));
       }
       for(const [a,done]of byArtifact)if(done)published.add(a);

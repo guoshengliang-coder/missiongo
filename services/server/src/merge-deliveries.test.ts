@@ -355,6 +355,21 @@ describe("planned integration batches",()=>{
     f.db.prepare("UPDATE work_item_events SET payload_json=? WHERE id=?").run(JSON.stringify(legacy),receipt.id);
     expect(f.store.getDeliveryRecords(item.key)[0]!.published).toBe(false);
   });
+  it("keeps an early human no-release transition in review without inventing formal handover",async()=>{
+    const f=await batchFixture(1,true),d=f.deliveries[0]!;
+    f.act(f.plan);f.check(d.id);f.merged(d.id);
+    const event=f.store.getDeliveryRecords(f.item.key)[0]!;
+    f.store.transitionWorkItem({itemKey:f.item.key,actor:"human",to:"pending_verification",reason:"non_release_submitted",attribution:{accountId:config.id}});
+    const timeline=f.store.getTimeline(f.item.key),receipt=timeline.find(e=>e.payload.reason==="non_release_submitted")!;
+    expect(receipt.actorKind).toBe("human");expect(receipt.payload.developmentEventId).toBeUndefined();
+    expect(f.store.getDeliveryRecords(f.item.key)[0]).toMatchObject({id:event.id,published:false});
+    const queue=f.merges.queue(f.item.productId,f.owner.id);
+    expect(queue.counts.review).toBe(1);expect(queue.counts.release??0).toBe(0);
+    expect(queue.deliveries[0]!.queue).toMatchObject({stage:"review",blocker:expect.stringContaining("无需发布交接证据")});
+    expect(()=>f.merges.publicationPreview(f.owner.id,f.item.productId,[{id:d.id,revision:d.revision}])).toThrow();
+    expect(f.store.getTimeline(f.item.key)).toEqual(timeline);
+    expect(f.store.getWorkItem(f.item.key).status).toBe("pending_verification");
+  });
   it("separates missing evidence into review and refuses publication selection",async()=>{
     const f=await batchFixture(),d=f.deliveries[0]!;
     f.act(f.plan);f.check(d.id);f.merged(d.id);
@@ -487,7 +502,8 @@ describe("planned integration batches",()=>{
     const f=await batchFixture(1,true),d=f.deliveries[0]!;
     f.act(f.plan);f.check(d.id);f.merged(d.id);
     f.store.transitionWorkItem({itemKey:f.item.key,actor:"human",to:"pending_verification",reason:"manual_override",note:"Human move without release evidence",attribution:{accountId:config.id}});
-    expect(f.merges.queue(f.item.productId,f.owner.id).counts.release).toBe(1);
+    expect(f.merges.queue(f.item.productId,f.owner.id).counts.review).toBe(1);
+    expect(f.merges.queue(f.item.productId,f.owner.id).counts.release??0).toBe(0);
     const e=f.store.getDevelopmentEvidence(f.item.key),item=f.store.getWorkItem(f.item.key);
     f.store.submitNonReleaseForVerification({itemKey:item.key,completion:e.completion!,expectedRevision:item.revision,
       developmentEventId:e.handover!.id,roundKey:e.roundKey!,evidenceDigest:e.handover!.payload.evidenceDigest as string,
@@ -1401,13 +1417,13 @@ describe("AND-511 two-step integration queue",()=>{
     try {
       const f=await mergedProject(["web"],path);
       const original=f.db.prepare("SELECT data_json FROM merge_deliveries WHERE id=?").get(f.d.id);
-      f.db.exec("DELETE FROM schema_migrations WHERE version=202611121223");
+      f.db.exec("DELETE FROM schema_migrations WHERE version=202611121510");
       f.db.prepare("UPDATE merge_delivery_projection SET data_json=json_set(data_json,'$.queue.stage','history')").run();
       await f.app.close();
       reopened=buildApp({databasePath:path,adminAccount:config,writeTools:"comments",statusCheckTime:false});
       expect(new MergeDeliveries(reopened.missionGoStore).queue(f.item.productId,f.owner.id).counts.release).toBe(1);
       expect(reopened.missionGoStore.database.connection.prepare("SELECT data_json FROM merge_deliveries WHERE id=?").get(f.d.id)).toEqual(original);
-      expect(reopened.missionGoStore.database.connection.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version=202611121223").get()).toMatchObject({count:1});
+      expect(reopened.missionGoStore.database.connection.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version=202611121510").get()).toMatchObject({count:1});
     } finally {await reopened?.close();rmSync(dir,{recursive:true,force:true});}
   });
   it("requires receipts for unselected but reviewed extra coverage before completing publication",async()=>{
