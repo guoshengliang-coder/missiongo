@@ -75,3 +75,6 @@ AND-507/508：安装清单由 `scripts/release-tool-files.mjs` 统一声明；�
 新增readiness、report及间接模块仍由同一版本化安装器、锁和摘要保护安装。
 Git合并不等于正式入口更新；本轮开发不自动安装。新旧工具差异可先用checkout内readiness只读核对，
 获授权安装后再核实正式入口和清单摘要。调用与证据边界见 [发布范围与覆盖检查](release-coverage.md#集成启动就绪报告and-507)。
+
+只读readiness/report的协调入口也核对助手输出完整性；子进程exit(0)但没有报告不再算成功。
+校验不转换或重新生成正文，非零退出时原stdout/stderr继续保留；正式部署、CI、备份和性能门禁不变。

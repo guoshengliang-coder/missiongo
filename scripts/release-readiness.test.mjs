@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, copyFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { collectReadiness, inspectInstalledTools, parseReadOnlyArgs } from "./release-readiness.mjs";
@@ -88,4 +89,40 @@ test("an inventory listing cannot conceal a removed executable CI guard", t => {
   const entry = join(source, "scripts/missiongo-release.py");
   writeFileSync(entry, readFileSync(entry, "utf8").replaceAll("release-ci.mjs", "disabled-ci.mjs"));
   assert.throws(() => install({ source, home, configHome: join(home, ".config"), dryRun: true }), /missing: release-ci.mjs/);
+});
+
+test("a nonblocking version provenance warning still needs investigation", () => {
+  const f = setup(); f.input.candidates.pages[0].candidates = [];
+  f.operations.tools = () => ({ status: "matching" }); f.operations.artifact = () => [];
+  f.operations.coverage = () => ({ ready: true }); f.operations.patchBumps = () => [];
+  f.operations.notes = () => ({ missing: [] });
+  f.operations.versions = () => [{ artifact: "androidSdk", blocking: false, reason: "cannot verify source" }];
+  assert.equal(collectReadiness(f.input, f.operations).needsFollowUp, true);
+});
+test("empty batches, duplicate artifacts and unexplained no-release scope are refused", () => {
+  for (const change of [f => { f.input.batch.deliveries = []; f.input.batch.entries = []; },
+    f => f.input.batch.entries[0].requiredArtifacts.push("web"), f => f.input.batch.entries[0].requiredArtifacts = []]) {
+    const f = setup(); change(f); assert.throws(() => collectReadiness(f.input, f.operations));
+  }
+});
+
+test("coordinator rejects zero-exit helpers without complete output and preserves nonzero reports", t => {
+  const directory = mkdtempSync(join(tmpdir(), "readiness-output-")); t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const home = join(directory, "home"), configHome = join(home, ".config");
+  install({ source: process.cwd(), home, configHome, commit: head });
+  const entry = join(home, ".local/bin/missiongo-release");
+  const program = "import runpy,sys,json; module=runpy.run_path(sys.argv[1]); module['run_readonly'](json.loads(sys.argv[2]),sys.argv[3],sys.argv[4],json.loads(sys.argv[5]))";
+  const run = (script, action = "readiness", options = []) => spawnSync("python3", ["-c", program, entry, JSON.stringify([process.execPath, "-e", script]), directory, action, JSON.stringify(options)],
+    { encoding: "utf8", env: { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: configHome } });
+  for (const script of ["process.exit(0)", "console.log('{}')", "console.log('unexpected banner')"]) {
+    const result = run(script); assert.notEqual(result.status, 0); assert.match(result.stderr, /incomplete read-only report/i);
+  }
+  const payload = { schemaVersion: 1, kind: "integration_readiness", checks: [{ name: "test" }] };
+  const expected = JSON.stringify(payload) + "\n";
+  const result = run(`console.log(${JSON.stringify(JSON.stringify(payload))});process.exit(1)`);
+  assert.equal(result.stdout, expected); assert.notEqual(result.status, 0);
+  const valid = run(`console.log(${JSON.stringify(JSON.stringify(payload))})`); assert.equal(valid.status, 0); assert.equal(valid.stdout, expected);
+  const markdown = "逐项交付结果\n\n| 对象 | 结果 | 缺口 | 责任 |\n|---|---|---|---|\n| test | test | test | test |\n";
+  const ordered = run(`process.stdout.write(${JSON.stringify(markdown)})`, "report", ["--format", "markdown", "--input", "file.json"]);
+  assert.equal(ordered.status, 0, ordered.stderr); assert.equal(ordered.stdout, markdown);
 });

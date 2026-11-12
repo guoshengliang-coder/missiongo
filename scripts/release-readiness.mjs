@@ -44,10 +44,10 @@ export function collectReadiness({ config, candidates, batch, now = Date.now() }
   const repository = operations.repository(), head = operations.head(), originMain = operations.originMain();
   if (config?.schemaVersion !== 1 || snapshot.productId !== config.productId || repository.toLowerCase() !== config.repository?.toLowerCase()) throw new Error("Readiness product/repository binding differs");
   if (!sha(head) || !sha(originMain)) throw new Error("Readiness requires exact HEAD and origin/main");
-  if (!batch || batch.productId !== snapshot.productId || typeof batch.id !== "string" || !Array.isArray(batch.deliveries) || !Array.isArray(batch.entries)
+  if (!batch || batch.productId !== snapshot.productId || typeof batch.id !== "string" || !Array.isArray(batch.deliveries) || batch.deliveries.length === 0 || !Array.isArray(batch.entries)
     || new Set(batch.deliveries).size !== batch.deliveries.length || batch.entries.length !== batch.deliveries.length
     || new Set(batch.entries.map(entry => entry.id)).size !== batch.entries.length
-    || batch.entries.some(entry => !Number.isSafeInteger(entry.pullRequest) || entry.pullRequest <= 0 || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,150}$/.test(entry.targetBranch ?? "") || !batch.deliveries.includes(entry.id) || entry.repository?.toLowerCase() !== repository.toLowerCase() || !sha(entry.executionHead ?? entry.head) || !Array.isArray(entry.requiredArtifacts) || entry.requiredArtifacts.some(a => !COVERAGE_ARTIFACTS.includes(a)))) {
+    || batch.entries.some(entry => !Number.isSafeInteger(entry.pullRequest) || entry.pullRequest <= 0 || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,150}$/.test(entry.targetBranch ?? "") || !batch.deliveries.includes(entry.id) || entry.repository?.toLowerCase() !== repository.toLowerCase() || !sha(entry.executionHead ?? entry.head) || !Array.isArray(entry.requiredArtifacts) || new Set(entry.requiredArtifacts).size !== entry.requiredArtifacts.length || !entry.requiredArtifacts.length && (typeof entry.noReleaseReason !== "string" || !entry.noReleaseReason.trim()) || entry.requiredArtifacts.some(a => !COVERAGE_ARTIFACTS.includes(a)))) {
     throw new Error("Use the complete get_merge_batch batch, with exact product, repository and frozen/execution heads");
   }
   const checks = [];
@@ -83,7 +83,7 @@ export function collectReadiness({ config, candidates, batch, now = Date.now() }
   });
   const needsFollowUp = historicalGaps.length > 0 || checks.some(check => check.status === "unverified"
     || check.name === "tools" && check.value?.status !== "matching" || check.name === "coverage" && check.value?.ready !== true
-    || check.name === "versions" && check.value?.some(gap => gap.blocking) || check.name === "patch_bumps" && check.value?.length > 0
+    || check.name === "versions" && check.value?.length > 0 || check.name === "patch_bumps" && check.value?.length > 0
     || check.name.startsWith("release_notes:") && check.value?.missing?.length > 0);
   return { schemaVersion: 1, kind: "integration_readiness", needsFollowUp, checkedAt: new Date(now).toISOString(), productId: snapshot.productId, repository,
     head, originMain, batchId: batch.id, batchRevision: batch.integration?.revision ?? null,

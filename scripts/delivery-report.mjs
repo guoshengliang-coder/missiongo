@@ -4,7 +4,8 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { resolve } from "node:path";
+import { resolve, join } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { integrationFacts, commitContains, receiptArtifacts } from "./release-coverage.mjs";
 import { repositoryIdentity } from "./handover-evidence.mjs";
@@ -14,7 +15,10 @@ const text = value => typeof value === "string" && value.trim().length > 0 && va
 const recent = (value, now) => Number.isFinite(Date.parse(value)) && Date.parse(value) <= now + 60_000 && now - Date.parse(value) <= 15 * 60_000;
 const resource = value => text(value) && !value.startsWith("/") && !value.includes("\\") && !value.includes(":") && !Array.from(value).some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) && value.split("/").every(p => p && p !== "." && p !== ".." && !p.startsWith("~"));
 const strings = value => Array.isArray(value) ? value.filter(text) : [];
-const safe = value => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll("|", "\\|").replace(/[\r\n]+/g, " ");
+// Encode Markdown syntax as entities, including backslashes before pipes. A
+// backslash-escaped pipe can otherwise escape its own escape and move columns.
+const safe = value => Array.from(String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replace(/[\r\n]+/g, " "))
+  .map(char => ["\\", "|", "`", "*", "_", "[", "]"].includes(char) ? `&#${char.charCodeAt(0)};` : char).join("");
 
 /** Explicit target/byte and actual-entry attestation, never generic "tests passed". */
 export function localEffect(evidence, verification, now) {
@@ -38,9 +42,20 @@ export function buildDeliveryReport(input, { resolveIntegration, ancestor, now =
     || !Array.isArray(input.items) || input.items.length !== input.scope.length || new Set(input.items.map(row => row.identity)).size !== input.items.length
     || input.items.some(row => !input.scope.includes(row.identity))) throw new Error("Report requires a complete explicit scope with every delivery exactly once");
   const publicArtifacts = input.receipt?.schemaVersion === 1 ? receiptArtifacts(input.receipt) : [];
+  const integrationObservations = new Map();
+  const observeIntegration = item => {
+    const key = JSON.stringify(item.completion ?? { pullRequestUrl: item.pullRequestUrl, ...(item.pullRequestUrl ? {} : { identity: item.identity }) });
+    if (!integrationObservations.has(key)) {
+      try { integrationObservations.set(key, { facts: resolveIntegration(item) }); }
+      catch (error) { integrationObservations.set(key, { error }); }
+    }
+    const observation = integrationObservations.get(key);
+    if (observation.error) throw observation.error;
+    return observation.facts;
+  };
   const items = input.scope.map(identity => {
     const item = input.items.find(row => row.identity === identity);
-    if (item.productId !== input.productId || item.included === false && !text(item.exclusionReason)) throw new Error("Report product differs or exclusion has no reason");
+    if (item.productId !== input.productId || item.included !== undefined && typeof item.included !== "boolean" || item.included === false && !text(item.exclusionReason)) throw new Error("Report product differs or exclusion has no reason");
     const required = item.requiredArtifacts;
     if (required !== null && (!Array.isArray(required) || new Set(required).size !== required.length || required.some(a => !/^[a-z][A-Za-z0-9_-]{0,49}$/.test(a)))) throw new Error("Invalid report artifact scope");
     const gaps = [], evidence = [], owners = [];
@@ -48,7 +63,7 @@ export function buildDeliveryReport(input, { resolveIntegration, ancestor, now =
     const local = item.completion?.kind === "local_change" ? item.completion.evidence : undefined;
     if (!local) {
       try {
-        const facts = resolveIntegration(item);
+        const facts = observeIntegration(item);
         if (facts.state === "merged" && SHA.test(facts.mergeCommit ?? "") && ancestor(facts.mergeCommit, input.head)) {
           merged = true; mergeCommit = facts.mergeCommit; evidence.push(`集成提交 ${mergeCommit}`);
         } else gaps.push("尚未核实代码已纳入目标主线");
@@ -94,6 +109,25 @@ export function buildDeliveryReport(input, { resolveIntegration, ancestor, now =
     boundary: "只读核对调用方提供的原始证据；本机效果为执行端的限定环境核实，不是脚本重新安装或执行检查；人工状态、通知送达与发布独立；不推进业务状态" };
 }
 
+/** Freeze the checkout on both sides of potentially slow GitHub evidence reads. */
+export function reportForCheckout({ root, input, config }, overrides = {}) {
+  if (config?.schemaVersion !== 1 || input?.productId !== config.productId || typeof input?.repository !== "string"
+    || input.repository.toLowerCase() !== config.repository?.toLowerCase()) throw new Error("Report product/repository binding differs");
+  const git = overrides.git ?? ((...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"] }).trim());
+  const assertCurrent = () => {
+    if (input.head !== git("rev-parse", "HEAD") || input.head !== git("rev-parse", "origin/main")
+      || input.head !== git("ls-remote", "origin", "refs/heads/main").split(/\s/)[0]
+      || typeof input.repository !== "string" || input.repository.toLowerCase() !== repositoryIdentity(git("config", "--get", "remote.origin.url")).toLowerCase()) throw new Error("Report checkout differs from live main; refresh exact repository and head");
+  };
+  assertCurrent();
+  const report = buildDeliveryReport(input, {
+    resolveIntegration: overrides.resolveIntegration ?? (item => integrationFacts(item, input.repository, root)),
+    ancestor: overrides.ancestor ?? ((a, b) => commitContains(root, a, b)), ...(overrides.now === undefined ? {} : { now: overrides.now }),
+  });
+  assertCurrent();
+  return report;
+}
+
 export function reportMarkdown(report) {
   return ["逐项交付结果（证据截至 " + safe(report.checkedAt) + "）", "", "| 对象 | 结果 | 证据与验证缺口 | 下一步责任 |", "|---|---|---|---|", ...report.items.map(item =>
     `| ${safe(item.identity)} | ${safe([item.included ? "纳入" : "未包含", item.integration, item.publication, item.localEffect, "人工状态记录：" + item.verification].join("；"))} | ${safe([...item.evidence, ...item.gaps, item.notification].join("；") || "暂无证据")} | ${safe(item.nextOwner.join("；") || "人工验收人：保留既有决定")} |`), "", report.boundary].join("\n");
@@ -108,11 +142,10 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     }
     if (!values["--input"] || values["--format"] && !["json", "markdown"].includes(values["--format"])) throw new Error("Invalid report input/format");
     const root = resolve(values["--root"] ?? process.cwd()), input = JSON.parse(readFileSync(values["--input"], "utf8"));
-    const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", timeout: 30_000 }).trim();
-    if (input.head !== git("rev-parse", "HEAD") || input.head !== git("rev-parse", "origin/main")
-      || input.head !== git("ls-remote", "origin", "refs/heads/main").split(/\s/)[0]
-      || input.repository.toLowerCase() !== repositoryIdentity(git("config", "--get", "remote.origin.url")).toLowerCase()) throw new Error("Report checkout differs from live main; refresh exact repository and head");
-    const report = buildDeliveryReport(input, { resolveIntegration: item => integrationFacts(item, input.repository, root), ancestor: (a, b) => commitContains(root, a, b) });
+    const configHome = process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config");
+    if (!configHome.startsWith("/")) throw new Error("Configuration root must be absolute");
+    const config = JSON.parse(readFileSync(join(configHome, "missiongo/release-coverage.json"), "utf8"));
+    const report = reportForCheckout({ root, input, config });
     console.log(values["--format"] === "markdown" ? reportMarkdown(report) : JSON.stringify(report, null, 2));
   } catch (error) { console.error(`Delivery report failed: ${error.message}`); process.exitCode = 1; }
 }

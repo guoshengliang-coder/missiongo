@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildDeliveryReport, reportMarkdown } from "./delivery-report.mjs";
+import { buildDeliveryReport, reportMarkdown, reportForCheckout } from "./delivery-report.mjs";
+import React from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { renderToStaticMarkup } from "react-dom/server";
 const now = Date.parse("2026-01-01T00:00:00Z"), head = "a".repeat(40), merge = "b".repeat(40);
 const local = { version: 1, target: "test host", files: [{ name: "release-tool.py", beforeSha256: "d".repeat(64), afterSha256: "c".repeat(64), sizeBytes: 42 }],
   validation: { checks: [{ name: "Bytes", result: "passed", method: "Compare SHA-256", evidence: "Match" }], remainingVerification: ["Real batch not exercised"], limitations: ["This host only"] } };
@@ -60,7 +64,7 @@ test("every scoped delivery is reported once; exclusions need reasons and remain
 test("Markdown renders input as text rather than allowing table/HTML injection", () => {
   const input = fixture(); input.items[1].noReleaseReason = "<script> | new\nrow";
   const markdown = reportMarkdown(buildDeliveryReport(input, operations));
-  assert.ok(markdown.includes("&lt;script&gt; \\| new row")); assert.ok(!markdown.includes("<script>"));
+  assert.ok(markdown.includes("&lt;script&gt; &#124; new row")); assert.ok(!markdown.includes("<script>"));
 });
 
 test("human cancellation or hold keeps its own meaning without suggesting automatic continuation", () => {
@@ -71,4 +75,40 @@ test("human cancellation or hold keeps its own meaning without suggesting automa
     assert.deepEqual(result.nextOwner, ["用户：保留暂停或取消决定；恢复需明确授权"]);
     assert.equal(input.items[0].itemStatus, status);
   }
+});
+
+test("evidence backslashes, pipes and Markdown cannot shift the responsibility column", () => {
+  const input = fixture(); input.items[1].noReleaseReason = "text \\| lost [action](https://example.invalid) **literal**";
+  const report = buildDeliveryReport(input, operations);
+  const html = renderToStaticMarkup(React.createElement(ReactMarkdown, { remarkPlugins: [remarkGfm] }, reportMarkdown(report)));
+  const rows = [...html.matchAll(/<tbody>([\s\S]*?)<\/tbody>/g)][0][1];
+  const cells = [...rows.matchAll(/<td>([\s\S]*?)<\/td>/g)].map(match => match[1]);
+  assert.equal(cells.length, 8);
+  assert.ok(cells[6].includes("lost [action]"));
+  assert.ok(cells[7].includes("人工验收人"));
+  assert.equal(html.includes('>action</a>'), false);
+  assert.equal(html.includes('<strong>literal'), false);
+});
+test("report checkout is rechecked after integration reads, not only before", () => {
+  const input = fixture(); let moved = false;
+  const git = (...args) => args[0] === "config" ? input.repository : args[0] === "ls-remote" ? `${moved ? merge : head} refs/heads/main` : head;
+  assert.throws(() => reportForCheckout({ root: ".", input, config: { schemaVersion: 1, productId: input.productId, repository: input.repository } }, { git, now, ancestor: () => true,
+    resolveIntegration: () => { moved = true; return { state: "merged", mergeCommit: merge }; } }), /changed|differs/);
+});
+test("repeated deliveries of the same PR reuse one immutable integration observation", () => {
+  const input = fixture(); input.scope.push("AND-1:second"); input.items.push({ ...input.items[0], identity: "AND-1:second" });
+  let calls = 0;
+  const report = buildDeliveryReport(input, { ...operations, resolveIntegration: () => { calls++; return { state: "merged", mergeCommit: merge }; } });
+  assert.equal(calls, 1); assert.equal(report.items.length, 3);
+});
+
+test("report product is bound to this installation, before any Git query", () => {
+  const input = fixture(); let calls = 0;
+  assert.throws(() => reportForCheckout({ root: ".", input, config: { schemaVersion: 1, productId: "another", repository: input.repository } },
+    { git: () => { calls++; return head; } }), /product|binding/);
+  assert.equal(calls, 0);
+});
+test("nonboolean inclusion must not silently become a successful included result", () => {
+  const input = fixture(); input.items[0].included = "false";
+  assert.throws(() => buildDeliveryReport(input, operations));
 });

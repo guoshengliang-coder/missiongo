@@ -174,6 +174,17 @@ test("installed real entry plans read-only, retains gates, detects historical mu
         noReleaseReason: "Fixture tool change", completion: { kind: "commit", commit: f.head, targetBranch: "main" }, itemStatus: "pending_verification" }] });
     const report = spawnSync("python3", [f.entry, "report", "--input", reportPath, "--format", "markdown"], { cwd: join(f.checkout, "scripts"), env: f.env, encoding: "utf8" });
     assert.equal(report.status, 0, report.stdout + report.stderr);
+    const reorderedReport = spawnSync("python3", [f.entry, "report", "--format", "markdown", "--input", reportPath], { cwd: join(f.checkout, "scripts"), env: f.env, encoding: "utf8" });
+    assert.equal(reorderedReport.status, 0, reorderedReport.stderr);
+    const reportInput = JSON.parse(readFileSync(reportPath));
+    const wrongProduct = { ...reportInput, productId: "unrelated-product", items: reportInput.items.map(item => ({ ...item, productId: "unrelated-product" })) };
+    save(reportPath, wrongProduct);
+    const wrongReport = spawnSync("python3", [f.entry, "report", "--input", reportPath], { cwd: join(f.checkout, "scripts"), env: f.env, encoding: "utf8" });
+    assert.notEqual(wrongReport.status, 0); assert.match(wrongReport.stderr, /binding differs/); save(reportPath, reportInput);
+    const installedReport = join(f.tools, "delivery-report.mjs"), reportSource = readFileSync(installedReport);
+    writeFileSync(installedReport, "process.exit(0);\n");
+    const noReport = spawnSync("python3", [f.entry, "report", "--input", reportPath], { cwd: join(f.checkout, "scripts"), env: f.env, encoding: "utf8" });
+    assert.notEqual(noReport.status, 0); assert.match(noReport.stderr, /Incomplete read-only report/); writeFileSync(installedReport, reportSource);
     assert.match(report.stdout, /AND-508:fixture/);
     assert.match(report.stdout, /无需产品发布/);
     assert.match(report.stdout, /人工验收人/);
@@ -189,7 +200,10 @@ test("installed real entry plans read-only, retains gates, detects historical mu
     // complete semantic output as well as an exit code.
     const stateModule = join(f.checkout, "scripts/release-state.mjs"), originalState = readFileSync(stateModule);
     writeFileSync(stateModule, Buffer.concat([originalState, Buffer.from("\nprocess.exit(0);\n")]));
-    assert.throws(() => completePlan(f.run("plan")), /complete coverage output/); writeFileSync(stateModule, originalState);
+    assert.throws(() => completePlan(f.run("plan")), /complete coverage output/);
+    const noReadiness = f.run("readiness", "--batch", batchPath);
+    assert.notEqual(noReadiness.status, 0); assert.match(noReadiness.stderr, /Incomplete read-only report/);
+    writeFileSync(stateModule, originalState);
     // Real OS lock, not a fake lock implementation.
     const busy = spawnSync("python3", ["-c", "import fcntl,subprocess,sys; f=open(sys.argv[1],'w'); fcntl.flock(f,fcntl.LOCK_EX); sys.exit(subprocess.run(sys.argv[2:]).returncode)", join(f.env.XDG_CONFIG_HOME, "missiongo/release.lock"), "python3", f.entry, "check", "--candidates", f.candidatesPath], { cwd: f.checkout, env: f.env, encoding: "utf8" });
     assert.equal(busy.status, 75, busy.stderr);
