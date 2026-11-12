@@ -164,3 +164,7 @@
 
 .merge-summary-copy { display: flex; flex-wrap: wrap; gap: 4px 8px; }
 .merge-summary-copy > span { white-space: nowrap; }
+
+.merge-processing-scope > .merge-selection-summary { margin: 0; }
+.merge-processing-scope .merge-stage-summary { margin: 0 0 16px; }
+.merge-processing-scope > h4 { margin: 16px 0 8px; font-size: var(--text-base); }
