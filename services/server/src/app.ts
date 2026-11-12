@@ -2565,6 +2565,20 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     // narrows that scope, including standalone deliveries without work items.
     return {deliveries:merges.list(productId,accountId,sessionId),batches:merges.batches(productId,accountId,sessionId),attentionSessionIds:merges.attentionSessionIds(productId,accountId,sessionId),sessionProgress:merges.sessionProgress(productId,accountId,sessionId)};
   });
+  app.get("/api/v1/products/:productId/integration-queue",async request=>{
+    const {productId}=request.params as {productId:string};requireProductPermission(request,productId,"view");
+    const q=request.query as {stage?:string;beforeSequence?:string};
+    if(q.stage&&!['all','merge','release','history'].includes(q.stage))throw invalidInput("Invalid queue stage.");
+    const before=q.beforeSequence===undefined?undefined:Number(q.beforeSequence);
+    if(before!==undefined&&(!Number.isSafeInteger(before)||before<1))throw invalidInput("Invalid queue cursor.");
+    return merges.queue(productId,requireAccountId(request),q.stage as 'all'|'merge'|'release'|'history'|undefined,before);
+  });
+  app.post("/api/v1/products/:productId/integration-preview",async request=>{
+    const {productId}=request.params as {productId:string};requireProductPermission(request,productId,"view");requireProductPermission(request,productId,"operate");requireProductPermission(request,productId,"ai");
+    const body=objectBody(request.body);
+    if(!Array.isArray(body.selection))throw invalidInput("Select deliveries.");
+    return merges.publicationPreview(requireAccountId(request),productId,body.selection.map(value=>{const row=objectBody(value);return {id:stringField(row,"id")!,revision:stringField(row,"revision")!};}));
+  });
   app.post("/api/v1/merge-deliveries/:id/decision",async request=>{
     const {id}=request.params as {id:string},body=objectBody(request.body);
     requireProductPermission(request,merges.product(id),"operate");
@@ -2595,11 +2609,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if(!Array.isArray(body.selection) || typeof body.publish!=="boolean") throw invalidInput("Select a batch and its publication scope.");
     if(body.saveAsDefault!==undefined && typeof body.saveAsDefault!=="boolean") throw invalidInput("saveAsDefault must be boolean.");
     if(body.integrationProtocol!==undefined&&body.integrationProtocol!==1)throw invalidInput("Unsupported integration protocol.");
+    const operation=body.operation;
+    if(operation!==undefined&&!["merge_only","merge_and_publish","publish_only"].includes(String(operation)))throw invalidInput("Invalid integration action.");
     const selection=body.selection.map(value=>{const row=objectBody(value);return {id:stringField(row,"id")!,revision:stringField(row,"revision")!};});
     return merges.start(requireAccountId(request),stringField(body,"requestKey")!,selection,{
       productId,nodeId:stringField(body,"nodeId")!,agentKind:stringField(body,"agentKind")! as AgentKind,mode:stringField(body,"mode")!,
       ...(optionalName(body,"model")?{model:optionalName(body,"model")!}:{}),...(optionalName(body,"effort")?{effort:optionalName(body,"effort")!}:{})
-    },body.publish,body.integrationProtocol===1?1:undefined,body.saveAsDefault===true);
+    },body.publish,body.integrationProtocol===1?1:undefined,body.saveAsDefault===true,operation as import("@missiongo/contracts").IntegrationActionMode|undefined,stringField(body,"scopeDigest",false));
   });
 
   app.post("/api/v1/project-conversations", async (request, reply) => {

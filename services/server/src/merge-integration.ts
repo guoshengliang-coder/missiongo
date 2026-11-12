@@ -7,6 +7,7 @@ const text=z.string().trim().min(1).max(4000);
 const id=z.string().min(1).max(200);
 const entry={deliveryId:id,expectedHead:sha};
 export const integrationActionSchema=z.discriminatedUnion("kind",[
+  z.object({kind:z.literal("verify_reference"),...entry,commit:sha,checkedAt:z.string().datetime(),source:text}),
   z.object({kind:z.literal("plan"),base:sha,summary:text,validation:text,entries:z.array(z.object({deliveryId:id,head:sha,
     dependsOn:z.array(id).max(20),group:z.string().trim().min(1).max(100),reason:text,validation:text})).min(1).max(20)}),
   z.object({kind:z.literal("prepare_repair"),...entry,base:sha,reason:text}),
@@ -24,6 +25,7 @@ export function integrationDenied(message:string):never {throw conflict("merge_i
 export function freshIntegrationCheck(checkedAt:string) {const age=Date.now()-Date.parse(checkedAt);return age>=-30_000&&age<=300_000;}
 export function applyIntegrationAction(state:MergeIntegration, action:IntegrationAction, key:string,
   results:Record<string,{status:string;head:string;commit?:string}>) {
+  if(action.kind==="verify_reference")integrationDenied("历史引用须由批次核验。");
   const at=new Date().toISOString();
   if(state.events.length>=1000)integrationDenied("集成记录已达上限，请保留原批次并联系维护者。");
   if(action.kind==="plan") {

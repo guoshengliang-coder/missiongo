@@ -1,7 +1,7 @@
 ---
 name: missiongo
 description: 通过 MissionGo MCP 查询项目概览、吞吐、交付周期和验收打回率，或完整读取及处理指定条目、评论、创建和上传附件；核实合并与发布后可靠交接。不修改条目正文与字段，不决定验收。
-version: 5.70.0
+version: 5.71.0
 ---
 
 # MissionGo 条目读取与评论
@@ -746,3 +746,12 @@ OpenCode 的空表单显示“确认请求 <id>”的批准/取消选项；只�
 参数来自当前读取的精确 productId/itemKey、expectedRevision、developmentEventId、roundKey；completion 为 local_change v1，requiredArtifacts=[] 且 noReleaseReason 非空，稳定 idempotencyKey。记录真实前后摘要、安全相对文件名、结果大小、目标环境、回退及 passed/failed/not_run 检查、剩余验证和限制；缺失的前摘要或结果不能伪造不存在或通过。
 仅当前有效轮次 development_complete/pending_verification 可追加；状态、Builder、轮次、人工历史不变。已有依据/范围/正式发布证据冲突、内容或Builder变化及终态、打回/重开均停止。缺历史开发事件锚点报告不适用，不造事件或凭据。相同键同内容重放只返回现状，不恢复人工状态。
 工具不读取本机文件、不证明安装成功、不产生产品发布或验收，不扩展到其他节点。成功后回读上下文、逐份交付和候选；分别报告证据已保存、人工状态保持及验证缺口。新能力不可用时明确说明，不借正式发布接口伪造产物。此能力不授权扫描或自动回填其他历史条目。
+
+
+## 待集成两步处理与历史合并引用（AND-511，5.71）
+
+清单只保留待合并与待发布，部分产物发布在行内说明；交付历史不计待集成数量。配置与发布范围同在第二步，默认仅合并；全部已合并时可仅发布，不因选中记录已合并就重新合并。
+
+get_merge_batch 返回 operation、references、publicationScope 时，以该冻结范围为准。references 保留原批次的真实合并事实，禁止再次修复、合并或 report，也不重复开发完成交接；独立核实精确 head、merge commit 在实际目标分支，用 record_merge_integration 的 verify_reference（deliveryId、expectedHead、commit、checkedAt、source）记录核验。计划包含全部选择，引用只读，只有非引用且 mergeReady 的项可合并。publish_only 不授权新的 Git 合并。完成 reference 核验及实际目标组合验证后，才上报发布阶段；未知结果保留原批次。
+
+第二步预览仅是服务端登记元数据，不代替实时 Git、公开产物和仓库发布门禁。发布覆盖包含此前已合并的额外候选，仍读取全量分页并用当前仓库 selection/digest 规划；新候选、轮次、范围或产物变化不得自动沿用旧授权。实际发布前核对 publicationScope，额外范围改变须在原会话重新审阅，不通过删清单、改摘要、重建批次绕过。部分失败的发布决定和恢复仍走原受限流程。旧批次没有这些字段时沿用原语义，不推断已有新授权；运行中旧客户端需显式重读当前 Skill 和工具契约。

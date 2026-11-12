@@ -1,3 +1,4 @@
+import { queueRoute } from "./integration-queue-fixture";
 import { expect, test } from "@playwright/test";
 
 test.describe("AND-476 click help and integration defaults",()=>{
@@ -9,12 +10,12 @@ test.describe("AND-476 click help and integration defaults",()=>{
     const at="2026-11-08T08:00:00Z";let active=false,empty=false;
     const deliveries=["conflicting","stale","failed","dependency","pending","changed",undefined,"unknown"].map((blocker,i)=>({id:`help-${i}`,productId:product.id,sessionId:`dev-${i}`,revision:`rev-${i}`,state:"confirmed",blocker,
       itemKeys:[`HP-${i+1}`],head:"a".repeat(40),summary:`改动 ${i+1}`,validation:"验证说明",requiredArtifacts:["web"],pullRequestUrl:`https://github.com/example/repo/pull/${i+1}`,evidence:{checkedAt:at,source:"Fixture"}}));
-    await page.route(/\/merge-deliveries(?:\?.*)?$/,route=>route.fulfill({json:{deliveries:empty?[]:deliveries,batches:active?[{id:"active",sessionId:"active-session",state:"active",deliveries:[],results:{},publish:false}]:[]}}));
-    await page.route("**/api/v1/nodes",route=>route.fulfill({json:{nodes:[{id:"help-node",name:"Fixture Mac",online:true,supportsFreeSessions:true,agents:[{kind:"codex",ready:true,models:[]}],repos:[{productId:product.id,repoPath:"fixture"}],repoCandidates:[],createdAt:at}]}}));
-    await page.route("**/api/v1/dispatch-defaults",route=>route.fulfill({json:{nodeId:"help-node",agentKind:"codex",agents:{codex:{mode:"auto"}}}}));
-    await page.route("**/api/v1/integration-defaults",route=>route.fulfill({json:{agents:{}}}));
+    await page.route(/\/(?:merge-deliveries|integration-queue)(?:\?.*)?$/,route=>queueRoute(route).fulfill({json:{deliveries:empty?[]:deliveries,batches:active?[{id:"active",sessionId:"active-session",state:"active",deliveries:[],results:{},publish:false}]:[]}}));
+    await page.route("**/api/v1/nodes",route=>queueRoute(route).fulfill({json:{nodes:[{id:"help-node",name:"Fixture Mac",online:true,supportsFreeSessions:true,agents:[{kind:"codex",ready:true,models:[]}],repos:[{productId:product.id,repoPath:"fixture"}],repoCandidates:[],createdAt:at}]}}));
+    await page.route("**/api/v1/dispatch-defaults",route=>queueRoute(route).fulfill({json:{nodeId:"help-node",agentKind:"codex",agents:{codex:{mode:"auto"}}}}));
+    await page.route("**/api/v1/integration-defaults",route=>queueRoute(route).fulfill({json:{agents:{}}}));
     const bodies:Record<string,unknown>[]=[];
-    await page.route("**/merge-batches",route=>{bodies.push(route.request().postDataJSON());return route.fulfill({status:503,json:{title:"Synthetic lost acknowledgement"}});});
+    await page.route("**/merge-batches",route=>{bodies.push(route.request().postDataJSON());return queueRoute(route).fulfill({status:503,json:{title:"Synthetic lost acknowledgement"}});});
     await page.goto(`/?product=${product.id}&console=agent`);
     await page.getByRole("button",{name:"待集成 7",exact:true}).click();
     const dialog=page.getByRole("dialog").first();
@@ -88,11 +89,11 @@ test("AND-476 saved integration preference takes priority and read failures can 
   const product=await(await request.post("/api/v1/products",{data:{name:"Integration saved preference",keyPrefix:"IPREF"}})).json();
   let failed=true,posts=0;
   const at="2026-11-08T08:00:00Z";
-  await page.route(/\/merge-deliveries(?:\?.*)?$/,route=>route.fulfill({json:{deliveries:[{id:"saved",productId:product.id,sessionId:"source",revision:"rev",state:"confirmed",summary:"Saved preference fixture",validation:"Passed",itemKeys:["IPREF-1"],head:"a".repeat(40),requiredArtifacts:["web"],evidence:{checkedAt:at,source:"Fixture"}}],batches:[]}}));
-  await page.route("**/api/v1/nodes",route=>route.fulfill({json:{nodes:["dispatch-node","integration-node"].map(id=>({id,name:id,online:true,supportsFreeSessions:true,agents:[{kind:"codex",ready:true,models:[]}],repos:[{productId:product.id,repoPath:"fixture"}],createdAt:at}))}}));
-  await page.route("**/api/v1/dispatch-defaults",route=>route.fulfill({json:{nodeId:"dispatch-node",agentKind:"codex",agents:{codex:{mode:"auto"}}}}));
-  await page.route("**/api/v1/integration-defaults",route=>failed?route.fulfill({status:503,json:{title:"Synthetic preference read failure"}}):route.fulfill({json:{nodeId:"integration-node",agentKind:"codex",agents:{codex:{mode:"default"}}}}));
-  await page.route("**/merge-batches",route=>{posts++;return route.fulfill({status:503,json:{title:"Unexpected start"}});});
+  await page.route(/\/(?:merge-deliveries|integration-queue)(?:\?.*)?$/,route=>queueRoute(route).fulfill({json:{deliveries:[{id:"saved",productId:product.id,sessionId:"source",revision:"rev",state:"confirmed",summary:"Saved preference fixture",validation:"Passed",itemKeys:["IPREF-1"],head:"a".repeat(40),requiredArtifacts:["web"],evidence:{checkedAt:at,source:"Fixture"}}],batches:[]}}));
+  await page.route("**/api/v1/nodes",route=>queueRoute(route).fulfill({json:{nodes:["dispatch-node","integration-node"].map(id=>({id,name:id,online:true,supportsFreeSessions:true,agents:[{kind:"codex",ready:true,models:[]}],repos:[{productId:product.id,repoPath:"fixture"}],createdAt:at}))}}));
+  await page.route("**/api/v1/dispatch-defaults",route=>queueRoute(route).fulfill({json:{nodeId:"dispatch-node",agentKind:"codex",agents:{codex:{mode:"auto"}}}}));
+  await page.route("**/api/v1/integration-defaults",route=>failed?queueRoute(route).fulfill({status:503,json:{title:"Synthetic preference read failure"}}):queueRoute(route).fulfill({json:{nodeId:"integration-node",agentKind:"codex",agents:{codex:{mode:"default"}}}}));
+  await page.route("**/merge-batches",route=>{posts++;return queueRoute(route).fulfill({status:503,json:{title:"Unexpected start"}});});
   await page.goto(`/?product=${product.id}&console=agent`);await page.getByRole("button",{name:"待集成 1",exact:true}).click();
   const dialog=page.getByRole("dialog");await dialog.getByRole("button",{name:"全选可选内容"}).click();await dialog.getByRole("button",{name:"下一步：配置 Agent"}).click();
   await expect(dialog.getByText("集成默认配置加载失败，请重试后再开始处理。",{exact:false})).toBeVisible();

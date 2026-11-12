@@ -1,3 +1,4 @@
+import { queueRoute } from "./integration-queue-fixture";
 import { refreshFromConsoleStream } from "./polling";
 import { expect, test } from "@playwright/test";
 import { AUDIT_SOURCE } from "./audit-page.mjs";
@@ -16,12 +17,12 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     const delivery={id:"delivery-one",productId:product.id,sessionId:"development-session",revision:"revision-one",state:"confirmed",blocker:width===320?"pending":"stale",
       itemKeys:width===320?[]:["MG-1"],head:"a".repeat(40),summary:"会话交付确认与待集成清单",validation:"服务端回归测试通过",requiredArtifacts:["web"],
       pullRequestUrl:"https://github.com/example/project/pull/12",evidence:{checkedAt:now,source:"GitHub"}};
-    await page.route(/\/merge-deliveries(?:\?.*)?$/,route=>route.fulfill({json:{deliveries:[delivery],batches:[]}}));
-    await page.route("**/api/v1/nodes",route=>route.fulfill({json:{nodes:[{id:"merge-node",name:"Fixture Mac",online:true,supportsFreeSessions:true,
+    await page.route(/\/(?:merge-deliveries|integration-queue)(?:\?.*)?$/,route=>queueRoute(route).fulfill({json:{deliveries:[delivery],batches:[]}}));
+    await page.route("**/api/v1/nodes",route=>queueRoute(route).fulfill({json:{nodes:[{id:"merge-node",name:"Fixture Mac",online:true,supportsFreeSessions:true,
       agents:[{kind:"codex",planApprovalProtocol:1,ready:true,models:[]}],repos:[{productId:product.id,repoPath:"fixture"}],repoCandidates:[],createdAt:now}]}}));
-    await page.route("**/api/v1/dispatch-defaults",route=>route.fulfill({json:{nodeId:"merge-node",agentKind:"codex",agents:{codex:{mode:"auto"}}}}));
+    await page.route("**/api/v1/dispatch-defaults",route=>queueRoute(route).fulfill({json:{nodeId:"merge-node",agentKind:"codex",agents:{codex:{mode:"auto"}}}}));
     const bodies:unknown[]=[];
-    await page.route("**/merge-batches",route=>{bodies.push(route.request().postDataJSON());return route.fulfill({status:503,json:{title:"Synthetic lost acknowledgement"}});});
+    await page.route("**/merge-batches",route=>{bodies.push(route.request().postDataJSON());return queueRoute(route).fulfill({status:503,json:{title:"Synthetic lost acknowledgement"}});});
     await page.goto(`/?product=${product.id}&console=agent`);
     const entry=page.getByRole("button",{name:"待集成 1",exact:true});
     const bar=page.locator(".agent-console-topbar");
@@ -78,16 +79,16 @@ for (const width of [320,1440]) for (const theme of ["light","dark"] as const) f
   await page.route("**/api/v1/agent-sessions**",route=>{
     if(route.request().method()==="POST" && new URL(route.request().url()).pathname.endsWith("/commands")) {
       // A definite rejection permits editing; unknown 5xx outcomes stay locked.
-      if(rejectSend)return route.fulfill({status:400,json:{title:"Synthetic rejected send"}});
+      if(rejectSend)return queueRoute(route).fulfill({status:400,json:{title:"Synthetic rejected send"}});
       blocker="changed";
-      return route.fulfill({json:{id:"new-input",sessionId:id,kind:"message",text:"Keep this unsent draft",status:"delivered",createdAt:stamp}});
+      return queueRoute(route).fulfill({json:{id:"new-input",sessionId:id,kind:"message",text:"Keep this unsent draft",status:"delivered",createdAt:stamp}});
     }
-    return route.fulfill({json:new URL(route.request().url()).pathname==="/api/v1/agent-sessions"?{sessions:[summary]}:{...summary,messages:[]}});
+    return queueRoute(route).fulfill({json:new URL(route.request().url()).pathname==="/api/v1/agent-sessions"?{sessions:[summary]}:{...summary,messages:[]}});
   });
-  await page.route("**/api/v1/items/*/dispatches",route=>route.fulfill({json:{dispatches:[{id:summary.dispatchId,agentSessionId:id,agentKind:"codex",mode:"auto",nodeName:"Fixture",status:"launched",createdAt:stamp,itemKeys:[item.key]}]}}));
-  await page.route(/\/merge-deliveries(?:\?.*)?$/,route=>route.fulfill({json:{deliveries:state==="withdrawn"?[]:[{id:"offer",productId:product.id,sessionId:id,revision:"frozen",state,blocker,reconfirmation,
+  await page.route("**/api/v1/items/*/dispatches",route=>queueRoute(route).fulfill({json:{dispatches:[{id:summary.dispatchId,agentSessionId:id,agentKind:"codex",mode:"auto",nodeName:"Fixture",status:"launched",createdAt:stamp,itemKeys:[item.key]}]}}));
+  await page.route(/\/(?:merge-deliveries|integration-queue)(?:\?.*)?$/,route=>queueRoute(route).fulfill({json:{deliveries:state==="withdrawn"?[]:[{id:"offer",productId:product.id,sessionId:id,revision:"frozen",state,blocker,reconfirmation,
     summary:"Verified delivery",validation:"Regression passed",itemKeys:[item.key],head:"a".repeat(40),requiredArtifacts:["web"],pullRequestUrl:"https://github.com/example/project/pull/12",evidence:{checkedAt:stamp,source:"Fixture"}}],attentionSessionIds:blocker==="changed"?[]:[id],batches:state==="batched"?[{id:"batch",state:"active",sessionId:"merge-session",deliveries:["offer"],results:{},publish:false}]:[]}}));
-  await page.route("**/merge-deliveries/offer/decision",route=>{const input=route.request().postDataJSON();expect(input.revision).toBe("frozen");state=input.decision==="confirm"?"confirmed":"withdrawn";decisions++;return route.fulfill({json:{state}});});
+  await page.route("**/merge-deliveries/offer/decision",route=>{const input=route.request().postDataJSON();expect(input.revision).toBe("frozen");state=input.decision==="confirm"?"confirmed":"withdrawn";decisions++;return queueRoute(route).fulfill({json:{state}});});
   if(surface==="console")await page.goto(`/?product=${product.id}&console=agent&session=${id}`);
   else {await page.goto(`/?product=${product.id}&item=${item.key}`);await page.locator(".execution-history > summary").click();await page.locator(".execution-record > summary").filter({hasText:"Fixture"}).click();await page.locator(".agent-session-toggle").click();}
   const card=page.locator(".merge-delivery-notice");await expect(card).toBeVisible();
@@ -165,8 +166,8 @@ for(const width of [320,1440]) for(const theme of ["light","dark"] as const) tes
     integration:{protocol:1,revision:7,plans:[{base:"c".repeat(40),summary:"先合基础接口，再核实依赖功能；独立改动单独处理",validation:"最终主线组合行为与仓库检查",at,
       entries:["a","b","c"].map((deliveryId,i)=>({deliveryId,head:"b".repeat(40),dependsOn:i===1?["a"]:[],group:i<2?"接口兼容":"独立变更",reason:"读取相互影响后确定顺序",validation:"保留已有行为并验证新增功能"}))}],
       entries:{a:entry("IP-1","ready"),b:{...entry("IP-2","waiting_ci"),repairs:[{id:"repair",fromHead:"a".repeat(40),head:"b".repeat(40),base:"c".repeat(40),reason:"修复重复渲染",commits:["b".repeat(40)],validation:"回归测试已通过，远程 CI 排队中",source:"Fixture",at}]},c:entry("IP-3","investigating")},events:[{id:"event",digest:"digest",action:"plan",at,detail:"整批计划已保存，断线恢复沿用原批次"}]}};
-  await page.route("**/api/v1/agent-sessions**",route=>route.fulfill({json:new URL(route.request().url()).pathname==="/api/v1/agent-sessions"?{sessions:[session]}:{...session,messages:[{id:"native-latest",sourceId:"native-latest",role:"agent",text:"原生会话的最新回复",occurredAt:at}]}}));
-  await page.route(/\/merge-deliveries(?:\?.*)?$/,route=>route.fulfill({json:{deliveries:[],batches:[batch]}}));
+  await page.route("**/api/v1/agent-sessions**",route=>queueRoute(route).fulfill({json:new URL(route.request().url()).pathname==="/api/v1/agent-sessions"?{sessions:[session]}:{...session,messages:[{id:"native-latest",sourceId:"native-latest",role:"agent",text:"原生会话的最新回复",occurredAt:at}]}}));
+  await page.route(/\/(?:merge-deliveries|integration-queue)(?:\?.*)?$/,route=>queueRoute(route).fulfill({json:{deliveries:[],batches:[batch]}}));
   await page.goto(`/?product=${product.id}&console=agent&session=${id}`);
   const draft=page.locator(".agent-console-reply textarea");await draft.fill("保留此草稿");
   const progress=page.getByRole("region",{name:"集成进度"});
@@ -257,16 +258,16 @@ for(const width of [320,375,1440]) for(const theme of ["light","dark"] as const)
   const batch={id:"recovery-batch",sessionId:id,state:"active",deliveries:["delivery"],publish:true,results:{}};
   let decision:string|undefined,reads=0;
   const row={id:"recovery-request",snapshot,digest:"digest",at,action:{kind:"accept_merge",deliveryId:"delivery",evidence:{head:"b".repeat(40),commit:"c".repeat(40),targetHead:"d".repeat(40),checkedAt:at,source:"https://github.com/example/project/pull/12",validation:"外部合并及真实目标回归已核实",checks:"passed",local:"passed",originalIncluded:true,targetIncludesMerge:true}}};
-  await page.route("**/api/v1/agent-sessions**",route=>route.fulfill({json:new URL(route.request().url()).pathname==="/api/v1/agent-sessions"?{sessions:[session]}:{...session,messages:[]}}));
-  await page.route(/\/merge-deliveries(?:\?.*)?$/,route=>route.fulfill({json:{deliveries:[],batches:[batch]}}));
-  await page.route("**/merge-batches/recovery-batch/reconciliation",route=>{reads++;return route.fulfill({json:{batchId:batch.id,state:"active",publish:true,snapshot,sessionId:id,
+  await page.route("**/api/v1/agent-sessions**",route=>queueRoute(route).fulfill({json:new URL(route.request().url()).pathname==="/api/v1/agent-sessions"?{sessions:[session]}:{...session,messages:[]}}));
+  await page.route(/\/(?:merge-deliveries|integration-queue)(?:\?.*)?$/,route=>queueRoute(route).fulfill({json:{deliveries:[],batches:[batch]}}));
+  await page.route("**/merge-batches/recovery-batch/reconciliation",route=>{reads++;return queueRoute(route).fulfill({json:{batchId:batch.id,state:"active",publish:true,snapshot,sessionId:id,
     entries:[{deliveryId:"delivery",itemKeys:["RC-1","RC-2"],originalHead:"a".repeat(40),executionHead:"a".repeat(40),repository:"https://github.com/example/project",pullRequest:12,targetBranch:"main",requiredArtifacts:["web"],
       items:[{itemKey:"RC-1",status:"development_complete",revision:4,missingEvidence:true,next:"补齐交付证据并核实必需产物发布"},{itemKey:"RC-2",status:"on_hold",revision:5,missingEvidence:false,blocker:"条目已暂缓；保留人工状态。",next:"等待人工决定"}]}],
     reconciliation:{requests:[{...row,...(decision?{decision}:{})}],history:[],handoffs:{}}}});});
   await page.route("**/merge-batches/recovery-batch/reconciliation/recovery-request/decision",route=>{
     expect(route.request().postDataJSON()).toEqual({snapshot,decision:"approved",noExecutionRemaining:true});decision="approved";
     // The server accepted the decision but the response was lost.
-    return route.fulfill({status:503,json:{title:"Synthetic lost response"}});
+    return queueRoute(route).fulfill({status:503,json:{title:"Synthetic lost response"}});
   });
   await page.goto(`/?product=${product.id}&console=agent&session=${id}`);
   const draft=page.locator(".agent-console-reply textarea");await draft.fill("保留恢复审阅草稿");
@@ -302,11 +303,11 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     itemKeys:i===1?["WZ-2","WZ-3"]:[`WZ-${i===0?1:4}`],head:"a".repeat(40),summary:`独立改动组 ${i}`,validation:`验证详情 ${i}`,requiredArtifacts:["web","macosApp"],
     pullRequestUrl:`https://github.com/example/project/pull/${i+1}`,evidence:{checkedAt:at,source:"Fixture"}}));
   let active=false,posts=0;
-  await page.route(/\/merge-deliveries(?:\?.*)?$/,route=>route.fulfill({json:{deliveries,batches:active?[{id:"active",sessionId:"active-session",state:"active",deliveries:[],publish:false,results:{}}]:[]}}));
-  await page.route("**/api/v1/nodes",route=>route.fulfill({json:{nodes:[{id:"wizard-node",name:"Wizard Mac",online:true,supportsFreeSessions:true,
+  await page.route(/\/(?:merge-deliveries|integration-queue)(?:\?.*)?$/,route=>queueRoute(route).fulfill({json:{deliveries,batches:active?[{id:"active",sessionId:"active-session",state:"active",deliveries:[],publish:false,results:{}}]:[]}}));
+  await page.route("**/api/v1/nodes",route=>queueRoute(route).fulfill({json:{nodes:[{id:"wizard-node",name:"Wizard Mac",online:true,supportsFreeSessions:true,
     agents:[{kind:"codex",ready:true,models:[]}],repos:[{productId:product.id,repoPath:"fixture"}],repoCandidates:[],createdAt:at}]}}));
-  await page.route("**/api/v1/dispatch-defaults",route=>route.fulfill({json:{nodeId:"wizard-node",agentKind:"codex",agents:{codex:{mode:"auto"}}}}));
-  await page.route("**/merge-batches",route=>{posts++;return route.fulfill({status:409,json:{title:"Fixture conflict"}});});
+  await page.route("**/api/v1/dispatch-defaults",route=>queueRoute(route).fulfill({json:{nodeId:"wizard-node",agentKind:"codex",agents:{codex:{mode:"auto"}}}}));
+  await page.route("**/merge-batches",route=>{posts++;return queueRoute(route).fulfill({status:409,json:{title:"Fixture conflict"}});});
   await page.goto(`/?product=${product.id}&console=agent`);await page.getByRole("button",{name:"待集成 2",exact:true}).click();
   const dialog=page.getByRole("dialog").first();
   await expect(dialog.locator(".merge-config")).toBeHidden();
@@ -357,7 +358,7 @@ test("AND-447 SSE invalidates a removed selection and permits deliberate reselec
   const product=await(await request.post("/api/v1/products",{data:{name:"AND-447 stale",keyPrefix:"WZSTALE"}})).json();
   const now="2026-11-08T08:00:00Z";let removed=false,reads=0;
   const delivery={id:"stale",productId:product.id,sessionId:"dev",revision:"first",state:"confirmed",itemKeys:["ST-1"],head:"a".repeat(40),summary:"变化中的改动",validation:"回归说明",requiredArtifacts:["web"],pullRequestUrl:"https://github.com/example/project/pull/1",evidence:{checkedAt:now,source:"Fixture"}};
-  await page.route(/\/merge-deliveries(?:\?.*)?$/,route=>{reads++;return route.fulfill({json:{deliveries:removed?[]:[delivery],batches:[]}});});
+  await page.route(/\/(?:merge-deliveries|integration-queue)(?:\?.*)?$/,route=>{reads++;return queueRoute(route).fulfill({json:{deliveries:removed?[]:[delivery],batches:[]}});});
   await page.goto(`/?product=${product.id}&console=agent`);await page.getByRole("button",{name:"待集成 1",exact:true}).click();
   const dialog=page.getByRole("dialog");await dialog.getByRole("button",{name:"全选可选内容"}).click();await dialog.getByRole("button",{name:"下一步：配置 Agent"}).click();
   removed=true;const before=reads;

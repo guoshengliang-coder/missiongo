@@ -130,3 +130,13 @@
 .merge-footer .primary-button:disabled { background: var(--surface-sunken); color: var(--muted); border: 1px solid var(--line); opacity: 1; }
 /* State changes switch the foreground/background pair together for readable contrast. */
 .merge-footer .primary-button { transition: transform 140ms ease; }
+
+/* AND-511: reuse existing controls, modal and semantic outcome tokens. */
+.merge-queue-tabs { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.merge-queue-tabs .merge-actions { margin: 0; }
+.merge-queue-tabs [aria-pressed="true"] { background: var(--surface-sunken); border-color: var(--ink); }
+.merge-scope { min-width: 0; overflow-wrap: anywhere; }
+.merge-scope h3 { font-size: var(--text-lg); margin: 0 0 12px; }
+.merge-scope details { margin: 16px 0; }
+.merge-scope summary { min-height: 44px; cursor: pointer; }
+.merge-row .item-handler-badge { margin-top: 8px; }
