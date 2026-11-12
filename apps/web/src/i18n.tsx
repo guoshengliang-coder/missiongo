@@ -421,6 +421,8 @@ const EN_MESSAGES = {
   iconSavedImmediately: "Icon changes are saved separately from the product name.",
 
   artifactPreview: "File preview",
+  artifactNavigation: "Files in this message",
+  artifactMessageOnly: "This message only",
   agentSendPreparing: "Preparing conversation",
   agentSendStarting: "Submitting conversation start",
   agentSendUploading: "Uploading attachment {current}/{total}",
@@ -2313,6 +2315,8 @@ const ZH_MESSAGES: Record<MessageKey, string> = {
   iconSavedImmediately: "图标与产品名称分开保存。",
 
   artifactPreview: "文件预览",
+  artifactNavigation: "本条消息的文件",
+  artifactMessageOnly: "仅此条消息",
   agentSendPreparing: "正在准备会话",
   agentSendStarting: "正在提交会话启动",
   agentSendUploading: "正在上传附件 {current}/{total}",

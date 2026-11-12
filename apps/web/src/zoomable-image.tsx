@@ -27,8 +27,10 @@ function ZoomControl({ label, disabled, children, onActivate }: {
   >{children}</button>;
 }
 
-/** Owns only image gestures. The gallery still owns unzoomed one-finger swipes. */
-export function ZoomableImage({ src, alt }: { src: string; alt: string }) {
+/** Owns image gestures and optionally reports unzoomed one-finger swipes. */
+export function ZoomableImage({ src, alt, onSwipe, onError }: {
+  src: string; alt: string; onSwipe?: ((direction: "previous" | "next") => void) | undefined; onError?: (() => void) | undefined;
+}) {
   const { t } = useI18n();
   const viewport = useRef<HTMLDivElement>(null);
   const image = useRef<HTMLImageElement>(null);
@@ -40,9 +42,11 @@ export function ZoomableImage({ src, alt }: { src: string; alt: string }) {
   const tapStart = useRef<Point | null>(null);
   const moved = useRef(false);
   const pointerType = useRef("");
+  const swipe = useRef<{ id: number; point: Point } | null>(null);
 
   const apply = (next: View) => {
     const scale = Math.max(1, Math.min(5, next.scale));
+    if (scale > 1) swipe.current = null;
     const bounds = viewport.current;
     const img = image.current;
     const fit = bounds && img?.naturalWidth ? Math.min(bounds.clientWidth / img.naturalWidth, bounds.clientHeight / img.naturalHeight) : 0;
@@ -87,6 +91,13 @@ export function ZoomableImage({ src, alt }: { src: string; alt: string }) {
         lastTap.current = null;
       } else lastTap.current = { time: now, point: { x: event.clientX, y: event.clientY } };
     }
+    const start = swipe.current;
+    swipe.current = null;
+    if (!cancelled && start?.id === event.pointerId && points.current.size === 1 && viewRef.current.scale === 1) {
+      const dx = event.clientX - start.point.x;
+      const dy = event.clientY - start.point.y;
+      if (Math.abs(dx) >= 55 && Math.abs(dx) >= Math.abs(dy) * 1.25) onSwipe?.(dx > 0 ? "previous" : "next");
+    }
     points.current.delete(event.pointerId);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     begin();
@@ -102,6 +113,8 @@ export function ZoomableImage({ src, alt }: { src: string; alt: string }) {
         event.currentTarget.setPointerCapture(event.pointerId);
         tapStart.current = { x: event.clientX, y: event.clientY };
         moved.current = points.current.size > 1;
+        swipe.current = event.pointerType === "touch" && points.current.size === 1 && viewRef.current.scale === 1
+          ? { id: event.pointerId, point: { x: event.clientX, y: event.clientY } } : null;
         if (moved.current) lastTap.current = null;
         begin();
       }}
@@ -126,9 +139,9 @@ export function ZoomableImage({ src, alt }: { src: string; alt: string }) {
       }}
       onPointerUp={event => finish(event)}
       onPointerCancel={event => finish(event, true)}
-      onLostPointerCapture={event => { if (points.current.delete(event.pointerId)) begin(); }}
+      onLostPointerCapture={event => { swipe.current = null; if (points.current.delete(event.pointerId)) begin(); }}
     >
-      <img ref={image} src={src} alt={alt} draggable={false} onLoad={() => apply(INITIAL)} style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }} />
+      <img ref={image} src={src} alt={alt} draggable={false} onError={onError} onLoad={() => apply(INITIAL)} style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }} />
     </div>
     <div className="image-zoom-controls">
       <ZoomControl onActivate={() => zoom(viewRef.current.scale / 1.5)} disabled={view.scale <= 1} label={t("zoomOutImage")}><Minus size={18} /></ZoomControl>
