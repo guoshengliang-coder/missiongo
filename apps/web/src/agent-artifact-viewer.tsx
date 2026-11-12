@@ -1,9 +1,12 @@
 import { OverlayDialog } from "./overlay";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Download, LoaderCircle, RotateCcw, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, LoaderCircle, RotateCcw, X } from "lucide-react";
 import { localArtifactLinks, localArtifactImageLinks, localArtifactPath, artifactResourceName, type AgentArtifactBundle } from "@missiongo/domain";
 import { createPortal } from "react-dom";
+
+import { ZoomableImage } from "./zoomable-image";
+import { artifactGalleryLinks } from "./agent-artifact-gallery";
 
 import { api } from "./api";
 import { useI18n, type MessageKey } from "./i18n";
@@ -16,15 +19,20 @@ const errorKeys: Record<string, MessageKey> = {
 };
 
 export function AgentArtifactMarkdown({ text, sessionId, messageId, onImageLoad }: { text: string; sessionId: string; messageId: string; onImageLoad?: (() => void) | undefined }) {
-  const [href, setHref] = useState<string>();
-  const closeViewer = useCallback(() => setHref(undefined), []);
-  const openViewer = useCallback((value: string) => setHref(localArtifactLinks(text).find((link) => localArtifactPath(link) === localArtifactPath(value)) ?? value), [text]);
+  const [selection, setSelection] = useState<{ sessionId: string; messageId: string; href: string; links: string[] }>();
+  const closeViewer = useCallback(() => setSelection(undefined), []);
+  useEffect(closeViewer, [sessionId, messageId, closeViewer]);
+  const openViewer = useCallback((value: string) => {
+    const href = localArtifactLinks(text).find(link => localArtifactPath(link) === localArtifactPath(value)) ?? value;
+    const gallery = artifactGalleryLinks(text);
+    setSelection({ sessionId, messageId, href, links: gallery.includes(href) ? gallery : [href] });
+  }, [text, sessionId, messageId]);
   const images = useMemo(() => localArtifactImageLinks(text), [text]);
   return <>
     <MarkdownText onLocalArtifactOpen={openViewer} hideLocalImages>{text}</MarkdownText>
     {images.length > 0 && <div className="agent-output-images">{images.map((image) =>
       <ArtifactImage key={`${sessionId}:${messageId}:${image}`} sessionId={sessionId} messageId={messageId} href={image} onOpen={() => openViewer(image)} onLoad={onImageLoad} />)}</div>}
-    {href && createPortal(<ArtifactViewer key={`${sessionId}:${messageId}:${href}`} sessionId={sessionId} messageId={messageId} href={href} onClose={closeViewer} />, document.body)}
+    {selection?.sessionId === sessionId && selection.messageId === messageId && createPortal(<ArtifactViewer key={`${sessionId}:${messageId}`} sessionId={sessionId} messageId={messageId} initialHref={selection.href} links={selection.links} onClose={closeViewer} />, document.body)}
   </>;
 }
 
@@ -43,6 +51,7 @@ function useArtifact(sessionId: string, messageId: string, href: string) {
   const retry = async () => {
     await request.refetch();
     await state.refetch();
+    if (status?.status === "ready") await bundle.refetch();
   };
   return { request, state, bundle, status, waiting, retry };
 }
@@ -68,24 +77,53 @@ function ArtifactImage({ sessionId, messageId, href, onOpen, onLoad }: {
   </div>;
 }
 
-function ArtifactViewer({ sessionId, messageId, href, onClose }: { sessionId: string; messageId: string; href: string; onClose: () => void }) {
+function ArtifactViewer({ sessionId, messageId, initialHref, links, onClose }: {
+  sessionId: string; messageId: string; initialHref: string; links: string[]; onClose: () => void;
+}) {
   const { t } = useI18n();
-  const { request, state, bundle, status, waiting, retry } = useArtifact(sessionId, messageId, href);
-  const failed = request.isError || state.isError || bundle.isError || status?.status === "failed";
-  return <OverlayDialog className="artifact-backdrop" onClose={onClose} aria-label={t("artifactPreview")}>
+  const [index, setIndex] = useState(() => Math.max(0, links.indexOf(initialHref)));
+  const navigate = (direction: "previous" | "next") => setIndex(current => Math.max(0, Math.min(links.length - 1, current + (direction === "previous" ? -1 : 1))));
+  return <OverlayDialog className="artifact-backdrop" onClose={onClose} aria-label={t("artifactPreview")}
+    onKeyDown={event => {
+      if (links.length < 2 || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+        || !(event.target instanceof Element) || event.target.closest('input, textarea, select, video, iframe, [contenteditable]:not([contenteditable="false"]), [role="slider"], [role="combobox"]')) return;
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();
+        navigate(event.key === "ArrowLeft" ? "previous" : "next");
+      }
+    }}>
     <div className="artifact-viewer">
-      <header><strong>{status?.filename ?? t("artifactPreview")}</strong><button className="icon-button" type="button" onClick={onClose} aria-label={t("close")}><X size={20} /></button></header>
-      {failed ? <div className="artifact-status" role="alert"><p>{t(errorKeys[status?.error ?? ""] ?? "artifactFailed")}</p>{status?.errorResource && artifactResourceName(status.errorResource) && <p>{t("artifactProblemResource", { name: status.errorResource })}</p>}<button className="secondary-button" type="button" onClick={() => void retry()}><RotateCcw size={16} />{t("retry")}</button></div>
-        : bundle.data ? <ArtifactContent bundle={bundle.data} previewUrl={`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(status!.id)}/preview`} />
-        : <div className="artifact-status" role="status"><LoaderCircle className="spin" size={24} /><p>{t(waiting ? "artifactWaiting" : "artifactLoading")}</p></div>}
+      <header><strong tabIndex={0}>{localArtifactPath(links[index]!)?.split("/").at(-1) ?? t("artifactPreview")}</strong><button className="icon-button" type="button" onClick={onClose} aria-label={t("close")}><X size={20} /></button></header>
+      <ArtifactSlide key={links[index]} sessionId={sessionId} messageId={messageId} href={links[index]!} onNavigate={navigate} />
+      {links.length > 1 && <footer className="artifact-navigation" aria-label={t("artifactNavigation")}>
+        <button className="secondary-button" type="button" disabled={index === 0} onClick={() => navigate("previous")} aria-label={t("previousMedia")}><ChevronLeft size={20} /></button>
+        <div aria-live="polite" aria-atomic="true"><strong>{index + 1} / {links.length}</strong><span>{t("artifactMessageOnly")}</span></div>
+        <button className="secondary-button" type="button" disabled={index === links.length - 1} onClick={() => navigate("next")} aria-label={t("nextMedia")}><ChevronRight size={20} /></button>
+      </footer>}
     </div>
   </OverlayDialog>;
 }
 
-function ArtifactContent({ bundle, previewUrl }: { bundle: AgentArtifactBundle; previewUrl: string }) {
+/** Only the slide remounts. The dialog keeps its history layer and original opener. */
+function ArtifactSlide({ sessionId, messageId, href, onNavigate }: {
+  sessionId: string; messageId: string; href: string; onNavigate: (direction: "previous" | "next") => void;
+}) {
+  const { t } = useI18n();
+  const { request, state, bundle, status, waiting, retry } = useArtifact(sessionId, messageId, href);
+  const failed = request.isError || state.isError || bundle.isError || status?.status === "failed";
+  return <>
+    {failed ? <div className="artifact-status" role="alert"><p>{t(errorKeys[status?.error ?? ""] ?? "artifactFailed")}</p>{status?.errorResource && artifactResourceName(status.errorResource) && <p>{t("artifactProblemResource", { name: status.errorResource })}</p>}<button className="secondary-button" type="button" onClick={() => void retry()}><RotateCcw size={16} />{t("retry")}</button></div>
+      : bundle.data ? <ArtifactContent bundle={bundle.data} onNavigate={onNavigate} previewUrl={`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(status!.id)}/preview`} />
+      : <div className="artifact-status" role="status"><LoaderCircle className="spin" size={24} /><p>{t(waiting ? "artifactWaiting" : "artifactLoading")}</p></div>}
+  </>;
+}
+
+function ArtifactContent({ bundle, previewUrl, onNavigate }: { bundle: AgentArtifactBundle; previewUrl: string; onNavigate: (direction: "previous" | "next") => void }) {
   const { t } = useI18n();
   const entry = bundle.files.find((file) => file.name === bundle.entry)!;
   const [url, setUrl] = useState("");
+  const [imageFailed, setImageFailed] = useState(false);
+  const [imageAttempt, setImageAttempt] = useState(0);
   const html = useMemo(() => entry.contentType === "text/html" ? artifactHtml(bundle) : undefined, [entry, bundle]);
   useEffect(() => {
     const bytes = Uint8Array.from(atob(entry.base64), (c) => c.charCodeAt(0));
@@ -99,7 +137,8 @@ function ArtifactContent({ bundle, previewUrl }: { bundle: AgentArtifactBundle; 
     {html !== undefined ? <><p className="artifact-help">{t("artifactHtmlHelp")}</p><iframe title={entry.name} sandbox="allow-scripts" referrerPolicy="no-referrer" src={previewUrl} onLoad={(event) => {
         event.currentTarget.contentWindow?.postMessage({ type: "missiongo-artifact-preview", html }, "*");
       }} /></>
-      : entry.contentType.startsWith("image/") ? <div className="artifact-image">{url && <img src={url} alt={entry.name} />}</div>
+      : entry.contentType.startsWith("image/") ? <div className="artifact-image">{imageFailed ? <div className="artifact-status" role="alert"><p>{t("agentImageUnavailable")}</p><button className="secondary-button" type="button" onClick={() => { setImageFailed(false); setImageAttempt(value => value + 1); }}>{t("retry")}</button></div>
+        : url && <ZoomableImage key={imageAttempt} src={url} alt={entry.name} onSwipe={onNavigate} onError={() => setImageFailed(true)} />}</div>
       : entry.contentType === "application/pdf" ? <iframe title={entry.name} sandbox="allow-scripts allow-same-origin" src={url || undefined} />
       : entry.contentType === "text/markdown" ? <div className="artifact-document"><MarkdownText resolveResourceUrl={(href) => {
         try {
