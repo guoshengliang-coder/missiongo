@@ -98,7 +98,7 @@ test("the public default tool set resolves real repository filenames", () => {
   const { home, done } = setup();
   try {
     const result = install({ home, dryRun: true });
-    assert.deepEqual(result.changed.sort(), [...Object.keys(tools), "linux-release-tools.mjs", "handover-evidence.mjs", "release-coverage.mjs", "release-candidates.mjs"].sort());
+    assert.deepEqual(result.changed.sort(), [...Object.keys(tools), "linux-release-tools.mjs", "handover-evidence.mjs", "release-coverage.mjs", "release-candidates.mjs", "release-readiness.mjs", "delivery-report.mjs", "release-tool-files.mjs"].sort());
   } finally { done(); }
 });
 

@@ -11,15 +11,7 @@ import { fileURLToPath } from "node:url";
 import { atomicInstallWrite } from "./enable-release-performance.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const TOOLS = [
-  "release-lock.py", "release_coverage_options.py", "release-preflight.mjs", "release-receipt.mjs",
-  "release-ci.mjs", "release-ci-wait.mjs", "linux-release-tools.mjs", "handover-evidence.mjs",
-  "release-coverage.mjs", "release-candidates.mjs", "release-coverage-guard.sh", "release-status.sh", "release-timing.sh", "deploy.sh",
-];
-const ENTRY = "missiongo-release.py";
-const DEFAULT_TOOLS = { ...Object.fromEntries(TOOLS.map(name => [name, name])),
-  // Install the implementation, not the repo-relative forwarding module.
-  "handover-evidence.mjs": "../apps/web/public/downloads/missiongo-handover.mjs", entry: ENTRY };
+import { RELEASE_TOOL_FILES as DEFAULT_TOOLS } from "./release-tool-files.mjs";
 
 export function parseInstallArgs(args) {
   assert.ok(args.length === 0 || (args.length === 1 && args[0] === "--dry-run"), "Usage: install-release-tools.mjs [--dry-run]");
@@ -67,7 +59,11 @@ export function install({ dryRun = false, home = homedir(), configHome = process
     for (let changed = true; changed;) {
       changed = false;
       for (const target of targets) if (!included.has(target.name) && references(reachable, target.name)) {
-        included.add(target.name); reachable += "\n" + target.text; changed = true;
+        included.add(target.name);
+        // The inventory names files, not executable/import edges. Counting its
+        // contents would let it hide a removed CI or coverage guard.
+        if (target.name !== "release-tool-files.mjs") reachable += "\n" + target.text;
+        changed = true;
       }
     }
     const missing = [references(entry, "release-lock.py") ? null : "release-lock.py",
