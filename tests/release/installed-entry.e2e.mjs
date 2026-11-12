@@ -88,7 +88,9 @@ async function fixture() {
   // Functional installation coverage needs a full page and real associated
   // history, not a hardware SLA. Keep the large regression corpus separate.
   const normal = await syntheticBackup(directory, "functional-backups", { batches: 5, deliveriesPerBatch: 2, itemsPerDelivery: 10, eventsPerItem: 10, payloadBytes: 128 });
-  const regression = await syntheticBackup(directory, "regression-backups", { batches: 20, deliveriesPerBatch: 2, itemsPerDelivery: 10, eventsPerItem: 200, payloadBytes: 1024 });
+  // Keep 400 items / 80k events, with enough independent deliveries to exercise
+  // optimized stage aggregation and make a fivefold regression exceed the fixed budget.
+  const regression = await syntheticBackup(directory, "regression-backups", { batches: 20, deliveriesPerBatch: 10, itemsPerDelivery: 2, eventsPerItem: 200, payloadBytes: 1024 });
   const { backups, productId } = normal;
   const configHome = join(home, ".config"), config = join(configHome, "missiongo"), tools = join(config, "release-tools");
   const installed = spawnSync(process.execPath, [join(checkout, "scripts/install-release-tools.mjs")], {
