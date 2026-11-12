@@ -20,6 +20,7 @@ export function changeAffects(key: QueryKey, change: ChangeResource, relatedIds?
   case "sessions":
    if(!sessionRoots.has(root))return false;
    if(root==="merge-deliveries" && change.productId && key[1]!==change.productId)return false;
+   if(root==="merge-deliveries" && ["queue","preview"].includes(String(key[2])))return true;
    if(change.resourceId && relatedIds && (root==="agent-session" || root==="merge-deliveries" && key.length>2))
     return relatedIds.includes(String(key[root==="agent-session" ? 1 : 2]));
    return true;

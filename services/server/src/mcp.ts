@@ -1,3 +1,4 @@
+import { releaseCandidatePage } from "./release-candidate-page.js";
 import { nonReleaseSupplementSchema } from "./non-release-evidence.js";
 import { deliveryValidationSchema, evidenceDigest } from "./non-release-evidence.js";
 import { PlanDocuments } from "./plan-documents.js";
@@ -26,7 +27,7 @@ import { ReleaseObservations } from "./release-observations.js";
 import { ExecutionRecoveryError, recoverExecutionAuthorization } from "./execution-authorization-recovery.js";
 import { commentAudienceSchema, commentCandidates } from "./comment-discussions.js";
 import { assertBuilderExecution, assertDispatchExecution, assertExecutionAuthorization } from "./builder-authority.js";
-import { completionSchema, completionFields, completionPayload, normalizeCompletion } from "./completion.js";
+import { completionSchema, completionFields, normalizeCompletion } from "./completion.js";
 import { insightInputSchema } from "./project-insights-query.js";
 import { StatusCheckHistory } from "./status-check-history.js";
 import { projectInsights } from "./project-insights.js";
@@ -483,48 +484,7 @@ export function createMissionGoMcpServer(
     },
     async ({ productId, limit, beforeSequence, includeUnscoped }, ctx) => {
       requireProductAccess(ctx, productId);
-      const coverage=includeUnscoped;
-      const itemBefore=coverage && beforeSequence ? Math.ceil(beforeSequence/2) : beforeSequence;
-      const itemPage = store.listWorkItems({productId,releaseCandidates:true,limit,...(itemBefore ? {beforeSequence:itemBefore} : {})});
-      const standalone=coverage ? new MergeDeliveries(store).releaseCandidates(productId,beforeSequence,limit) : [];
-      const page=[...itemPage.map(item=>({sequence:Number(item.key.slice(item.key.lastIndexOf("-")+1))*(coverage?2:1),item})),...standalone]
-        .sort((a,b)=>b.sequence-a.sequence).slice(0,limit);
-      const items=page.flatMap(row=>"item" in row ? [row.item] : []);
-      const noReleaseItems: Array<{ itemKey: string; noReleaseReason: string }> = [];
-      const candidates = items.flatMap(item => {
-        const records=store.getDeliveryRecords(item.key);
-        const outstanding=records.filter(d=>!d.published);
-        if(!records.length && item.status==="development_complete") {
-          if(!includeUnscoped) return [];
-          const e=store.getDevelopmentEvidence(item.key);
-          return [{itemKey:item.key,expectedRevision:item.revision,developmentEventId:e.handover?.id,roundKey:e.roundKey}];
-        }
-        return outstanding.flatMap(record=>{
-          const {completion,requiredArtifacts,noReleaseReason}=record;
-          if(requiredArtifacts?.length===0 && noReleaseReason) {
-            if(!noReleaseItems.some(row=>row.itemKey===item.key)) noReleaseItems.push({itemKey:item.key,noReleaseReason});return [];
-          }
-          if(!includeUnscoped && (!completion || !requiredArtifacts?.length)) return [];
-          return [{itemKey:item.key,expectedRevision:item.revision,developmentEventId:record.id,roundKey:record.roundKey,
-            ...(completion?completionPayload(completion):{}),...(requiredArtifacts!==null?{requiredArtifacts}: {})}];
-        });
-      });
-      const deliveryCandidates=page.flatMap(row=>{
-        if(!("delivery" in row)) return [];
-        const d=row.delivery;
-        if(!d.requiredArtifacts.length && d.noReleaseReason) return [];
-        if(d.requiredArtifacts.length && d.requiredArtifacts.every(a=>d.releaseReceipts?.some(r=>r.releases.some(release=>release.artifact===a)))) return [];
-        return [row.candidate];
-      });
-      const noReleaseDeliveries=page.flatMap(row=>"delivery" in row && !row.delivery.requiredArtifacts.length && row.delivery.noReleaseReason
-        ? [{deliveryId:row.delivery.id,noReleaseReason:row.delivery.noReleaseReason}] : []);
-      const lastSequence=page.at(-1)?.sequence;
-      return textResult({
-        productId,
-        candidates:[...candidates,...deliveryCandidates],
-        ...(includeUnscoped ? { coverageVersion: 2, generatedAt: new Date().toISOString(), noReleaseItems, noReleaseDeliveries } : {}),
-        ...(page.length === limit && Number.isSafeInteger(lastSequence) ? { nextBeforeSequence: lastSequence } : {}),
-      });
+      return textResult(releaseCandidatePage(store,new MergeDeliveries(store),productId,limit,beforeSequence,includeUnscoped));
     },
   );
 
@@ -978,7 +938,7 @@ export function createMissionGoMcpServer(
   };
   server.registerTool("get_merge_batch", {
     annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},
-    description:"Read the user-authorized frozen batch from its original merge dispatch. Do not claim the source development items. Original revisions remain immutable. Protocol-1 integration repairs must be reserved and recorded with record_merge_integration; use executionHead, require mergeReady=true, and recheck live Git/CI before every merge. Legacy batches cannot repair. Respect publish=false. Unknown results keep the project lock until verified.",
+    description:"Read the user-authorized frozen batch from its original merge dispatch. Do not claim the source development items. Original revisions remain immutable. Protocol-1 integration repairs must be reserved and recorded with record_merge_integration; use executionHead, require mergeReady=true, and recheck live Git/CI before every merge. Legacy batches cannot repair. Action protocol 2 references are historical merge facts: never merge, repair or report them again; independently verify and record verify_reference first. publish_only forbids new Git merges. Respect publish=false and the frozen publicationScope; new scope needs human review. Unknown results keep the project lock until verified.",
     inputSchema:z.object({batchId:z.string(),dispatchId:z.string()}),
   },async (input,ctx)=>{
     const batch=merges.batch(accountAccess(ctx).accountId,input.dispatchId,input.batchId);
@@ -1150,7 +1110,7 @@ export function createMissionGoMcpServer(
   server.registerTool(
     "record_merge_integration", {
     annotations: {readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
-    description:"Persist this authorized integration batch's complete ordered plan, repair reservation and commit chain, live validation, progress, or final combined validation. publication_progress records only an authorized batch publication signal (publishing/failed/ended), with a fresh checkedAt and exact resultsDigest returned by get_merge_batch. Renew publishing within five minutes; expiry is unknown, ended is not a receipt and never proves publication. No Git operations are performed here. Only protocol-1 batches explicitly authorize necessary integration repairs. Read get_merge_batch first; send expectedRevision and a stable idempotencyKey, retry exact inputs on uncertain response. Plans cover every selected delivery with dependencies before dependents. Before repairing, reserve the current remote head with prepare_repair. Push only your own necessary additive repair commits to that original PR, never force or include someone else's new head. Then repair records the exact reserved-to-new-head commit chain verified in the execution repository; preserve originalHead. check requires executor-verified local checks and live CI for executionHead and current target base. Recheck the base immediately before merging. A changed base invalidates reuse. Never weaken tests to turn CI green. final_validation follows all known item results and verifies the actual merged combination on the target branch; it does not authorize partial publication or acceptance. The service validates identity and consistency, not GitHub truth.",
+    description:"verify_reference binds a historical reference deliveryId, expectedHead, commit, fresh checkedAt and source without merging or handing over again. Persist this authorized integration batch's complete ordered plan, repair reservation and commit chain, live validation, progress, or final combined validation. publication_progress records only an authorized batch publication signal (publishing/failed/ended), with a fresh checkedAt and exact resultsDigest returned by get_merge_batch. Renew publishing within five minutes; expiry is unknown, ended is not a receipt and never proves publication. No Git operations are performed here. Only protocol-1 batches explicitly authorize necessary integration repairs. Read get_merge_batch first; send expectedRevision and a stable idempotencyKey, retry exact inputs on uncertain response. Plans cover every selected delivery with dependencies before dependents. Before repairing, reserve the current remote head with prepare_repair. Push only your own necessary additive repair commits to that original PR, never force or include someone else's new head. Then repair records the exact reserved-to-new-head commit chain verified in the execution repository; preserve originalHead. check requires executor-verified local checks and live CI for executionHead and current target base. Recheck the base immediately before merging. A changed base invalidates reuse. Never weaken tests to turn CI green. final_validation follows all known item results and verifies the actual merged combination on the target branch; it does not authorize partial publication or acceptance. The service validates identity and consistency, not GitHub truth.",
     inputSchema:z.object({batchId:z.string(),dispatchId:z.string(),expectedRevision:z.number().int().nonnegative(),idempotencyKey:z.string().min(1).max(200),action:integrationActionSchema}),
   },async(input,ctx)=>{
     requireWriteScope(ctx);

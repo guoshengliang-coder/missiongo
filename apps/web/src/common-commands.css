@@ -1,5 +1,4 @@
-.modal-header-actions { display: flex; align-items: center; gap: 2px; }
-.modal-header-actions:empty { display: none; }
+.common-command-picker .modal-header-actions { gap: 2px; }
 .common-command-picker .modal > header { align-items: center; gap: 4px; }
 .common-command-picker .modal > header > div:first-child { flex: 1; min-width: 0; }
 .common-command-picker .modal h2 { font-size: var(--text-xl); }

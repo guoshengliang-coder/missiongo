@@ -5,10 +5,11 @@ import { useI18n } from "./i18n";
 import { DialogDraftContext, useDialogDraftState } from "./dialog-state";
 import { useModalSurface } from "./overlay";
 
-export function Modal({ className = "", fullScreenOnCompact = false, title, subtitle, onClose, children, wide = false, scrolls = false, dirty: ownDirty = false, pending: ownPending = false, pendingNotice, closeWarning, headerActions }: {
-  headerActions?: ReactNode;
+export function Modal({ className = "", fullScreenOnCompact = false, title, subtitle, headerActions, onClose, children, wide = false, scrolls = false, dirty: ownDirty = false, pending: ownPending = false, pendingNotice, closeWarning }: {
   title: string;
   subtitle: string;
+  /** Optional secondary reading actions; the close control remains separate. */
+  headerActions?: ReactNode;
   onClose: () => void;
   children: ReactNode | ((requestClose: () => void) => ReactNode);
   className?: string;
@@ -70,7 +71,7 @@ export function Modal({ className = "", fullScreenOnCompact = false, title, subt
     <dialog ref={dialogRef} className={`modal-layer ${className}`} aria-labelledby={titleId} aria-busy={pending}
       onMouseDown={event => { if (event.target === event.currentTarget) close.current(); }}>
       <section className={`modal ${wide ? "wide" : ""} ${scrolls ? "scrolls" : ""}`}>
-        <header><div>{subtitle && <p className="eyebrow">{subtitle}</p>}<h2 id={titleId}>{discarding ? t(closeWarning ? "confirmAction" : "discardDialogTitle") : title}</h2></div>{!discarding && <div className="modal-header-actions">{headerActions}</div>}<button type="button" className="icon-button" disabled={pending} onClick={() => close.current()} aria-label={t("close")}><X size={20} /></button></header>
+        <header><div>{subtitle && <p className="eyebrow">{subtitle}</p>}<h2 id={titleId}>{discarding ? t(closeWarning ? "confirmAction" : "discardDialogTitle") : title}</h2></div>{!discarding && headerActions && <div className="modal-header-actions">{headerActions}</div>}<button type="button" className="icon-button" disabled={pending} onClick={() => close.current()} aria-label={t("close")}><X size={20} /></button></header>
         {waiting && pending && pendingNotice !== null && <p role="status" className="account-note">{pendingNotice ?? t("settingsWaitForSave")}</p>}
         {discarding && <div className="discard-dialog">
           <p>{closeWarning ?? t("discardDialogHelp")}</p>
