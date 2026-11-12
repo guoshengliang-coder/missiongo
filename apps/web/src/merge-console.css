@@ -136,7 +136,8 @@
 .merge-queue-tabs .merge-actions { margin: 0; }
 .merge-queue-tabs [aria-pressed="true"] { background: var(--surface-sunken); border-color: var(--ink); }
 .merge-scope { min-width: 0; overflow-wrap: anywhere; }
-.merge-scope h3 { font-size: var(--text-lg); margin: 0 0 12px; }
+.merge-scope .help-label { margin-bottom: 12px; }
+.merge-scope h3 { font-size: var(--text-lg); margin: 0; }
 .merge-scope details { margin: 16px 0; }
 .merge-scope summary { min-height: 44px; cursor: pointer; }
 .merge-row .item-handler-badge { margin-top: 8px; }

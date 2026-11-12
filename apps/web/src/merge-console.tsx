@@ -38,7 +38,7 @@ function QueueFacts({d}:{d:Delivery}) {
 }
 function QueueHistory({productId,onClose}:{productId:string;onClose:()=>void}) {
   const {t}=useI18n(),q=useIntegrationQueue(productId,"history");
-  return <Modal title={t("queueHistory")} subtitle={t("queueHistoryHelp")} onClose={onClose} wide scrolls>
+  return <Modal title={t("queueHistory")} subtitle="" headerActions={<HelpHint title={t("queueHistory")}><p>{t("queueHistoryHelp")}</p></HelpHint>} onClose={onClose} wide scrolls>
     {q.isPending?<p role="status">{t("mergeLoading")}</p>:q.isError?<p role="alert">{t("mergeLoadError")} <button className="secondary-button" onClick={()=>void q.refetch()}>{t("retry")}</button></p>:
       <div className="merge-list">{q.data.pages.flatMap(p=>p.deliveries).map(d=><div className="merge-row" key={d.id}><div><strong>{d.summary}</strong><small>{d.itemKeys.join(" · ")||`PR #${d.pullRequestUrl.split("/").at(-1)}`}</small><QueueFacts d={d}/><details><summary>{t("mergeDetails")}</summary><p>{d.validation}</p><p>{d.noReleaseReason}</p>{d.queue.merge&&<p>{t("mergeCommit")}: <code>{d.queue.merge.commit}</code></p>}{d.queue.releases?.map((r,i)=><p key={i}>{artifactName(r.artifact)} · {r.version}<br/><code>{r.sourceCommit}</code></p>)}<a href={d.pullRequestUrl} target="_blank" rel="noreferrer">{t("mergeViewPR")}</a></details></div></div>)}</div>}
     {q.isSuccess&&!q.data.pages.some(p=>p.deliveries.length)&&<p>{t("queueHistoryEmpty")}</p>}
@@ -242,7 +242,7 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
   const modeIssue=config?modeProblem(config.agentKind,config.mode,node?.agents.find(a=>a.kind===config.agentKind)?.modes,config.model):undefined;
   const modelUnavailable=Boolean(config?.model && (!models || !models.some(m=>m.id===config.model)));
   const configValid=Boolean(!modeIssue&&!modelUnavailable&&config&&node?.online&&node.supportsFreeSessions&&node.repos.some(r=>r.productId===productId)&&node.agents.some(a=>a.kind===config.agentKind&&a.ready!==false));
-  return <><Modal title={t("integrationQueueTitle")} subtitle={t("mergeSelectHelp")} onClose={onClose} wide scrolls
+  return <><Modal title={t("integrationQueueTitle")} subtitle="" headerActions={<button type="button" className="text-button" disabled={locked} onClick={()=>setHistory(true)}>{t("queueHistory")}</button>} onClose={onClose} wide scrolls
     dirty={!createdBatch&&(Boolean(selectedCount)||publish||saveAsDefault||Boolean(initialConfig.current&&JSON.stringify(config)!==initialConfig.current))} pending={start.isPending||openSession.isPending}>
     {close=><div className="merge-dialog">
       <ol className="merge-steps" aria-label={t("mergeSteps")}><li aria-current={step===1?"step":undefined}>{t("mergeStepSelect")}</li><li aria-current={step===2?"step":undefined}>{t("mergeStepConfigure")}</li></ol>
@@ -254,7 +254,7 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
       <div hidden={step!==1} className="merge-selection-step">
       <div className="merge-queue-tabs"><div className="merge-actions" role="group" aria-label={t("queueStages")}>
         {(["all","merge","release"] as const).map(value=><button type="button" className="secondary-button" aria-pressed={stage===value} disabled={locked} key={value} onClick={()=>setStage(value)}>{t(value==="all"?"queueAll":value==="merge"?"queueMerge":"queueRelease")} {value==="all"?(queue.data?.pages[0]?.counts.merge??0)+(queue.data?.pages[0]?.counts.release??0):queue.data?.pages[0]?.counts[value]??0}</button>)}
-      </div><button type="button" className="text-button" disabled={locked} onClick={()=>setHistory(true)}>{t("queueHistory")}</button></div>
+      </div></div>
       <div className="merge-selection-toolbar"><span className="help-label"><strong>{t("mergeContentTitle")}</strong>{step===1&&<HelpHint title={t("mergeContentTitle")}><p>{t("mergeSelectionHelp")}</p><p>{t("mergeNeedsCheckHelp")}</p></HelpHint>}</span><button type="button" className="secondary-button" disabled={locked||!selectable.length} onClick={()=>setSelected(prev=>{const next={...prev};for(const d of selectable)if(allSelected)delete next[d.id];else next[d.id]=d.revision;return next;})}>{t(allSelected?"mergeDeselectAll":"mergeSelectAll")}</button></div>
       {queue.isSuccess&&!candidates.length&&<section className="merge-empty"><Files size={28} aria-hidden="true"/><strong>{t("mergeEmptyTitle")}</strong><p>{t(active?"mergeEmptyActive":"mergeEmpty")}</p></section>}
       <div className="merge-list">{candidates.map(d=><div className="merge-row" key={d.id}>
@@ -269,8 +269,7 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
       {step===2&&<div className="merge-configuration-step">
       <p>{t(itemCount ? "mergeSelected" : "mergeSelectedGroups",{count:selectedCount,items:itemCount})}</p>
       <p className="integration-note">{t("queueSelectedStages",{merge:chosen.filter(d=>d.queue.stage==="merge").length,merged:chosen.filter(d=>d.queue.stage!=="merge").length})}</p>
-      <p className="integration-note">{t(operation==="publish_only"?"queuePublishOnlyHelp":"mergeAuthorizationShort")}</p>
-      <section className="merge-config"><div className="help-label"><strong>{t("mergeExecutor")}</strong><HelpHint title={t("mergeExecutor")}><p>{t("mergeExecutorHelp")}</p><p>{t("integrationAuthorization")}</p></HelpHint></div>
+      <section className="merge-config"><div className="help-label"><strong>{t("mergeExecutor")}</strong><HelpHint title={t("mergeExecutor")}><p>{t("mergeExecutorHelp")}</p><p>{t("integrationAuthorization")}</p><p>{t(operation==="publish_only"?"queuePublishOnlyHelp":"mergeAuthorizationShort")}</p></HelpHint></div>
         <div className="merge-config-fields">
           <label>{t("mergeDevice")}<Select value={config?.nodeId??""} disabled={locked||!defaultsReady} onChange={e=>{
             const n=nodes.data?.nodes.find(n=>n.id===e.target.value);
@@ -294,14 +293,13 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
       {differsFromDefaults&&<div className="help-option"><label><input type="checkbox" checked={saveAsDefault} disabled={locked} onChange={e=>setSaveDefaultsFor(e.target.checked?defaultsKey:null)}/><span>{t("mergeDefault")}</span></label><HelpHint title={t("mergeDefault")}><p>{t("mergeDefaultHelp")}</p></HelpHint></div>}
       {hasMerge&&<div className="help-option"><label><input type="checkbox" checked={publish} disabled={locked} onChange={e=>setPublish(e.target.checked)}/><span>{t("mergePublish")}</span></label><HelpHint title={t("mergePublish")}><p>{t("mergePublishHelp")}</p></HelpHint><small className="integration-note">{t(publish?"mergeAndPublish":"mergeOnly")}</small></div>}
       {!hasMerge&&<p>{t(hasArtifacts?"queuePublishOnly":"queueNonRelease")}</p>}
-      {effectivePublish&&<section className="merge-scope"><h3>{t("queueScope")}</h3>
+      {effectivePublish&&<section className="merge-scope"><div className="help-label"><h3>{t("queueScope")}</h3><HelpHint title={t("queueScope")}><p>{t("queueScopeHelp")}</p></HelpHint></div>
         {scope.isPending?<p role="status">{t("queueScopeLoading")}</p>:scope.isError?<p role="alert" className="inline-error">{t("queueScopeError")} <button type="button" className="secondary-button" onClick={()=>void scope.refetch()}>{t("retry")}</button></p>:scope.data&&<>
           <p>{scope.data.requiredArtifacts.map(artifactName).join(" / ")} · {t("queueScopeGroups",{count:scope.data.candidates.length})}</p>
           {scope.data.candidates.some(c=>!c.selected)&&<div className="integration-attention"><strong>{t("queueExtraScope")}</strong><p>{t("queueExtraScopeHelp")}</p>{scope.data.candidates.filter(c=>!c.selected).map(c=><p key={c.identity}>{c.title} · {c.requiredArtifacts?.map(artifactName).join(" / ")}</p>)}</div>}
           {scope.data.exclusions?.map(e=><p className="integration-note" key={e.identity}>{e.title} · {e.reason}</p>)}
           {scope.data.blockers.map(b=><p className="inline-error" role="alert" key={b}>{b}</p>)}
           <details><summary>{t("queueScopeDetails")}</summary>{scope.data.candidates.map(c=><p key={c.identity}>{c.title} · {c.requiredArtifacts?.map(artifactName).join(" / ")}</p>)}</details>
-          <p className="integration-note">{t("queueScopeHelp")}</p>
         </>}
       </section>}
       </div>}

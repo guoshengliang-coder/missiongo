@@ -1420,6 +1420,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 /* A wide modal whose content has no scroller of its own, like Agent management. */
 .modal.wide.scrolls { overflow-y: auto; }
 .modal > header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
+.modal-header-actions { display: flex; align-items: center; flex-shrink: 0; margin-inline-start: auto; margin-inline-end: 8px; gap: 8px; }
 .modal h2 { margin: 0; font-size: 25px; letter-spacing: -0.035em; }
 .product-manager { height: min(650px, calc(100vh - 150px)); height: min(650px, calc(100dvh - 150px)); min-height: 430px; display: grid; grid-template-columns: 220px minmax(0, 1fr); overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-lg); }
 .product-manager-list { display: flex; flex-direction: column; gap: 5px; padding: 15px 11px; overflow-y: auto; background: var(--surface-inset); border-right: 1px solid var(--line); }
