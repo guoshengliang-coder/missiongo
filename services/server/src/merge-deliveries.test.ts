@@ -382,6 +382,26 @@ describe("planned integration batches",()=>{
     expect(()=>f.merges.publicationPreview(f.owner.id,f.item.productId,[{id:d.id,revision:d.revision}])).toThrow();
     expect(f.store.getWorkItem(f.item.key).status).toBe("development_complete");
   });
+  it("aggregates session stages with exact expiry, scope and JSON key preservation",async()=>{
+    const f=await prepared(),now=Date.now(),session='quoted-"-\\-会话';
+    const insert=f.db.prepare("INSERT INTO merge_session_projection VALUES (?,?,?,?,?,?)");
+    insert.run(f.item.productId,f.owner.id,session,"publishing",now,"publication_unknown");
+    insert.run(f.item.productId,f.owner.id,"future","publishing",now+1000,"publication_partial");
+    insert.run(f.item.productId,f.owner.id,"stable","published",null,null);
+    insert.run(f.item.productId,f.other.id,"other","merged",null,null);
+    insert.run("other-product",f.owner.id,"other-product","merged",null,null);
+    const clock=vi.spyOn(Date,"now").mockReturnValue(now);
+    try {
+      const expected={[session]:"publication_unknown",future:"publishing",stable:"published"};
+      expect(f.merges.sessionProgress(f.item.productId,f.owner.id)).toEqual(expected);
+      expect(f.merges.sessionProgress(f.item.productId,f.owner.id,session)).toEqual({[session]:"publication_unknown"});
+      expect(f.merges.sessionProgress(f.item.productId,f.owner.id,"missing")).toEqual({});
+      clock.mockReturnValue(now+1000);
+      expect(f.merges.sessionProgress(f.item.productId,f.owner.id).future).toBe("publication_partial");
+      f.db.prepare("UPDATE merge_session_projection SET stage='merged',expires_at=NULL,expired_stage=NULL WHERE session_id='future'").run();
+      expect(f.merges.sessionProgress(f.item.productId,f.owner.id).future).toBe("merged");
+    } finally {clock.mockRestore();}
+  });
   it("checks live activity only for sensitive pending entries without changing publication semantics",async()=>{
     const f=await batchFixture(2),[pending,published]=f.deliveries;
     f.act(f.plan);for(const d of f.deliveries){f.check(d.id);f.merged(d.id);}
@@ -1193,7 +1213,8 @@ for(const [itemCount,batchCount] of [[500,100],[1000,200]])it(`AND-484 scale ${i
       if(i===0)expect(response.json()).toEqual(expected);
     }
   }finally{heavy.mockRestore();counter.mockRestore();}
-  expect(new Set(queryCounts).size).toBe(1);expect(queryCounts[0]).toBeLessThan(25);
+  // Cold reads may prepare fixed SQL once; warm reads reuse statements but still execute them.
+  expect(new Set(queryCounts.slice(1)).size).toBe(1);expect(Math.max(...queryCounts)).toBeLessThan(25);
   const writeAt=performance.now();
   f.store.updateWorkItem(`CON-${itemCount}`,{title:"One unrelated item update"});
   const writeMs=performance.now()-writeAt,firstMs=times[0]!;
