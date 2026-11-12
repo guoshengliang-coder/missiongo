@@ -1323,10 +1323,10 @@ export function App() {
 
   return (
     <SessionSenderContext.Provider value={consoleDrafts.sender}>
-    <div className={`app-shell ${agentConsoleOpen ? "agent-console-open" : ""} ${
+    <div className={`app-shell ${selectedItemKey ? "detail-open" : ""} ${agentConsoleOpen ? "agent-console-open" : ""} ${
       agentConsoleOpen && agentConsoleSinglePane && (agentConversationOpen || newSessionOpen) ? "agent-conversation-open" : ""
     }`}>
-      <header className={`topbar ${agentConsoleOpen ? `agent-console-topbar ${agentConsoleSearchOpen ? "agent-console-searching" : ""}` : ""} ${mobileSearchOpen ? "searching" : ""} ${selectedItemKey ? "detail-view" : ""}`} inert={sidebarIsDrawer && sidebarOpen}>
+      <header className={`topbar ${agentConsoleOpen ? `agent-console-topbar ${agentConsoleSearchOpen ? "agent-console-searching" : ""}` : ""} ${mobileSearchOpen ? "searching" : ""}`} inert={sidebarIsDrawer && sidebarOpen}>
         {!agentConsoleOpen && <button ref={sidebarTriggerRef} className="icon-button mobile-only" onClick={() => openSidebar()} aria-label={t("openNavigation")}>
           <Menu size={20} />
         </button>}
