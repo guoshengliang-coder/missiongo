@@ -181,3 +181,72 @@ HEAD 改变（包括版本或账本提交）后重新生成并审阅范围，不
 
 
 范围摘要是内容一致性检查，不是人工批准或新的发布授权。仅 plan 允许首次传入范围文件而不带摘要以供审阅；执行与交接缺摘要、摘要改变或摘要无对应文件均拒绝。摘要原样穿过 coordinator 和 deploy guard，避免检查后改写处置被后续阶段静默采用。
+
+## 集成启动就绪报告（AND-507）
+
+先在原集成会话核对账号、批次和最新主线，取得当前产品完整候选页（包括无需发布项），
+将完整 `get_merge_batch` 返回值和完整分页分别保存到仓库外。调查开始、编排计划之前运行：
+
+```sh
+missiongo-release readiness --candidates <full-pages.json> --batch <batch.json>
+```
+
+`--batch` 接受 `{ "batch": ... }` 或完整 batch 本身，不接受挑选后的 entries；
+productId、repository、deliveries 与每个 executionHead 必须相符。多条目、多份交付不能丢失。
+旧正式入口尚无该动作时，允许从当前 checkout 运行
+`node scripts/release-readiness.mjs --candidates <full-pages.json> --batch <batch.json>` 做只读调查，
+不能据此自动安装或绕过正式 plan/check/deploy。没有发布授权也能调查，但不构建、安装、部署。
+
+报告分别收集主线新鲜度、正式工具实际文件/安装清单/主线摘要、线上元数据、
+各产物可用来源、全量覆盖、历史缺证、版本缺口、patch建议、两个客户端发布说明缺口，
+以及本批冻结head的预计影响。独立检查失败不遮蔽其他检查；错产品/仓库、不完整分页及批次拒绝。
+`checks[].status=unverified` 保留原因与下一步责任；`observed` 仅表示已得到检查结果，
+其中仍可包含 `ready:false`、版本阻碍、工具差异或缺失说明，绝不代表发布就绪。
+`needsFollowUp`汇总需继续处理的事实，退出非零也须读完整JSON；退出0同样不是发布许可。工具差异是待核查事实，不能仅按提交先后推断兼容。
+
+报告固定本次checkedAt、实际head/originMain、批次修订与内容摘要、完整候选摘要；
+不会写版本、账本、selection、业务数据、全机工具或生产环境。候选之外的冻结PR仅用于前瞻，
+不算已集成候选，不提供正式产物来源。未知Git对象/缺工具保留缺口，不自动fetch任意PR或猜测。
+只读Git/SSH/GitHub查询沿用户现有权限，原始JSON应留在仓库外，不提交动态业务正文。
+
+前瞻报告后在原批次记录依赖、顺序和组合验证。实际全部合并后刷新主线、候选及release:state，
+一次用既有release:bump-patch准备当时已知必要patch，并为实际改动补齐发布说明。
+首份版本PR应包含这些已知要求；后来新候选或主线变化仍需重新对账，不能承诺永无后续PR。
+部署前仍取得实时候选、CI、精确head、selection摘要并通过全部原门禁，不能跨head复用调查快照。
+
+## 原会话逐项交付报告（AND-508）
+
+```sh
+missiongo-release report --input <bounded-evidence.json> --format markdown
+```
+
+默认输出JSON；format仅接受json或markdown。报告checkout的HEAD须等于已刷新且与远端实测一致的origin/main，不能把未集成工作分支当目标主线。旧安装可从当前checkout运行
+`node scripts/delivery-report.mjs` 同名参数。只读脚本不调用MissionGo写工具，不获取MCP令牌，
+不执行输入中的命令或读取输入指定的目标文件；不会自行安装或作验收决定。
+调用方必须先按Skill读取、核实原始证据，不能把AI文字或布尔“完成”字段当作凭据。
+
+输入为schemaVersion=1、productId、repository、实际head、完整scope身份数组及items数组。
+scope由原授权范围与本次授权候选逐份列齐，不能只选择成功项；每个身份恰有一行，不同开发事件不能去重。
+脚本验证scope/items一一对应，不能替调用者证明其给出的scope已经涵盖全部原授权对象。
+每行含identity、productId、completion、requiredArtifacts（未知用null）、itemStatus、remainingVerification；
+明确无需发布用requiredArtifacts=[]与noReleaseReason。未包含项另有included=false和exclusionReason，
+保留可见，不从产物中移除已合并代码。itemStatus沿读取到的实际业务状态，不按发布结果生成。
+
+产品发布输入可附原始 `release-receipt.mjs` receipt。报告独立核查当前仓库PR/提交集成及祖先关系，
+仅使用receipt公开校验通过的产物、版本与来源；Web提交须与deployedCommit相符，
+每个必需产物来源包含集成提交才计完整发布。输出计算receiptDigest，不要求调用方给原始回执添加字段。
+脚本沿用原回执的公开核验结果，不重新下载所有公开包；执行者仍负责在当前交付阶段核实原回执真实适用。
+人工移待验证/已完成、过程“发布成功”文字和批次结束不能替代凭据。
+
+本机行completion.kind=local_change，evidence沿原领域证据（version=1、target、files、validation等）。
+如实际完成限定环境安装检查，另提供localVerification：同一target、checkedAt、files[{name,sha256}]，
+以及entryCheck{result,method,evidence}。摘要必须逐文件匹配原afterSha256（删除为null），
+原检查全部通过且实际入口成功，核验时间15分钟内，才标“本机已生效（执行端核实）”。
+缺证、文件不符、失败/未运行、过期或仅有通用测试，一律生效待核实；不读取任意本机路径来补造证明。
+这份localVerification是执行端核查声明，不是脚本独立安装或操作系统证明；必须保留环境、时间与限制。
+
+输出“对象/结果/证据与验证缺口/下一步责任”四列，并分别保留代码合并、产品完整/部分发布、
+本机效果、未包含、人工状态及通知未核实。local_change的Git合并标为不适用，不误报代码漏合并。
+全部必需产物缺口、remainingVerification与limitations不因成功摘要消失；最终验收始终由人工决定。
+等待CI汇报阶段变化、失败与待决事项，无变化降低轮询，仅必要时简短保活；
+不反复输出任务计数和全量日志，不改写或隐藏原生历史消息。

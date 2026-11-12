@@ -70,3 +70,8 @@ status、plan、check和deploy。真实编译和性能测量仅使用合成备�
 显式传给installed deploy，不再让后者使用不同默认值。命令行覆盖这些路径以及data-dir仍拒绝；
 不允许通过参数跳过备份、CI或工作区检查。逐目标五倍退化实验使用20个历史批次、400个条目的
 受控数据，目标须实际超预算才记detected；保护性非零退出不算检出。
+
+AND-507/508：安装清单由 `scripts/release-tool-files.mjs` 统一声明；安装与只读就绪检查共用固定文件集合。
+新增readiness、report及间接模块仍由同一版本化安装器、锁和摘要保护安装。
+Git合并不等于正式入口更新；本轮开发不自动安装。新旧工具差异可先用checkout内readiness只读核对，
+获授权安装后再核实正式入口和清单摘要。调用与证据边界见 [发布范围与覆盖检查](release-coverage.md#集成启动就绪报告and-507)。

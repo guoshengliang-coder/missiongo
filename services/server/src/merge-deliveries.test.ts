@@ -166,6 +166,26 @@ describe("AND-423 explicit merge deliveries",()=>{
     expect(prompt).toContain("禁止 --admin");
     expect(prompt).toContain("required checks 全绿");
   });
+  it.each([false,true])("AND-507/508 front-loads read-only readiness and itemized evidence even when publish=%s",async publish=>{
+    const f=await prepared();f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
+    const b=f.merges.start(f.owner.id,randomUUID(),[{id:f.d.id,revision:f.d.revision}],f.config,publish,1);
+    const prompt=(f.db.prepare("SELECT initial_text FROM free_session_starts WHERE dispatch_id=?").get(b.dispatchId) as {initial_text:string}).initial_text;
+    expect(prompt).toContain("先做发布就绪预检，再保存集成计划");
+    expect(prompt).toContain("missiongo-release readiness --candidates");
+    expect(prompt).toContain("全量 list_release_candidates(includeUnscoped:true)");
+    expect(prompt).toContain("不自动安装");
+    expect(prompt).toContain("未选择发布也做只读调查，但不构建、安装或发布");
+    expect(prompt).toContain("实际合并后刷新主线和release:state");
+    expect(prompt).toContain("启动快照不是部署凭据");
+    expect(prompt).toContain("对象/结果/证据与验证缺口/下一步责任");
+    expect(prompt).toContain("限定目标文件摘要和实际入口成功检查");
+    expect(prompt).toContain("部分产物不能报完整交付");
+    expect(prompt).toContain("不得隐藏或改写原生源消息");
+    expect(prompt).toContain("不重复全量计数/列表/日志");
+    expect(prompt).toContain("未核实送达不报通知成功，人工验收由人决定");
+    expect(f.store.getWorkItem(f.item.key).status).toBe("in_progress");
+    expect(b.publish).toBe(publish);
+  });
   it("preserves confirmation when only same-head evidence refreshes",async()=>{
     const f=await prepared();f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
     f.merges.refresh(f.owner.id,"original-client",f.identity,f.d.id,{...f.input.evidence,checkedAt:new Date(Date.now()-360_000).toISOString()});

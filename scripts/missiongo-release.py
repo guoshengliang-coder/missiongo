@@ -24,7 +24,7 @@ from release_coverage_options import coverage_options
 
 def main():
     action = sys.argv[1] if len(sys.argv) > 1 else "status"
-    allowed = {"status", "check", "deploy", "publish:macos", "publish:android-internal", "publish:android-sdk", "publish:linux", "plan"}
+    allowed = {"status", "check", "deploy", "publish:macos", "publish:android-internal", "publish:android-sdk", "publish:linux", "plan", "readiness", "report"}
     if action not in allowed:
         raise ValueError("Usage: missiongo-release " + "|".join(sorted(allowed)))
     root = Path(git(Path.cwd(), "rev-parse", "--show-toplevel"))
@@ -39,6 +39,11 @@ def main():
     if os.environ.get("MISSIONGO_COORDINATOR_ENTRY") != entry:
         os.environ["MISSIONGO_COORDINATOR_ENTRY"] = entry
         os.execv(sys.executable, [sys.executable, str(TOOLS / "release-lock.py"), "--", sys.executable, entry, *sys.argv[1:]])
+    if action in {"readiness", "report"}:
+        # Read-only helpers own strict input parsing. Never fall through to deploy.
+        helper = "release-readiness.mjs" if action == "readiness" else "delivery-report.mjs"
+        run(["node", str(TOOLS / helper), "--root", str(root), *sys.argv[2:]], root)
+        return
     if action.startswith("publish:"):
         artifact = {"publish:macos": "macosApp", "publish:android-internal": "androidApp", "publish:android-sdk": "androidSdk", "publish:linux": "linuxCli"}[action]
         run(["node", str(TOOLS / "release-preflight.mjs"), "--root", str(root), "--build", artifact], root)
