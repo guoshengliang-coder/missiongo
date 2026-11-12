@@ -1,3 +1,4 @@
+import { queueRoute } from "./integration-queue-fixture";
 import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 import { refreshFromConsoleStream } from "./polling";
@@ -9,12 +10,12 @@ for(const width of [320,1440])for(const surface of ["console","panel"] as const)
  nodeName:"Fixture",nodeId:"fixture-node",nodeConnectionState:"online",mode:"auto",dispatchStatus:"launched",activities:[],settings:{},unread:false,
  canReply:true,canRetry:false,canStop:false,canArchive:true,attention:{state:"not_needed"},needsAttention:false,items:[{key:fixture.detailKey,title:"Recovery",productId:fixture.productId}]};
  let body="Cached conversation",scopedFailure=false,hasOffer=false;
- await page.route("**/api/v1/agent-sessions**",route=>route.fulfill({json:new URL(route.request().url()).pathname==="/api/v1/agent-sessions"?{sessions:[summary]}:{...summary,messages:[{id:"message",role:"agent",text:body,occurredAt:stamp}]}}));
- await page.route("**/api/v1/items/*/dispatches",route=>route.fulfill({json:{dispatches:[{id:summary.dispatchId,agentSessionId:id,agentKind:"codex",mode:"auto",nodeName:"Fixture",status:"launched",createdAt:stamp,itemKeys:[fixture.detailKey]}]}}));
- await page.route(/\/merge-deliveries(?:\?.*)?$/,route=>{
-  if(!new URL(route.request().url()).searchParams.has("sessionId"))return route.fulfill({status:503,json:{title:"Project list unavailable"}});
-  if(scopedFailure)return route.fulfill({status:503,json:{title:"Session delivery unavailable"}});
-  return route.fulfill({json:{deliveries:hasOffer?[{id:"offer",productId:fixture.productId,sessionId:id,revision:"r",state:"proposed",summary:"Standalone offer",validation:"Passed",itemKeys:[],head:"a".repeat(40),requiredArtifacts:["web"],evidence:{checkedAt:stamp,source:"Fixture"}}]:[],batches:[],sessionProgress:{}}});
+ await page.route("**/api/v1/agent-sessions**",route=>queueRoute(route).fulfill({json:new URL(route.request().url()).pathname==="/api/v1/agent-sessions"?{sessions:[summary]}:{...summary,messages:[{id:"message",role:"agent",text:body,occurredAt:stamp}]}}));
+ await page.route("**/api/v1/items/*/dispatches",route=>queueRoute(route).fulfill({json:{dispatches:[{id:summary.dispatchId,agentSessionId:id,agentKind:"codex",mode:"auto",nodeName:"Fixture",status:"launched",createdAt:stamp,itemKeys:[fixture.detailKey]}]}}));
+ await page.route(/\/(?:merge-deliveries|integration-queue)(?:\?.*)?$/,route=>{
+  if(!new URL(route.request().url()).searchParams.has("sessionId"))return queueRoute(route).fulfill({status:503,json:{title:"Project list unavailable"}});
+  if(scopedFailure)return queueRoute(route).fulfill({status:503,json:{title:"Session delivery unavailable"}});
+  return queueRoute(route).fulfill({json:{deliveries:hasOffer?[{id:"offer",productId:fixture.productId,sessionId:id,revision:"r",state:"proposed",summary:"Standalone offer",validation:"Passed",itemKeys:[],head:"a".repeat(40),requiredArtifacts:["web"],evidence:{checkedAt:stamp,source:"Fixture"}}]:[],batches:[],sessionProgress:{}}});
  });
  if(surface==="console")await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
  else {await page.goto(`/?product=${fixture.productId}&item=${fixture.detailKey}`);await page.locator(".execution-history > summary").click();await page.locator(".execution-record > summary").filter({hasText:"派单 · Fixture"}).click();await page.locator(".agent-session-toggle").click();}

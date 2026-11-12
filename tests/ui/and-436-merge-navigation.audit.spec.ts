@@ -1,3 +1,4 @@
+import { queueRoute } from "./integration-queue-fixture";
 import { refreshFromConsoleStream } from "./polling";
 import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
@@ -9,8 +10,9 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     await page.setViewportSize({ width, height: 900 });
     await page.emulateMedia({ colorScheme: theme });
     const stalePoll = width === 1440 && theme === "light" && !failure;
-    if (stalePoll) await page.clock.install();
-    const stamp = new Date().toISOString();
+    const stamp = "2026-11-12T00:00:00Z";
+    if (stalePoll) await page.clock.install({time:new Date(stamp)});
+    else await page.clock.setFixedTime(new Date(stamp));
     const id = "new-integration";
     let created = false, failList = failure, creates = 0, freshReads = 0;
     let beforeReads = 0, staleReturned = false;
@@ -28,32 +30,32 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     const delivery = { id: "delivery", productId: fixture.productId, sessionId: "source", revision: "r1", state: "confirmed",
       itemKeys: ["EX-436"], head: "a".repeat(40), summary: "导航回归", validation: "Synthetic", requiredArtifacts: ["web"],
       pullRequestUrl: "https://github.com/example/project/pull/1", evidence: { checkedAt: stamp, source: "Fixture" } };
-    await page.route(/\/merge-deliveries(?:\?.*)?$/, route => route.fulfill({ json: { deliveries: created ? [] : [delivery], batches: created ? [batch] : [] } }));
-    await page.route("**/api/v1/nodes", route => route.fulfill({ json: { nodes: [{ id: "merge-node", name: "Fixture", online: true,
+    await page.route(/\/(?:merge-deliveries|integration-queue)(?:\?.*)?$/, route => queueRoute(route).fulfill({ json: { deliveries: created ? [] : [delivery], batches: created ? [batch] : [] } }));
+    await page.route("**/api/v1/nodes", route => queueRoute(route).fulfill({ json: { nodes: [{ id: "merge-node", name: "Fixture", online: true,
       supportsFreeSessions: true, agents: [{ kind: "codex", ready: true, planApprovalProtocol: 1, models: [] }],
       repos: [{ productId: fixture.productId, repoPath: "synthetic" }], repoCandidates: [], createdAt: stamp }] } }));
-    await page.route("**/api/v1/dispatch-defaults", route => route.fulfill({ json: { nodeId: "merge-node", agentKind: "codex", agents: { codex: { mode: "auto" } } } }));
-    await page.route("**/merge-batches", route => { creates++; created = true; return route.fulfill({ json: batch }); });
+    await page.route("**/api/v1/dispatch-defaults", route => queueRoute(route).fulfill({ json: { nodeId: "merge-node", agentKind: "codex", agents: { codex: { mode: "auto" } } } }));
+    await page.route("**/merge-batches", route => { creates++; created = true; return queueRoute(route).fulfill({ json: batch }); });
     await page.route("**/api/v1/agent-sessions**", async route => {
       const path = new URL(route.request().url()).pathname;
-      if (route.request().method() !== "GET") return route.fulfill({ status: 204 });
+      if (route.request().method() !== "GET") return queueRoute(route).fulfill({ status: 204 });
       if (path === "/api/v1/agent-sessions") {
         if (!created) {
           beforeReads++;
           if (stalePoll && beforeReads > 1) {
             await staleGate;
-            await route.fulfill({ json: { sessions: [] } });
+            await queueRoute(route).fulfill({ json: { sessions: [] } });
             staleReturned = true;
             return;
           }
-          return route.fulfill({ json: { sessions: [] } });
+          return queueRoute(route).fulfill({ json: { sessions: [] } });
         }
         freshReads++;
         await gate;
-        return failList ? route.fulfill({ status: 503, json: { title: "Synthetic list failure" } })
-          : route.fulfill({ json: { sessions: [summary] } });
+        return failList ? queueRoute(route).fulfill({ status: 503, json: { title: "Synthetic list failure" } })
+          : queueRoute(route).fulfill({ json: { sessions: [summary] } });
       }
-      return route.fulfill({ json: { ...summary, messages: [{ id: "answer", role: "agent", text: "集成会话正文", occurredAt: stamp }] } });
+      return queueRoute(route).fulfill({ json: { ...summary, messages: [{ id: "answer", role: "agent", text: "集成会话正文", occurredAt: stamp }] } });
     });
     await page.goto(`/?product=${fixture.productId}&console=agent`);
     await page.getByRole("button", { name: "待集成 1", exact: true }).click();

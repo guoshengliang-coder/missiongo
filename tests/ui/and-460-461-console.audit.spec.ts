@@ -1,3 +1,4 @@
+import { queueRoute } from "./integration-queue-fixture";
 import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as { productId: string };
@@ -25,14 +26,14 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
       const id = decodeURIComponent(path.split("/")[4] ?? ""); const current = rows.find(row => row.id === id);
       if (path.endsWith("/favorite")) {
         writes++;
-        if (failed) return route.fulfill({ status: 503, json: { title: "Synthetic failure" } });
+        if (failed) return queueRoute(route).fulfill({ status: 503, json: { title: "Synthetic failure" } });
         current!.favorite = route.request().postDataJSON().favorite;
-        return route.fulfill({ json: current });
+        return queueRoute(route).fulfill({ json: current });
       }
-      return route.fulfill({ json: path === "/api/v1/agent-sessions" ? { sessions: rows } : {
+      return queueRoute(route).fulfill({ json: path === "/api/v1/agent-sessions" ? { sessions: rows } : {
         ...current, messages: [{ id: "message", role: "agent", text: "Current message", occurredAt: stamp }] } });
     });
-    await page.route(/\/merge-deliveries(?:\?.*)?$/, route => route.fulfill({ json: { deliveries: [], batches: [], attentionSessionIds: ["active-chat", "independent-chat"] } }));
+    await page.route(/\/(?:merge-deliveries|integration-queue)(?:\?.*)?$/, route => queueRoute(route).fulfill({ json: { deliveries: [], batches: [], attentionSessionIds: ["active-chat", "independent-chat"] } }));
     await page.goto(`/?product=${fixture.productId}&console=agent`);
     const activeRow = page.locator(".agent-console-session-row").filter({ hasText: "active-chat" });
     const star = activeRow.getByRole("button", { name: "收藏", exact: true });

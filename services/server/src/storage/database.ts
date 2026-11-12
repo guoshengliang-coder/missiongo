@@ -2699,5 +2699,16 @@ export class MissionGoDatabase {
       });
     }
 
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611120007").get()) {
+      this.transaction(() => {
+        this.connection.exec(`CREATE INDEX integration_queue_stage ON merge_delivery_projection(product_id,account_id,json_extract(data_json,'$.queue.stage'),sequence DESC);
+          INSERT OR IGNORE INTO merge_display_dirty(kind,id) SELECT 'delivery',id FROM merge_deliveries;
+          CREATE TRIGGER IF NOT EXISTS display_integration_queue_non_release AFTER INSERT ON work_item_events
+          WHEN NEW.event_type='non_release_submitted'
+          BEGIN INSERT OR IGNORE INTO merge_display_dirty(kind,id) VALUES ('item',NEW.item_id); END;`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202611120007,new Date().toISOString());
+      });
+    }
+
   }
 }
