@@ -476,13 +476,19 @@ export class MergeDeliveries {
   batches(productId: string, accountId: string, sessionId?: string): ReturnType<MergeDeliveries["recomputeBatches"]> {
     const rows=this.db.connection.prepare(`SELECT data_json,activity_json FROM merge_batch_projection WHERE product_id=? AND account_id=? ${sessionId ? "AND session_id=?" : ""} ORDER BY sequence DESC LIMIT 20`).all(productId,accountId,...(sessionId ? [sessionId] : [])) as {data_json:string;activity_json:string}[];
     type ActivityBoundary={sessionId:string;activity:string;sensitive:boolean};
-    const boundaries=rows.map(row=>JSON.parse(row.activity_json) as Record<string,ActivityBoundary>);
-    const sessionIds=[...new Set(boundaries.flatMap(entries=>Object.values(entries).map(entry=>entry.sessionId)))];
+    const values=rows.map(row=>JSON.parse(row.data_json) as ReturnType<MergeDeliveries["recomputeBatches"]>[number]);
+    // Formal receipts and non-pending history cannot be invalidated by later
+    // chat activity. Only load live activity for the entries that can change.
+    const boundaries=values.map((value,index)=>{
+      const pending=Object.keys(value.presentation.entries).filter(id=>value.presentation.entries[id]!.publication==="pending");
+      if(!pending.length)return [];
+      const entries=JSON.parse(rows[index]!.activity_json) as Record<string,ActivityBoundary>;
+      return pending.flatMap(id=>entries[id]?.sensitive ? [{id,...entries[id]!}] : []);
+    });
+    const sessionIds=[...new Set(boundaries.flatMap(entries=>entries.map(entry=>entry.sessionId)))];
     const activity=new Map((sessionIds.length ? this.db.connection.prepare(`SELECT session_id,activity FROM merge_display_activity WHERE session_id IN (${sessionIds.map(()=>"?").join(",")})`).all(...sessionIds) as {session_id:string;activity:string}[] : []).map(row=>[row.session_id,row.activity]));
-    return rows.map((row,index)=>{
-      const value=JSON.parse(row.data_json) as ReturnType<MergeDeliveries["recomputeBatches"]>[number];
-      const expected=boundaries[index]!;
-      for(const [id,entry] of Object.entries(expected))if(value.presentation.entries[id]?.publication==="pending" && activity.get(entry.sessionId)!==entry.activity && entry.sensitive)value.presentation.entries[id]!.publication="unknown";
+    return values.map((value,index)=>{
+      for(const entry of boundaries[index]!)if(activity.get(entry.sessionId)!==entry.activity)value.presentation.entries[entry.id]!.publication="unknown";
       return value;
     });
   }
