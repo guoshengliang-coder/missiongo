@@ -2733,5 +2733,12 @@ export class MissionGoDatabase {
       });
     }
 
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611121510").get()) {
+      this.transaction(() => {
+        this.connection.exec("INSERT OR IGNORE INTO merge_display_dirty(kind,id) SELECT 'delivery',id FROM merge_deliveries");
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202611121510,new Date().toISOString());
+      });
+    }
+
   }
 }
