@@ -127,8 +127,11 @@ for (const width of [320, 353, 390]) for (const theme of ["light", "dark"] as co
         await expect.poll(() => changes).toContainEqual({ [field]: value });
       }
       await expect(attach).toBeEnabled();
-      const chooser = page.waitForEvent("filechooser");
       await attach.click();
+      const upload = page.getByRole("button", { name: "上传文件", exact: true });
+      await expect(upload).toBeEnabled();
+      const chooser = page.waitForEvent("filechooser");
+      await upload.click();
       expect((await chooser).isMultiple()).toBe(true);
       await page.screenshot({ path: test.info().outputPath(`compact-${width}-${theme}.png`) });
       await page.locator(".agent-console-reply textarea").fill("继续检查");
