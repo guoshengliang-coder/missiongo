@@ -25,7 +25,9 @@ for(const width of [320,1440])for(const theme of ['light','dark'] as const) {
     await page.getByRole('button',{name:'待集成 3',exact:true}).click();
     const dialog=page.getByRole('dialog');
     const history=dialog.locator('.modal > header').getByRole('button',{name:'交付历史',exact:true});
-    await expect(history).toBeVisible();
+    await expect(history).toBeVisible();await expect(history).toHaveText('');await expect(history).toHaveAttribute('title','交付历史');
+    await expect(dialog.locator('.merge-step-number')).toHaveText(['1','2']);
+    await expect(dialog.locator('.merge-steps [aria-current="step"]')).toContainText('选择处理内容');
     const title=await dialog.getByRole('heading',{name:'待集成',exact:true}).boundingBox(),historyBox=await history.boundingBox();
     expect(historyBox!.x).toBeGreaterThan(title!.x+title!.width);
     expect(Math.abs(historyBox!.y-title!.y)).toBeLessThan(20);
@@ -40,6 +42,7 @@ for(const width of [320,1440])for(const theme of ['light','dark'] as const) {
     await expect(boxes.nth(0)).toBeChecked();await expect(boxes.nth(1)).toBeChecked();
     await page.screenshot({path:testInfo.outputPath(`queue-${width}-${theme}.png`),fullPage:true});
     await dialog.getByRole('button',{name:'下一步：配置 Agent'}).click();
+    await expect(dialog.locator('.merge-steps [aria-current="step"]')).toContainText('配置与确认');
     await expect(dialog.getByRole('checkbox',{name:/合并后发布/})).not.toBeChecked();expect(previews).toBe(0);
     await dialog.getByRole('checkbox',{name:/合并后发布/}).check();
     await expect(dialog.getByRole('heading',{name:'本次发布范围'})).toBeVisible();
@@ -75,6 +78,8 @@ test('AND-511 already merged selection offers publication only and blocks an unk
   for(const name of ['dispatch-defaults','integration-defaults'])await page.route('**/api/v1/'+name,route=>route.fulfill({json:{nodeId:'node',agentKind:'codex',agents:{codex:{mode:'auto'}}}}));
   await page.goto(`/?product=${product.id}&console=agent`);await page.getByRole('button',{name:'待集成 1',exact:true}).click();
   const dialog=page.getByRole('dialog');await dialog.locator('.merge-row input').check();await dialog.getByRole('button',{name:'下一步：配置 Agent'}).click();
+  await page.emulateMedia({reducedMotion:'reduce'});
+  expect(await dialog.locator('.merge-configuration-step').evaluate(el=>getComputedStyle(el).animationName)).toBe('none');
   await expect(dialog.getByText('仅发布',{exact:true})).toBeVisible();await expect(dialog.getByRole('checkbox',{name:/合并后发布/})).toHaveCount(0);
   await expect(dialog.getByRole('button',{name:'开始处理',exact:true})).toBeDisabled();
   recovered=true;await dialog.getByRole('button',{name:'上一步',exact:true}).click();await dialog.getByRole('button',{name:'下一步：配置 Agent'}).click();

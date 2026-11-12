@@ -1,4 +1,4 @@
-import { CloudUpload, GitMerge, Plus, TriangleAlert, Files } from "lucide-react";
+import { CloudUpload, GitMerge, Plus, TriangleAlert, Files, History, ArrowRight } from "lucide-react";
 import { modeProblem } from "./agent-mode-options";
 import { HelpHint } from "./help-hint";
 import { IntegrationProgress } from "./integration-details";
@@ -242,10 +242,10 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
   const modeIssue=config?modeProblem(config.agentKind,config.mode,node?.agents.find(a=>a.kind===config.agentKind)?.modes,config.model):undefined;
   const modelUnavailable=Boolean(config?.model && (!models || !models.some(m=>m.id===config.model)));
   const configValid=Boolean(!modeIssue&&!modelUnavailable&&config&&node?.online&&node.supportsFreeSessions&&node.repos.some(r=>r.productId===productId)&&node.agents.some(a=>a.kind===config.agentKind&&a.ready!==false));
-  return <><Modal title={t("integrationQueueTitle")} subtitle="" headerActions={<button type="button" className="text-button" disabled={locked} onClick={()=>setHistory(true)}>{t("queueHistory")}</button>} onClose={onClose} wide scrolls
+  return <><Modal title={t("integrationQueueTitle")} subtitle="" headerActions={<button type="button" className="icon-button" aria-label={t("queueHistory")} title={t("queueHistory")} disabled={locked} onClick={()=>setHistory(true)}><History size={20} aria-hidden="true"/></button>} onClose={onClose} wide scrolls
     dirty={!createdBatch&&(Boolean(selectedCount)||publish||saveAsDefault||Boolean(initialConfig.current&&JSON.stringify(config)!==initialConfig.current))} pending={start.isPending||openSession.isPending}>
     {close=><div className="merge-dialog">
-      <ol className="merge-steps" aria-label={t("mergeSteps")}><li aria-current={step===1?"step":undefined}>{t("mergeStepSelect")}</li><li aria-current={step===2?"step":undefined}>{t("mergeStepConfigure")}</li></ol>
+      <ol className="merge-steps" aria-label={t("mergeSteps")}>{([1,2] as const).map(number=><li key={number} aria-current={step===number?"step":undefined} data-complete={step>number}><span className="merge-step-number">{number}</span><span>{t(number===1?"mergeStepSelect":"mergeStepConfigure")}</span>{number===1&&<ArrowRight className="merge-step-arrow" size={16} aria-hidden="true"/>}</li>)}</ol>
       {queue.isPending&&<p role="status">{t("mergeLoading")}</p>}
       {queue.isError&&<p role="alert" className="inline-error">{t("mergeLoadError")} <button type="button" className="secondary-button" onClick={()=>void queue.refetch()}>{t("retry")}</button></p>}
       {openSession.isPending&&<p role="status">{t("agentSessionLoading")}</p>}
