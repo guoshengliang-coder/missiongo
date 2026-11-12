@@ -1,3 +1,4 @@
+import { COMMON_COMMAND_SCHEMA } from "../common-commands.js";
 import { CONSOLE_CHANGE_SCHEMA } from "../console-changes.js";
 import { sourceMutation } from "./sql-mutation.js";
 import { DISPLAY_PROJECTION_SCHEMA, DISPLAY_ACTIVITY_SCHEMA } from "./display-projection-schema.js";
@@ -2696,6 +2697,13 @@ export class MissionGoDatabase {
         `);
         this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
           .run(202611100633,new Date().toISOString());
+      });
+    }
+
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611120305").get()) {
+      this.transaction(() => {
+        this.connection.exec(COMMON_COMMAND_SCHEMA);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202611120305,new Date().toISOString());
       });
     }
 

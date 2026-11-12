@@ -1,3 +1,4 @@
+import { CommonCommandProvider } from "./common-commands";
 import { StrictMode, Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -55,7 +56,7 @@ createRoot(document.getElementById("root")!).render(
               screen blank for all of it. BootSkeleton lives in this chunk, so it can
               paint immediately. */}
           <Suspense fallback={<BootSkeleton />}>
-            <RootPage />
+            <CommonCommandProvider><RootPage /></CommonCommandProvider>
           </Suspense>
         </ErrorBoundary>
         <UpdateBanner />

@@ -9,7 +9,7 @@ import { checkReleaseStatus } from "./release-status";
 export type ChangeResource = ConsoleChangeResource;
 const itemRoots = new Set(["item","timeline","delivery","collaboration","dingtalk-notifications","comment-dingtalk-notifications","dispatches"]);
 const sessionRoots = new Set(["agent-sessions","agent-session","dispatches","merge-deliveries","delivery","personal-todos","personal-attention","personal-notifications"]);
-const allConfig = new Set(["products","components","builders","accounts","account-permissions","dingtalk-bindings","dingtalk-settings","dingtalk-project","dispatch-defaults","integration-defaults","insight-batches","insight-batch","insight-batch-candidates","ai-authorizations","ai-title-settings","product-accounts","sdk-tokens"]);
+const allConfig = new Set(["common-commands","products","components","builders","accounts","account-permissions","dingtalk-bindings","dingtalk-settings","dingtalk-project","dispatch-defaults","integration-defaults","insight-batches","insight-batch","insight-batch-candidates","ai-authorizations","ai-title-settings","product-accounts","sdk-tokens"]);
 export function changeAffects(key: QueryKey, change: ChangeResource, relatedIds?: readonly string[]): boolean {
  const root=String(key[0]);
  switch(change.kind) {

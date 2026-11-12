@@ -1,3 +1,4 @@
+import { CommonCommandMenu, CommandMessageMenu, useCommandTarget } from "./common-commands";
 import { SessionSender, SendUnconfirmed, SendSuperseded, commandNotDelivered, sendAttemptHasDraft, type SendInput } from "./session-send";
 import { useSendAttempt, sendAttemptLocked, SessionSendFeedback } from "./session-send-feedback";
 import { useSelectedSessionScroll } from "./selected-session-scroll";
@@ -33,7 +34,6 @@ import {
   Image as ImageIcon,
   LoaderCircle,
   MessageSquare,
-  Plus,
   RotateCcw,
   Send,
   Square,
@@ -913,6 +913,8 @@ export function AgentSessionConsole({
     event.preventDefault();
     addFilesList(pasted);
   };
+  const commandTargetId = `console-${replySessionId ?? "none"}`;
+  const commandUndo = useCommandTarget(commandTargetId, reply, text => setReply(text), !selected?.canReply || pending || sendingSelected || cancellingSelected);
   const addFiles = (incoming: FileList | null) => {
     // Copy before clearing the input: resetting .value empties the FileList.
     const picked = incoming ? Array.from(incoming) : [];
@@ -1364,6 +1366,7 @@ export function AgentSessionConsole({
                       <header className="agent-console-message-meta">
                         {labelKey && <small>{t(labelKey)}</small>}
                         <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
+                        {message.role === "user" && <CommandMessageMenu text={message.text} />}
                       </header>
                       {message.text && (selected.agentSessionId && ["agent", "plan"].includes(message.role)
                         ? <AgentArtifactMarkdown text={message.text} sessionId={selected.agentSessionId} messageId={message.id} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />
@@ -1646,6 +1649,7 @@ export function AgentSessionConsole({
                   <AutoGrowTextarea
                     submitOnEnter
                     id={`agent-reply-${selected.id}`}
+                    data-command-target={commandTargetId}
                     rows={1}
                     maximumHeight={240}
                     value={permissionReplyText((sessionQuery.data?.currentRequests ?? sessionQuery.data?.messages)?.flatMap(message => message.questions ?? []) ?? [], reply)}
@@ -1656,6 +1660,7 @@ export function AgentSessionConsole({
                     placeholder={t("agentSessionReplyPlaceholder", { agent: agentLabel(selected, t) })}
                     disabled={!selected.canReply || pending || sendingSelected || cancellingSelected}
                   />
+                  {commandUndo}
                   {replyFiles.length > 0 && <div className="agent-chat-draft-files">
                     {replyFiles.map((file, index) => <DraftChatFile key={`${file.name}-${index}`} file={file} disabled={sendingSelected || cancellingSelected}
                       onRemove={() => setReplyFiles((current) => current.filter((_, fileIndex) => fileIndex !== index))} />)}
@@ -1669,11 +1674,9 @@ export function AgentSessionConsole({
                     <div className="agent-chat-send-actions">
                       <input ref={fileInputRef} type="file" accept={CHAT_FILE_ACCEPT} multiple hidden
                         onChange={(event) => addFiles(event.target.files)} />
-                      {(selected.source !== "external" || canAttach) && <button type="button" className="secondary-button agent-chat-icon-button"
-                        disabled={!sessionQuery.data?.canAttach || pending || sendingSelected || cancellingSelected || replyFiles.length >= 10}
-                        title={sessionQuery.data?.canAttach ? t("agentChatAddFile") : t("agentChatNodeUpdate")}
-                        aria-label={t("agentChatAddFile")}
-                        onClick={() => fileInputRef.current?.click()}><Plus size={18} /></button>}
+                      <CommonCommandMenu targetId={commandTargetId} disabled={!selected.canReply || pending || sendingSelected || cancellingSelected}
+                        onUpload={selected.source !== "external" || canAttach ? kind => {const input=fileInputRef.current;if(input){input.accept=kind==="image"?".png,.jpg,.jpeg,.webp,.gif,.heic":CHAT_FILE_ACCEPT;input.click()}} : undefined}
+                        uploadDisabled={!sessionQuery.data?.canAttach || replyFiles.length >= 10} />
                       <button type="submit" className="primary-button agent-chat-icon-button"
                         disabled={!selected.canReply || (!reply.trim() && replyFiles.length === 0) || (replyFiles.length > 0 && !sessionQuery.data?.canAttach) || pending || sendingSelected || cancellingSelected}
                         title={sendAttempt?.phase === "unconfirmed" ? t("agentSendUnconfirmedShort") : t(sendInFlight ? "agentSessionSending" : "agentSessionSend")}

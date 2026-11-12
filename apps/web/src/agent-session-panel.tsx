@@ -1,3 +1,4 @@
+import { CommonCommandMenu, CommandMessageMenu, useCommandTarget, useCommonCommands } from "./common-commands";
 import { AgentSessionFailureNotice } from "./agent-session-failure-notice";
 import { DraftChatFile } from "./agent-chat-draft-file";
 import { SessionSender, SendUnconfirmed, SendSuperseded, commandNotDelivered, sendAttemptHasDraft } from "./session-send";
@@ -51,7 +52,8 @@ function statusLabel(status: AgentSessionStatus, t: ReturnType<typeof useI18n>["
 export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: string; productId?: string }) {
   const { locale, t } = useI18n();
   const queryClient = useQueryClient();
-  const [open, setOpen] = useState(false);
+  const commonCommands = useCommonCommands();
+  const [open, setOpen] = useState(() => Boolean(commonCommands?.returning && commonCommands.activeTarget === `panel-${sessionId}`));
   const [localSender] = useState(() => new SessionSender());
   const sharedSender = useContext(SessionSenderContext);
   const sender = sharedSender ?? localSender;
@@ -163,6 +165,8 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
   };
 
   const planMessages = inlinePlanTranscript(history.messages.filter(message => !isWithdrawnCard(message)), session.data);
+  const commandTargetId = `panel-${sessionId}`;
+  const commandUndo = useCommandTarget(commandTargetId,reply,setReply,!canReply || pending || sendBusy);
   return (
     <div className="agent-session-panel">
       <button type="button" className="text-button agent-session-toggle" onClick={() => setOpen((value) => !value)}>
@@ -194,6 +198,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                       <header className="agent-session-message-meta">
                         <small>{messageLabel(message.role, session.data.agentKind, t)}</small>
                         <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
+                        {message.role === "user" && <CommandMessageMenu text={message.text} />}
                       </header>
                       {(message.role === "user" ? <MarkdownText>{permissionReplyText((session.data.currentRequests ?? session.data.messages).flatMap(message => message.questions ?? []), message.text)}</MarkdownText> : <AgentArtifactMarkdown text={message.text} sessionId={sessionId} messageId={message.id} />)}
                       {message.id === planMessages.planMessageId && <InlinePlanApproval onRequestChanges={()=>document.querySelector<HTMLTextAreaElement>(".agent-session-reply textarea")?.focus()} key={`${session.data.id}:${currentPlan(session.data)?.revision}`} session={session.data} blocked={questionPermission || pending || sendBusy} />}
@@ -280,11 +285,13 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                   {inheritedFiles.length > 0 && <div className="agent-chat-draft-files">
                     {inheritedFiles.map((file, index) => <DraftChatFile key={`${file.name}-${index}`} file={file} disabled />)}
                   </div>}
+                  {commandUndo}
                   <form className="agent-session-reply" onSubmit={submit}>
                     <AutoGrowTextarea
+                      submitOnEnter
+                      data-command-target={commandTargetId}
                       rows={1}
                       maximumHeight={240}
-                      submitOnEnter
                       value={permissionReplyText((session.data.currentRequests ?? session.data.messages).flatMap(message => message.questions ?? []), reply)}
                       onChange={(event) => setReply(permissionReplyText((session.data.currentRequests ?? session.data.messages).flatMap(message => message.questions ?? []), event.target.value, true))}
                       placeholder={t("agentSessionReplyPlaceholder", {
@@ -292,9 +299,12 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                       })}
                       disabled={pending || sendBusy}
                     />
+                    <div className="agent-chat-send-actions">
+                    <CommonCommandMenu targetId={commandTargetId} disabled={pending || sendBusy} />
                     <button type="submit" className="primary-button" disabled={(!reply.trim() && inheritedFiles.length === 0) || pending || sendBusy}>
                       {sendAttempt?.phase === "unconfirmed" ? t("agentSendUnconfirmedShort") : t(sendBusy ? "agentSessionSending" : "agentSessionSend")}
                     </button>
+                    </div>
                   </form>
                 </>
               ) : (

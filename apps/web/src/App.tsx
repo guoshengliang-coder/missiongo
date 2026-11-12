@@ -1,3 +1,4 @@
+import { useCommonCommands } from "./common-commands";
 import { SessionSenderContext } from "./session-send-feedback";
 import { bootstrapCacheSeeder } from "./bootstrap-cache";
 import { useConsoleConnection, useConsoleEvents } from "./console-events";
@@ -329,6 +330,17 @@ export function App() {
   const advancedFilterKey = itemFilterKey(advancedFilters);
   const [captureOpen, setCaptureOpen] = useState(false);
   const settings = useSettingsNavigation();
+  const commonCommands = useCommonCommands();
+  useEffect(() => {
+    const open = () => settings.navigate({section: "common-commands"});
+    window.addEventListener("missiongo:common-command-settings",open);
+    return () => window.removeEventListener("missiongo:common-command-settings",open);
+  },[settings.navigate]);
+  const commonSettingsVisited = useRef(false);
+  useEffect(() => {
+    if (settings.route?.section === "common-commands" && commonCommands?.returning) commonSettingsVisited.current = true;
+    if (!settings.route && commonSettingsVisited.current) { commonSettingsVisited.current = false; commonCommands?.resume(); }
+  },[settings.route,commonCommands?.returning]);
   const [downloadsOpen, setDownloadsOpen] = useState(false);
   const [statisticsOpen,setStatisticsOpen] = useState(statisticsIsOpen);
   const [agentConsoleOpen, setAgentConsoleOpen] = useState(agentConsoleIsOpen);
@@ -948,6 +960,7 @@ export function App() {
     const accountId = bootstrapQuery.data?.user.id;
     if (accountId && draftAccountId.current && accountId !== draftAccountId.current) {
       consoleDrafts.clear();
+      commonCommands?.clear();
       setNewSessionDraft(null);
       setNewSessionOpen(false);
       setNewSessionConfigOpen(false);

@@ -1,3 +1,4 @@
+import { CommonCommandStore } from "./common-commands.js";
 import { SessionSendRequests } from "./session-send-requests.js";
 import { StoredSessionMessages } from "./stored-session-messages.js";
 import { NodeControlChanges } from "./node-control-changes.js";
@@ -3109,6 +3110,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // What the dispatch dialog starts from, per account (AND-130). Stored as the
   // person left it; the dialog falls back field by field when a machine, agent
   // or model saved here is no longer offered.
+  const commonCommands = new CommonCommandStore(store.database);
+  app.get("/api/v1/common-commands", async (request) => commonCommands.list(requireAccountId(request)));
+  app.post("/api/v1/common-commands", async (request) => commonCommands.change(requireAccountId(request), objectBody(request.body)));
+
   app.get("/api/v1/dispatch-defaults", async (request) => {
     return dispatchStore.getDispatchDefaults(requireAccountId(request));
   });

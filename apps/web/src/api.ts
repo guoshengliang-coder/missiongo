@@ -1,3 +1,4 @@
+import type { CommonCommands, CommonCommandAction } from "@missiongo/contracts";
 import { checkReleaseStatus, deploymentInProgress } from "./release-status";
 import type { DeliveryExplanation } from "@missiongo/contracts";
 import type { AgentHistoryPage } from "./types";
@@ -734,6 +735,8 @@ export const api = {
       body: JSON.stringify({ revision }),
     }),
   getIntegrationDefaults: () => request<DispatchDefaults>("/api/v1/integration-defaults"),
+  getCommonCommands: () => request<CommonCommands>("/api/v1/common-commands"),
+  changeCommonCommands: (input: {requestId: string; revision: number; action: CommonCommandAction}) => request<CommonCommands>("/api/v1/common-commands", {method: "POST", body: JSON.stringify(input)}),
   getDispatchDefaults: () => request<DispatchDefaults>("/api/v1/dispatch-defaults"),
   setDispatchDefaults: (defaults: DispatchDefaults) =>
     request<DispatchDefaults>("/api/v1/dispatch-defaults", { method: "PUT", body: JSON.stringify(defaults) }),

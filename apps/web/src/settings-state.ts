@@ -3,7 +3,7 @@ export const SETTINGS_DEPTH = "missiongo:settings-depth";
 export const SETTINGS_INDEX = "missiongo:settings-index";
 export const PRODUCT_SETTINGS = ["product", "components", "builders", "artifacts", "tokens", "notifications", "collaboration"] as const;
 export type ProductSettingsSection = typeof PRODUCT_SETTINGS[number];
-export type SettingsSection = ProductSettingsSection | "index" | "profile" | "display" | "agent" | "connections" | "devices" | "dispatch" | "products" | "overview" | "access" | "accounts" | "project-admins" | "ai" | "dingtalk" | "new-product";
+export type SettingsSection = ProductSettingsSection | "common-commands" | "index" | "profile" | "display" | "agent" | "connections" | "devices" | "dispatch" | "products" | "overview" | "access" | "accounts" | "project-admins" | "ai" | "dingtalk" | "new-product";
 export interface SettingsRoute { section: SettingsSection; productId?: string | undefined; nodeId?: string | undefined; componentId?: string | undefined; accountId?: string | undefined; filterProductId?: string | undefined }
 export function settingsRoute(url = new URL(window.location.href)): SettingsRoute | null {
   if (!/^\/settings(?:\/|$)/.test(url.pathname)) return null;
@@ -29,7 +29,7 @@ export function settingsRoute(url = new URL(window.location.href)): SettingsRout
       if (parts[2] === "accounts") return { section: "accounts", ...(parts[3] ? { accountId: parts[3] } : {}), ...(url.searchParams.get("settingsProduct") ? { filterProductId: url.searchParams.get("settingsProduct")! } : {}) };
     }
     // Existing bookmarks continue to open their corresponding detail page.
-    const section = ["profile", "display", "connections", "devices", "dispatch"].find(value => value === parts[1]) as SettingsSection | undefined;
+    const section = ["profile", "display", "connections", "devices", "dispatch", "common-commands"].find(value => value === parts[1]) as SettingsSection | undefined;
     return { section: section ?? "index" };
   } catch { return { section: "index" }; }
 }

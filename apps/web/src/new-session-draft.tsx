@@ -1,6 +1,7 @@
+import { CommonCommandMenu, useCommandTarget } from "./common-commands";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ArrowLeft, LoaderCircle, MessageSquare, Plus, Send } from "lucide-react";
+import { ArrowLeft, LoaderCircle, MessageSquare, Send } from "lucide-react";
 import { api, ApiError } from "./api";
 import { useI18n } from "./i18n";
 import { agentLabelKey, dispatchProblemKey } from "./dispatch-eligibility";
@@ -96,6 +97,7 @@ export function NewSessionDraft({ draft, projectName, onChange, onBack, onConfig
     } else { setFileError(null); onChange({ ...draft, files: result.files }); }
   };
   const { isDraggingFiles, dropHandlers } = useFileDropZone(addFiles, { canAccept: !locked && Boolean(draft.config.canAttach) });
+  const commandUndo = useCommandTarget("new-session",draft.text,text=>onChange({...draft,text}),locked);
   return <>
     <header className="agent-console-conversation-head new-session-head">
       <button type="button" className="icon-button" aria-label={t("agentConsoleBackToSessions")} disabled={send.isPending} onClick={onBack}><ArrowLeft size={19} /></button>
@@ -107,13 +109,15 @@ export function NewSessionDraft({ draft, projectName, onChange, onBack, onConfig
     <footer className="agent-console-reply">
       <form onSubmit={event => { event.preventDefault(); if (!submitLock.current && !send.isPending && !configBlocked && (!draft.files.length || draft.config.canAttach) && (draft.text.trim() || draft.files.length)) { submitLock.current = true; send.mutate(); } }} {...dropHandlers}>
         {isDraggingFiles && <FileDropOverlay remaining={10 - draft.files.length} />}
-        <AutoGrowTextarea autoFocus submitOnEnter rows={2} value={draft.text} maxLength={20000} disabled={locked}
+        <AutoGrowTextarea data-command-target="new-session" autoFocus submitOnEnter rows={2} value={draft.text} maxLength={20000} disabled={locked}
           aria-label={t("agentSessionReplyPlaceholder", { agent: agentName })}
           placeholder={t("agentSessionReplyPlaceholder", { agent: agentName })}
           onChange={event => onChange({ ...draft, text: event.target.value })}
           onPaste={event => { const files = Array.from(event.clipboardData.files); if (files.length) { event.preventDefault(); addFiles(files); } }} />
+        {commandUndo}
         {draft.files.length > 0 && <div className="agent-chat-draft-files">{draft.files.map((file, index) =>
           <DraftChatFile key={index} file={file} disabled={locked} onRemove={() => onChange({ ...draft, files: draft.files.filter((_, i) => i !== index) })} />)}</div>}
+        {commandUndo}
         {draft.files.length > 0 && !draft.config.canAttach && <p className="inline-error" role="alert">{t("agentChatNodeUpdate")}</p>}
         {fileError && <p className="inline-error" role="alert">{fileError}</p>}
         {send.isError && <p className="inline-error" role="alert">{errorText}</p>}
@@ -129,8 +133,7 @@ export function NewSessionDraft({ draft, projectName, onChange, onBack, onConfig
           <div className="agent-chat-send-actions">
             <input ref={picker} type="file" multiple hidden accept=".png,.jpg,.jpeg,.webp,.gif,.heic,.mp4,.mov,.webm,.log,.txt,.json,.md,.csv,.pdf"
               onChange={event => { addFiles(Array.from(event.target.files ?? [])); event.target.value = ""; }} />
-            <button type="button" className="secondary-button agent-chat-icon-button" disabled={locked || !draft.config.canAttach}
-              aria-label={t("agentChatAddFile")} title={t(draft.config.canAttach ? "agentChatAddFile" : "agentChatNodeUpdate")} onClick={() => picker.current?.click()}><Plus size={18} /></button>
+            <CommonCommandMenu targetId="new-session" disabled={locked} onUpload={kind=>{const input=picker.current;if(input){input.accept=kind==="image"?".png,.jpg,.jpeg,.webp,.gif,.heic":".png,.jpg,.jpeg,.webp,.gif,.heic,.mp4,.mov,.webm,.log,.txt,.json,.md,.csv,.pdf";input.click()}}} uploadDisabled={!draft.config.canAttach} />
             <button type="submit" className="primary-button agent-chat-icon-button" disabled={send.isPending || configBlocked || (draft.files.length > 0 && !draft.config.canAttach) || (!draft.text.trim() && !draft.files.length)}
               aria-label={t(send.isError ? "retry" : "agentSessionSend")}>
               {send.isPending ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />}
