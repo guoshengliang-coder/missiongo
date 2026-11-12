@@ -212,13 +212,13 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
   const hasArtifacts=chosen.some(d=>d.requiredArtifacts.length>0);
   const effectivePublish=hasArtifacts&&(publish||!hasMerge);
   const operation:IntegrationActionMode=effectivePublish?(hasMerge?"merge_and_publish":"publish_only"):"merge_only";
-  const selection=Object.entries(selected).map(([id,revision])=>({id,revision}));
+  const selection=Object.entries(selected).filter(([id])=>!hasMerge||effectivePublish||catalog.current.get(id)?.queue.stage==="merge").map(([id,revision])=>({id,revision}));
   const scope=useQuery({queryKey:["merge-deliveries",productId,"preview",selection],
     queryFn:()=>post<PublicationScope>(`/api/v1/products/${encodeURIComponent(productId)}/integration-preview`,{selection}),
     enabled:step===2&&effectivePublish&&selection.length>0,staleTime:0});
   const start=useMutation({mutationFn:async()=>{
     if(!config)throw new Error("Missing configuration");
-    frozen.current??={requestKey:crypto.randomUUID(),selection:Object.entries(selected).map(([id,revision])=>({id,revision})),config,publish:effectivePublish,saveAsDefault,operation,...(effectivePublish&&scope.data?{scopeDigest:scope.data.digest}:{})};
+    frozen.current??={requestKey:crypto.randomUUID(),selection,config,publish:effectivePublish,saveAsDefault,operation,...(effectivePublish&&scope.data?{scopeDigest:scope.data.digest}:{})};
     const f=frozen.current;
     return post<Batch>(`/api/v1/products/${productId}/merge-batches`,{...f.config,requestKey:f.requestKey,selection:f.selection,publish:f.publish,saveAsDefault:f.saveAsDefault,operation:f.operation,...(f.scopeDigest?{scopeDigest:f.scopeDigest}:{}),integrationProtocol:1});
   },onSuccess:b=>{
@@ -228,7 +228,7 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
     void client.invalidateQueries({queryKey:["merge-deliveries",productId]});
   },onError:error=>{
     if(error instanceof ApiError && error.status>=400 && error.status<500) frozen.current=undefined;
-    void query.refetch();void queue.refetch();void scope.refetch();
+    void query.refetch();void queue.refetch();if(effectivePublish)void scope.refetch();
   }});
   const locked=start.isPending||openSession.isPending||Boolean(frozen.current);
   const active=createdBatch??query.data?.batches.find(b=>b.state==="active");
@@ -240,7 +240,7 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
   const releaseCount=chosen.length-mergeCount;
   const extraScope=scope.data?.candidates.filter(c=>!c.selected)??[];
   const extraGroups=new Set(extraScope.map(c=>JSON.stringify(c.completion??c.identity))).size;
-  const selectedValid=Object.entries(selected).every(([id,revision])=>chosen.some(d=>d.id===id&&d.revision===revision&&d.blocker!=="changed"&&!d.queue.blocker));
+  const selectedValid=selection.every(({id,revision})=>chosen.some(d=>d.id===id&&d.revision===revision&&d.blocker!=="changed"&&!d.queue.blocker));
   const detailCurrent=detail?catalog.current.get(detail.id):undefined;
   const modeIssue=config?modeProblem(config.agentKind,config.mode,node?.agents.find(a=>a.kind===config.agentKind)?.modes,config.model):undefined;
   const modelUnavailable=Boolean(config?.model && (!models || !models.some(m=>m.id===config.model)));
@@ -292,9 +292,9 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
       {needsDispatchFallback&&defaults.isError&&<p role="alert" className="inline-error">{t("dispatchDefaultsUnavailable")} <button type="button" className="secondary-button" onClick={()=>void defaults.refetch()}>{t("retry")}</button></p>}
       {integrationDefaults.isError&&<p role="alert" className="inline-error">{t("mergeDefaultsUnavailable")} <button type="button" className="secondary-button" onClick={()=>void integrationDefaults.refetch()}>{t("retry")}</button></p>}
       {differsFromDefaults&&<div className="help-option"><label><input type="checkbox" checked={saveAsDefault} disabled={locked} onChange={e=>setSaveDefaultsFor(e.target.checked?defaultsKey:null)}/><span>{t("mergeDefault")}</span></label><HelpHint title={t("mergeDefault")}><p>{t("mergeDefaultHelp")}</p></HelpHint></div>}
-      {hasMerge&&<div className="help-option"><label><input type="checkbox" checked={publish} disabled={locked} onChange={e=>setPublish(e.target.checked)}/><span>{t("mergePublish")}</span></label><HelpHint title={t("mergePublish")}><p>{t("mergePublishHelp")}</p></HelpHint><small className="integration-note">{t(publish?"mergeAndPublish":"mergeOnly")}</small></div>}
+      {hasMerge&&<div className="help-option"><label><input type="checkbox" checked={publish} disabled={locked} onChange={e=>setPublish(e.target.checked)}/><span>{t("mergePublish")}</span></label><HelpHint title={t("mergePublish")}><p>{t("mergePublishHelp")}</p></HelpHint><small className="integration-note">{t(effectivePublish?"mergeAndPublish":"queueSelectedMerge",{count:mergeCount})}</small></div>}
       {!hasMerge&&<p>{t(hasArtifacts?"queuePublishOnly":"queueNonRelease")}</p>}
-      <section className="merge-scope merge-processing-scope"><div className="help-label"><h3>{t("queueProcessingScope")}</h3><HelpHint title={t("queueProcessingScope")}><p>{t("queueProcessingScopeHelp")}</p>{effectivePublish&&<p>{t("queueScopeHelp")}</p>}</HelpHint></div>
+      {(effectivePublish||!hasMerge)&&<section className="merge-scope merge-processing-scope"><div className="help-label"><h3>{t("queueProcessingScope")}</h3><HelpHint title={t("queueProcessingScope")}><p>{t("queueProcessingScopeHelp")}</p>{effectivePublish&&<p>{t("queueScopeHelp")}</p>}</HelpHint></div>
         <details className="merge-selection-summary"><summary><span>{t("queueSelectedCount",{count:selectedCount})}</span><span>{t("queueView")}</span></summary>
           {chosen.map(d=><p key={d.id}><strong>{d.summary}</strong><br/>{d.itemKeys.join(" · ")||`PR #${d.pullRequestUrl.split("/").at(-1)}`} · {t(d.queue.stage==="merge"?"queueMerge":"queueRelease")}</p>)}
         </details>
@@ -308,7 +308,7 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
           <details><summary>{t("queueScopeDetails")}</summary>{scope.data.candidates.map(c=><p key={c.identity}>{c.title} · {c.requiredArtifacts?.map(artifactName).join(" / ")}</p>)}</details>
         </>}
         </>}
-      </section>
+      </section>}
       </div>}
       {start.isError&&<p role="alert" className="inline-error">{start.error instanceof ApiError && start.error.status<500 ? start.error.message : t("mergeStartError")}</p>}
       {active&&<p className="merge-next-blocked">{t("mergeBlockedNext")}</p>}

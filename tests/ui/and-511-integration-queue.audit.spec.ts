@@ -20,7 +20,7 @@ for(const width of [320,1440])for(const theme of ['light','dark'] as const) {
     for(const suffix of ['dispatch-defaults','integration-defaults'])await page.route('**/api/v1/'+suffix,route=>route.fulfill({json:{nodeId:'node',agentKind:'codex',agents:{codex:{mode:'auto'}}}}));
     let previews=0;const bodies:Record<string,unknown>[]=[];
     await page.route('**/integration-preview',route=>{previews++;return route.fulfill({json:{digest:'reviewed-scope',requiredArtifacts:['web','androidApp'],blockers:[],candidates:[{identity:'selection:pending',title:rows[0]!.summary,selected:true,requiredArtifacts:['web']},{identity:'delivery:merged',title:rows[1]!.summary,selected:true,requiredArtifacts:['web']},{identity:'delivery:partial',title:rows[2]!.summary,selected:false,requiredArtifacts:['web','androidApp']}]}});});
-    await page.route('**/merge-batches',route=>{bodies.push(route.request().postDataJSON());return route.fulfill({status:503,json:{title:'Synthetic response lost'}});});
+    await page.route('**/merge-batches',route=>{bodies.push(route.request().postDataJSON());return route.fulfill({status:bodies.length===1?409:503,json:{title:'Synthetic rejected first merge / subsequent response lost'}});});
     await page.goto(`/?product=${product.id}&console=agent`);
     await page.getByRole('button',{name:'待集成 3',exact:true}).click();
     const dialog=page.getByRole('dialog');
@@ -44,10 +44,22 @@ for(const width of [320,1440])for(const theme of ['light','dark'] as const) {
     await dialog.getByRole('button',{name:'下一步：配置 Agent'}).click();
     await expect(dialog.locator('.merge-steps [aria-current="step"]')).toContainText('配置与确认');
     await expect(dialog.getByRole('checkbox',{name:/合并后发布/})).not.toBeChecked();expect(previews).toBe(0);
-    await expect(dialog.getByRole('heading',{name:'本次处理范围',exact:true})).toBeVisible();
+    await expect(dialog.locator('.merge-processing-scope')).toHaveCount(0);
     await expect(dialog.getByRole('heading',{name:'发布范围',exact:true})).toHaveCount(0);
+    await expect(dialog.getByText('合并 1 组改动',{exact:true})).toBeVisible();
     await page.evaluate(()=>document.documentElement.dataset.fontScale='large');
     await page.screenshot({path:testInfo.outputPath(`merge-only-${width}-${theme}.png`),fullPage:true,animations:'disabled'});
+    await dialog.getByRole('button',{name:'开始处理',exact:true}).click();await expect(dialog.getByRole('alert')).toBeVisible();
+    expect(bodies[0]).toMatchObject({operation:'merge_only',publish:false,selection:[{id:'pending',revision:'rev-pending'}]});
+    expect(bodies[0]).not.toHaveProperty('scopeDigest');expect(previews).toBe(0);
+    // Reopen a clean view after the intentional rejection before taking publication screenshots.
+    await page.reload();await page.getByRole('button',{name:'待集成 3',exact:true}).click();
+    await boxes.nth(0).check();await boxes.nth(1).check();
+    await dialog.getByRole('button',{name:'下一步：配置 Agent'}).click();
+    await dialog.getByRole('checkbox',{name:/合并后发布/}).check();
+    await expect(dialog.getByRole('heading',{name:'发布范围',exact:true})).toBeVisible();
+    await dialog.getByRole('checkbox',{name:/合并后发布/}).uncheck();
+    await expect(dialog.locator('.merge-processing-scope')).toHaveCount(0);
     await dialog.getByRole('checkbox',{name:/合并后发布/}).check();
     await expect(dialog.getByRole('heading',{name:'发布范围'})).toBeVisible();
     await expect(dialog.getByText('处理所选改动并验证后合并，超出原需求另行确认。',{exact:true})).toHaveCount(0);
@@ -75,10 +87,11 @@ for(const width of [320,1440])for(const theme of ['light','dark'] as const) {
       expect(audit.text.filter(r=>r.fontSize>0&&r.fontSize<11)).toEqual([]);
       expect(audit.text.filter(r=>r.contrast<(r.fontSize>=24||r.fontWeight>=700&&r.fontSize>=18.66?3:4.5))).toEqual([]);
     }
+    await expect(dialog.getByRole('button',{name:'开始处理',exact:true})).toBeEnabled();
     await page.screenshot({path:testInfo.outputPath(`inline-scope-${width}-${theme}.png`),fullPage:true,animations:'disabled'});
     await dialog.getByRole('button',{name:'开始处理',exact:true}).click();await expect(dialog.getByRole('alert')).toBeVisible();
-    await dialog.getByRole('button',{name:'重试原批次',exact:true}).click();await expect.poll(()=>bodies.length).toBe(2);
-    expect(bodies[0]).toEqual(bodies[1]);expect(bodies[0]).toMatchObject({operation:'merge_and_publish',publish:true,scopeDigest:'reviewed-scope',selection:[{id:'pending',revision:'rev-pending'},{id:'merged',revision:'rev-merged'}]});
+    await dialog.getByRole('button',{name:'重试原批次',exact:true}).click();await expect.poll(()=>bodies.length).toBe(3);
+    expect(bodies[1]).toEqual(bodies[2]);expect(bodies[1]).toMatchObject({operation:'merge_and_publish',publish:true,scopeDigest:'reviewed-scope',selection:[{id:'pending',revision:'rev-pending'},{id:'merged',revision:'rev-merged'}]});
   });
 }
 
