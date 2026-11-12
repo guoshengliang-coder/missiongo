@@ -313,7 +313,8 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
   await expect(dialog.locator(".merge-config")).toBeHidden();
   await dialog.getByRole("button",{name:"全选可选内容"}).click();
   await expect(dialog.locator(".merge-row input:checked")).toHaveCount(2);
-  await expect(dialog.locator(".merge-footer")).toContainText("已选 2 组改动 · 3 个条目");
+  await expect(dialog.locator(".merge-selection-toolbar")).toContainText("已选 2 组改动");
+  await expect(dialog.locator(".merge-footer")).not.toContainText("已选");
   await expect(dialog.locator(".merge-row input").nth(2)).toBeDisabled();
   await dialog.getByRole("button",{name:"取消全选"}).click();await expect(dialog.locator(".merge-row input:checked")).toHaveCount(0);
   await dialog.getByRole("button",{name:"全选可选内容"}).click();

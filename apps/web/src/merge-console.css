@@ -154,3 +154,13 @@
 .merge-scope details { margin: 16px 0; }
 .merge-scope summary { min-height: 44px; cursor: pointer; }
 .merge-row .item-handler-badge { margin-top: 8px; }
+
+.merge-selection-summary > summary, .merge-extra-scope > summary { display: flex; align-items: center; gap: 8px; min-height: 44px; cursor: pointer; }
+.merge-selection-summary > summary > span:first-child, .merge-extra-scope > summary > span:first-of-type { flex: 1; min-width: 0; text-wrap: wrap; text-wrap: balance; }
+.merge-selection-summary > summary > span:last-child, .merge-extra-scope > summary > span:last-child { text-decoration: underline; flex-shrink: 0; font-size: var(--text-sm); }
+.merge-extra-scope > summary > svg { flex-shrink: 0; }
+.merge-scope .merge-extra-scope { margin: 12px 0; padding: 4px 12px; }
+.merge-selection-summary > p { margin: 12px 0; font-size: var(--text-md); }
+
+.merge-summary-copy { display: flex; flex-wrap: wrap; gap: 4px 8px; }
+.merge-summary-copy > span { white-space: nowrap; }

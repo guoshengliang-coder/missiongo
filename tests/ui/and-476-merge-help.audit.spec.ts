@@ -103,5 +103,5 @@ test("AND-476 saved integration preference takes priority and read failures can 
   await expect(dialog.getByRole("combobox",{name:"运行设备",exact:true})).toHaveText("integration-node");
   await expect(dialog.getByRole("checkbox",{name:"设为默认集成 Agent",exact:true})).toHaveCount(0);
   await expect(dialog.getByRole("button",{name:"开始处理",exact:true})).toBeEnabled();
-  await dialog.getByRole("button",{name:"取消",exact:true}).click();await dialog.getByRole("button",{name:"放弃修改",exact:true}).click();await expect(dialog).toHaveCount(0);expect(posts).toBe(0);
+  await dialog.locator(".modal > header").getByRole("button",{name:"关闭",exact:true}).click();await dialog.getByRole("button",{name:"放弃修改",exact:true}).click();await expect(dialog).toHaveCount(0);expect(posts).toBe(0);
 });

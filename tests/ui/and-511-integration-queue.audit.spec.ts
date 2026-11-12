@@ -51,7 +51,14 @@ for(const width of [320,1440])for(const theme of ['light','dark'] as const) {
     await scopeHelp.click();await expect(page.getByRole('region',{name:'本次发布范围',exact:true})).toContainText('预览依据已登记事实');
     await page.keyboard.press('Escape');await expect(scopeHelp).toBeFocused();
     await expect(dialog.getByText('预览依据已登记事实；执行端仍须核对实时 Git 与公开产物。新增范围须重新审阅；重试沿用原请求。',{exact:true})).toHaveCount(0);
-    await expect(dialog.locator('.integration-attention')).toContainText('Android 附件上传修复');
+    await expect(dialog.getByRole('button',{name:'取消',exact:true})).toHaveCount(0);
+    await expect(dialog.locator('.merge-summary-copy > span')).toHaveText(['已选 2 组：','待合并 1','待发布 1']);
+    await expect(dialog.locator('.merge-footer')).not.toContainText('已选');
+    const extra=dialog.locator('.merge-extra-scope');
+    await expect(extra.locator('summary')).toContainText('还将发布 1 组已合并改动');
+    await expect(extra.getByText('Android 附件上传修复 · Web / Android',{exact:true})).toBeHidden();
+    await extra.locator('summary').click();await expect(extra).toContainText('Android 附件上传修复');
+    await extra.locator('summary').click();
     await expect(dialog.getByRole('button',{name:/审阅发布|第三步/})).toHaveCount(0);
     for(const scale of ['small','medium','large']) {
       await page.evaluate(value=>document.documentElement.dataset.fontScale=value,scale);
