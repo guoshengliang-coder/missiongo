@@ -42,7 +42,13 @@ for (const surface of ["console", "panel"] as const) for (const width of [320, 1
     for (const scale of ["small", "medium", "large"]) {
       await page.evaluate(value => { document.documentElement.dataset.fontScale = value; }, scale);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-      for (const button of await notice.getByRole("button").all()) expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+      for (const button of await notice.getByRole("button").all()) {
+        const size=await button.evaluate(node=>({height:node.getBoundingClientRect().height,minHeight:Number.parseFloat(getComputedStyle(node).minHeight)}));
+        // Fractional modal placement can report 43.999969px for a 44px box.
+        // Keep both the declared minimum and rendered geometry at 44 CSS px.
+        expect(size.minHeight).toBeGreaterThanOrEqual(44);
+        expect(Math.round(size.height*1000)/1000).toBeGreaterThanOrEqual(44);
+      }
     }
     await page.screenshot({ path: testInfo.outputPath("local-merge-guide.png"), fullPage: true });
     // A send failure leaves the guide retryable and never consumes the chat draft.
