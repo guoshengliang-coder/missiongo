@@ -1,3 +1,4 @@
+import { queueRoute } from "./integration-queue-fixture";
 import { refreshFromConsoleStream } from "./polling";
 import { chooseOption } from "./select-helpers";
 import { expect, test } from "@playwright/test";
@@ -7,7 +8,7 @@ for (const viewport of [{width:320,theme:"dark"},{width:724,theme:"light"},{widt
     test.use({viewport:{width:viewport.width,height:850},hasTouch:true,colorScheme:viewport.theme});
     test("reveals a deep-linked selected row on arrival and layout return, without polling taking over scrolling",async({page,request},info)=>{
       const product=await(await request.post("/api/v1/products",{data:{name:"Selected conversation",keyPrefix:`SC${viewport.width}`}})).json();
-      const now=Date.now(),id="session-34";
+      const now=Date.parse("2026-11-12T00:00:00Z"),id="session-34";
       const rows=Array.from({length:35},(_,i)=>({id:`session-${i}`,agentSessionId:`session-${i}`,dispatchId:`dispatch-${i}`,productId:product.id,
         agentKind:"codex",status:"idle",createdAt:new Date(now-i*1000).toISOString(),updatedAt:new Date(now-i*1000).toISOString(),activityAt:new Date(now-i*1000).toISOString(),
         nodeName:"Fixture",nodeId:"node",nodeConnectionState:"online",mode:"auto",dispatchStatus:"launched",activities:[],settings:{},unread:false,
@@ -15,12 +16,12 @@ for (const viewport of [{width:320,theme:"dark"},{width:724,theme:"light"},{widt
       let phase="merging";
       await page.route("**/api/v1/agent-sessions**",async route=>{
         const path=new URL(route.request().url()).pathname;
-        if(path==="/api/v1/agent-sessions")return route.fulfill({json:{sessions:rows}});
+        if(path==="/api/v1/agent-sessions")return queueRoute(route).fulfill({json:{sessions:rows}});
         const row=rows.find(r=>r.id===path.split("/")[4])??rows[34]!;
-        return route.fulfill({json:{...row,messages:[]}});
+        return queueRoute(route).fulfill({json:{...row,messages:[]}});
       });
-      await page.route(/\/merge-deliveries(?:\?.*)?$/,route=>route.fulfill({json:{deliveries:[],batches:[],sessionProgress:{[id]:phase}}}));
-      await page.clock.install();
+      await page.route(/\/(?:merge-deliveries|integration-queue)(?:\?.*)?$/,route=>queueRoute(route).fulfill({json:{deliveries:[],batches:[],sessionProgress:{[id]:phase}}}));
+      await page.clock.install({time:new Date(now)});
       await page.goto(`/?product=${product.id}&console=agent&session=${id}&consoleFilter=attention`);
       if(viewport.width===320)await page.locator(".agent-console-conversation-back").click();
       await expect(page.getByText("当前筛选未显示选中的会话。")).toBeVisible();
@@ -54,13 +55,13 @@ for(const width of [353,1440])test(`AND-470 differentiates inconsistent, failed 
   let mode="inconsistent",requests=0;
   await page.route("**/api/v1/bootstrap**",async route=>{
     const response=await route.fetch(),body=await response.json();
-    return route.fulfill({response,json:{...body,items:[]}});
+    return queueRoute(route).fulfill({response,json:{...body,items:[]}});
   });
   await page.route("**/api/v1/items?**",async route=>{
     requests++;
-    if(mode==="error")return route.fulfill({status:403,json:{code:"forbidden",title:"Synthetic rejected list"}});
+    if(mode==="error")return queueRoute(route).fulfill({status:403,json:{code:"forbidden",title:"Synthetic rejected list"}});
     const response=await route.fetch(),body=await response.json();
-    return route.fulfill({response,json:mode==="inconsistent"?{...body,items:[]}:body});
+    return queueRoute(route).fulfill({response,json:mode==="inconsistent"?{...body,items:[]}:body});
   });
   await page.goto(`/?product=${product.id}&status=ready`);
   await expect(page.getByRole("alert")).toContainText("条目数量与列表结果不一致");
@@ -101,7 +102,7 @@ for(const width of [353,1440])test(`AND-470 creates then switches conditions wit
   await page.route("**/api/v1/items?**",async route=>{
     if(new URL(route.request().url()).searchParams.get("status")==="inbox"){
       const response=await route.fetch();seen=true;await delayed;
-      await route.fulfill({response}).catch(()=>{});return;
+      await queueRoute(route).fulfill({response}).catch(()=>{});return;
     }
     await route.continue();
   });
