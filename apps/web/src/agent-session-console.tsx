@@ -914,7 +914,7 @@ export function AgentSessionConsole({
     addFilesList(pasted);
   };
   const commandTargetId = `console-${replySessionId ?? "none"}`;
-  const commandUndo = useCommandTarget(commandTargetId, reply, text => setReply(text), !selected?.canReply || pending || sendingSelected || cancellingSelected);
+  const commandUndo = useCommandTarget(commandTargetId, permissionReplyText((sessionQuery.data?.currentRequests ?? sessionQuery.data?.messages)?.flatMap(message => message.questions ?? []) ?? [], reply), text => setReply(permissionReplyText((sessionQuery.data?.currentRequests ?? sessionQuery.data?.messages)?.flatMap(message => message.questions ?? []) ?? [],text,true)), !selected?.canReply || pending || sendingSelected || cancellingSelected);
   const addFiles = (incoming: FileList | null) => {
     // Copy before clearing the input: resetting .value empties the FileList.
     const picked = incoming ? Array.from(incoming) : [];
@@ -1366,7 +1366,7 @@ export function AgentSessionConsole({
                       <header className="agent-console-message-meta">
                         {labelKey && <small>{t(labelKey)}</small>}
                         <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
-                        {message.role === "user" && <CommandMessageMenu text={message.text} />}
+                        {message.role === "user" && <CommandMessageMenu text={permissionReplyText((sessionQuery.data?.currentRequests ?? sessionQuery.data?.messages)?.flatMap(message => message.questions ?? []) ?? [], message.text)} />}
                       </header>
                       {message.text && (selected.agentSessionId && ["agent", "plan"].includes(message.role)
                         ? <AgentArtifactMarkdown text={message.text} sessionId={selected.agentSessionId} messageId={message.id} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />

@@ -117,7 +117,6 @@ export function NewSessionDraft({ draft, projectName, onChange, onBack, onConfig
         {commandUndo}
         {draft.files.length > 0 && <div className="agent-chat-draft-files">{draft.files.map((file, index) =>
           <DraftChatFile key={index} file={file} disabled={locked} onRemove={() => onChange({ ...draft, files: draft.files.filter((_, i) => i !== index) })} />)}</div>}
-        {commandUndo}
         {draft.files.length > 0 && !draft.config.canAttach && <p className="inline-error" role="alert">{t("agentChatNodeUpdate")}</p>}
         {fileError && <p className="inline-error" role="alert">{fileError}</p>}
         {send.isError && <p className="inline-error" role="alert">{errorText}</p>}

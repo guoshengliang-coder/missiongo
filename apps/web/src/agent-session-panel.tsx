@@ -166,7 +166,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
 
   const planMessages = inlinePlanTranscript(history.messages.filter(message => !isWithdrawnCard(message)), session.data);
   const commandTargetId = `panel-${sessionId}`;
-  const commandUndo = useCommandTarget(commandTargetId,reply,setReply,!canReply || pending || sendBusy);
+  const commandUndo = useCommandTarget(commandTargetId,permissionReplyText((session.data?.currentRequests ?? session.data?.messages ?? []).flatMap(message => message.questions ?? []),reply),text=>setReply(permissionReplyText((session.data?.currentRequests ?? session.data?.messages ?? []).flatMap(message => message.questions ?? []),text,true)),!canReply || pending || sendBusy);
   return (
     <div className="agent-session-panel">
       <button type="button" className="text-button agent-session-toggle" onClick={() => setOpen((value) => !value)}>
@@ -198,7 +198,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                       <header className="agent-session-message-meta">
                         <small>{messageLabel(message.role, session.data.agentKind, t)}</small>
                         <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
-                        {message.role === "user" && <CommandMessageMenu text={message.text} />}
+                        {message.role === "user" && <CommandMessageMenu text={permissionReplyText((session.data?.currentRequests ?? session.data?.messages ?? []).flatMap(message => message.questions ?? []), message.text)} />}
                       </header>
                       {(message.role === "user" ? <MarkdownText>{permissionReplyText((session.data.currentRequests ?? session.data.messages).flatMap(message => message.questions ?? []), message.text)}</MarkdownText> : <AgentArtifactMarkdown text={message.text} sessionId={sessionId} messageId={message.id} />)}
                       {message.id === planMessages.planMessageId && <InlinePlanApproval onRequestChanges={()=>document.querySelector<HTMLTextAreaElement>(".agent-session-reply textarea")?.focus()} key={`${session.data.id}:${currentPlan(session.data)?.revision}`} session={session.data} blocked={questionPermission || pending || sendBusy} />}
