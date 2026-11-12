@@ -382,6 +382,33 @@ describe("planned integration batches",()=>{
     expect(()=>f.merges.publicationPreview(f.owner.id,f.item.productId,[{id:d.id,revision:d.revision}])).toThrow();
     expect(f.store.getWorkItem(f.item.key).status).toBe("development_complete");
   });
+  it("checks live activity only for sensitive pending entries without changing publication semantics",async()=>{
+    const f=await batchFixture(2),[pending,published]=f.deliveries;
+    f.act(f.plan);for(const d of f.deliveries){f.check(d.id);f.merged(d.id);}
+    const release=(d:typeof f.d,key:string)=>{
+      const itemKey=d.itemKeys[0]!,event=f.store.getDeliveryRecords(itemKey)[0]!;
+      f.store.submitForVerification({itemKey,developmentEventId:event.id,completion:event.completion!,releases:[{artifact:"web",version:"1",sourceCommit:"e".repeat(40)}],deployedCommit:"e".repeat(40),receiptDigest:"f".repeat(64),idempotencyKey:key});
+    };
+    release(published!,"activity-published");
+    const queries:string[]=[],prepare=f.db.prepare.bind(f.db);
+    const spy=vi.spyOn(f.db,"prepare").mockImplementation(sql=>{if(sql.startsWith("SELECT session_id,activity FROM merge_display_activity"))queries.push(sql);return prepare(sql);});
+    try {
+      const read=f.merges.batches(f.item.productId,f.owner.id);
+      expect(read).toEqual(f.merges.recomputeBatches(f.item.productId,f.owner.id));
+      expect(queries).toHaveLength(1);expect(queries[0]!.match(/\?/g)).toHaveLength(1);
+      new AgentSessionStore(f.store.database).enqueue(f.owner.id,pending!.sessionId,"New pending implementation input",[]);
+      const changed=f.merges.batches(f.item.productId,f.owner.id)[0]!;
+      expect(changed.presentation.entries[published!.id]!.publication).toBe("published");
+      expect(changed.presentation.entries[pending!.id]!.publication).toBe("unknown");
+      release(pending!,"activity-complete");queries.length=0;
+      const complete=f.merges.batches(f.item.productId,f.owner.id);
+      expect(complete[0]!.presentation.entries[pending!.id]!.publication).toBe("published");
+      expect(queries).toEqual([]);
+      // Every read still returns independent objects; caller changes cannot leak.
+      complete[0]!.presentation.entries[published!.id]!.publication="unknown";
+      expect(f.merges.batches(f.item.productId,f.owner.id)[0]!.presentation.entries[published!.id]!.publication).toBe("published");
+    } finally {spy.mockRestore();}
+  });
   it("AND-469 shares current stages and preserves history when a new input clears completion",async()=>{
     const f=await batchFixture(), d=f.deliveries[0]!;
     const progress=()=>f.merges.sessionProgress(f.item.productId,f.owner.id);
