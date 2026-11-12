@@ -74,6 +74,25 @@ interface Batch {
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const changed = () => conflict("merge_delivery_changed", "交付内容、代码或执行范围已变化，请重新核对并确认。");
 
+/** Copy JSON containers while reusing immutable primitive values. The private
+ * parsed template never escapes; __proto__ stays an ordinary own JSON key. */
+function cloneProjection<T>(value:T):T {
+  if(value===null || typeof value!=="object")return value;
+  type Container=Record<string,unknown>;
+  const create=(source:object)=>(Array.isArray(source)?[]:{}) as Container;
+  const result=create(value),pending:[Container,Container][]=[[value as Container,result]];
+  while(pending.length){
+    const [source,target]=pending.pop()!;
+    for(const key of Object.keys(source)){
+      const entry=source[key],copy=entry!==null && typeof entry==="object"?create(entry):entry;
+      if(key==="__proto__")Object.defineProperty(target,key,{value:copy,writable:true,enumerable:true,configurable:true});
+      else target[key]=copy;
+      if(entry!==null && typeof entry==="object")pending.push([entry as Container,copy as Container]);
+    }
+  }
+  return result as T;
+}
+
 /** Explicit delivery intent is independent of item state and chat inference. */
 export class MergeDeliveries {
   constructor(private readonly store: MissionGoStore) {
@@ -89,6 +108,23 @@ export class MergeDeliveries {
     return query(...parameters);
   }
 
+  private readonly batchTemplates=new Map<string,{text:string;value:ReturnType<MergeDeliveries["recomputeBatches"]>[number]}>();
+  private batchTemplateChars=0;
+  private readBatchProjection(id:string,text:string):ReturnType<MergeDeliveries["recomputeBatches"]>[number] {
+    const previous=this.batchTemplates.get(id);
+    // Always read the current scoped DB row first. Exact serialized equality is
+    // the invalidation key, including writes within a transaction and rollbacks.
+    if(previous?.text===text)return cloneProjection(previous.value);
+    if(previous){this.batchTemplates.delete(id);this.batchTemplateChars-=previous.text.length;}
+    const value=JSON.parse(text) as ReturnType<MergeDeliveries["recomputeBatches"]>[number];
+    if(text.length<16*1024 || text.length>512*1024)return value;
+    while(this.batchTemplates.size>=20 || this.batchTemplateChars+text.length>4*1024*1024){
+      const oldest=this.batchTemplates.keys().next().value!;
+      this.batchTemplateChars-=this.batchTemplates.get(oldest)!.text.length;this.batchTemplates.delete(oldest);
+    }
+    this.batchTemplates.set(id,{text,value});this.batchTemplateChars+=text.length;
+    return cloneProjection(value);
+  }
   private read<T>(table: "merge_deliveries" | "merge_batches", id: string): T {
     const row = this.db.connection.prepare(`SELECT data_json FROM ${table} WHERE id=?`).get(id) as {data_json:string}|undefined;
     if (!row) throw notFound("Merge record");
@@ -485,9 +521,9 @@ export class MergeDeliveries {
     });
   }
   batches(productId: string, accountId: string, sessionId?: string): ReturnType<MergeDeliveries["recomputeBatches"]> {
-    const rows=this.displayRows(`SELECT data_json,activity_json FROM merge_batch_projection WHERE product_id=? AND account_id=? ${sessionId ? "AND session_id=?" : ""} ORDER BY sequence DESC LIMIT 20`,productId,accountId,...(sessionId ? [sessionId] : [])) as {data_json:string;activity_json:string}[];
+    const rows=this.displayRows(`SELECT id,data_json,activity_json FROM merge_batch_projection WHERE product_id=? AND account_id=? ${sessionId ? "AND session_id=?" : ""} ORDER BY sequence DESC LIMIT 20`,productId,accountId,...(sessionId ? [sessionId] : [])) as {id:string;data_json:string;activity_json:string}[];
     type ActivityBoundary={sessionId:string;activity:string;sensitive:boolean};
-    const values=rows.map(row=>JSON.parse(row.data_json) as ReturnType<MergeDeliveries["recomputeBatches"]>[number]);
+    const values=rows.map(row=>this.readBatchProjection(row.id,row.data_json));
     // Formal receipts and non-pending history cannot be invalidated by later
     // chat activity. Only load live activity for the entries that can change.
     const boundaries=values.map((value,index)=>{

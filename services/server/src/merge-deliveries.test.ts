@@ -397,6 +397,41 @@ describe("planned integration batches",()=>{
     expect(()=>f.merges.publicationPreview(f.owner.id,f.item.productId,[{id:d.id,revision:d.revision}])).toThrow();
     expect(f.store.getWorkItem(f.item.key).status).toBe("development_complete");
   });
+  it("reuses large exact batch templates while returning independent live JSON containers",async()=>{
+    const f=await batchFixture(),d=f.deliveries[0]!;
+    f.act(f.plan);f.check(d.id);f.merged(d.id);
+    const raw=JSON.parse((f.db.prepare("SELECT data_json FROM merge_batches WHERE id=?").get(f.b.id) as {data_json:string}).data_json);
+    raw.integration.plans[0].summary="Synthetic long history. ".repeat(2000);
+    raw.integration.events[0].detail=JSON.parse('{"__proto__":{"polluted":true},"constructor":"own","nested":[null,false,4,{"text":"original"}]}');
+    const save=()=>f.db.prepare("UPDATE merge_batches SET data_json=? WHERE id=?").run(JSON.stringify(raw),f.b.id);
+    save();
+    const text=(f.db.prepare("SELECT data_json FROM merge_batch_projection WHERE id=?").get(f.b.id) as {data_json:string}).data_json;
+    let parses=0;const parse=JSON.parse,spy=vi.spyOn(JSON,"parse").mockImplementation((input,...args)=>{if(input===text)parses++;return parse(input,...args);});
+    try {
+      const first=f.merges.batches(f.item.productId,f.owner.id),second=f.merges.batches(f.item.productId,f.owner.id);
+      expect(first).toEqual(second);expect(parses).toBe(1);
+      expect(first).toEqual(f.merges.recomputeBatches(f.item.productId,f.owner.id));
+      const detail=first[0]!.integration!.events[0]!.detail as unknown as Record<string,unknown>;
+      expect(Object.getPrototypeOf(detail)).toBe(Object.prototype);expect(Object.hasOwn(detail,"__proto__")).toBe(true);
+      expect(detail.__proto__).toEqual({polluted:true});expect(({} as Record<string,unknown>).polluted).toBeUndefined();
+      first[0]!.integration!.plans[0]!.summary="Caller mutation";
+      (detail.nested as unknown[])[3]="Caller nested mutation";
+      expect(f.merges.batches(f.item.productId,f.owner.id)).toEqual(second);
+      expect(f.merges.batches(f.item.productId,f.other.id)).toEqual([]);
+      expect(f.merges.batches("other-product",f.owner.id)).toEqual([]);
+      expect(f.merges.batches(f.item.productId,f.owner.id,f.b.sessionId)).toEqual(second);
+      expect(()=>f.store.database.transaction(()=>{
+        raw.integration.plans[0].summary="Synthetic uncommitted history. ".repeat(2000);save();
+        // Source projections normally flush at outer commit; explicitly model
+        // an in-transaction projection update before rolling the fixture back.
+        f.db.prepare("UPDATE merge_batch_projection SET data_json=json_set(data_json,'$.integration.plans[0].summary',?) WHERE id=?").run(raw.integration.plans[0].summary,f.b.id);
+        expect(f.merges.batches(f.item.productId,f.owner.id)[0]!.integration!.plans[0]!.summary).toBe(raw.integration.plans[0].summary);
+        throw Error("rollback template input");
+      })).toThrow("rollback template input");
+      expect(f.merges.batches(f.item.productId,f.owner.id)).toEqual(second);
+      save();expect(f.merges.batches(f.item.productId,f.owner.id)[0]!.integration!.plans[0]!.summary).toBe(raw.integration.plans[0].summary);
+    } finally {spy.mockRestore();}
+  });
   it("aggregates session stages with exact expiry, scope and JSON key preservation",async()=>{
     const f=await prepared(),now=Date.now(),session='quoted-"-\\-会话';
     const insert=f.db.prepare("INSERT INTO merge_session_projection VALUES (?,?,?,?,?,?)");
