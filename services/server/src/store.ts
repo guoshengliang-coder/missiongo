@@ -1827,8 +1827,17 @@ export class MissionGoStore {
         if(e.payload.roundKey!==eventRound)return false;
         if(e.payload.developmentEventId)return e.payload.developmentEventId===event.id;
         if(event.eventType!=="status_changed" || e.eventType!=="status_changed")return false;
-        const preceding=events.slice(0,events.indexOf(e)).reverse().find(v=>(v.eventType==="delivery_recorded" || v.eventType==="status_changed" && v.toStatus==="development_complete") && v.payload.roundKey===eventRound);
-        try{return preceding?.id===event.id && Boolean(completion && sameCompletion(normalizeCompletion(e.payload),completion));}catch{return false;}
+        const preceding=events.slice(0,events.indexOf(e)).filter(v=>(v.eventType==="delivery_recorded" || v.eventType==="status_changed" && v.toStatus==="development_complete") && v.payload.roundKey===eventRound);
+        if(preceding.at(-1)?.id!==event.id)return false;
+        try{return Boolean(completion && sameCompletion(normalizeCompletion(e.payload),completion));}catch{
+          // Earliest no-release transitions stored neither ID nor completion.
+          // Only a unique, revision-adjacent formal handover can identify its target.
+          return !e.payload.completion && !e.payload.pullRequestUrl && e.actorKind==="agent"
+            && e.payload.reason==="non_release_submitted" && e.fromStatus==="development_complete" && e.toStatus==="pending_verification"
+            && preceding.length===1 && scope.requiredArtifacts?.length===0 && Boolean(scope.noReleaseReason)
+            && typeof event.payload.contentVersion==="number" && e.payload.contentVersion===event.payload.contentVersion
+            && typeof event.payload.resultRevision==="number" && e.payload.revision===event.payload.resultRevision;
+        }
       };
       const receipts=events.filter(e=>(e.eventType==="release_evidence_added" || e.eventType==="status_changed" && e.toStatus==="pending_verification") &&
         bound(e));

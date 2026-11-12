@@ -343,7 +343,15 @@ describe("planned integration batches",()=>{
     expect(f.store.getDeliveryRecords(item.key)[0]!.published).toBe(true);
     expect(f.merges.queue(item.productId,f.owner.id).deliveries).toEqual([]);
     expect(f.merges.queue(item.productId,f.owner.id,"history").deliveries[0]!.queue).toMatchObject({resolution:"not_required"});
-    legacy.roundKey="different-round";
+    // The actual AND-450 receipt also lacks a completion reference.
+    delete legacy.completion;delete legacy.pullRequestUrl;
+    f.db.prepare("UPDATE work_item_events SET payload_json=? WHERE id=?").run(JSON.stringify(legacy),receipt.id);
+    expect(f.store.getDeliveryRecords(item.key)[0]!.published).toBe(true);
+    const validRevision=legacy.revision;
+    legacy.revision=-1;
+    f.db.prepare("UPDATE work_item_events SET payload_json=? WHERE id=?").run(JSON.stringify(legacy),receipt.id);
+    expect(f.store.getDeliveryRecords(item.key)[0]!.published).toBe(false);
+    legacy.revision=validRevision;legacy.roundKey="different-round";
     f.db.prepare("UPDATE work_item_events SET payload_json=? WHERE id=?").run(JSON.stringify(legacy),receipt.id);
     expect(f.store.getDeliveryRecords(item.key)[0]!.published).toBe(false);
   });
