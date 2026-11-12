@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, TextQuote, Paperclip, Image, ChevronRight, Settings, Bookmark, ArrowUp, ArrowDown, Pencil, Trash2, MoreVertical, Copy } from "lucide-react";
+import { Plus, TextQuote, Paperclip, Image, ChevronRight, Settings, Bookmark, ArrowUp, ArrowDown, Pencil, Trash2, MoreHorizontal, Copy } from "lucide-react";
 import { COMMON_COMMAND_CONTENT_LIMIT, COMMON_COMMAND_NAME_LIMIT, COMMON_COMMAND_COUNT_LIMIT, type CommonCommand, type CommonCommandAction, type CommonCommands } from "@missiongo/contracts";
 import { api, ApiError } from "./api";
 import { Modal } from "./modal";
@@ -85,5 +85,5 @@ export function CommandMessageMenu({text}:{text:string}){
  const copy=async()=>{try{await navigator.clipboard.writeText(content);setMobile(false);if(menu.current)menu.current.open=false}catch{setError(true)}};
  const save=()=>{setMobile(false);if(menu.current)menu.current.open=false;afterOverlaysClose(()=>context.edit(undefined,content))};
  const buttons=<><button type="button" onClick={()=>void copy()}><Copy size={16}/>{t("commandCopy")}</button><button type="button" onClick={save}><TextQuote size={16}/>{t("commandFromMessage")}</button>{error&&<p role="alert">{t("commandCopyFailed")}</p>}</>;
- return <><OverlayMenu ref={menu} className="common-command-message-menu"><summary className="icon-button" aria-label={t("commandMore")} onClick={e=>{if(matchMedia("(pointer: coarse)").matches){e.preventDefault();setMobile(true)}}}><MoreVertical size={16}/></summary><div className="detail-more-menu-popover">{buttons}</div></OverlayMenu>{mobile&&<Modal title={t("commandMore")} subtitle="" onClose={()=>setMobile(false)} className="common-command-message-sheet"><div className="common-command-mobile-actions">{buttons}</div></Modal>}</>
+ return <><OverlayMenu ref={menu} className="common-command-message-menu"><summary className="icon-button" aria-label={t("commandMore")} onClick={e=>{if(matchMedia("(pointer: coarse)").matches){e.preventDefault();setMobile(true)}}}><MoreHorizontal size={16}/></summary><div className="detail-more-menu-popover">{buttons}</div></OverlayMenu>{mobile&&<Modal title={t("commandMore")} subtitle="" onClose={()=>setMobile(false)} className="common-command-message-sheet"><div className="common-command-mobile-actions">{buttons}</div></Modal>}</>
 }

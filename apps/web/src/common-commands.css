@@ -33,7 +33,7 @@
 .common-command-message-menu > summary { display: flex; align-items: flex-end; width: 18px; height: 16px; min-height: 16px; padding: 0; list-style: none; color: var(--muted); cursor: pointer; position: relative; }
 .common-command-message-menu > summary::before { content: ""; position: absolute; top: -14px; left: 0; width: 44px; height: 44px; }
 .agent-console-message-user:has(.common-command-message-menu) { padding-top: 8px; }
-.agent-console-message-user .agent-console-message-meta:has(.common-command-message-menu), .agent-session-message-user .agent-session-message-meta:has(.common-command-message-menu) { align-items: flex-end; justify-content: flex-end; gap: 2px; min-height: 16px; line-height: 16px; }
+.agent-console-message-user .agent-console-message-meta:has(.common-command-message-menu), .agent-session-message-user .agent-session-message-meta:has(.common-command-message-menu) { align-items: flex-end; justify-content: flex-end; gap: 4px; min-height: 16px; line-height: 16px; }
 .common-command-message-menu .detail-more-menu-popover { min-width: 190px; line-height: normal; }
 .common-command-mobile-actions { display: grid; gap: 10px; }
 .common-command-mobile-actions > button { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 52px; padding: 0 14px; color: var(--ink); background: var(--surface-strong); border: 1px solid var(--line); border-radius: var(--radius-md); font: inherit; cursor: pointer; }
