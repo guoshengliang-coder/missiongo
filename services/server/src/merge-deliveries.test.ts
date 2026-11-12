@@ -178,7 +178,8 @@ describe("AND-423 explicit merge deliveries",()=>{
     expect(prompt).toContain("全量 list_release_candidates(includeUnscoped:true)");
     expect(prompt).toContain("不自动安装");
     expect(prompt).toContain("未选择发布也做只读调查，但不构建、安装或发布");
-    expect(prompt).toContain("实际合并后刷新主线和release:state");
+    expect(prompt).toContain("按operation核实实际合并或既有references后刷新主线和release:state");
+    expect(prompt).toContain("仅在原授权范围内一次准备");
     expect(prompt).toContain("启动快照不是部署凭据");
     expect(prompt).toContain("对象/结果/证据与验证缺口/下一步责任");
     expect(prompt).toContain("限定目标文件摘要和实际入口成功检查");

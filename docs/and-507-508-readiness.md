@@ -23,7 +23,7 @@ UI布局、浮层、业务状态或状态看板。原会话使用现有MarkdownT
 
 实现主要位于scripts/release-readiness.mjs、scripts/delivery-report.mjs、scripts/release-tool-files.mjs、
 原missiongo-release协调入口、安装器、release-preflight及服务端集成启动指令。
-Skill声明与服务端期望同步为5.71.0，内容摘要锁同时更新；没有修改正在运行的已安装Skill或服务。
+初次实施时Skill声明与服务端期望同步为5.71.0，后续与主线并行变更合并为5.72.0，内容摘要锁同时更新；没有修改正在运行的已安装Skill或服务。
 操作与输入契约见 [发布范围](release-coverage.md#集成启动就绪报告and-507)、
 [集成流程](merge-deliveries.md#启动就绪与逐项收尾and-507508) 和 [安装流程](install-release-tools.md)。
 
@@ -71,14 +71,16 @@ Skill声明与服务端期望同步为5.71.0，内容摘要锁同时更新；没
 升版清单沿现有实现区分：`patch_bumps`是released.json账本产物建议；Web缺口由`versions`的既有Web版本门禁给出，
 按其`npm run version:web -- patch`要求与其他账本产物一并准备首份版本PR，不把空的账本patch建议误读为Web无需升版。
 
-### 最终演练验证缺口
+### 初次交付时的演练验证缺口（历史记录）
 
 按既有flaky核查规则仅重跑安装副本演练一次，仍未通过：此次merge-deliveries与item-list负向控制已有效检出，
 claim-next负向控制的HTTP目标已超预算，但CPU校准relativeIqr=0.5198、valid=false，
 因此整体diagnosticOutcome仍为not_detected，不能冒充有效检出。未变更校准条件、性能预算或断言。
 普通大型合成数据测量通过，两次失败均清理成功；没有真实安装或生产写入。
 
-当前事实是：完整npm run check曾退出0，末次全部脚本单测272项通过，
+初次交付时的事实是：完整npm run check曾退出0，末次全部脚本单测272项通过，
 但最终安装副本演练的性能负向控制因校准噪声失败，含唯一一次重跑；不能概括为最终全部检查全绿。
 需要在校准有效的稳定执行环境复核这一演练，之后再核对待集成交付证据。
 本地提交只保存实现及真实验证结果，不意味着可合并、已发布或验收通过；两条条目保持处理中。
+
+后续用户授权三轮独立审计与补修，当前结果见 [三轮审计记录](and-507-508-audit.md)。以上失败是保留的历史证据，不覆盖后续真实重验结果。
