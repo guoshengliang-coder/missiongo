@@ -367,6 +367,21 @@ describe("planned integration batches",()=>{
     expect(q.deliveries[0]!.queue).toMatchObject({stage:"review",blocker:expect.any(String)});
     expect(()=>f.merges.publicationPreview(f.owner.id,f.item.productId,[{id:d.id,revision:d.revision}])).toThrow();
   });
+  it.each(["missing","null","unknown"])("keeps %s delivery rounds in review instead of silently archiving",async shape=>{
+    const f=await batchFixture(),d=f.deliveries[0]!;
+    f.act(f.plan);f.check(d.id);f.merged(d.id);
+    const event=f.store.getDeliveryRecords(f.item.key)[0]!;
+    const raw=f.db.prepare("SELECT payload_json FROM work_item_events WHERE id=?").get(event.id) as {payload_json:string};
+    const payload=JSON.parse(raw.payload_json);
+    if(shape==="missing")delete payload.roundKey;else payload.roundKey=shape==="null"?null:"unknown-round";
+    f.db.prepare("UPDATE work_item_events SET payload_json=? WHERE id=?").run(JSON.stringify(payload),event.id);
+    f.db.prepare("INSERT OR IGNORE INTO merge_display_dirty(kind,id) VALUES ('item',?)").run(f.item.id);
+    const q=f.merges.queue(f.item.productId,f.owner.id);
+    expect(q.counts.review).toBe(1);expect(q.counts.history??0).toBe(0);
+    expect(q.deliveries[0]!.queue).toMatchObject({stage:"review",blocker:"交付处理轮次待核实，请核对原交付。"});
+    expect(()=>f.merges.publicationPreview(f.owner.id,f.item.productId,[{id:d.id,revision:d.revision}])).toThrow();
+    expect(f.store.getWorkItem(f.item.key).status).toBe("development_complete");
+  });
   it("AND-469 shares current stages and preserves history when a new input clears completion",async()=>{
     const f=await batchFixture(), d=f.deliveries[0]!;
     const progress=()=>f.merges.sessionProgress(f.item.productId,f.owner.id);
@@ -1338,13 +1353,13 @@ describe("AND-511 two-step integration queue",()=>{
     try {
       const f=await mergedProject(["web"],path);
       const original=f.db.prepare("SELECT data_json FROM merge_deliveries WHERE id=?").get(f.d.id);
-      f.db.exec("DELETE FROM schema_migrations WHERE version=202611120900");
+      f.db.exec("DELETE FROM schema_migrations WHERE version=202611121223");
       f.db.prepare("UPDATE merge_delivery_projection SET data_json=json_set(data_json,'$.queue.stage','history')").run();
       await f.app.close();
       reopened=buildApp({databasePath:path,adminAccount:config,writeTools:"comments",statusCheckTime:false});
       expect(new MergeDeliveries(reopened.missionGoStore).queue(f.item.productId,f.owner.id).counts.release).toBe(1);
       expect(reopened.missionGoStore.database.connection.prepare("SELECT data_json FROM merge_deliveries WHERE id=?").get(f.d.id)).toEqual(original);
-      expect(reopened.missionGoStore.database.connection.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version=202611120900").get()).toMatchObject({count:1});
+      expect(reopened.missionGoStore.database.connection.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version=202611121223").get()).toMatchObject({count:1});
     } finally {await reopened?.close();rmSync(dir,{recursive:true,force:true});}
   });
   it("requires receipts for unselected but reviewed extra coverage before completing publication",async()=>{

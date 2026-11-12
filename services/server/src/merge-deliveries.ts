@@ -237,14 +237,16 @@ export class MergeDeliveries {
       for(const key of d.itemKeys) {
         const item=this.store.getWorkItem(key);
         const record=this.store.getDeliveryRecords(key,true).find(r=>r.completion&&sameCompletion(r.completion,{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`}));
-        const oldRound=Boolean(record && record.roundKey!==deliveryRound(this.db,this.store.workItemId(key)));
+        const knownRound=Boolean(record?.roundKey && this.store.getTimeline(key).some(e=>!e.historySourceKey&&e.id===record.roundKey));
+        if(record&&!knownRound)blocker??="交付处理轮次待核实，请核对原交付。";
+        const oldRound=Boolean(record && knownRound && record.roundKey!==deliveryRound(this.db,this.store.workItemId(key)));
         historical ||= oldRound;
         if(!oldRound && (!record || !record.published))currentPending=true;
         // Old rounds remain auditable, but can never be selected for a new handover.
         if(!oldRound)blocker??=this.itemBlocker(d,key,true);
         if(!record){blocker??="缺少本轮交付证据，请核对原交付。";complete=false;continue;}
         releases.push(...record.releases);
-        records.push({itemKey:key,developmentEventId:record.id,roundKey:record.roundKey,expectedRevision:item.revision??0});
+        if(knownRound)records.push({itemKey:key,developmentEventId:record.id,roundKey:record.roundKey,expectedRevision:item.revision??0});
         complete=complete&&record.published;
         if(record.requiredArtifacts===null)blocker??="发布范围待核实。";
         for(const a of record.requiredArtifacts??d.requiredArtifacts)byArtifact.set(a,(byArtifact.get(a)??true)&&record.releases.some(r=>r.artifact===a));
