@@ -6,6 +6,7 @@ const stamp = "2026-10-30T15:30:00.000Z";
 const modelName = "GPT-6.1 Sol（用于验证完整名称展示的长模型名称）";
 
 async function openConversation(page: Page) {
+  await page.clock.setFixedTime(new Date(stamp));
   const { productId } = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as { productId: string };
   const settings = { adjustable: true, mode: "plan", model: "fixture-model", requestedModel: "fixture-model", effort: "high" };
   const summary = {
@@ -74,7 +75,7 @@ for (const width of [320, 353, 390]) for (const theme of ["light", "dark"] as co
       await expect(row.locator("button.agent-settings-effort")).toBeHidden();
       const model = row.getByRole("combobox", { name: "模型", exact: true });
       const more = row.getByRole("button", { name: "更多操作", exact: true });
-      const attach = page.locator(".agent-chat-send-actions button[type=button]");
+      const attach = page.locator(".agent-chat-send-actions .common-command-add > summary");
       const send = page.locator(".agent-console-reply button[type=submit]");
       for (const large of [false, true]) {
         if (large) await page.locator("html").evaluate(node => node.setAttribute("data-font-scale", "large"));
