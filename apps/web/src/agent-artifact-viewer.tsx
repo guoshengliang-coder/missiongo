@@ -83,11 +83,16 @@ function ArtifactViewer({ sessionId, messageId, initialHref, links, onClose }: {
   const { t } = useI18n();
   const [index, setIndex] = useState(() => Math.max(0, links.indexOf(initialHref)));
   const navigation = useRef<HTMLElement>(null);
+  const closeButton = useRef<HTMLButtonElement>(null);
+  const retainFocus = () => (navigation.current ?? closeButton.current)?.focus({ preventScroll: true });
   const navigate = (direction: "previous" | "next") => {
-    // A focused button becoming disabled can blur to the inert background.
-    // Keep keyboard navigation in this stable layer when reaching an edge.
-    if (navigation.current?.contains(document.activeElement)
-      && (direction === "previous" ? index <= 1 : index >= links.length - 2)) navigation.current.focus({ preventScroll: true });
+    const focused = document.activeElement;
+    const leavingSlide = focused instanceof Element && navigation.current?.parentElement?.contains(focused)
+      && !focused.closest(".artifact-viewer > header, .artifact-navigation");
+    // Slide controls are removed during navigation; edge buttons become disabled.
+    // Both must hand focus to a stable part of the same modal before replacement.
+    if (leavingSlide || (navigation.current?.contains(focused)
+      && (direction === "previous" ? index <= 1 : index >= links.length - 2))) retainFocus();
     setIndex(current => Math.max(0, Math.min(links.length - 1, current + (direction === "previous" ? -1 : 1))));
   };
   return <OverlayDialog className="artifact-backdrop" onClose={onClose} aria-label={t("artifactPreview")}
@@ -100,8 +105,8 @@ function ArtifactViewer({ sessionId, messageId, initialHref, links, onClose }: {
       }
     }}>
     <div className="artifact-viewer">
-      <header><strong tabIndex={0}>{localArtifactPath(links[index]!)?.split("/").at(-1) ?? t("artifactPreview")}</strong><button className="icon-button" type="button" onClick={onClose} aria-label={t("close")}><X size={20} /></button></header>
-      <ArtifactSlide key={links[index]} sessionId={sessionId} messageId={messageId} href={links[index]!} onNavigate={navigate} />
+      <header><strong tabIndex={0}>{localArtifactPath(links[index]!)?.split("/").at(-1) ?? t("artifactPreview")}</strong><button ref={closeButton} className="icon-button" type="button" onClick={onClose} aria-label={t("close")}><X size={20} /></button></header>
+      <ArtifactSlide key={links[index]} sessionId={sessionId} messageId={messageId} href={links[index]!} onNavigate={navigate} onRetainFocus={retainFocus} />
       {links.length > 1 && <footer ref={navigation} tabIndex={-1} className="artifact-navigation" aria-label={t("artifactNavigation")}>
         <button className="secondary-button" type="button" disabled={index === 0} onClick={() => navigate("previous")} aria-label={t("previousMedia")}><ChevronLeft size={20} /></button>
         <div aria-live="polite" aria-atomic="true"><strong>{index + 1} / {links.length}</strong><span>{t("artifactMessageOnly")}</span></div>
@@ -112,25 +117,28 @@ function ArtifactViewer({ sessionId, messageId, initialHref, links, onClose }: {
 }
 
 /** Only the slide remounts. The dialog keeps its history layer and original opener. */
-function ArtifactSlide({ sessionId, messageId, href, onNavigate }: {
-  sessionId: string; messageId: string; href: string; onNavigate: (direction: "previous" | "next") => void;
+function ArtifactSlide({ sessionId, messageId, href, onNavigate, onRetainFocus }: {
+  sessionId: string; messageId: string; href: string; onNavigate: (direction: "previous" | "next") => void; onRetainFocus: () => void;
 }) {
   const { t } = useI18n();
   const { request, state, bundle, status, waiting, retry } = useArtifact(sessionId, messageId, href);
   const failed = request.isError || state.isError || bundle.isError || status?.status === "failed";
+  const retryWithFocus = () => { onRetainFocus(); return retry(); };
   return <>
-    {failed ? <div className="artifact-status" role="alert"><p>{t(errorKeys[status?.error ?? ""] ?? "artifactFailed")}</p>{status?.errorResource && artifactResourceName(status.errorResource) && <p>{t("artifactProblemResource", { name: status.errorResource })}</p>}<button className="secondary-button" type="button" onClick={() => void retry()}><RotateCcw size={16} />{t("retry")}</button></div>
-      : bundle.data ? <ArtifactContent bundle={bundle.data} onNavigate={onNavigate} previewUrl={`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(status!.id)}/preview`} />
+    {failed ? <div className="artifact-status" role="alert" tabIndex={0}><p>{t(errorKeys[status?.error ?? ""] ?? "artifactFailed")}</p>{status?.errorResource && artifactResourceName(status.errorResource) && <p>{t("artifactProblemResource", { name: status.errorResource })}</p>}<button className="secondary-button" type="button" onClick={() => void retryWithFocus()}><RotateCcw size={16} />{t("retry")}</button></div>
+      : bundle.data ? <ArtifactContent bundle={bundle.data} onNavigate={onNavigate} onRetry={retryWithFocus} previewUrl={`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(status!.id)}/preview`} />
       : <div className="artifact-status" role="status"><LoaderCircle className="spin" size={24} /><p>{t(waiting ? "artifactWaiting" : "artifactLoading")}</p></div>}
   </>;
 }
 
-function ArtifactContent({ bundle, previewUrl, onNavigate }: { bundle: AgentArtifactBundle; previewUrl: string; onNavigate: (direction: "previous" | "next") => void }) {
+function ArtifactContent({ bundle, previewUrl, onNavigate, onRetry }: { bundle: AgentArtifactBundle; previewUrl: string; onNavigate: (direction: "previous" | "next") => void; onRetry: () => Promise<void> }) {
   const { t } = useI18n();
   const entry = bundle.files.find((file) => file.name === bundle.entry)!;
   const [url, setUrl] = useState("");
   const [imageFailed, setImageFailed] = useState(false);
   const [imageAttempt, setImageAttempt] = useState(0);
+  const [imageRetrying, setImageRetrying] = useState(false);
+  const imageUrl = useMemo(() => entry.contentType.startsWith("image/") ? artifactDataUrl(entry) : undefined, [entry]);
   const html = useMemo(() => entry.contentType === "text/html" ? artifactHtml(bundle) : undefined, [entry, bundle]);
   useEffect(() => {
     const bytes = Uint8Array.from(atob(entry.base64), (c) => c.charCodeAt(0));
@@ -140,12 +148,16 @@ function ArtifactContent({ bundle, previewUrl, onNavigate }: { bundle: AgentArti
   }, [entry, html]);
   return <>
     <div className="artifact-toolbar"><span>{t("artifactSaved")}</span><a className="secondary-button" href={url || undefined} download={entry.name.split("/").at(-1)}><Download size={16} />{t("download")}</a></div>
-    {Boolean(bundle.skippedResources?.length) && <div className="artifact-help" role="status">{t("artifactSkippedHelp")}<ul>{bundle.skippedResources!.map(name => <li key={name}>{name}</li>)}</ul></div>}
+    {Boolean(bundle.skippedResources?.length) && <div className="artifact-help" role="status" tabIndex={0}>{t("artifactSkippedHelp")}<ul>{bundle.skippedResources!.map(name => <li key={name}>{name}</li>)}</ul></div>}
     {html !== undefined ? <><p className="artifact-help">{t("artifactHtmlHelp")}</p><iframe title={entry.name} sandbox="allow-scripts" referrerPolicy="no-referrer" src={previewUrl} onLoad={(event) => {
         event.currentTarget.contentWindow?.postMessage({ type: "missiongo-artifact-preview", html }, "*");
       }} /></>
-      : entry.contentType.startsWith("image/") ? <div className="artifact-image">{imageFailed ? <div className="artifact-status" role="alert"><p>{t("agentImageUnavailable")}</p><button className="secondary-button" type="button" onClick={() => { setImageFailed(false); setImageAttempt(value => value + 1); }}>{t("retry")}</button></div>
-        : url && <ZoomableImage key={imageAttempt} src={url} alt={entry.name} onSwipe={onNavigate} onError={() => setImageFailed(true)} />}</div>
+      : entry.contentType.startsWith("image/") ? <div className="artifact-image">{imageFailed ? <div className="artifact-status" role="alert" tabIndex={0}><p>{t("agentImageUnavailable")}</p><button className="secondary-button" type="button" disabled={imageRetrying} onClick={async () => {
+          setImageRetrying(true);
+          try { await onRetry(); setImageFailed(false); setImageAttempt(value => value + 1); }
+          finally { setImageRetrying(false); }
+        }}>{t("retry")}</button></div>
+        : imageUrl && <ZoomableImage key={imageAttempt} src={imageUrl} alt={entry.name} onSwipe={onNavigate} onError={() => setImageFailed(true)} />}</div>
       : entry.contentType === "application/pdf" ? <iframe title={entry.name} sandbox="allow-scripts allow-same-origin" src={url || undefined} />
       : entry.contentType === "text/markdown" ? <div className="artifact-document"><MarkdownText resolveResourceUrl={(href) => {
         try {
