@@ -1420,6 +1420,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 /* A wide modal whose content has no scroller of its own, like Agent management. */
 .modal.wide.scrolls { overflow-y: auto; }
 .modal > header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
+.modal-header-actions { display: flex; align-items: center; flex-shrink: 0; margin-inline-start: auto; margin-inline-end: 8px; gap: 8px; }
 .modal h2 { margin: 0; font-size: 25px; letter-spacing: -0.035em; }
 .product-manager { height: min(650px, calc(100vh - 150px)); height: min(650px, calc(100dvh - 150px)); min-height: 430px; display: grid; grid-template-columns: 220px minmax(0, 1fr); overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-lg); }
 .product-manager-list { display: flex; flex-direction: column; gap: 5px; padding: 15px 11px; overflow-y: auto; background: var(--surface-inset); border-right: 1px solid var(--line); }
@@ -2114,6 +2115,16 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .detail-toolbar-actions { gap: 4px; }
   .detail-back-button { flex: 0 0 44px; width: 44px; padding: 0; font-size: 0; }
   .detail-toolbar code { display: none; }
+  /* A phone detail is a full-screen sub-page. Its topbar controls -- product
+     switcher, search, attention entry -- all act on the list, and keeping the
+     bar would stack a second 64px row above the item toolbar. One back step
+     returns to the list, whose topbar still carries them. */
+  .app-shell.detail-open > .topbar { display: none; }
+  .app-shell.detail-open .workspace.detail-open { height: 100vh; height: 100dvh; }
+  /* The hidden topbar used to supply the safe area; the item toolbar is now
+     the first row, so it takes that padding and keeps its 62px body. */
+  .app-shell.detail-open .detail-toolbar { min-height: calc(62px + var(--safe-top)); padding-top: calc(9px + var(--safe-top)); }
+  .app-shell.detail-open .offline-banner { top: calc(70px + var(--safe-top)); }
   .field-row, .classification-row, .context-grid, .report-field-grid, .report-detail-grid, .diagnostic-context-grid { grid-template-columns: 1fr; }
   .capture-type-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .selected-preview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }

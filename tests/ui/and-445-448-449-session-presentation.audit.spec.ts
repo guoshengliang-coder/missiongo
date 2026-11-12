@@ -1,10 +1,12 @@
+import { queueRoute } from "./integration-queue-fixture";
 import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 
 const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as {
   productId: string; detailKey: string;
 };
-const stamp = new Date().toISOString();
+const stamp = "2026-11-12T00:00:00Z";
+test.beforeEach(async({page})=>{await page.clock.setFixedTime(new Date(stamp));});
 
 type Kind = "waiting" | "claimed" | "integration";
 
@@ -23,11 +25,11 @@ async function mockSession(page: Page, kind: Kind, id = `and449-${kind}`) {
     turnState: { turnActive: kind !== "waiting", waitingForInput: kind === "waiting" } };
   const detail = { ...common, messages: [{ id: "answer", sourceId: "answer", role: "agent", text: "已读取本批条目与 PR。", occurredAt: stamp }] };
   await page.route("**/api/v1/agent-sessions**", async route => {
-    if (route.request().method() !== "GET") return route.fulfill({ status: 204 });
-    await route.fulfill({ json: new URL(route.request().url()).pathname === "/api/v1/agent-sessions" ? { sessions: [common] } : detail });
+    if (route.request().method() !== "GET") return queueRoute(route).fulfill({ status: 204 });
+    await queueRoute(route).fulfill({ json: new URL(route.request().url()).pathname === "/api/v1/agent-sessions" ? { sessions: [common] } : detail });
   });
   if (kind === "integration") {
-    await page.route(/\/merge-deliveries(?:\?.*)?$/, route => route.fulfill({ json: {
+    await page.route(/\/(?:merge-deliveries|integration-queue)(?:\?.*)?$/, route => queueRoute(route).fulfill({ json: {
       deliveries: [{ id: "and449-delivery", productId: fixture.productId, sessionId: id, revision: "frozen", state: "batched",
         summary: "会话呈现调整", validation: "本地检查通过", itemKeys: [fixture.detailKey, "AND-448", "AND-445"],
         head: "a".repeat(40), requiredArtifacts: ["web"], pullRequestUrl: "https://example.test/pr/1",

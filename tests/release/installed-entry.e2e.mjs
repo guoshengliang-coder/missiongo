@@ -106,8 +106,8 @@ async function fixture() {
   const statePath = join(directory, "state.json"), tracePath = join(directory, "commands.jsonl"), boundary = join(directory, "first-write-attempt"); save(statePath, {});
   const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
   const header = `#!${process.execPath}\nconst fs=require('node:fs'),cp=require('node:child_process');const args=process.argv.slice(2);const state=JSON.parse(fs.readFileSync(${JSON.stringify(statePath)}));fs.appendFileSync(${JSON.stringify(tracePath)},JSON.stringify({tool:require('node:path').basename(process.argv[1]),args,cwd:process.cwd()})+'\\n');\n`;
-  writeFileSync(join(bin, "git"), header + `if(args.includes('fetch'))process.exit(0); if(args.includes('push'))process.exit(92);process.exit(cp.spawnSync(${JSON.stringify(realGit)},args,{stdio:'inherit'}).status??1);`, { mode: 0o700 });
-  writeFileSync(join(bin, "gh"), header + `if(args[0]!=='api'||!args.some(a=>a.includes('/check-runs')))process.exit(92);const runs=['web-and-server','ui','android','macos','linux-node'].map((name,id)=>({id,name,status:'completed',conclusion:state.ciFailure?'failure':'success'}));console.log(args.includes('--jq')?runs.map(r=>r.status+'/'+r.conclusion).join(' '):JSON.stringify([{check_runs:runs}]));`, { mode: 0o700 });
+  writeFileSync(join(bin, "git"), header + `if(args.includes('fetch'))process.exit(0); if(args.includes('ls-remote')){console.log(${JSON.stringify(head + ' refs/heads/main')});process.exit(0);} if(args.includes('push'))process.exit(92);process.exit(cp.spawnSync(${JSON.stringify(realGit)},args,{stdio:'inherit'}).status??1);`, { mode: 0o700 });
+  writeFileSync(join(bin, "gh"), header + `if(args[0]==='pr'&&args[1]==='view'&&args[2]==='https://github.com/fixture/missiongo/pull/1'){console.log(JSON.stringify({state:'OPEN',headRefOid:${JSON.stringify(head)},baseRefName:'main'}));process.exit(0);} if(args[0]!=='api'||!args.some(a=>a.includes('/check-runs')))process.exit(92);const runs=['web-and-server','ui','android','macos','linux-node'].map((name,id)=>({id,name,status:'completed',conclusion:state.ciFailure?'failure':'success'}));console.log(args.includes('--jq')?runs.map(r=>r.status+'/'+r.conclusion).join(' '):JSON.stringify([{check_runs:runs}]));`, { mode: 0o700 });
   // Emulate only read-only remote responses. No command is sent to a shell or
   // an actual host. Unknown commands are refused and remain visible in the trace.
   const remoteFiles = {
@@ -154,6 +154,42 @@ test("installed real entry plans read-only, retains gates, detects historical mu
     const plan = completePlan(f.run("plan")); assert.equal(plan.coverage.ready, true);
     assert.deepEqual(["product.json", "released.json", "fixture-versions.json"].map(p => readFileSync(join(f.checkout, p), "utf8")), before);
     assert.equal(existsSync(f.boundary), false);
+    // Exercise new installed read-only actions from the same nested checkout.
+    const batchPath = join(f.directory, "batch.json");
+    save(batchPath, { batch: { id: "fixture-batch", productId: f.productId, deliveries: ["readiness-fixture"], entries: [{ id: "readiness-fixture", repository: "https://github.com/fixture/missiongo", head: f.head, requiredArtifacts: ["web"], pullRequest: 1, targetBranch: "main" }] } });
+    const readiness = f.run("readiness", "--batch", batchPath);
+    const investigation = JSON.parse(readiness.stdout);
+    assert.equal(investigation.kind, "integration_readiness");
+    assert.equal(investigation.head, f.head);
+    assert.equal(investigation.checks.find(c => c.name === "main").status, "observed");
+    assert.equal(investigation.checks.find(c => c.name === "checkout_consistency").status, "observed");
+    assert.equal(investigation.checks.find(c => c.name === "prospective:readiness-fixture").status, "observed");
+    assert.ok(investigation.checks.some(c => c.name === "tools" && c.value.status === "matching"));
+    assert.ok(investigation.checks.some(c => c.name === "versions"));
+    assert.ok(investigation.checks.some(c => c.name === "coverage"));
+    assert.equal(existsSync(f.boundary), false);
+    const reportPath = join(f.directory, "report.json");
+    save(reportPath, { schemaVersion: 1, productId: f.productId, repository: "https://github.com/fixture/missiongo", head: f.head,
+      scope: ["AND-508:fixture"], items: [{ identity: "AND-508:fixture", productId: f.productId, requiredArtifacts: [],
+        noReleaseReason: "Fixture tool change", completion: { kind: "commit", commit: f.head, targetBranch: "main" }, itemStatus: "pending_verification" }] });
+    const report = spawnSync("python3", [f.entry, "report", "--input", reportPath, "--format", "markdown"], { cwd: join(f.checkout, "scripts"), env: f.env, encoding: "utf8" });
+    assert.equal(report.status, 0, report.stdout + report.stderr);
+    const reorderedReport = spawnSync("python3", [f.entry, "report", "--format", "markdown", "--input", reportPath], { cwd: join(f.checkout, "scripts"), env: f.env, encoding: "utf8" });
+    assert.equal(reorderedReport.status, 0, reorderedReport.stderr);
+    const reportInput = JSON.parse(readFileSync(reportPath));
+    const wrongProduct = { ...reportInput, productId: "unrelated-product", items: reportInput.items.map(item => ({ ...item, productId: "unrelated-product" })) };
+    save(reportPath, wrongProduct);
+    const wrongReport = spawnSync("python3", [f.entry, "report", "--input", reportPath], { cwd: join(f.checkout, "scripts"), env: f.env, encoding: "utf8" });
+    assert.notEqual(wrongReport.status, 0); assert.match(wrongReport.stderr, /binding differs/); save(reportPath, reportInput);
+    const installedReport = join(f.tools, "delivery-report.mjs"), reportSource = readFileSync(installedReport);
+    writeFileSync(installedReport, "process.exit(0);\n");
+    const noReport = spawnSync("python3", [f.entry, "report", "--input", reportPath], { cwd: join(f.checkout, "scripts"), env: f.env, encoding: "utf8" });
+    assert.notEqual(noReport.status, 0); assert.match(noReport.stderr, /Incomplete read-only report/); writeFileSync(installedReport, reportSource);
+    assert.match(report.stdout, /AND-508:fixture/);
+    assert.match(report.stdout, /无需产品发布/);
+    assert.match(report.stdout, /人工验收人/);
+    assert.equal(existsSync(f.boundary), false);
+    assert.deepEqual(["product.json", "released.json", "fixture-versions.json"].map(p => readFileSync(join(f.checkout, p), "utf8")), before);
     const scoped = completePlan(f.run("plan", "--selection", f.selectionPath, "--only-artifacts", "web,androidSdk", "--scope-reason", "User chose Web and SDK"));
     const pin = scoped.coverage.selection.digest;
     assert.match(pin, /^[a-f0-9]{64}$/);
@@ -164,7 +200,10 @@ test("installed real entry plans read-only, retains gates, detects historical mu
     // complete semantic output as well as an exit code.
     const stateModule = join(f.checkout, "scripts/release-state.mjs"), originalState = readFileSync(stateModule);
     writeFileSync(stateModule, Buffer.concat([originalState, Buffer.from("\nprocess.exit(0);\n")]));
-    assert.throws(() => completePlan(f.run("plan")), /complete coverage output/); writeFileSync(stateModule, originalState);
+    assert.throws(() => completePlan(f.run("plan")), /complete coverage output/);
+    const noReadiness = f.run("readiness", "--batch", batchPath);
+    assert.notEqual(noReadiness.status, 0); assert.match(noReadiness.stderr, /Incomplete read-only report/);
+    writeFileSync(stateModule, originalState);
     // Real OS lock, not a fake lock implementation.
     const busy = spawnSync("python3", ["-c", "import fcntl,subprocess,sys; f=open(sys.argv[1],'w'); fcntl.flock(f,fcntl.LOCK_EX); sys.exit(subprocess.run(sys.argv[2:]).returncode)", join(f.env.XDG_CONFIG_HOME, "missiongo/release.lock"), "python3", f.entry, "check", "--candidates", f.candidatesPath], { cwd: f.checkout, env: f.env, encoding: "utf8" });
     assert.equal(busy.status, 75, busy.stderr);

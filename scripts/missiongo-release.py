@@ -22,9 +22,32 @@ sys.path.insert(0, str(TOOLS))
 from release_coverage_options import coverage_options
 
 
+def run_readonly(command, root, action, options):
+    # Preserve the exact helper output, but an import-time exit(0) must not look
+    # like a completed investigation. No output is synthesized or transformed.
+    result = subprocess.run(command, cwd=str(root), text=True, capture_output=True)
+    sys.stdout.write(result.stdout)
+    sys.stderr.write(result.stderr)
+    if result.returncode:
+        raise subprocess.CalledProcessError(result.returncode, command)
+    index = options.index("--format") if "--format" in options else -1
+    markdown = action == "report" and index >= 0 and index + 1 < len(options) and options[index + 1] == "markdown"
+    if markdown:
+        complete = result.stdout.startswith("逐项交付结果") and "|---|---|---|---|" in result.stdout
+    else:
+        try:
+            value = json.loads(result.stdout)
+            key = "checks" if action == "readiness" else "items"
+            complete = isinstance(value, dict) and value.get("schemaVersion") == 1 and value.get("kind") == ("integration_readiness" if action == "readiness" else "delivery_report") and isinstance(value.get(key), list) and len(value[key]) > 0
+        except (ValueError, TypeError):
+            complete = False
+    if not complete:
+        raise ValueError("Incomplete read-only report; inspect the helper and refresh evidence")
+
+
 def main():
     action = sys.argv[1] if len(sys.argv) > 1 else "status"
-    allowed = {"status", "check", "deploy", "publish:macos", "publish:android-internal", "publish:android-sdk", "publish:linux", "plan"}
+    allowed = {"status", "check", "deploy", "publish:macos", "publish:android-internal", "publish:android-sdk", "publish:linux", "plan", "readiness", "report"}
     if action not in allowed:
         raise ValueError("Usage: missiongo-release " + "|".join(sorted(allowed)))
     root = Path(git(Path.cwd(), "rev-parse", "--show-toplevel"))
@@ -39,6 +62,11 @@ def main():
     if os.environ.get("MISSIONGO_COORDINATOR_ENTRY") != entry:
         os.environ["MISSIONGO_COORDINATOR_ENTRY"] = entry
         os.execv(sys.executable, [sys.executable, str(TOOLS / "release-lock.py"), "--", sys.executable, entry, *sys.argv[1:]])
+    if action in {"readiness", "report"}:
+        # Read-only helpers own strict input parsing. Never fall through to deploy.
+        helper = "release-readiness.mjs" if action == "readiness" else "delivery-report.mjs"
+        run_readonly(["node", str(TOOLS / helper), "--root", str(root), *sys.argv[2:]], root, action, sys.argv[2:])
+        return
     if action.startswith("publish:"):
         artifact = {"publish:macos": "macosApp", "publish:android-internal": "androidApp", "publish:android-sdk": "androidSdk", "publish:linux": "linuxCli"}[action]
         run(["node", str(TOOLS / "release-preflight.mjs"), "--root", str(root), "--build", artifact], root)

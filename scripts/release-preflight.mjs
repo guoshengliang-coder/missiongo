@@ -42,14 +42,16 @@ export function checkBuild(root, artifact, { fetch = true } = {}) {
   }
 }
 
-export function checkArtifacts(root, live, { publishApk = true } = {}) {
+export function checkArtifacts(root, live, { publishApk = true, onlyArtifacts } = {}) {
   const ledger = JSON.parse(readFileSync(join(root, "released.json"), "utf8")).artifacts;
   const downloads = join(root, "apps/web/public/downloads");
   const result = [];
+  const includes = name => !onlyArtifacts || onlyArtifacts.includes(name);
   for (const [key, stem, extension, enabled] of [
     ["androidApp", "missiongo-android-latest", "apk", publishApk],
     ["macosApp", "missiongo-macos-latest", "zip", true],
   ]) {
+    if (!includes(key)) continue;
     const record = ledger?.[key];
     if (!record || !VERSION.test(record.version) || !SHA.test(record.commit)) throw new Error(`${key}: invalid release ledger.`);
     const binary = join(downloads, `${stem}.${extension}`);
@@ -78,32 +80,36 @@ export function checkArtifacts(root, live, { publishApk = true } = {}) {
       result.push({ artifact: key, mode: "inherit", ...inherited, sourceVerified: inherited.sourceCommit === record.commit });
     }
   }
-  const sdk = ledger?.androidSdk;
-  if (!sdk || !VERSION.test(sdk.version) || !SHA.test(sdk.commit)) throw new Error("androidSdk: invalid release ledger.");
-  const stem = `missiongo-feedback-${sdk.version}`;
-  const directory = join(root, "apps/web/public/maven/io/missiongo/missiongo-feedback", sdk.version);
-  if (existsSync(directory)) {
-    const pom = join(directory, `${stem}.pom`);
-    const aar = join(directory, `${stem}.aar`);
-    if (!present(pom) || !present(aar) || !readFileSync(pom, "utf8").includes(`<version>${sdk.version}</version>`)) {
-      throw new Error(`androidSdk: incomplete Maven publication for ${sdk.version}; both POM and AAR are required.`);
-    }
-    for (const file of [pom, aar]) {
-      if (!present(`${file}.sha256`) || readFileSync(`${file}.sha256`, "utf8").trim() !== digest(file)) {
-        throw new Error(`androidSdk: missing or mismatched SHA-256 for ${file.split("/").pop()}.`);
+  if (includes("androidSdk")) {
+    const sdk = ledger?.androidSdk;
+    if (!sdk || !VERSION.test(sdk.version) || !SHA.test(sdk.commit)) throw new Error("androidSdk: invalid release ledger.");
+    const stem = `missiongo-feedback-${sdk.version}`;
+    const directory = join(root, "apps/web/public/maven/io/missiongo/missiongo-feedback", sdk.version);
+    if (existsSync(directory)) {
+      const pom = join(directory, `${stem}.pom`);
+      const aar = join(directory, `${stem}.aar`);
+      if (!present(pom) || !present(aar) || !readFileSync(pom, "utf8").includes(`<version>${sdk.version}</version>`)) {
+        throw new Error(`androidSdk: incomplete Maven publication for ${sdk.version}; both POM and AAR are required.`);
       }
+      for (const file of [pom, aar]) {
+        if (!present(`${file}.sha256`) || readFileSync(`${file}.sha256`, "utf8").trim() !== digest(file)) {
+          throw new Error(`androidSdk: missing or mismatched SHA-256 for ${file.split("/").pop()}.`);
+        }
+      }
+      if (sdk.sha256 && sdk.sha256 !== digest(aar)) throw new Error("androidSdk: AAR differs from the immutable release record.");
+      git(root, "merge-base", "--is-ancestor", sdk.commit, "HEAD");
+      result.push({ artifact: "androidSdk", mode: "local", version: sdk.version, sourceCommit: sdk.commit, pomSha256: digest(pom), aarSha256: digest(aar) });
+    } else if (live?.androidSdk?.version === sdk.version && live.androidSdk.sourceCommit === sdk.commit && live.androidSdk.aarSha256 && (!sdk.sha256 || sdk.sha256 === live.androidSdk.aarSha256)) {
+      result.push({ artifact: "androidSdk", mode: "inherit", ...live.androidSdk });
+    } else {
+      throw new Error(`androidSdk: no complete local or live Maven publication for ${sdk.version}.`);
     }
-    if (sdk.sha256 && sdk.sha256 !== digest(aar)) throw new Error("androidSdk: AAR differs from the immutable release record.");
-    git(root, "merge-base", "--is-ancestor", sdk.commit, "HEAD");
-    result.push({ artifact: "androidSdk", mode: "local", version: sdk.version, sourceCommit: sdk.commit, pomSha256: digest(pom), aarSha256: digest(aar) });
-  } else if (live?.androidSdk?.version === sdk.version && live.androidSdk.sourceCommit === sdk.commit && live.androidSdk.aarSha256 && (!sdk.sha256 || sdk.sha256 === live.androidSdk.aarSha256)) {
-    result.push({ artifact: "androidSdk", mode: "inherit", ...live.androidSdk });
-  } else {
-    throw new Error(`androidSdk: no complete local or live Maven publication for ${sdk.version}.`);
   }
-  if (ledger.linuxCli && !linuxReleaseTools) throw new Error("Current checkout lacks Linux release verification");
-  const linux = linuxReleaseTools?.checkLinuxArtifacts(root, live?.linuxCli);
-  if (linux) result.push({ artifact: "linuxCli", ...linux });
+  if (includes("linuxCli")) {
+    if (ledger.linuxCli && !linuxReleaseTools) throw new Error("Current checkout lacks Linux release verification");
+    const linux = linuxReleaseTools?.checkLinuxArtifacts(root, live?.linuxCli);
+    if (linux) result.push({ artifact: "linuxCli", ...linux });
+  }
   return result;
 }
 
@@ -143,7 +149,7 @@ function patchRaise(current, published, assertAccepted) {
 }
 
 /** Same verdicts as `npm run release:state`, surfaced during --coverage-plan. */
-function planVersionGaps(root, live) {
+export function planVersionGaps(root, live) {
   const gaps = [];
   const web = live?.web;
   if (web?.commit && !webVersionTools) {
