@@ -1,5 +1,5 @@
 import { OverlayDialog } from "./overlay";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Download, LoaderCircle, RotateCcw, X } from "lucide-react";
 import { localArtifactLinks, localArtifactImageLinks, localArtifactPath, artifactResourceName, type AgentArtifactBundle } from "@missiongo/domain";
@@ -82,7 +82,14 @@ function ArtifactViewer({ sessionId, messageId, initialHref, links, onClose }: {
 }) {
   const { t } = useI18n();
   const [index, setIndex] = useState(() => Math.max(0, links.indexOf(initialHref)));
-  const navigate = (direction: "previous" | "next") => setIndex(current => Math.max(0, Math.min(links.length - 1, current + (direction === "previous" ? -1 : 1))));
+  const navigation = useRef<HTMLElement>(null);
+  const navigate = (direction: "previous" | "next") => {
+    // A focused button becoming disabled can blur to the inert background.
+    // Keep keyboard navigation in this stable layer when reaching an edge.
+    if (navigation.current?.contains(document.activeElement)
+      && (direction === "previous" ? index <= 1 : index >= links.length - 2)) navigation.current.focus({ preventScroll: true });
+    setIndex(current => Math.max(0, Math.min(links.length - 1, current + (direction === "previous" ? -1 : 1))));
+  };
   return <OverlayDialog className="artifact-backdrop" onClose={onClose} aria-label={t("artifactPreview")}
     onKeyDown={event => {
       if (links.length < 2 || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
@@ -95,7 +102,7 @@ function ArtifactViewer({ sessionId, messageId, initialHref, links, onClose }: {
     <div className="artifact-viewer">
       <header><strong tabIndex={0}>{localArtifactPath(links[index]!)?.split("/").at(-1) ?? t("artifactPreview")}</strong><button className="icon-button" type="button" onClick={onClose} aria-label={t("close")}><X size={20} /></button></header>
       <ArtifactSlide key={links[index]} sessionId={sessionId} messageId={messageId} href={links[index]!} onNavigate={navigate} />
-      {links.length > 1 && <footer className="artifact-navigation" aria-label={t("artifactNavigation")}>
+      {links.length > 1 && <footer ref={navigation} tabIndex={-1} className="artifact-navigation" aria-label={t("artifactNavigation")}>
         <button className="secondary-button" type="button" disabled={index === 0} onClick={() => navigate("previous")} aria-label={t("previousMedia")}><ChevronLeft size={20} /></button>
         <div aria-live="polite" aria-atomic="true"><strong>{index + 1} / {links.length}</strong><span>{t("artifactMessageOnly")}</span></div>
         <button className="secondary-button" type="button" disabled={index === links.length - 1} onClick={() => navigate("next")} aria-label={t("nextMedia")}><ChevronRight size={20} /></button>

@@ -84,6 +84,9 @@ for (const panel of [false, true]) test(`mixed message gallery preserves context
   await previous.click();
   await expect(count(page)).toHaveText("1 / 4");
   await expect(previous).toBeDisabled();
+  await page.keyboard.press("ArrowRight");
+  await expect(count(page)).toHaveText("2 / 4");
+  await previous.click();
   await expect(dialog(page).locator(".zoomable-image")).toBeVisible();
   await dialog(page).getByRole("button", { name: "关闭", exact: true }).focus();
   await page.keyboard.press("ArrowRight");
