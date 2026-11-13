@@ -7,7 +7,8 @@ type Anchor = {id:string; top:number};
  * have an anchor in useAgentHistory and must not be compensated twice. */
 export function useTranscriptAnchor(container: RefObject<HTMLDivElement | null>, scope: string, followLatest: boolean,
   historyRevision: number, messages: readonly AgentSessionMessage[], receiptSignature = "") {
-  const previous = useRef<{scope:string; revision:number; anchors:Anchor[]} | null>(null);
+  const previous = useRef<{scope:string; revision:number; anchors:Anchor[];
+    messages:readonly AgentSessionMessage[]; receiptSignature:string} | null>(null);
   const remember = useCallback(() => {
     const box = container.current;
     if (!box) { previous.current = null; return; }
@@ -19,11 +20,14 @@ export function useTranscriptAnchor(container: RefObject<HTMLDivElement | null>,
       anchors.push({id:element.dataset.agentMessageId!,top:rect.top-top});
       if (anchors.length === 3) break;
     }
-    previous.current = {scope, revision:historyRevision, anchors};
-  }, [container, scope, historyRevision]);
+    previous.current = {scope, revision:historyRevision, anchors, messages, receiptSignature};
+  }, [container, scope, historyRevision, messages, receiptSignature]);
   useLayoutEffect(() => {
     const box = container.current;
-    if (box && !followLatest && previous.current?.scope === scope && previous.current.revision === historyRevision) {
+    // A follow-mode change can be an intermediate event of an explicit smooth
+    // scroll. Only compensate changed content, never interrupt that navigation.
+    if (box && !followLatest && previous.current?.scope === scope && previous.current.revision === historyRevision
+      && (previous.current.messages !== messages || previous.current.receiptSignature !== receiptSignature)) {
       const elements = [...box.querySelectorAll<HTMLElement>("[data-agent-message-id]")];
       for (const anchor of previous.current.anchors) {
         const element = elements.find(node => node.dataset.agentMessageId === anchor.id);
