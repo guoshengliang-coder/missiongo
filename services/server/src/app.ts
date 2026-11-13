@@ -2569,10 +2569,26 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.get("/api/v1/products/:productId/integration-queue",async request=>{
     const {productId}=request.params as {productId:string};requireProductPermission(request,productId,"view");
     const q=request.query as {stage?:string;beforeSequence?:string};
-    if(q.stage&&!['all','merge','release','review','history'].includes(q.stage))throw invalidInput("Invalid queue stage.");
+    if(q.stage&&!['all','merge','release','review','reviewed','history'].includes(q.stage))throw invalidInput("Invalid queue stage.");
     const before=q.beforeSequence===undefined?undefined:Number(q.beforeSequence);
     if(before!==undefined&&(!Number.isSafeInteger(before)||before<1))throw invalidInput("Invalid queue cursor.");
-    return merges.queue(productId,requireAccountId(request),q.stage as 'all'|'merge'|'release'|'review'|'history'|undefined,before);
+    return merges.queue(productId,requireAccountId(request),q.stage as 'all'|'merge'|'release'|'review'|'reviewed'|'history'|undefined,before);
+  });
+  app.get("/api/v1/merge-deliveries/:id/review",async request=>{
+    const {id}=request.params as {id:string};requireProductPermission(request,merges.product(id),"view");
+    return merges.reviewContext(requireAccountId(request),id);
+  });
+  app.post("/api/v1/merge-deliveries/:id/review",async request=>{
+    const {id}=request.params as {id:string},body=objectBody(request.body),productId=merges.product(id);
+    for(const permission of ["view","operate","ai"] as const)requireProductPermission(request,productId,permission);
+    return merges.startReview(requireAccountId(request),id,stringField(body,"revision")!,stringField(body,"scopeDigest")!,stringField(body,"requestKey")!,{
+      productId,nodeId:stringField(body,"nodeId")!,agentKind:stringField(body,"agentKind")! as AgentKind,mode:stringField(body,"mode")!,
+      ...(optionalName(body,"model")?{model:optionalName(body,"model")!}:{}),...(optionalName(body,"effort")?{effort:optionalName(body,"effort")!}:{})});
+  });
+  app.post("/api/v1/merge-deliveries/:id/review/close",async request=>{
+    const {id}=request.params as {id:string},body=objectBody(request.body),productId=merges.product(id);
+    requireProductPermission(request,productId,"view");requireProductPermission(request,productId,"operate");
+    return merges.closeReview(requireAccountId(request),id,stringField(body,"scopeDigest")!,stringField(body,"caseId")!,stringField(body,"note")!);
   });
   app.post("/api/v1/products/:productId/integration-preview",async request=>{
     const {productId}=request.params as {productId:string};requireProductPermission(request,productId,"view");requireProductPermission(request,productId,"operate");requireProductPermission(request,productId,"ai");

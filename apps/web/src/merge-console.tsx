@@ -8,6 +8,8 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { defaultAgentMode, type AgentKind } from "@missiongo/domain";
 import { api, request, ApiError } from "./api";
+import { DispatchDialog } from "./dispatch-dialog";
+import { MarkdownText } from "./markdown-text";
 import { Modal } from "./modal";
 import { Select } from "./select";
 import { AgentSettingsControls } from "./agent-session-settings";
@@ -22,7 +24,7 @@ interface Delivery {
   itemKeys:string[];head:string;requiredArtifacts:string[];noReleaseReason?:string;pullRequestUrl:string;
   reconfirmation?:boolean;blocker?:string;evidence:{checkedAt:string;source:string};
 }
-interface QueueDelivery extends Delivery {queue:IntegrationQueueFacts}
+interface QueueDelivery extends Delivery {queue:IntegrationQueueFacts;latestInputAt?:string;previousReviews?:{caseId:string;sessionId:string;createdAt:string;closedAt?:string;closeNote?:string}[]}
 const artifactName=(a:string)=>({web:"Web",macosApp:"macOS",androidApp:"Android",androidSdk:"Android SDK",linuxCli:"Linux CLI"}[a]??a);
 function useIntegrationQueue(productId:string,stage="all") {
   return useInfiniteQuery({queryKey:["merge-deliveries",productId,"queue",stage],initialPageParam:undefined as number|undefined,
@@ -31,18 +33,21 @@ function useIntegrationQueue(productId:string,stage="all") {
 }
 function QueueFacts({d}:{d:Delivery}) {
   const {t}=useI18n(),q=(d as QueueDelivery).queue;if(!q)return null;
-  return <><span className="item-handler-badge" data-merge-progress={q.stage==="merge"?"pending":q.stage==="history"?"published":"merged"}>{t(q.stage==="merge"?"queueMerge":q.stage==="review"?"queueReview":q.stage==="history"?(q.resolution==="historical"?"queueHistorical":q.resolution==="not_required"?"queueNotRequired":"queuePublished"):"queueRelease")}</span>
+  return <><span className="item-handler-badge" data-merge-progress={q.stage==="merge"?"pending":q.stage==="history"?"published":"merged"}>{t(q.review?.closedAt?"reviewClosed":q.stage==="merge"?"queueMerge":q.stage==="review"?"queueReview":q.stage==="history"?(q.resolution==="historical"?"queueHistorical":q.resolution==="not_required"?"queueNotRequired":"queuePublished"):"queueRelease")}</span>
     {q.publishedArtifacts.length>0&&<small>{t("queuePublishedArtifacts")}: {q.publishedArtifacts.map(artifactName).join(" / ")}</small>}
-    {q.stage!=="history"&&q.pendingArtifacts.length>0&&<small>{t("queuePendingArtifacts")}: {q.pendingArtifacts.map(artifactName).join(" / ")}</small>}
+    {q.stage!=="history"&&!q.review?.closedAt&&q.pendingArtifacts.length>0&&<small>{t("queuePendingArtifacts")}: {q.pendingArtifacts.map(artifactName).join(" / ")}</small>}
     {q.blocker&&<small className="integration-attention">{q.blocker}</small>}</>;
 }
-function QueueHistory({productId,onClose}:{productId:string;onClose:()=>void}) {
-  const {t}=useI18n(),q=useIntegrationQueue(productId,"history");
+function QueueHistory({productId,onClose,onSession}:{productId:string;onClose:()=>void;onSession:(id:string)=>Promise<void>}) {
+  const {t}=useI18n(),q=useIntegrationQueue(productId,"history"),reviews=useIntegrationQueue(productId,"reviewed"),open=useMutation({mutationFn:onSession});
   return <Modal title={t("queueHistory")} subtitle="" headerActions={<HelpHint title={t("queueHistory")}><p>{t("queueHistoryHelp")}</p></HelpHint>} onClose={onClose} wide scrolls>
-    {q.isPending?<p role="status">{t("mergeLoading")}</p>:q.isError?<p role="alert">{t("mergeLoadError")} <button className="secondary-button" onClick={()=>void q.refetch()}>{t("retry")}</button></p>:
-      <div className="merge-list">{q.data.pages.flatMap(p=>p.deliveries).map(d=><div className="merge-row" key={d.id}><div><strong>{d.summary}</strong><small>{d.itemKeys.join(" · ")||`PR #${d.pullRequestUrl.split("/").at(-1)}`}</small><QueueFacts d={d}/><details><summary>{t("mergeDetails")}</summary><p>{d.validation}</p><p>{d.noReleaseReason}</p>{d.queue.merge&&<p>{t("mergeCommit")}: <code>{d.queue.merge.commit}</code></p>}{d.queue.releases?.map((r,i)=><p key={i}>{artifactName(r.artifact)} · {r.version}<br/><code>{r.sourceCommit}</code></p>)}<a href={d.pullRequestUrl} target="_blank" rel="noreferrer">{t("mergeViewPR")}</a></details></div></div>)}</div>}
-    {q.isSuccess&&!q.data.pages.some(p=>p.deliveries.length)&&<p>{t("queueHistoryEmpty")}</p>}
-    {q.hasNextPage&&<button className="secondary-button" disabled={q.isFetchingNextPage} onClick={()=>void q.fetchNextPage()}>{t("queueLoadMore")}</button>}
+    {[q,reviews].map((query,index)=><section key={index}>
+      {index===1&&(!query.isSuccess||query.data.pages.some(p=>p.deliveries.length))&&<h3>{t("reviewPrevious")}</h3>}
+      {query.isPending?<p role="status">{t("mergeLoading")}</p>:query.isError?<p role="alert">{t("mergeLoadError")} <button className="secondary-button" onClick={()=>void query.refetch()}>{t("retry")}</button></p>:<div className="merge-list">{query.data.pages.flatMap(p=>p.deliveries).map(d=><div className="merge-row" key={d.id}><div><strong>{d.summary}</strong><small>{d.itemKeys.join(" · ")||`PR #${d.pullRequestUrl.split("/").at(-1)}`}</small><QueueFacts d={d}/><details><summary>{t("mergeDetails")}</summary><p>{d.validation}</p><p>{d.noReleaseReason}</p>{d.queue.merge&&<p>{t("mergeCommit")}: <code>{d.queue.merge.commit}</code></p>}{d.queue.review?.closeNote&&<p>{t("reviewConclusion")}: {d.queue.review.closeNote}</p>}{d.queue.review?.sessionId&&<button type="button" className="secondary-button" disabled={open.isPending} onClick={()=>open.mutate(d.queue.review!.sessionId!)}>{t("reviewOpenSession")}</button>}{d.queue.releases?.map((r,i)=><p key={i}>{artifactName(r.artifact)} · {r.version}<br/><code>{r.sourceCommit}</code></p>)}<a href={d.pullRequestUrl} target="_blank" rel="noreferrer">{t("mergeViewPR")}</a></details></div></div>)}</div>}
+      {query.hasNextPage&&<button className="secondary-button" disabled={query.isFetchingNextPage} onClick={()=>void query.fetchNextPage()}>{t("queueLoadMore")}</button>}
+    </section>)}
+    {open.isError&&<p role="alert" className="inline-error">{localizedErrorText(open.error,t)}</p>}
+    {q.isSuccess&&reviews.isSuccess&&![...q.data.pages,...reviews.data.pages].some(p=>p.deliveries.length)&&<p>{t("queueHistoryEmpty")}</p>}
   </Modal>;
 }
 export interface Batch {operation?:IntegrationActionMode;references?:Record<string,{batchId:string;head:string;commit:string}>;verifiedReferences?:Record<string,{checkedAt:string;source:string}>;presentation?:MergeBatchPresentation;integration?:MergeIntegration;id:string;sessionId:string;state:string;deliveries:string[];publish:boolean;results:Record<string,{status:string;detail:string}>}
@@ -162,7 +167,7 @@ export function PendingMergeButton({productId,onSession}:{productId:string;onSes
 
 function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=>void;onSession:(id:string)=>Promise<void>}) {
   const {t,formatTime}=useI18n(),query=useDeliveries(productId);
-  const [stage,setStage]=useState("all"),[history,setHistory]=useState(false);
+  const [stage,setStage]=useState("all"),[history,setHistory]=useState(false),[exceptions,setExceptions]=useState(false);
   const queue=useIntegrationQueue(productId,stage);
   const catalog=useRef(new Map<string,QueueDelivery>());
   for(const page of queue.data?.pages??[])for(const d of page.deliveries)catalog.current.set(d.id,d);
@@ -256,8 +261,8 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
       {active&&<section role="status" className="merge-active-notice"><TriangleAlert size={22} aria-hidden="true"/><div><strong>{t("mergeActiveTitle")}</strong><p>{t("mergeActiveShort")}</p><small>{t("mergeActiveTimeout")}</small></div><button type="button" className="secondary-button" disabled={openSession.isPending} onClick={()=>openSession.mutate(active.sessionId)}>{t("mergeOpenSession")}</button></section>}
       <div hidden={step!==1} className="merge-selection-step">
       <div className="merge-queue-tabs"><div className="merge-actions" role="group" aria-label={t("queueStages")}>
-        {(["all","merge","release","review"] as const).map(value=><button type="button" className="secondary-button" aria-pressed={stage===value} disabled={locked} key={value} onClick={()=>setStage(value)}>{t(value==="all"?"queueAll":value==="merge"?"queueMerge":value==="review"?"queueReview":"queueRelease")} {value==="all"?(queue.data?.pages[0]?.counts.merge??0)+(queue.data?.pages[0]?.counts.release??0)+(queue.data?.pages[0]?.counts.review??0):queue.data?.pages[0]?.counts[value]??0}</button>)}
-      </div></div>
+        {(["all","merge","release"] as const).map(value=><button type="button" className="secondary-button" aria-pressed={stage===value} disabled={locked} key={value} onClick={()=>setStage(value)}>{t(value==="all"?"queueAll":value==="merge"?"queueMerge":"queueRelease")} {value==="all"?(queue.data?.pages[0]?.counts.merge??0)+(queue.data?.pages[0]?.counts.release??0):queue.data?.pages[0]?.counts[value]??0}</button>)}
+      </div><button type="button" className="text-button" disabled={locked} onClick={()=>setExceptions(true)}>{t("reviewExceptions")} {queue.data?.pages[0]?.counts.review??0}</button></div>
       <div className="merge-selection-toolbar"><span className="help-label"><strong>{t(selectedCount?"mergeSelectedGroups":"mergeContentTitle",{count:selectedCount})}</strong>{step===1&&<HelpHint title={t("mergeContentTitle")}><p>{t("mergeSelectionHelp")}</p><p>{t("mergeNeedsCheckHelp")}</p></HelpHint>}</span><button type="button" className="secondary-button" disabled={locked||!selectable.length} onClick={()=>setSelected(prev=>{const next={...prev};for(const d of selectable)if(allSelected)delete next[d.id];else next[d.id]=d.revision;return next;})}>{t(allSelected?"mergeDeselectAll":"mergeSelectAll")}</button></div>
       {queue.isSuccess&&!candidates.length&&<section className="merge-empty"><Files size={28} aria-hidden="true"/><strong>{t("mergeEmptyTitle")}</strong><p>{t(active?"mergeEmptyActive":"mergeEmpty")}</p></section>}
       <div className="merge-list">{candidates.map(d=><div className="merge-row" key={d.id}>
@@ -321,7 +326,8 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
       </div>
     </div>}
   </Modal>
-    {history&&<QueueHistory productId={productId} onClose={()=>setHistory(false)}/>}
+    {exceptions&&<DeliveryExceptions productId={productId} onClose={()=>setExceptions(false)} onSession={onSession}/>}
+    {history&&<QueueHistory productId={productId} onClose={()=>setHistory(false)} onSession={onSession}/>}
     {detail&&<Modal title={t("mergeDetails")} subtitle={detail.itemKeys.join(" · ") || `PR #${detail.pullRequestUrl.split("/").at(-1)}`} onClose={()=>setDetail(undefined)} pending={openSession.isPending} wide scrolls>
       <div className="merge-delivery-detail">
         <button type="button" className="secondary-button" data-initial-focus onClick={()=>setDetail(undefined)}>{t("mergeBackToSelection")}</button>
@@ -337,4 +343,70 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
       </div>
     </Modal>}
   </>;
+}
+
+/** Exception handling is outside the executable selection and its two-step flow. */
+function DeliveryExceptions({productId,onClose,onSession}:{productId:string;onClose:()=>void;onSession:(id:string)=>Promise<void>}) {
+  const {t}=useI18n(),q=useIntegrationQueue(productId,"review");
+  const [selected,setSelected]=useState<QueueDelivery>();
+  return <><Modal title={t("reviewExceptions")} subtitle={t("reviewExceptionsHelp")} onClose={onClose} wide scrolls>
+    {q.isPending?<p role="status">{t("mergeLoading")}</p>:q.isError?<p role="alert">{t("mergeLoadError")} <button className="secondary-button" onClick={()=>void q.refetch()}>{t("retry")}</button></p>:<div className="merge-list">
+      {q.data.pages.flatMap(p=>p.deliveries).map(d=><div className="merge-row" key={d.id}><div><strong>{d.itemKeys.join(" · ")||`PR #${d.pullRequestUrl.split("/").at(-1)}`}</strong><p>{d.summary}</p><QueueFacts d={d}/><button type="button" className="secondary-button" onClick={()=>setSelected(d)}>{t("reviewHandle")}</button></div></div>)}
+      {!q.data.pages.some(p=>p.deliveries.length)&&<p>{t("reviewEmpty")}</p>}
+    </div>}
+    {q.hasNextPage&&<button type="button" className="secondary-button" disabled={q.isFetchingNextPage} onClick={()=>void q.fetchNextPage()}>{t("queueLoadMore")}</button>}
+  </Modal>{selected&&<DeliveryReview productId={productId} delivery={selected} onClose={()=>setSelected(undefined)} onSession={onSession}/>}</>;
+}
+function DeliveryReview({productId,delivery,onClose,onSession}:{productId:string;delivery:QueueDelivery;onClose:()=>void;onSession:(id:string)=>Promise<void>}) {
+  const {t}=useI18n(),client=useQueryClient();
+  const context=useQuery({queryKey:["merge-deliveries",productId,"queue","review-detail",delivery.id],queryFn:()=>request<QueueDelivery>(`/api/v1/merge-deliveries/${delivery.id}/review`)});
+  const current=context.data,review=current?.queue.review;
+  const [configure,setConfigure]=useState(false),[finish,setFinish]=useState<{scopeDigest:string;caseId:string}>(),[note,setNote]=useState("");
+  const frozen=useRef<{requestKey:string;revision:string;scopeDigest:string;config:FreeSessionConfig}|undefined>(undefined);
+  const products=useQuery({queryKey:["products"],queryFn:()=>api.listProducts()});
+  const session=useQuery({queryKey:["agent-session",review?.sessionId],queryFn:({signal})=>api.getAgentSession(review!.sessionId!,signal),enabled:Boolean(review?.sessionId)});
+  const answer=[...(session.data?.messages??[])].reverse().find(m=>m.role==="agent"&&m.text.trim());
+  const running=Boolean(session.data?.turnState?.turnActive||session.data?.status==="active");
+  const unsettled=Boolean(session.data?.command&&["queued","delivering","delivery_unknown"].includes(session.data.command.status));
+  const product=products.data?.find(p=>p.id===productId);
+  const mayInvestigate=product?.access?.canOperate!==false&&product?.access?.canUseAi!==false;
+  const latestInputAt=current?.latestInputAt;
+  const freshAnswer=Boolean(answer&&Number.isFinite(Date.parse(answer.occurredAt))&&!(latestInputAt&&(!Number.isFinite(Date.parse(latestInputAt))||Date.parse(answer.occurredAt)<Date.parse(latestInputAt)))&&!(session.data?.command?.kind==="message"&&Date.parse(answer.occurredAt)<Date.parse(session.data.command.createdAt)));
+  const status=session.data?.turnState?.waitingForInput?"reviewWaiting":running?"reviewRunning":session.isError||session.data&&["failed","stalled","unavailable"].includes(session.data.status)?"reviewFailed":answer?(freshAnswer?"reviewAnswer":"reviewStaleAnswer"):"reviewQueued";
+  const refresh=()=>client.invalidateQueries({queryKey:["merge-deliveries",productId]});
+  const open=useMutation({mutationFn:onSession});
+  const start=useMutation({mutationFn:(config:FreeSessionConfig)=>{
+    if(!current?.queue.review)throw Error("Missing current review scope");
+    frozen.current??={requestKey:crypto.randomUUID(),revision:current.revision,scopeDigest:current.queue.review.scopeDigest,config};
+    const f=frozen.current;return post<QueueDelivery>(`/api/v1/merge-deliveries/${delivery.id}/review`,{...f.config,revision:f.revision,scopeDigest:f.scopeDigest,requestKey:f.requestKey});
+  },onSuccess:async()=>{setConfigure(false);frozen.current=undefined;await refresh();},onError:error=>{if(error instanceof ApiError&&error.status>=400&&error.status<500)frozen.current=undefined;}});
+  const close=useMutation({mutationFn:()=>post<QueueDelivery>(`/api/v1/merge-deliveries/${delivery.id}/review/close`,{...finish,note}),onSuccess:async()=>{await refresh();onClose();},onError:()=>void context.refetch()});
+  const canClose=Boolean(freshAnswer&&!running&&!session.data?.turnState?.waitingForInput&&!unsettled&&!session.isError&&!["failed","stalled","unavailable"].includes(session.data?.status??""));
+  const finishChanged=Boolean(finish&&(review?.scopeDigest!==finish.scopeDigest||review?.caseId!==finish.caseId));
+  return <><Modal title={t("reviewHandle")} subtitle={delivery.itemKeys.join(" · ")||delivery.summary} onClose={onClose} wide scrolls pending={start.isPending||close.isPending||open.isPending}>
+    {context.isPending?<p role="status">{t("mergeLoading")}</p>:context.isError?<p role="alert">{context.error instanceof ApiError&&[404,409].includes(context.error.status)?t("reviewChanged"):localizedErrorText(context.error,t)} <button className="secondary-button" onClick={()=>void context.refetch()}>{t("retry")}</button></p>:current&&<div className="merge-delivery-detail">
+      <strong>{current.summary}</strong><QueueFacts d={current}/><p>{t("reviewResponsibility")}</p><p>{t("reviewBoundary")}</p>
+      <details><summary>{t("mergeDetails")}</summary><p>{current.validation}</p><p>{current.noReleaseReason}</p><a href={current.pullRequestUrl} target="_blank" rel="noreferrer">{t("mergeViewPR")}</a></details>
+      {products.isError&&<p role="alert" className="inline-error">{t("reviewPermissionsError")} <button type="button" className="secondary-button" onClick={()=>void products.refetch()}>{t("retry")}</button></p>}
+      {!mayInvestigate&&<p>{t("reviewNoPermission")}</p>}
+      {current.previousReviews?.length? <details><summary>{t("reviewPrevious")}</summary>{current.previousReviews.map(r=><div key={r.caseId}><p>{r.closeNote||t("reviewScopeChanged")}</p><button type="button" className="secondary-button" onClick={()=>open.mutate(r.sessionId)}>{t("reviewOpenSession")}</button></div>)}</details>:null}
+      {!review?.sessionId?<button type="button" className="primary-button" disabled={!mayInvestigate||!products.isSuccess} onClick={()=>setConfigure(true)}>{t("reviewDelegate")}</button>:<>
+        <strong>{t(status)}</strong>{session.data&&<p>{t("reviewAssigned")}: {({codex:"Codex",claude_code:"Claude Code",opencode:"OpenCode",other:"Agent"} as Record<string,string>)[session.data.agentKind]??session.data.agentKind}</p>}
+        <div className="merge-actions"><button type="button" className="secondary-button" disabled={open.isPending} onClick={()=>open.mutate(review.sessionId!)}>{t("reviewOpenSession")}</button><button type="button" className="secondary-button" onClick={()=>{void context.refetch();void session.refetch();}}>{t("reviewRefresh")}</button></div>
+        {session.isPending&&<p role="status">{t("agentSessionLoading")}</p>}
+        {session.isError&&<p role="alert" className="inline-error">{t("reviewSessionError")}</p>}
+        {answer&&<section><h3>{t("reviewLatestAnswer")}</h3><MarkdownText>{answer.text}</MarkdownText>{session.data?.history?.nextCursor&&<p>{t("reviewMoreInSession")}</p>}</section>}
+        {canClose&&!review.closedAt&&<button type="button" className="secondary-button" onClick={()=>setFinish({scopeDigest:review.scopeDigest,caseId:review.caseId!})}>{t("reviewFinish")}</button>}
+        {review.closedAt&&<p>{t("reviewClosed")}: {review.closeNote}</p>}
+      </>}
+    </div>}
+    {(open.isError||close.isError)&&<p role="alert" className="inline-error">{localizedErrorText(open.error??close.error,t)}</p>}
+  </Modal>
+  {finish&&<Modal title={t("reviewFinish")} subtitle={delivery.itemKeys.join(" · ")} onClose={()=>{setFinish(undefined);setNote("");}} dirty={Boolean(note.trim())} pending={close.isPending}>
+    <form className="dispatch-form" onSubmit={e=>{e.preventDefault();if(!finishChanged&&canClose&&!context.isError)close.mutate();}}><p>{t("reviewCloseBoundary")}</p>{context.isError&&<p role="alert" className="inline-error">{context.error instanceof ApiError&&[404,409].includes(context.error.status)?t("reviewChanged"):localizedErrorText(context.error,t)} <button type="button" className="secondary-button" onClick={()=>void context.refetch()}>{t("retry")}</button></p>}{!canClose&&<p role="status">{t(session.isError?"reviewSessionError":"reviewIncomplete")} <button type="button" className="secondary-button" onClick={()=>{void context.refetch();void session.refetch();}}>{t("reviewRefresh")}</button></p>}{finishChanged&&<p role="alert" className="inline-error">{t("reviewChanged")}</p>}<label>{t("reviewConclusion")}<textarea data-initial-focus required maxLength={2000} value={note} onChange={e=>setNote(e.target.value)} disabled={close.isPending}/></label><div className="form-footer"><button type="submit" className="primary-button" disabled={!note.trim()||close.isPending||finishChanged||!canClose||context.isError}>{t("reviewConfirmClose")}</button></div>{close.isError&&<p role="alert" className="inline-error">{localizedErrorText(close.error,t)}</p>}</form>
+  </Modal>}
+  {configure&&<Modal title={t("reviewDelegate")} subtitle={t("reviewBoundary")} onClose={()=>setConfigure(false)} pending={start.isPending}>
+    {!frozen.current?<DispatchDialog items={[]} products={products.data?.filter(p=>p.id===productId)??[]} onClose={()=>setConfigure(false)} onDispatched={()=>{}} newSession={{productId,allowSaveDefaults:false,onConfigured:config=>start.mutate(config)}}/>:<><p role="status">{t(start.isPending?"reviewStarting":"reviewFrozen")}</p>{!start.isPending&&<button className="primary-button" onClick={()=>start.mutate(frozen.current!.config)}>{t("retry")}</button>}</>}
+    {start.isError&&<p role="alert" className="inline-error">{localizedErrorText(start.error,t)}</p>}
+  </Modal>}</>;
 }
