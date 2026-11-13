@@ -86,3 +86,14 @@ test("denial clears the real plan and artifact query keys without touching anoth
     expect(c.getQueryData([root, "other", "record"]), root).toEqual({ keep: root });
   }
 });
+
+test("a late plan response cannot repopulate the cache after confirmed denial", async () => {
+  const c = client();
+  let release!: (value: unknown) => void;
+  const pending = c.fetchQuery({ queryKey: ["plan-record", "legacy", 1],
+    queryFn: () => new Promise(resolve => { release = resolve; }) }).catch(() => undefined);
+  clearDeniedSession(c, "legacy");
+  release({ markdown: "Previously readable plan" });
+  await pending;
+  expect(c.getQueryData(["plan-record", "legacy", 1])).toBeUndefined();
+});

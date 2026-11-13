@@ -279,7 +279,7 @@ export function AgentSessionConsole({
   // The item a dispatch chip opened a preview of (AND-159). A preview, not a
   // page: reading what the session is working on must not walk away from it.
   const [previewItemKey, setPreviewItemKey] = useState<string | null>(null);
-  const [deniedDetail, setDeniedDetail] = useState<{ id: string; error: ApiError } | null>(null);
+  const [deniedDetails, setDeniedDetails] = useState<Readonly<Record<string, ApiError>>>({});
   const messagesRef = useRef<HTMLDivElement>(null);
   const observedSessionRef = useRef<string | null>(null);
   const conversationOpenRef = useRef(false);
@@ -398,6 +398,9 @@ export function AgentSessionConsole({
 
   const selectedVisible = visibleSessions.some(session => session.id === selectedId);
   const sessionListRef = useSelectedSessionScroll(selectedId, selectedVisible, conversationOpen);
+  const denialIds = useMemo(() => [...new Set([selectedId, linked?.agentSessionId, ...(linked?.relatedSessionIds ?? [])]
+    .filter((id): id is string => Boolean(id)))], [selectedId, linked?.agentSessionId, linked?.relatedSessionIds]);
+  const latchedError = denialIds.map(id => deniedDetails[id]).find(Boolean);
   const sessionQuery = useQuery({
     queryKey: ["agent-session", linked?.agentSessionId],
     queryFn: async ({ queryKey, signal }) => {
@@ -412,29 +415,37 @@ export function AgentSessionConsole({
     },
     enabled: Boolean(linked?.agentSessionId) && documentVisible,
     retry: (failures, error) => !isSessionAccessError(error) && failures < 1,
-    ...(deniedDetail ? { staleTime: 0 } : {}),
+    ...(latchedError ? { staleTime: 0 } : {}),
   });
   const detailAccessError = isSessionAccessError(sessionQuery.error) ? sessionQuery.error : undefined;
   const recoveryAccessError = recovery.data?.kind === "unavailable" ? recovery.data.error : undefined;
   // A retry must obtain a new readable snapshot before restoring controls.
   const detailRechecked = sessionQuery.isSuccess && sessionQuery.isFetchedAfterMount && Boolean(sessionQuery.data);
-  const latchedDenial = deniedDetail && (deniedDetail.id === selectedId
-    || deniedDetail.id === linked?.agentSessionId || linked?.relatedSessionIds?.includes(deniedDetail.id));
-  const denied = Boolean(detailAccessError || !detailRechecked && (recoveryAccessError || latchedDenial));
-  const recoveryError = (denied ? sessionQuery.error ?? deniedDetail?.error : undefined)
+  const denied = Boolean(detailAccessError || !detailRechecked && (recoveryAccessError || latchedError));
+  const recoveryError = (denied ? sessionQuery.error ?? latchedError : undefined)
     ?? recoveryAccessError ?? recovery.error ?? sessionsError;
   // Permission failures must hide cached content and all of its controls on
   // this render, before asynchronous cache cleanup or list refresh completes.
   const selected = denied ? undefined : linked;
   useEffect(() => {
-    if (detailRechecked && !detailAccessError) { setDeniedDetail(null); return; }
+    if (detailRechecked && !detailAccessError) {
+      // Reading B cannot revoke A's denial. Only this verified identity group
+      // may be unlocked, including an old ID mapped to its canonical session.
+      setDeniedDetails(current => {
+        if (!denialIds.some(id => current[id])) return current;
+        const next = { ...current };
+        for (const id of denialIds) delete next[id];
+        return next;
+      });
+      return;
+    }
     const error = detailAccessError ?? recoveryAccessError;
     const id = linked?.agentSessionId ?? selectedId;
     if (error && id) {
-      setDeniedDetail({ id, error });
+      setDeniedDetails(current => current[id] === error ? current : { ...current, [id]: error });
       clearDeniedSession(queryClient, id);
     }
-  }, [detailAccessError, recoveryAccessError, linked?.agentSessionId, selectedId, detailRechecked, queryClient]);
+  }, [detailAccessError, recoveryAccessError, linked?.agentSessionId, selectedId, detailRechecked, denialIds, queryClient]);
 
   // A claimed session names its items; an integration session has none of its
   // own and lists the batch it runs instead (AND-449).

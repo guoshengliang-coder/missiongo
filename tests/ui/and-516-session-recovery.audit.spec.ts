@@ -210,3 +210,51 @@ test("confirmed missing target stays retryable and returning to the list clears 
   await expect(page).not.toHaveURL(/session=/); await expect(pane).toContainText("选择一个会话后");
   await expect(pane.getByRole("alert")).toHaveCount(0);
 });
+
+test("another conversation's successful read cannot unlock a denied target on return", async ({ page }) => {
+  const other = "and-516-other", wait = gate();
+  let phase: "ready" | "denied" | "retrying" = "ready";
+  await mock(page, () => ({ sessions: [summary(), summary(other)] }), async id => {
+    if (id === other) return { json: detail(other) };
+    if (phase === "denied") return { status: 403, json: { code: "forbidden" } };
+    if (phase === "retrying") await wait.promise;
+    return { json: detail() };
+  });
+  await page.goto(url());
+  await expect(page.locator(".agent-console-message")).toContainText(`Transcript ${target}`);
+  phase = "denied"; await refreshFromConsoleStream(page);
+  const pane = page.locator(".agent-console-conversation");
+  await expect(pane.getByRole("alert")).toBeVisible();
+  await page.locator(".agent-console-session").filter({ hasText: other }).click();
+  await expect(page.locator(".agent-console-message")).toContainText(`Transcript ${other}`);
+  phase = "retrying";
+  await page.locator(".agent-console-session").filter({ hasText: target }).click();
+  await expect(pane.getByRole("alert")).toBeVisible();
+  await expect(page.locator(".agent-console-message, .agent-console-reply textarea")).toHaveCount(0);
+  await expect(pane.getByRole("button", { name: "归档", exact: true })).toHaveCount(0);
+  wait.release();
+  await expect(page.locator(".agent-console-message")).toContainText(`Transcript ${target}`);
+});
+
+test("denial survives canonical mapping and a 503 retry before a successful detail check", async ({ page }) => {
+  const legacy = "and-516-legacy", wait = gate();
+  let mapped = false, successful = false, failures = 0;
+  await mock(page, () => ({ sessions: mapped ? [{ ...summary(), relatedSessionIds: [legacy, target] }] : [] }), async id => {
+    if (id === legacy) return { status: 403, json: { code: "forbidden" } };
+    if (!successful) { failures++; return { status: 503, json: { code: "unavailable" } }; }
+    await wait.promise; return { json: detail() };
+  });
+  await page.goto(url(legacy));
+  const pane = page.locator(".agent-console-conversation");
+  await expect(pane.getByRole("alert")).toBeVisible();
+  mapped = true; await refreshFromConsoleStream(page);
+  await expect(page).toHaveURL(/session=and-516-target/);
+  await expect.poll(() => failures).toBeGreaterThan(1);
+  await expect(pane.getByRole("button", { name: "重试", exact: true })).toBeEnabled();
+  await expect(page.locator(".agent-console-message, .agent-console-reply textarea")).toHaveCount(0);
+  await expect(pane.getByRole("button", { name: "归档", exact: true })).toHaveCount(0);
+  successful = true; await pane.getByRole("button", { name: "重试", exact: true }).click();
+  await expect(page.locator(".agent-console-reply textarea")).toHaveCount(0);
+  wait.release();
+  await expect(page.locator(".agent-console-message")).toContainText(`Transcript ${target}`);
+});
