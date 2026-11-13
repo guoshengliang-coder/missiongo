@@ -20,6 +20,7 @@ export type IntegrationActionMode = "merge_only" | "merge_and_publish" | "publis
 export interface IntegrationQueueFacts {
   stage: "merge" | "release" | "review" | "history";
   resolution?: "historical" | "not_required";
+  review?: {scopeDigest:string;caseId?:string;sessionId?:string;createdAt?:string;closedAt?:string;closeNote?:string};
   merge?:{batchId:string;head:string;commit:string};
   releases?:{artifact:string;version:string;sourceCommit:string}[];
   blocker?: string;
