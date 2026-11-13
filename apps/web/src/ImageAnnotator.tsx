@@ -8,6 +8,7 @@ import { useI18n, type MessageKey } from "./i18n";
 import {
   ANNOTATION_COLORS,
   ANNOTATION_JPEG_QUALITY,
+  ImageAnnotationSaveError,
   MAX_ANNOTATION_ZOOM,
   MIN_ANNOTATION_ZOOM,
   annotatedFilename,
@@ -94,8 +95,10 @@ export function ImageAnnotator({
   onCancel,
   onSave,
   staged = false,
+  saveHint,
 }: {
   staged?: boolean;
+  saveHint?: string;
   file: File;
   onCancel: () => void;
   onSave: (annotated: File) => void | Promise<void>;
@@ -106,9 +109,14 @@ export function ImageAnnotator({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const confirm = useConfirm();
+  const savingRef = useRef(false);
+  const confirmingRef = useRef(false);
   const cancel = async () => {
-    if (saving) return;
-    if (!shapes.length || await confirm(t("discardDialogHelp"), { title: t("discardDialogTitle"), confirmLabel: t("discardChanges") })) onCancel();
+    if (savingRef.current || confirmingRef.current) return;
+    confirmingRef.current = true;
+    try {
+      if ((!shapes.length && !drawing) || await confirm(t("discardDialogHelp"), { title: t("discardDialogTitle"), confirmLabel: t("discardChanges") })) onCancel();
+    } finally { confirmingRef.current = false; }
   };
   const [natural, setNatural] = useState({ width: 0, height: 0 });
   const [stage, setStage] = useState({ width: 0, height: 0 });
@@ -126,6 +134,7 @@ export function ImageAnnotator({
   const [color, setColor] = useState<AnnotationColor>(ANNOTATION_COLORS[0]);
   const [loadError, setLoadError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [saveFailure, setSaveFailure] = useState("");
   const [ready, setReady] = useState(false);
 
   useModalSurface(dialogRef, () => { void cancel(); return false; });
@@ -328,21 +337,28 @@ export function ImageAnnotator({
 
   const save = async () => {
     const canvas = canvasRef.current;
-    if (!canvas || saving) return;
+    if (!canvas || !ready || savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
-    const outputType = annotationOutputType(file);
-    const blob = await new Promise<Blob | null>((resolve) => {
-      canvas.toBlob(resolve, outputType, outputType === "image/jpeg" ? ANNOTATION_JPEG_QUALITY : undefined);
-    });
-    if (!blob) {
-      setLoadError(t("annotateExportFailed"));
-      setSaving(false);
-      return;
-    }
-    const name = annotatedFilename(file.name, outputType);
+    setSaveFailure("");
     try {
-      await onSave(new File([blob], name, { type: outputType, lastModified: Date.now() }));
+      // Flush the last stroke before export; the canvas keeps its natural size.
+      repaint();
+      const outputType = annotationOutputType(file);
+      const blob = await new Promise<Blob | null>(resolve => {
+        canvas.toBlob(resolve, outputType, outputType === "image/jpeg" ? ANNOTATION_JPEG_QUALITY : undefined);
+      });
+      if (!blob) {
+        setSaveFailure(t("annotateExportFailed"));
+        return;
+      }
+      await onSave(new File([blob], annotatedFilename(file.name, outputType), { type: outputType, lastModified: Date.now() }));
+    } catch (error) {
+      // Keep the canvas and marks for retry; never turn an export/save failure
+      // into an unreadable-image screen that discards the backing canvas.
+      setSaveFailure(error instanceof ImageAnnotationSaveError ? error.message : t("annotateSaveFailed"));
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -359,7 +375,7 @@ export function ImageAnnotator({
     >
       <header className="annotator-bar">
         <strong>{t("annotateTitle")}</strong>
-        <button type="button" className="icon-button" onClick={() => void cancel()} aria-label={t("cancel")}>
+        <button type="button" className="icon-button" onClick={() => void cancel()} disabled={saving} aria-label={t("cancel")}>
           <X size={18} aria-hidden="true" />
         </button>
       </header>
@@ -373,6 +389,7 @@ export function ImageAnnotator({
               className={`annotator-tool${tool === name ? " active" : ""}`}
               aria-pressed={tool === name}
               aria-label={t(label)}
+              disabled={saving}
               onClick={() => setTool(name)}
             >
               <Icon size={17} aria-hidden="true" />
@@ -389,6 +406,7 @@ export function ImageAnnotator({
               style={{ background: swatch }}
               aria-pressed={color === swatch}
               aria-label={swatch}
+              disabled={saving}
               onClick={() => setColor(swatch)}
             />
           ))}
@@ -398,7 +416,7 @@ export function ImageAnnotator({
           type="button"
           className="annotator-tool"
           onClick={() => setShapes((current) => current.slice(0, -1))}
-          disabled={shapes.length === 0}
+          disabled={saving || shapes.length === 0}
           aria-label={t("annotateUndo")}
         >
           <RotateCcw size={17} aria-hidden="true" />
@@ -468,9 +486,11 @@ export function ImageAnnotator({
       </div>
 
       <footer className="annotator-actions">
-        <p className="annotator-hint">{t(staged ? "stagedAnnotation" : "annotateOverwriteHint")}</p>
+        <p className={`annotator-hint${saveFailure ? " inline-error" : ""}`} role={saveFailure ? "alert" : undefined}>
+          {saveFailure || saveHint || t(staged ? "stagedAnnotation" : "annotateOverwriteHint")}
+        </p>
         <div>
-          <button type="button" className="secondary-button" onClick={onCancel} disabled={saving}>{t("cancel")}</button>
+          <button type="button" className="secondary-button" onClick={() => void cancel()} disabled={saving}>{t("cancel")}</button>
           <button type="button" className="primary-button" onClick={save} disabled={!ready || saving || Boolean(loadError)}>
             {saving ? <Loader2 size={16} className="spin" aria-hidden="true" /> : null}
             {t("annotateSave")}
