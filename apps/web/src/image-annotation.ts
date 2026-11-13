@@ -6,6 +6,9 @@
  * ends up with have to be decided deliberately.
  */
 
+/** Only caller-authored, localized validation messages may reach the editor. */
+export class ImageAnnotationSaveError extends Error {}
+
 /** Colours offered for circling a problem area. Chosen to stay visible on both light UI screenshots and photographs. */
 export const ANNOTATION_COLORS = ["#e5484d", "#f76808", "#ffb224", "#30a46c", "#0091ff", "#8e4ec6"] as const;
 export type AnnotationColor = (typeof ANNOTATION_COLORS)[number];

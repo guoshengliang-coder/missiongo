@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 
 /** Restore the pre-AND-484 fixture shape, including dependencies on old columns. */
 export function beforeDisplayProjection(db: Pick<DatabaseSync,"prepare"|"exec">): void {
+  db.exec("DROP TRIGGER IF EXISTS display_review_insert; DROP TRIGGER IF EXISTS display_review_update; DROP TABLE IF EXISTS delivery_reviews; DELETE FROM schema_migrations WHERE version=202611130731;");
   const triggers=db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'display_%'").all() as {name:string}[];
   for(const {name} of triggers)db.exec(`DROP TRIGGER "${name}"`);
   for(const name of ["merge_delivery_source_session","merge_delivery_source_batch","merge_batch_source_session"])db.exec(`DROP INDEX IF EXISTS ${name}`);

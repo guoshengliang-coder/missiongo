@@ -125,18 +125,18 @@ for(const width of [320,1440])for(const theme of ['light','dark'] as const) {
     await page.route(/\/merge-deliveries(?:\?.*)?$/,route=>route.fulfill({json:{deliveries:[],batches:[]}}));
     await page.route('**/integration-queue?**',route=>{
       const stage=new URL(route.request().url()).searchParams.get('stage');
-      return route.fulfill({json:{deliveries:stage==='history'?[row('AND-435 historical','history','historical'),row('AND-450 no release','history','not_required')]:stage==='release'||stage==='merge'?[]:[row('Missing receipt','review')],counts:{review:1,history:2}}});
+      return route.fulfill({json:{deliveries:stage==='history'?[row('AND-435 historical','history','historical'),row('AND-450 no release','history','not_required')]:stage==='review'?[row('Missing receipt','review')]:[],counts:{review:1,history:2}}});
     });
     await page.goto(`/?product=${product.id}&console=agent`);
     await page.getByRole('button',{name:'待集成 0',exact:true}).click();
     const dialog=page.getByRole('dialog');
-    await expect(dialog.getByRole('button',{name:'全部 1',exact:true})).toBeVisible();
-    await dialog.getByRole('button',{name:'待核对 1',exact:true}).click();
-    await expect(dialog.locator('.merge-row input')).toBeDisabled();
+    await expect(dialog.getByRole('button',{name:'全部 0',exact:true})).toBeVisible();
+    await expect(dialog.locator('.merge-row')).toHaveCount(0);
     await expect(dialog.getByRole('button',{name:'全选可选内容',exact:true})).toBeDisabled();
     await expect(dialog.getByRole('button',{name:'下一步：配置 Agent',exact:true})).toBeDisabled();
-    await dialog.getByRole('button',{name:'查看改动与验证详情',exact:true}).click();
-    await expect(page.getByRole('dialog').last()).toContainText('Synthetic evidence');
+    await dialog.getByRole('button',{name:'交付异常 1',exact:true}).click();
+    await expect(page.getByRole('dialog').last()).toContainText('Missing receipt');
+    await expect(page.getByRole('dialog').last().locator('input[type=checkbox]')).toHaveCount(0);
     await page.keyboard.press('Escape');
     await dialog.getByRole('button',{name:'交付历史',exact:true}).click();
     const history=page.getByRole('dialog').last();
@@ -145,7 +145,7 @@ for(const width of [320,1440])for(const theme of ['light','dark'] as const) {
     await expect(history.getByText('待发布产物: Web',{exact:true})).toHaveCount(0);
     await page.screenshot({path:testInfo.outputPath(`lifecycle-${width}-${theme}.png`),fullPage:true});
     await page.keyboard.press('Escape');
-    await expect(dialog.getByRole('button',{name:'待核对 1',exact:true})).toHaveAttribute('aria-pressed','true');
+    await expect(dialog.getByRole('button',{name:'全部 0',exact:true})).toHaveAttribute('aria-pressed','true');
     await page.evaluate(()=>document.documentElement.dataset.fontScale='large');
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
     const audit=await page.evaluate(AUDIT_SOURCE) as {text:{fontSize:number;contrast:number;fontWeight:number}[]};

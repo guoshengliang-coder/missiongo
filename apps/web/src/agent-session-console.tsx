@@ -44,7 +44,8 @@ import {
   X,
 } from "lucide-react";
 
-import { api } from "./api";
+import { api, type ApiError } from "./api";
+import { clearDeniedSession, isSessionAccessError, recoverAgentSession } from "./agent-session-recovery";
 import { AgentSessionFailureNotice } from "./agent-session-failure-notice";
 import { AgentHistoryNotice, AgentReplyFeedback, AgentReplySourceNotice, AgentRunDetails, SessionStatusIcon, isHistoryLimited, AgentSessionError } from "./agent-session-feedback";
 import { AgentIcon } from "./agent-icons";
@@ -82,7 +83,6 @@ import {
   externalProgressLabelKey,
   replySourceState,
   commandPrecedesLoadedWindow,
-  resolvedAgentSessionId,
   sessionCountsAsUnread,
   sessionInlineError,
   sessionReplyDraft,
@@ -282,7 +282,7 @@ export function AgentSessionConsole({
   // The item a dispatch chip opened a preview of (AND-159). A preview, not a
   // page: reading what the session is working on must not walk away from it.
   const [previewItemKey, setPreviewItemKey] = useState<string | null>(null);
-  const [unavailableSessionId, setUnavailableSessionId] = useState<string | null>(null);
+  const [deniedDetails, setDeniedDetails] = useState<Readonly<Record<string, ApiError>>>({});
   const messagesRef = useRef<HTMLDivElement>(null);
   const observedSessionRef = useRef<string | null>(null);
   const conversationOpenRef = useRef(false);
@@ -349,17 +349,23 @@ export function AgentSessionConsole({
   // A reply resolves "needs attention" and removes this row from that filter.
   // Keep the conversation the person is still reading; explicit filter and
   // navigation handlers remain responsible for leaving it (AND-147).
-  const selectedId = resolvedAgentSessionId(
-    canonicalAgentSessionId(selectedSessionId, allSessions),
-    allSessions.map((session) => session.id),
-    sessionsLoaded,
-  );
-
+  // Keep the requested route while a missing summary is checked. Only explicit
+  // navigation clears the target; identity mappings may canonicalize it.
+  const selectedId = canonicalAgentSessionId(selectedSessionId, allSessions);
+  const linked = draftView ? undefined : allSessions.find(session => session.id === selectedId);
+  const missingTarget = !draftView && Boolean(selectedId) && !linked;
+  const recoveryEnabled = missingTarget && sessionsLoaded && documentVisible;
+  const recovery = useQuery({
+    queryKey: ["agent-session-recovery", selectedId],
+    queryFn: ({ signal }) => recoverAgentSession(queryClient, selectedId!, signal),
+    enabled: recoveryEnabled,
+    retry: false, staleTime: 0, gcTime: 0,
+    refetchOnWindowFocus: false,
+  });
   useEffect(() => {
-    if (!sessionsLoaded || !selectedSessionId) return;
-    const linked = allSessions.find((session) => session.id === canonicalAgentSessionId(selectedSessionId, allSessions));
-    setUnavailableSessionId(linked ? null : selectedSessionId);
-  }, [allSessions, selectedSessionId, sessionsLoaded]);
+    if (!recoveryEnabled) return;
+    return () => { void queryClient.cancelQueries({ queryKey: ["agent-session-recovery", selectedId], exact: true }); };
+  }, [queryClient, recoveryEnabled, selectedId]);
 
   useEffect(() => {
     const update = () => setDocumentVisible(document.visibilityState === "visible");
@@ -390,13 +396,61 @@ export function AgentSessionConsole({
   }, [bulkMode]);
 
   useEffect(() => {
-    if (draftView || selectedId === selectedSessionId) return;
+    if (draftView || !linked || selectedId === selectedSessionId) return;
     onSelectSession(selectedId, conversationOpen && Boolean(selectedId));
-  }, [conversationOpen, draftView, onSelectSession, selectedId, selectedSessionId]);
+  }, [conversationOpen, draftView, linked, onSelectSession, selectedId, selectedSessionId]);
 
   const selectedVisible = visibleSessions.some(session => session.id === selectedId);
   const sessionListRef = useSelectedSessionScroll(selectedId, selectedVisible, conversationOpen);
-  const selected = draftView ? undefined : allSessions.find((session) => session.id === selectedId);
+  const denialIds = useMemo(() => [...new Set([selectedId, linked?.agentSessionId, ...(linked?.relatedSessionIds ?? [])]
+    .filter((id): id is string => Boolean(id)))], [selectedId, linked?.agentSessionId, linked?.relatedSessionIds]);
+  const latchedError = denialIds.map(id => deniedDetails[id]).find(Boolean);
+  const sessionQuery = useQuery({
+    queryKey: ["agent-session", linked?.agentSessionId],
+    queryFn: async ({ queryKey, signal }) => {
+      const sessionId = queryKey[1] as string;
+      const requestStarted = queryClient.getQueryData<AgentSession>(["agent-session", sessionId]);
+      const incoming = await api.getAgentSession(sessionId, signal);
+      return mergeAgentSessionSnapshot(
+        requestStarted,
+        queryClient.getQueryData<AgentSession>(["agent-session", sessionId]),
+        incoming,
+      );
+    },
+    enabled: Boolean(linked?.agentSessionId) && documentVisible,
+    retry: (failures, error) => !isSessionAccessError(error) && failures < 1,
+    ...(latchedError ? { staleTime: 0 } : {}),
+  });
+  const detailAccessError = isSessionAccessError(sessionQuery.error) ? sessionQuery.error : undefined;
+  const recoveryAccessError = recovery.data?.kind === "unavailable" ? recovery.data.error : undefined;
+  // A retry must obtain a new readable snapshot before restoring controls.
+  const detailRechecked = sessionQuery.isSuccess && sessionQuery.isFetchedAfterMount && Boolean(sessionQuery.data);
+  const denied = Boolean(detailAccessError || !detailRechecked && (recoveryAccessError || latchedError));
+  const recoveryError = (denied ? sessionQuery.error ?? latchedError : undefined)
+    ?? recoveryAccessError ?? recovery.error ?? sessionsError;
+  // Permission failures must hide cached content and all of its controls on
+  // this render, before asynchronous cache cleanup or list refresh completes.
+  const selected = denied ? undefined : linked;
+  useEffect(() => {
+    if (detailRechecked && !detailAccessError) {
+      // Reading B cannot revoke A's denial. Only this verified identity group
+      // may be unlocked, including an old ID mapped to its canonical session.
+      setDeniedDetails(current => {
+        if (!denialIds.some(id => current[id])) return current;
+        const next = { ...current };
+        for (const id of denialIds) delete next[id];
+        return next;
+      });
+      return;
+    }
+    const error = detailAccessError ?? recoveryAccessError;
+    const id = linked?.agentSessionId ?? selectedId;
+    if (error && id) {
+      setDeniedDetails(current => current[id] === error ? current : { ...current, [id]: error });
+      clearDeniedSession(queryClient, id);
+    }
+  }, [detailAccessError, recoveryAccessError, linked?.agentSessionId, selectedId, detailRechecked, denialIds, queryClient]);
+
   // A claimed session names its items; an integration session has none of its
   // own and lists the batch it runs instead (AND-449).
   const integrationItemKeys = selected?.sessionPurpose === "integration"
@@ -432,20 +486,6 @@ export function AgentSessionConsole({
   const setReply = useCallback((update: string | ((current: string) => string)) => {
     setReplyFor(replySessionId, update);
   }, [replySessionId, setReplyFor]);
-  const sessionQuery = useQuery({
-    queryKey: ["agent-session", selected?.agentSessionId],
-    queryFn: async ({ queryKey, signal }) => {
-      const sessionId = queryKey[1] as string;
-      const requestStarted = queryClient.getQueryData<AgentSession>(["agent-session", sessionId]);
-      const incoming = await api.getAgentSession(sessionId, signal);
-      return mergeAgentSessionSnapshot(
-        requestStarted,
-        queryClient.getQueryData<AgentSession>(["agent-session", sessionId]),
-        incoming,
-      );
-    },
-    enabled: Boolean(selected?.agentSessionId) && documentVisible,
-  });
   // List summaries arrive before the transcript. Reveal the whole conversation
   // together, including approval/attention/recovery cards (AND-375). Cached
   // detail stays visible during live updates and refetch errors; dispatches without
@@ -723,7 +763,7 @@ export function AgentSessionConsole({
   const sendingRequest = sendingSelected && sendAttempt
     ? { text: sendAttempt.text, occurredAt: sendAttempt.occurredAt, status: "sending" as const }
     : failedRequest;
-  const history = useAgentHistory(selected?.agentSessionId ?? null, sessionQuery.data, messagesRef);
+  const history = useAgentHistory(selected?.agentSessionId ?? null, denied ? undefined : sessionQuery.data, messagesRef);
   const previousHistoryRevision = useRef(0);
   const mirrorMessages = history.messages;
   const mirrorAttachments = sessionQuery.data?.attachmentMessages ?? [];
@@ -1068,7 +1108,6 @@ export function AgentSessionConsole({
       </aside>
 
       <section className="agent-console-list" aria-label={t("agentConsoleSessions")}>
-        {unavailableSessionId && <p className="inline-error" role="alert">{t("agentConsoleUnavailableLink")}</p>}
         {otherProjectHint}
         <div className="agent-console-list-controls">
           {compact ? <button type="button" className="single-select agent-console-combined-filter"
@@ -1206,7 +1245,6 @@ export function AgentSessionConsole({
                   className={`agent-console-session ${session.id === selectedId ? "active" : ""} ${session.unread ? "unread" : ""}`}
                   aria-pressed={bulkMode && selectable ? checked : undefined}
                   onClick={() => {
-                    setUnavailableSessionId(null);
                     if (bulkMode) {
                       if (selectable) {
                         setSelectedForArchive((current) => {
@@ -1264,7 +1302,26 @@ export function AgentSessionConsole({
       <section className="agent-console-conversation" aria-live="polite">
         {draftView}
         {selected && favoriteErrors.has(selected.id) && <p className="inline-error" role="alert">{t("agentSessionFavoriteFailed")}</p>}
-        {!draftView && !selected && <div className="agent-console-empty agent-console-empty-conversation"><MessageSquare size={24} /><p>{t("agentConsoleChoose")}</p></div>}
+        {!draftView && !selected && <>
+          {selectedId && <header className="agent-console-conversation-head">
+            <BackButton label={t(backToItem ? "agentConsoleBackToItem" : "agentConsoleBackToSessions")}
+              onClick={() => { if (backToItem || conversationOpen) onBackToSessions(); else onSelectSession(null, false); }} />
+          </header>}
+          <div className="agent-console-empty agent-console-empty-conversation">
+          {selectedId ? <>
+            {(denied || recovery.data?.kind === "unavailable" || recovery.isError || hasSessionsError) ? <div role="alert">
+              <p className="inline-error">{isSessionAccessError(recoveryError) && recoveryError.status === 404
+                ? t("agentConsoleUnavailableLink") : localizedErrorText(recoveryError, t)}</p>
+              <button type="button" className="text-button" disabled={recovery.isFetching || sessionQuery.isFetching}
+                onClick={() => void (denied && linked?.agentSessionId ? sessionQuery.refetch() : recovery.refetch())}>{t("retry")}</button>
+            </div> : recovery.data?.kind === "sync_pending" && !recovery.isFetching ? <div role="status">
+              <p>{t("agentConsoleSessionSyncPending")}</p>
+              <button type="button" className="text-button" disabled={recovery.isFetching}
+                onClick={() => void recovery.refetch()}>{t("retry")}</button>
+            </div> : <div role="status"><LoaderCircle className="spin" size={20} /><p>{t("agentSessionLoading")}</p></div>}
+          </> : <><MessageSquare size={24} /><p>{t("agentConsoleChoose")}</p></>}
+          </div>
+        </>}
         {selected && (
           <>
             <header className="agent-console-conversation-head">
@@ -1680,7 +1737,8 @@ export function AgentSessionConsole({
                   />
                   {commandUndo}
                   {replyFiles.length > 0 && <div className="agent-chat-draft-files">
-                    {replyFiles.map((file, index) => <DraftChatFile key={`${file.name}-${index}`} file={file} disabled={sendingSelected || cancellingSelected}
+                    {replyFiles.map((file, index) => <DraftChatFile key={`${replySessionId}-${index}`} file={file} disabled={!selected.canReply || pending || sendingSelected || cancellingSelected}
+                      onReplace={(original, annotated) => setReplyFilesFor(replySessionId, current => current.map((entry, fileIndex) => fileIndex === index && entry === original ? annotated : entry))}
                       onRemove={() => setReplyFiles((current) => current.filter((_, fileIndex) => fileIndex !== index))} />)}
                   </div>}
                   {replyFileError && <p className="inline-error" role="alert">{replyFileError}</p>}
