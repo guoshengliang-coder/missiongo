@@ -80,13 +80,9 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
   const followLatest = useRef(true);
   const previousHistoryRevision = useRef(history.revision);
   useLayoutEffect(() => { followLatest.current = true; }, [sessionId, open]);
-  useLayoutEffect(() => {
-    const prepended = previousHistoryRevision.current !== history.revision;
-    previousHistoryRevision.current = history.revision;
-    const box = messagesRef.current;
-    if (open && box && followLatest.current && !prepended) box.scrollTop = box.scrollHeight;
-  }, [open, sessionId, history.messages, history.revision, session.data?.implementationPlan]);
   const sendAttempt = useSendAttempt(sender, sessionId);
+  const previousSubmittedRef = useRef<string | undefined>(undefined);
+  const replySubmitted = Boolean(sendAttempt?.requestKey && previousSubmittedRef.current !== sendAttempt.requestKey);
   const sendLocked = sendAttemptLocked(sendAttempt);
   const inheritedFiles = sendAttempt && sendAttemptHasDraft(sendAttempt) ? sendAttempt.files : [];
   useEffect(() => {
@@ -170,9 +166,22 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
   const outgoing = outgoingReply(command, sendLocked && sendAttempt && !sendAttempt.command
     ? { text: sendAttempt.text, occurredAt: sendAttempt.occurredAt, status: "sending" } : undefined, sourceState !== "unmatched");
   const planMessages = inlinePlanTranscript(withOutgoingReply(agentChatMessages(history.messages,
-    session.data?.attachmentMessages ?? [], outgoing?.commandId), outgoing), session.data);
-  const rememberReadingPosition = useTranscriptAnchor(messagesRef, `${sessionId}:${open}`, followLatest.current, history.revision,
-    history.messages, outgoing ? `${outgoing.commandId}:${outgoing.status}:${outgoing.text}` : "");
+    session.data?.attachmentMessages ?? []), outgoing), session.data);
+  const outgoingSignature = outgoing ? `${outgoing.commandId}:${outgoing.status}:${outgoing.text}` : "";
+  useLayoutEffect(() => {
+    const prepended = previousHistoryRevision.current !== history.revision;
+    previousHistoryRevision.current = history.revision;
+    previousSubmittedRef.current = sendAttempt?.requestKey;
+    if (replySubmitted) followLatest.current = true;
+    const box = messagesRef.current;
+    if (open && box && followLatest.current && !prepended) box.scrollTop = box.scrollHeight;
+  }, [open, sessionId, history.messages, history.revision, session.data?.implementationPlan, sendAttempt?.requestKey, replySubmitted, outgoingSignature]);
+  const rememberReadingPosition = useTranscriptAnchor(messagesRef, `${sessionId}:${open}`, followLatest.current || replySubmitted, history.revision,
+    history.messages, outgoingSignature);
+  const followLoadedImage = () => {
+    const box = messagesRef.current;
+    if (box && followLatest.current) box.scrollTop = box.scrollHeight;
+  };
   const commandTargetId = `panel-${sessionId}`;
   const commandUndo = useCommandTarget(commandTargetId,permissionReplyText((session.data?.currentRequests ?? session.data?.messages ?? []).flatMap(message => message.questions ?? []),reply),text=>setReply(permissionReplyText((session.data?.currentRequests ?? session.data?.messages ?? []).flatMap(message => message.questions ?? []),text,true)),!canReply || pending || sendBusy);
   return (
@@ -211,9 +220,9 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                       </header>
                       {(message.role === "user" ? <MarkdownText>{permissionReplyText((session.data.currentRequests ?? session.data.messages).flatMap(message => message.questions ?? []), message.text)}</MarkdownText> : <AgentArtifactMarkdown text={message.text} sessionId={sessionId} messageId={message.id} />)}
                       {message.id === planMessages.planMessageId && <InlinePlanApproval onRequestChanges={()=>document.querySelector<HTMLTextAreaElement>(".agent-session-reply textarea")?.focus()} key={`${session.data.id}:${currentPlan(session.data)?.revision}`} session={session.data} blocked={questionPermission || pending || sendBusy} />}
-                      {message.attachmentData && <ChatAttachments sessionId={sessionId} attachments={message.attachmentData} />}
-                      {message.outgoing && command && command.id === message.outgoing.commandId && command.attachments
-                        && <ChatAttachments sessionId={sessionId} attachments={command.attachments} />}
+                      {message.attachmentData && <ChatAttachments sessionId={sessionId} attachments={message.attachmentData} onImageLoad={followLoadedImage} />}
+                      {!message.attachmentData && message.outgoing && command && command.id === message.outgoing.commandId && command.attachments
+                        && <ChatAttachments sessionId={sessionId} attachments={command.attachments} onImageLoad={followLoadedImage} />}
                       {message.questions && (
                         <AgentSessionQuestions
                           questions={message.questions}

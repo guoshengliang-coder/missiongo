@@ -1,14 +1,17 @@
 import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
-import type { AgentSessionCommand, AgentSessionMessage } from "../../apps/web/src/types";
+import type { AgentSession, AgentSessionCommand, AgentSessionMessage } from "../../apps/web/src/types";
 import { advanceSessionDetailPoll } from "./polling";
+test.use({timezoneId:"Asia/Shanghai"});
+
 const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as {productId: string; detailKey: string};
 
 for (const width of [320, 900, 1440]) for (const colorScheme of ["light", "dark"] as const) {
   test(`old receipt stays before a newer reply ${width} ${colorScheme}`, async ({page}, testInfo) => {
     await page.setViewportSize({width, height: 900});
     await page.emulateMedia({colorScheme});
-    await page.clock.install({time: new Date("2026-11-13T03:19:00Z")});
+    await page.clock.install();
+    await page.clock.setFixedTime(new Date("2026-11-13T03:19:00Z"));
     const id = "message-order";
     const createdAt = "2026-11-12T12:46:00Z";
     const command = {id: "original-command", kind: "message", text: "允许，仅用于标准发布性能门禁", status: "delivered", createdAt};
@@ -34,6 +37,8 @@ for (const width of [320, 900, 1440]) for (const colorScheme of ["light", "dark"
     const later = page.locator('[data-agent-message-id="agent:after"]');
     await expect(receipt).toContainText("已送达");
     await expect(receipt).not.toContainText("待执行");
+    await expect(receipt.locator("time")).toHaveText("昨天 20:46");
+    await expect(later.locator("time")).toHaveText("00:54");
     await expect(later).toBeVisible();
     expect((await receipt.boundingBox())!.y).toBeLessThan((await later.boundingBox())!.y);
     for(const scale of ["small","medium","large"]) {
@@ -57,7 +62,7 @@ for (const width of [320, 900, 1440]) for (const colorScheme of ["light", "dark"
 }
 
 async function openReceiptFixture(page: Page, surface:"console"|"panel", read:()=>{
-  command:AgentSessionCommand; messages:AgentSessionMessage[]; history?:{nextCursor:string};
+  command:AgentSessionCommand; messages:AgentSessionMessage[]; history?:{nextCursor:string}; attachmentMessages?:AgentSession["attachmentMessages"];
 }, older?:()=>AgentSessionMessage[]) {
   const id="receipt-history";
   const stamp="2026-11-13T00:00:00Z";
@@ -88,6 +93,7 @@ async function openReceiptFixture(page: Page, surface:"console"|"panel", read:()
 for(const surface of ["console","panel"] as const) {
   test(`${surface} distinguishes an unloaded receipt from a source mirror`, async({page})=>{
     await page.clock.install();
+    await page.clock.setFixedTime(new Date("2026-11-13T03:19:00Z"));
     await page.setViewportSize({width:1440,height:900});
     const command:AgentSessionCommand={id:"old",kind:"message",text:"Older input",status:"delivered",createdAt:"2026-11-12T00:00:00Z"};
     const recent:AgentSessionMessage={id:"recent",sourceId:"recent",role:"agent",text:"Newest answer",occurredAt:"2026-11-13T00:00:00Z"};
@@ -103,6 +109,7 @@ for(const surface of ["console","panel"] as const) {
 
   test(`${surface} preserves reading position through receipt and mirror updates`,async({page})=>{
     await page.clock.install();
+    await page.clock.setFixedTime(new Date("2026-11-13T03:19:00Z"));
     await page.setViewportSize({width:1440,height:900});
     let command:AgentSessionCommand={id:"mid-input",kind:"message",text:"Input waiting for native mirror",status:"delivering",createdAt:"2026-11-13T00:20:30Z"};
     let mirrored=false;
@@ -134,6 +141,7 @@ for(const surface of ["console","panel"] as const) {
 
   test(`${surface} retains unknown-delivery recovery outside loaded history`,async({page})=>{
     await page.clock.install();
+    await page.clock.setFixedTime(new Date("2026-11-13T03:19:00Z"));
     await page.setViewportSize({width:1440,height:900});
     const command:AgentSessionCommand={id:"unknown-old",kind:"message",text:"Unknown input",status:"delivery_unknown",createdAt:"2026-11-12T00:00:00Z"};
     const area=await openReceiptFixture(page,surface,()=>({command,history:{nextCursor:"older"},messages:[
@@ -143,3 +151,58 @@ for(const surface of ["console","panel"] as const) {
     await expect(page.getByRole("button",{name:"确认未收到，取回文本",exact:true})).toBeVisible();
   });
 }
+
+for(const surface of ["console","panel"] as const) for(const status of ["delivering","delivery_unknown"] as const) {
+  test(`${surface} keeps attachment identity position and renders its file once (${status})`,async({page})=>{
+    await page.clock.install();
+    await page.clock.setFixedTime(new Date("2026-11-13T03:19:00Z"));
+    await page.setViewportSize({width:1440,height:900});
+    const file={id:"file",filename:"audit.txt",kind:"document" as const,contentType:"text/plain",sizeBytes:3,sha256:"fixture",createdAt:"2026-11-12T00:00:00Z"};
+    const command:AgentSessionCommand={id:"attachment-command",kind:"message",text:"Review this file",status,createdAt:file.createdAt,attachments:[file]};
+    const area=await openReceiptFixture(page,surface,()=>({command,attachmentMessages:[{commandId:command.id,text:command.text,status,createdAt:command.createdAt,attachments:[file]}],messages:[
+      {id:"before",sourceId:"before",role:"agent",text:"Before",occurredAt:"2026-11-13T00:00:00Z"},
+      {id:"user",sourceId:command.id,role:"user",text:command.text,occurredAt:"2026-11-13T00:00:01Z"},
+      {id:"after",sourceId:"after",role:"agent",text:"After",occurredAt:"2026-11-13T00:00:02Z"},
+      {id:"wrapped",sourceId:"wrapped",role:"user",text:`${command.text}\n[MissionGo attachment command ${command.id}]`,occurredAt:"2026-11-13T00:00:03Z"},
+    ]}));
+    await expect(area.getByText(command.text,{exact:true})).toHaveCount(1);
+    await expect(area.locator(".agent-chat-attachment")).toHaveCount(1);
+    const order=await area.locator("[data-agent-message-id]").evaluateAll(nodes=>nodes.map(node=>(node as HTMLElement).dataset.agentMessageId));
+    expect(order).toEqual(["agent:before",`user:${command.id}`,"agent:after"]);
+  });
+}
+
+for(const surface of ["console","panel"] as const) {
+  test(`${surface} inserts a late old-page item between shared source anchors`,async({page})=>{
+    await page.clock.install();
+    await page.clock.setFixedTime(new Date("2026-11-13T03:19:00Z"));
+    await page.setViewportSize({width:1440,height:900});
+    const msg=(id:string):AgentSessionMessage=>({id,sourceId:id,role:"agent",text:id,occurredAt:"2026-11-13T00:00:00Z"});
+    const command:AgentSessionCommand={id:"cancelled",kind:"message",text:"",status:"cancelled",createdAt:"2026-11-12T00:00:00Z"};
+    const area=await openReceiptFixture(page,surface,()=>({command,messages:[msg("a"),msg("c"),msg("d")],history:{nextCursor:"source-page"}}),()=>[msg("a"),msg("b"),msg("c")]);
+    await area.getByRole("button",{name:"加载更早消息",exact:true}).click();
+    await expect(area.locator('[data-agent-message-id="agent:b"]')).toHaveCount(1);
+    const order=await area.locator("[data-agent-message-id]").evaluateAll(nodes=>nodes.map(node=>(node as HTMLElement).dataset.agentMessageId));
+    expect(order).toEqual(["agent:a","agent:b","agent:c","agent:d"]);
+  });
+}
+
+test("panel follows a new explicit send while the reader was in older history",async({page})=>{
+  await page.clock.install();
+  await page.clock.setFixedTime(new Date("2026-11-13T03:19:00Z"));
+  await page.setViewportSize({width:1440,height:900});
+  let command:AgentSessionCommand={id:"old-input",kind:"message",text:"Old input",status:"delivered",createdAt:"2026-11-12T00:00:00Z"};
+  const messages:AgentSessionMessage[]=[{id:"old",sourceId:command.id,role:"user",text:command.text,occurredAt:command.createdAt},
+    ...Array.from({length:70},(_,n)=>({id:`long-${n}`,sourceId:`long-${n}`,role:"agent" as const,text:`Long context ${n}\n\n${"Context ".repeat(80)}`,occurredAt:"2026-11-13T00:00:00Z"}))];
+  const area=await openReceiptFixture(page,"panel",()=>({command,messages}));
+  await page.route("**/api/v1/agent-sessions/receipt-history/commands",route=>{
+    command={id:"new-input",kind:"message",text:route.request().postDataJSON().text,status:"queued",createdAt:"2026-11-13T03:19:00Z"};
+    return route.fulfill({status:201,json:command});
+  });
+  await area.evaluate(box=>{box.scrollTop=box.scrollHeight/3;box.dispatchEvent(new Event("scroll",{bubbles:true}));});
+  const editor=page.locator(".agent-session-reply textarea");
+  await editor.fill("Show my newly sent input");
+  await page.locator(".agent-session-reply button[type=submit]").click();
+  await expect(area.getByText("Show my newly sent input",{exact:true})).toHaveCount(1);
+  await expect.poll(()=>area.evaluate(box=>box.scrollHeight-box.scrollTop-box.clientHeight)).toBeLessThanOrEqual(2);
+});

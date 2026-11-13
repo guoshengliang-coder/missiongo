@@ -11,6 +11,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
       colorScheme: theme, storageState: "./tests/ui/.auth/state.json" });
     const page = await context.newPage();
     await page.clock.install();
+    await page.clock.setFixedTime(new Date("2026-11-13T03:19:00Z"));
     const id = `and428-${width}-${theme}`;
     let count = 50;
     let withinWindow = false;

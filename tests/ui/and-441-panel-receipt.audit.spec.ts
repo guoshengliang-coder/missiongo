@@ -9,7 +9,8 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     await page.setViewportSize({ width, height: 900 });
     await page.emulateMedia({ colorScheme: theme });
     await page.clock.install();
-    const id = "panel-receipt", stamp = new Date().toISOString();
+    await page.clock.setFixedTime(new Date("2026-11-13T03:19:00Z"));
+    const id = "panel-receipt", stamp = "2026-11-13T00:00:00Z";
     let status = "queued", mirrored = false;
     const text = "这条回复保留投递与执行边界";
     const summary = { id, agentSessionId: id, dispatchId: "receipt-dispatch", agentKind: "codex", status: "idle",

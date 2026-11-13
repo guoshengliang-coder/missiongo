@@ -18,3 +18,13 @@ describe("ordered history merge",()=>{
     expect(ids(mergeMessages([message("a"),message("b")],[message("b"),message("a")]))).toEqual(["b","a"]);
   });
 });
+
+
+it("weaves partial overlap without moving cached-only records past their next source anchor",()=>{
+  expect(ids(mergeMessages([message("a"),message("b"),message("c"),message("d")],[message("b"),message("x"),message("d")]))).toEqual(["a","b","x","c","d"]);
+});
+it("keeps late items in the older page before already cached replies",()=>{
+  const page=[message("a"),message("b"),message("c")];
+  const cached=[message("a"),message("c"),message("d")];
+  expect(ids(mergeMessages(page,cached))).toEqual(["a","b","c","d"]);
+});

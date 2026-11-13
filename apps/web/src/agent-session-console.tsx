@@ -745,7 +745,7 @@ export function AgentSessionConsole({
     : sessionReplyPresentation(sessionQuery.data?.status ?? selected?.status ?? "unavailable", command, sendInFlight, stopCommand);
   const messages = projectConversationMessages(history.messages, Boolean(selected?.productId));
   const attachmentMessages = sessionQuery.data?.attachmentMessages ?? [];
-  const visibleMessages = agentChatMessages(messages, attachmentMessages, outgoing?.commandId);
+  const visibleMessages = agentChatMessages(messages, attachmentMessages);
   const planMessages = inlinePlanTranscript(withOutgoingReply(visibleMessages, outgoing), sessionQuery.data);
   const rememberReadingPosition = useTranscriptAnchor(messagesRef, `${selectedId}:${conversationOpen}`, followLatest, history.revision, history.messages, outgoingSignature);
   const activities = sessionQuery.data?.activities ?? [];

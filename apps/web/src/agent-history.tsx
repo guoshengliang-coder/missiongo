@@ -17,7 +17,21 @@ export function mergeMessages(older: readonly AgentSessionMessage[], latest: rea
   const indexes = new Map(prefix.map((message, index) => [historyMessageKey(message), index]));
   const split = incoming.reduce((start, message) => Math.min(start, indexes.get(historyMessageKey(message)) ?? prefix.length), prefix.length);
   const values = new Map([...prefix, ...incoming].map(message => [historyMessageKey(message), message]));
-  const order = new Set([...prefix.slice(0, split), ...incoming, ...prefix.slice(split)].map(historyMessageKey));
+  const incomingKeys = new Set(incoming.map(historyMessageKey));
+  const beforeAnchor = new Map<string, string[]>();
+  let pending: string[] = [];
+  for (const message of prefix.slice(split)) {
+    const key = historyMessageKey(message);
+    if (incomingKeys.has(key)) { beforeAnchor.set(key, pending); pending = []; }
+    else pending.push(key);
+  }
+  const order = new Set(prefix.slice(0, split).map(historyMessageKey));
+  for (const message of incoming) {
+    const key = historyMessageKey(message);
+    for (const cached of beforeAnchor.get(key) ?? []) order.add(cached);
+    order.add(key);
+  }
+  for (const cached of pending) order.add(cached);
   return [...order].map(key => values.get(key)!);
 }
 

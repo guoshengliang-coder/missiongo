@@ -75,7 +75,7 @@ describe("agent session message view", () => {
     ];
     expect(agentChatMessages(messages, attached).map((message) => message.text)).toEqual(["Look at this", "I see it"]);
     expect(agentChatMessages(messages, attached)[0]?.attachmentData).toEqual([attachment]);
-    expect(agentChatMessages(messages, attached, "command-1").map((message) => message.text)).toEqual(["I see it"]);
+    expect(withOutgoingReply(agentChatMessages(messages, attached), {commandId:"command-1",text:"Look at this",occurredAt:attached[0]!.createdAt,status:"delivering"}).map(message=>message.text)).toEqual(["Look at this", "I see it"]);
   });
 
   it("drops a card whose ask went away but keeps answered history (AND-239)", () => {
@@ -810,5 +810,26 @@ describe("receipt source state", () => {
   it("does not treat unknown timestamps as an unloaded source boundary", () => {
     expect(replySourceState({...command,createdAt:""},recent,[],true)).toBe("unmatched");
     expect(replySourceState(command,[{...recent[0]!,occurredAt:""}],[],true)).toBe("unmatched");
+  });
+});
+
+
+describe("audited attachment receipt identity",()=>{
+  const file={id:"f",filename:"photo.png",kind:"image" as const,contentType:"image/png",sizeBytes:3,sha256:"abc",createdAt:"2026-11-13T00:00:00Z"};
+  const attached=[{commandId:"cmd",text:"Original input",createdAt:"2026-11-12T00:00:00Z",status:"delivered" as const,attachments:[file]}];
+  const source=[{id:"a",sourceId:"a",role:"agent" as const,text:"Before",occurredAt:"2026-11-13T00:00:00Z"},
+    {id:"native",sourceId:"cmd",role:"user" as const,text:"Original input",occurredAt:"2026-11-13T00:00:01Z"},
+    {id:"b",sourceId:"b",role:"agent" as const,text:"After",occurredAt:"2026-11-13T00:00:02Z"}];
+  it.each(["queued","delivering","delivery_unknown","failed"] as const)("retains the exact source position for %s despite clock drift",status=>{
+    const output=withOutgoingReply(agentChatMessages(source,attached),{commandId:"cmd",text:"Original input",occurredAt:attached[0]!.createdAt,status});
+    expect(output.map(message=>message.sourceId)).toEqual(["a","cmd","b"]);
+    expect(output[1]?.outgoing?.status).toBe(status);
+    expect(output[1]?.attachmentData).toEqual([file]);
+  });
+  it("collapses every mirror of one attachment command without moving its first source position",()=>{
+    const mirrors=[...source,{id:"second",sourceId:"wrapped",role:"user" as const,text:"Original input\n[MissionGo attachment command cmd]",occurredAt:"2026-11-13T00:00:03Z"}];
+    const output=agentChatMessages(mirrors,attached);
+    expect(output.map(message=>message.sourceId)).toEqual(["a","cmd","b"]);
+    expect(output.filter(message=>message.role==="user")).toHaveLength(1);
   });
 });

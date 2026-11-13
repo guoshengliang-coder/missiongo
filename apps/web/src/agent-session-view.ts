@@ -46,16 +46,18 @@ export function isWithdrawnCard(message: { readonly questions?: readonly AgentSe
 export function agentChatMessages(
   messages: readonly AgentSessionMessage[],
   attachmentMessages: NonNullable<AgentSession["attachmentMessages"]>,
-  outgoingCommandId?: string,
 ): AgentChatMessage[] {
   const result: AgentChatMessage[] = messages.filter(message => isConversationMessage(message) && !isWithdrawnCard(message));
   for (const attachment of attachmentMessages) {
-    const index = result.findIndex(message => message.role === "user" && (message.sourceId === attachment.commandId
-      || message.text.includes(`[MissionGo attachment command ${attachment.commandId}]`)));
+    const matches = (message: AgentChatMessage) => message.role === "user" && (message.sourceId === attachment.commandId
+      || message.text.includes(`[MissionGo attachment command ${attachment.commandId}]`));
+    const index = result.findIndex(matches);
     const message: AgentChatMessage = { id: `attachment-${attachment.commandId}`, sourceId: attachment.commandId,
       role: "user", text: attachment.text, occurredAt: attachment.createdAt, attachmentData: attachment.attachments };
-    if (attachment.commandId === outgoingCommandId) { if (index >= 0) result.splice(index, 1); continue; }
-    if (index >= 0) result.splice(index, 1, message);
+    if (index >= 0) {
+      const suffix = result.slice(index + 1).filter(message => !matches(message));
+      result.splice(index, result.length - index, message, ...suffix);
+    }
     else insertChatMessage(result, message);
   }
   return result;

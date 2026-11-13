@@ -15,7 +15,8 @@ for (const width of [320, 768, 1440]) for (const theme of ["light", "dark"] as c
       colorScheme: theme, storageState: "./tests/ui/.auth/state.json" });
     const page = await context.newPage();
     await page.clock.install();
-    const id = "and371-session"; const stamp = new Date().toISOString();
+    await page.clock.setFixedTime(new Date("2026-11-13T03:19:00Z"));
+    const id = "and371-session"; const stamp = "2026-11-13T00:00:00Z";
     const attachment = { id: "source-file", filename: "notes.txt", kind: "document" as const, contentType: "text/plain", sizeBytes: 5, sha256: "fixture" };
     let command: AgentSessionCommand = { id: "queued-message", kind: "message", text: "那你找一个需要审批的内容来测试下", status: "queued", createdAt: stamp, attachments: [attachment] };
     let rejectCancel = true; let imageFailed = false; let imagePolls = 0; const artifactRequests: string[] = []; let cancels = 0;
@@ -129,7 +130,8 @@ for (const width of [320, 768, 1440]) for (const theme of ["light", "dark"] as c
 }
 
 test("recalling attachments stays bound to the original session and reports partial restore failures", async ({ page }) => {
-  const stamp = new Date().toISOString();
+  await page.clock.setFixedTime(new Date("2026-11-13T03:19:00Z"));
+  const stamp = "2026-11-13T00:00:00Z";
   const attachments = ["notes.txt", "missing.txt"].map((filename) => ({ id: filename, filename, kind: "document", contentType: "text/plain", sizeBytes: 5, sha256: "fixture" }));
   let cancelled = false; let releaseFiles!: () => void;
   const files = new Promise<void>((resolve) => { releaseFiles = resolve; });
