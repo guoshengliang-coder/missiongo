@@ -4,6 +4,7 @@ import {
   activityLabelKey,
   dispatchActivityLabelKey,
   agentChatMessages,
+  withOutgoingReply,
   projectConversationMessages,
   approvalNeedsAction,
   approvalTitleKey,
@@ -38,6 +39,7 @@ import {
   questionAnswerValue,
   questionAnswerValues,
   replyMirrorArrived,
+  replySourceState,
   toggleQuestionOption,
   replyBlockedLabelKey,
   sessionCountsAsUnread,
@@ -72,7 +74,7 @@ describe("agent session message view", () => {
     ];
     expect(agentChatMessages(messages, attached).map((message) => message.text)).toEqual(["Look at this", "I see it"]);
     expect(agentChatMessages(messages, attached)[0]?.attachmentData).toEqual([attachment]);
-    expect(agentChatMessages(messages, attached, "command-1").map((message) => message.text)).toEqual(["I see it"]);
+    expect(withOutgoingReply(agentChatMessages(messages, attached), {commandId:"command-1",text:"Look at this",occurredAt:attached[0]!.createdAt,status:"delivering"}).map(message=>message.text)).toEqual(["Look at this", "I see it"]);
   });
 
   it("drops a card whose ask went away but keeps answered history (AND-239)", () => {
@@ -410,10 +412,10 @@ describe("agent session message view", () => {
     expect(replyMirrorArrived({ ...command, status: "delivered" }, [
       { id: "m2", sourceId: "m2", role: "user", text: "继续", occurredAt: "2026-09-25T00:00:30Z" },
     ], [])).toBe(true);
-    // Clock drift: a mirror stamped slightly before the command still counts.
+    // Without identity, an earlier same-text record may be the previous input.
     expect(replyMirrorArrived({ ...command, status: "delivered" }, [
       { id: "m3", sourceId: "m3", role: "user", text: "继续", occurredAt: "2026-09-24T23:59:30Z" },
-    ], [])).toBe(true);
+    ], [])).toBe(false);
 
     const attachmentCommand = {
       id: "command-2", kind: "message", text: "看图", createdAt: "2026-09-25T00:00:00Z", status: "delivered",
@@ -744,5 +746,85 @@ describe("message delivery presentation (AND-487)", () => {
     expect(sessionReplyPresentation("idle", message, false, stop)).toBeUndefined();
     expect(sessionReplyPresentation("idle", { ...message, createdAt: "2026-11-09T00:03:00Z" }, false, stop)?.iconStatus).toBe("active");
     expect(sessionReplyPresentation("idle", message, true, stop)?.labelKey).toBe("agentReplySendingShort");
+  });
+});
+
+
+describe("outgoing transcript placement", () => {
+  const message = (sourceId: string, occurredAt: string) => ({id: sourceId, sourceId, role: "agent" as const, text: sourceId, occurredAt});
+  it("places yesterday's receipt before today's reply without reordering source messages", () => {
+    const source = [message("a", "2026-11-12T12:00:00Z"), message("b", "2026-11-12T16:54:00Z")];
+    const outgoing = {text: "允许", occurredAt: "2026-11-12T12:46:00Z", status: "delivered" as const, commandId: "command"};
+    expect(withOutgoingReply(source, outgoing).map(m => m.sourceId)).toEqual(["a", "command", "b"]);
+    expect(withOutgoingReply([...source].reverse(), outgoing).filter(m => !m.outgoing)).toEqual([...source].reverse());
+  });
+  it("preserves source order when clocks disagree, including attachment replacement", () => {
+    const source = [message("newer-clock", "2026-11-12T12:00:00Z"), message("older-clock", "2026-11-12T11:00:00Z")];
+    expect(agentChatMessages(source, []).map(m => m.sourceId)).toEqual(["newer-clock", "older-clock"]);
+    expect(withOutgoingReply(source, {text: "x", occurredAt: "", status: "failed"}).slice(0, 2)).toEqual(source);
+  });
+});
+
+describe("command/source identity", () => {
+  const command = {id:"input-2",kind:"message" as const,text:"继续",createdAt:"2026-11-13T00:00:00Z",status:"delivered" as const};
+  const user = (sourceId:string, text="继续", occurredAt=command.createdAt) => ({id:sourceId,sourceId,role:"user" as const,text,occurredAt});
+  it("prefers exact source identity even when source clocks and wrapped text differ", () => {
+    expect(replyMirrorArrived(command,[user(command.id,"Native wrapping","2020-01-01T00:00:00Z")],[])).toBe(true);
+    expect(replyMirrorArrived(command,[user(`answer-${command.id}`)],[])).toBe(true);
+    expect(replyMirrorArrived({...command,sourceMessageId:"native-user"},[user("native-user","wrapped")],[])).toBe(true);
+  });
+  it("does not turn repeated words or a much later input into an association", () => {
+    expect(replyMirrorArrived(command,[user("a","继续","2026-11-13T00:00:10Z"),user("b","继续","2026-11-13T00:00:20Z")],[])).toBe(false);
+    expect(replyMirrorArrived(command,[user("previous-same-second")],[])).toBe(false);
+    expect(replyMirrorArrived(command,[user("later","继续","2026-11-14T00:00:00Z")],[])).toBe(false);
+    expect(replyMirrorArrived({...command,sourceMessageId:"missing"},[user("same-text")],[])).toBe(false);
+    expect(replyMirrorArrived(command,[{...user(command.id),role:"agent"}],[])).toBe(false);
+  });
+  it("keeps a pending receipt in its native position instead of duplicating it", () => {
+    const native=[user(command.id),{...user("response","Reply"),role:"agent" as const}];
+    const outgoing=outgoingReply({...command,status:"delivering"},undefined,true)!;
+    const visible=withOutgoingReply(native,outgoing);
+    expect(visible).toHaveLength(2);
+    expect(visible[0]?.outgoing?.commandId).toBe(command.id);
+    expect(visible[1]).toEqual(native[1]);
+  });
+});
+
+
+describe("receipt source state", () => {
+  const command = {id:"old-input",kind:"message" as const,text:"继续",status:"delivered" as const,createdAt:"2026-11-12T00:00:00Z"};
+  const recent = [{id:"answer",sourceId:"answer",role:"agent" as const,text:"Later",occurredAt:"2026-11-13T00:00:00Z"}];
+  it("distinguishes an unloaded boundary from an observed source message", () => {
+    expect(replySourceState(command,recent,[],true)).toBe("outside_window");
+    expect(replySourceState(command,recent,[],false)).toBe("unmatched");
+    expect(replySourceState(command,[{...recent[0]!,sourceId:command.id,role:"user"}],[],true)).toBe("matched");
+  });
+  it.each(["queued","delivering","delivery_unknown","failed"] as const)("never hides a %s receipt because it is old", status => {
+    expect(replySourceState({...command,status},recent,[],true)).toBe("unmatched");
+  });
+  it("does not treat unknown timestamps as an unloaded source boundary", () => {
+    expect(replySourceState({...command,createdAt:""},recent,[],true)).toBe("unmatched");
+    expect(replySourceState(command,[{...recent[0]!,occurredAt:""}],[],true)).toBe("unmatched");
+  });
+});
+
+
+describe("audited attachment receipt identity",()=>{
+  const file={id:"f",filename:"photo.png",kind:"image" as const,contentType:"image/png",sizeBytes:3,sha256:"abc",createdAt:"2026-11-13T00:00:00Z"};
+  const attached=[{commandId:"cmd",text:"Original input",createdAt:"2026-11-12T00:00:00Z",status:"delivered" as const,attachments:[file]}];
+  const source=[{id:"a",sourceId:"a",role:"agent" as const,text:"Before",occurredAt:"2026-11-13T00:00:00Z"},
+    {id:"native",sourceId:"cmd",role:"user" as const,text:"Original input",occurredAt:"2026-11-13T00:00:01Z"},
+    {id:"b",sourceId:"b",role:"agent" as const,text:"After",occurredAt:"2026-11-13T00:00:02Z"}];
+  it.each(["queued","delivering","delivery_unknown","failed"] as const)("retains the exact source position for %s despite clock drift",status=>{
+    const output=withOutgoingReply(agentChatMessages(source,attached),{commandId:"cmd",text:"Original input",occurredAt:attached[0]!.createdAt,status});
+    expect(output.map(message=>message.sourceId)).toEqual(["a","cmd","b"]);
+    expect(output[1]?.outgoing?.status).toBe(status);
+    expect(output[1]?.attachmentData).toEqual([file]);
+  });
+  it("collapses every mirror of one attachment command without moving its first source position",()=>{
+    const mirrors=[...source,{id:"second",sourceId:"wrapped",role:"user" as const,text:"Original input\n[MissionGo attachment command cmd]",occurredAt:"2026-11-13T00:00:03Z"}];
+    const output=agentChatMessages(mirrors,attached);
+    expect(output.map(message=>message.sourceId)).toEqual(["a","cmd","b"]);
+    expect(output.filter(message=>message.role==="user")).toHaveLength(1);
   });
 });

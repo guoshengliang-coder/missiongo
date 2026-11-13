@@ -1,3 +1,4 @@
+import { commandSourceMessage } from "./command-source-message.js";
 import { SessionSendRequests } from "./session-send-requests.js";
 import { observeMessageTimes, recordMessageTime } from "./session-message-clock.js";
 import { acknowledgeSessionUnread, observeSessionUnread } from "./session-unread.js";
@@ -92,6 +93,8 @@ export interface AgentSessionTurnState {
 
 export interface AgentSessionCommand {
   readonly id: string;
+  /** Persisted source association; delivery alone is not execution evidence. */
+  readonly sourceMessageId?: string;
   readonly kind: "message" | "interrupt";
   readonly text: string;
   readonly planApprovalRevision?: string | undefined;
@@ -2308,6 +2311,7 @@ export class AgentSessionStore {
     return {
       id: row.id,
       kind: row.kind,
+      ...(row.kind === "message" ? commandSourceMessage(this.database.connection, row.id) : {}),
       text: row.text,
       ...(new ImplementationPlans(this.database).commandRevision(row.id) ? { planApprovalRevision: new ImplementationPlans(this.database).commandRevision(row.id) } : {}),
       ...(attachments.length ? { attachments } : {}),

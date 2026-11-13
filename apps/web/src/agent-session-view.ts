@@ -15,7 +15,7 @@ import type {
   AgentSessionSummary,
 } from "./types";
 
-export type AgentChatMessage = AgentSessionMessage & { readonly attachmentData?: readonly AgentSessionAttachment[] };
+export type AgentChatMessage = AgentSessionMessage & { readonly outgoing?: OutgoingReply; readonly attachmentData?: readonly AgentSessionAttachment[] };
 
 /** A question the console still draws: an open ask, or an answered card kept
  *  as settled history. A `withdrawn` one is neither — the request stopped
@@ -46,18 +46,40 @@ export function isWithdrawnCard(message: { readonly questions?: readonly AgentSe
 export function agentChatMessages(
   messages: readonly AgentSessionMessage[],
   attachmentMessages: NonNullable<AgentSession["attachmentMessages"]>,
-  outgoingCommandId?: string,
 ): AgentChatMessage[] {
-  const hidden = new Set(attachmentMessages.map((message) => message.commandId));
-  return [
-    ...messages.filter((message) => isConversationMessage(message) && !isWithdrawnCard(message)
-      && (message.role !== "user" || ![...hidden].some((id) =>
-        message.sourceId === id || message.text.includes(`[MissionGo attachment command ${id}]`)))),
-    ...attachmentMessages.filter((message) => message.commandId !== outgoingCommandId)
-      .map((message) => ({ id: `attachment-${message.commandId}`, sourceId: message.commandId,
-        role: "user" as const, text: message.text, occurredAt: message.createdAt,
-        attachmentData: message.attachments })),
-  ].sort((a, b) => Date.parse(a.occurredAt) - Date.parse(b.occurredAt));
+  const result: AgentChatMessage[] = messages.filter(message => isConversationMessage(message) && !isWithdrawnCard(message));
+  for (const attachment of attachmentMessages) {
+    const matches = (message: AgentChatMessage) => message.role === "user" && (message.sourceId === attachment.commandId
+      || message.text.includes(`[MissionGo attachment command ${attachment.commandId}]`));
+    const index = result.findIndex(matches);
+    const message: AgentChatMessage = { id: `attachment-${attachment.commandId}`, sourceId: attachment.commandId,
+      role: "user", text: attachment.text, occurredAt: attachment.createdAt, attachmentData: attachment.attachments };
+    if (index >= 0) {
+      const suffix = result.slice(index + 1).filter(message => !matches(message));
+      result.splice(index, result.length - index, message, ...suffix);
+    }
+    else insertChatMessage(result, message);
+  }
+  return result;
+}
+
+/** Insert console-owned records without sorting (or changing) the source transcript. */
+function insertChatMessage(messages: AgentChatMessage[], message: AgentChatMessage): void {
+  const time = Date.parse(message.occurredAt);
+  const index = Number.isFinite(time) ? messages.findIndex(existing => Date.parse(existing.occurredAt) > time) : -1;
+  messages.splice(index < 0 ? messages.length : index, 0, message);
+}
+
+export function withOutgoingReply(messages: readonly AgentChatMessage[], outgoing: OutgoingReply | null): AgentChatMessage[] {
+  const result = [...messages];
+  if (outgoing) {
+    const index = result.findIndex(message => message.role === "user" && [outgoing.sourceMessageId, outgoing.commandId, outgoing.commandId ? `answer-${outgoing.commandId}` : undefined].filter(Boolean).includes(message.sourceId));
+    if (index >= 0) { result[index] = {...result[index]!, outgoing}; return result; }
+    insertChatMessage(result, { id: `outgoing-${outgoing.commandId ?? "request"}`,
+    sourceId: outgoing.commandId ?? "outgoing-request", role: "user", text: outgoing.text,
+    occurredAt: outgoing.occurredAt, outgoing });
+  }
+  return result;
 }
 
 export const DEFAULT_AGENT_SESSION_FILTER = "all" as const;
@@ -376,6 +398,7 @@ export interface OutgoingReply {
   readonly status: "sending" | "queued" | "delivering" | "delivered" | "delivery_unknown" | "failed";
   readonly error?: string;
   readonly commandId?: string;
+  readonly sourceMessageId?: string;
 }
 
 const outgoingReplyStatusKeys = {
@@ -467,6 +490,7 @@ export function outgoingReply(
       occurredAt: command.createdAt,
       status: command.status,
       commandId: command.id,
+      ...(command.sourceMessageId ? {sourceMessageId: command.sourceMessageId} : {}),
     };
   }
   if (command.status !== "queued" && command.status !== "delivering"
@@ -477,39 +501,52 @@ export function outgoingReply(
     status: command.status,
     ...(command.error ? { error: command.error } : {}),
     commandId: command.id,
+    ...(command.sourceMessageId ? {sourceMessageId: command.sourceMessageId} : {}),
   };
 }
 
-/**
- * Whether the display receipt is replaced by a mirror or precedes the loaded
- * history window. The latter is a display policy, not evidence of execution.
- * An attachment command mirrors as its own attachment bubble keyed by command
- * id; a plain reply mirrors as a user message with the same text from around
- * the moment the command was created. The clock tolerance is generous on
- * purpose: source and server timestamps can drift, and mistaking an older
- * same-text message for the mirror only hides a bubble the mirror replaces.
- */
-export function replyMirrorArrived(
+export type ReplySourceState = "matched" | "outside_window" | "unmatched";
+
+/** A display boundary is not a claim that the command was executed. */
+export function commandPrecedesLoadedWindow(command: AgentSessionCommand | undefined,
+  messages: readonly AgentSessionMessage[], hasOlderHistory: boolean): boolean {
+  const created = Date.parse(command?.createdAt ?? "");
+  if (!hasOlderHistory || !Number.isFinite(created)) return false;
+  const times = messages.filter(isConversationMessage).map(message => Date.parse(message.occurredAt)).filter(Number.isFinite);
+  return times.length > 0 && times.every(time => created < time);
+}
+
+export function replySourceState(
   command: AgentSessionCommand | undefined,
   messages: readonly AgentSessionMessage[],
   attachmentMessages: NonNullable<AgentSession["attachmentMessages"]>,
   hasOlderHistory = false,
-): boolean {
-  if (!command) return true;
-  if (command.attachments?.length) {
-    return attachmentMessages.some((message) => message.commandId === command.id);
-  }
+): ReplySourceState {
+  if (!command) return "matched";
+  const userMessages = messages.filter(message => message.role === "user" && isConversationMessage(message));
+  const explicitIds = new Set([command.id, `answer-${command.id}`, ...(command.sourceMessageId ? [command.sourceMessageId] : [])]);
+  if (command.attachments?.length
+    ? attachmentMessages.some(message => message.commandId === command.id)
+    : userMessages.some(message => explicitIds.has(message.sourceId))) return "matched";
   const created = Date.parse(command.createdAt);
-  // A recent-history window cannot prove that an older reply never mirrored.
-  // Suppress only its display receipt, and only with an explicit older-page
-  // boundary; complete short histories must retain AND-219's pending receipt.
-  if (command.status === "delivered" && hasOlderHistory && Number.isFinite(created)) {
-    const times = messages.map(message => Date.parse(message.occurredAt)).filter(Number.isFinite);
-    if (times.length > 0 && times.every(time => created < time)) return true;
+  // Without identity, an equal/earlier same-text input may be a previous command.
+  // Clock drift is tolerated only by exact source identity, not by guessing.
+  if (!command.attachments?.length && !command.sourceMessageId && Number.isFinite(created)) {
+    const delivered = Date.parse(command.deliveredAt ?? "");
+    const ceiling = Number.isFinite(delivered) ? Math.max(created, delivered) + 60_000 : created + 5 * 60_000;
+    if (userMessages.filter(message => message.text === command.text
+      && Date.parse(message.occurredAt) > created && Date.parse(message.occurredAt) <= ceiling).length === 1) return "matched";
   }
-  const floor = Number.isNaN(created) ? Number.NEGATIVE_INFINITY : created - 60_000;
-  return messages.some((message) => message.role === "user" && message.text === command.text
-    && Date.parse(message.occurredAt) >= floor);
+  return !command.attachments?.length && command.status === "delivered" && commandPrecedesLoadedWindow(command, messages, hasOlderHistory)
+    ? "outside_window" : "unmatched";
+}
+
+/** Compatibility projection: only the display receipt is suppressed outside
+ * the window. Its persisted source and execution facts remain independent. */
+export function replyMirrorArrived(command: AgentSessionCommand | undefined,
+  messages: readonly AgentSessionMessage[], attachmentMessages: NonNullable<AgentSession["attachmentMessages"]>,
+  hasOlderHistory = false): boolean {
+  return replySourceState(command, messages, attachmentMessages, hasOlderHistory) !== "unmatched";
 }
 
 /**
@@ -550,8 +587,8 @@ export function isNearMessageBottom(
  * merely arrive keep respecting the follow-latest position: scrolling up is a
  * request to read something else, not an invitation to be pulled back down.
  */
-export function shouldScrollMessagesAfterChange(outgoingChanged: boolean, followLatest: boolean): boolean {
-  return outgoingChanged || followLatest;
+export function shouldScrollMessagesAfterChange(replySubmitted: boolean, followLatest: boolean): boolean {
+  return replySubmitted || followLatest;
 }
 
 /**

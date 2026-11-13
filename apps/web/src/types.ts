@@ -532,6 +532,8 @@ export interface AgentSessionMessage {
 
 export interface AgentSessionCommand {
   readonly id: string;
+  /** Persisted source association; delivery alone is not execution evidence. */
+  readonly sourceMessageId?: string;
   readonly kind: "message" | "interrupt";
   readonly text: string;
   readonly attachments?: readonly AgentSessionAttachment[];

@@ -1,3 +1,4 @@
+import { useTranscriptAnchor, revealTranscriptReply } from "./transcript-anchor";
 import { DocumentPlanRecovery } from "./document-plan-recovery";
 import { CommonCommandMenu, CommandMessageMenu, useCommandTarget } from "./common-commands";
 import { SessionSender, SendUnconfirmed, SendSuperseded, commandNotDelivered, sendAttemptHasDraft, type SendInput } from "./session-send";
@@ -47,7 +48,7 @@ import {
 import { api, type ApiError } from "./api";
 import { clearDeniedSession, isSessionAccessError, recoverAgentSession } from "./agent-session-recovery";
 import { AgentSessionFailureNotice } from "./agent-session-failure-notice";
-import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, SessionStatusIcon, isHistoryLimited, AgentSessionError } from "./agent-session-feedback";
+import { AgentHistoryNotice, AgentReplyFeedback, AgentReplySourceNotice, AgentRunDetails, SessionStatusIcon, isHistoryLimited, AgentSessionError } from "./agent-session-feedback";
 import { AgentIcon } from "./agent-icons";
 import {
   activityLabelKey,
@@ -58,6 +59,7 @@ import {
   waitingStatusLabelKey,
   planApprovalStatusKey,
   agentChatMessages,
+  withOutgoingReply,
   projectConversationMessages,
   agentSessionMatches,
   agentSessionCategory,
@@ -80,7 +82,8 @@ import {
   outgoingReplyStatusKey,
   replyBlockedLabelKey,
   externalProgressLabelKey,
-  replyMirrorArrived,
+  replySourceState,
+  commandPrecedesLoadedWindow,
   sessionCountsAsUnread,
   sessionInlineError,
   sessionReplyDraft,
@@ -286,6 +289,7 @@ export function AgentSessionConsole({
   const conversationOpenRef = useRef(false);
   const previousMessagesRef = useRef<readonly { id: string; text: string }[]>([]);
   const previousOutgoingRef = useRef("");
+  const previousSubmittedRef = useRef<string | undefined>(undefined);
   const unseenMessageIdsRef = useRef(new Set<string>());
   const hasSessionsError = sessionsError !== null && sessionsError !== undefined;
 
@@ -764,10 +768,13 @@ export function AgentSessionConsole({
   const previousHistoryRevision = useRef(0);
   const mirrorMessages = history.messages;
   const mirrorAttachments = sessionQuery.data?.attachmentMessages ?? [];
-  const outgoingCandidate = outgoingReply(command, sendingRequest,
-    replyMirrorArrived(command, mirrorMessages, mirrorAttachments, history.hasMore));
+  const sourceState = replySourceState(command, mirrorMessages, mirrorAttachments, history.hasMore);
+  const outgoingCandidate = outgoingReply(command, sendingRequest, sourceState !== "unmatched");
   const outgoing = outgoingCandidate?.commandId === dismissedCommandId ? null : outgoingCandidate;
   const outgoingSignature = outgoing ? `${selectedId}:${outgoing.commandId ?? "request"}:${outgoing.status}:${outgoing.text}` : "";
+  const revealOldReply = command && ["failed", "delivery_unknown"].includes(command.status)
+    && commandPrecedesLoadedWindow(command, history.messages, history.hasMore)
+    ? () => revealTranscriptReply(messagesRef.current, [command.id, `answer-${command.id}`, ...(command.sourceMessageId ? [command.sourceMessageId] : [])]) : undefined;
   const sessionStatus = effectiveAgentSessionStatus(
     sessionQuery.data?.status ?? selected?.status ?? "unavailable",
     command,
@@ -779,8 +786,9 @@ export function AgentSessionConsole({
     : sessionReplyPresentation(sessionQuery.data?.status ?? selected?.status ?? "unavailable", command, sendInFlight, stopCommand);
   const messages = projectConversationMessages(history.messages, Boolean(selected?.productId));
   const attachmentMessages = sessionQuery.data?.attachmentMessages ?? [];
-  const visibleMessages = agentChatMessages(messages, attachmentMessages, outgoing?.commandId);
-  const planMessages = inlinePlanTranscript(visibleMessages, sessionQuery.data);
+  const visibleMessages = agentChatMessages(messages, attachmentMessages);
+  const planMessages = inlinePlanTranscript(withOutgoingReply(visibleMessages, outgoing), sessionQuery.data);
+  const rememberReadingPosition = useTranscriptAnchor(messagesRef, `${selectedId}:${conversationOpen}`, followLatest, history.revision, history.messages, outgoingSignature);
   const activities = sessionQuery.data?.activities ?? [];
   const turnState = sessionQuery.data?.turnState ?? selected?.turnState;
   // Detail and list notifications may arrive separately. Use the same foreground rule as
@@ -893,6 +901,8 @@ export function AgentSessionConsole({
     const resetView = shouldResetMessageView(changedSession, conversationOpenRef.current, conversationOpen);
     const previousMessages = previousMessagesRef.current;
     const outgoingChanged = previousOutgoingRef.current !== outgoingSignature;
+    const replySubmitted = Boolean(sendAttempt?.requestKey && previousSubmittedRef.current !== sendAttempt.requestKey);
+    previousSubmittedRef.current = sendAttempt?.requestKey;
     observedSessionRef.current = selectedId;
     conversationOpenRef.current = conversationOpen;
     previousMessagesRef.current = messages;
@@ -912,13 +922,13 @@ export function AgentSessionConsole({
       return; // Prepending history is neither new output nor an unread event.
     }
     const changedIds = changedMessageIds(previousMessages, messages);
-    if (changedIds.length === 0 && !outgoingChanged) return;
-    if (shouldScrollMessagesAfterChange(outgoingChanged, followLatest)) scrollToLatest();
+    if (changedIds.length === 0 && !outgoingChanged && !replySubmitted) return;
+    if (shouldScrollMessagesAfterChange(replySubmitted, followLatest)) scrollToLatest();
     else if (changedIds.length > 0) {
       changedIds.forEach((id) => unseenMessageIdsRef.current.add(id));
       setNewMessageCount(unseenMessageIdsRef.current.size);
     }
-  }, [conversationOpen, followLatest, messages, outgoingSignature, scrollToLatest, selectedId, history.revision]);
+  }, [conversationOpen, followLatest, messages, outgoingSignature, scrollToLatest, selectedId, history.revision, sendAttempt?.requestKey]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -1345,6 +1355,7 @@ export function AgentSessionConsole({
                 onScroll={(event) => {
                   const nearBottom = isNearMessageBottom(event.currentTarget);
                   setFollowLatest(nearBottom);
+                  rememberReadingPosition();
                   if (!nearBottom && !history.error && event.currentTarget.scrollTop <= 48) void history.loadMore();
                   if (nearBottom) {
                     unseenMessageIdsRef.current.clear();
@@ -1418,6 +1429,62 @@ export function AgentSessionConsole({
                 )}
                 <AgentProgressReports session={sessionQuery.data} />
                 {planMessages.messages.map((message) => {
+                  if (message.outgoing) {
+                    const outgoing = message.outgoing;
+                    return (
+
+                  <div key={message.id} data-agent-message-id={`user:${message.sourceId}`} className={`agent-console-outgoing agent-console-outgoing-${outgoing.status}`}>
+                  <article className={`agent-console-message agent-console-message-user agent-console-message-outgoing agent-console-message-outgoing-${outgoing.status}`}>
+                    <header className="agent-console-message-meta">
+                      <time dateTime={outgoing.occurredAt}>{formatAgentMessageTime(outgoing.occurredAt, locale)}</time>
+                    </header>
+                    <MarkdownText>{permissionReplyText((sessionQuery.data?.currentRequests ?? sessionQuery.data?.messages)?.flatMap(message => message.questions ?? []) ?? [], outgoing.text)}</MarkdownText>
+                    {command && command.id === outgoing.commandId && command.attachments && selected.agentSessionId
+                      && <ChatAttachments sessionId={selected.agentSessionId} attachments={command.attachments} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />}
+                    {sendingSelected && sendAttempt?.files.length ? <div className="agent-chat-draft-files">
+                      {sendAttempt.files.map((file, index) => <DraftChatFile key={`${file.name}-${index}`} file={file} disabled />)}
+                    </div> : null}
+                  </article>
+                    {!sendingSelected && <AgentReplyFeedback status={outgoing.status} cancelling={cancellingSelected}
+                      onEdit={outgoing.commandId && selected.canReply ? () => cancel.mutate({ sessionId: selected.agentSessionId!, commandId: outgoing.commandId!, text: outgoing.text }) : undefined} />}
+                    {(outgoing.status === "failed" || outgoing.status === "delivery_unknown") && (
+                    <footer className="agent-console-message-delivery" role="alert">
+                      <CircleAlert size={14} />
+                      <span>{outgoing.status === "delivery_unknown"
+                        ? t("agentSessionReplyDeliveryUnknown", { agent: agentName })
+                        : t(outgoingReplyStatusKey(outgoing.status))}{outgoing.error ? `: ${outgoing.error}` : ""}</span>
+                      {outgoing.status === "delivery_unknown" && outgoing.commandId
+                        && sessionQuery.data?.canResolveDelivery && (
+                        <>
+                          <button type="button" className="text-button" disabled={resolveDelivery.isPending}
+                            onClick={() => resolveDelivery.mutate({ sessionId: selected.agentSessionId!, commandId: outgoing.commandId!, outcome: "received", text: outgoing.text })}>
+                            {t("agentSessionReplyConfirmReceived", { agent: agentName })}
+                          </button>
+                          <button type="button" className="text-button" disabled={resolveDelivery.isPending}
+                            onClick={() => resolveDelivery.mutate({ sessionId: selected.agentSessionId!, commandId: outgoing.commandId!, outcome: "not_received", text: outgoing.text })}>
+                            {t("agentSessionReplyConfirmNotReceived")}
+                          </button>
+                        </>
+                      )}
+                      {outgoing.status === "failed" && (
+                        <button
+                          type="button"
+                          className="text-button"
+                          onClick={() => {
+                            setReply(outgoing.text);
+                            if (outgoing.commandId) setDismissedCommandId(outgoing.commandId);
+                            else send.reset();
+                          }}
+                        >
+                          {t("agentSessionEditAndRetry")}
+                        </button>
+                      )}
+                    </footer>
+                    )}
+                  </div>
+
+                    );
+                  }
                   const labelKey = messageLabelKey(message.role, selected.agentKind);
                   return (
                     <article key={message.id} data-agent-message-id={`${message.role}:${message.sourceId || message.id}`} className={`agent-console-message agent-console-message-${message.role}`}>
@@ -1491,57 +1558,7 @@ export function AgentSessionConsole({
                     )}
                   </div>
                 )}
-                {outgoing && (
-                  <div className={`agent-console-outgoing agent-console-outgoing-${outgoing.status}`}>
-                  <article className={`agent-console-message agent-console-message-user agent-console-message-outgoing agent-console-message-outgoing-${outgoing.status}`}>
-                    <header className="agent-console-message-meta">
-                      <time dateTime={outgoing.occurredAt}>{formatAgentMessageTime(outgoing.occurredAt, locale)}</time>
-                    </header>
-                    <MarkdownText>{permissionReplyText((sessionQuery.data?.currentRequests ?? sessionQuery.data?.messages)?.flatMap(message => message.questions ?? []) ?? [], outgoing.text)}</MarkdownText>
-                    {command && command.id === outgoing.commandId && command.attachments && selected.agentSessionId
-                      && <ChatAttachments sessionId={selected.agentSessionId} attachments={command.attachments} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />}
-                    {sendingSelected && sendAttempt?.files.length ? <div className="agent-chat-draft-files">
-                      {sendAttempt.files.map((file, index) => <DraftChatFile key={`${file.name}-${index}`} file={file} disabled />)}
-                    </div> : null}
-                  </article>
-                    {!sendingSelected && <AgentReplyFeedback status={outgoing.status} cancelling={cancellingSelected}
-                      onEdit={outgoing.commandId && selected.canReply ? () => cancel.mutate({ sessionId: selected.agentSessionId!, commandId: outgoing.commandId!, text: outgoing.text }) : undefined} />}
-                    {(outgoing.status === "failed" || outgoing.status === "delivery_unknown") && (
-                    <footer className="agent-console-message-delivery" role="alert">
-                      <CircleAlert size={14} />
-                      <span>{outgoing.status === "delivery_unknown"
-                        ? t("agentSessionReplyDeliveryUnknown", { agent: agentName })
-                        : t(outgoingReplyStatusKey(outgoing.status))}{outgoing.error ? `: ${outgoing.error}` : ""}</span>
-                      {outgoing.status === "delivery_unknown" && outgoing.commandId
-                        && sessionQuery.data?.canResolveDelivery && (
-                        <>
-                          <button type="button" className="text-button" disabled={resolveDelivery.isPending}
-                            onClick={() => resolveDelivery.mutate({ sessionId: selected.agentSessionId!, commandId: outgoing.commandId!, outcome: "received", text: outgoing.text })}>
-                            {t("agentSessionReplyConfirmReceived", { agent: agentName })}
-                          </button>
-                          <button type="button" className="text-button" disabled={resolveDelivery.isPending}
-                            onClick={() => resolveDelivery.mutate({ sessionId: selected.agentSessionId!, commandId: outgoing.commandId!, outcome: "not_received", text: outgoing.text })}>
-                            {t("agentSessionReplyConfirmNotReceived")}
-                          </button>
-                        </>
-                      )}
-                      {outgoing.status === "failed" && (
-                        <button
-                          type="button"
-                          className="text-button"
-                          onClick={() => {
-                            setReply(outgoing.text);
-                            if (outgoing.commandId) setDismissedCommandId(outgoing.commandId);
-                            else send.reset();
-                          }}
-                        >
-                          {t("agentSessionEditAndRetry")}
-                        </button>
-                      )}
-                    </footer>
-                    )}
-                  </div>
-                )}
+
                 <AgentHistoryNotice error={sessionQuery.data ? sessionQuery.data.lastError : selected.lastError} />
                 {showFailureCard ? (
                   <AgentSessionFailureNotice status={sessionStatus}
@@ -1641,6 +1658,7 @@ export function AgentSessionConsole({
                   <AgentStopFeedback stop={stopCommand}
                     latestCommand={command} turnActive={sessionQuery.data?.turnState?.turnActive ?? false}
                     backgroundRunning={(sessionQuery.data?.activities.length ?? 0) > 0} />
+                {revealOldReply && <AgentReplySourceNotice command={command} state={sourceState} onRevealFailure={revealOldReply} />}
                 {showRunDetails && (<>
                     {["stalled", "unavailable", "failed"].includes(sessionStatus) && <p className="agent-run-warning" role="alert">{activityText}</p>}
                     <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={replyPresentation?.iconStatus ?? (agentWaiting ? "waiting" : visualStatus)} />} actions={stopAction}
@@ -1648,10 +1666,10 @@ export function AgentSessionConsole({
                         : agentWaiting ? t(questionPermission ? "agentRunApproval" : runWaitingLabelKey({ agentKind: selected.agentKind, approval }), { agent: agentName })
                           : claudeBackgroundOnly ? t("agentRunBackground") : sessionStatus === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(sessionStatus, t)}>
                       {!["stalled", "unavailable", "failed"].includes(sessionStatus) && <p>{statusDetail}</p>}
-                      {outgoing && ["queued", "delivering", "delivered"].includes(outgoing.status) && <p>
-                        {outgoing.status === "delivered" ? t("agentSessionReplyAwaitingExecution", { agent: agentName, duration: elapsed(outgoing.occurredAt, clock) ?? "–" })
-                          : t("agentSessionReplyWaitingReason", { duration: elapsed(outgoing.occurredAt, clock) ?? "–",
-                            reason: agentWaiting ? waitingText : activities.length > 0 ? t("agentSessionCurrentTool") : t("agentSessionCurrentTurn") })}
+                      <AgentReplySourceNotice command={command} state={sourceState} />
+                      {outgoing && ["queued", "delivering"].includes(outgoing.status) && <p>
+                        {t("agentSessionReplyWaitingReason", { duration: elapsed(outgoing.occurredAt, clock) ?? "–",
+                          reason: agentWaiting ? waitingText : activities.length > 0 ? t("agentSessionCurrentTool") : t("agentSessionCurrentTurn") })}
                       </p>}
                       {(turnRunning || sessionStatus === "stalled") && (turnState?.lastProgressAt || claudeTurn) && <small>{t("agentSessionLastActivity", { duration: elapsed(turnState?.lastProgressAt ?? selected.activityAt, clock) ?? "–" })}</small>}
                       {turnState?.observedAt && <small>{t("agentSessionLastObserved", { duration: elapsed(turnState.observedAt, clock) ?? "–" })}</small>}
