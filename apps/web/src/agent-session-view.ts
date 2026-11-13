@@ -15,7 +15,7 @@ import type {
   AgentSessionSummary,
 } from "./types";
 
-export type AgentChatMessage = AgentSessionMessage & { readonly attachmentData?: readonly AgentSessionAttachment[] };
+export type AgentChatMessage = AgentSessionMessage & { readonly outgoing?: OutgoingReply; readonly attachmentData?: readonly AgentSessionAttachment[] };
 
 /** A question the console still draws: an open ask, or an answered card kept
  *  as settled history. A `withdrawn` one is neither — the request stopped
@@ -48,16 +48,32 @@ export function agentChatMessages(
   attachmentMessages: NonNullable<AgentSession["attachmentMessages"]>,
   outgoingCommandId?: string,
 ): AgentChatMessage[] {
-  const hidden = new Set(attachmentMessages.map((message) => message.commandId));
-  return [
-    ...messages.filter((message) => isConversationMessage(message) && !isWithdrawnCard(message)
-      && (message.role !== "user" || ![...hidden].some((id) =>
-        message.sourceId === id || message.text.includes(`[MissionGo attachment command ${id}]`)))),
-    ...attachmentMessages.filter((message) => message.commandId !== outgoingCommandId)
-      .map((message) => ({ id: `attachment-${message.commandId}`, sourceId: message.commandId,
-        role: "user" as const, text: message.text, occurredAt: message.createdAt,
-        attachmentData: message.attachments })),
-  ].sort((a, b) => Date.parse(a.occurredAt) - Date.parse(b.occurredAt));
+  const result: AgentChatMessage[] = messages.filter(message => isConversationMessage(message) && !isWithdrawnCard(message));
+  for (const attachment of attachmentMessages) {
+    const index = result.findIndex(message => message.role === "user" && (message.sourceId === attachment.commandId
+      || message.text.includes(`[MissionGo attachment command ${attachment.commandId}]`)));
+    const message: AgentChatMessage = { id: `attachment-${attachment.commandId}`, sourceId: attachment.commandId,
+      role: "user", text: attachment.text, occurredAt: attachment.createdAt, attachmentData: attachment.attachments };
+    if (attachment.commandId === outgoingCommandId) { if (index >= 0) result.splice(index, 1); continue; }
+    if (index >= 0) result.splice(index, 1, message);
+    else insertChatMessage(result, message);
+  }
+  return result;
+}
+
+/** Insert console-owned records without sorting (or changing) the source transcript. */
+function insertChatMessage(messages: AgentChatMessage[], message: AgentChatMessage): void {
+  const time = Date.parse(message.occurredAt);
+  const index = Number.isFinite(time) ? messages.findIndex(existing => Date.parse(existing.occurredAt) > time) : -1;
+  messages.splice(index < 0 ? messages.length : index, 0, message);
+}
+
+export function withOutgoingReply(messages: readonly AgentChatMessage[], outgoing: OutgoingReply | null): AgentChatMessage[] {
+  const result = [...messages];
+  if (outgoing) insertChatMessage(result, { id: `outgoing-${outgoing.commandId ?? "request"}`,
+    sourceId: outgoing.commandId ?? "outgoing-request", role: "user", text: outgoing.text,
+    occurredAt: outgoing.occurredAt, outgoing });
+  return result;
 }
 
 export const DEFAULT_AGENT_SESSION_FILTER = "all" as const;

@@ -4,6 +4,7 @@ import {
   activityLabelKey,
   dispatchActivityLabelKey,
   agentChatMessages,
+  withOutgoingReply,
   projectConversationMessages,
   approvalNeedsAction,
   approvalTitleKey,
@@ -749,5 +750,21 @@ describe("message delivery presentation (AND-487)", () => {
     expect(sessionReplyPresentation("idle", message, false, stop)).toBeUndefined();
     expect(sessionReplyPresentation("idle", { ...message, createdAt: "2026-11-09T00:03:00Z" }, false, stop)?.iconStatus).toBe("active");
     expect(sessionReplyPresentation("idle", message, true, stop)?.labelKey).toBe("agentReplySendingShort");
+  });
+});
+
+
+describe("outgoing transcript placement", () => {
+  const message = (sourceId: string, occurredAt: string) => ({id: sourceId, sourceId, role: "agent" as const, text: sourceId, occurredAt});
+  it("places yesterday's receipt before today's reply without reordering source messages", () => {
+    const source = [message("a", "2026-11-12T12:00:00Z"), message("b", "2026-11-12T16:54:00Z")];
+    const outgoing = {text: "允许", occurredAt: "2026-11-12T12:46:00Z", status: "delivered" as const, commandId: "command"};
+    expect(withOutgoingReply(source, outgoing).map(m => m.sourceId)).toEqual(["a", "command", "b"]);
+    expect(withOutgoingReply([...source].reverse(), outgoing).filter(m => !m.outgoing)).toEqual([...source].reverse());
+  });
+  it("preserves source order when clocks disagree, including attachment replacement", () => {
+    const source = [message("newer-clock", "2026-11-12T12:00:00Z"), message("older-clock", "2026-11-12T11:00:00Z")];
+    expect(agentChatMessages(source, []).map(m => m.sourceId)).toEqual(["newer-clock", "older-clock"]);
+    expect(withOutgoingReply(source, {text: "x", occurredAt: "", status: "failed"}).slice(0, 2)).toEqual(source);
   });
 });

@@ -56,6 +56,7 @@ import {
   waitingStatusLabelKey,
   planApprovalStatusKey,
   agentChatMessages,
+  withOutgoingReply,
   projectConversationMessages,
   agentSessionMatches,
   agentSessionCategory,
@@ -739,7 +740,7 @@ export function AgentSessionConsole({
   const messages = projectConversationMessages(history.messages, Boolean(selected?.productId));
   const attachmentMessages = sessionQuery.data?.attachmentMessages ?? [];
   const visibleMessages = agentChatMessages(messages, attachmentMessages, outgoing?.commandId);
-  const planMessages = inlinePlanTranscript(visibleMessages, sessionQuery.data);
+  const planMessages = inlinePlanTranscript(withOutgoingReply(visibleMessages, outgoing), sessionQuery.data);
   const activities = sessionQuery.data?.activities ?? [];
   const turnState = sessionQuery.data?.turnState ?? selected?.turnState;
   // Detail and list notifications may arrive separately. Use the same foreground rule as
@@ -1360,6 +1361,62 @@ export function AgentSessionConsole({
                 )}
                 <AgentProgressReports session={sessionQuery.data} />
                 {planMessages.messages.map((message) => {
+                  if (message.outgoing) {
+                    const outgoing = message.outgoing;
+                    return (
+
+                  <div key={message.id} data-agent-message-id={`user:${message.sourceId}`} className={`agent-console-outgoing agent-console-outgoing-${outgoing.status}`}>
+                  <article className={`agent-console-message agent-console-message-user agent-console-message-outgoing agent-console-message-outgoing-${outgoing.status}`}>
+                    <header className="agent-console-message-meta">
+                      <time dateTime={outgoing.occurredAt}>{formatAgentMessageTime(outgoing.occurredAt, locale)}</time>
+                    </header>
+                    <MarkdownText>{permissionReplyText((sessionQuery.data?.currentRequests ?? sessionQuery.data?.messages)?.flatMap(message => message.questions ?? []) ?? [], outgoing.text)}</MarkdownText>
+                    {command && command.id === outgoing.commandId && command.attachments && selected.agentSessionId
+                      && <ChatAttachments sessionId={selected.agentSessionId} attachments={command.attachments} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />}
+                    {sendingSelected && sendAttempt?.files.length ? <div className="agent-chat-draft-files">
+                      {sendAttempt.files.map((file, index) => <DraftChatFile key={`${file.name}-${index}`} file={file} disabled />)}
+                    </div> : null}
+                  </article>
+                    {!sendingSelected && <AgentReplyFeedback status={outgoing.status} cancelling={cancellingSelected}
+                      onEdit={outgoing.commandId && selected.canReply ? () => cancel.mutate({ sessionId: selected.agentSessionId!, commandId: outgoing.commandId!, text: outgoing.text }) : undefined} />}
+                    {(outgoing.status === "failed" || outgoing.status === "delivery_unknown") && (
+                    <footer className="agent-console-message-delivery" role="alert">
+                      <CircleAlert size={14} />
+                      <span>{outgoing.status === "delivery_unknown"
+                        ? t("agentSessionReplyDeliveryUnknown", { agent: agentName })
+                        : t(outgoingReplyStatusKey(outgoing.status))}{outgoing.error ? `: ${outgoing.error}` : ""}</span>
+                      {outgoing.status === "delivery_unknown" && outgoing.commandId
+                        && sessionQuery.data?.canResolveDelivery && (
+                        <>
+                          <button type="button" className="text-button" disabled={resolveDelivery.isPending}
+                            onClick={() => resolveDelivery.mutate({ sessionId: selected.agentSessionId!, commandId: outgoing.commandId!, outcome: "received", text: outgoing.text })}>
+                            {t("agentSessionReplyConfirmReceived", { agent: agentName })}
+                          </button>
+                          <button type="button" className="text-button" disabled={resolveDelivery.isPending}
+                            onClick={() => resolveDelivery.mutate({ sessionId: selected.agentSessionId!, commandId: outgoing.commandId!, outcome: "not_received", text: outgoing.text })}>
+                            {t("agentSessionReplyConfirmNotReceived")}
+                          </button>
+                        </>
+                      )}
+                      {outgoing.status === "failed" && (
+                        <button
+                          type="button"
+                          className="text-button"
+                          onClick={() => {
+                            setReply(outgoing.text);
+                            if (outgoing.commandId) setDismissedCommandId(outgoing.commandId);
+                            else send.reset();
+                          }}
+                        >
+                          {t("agentSessionEditAndRetry")}
+                        </button>
+                      )}
+                    </footer>
+                    )}
+                  </div>
+
+                    );
+                  }
                   const labelKey = messageLabelKey(message.role, selected.agentKind);
                   return (
                     <article key={message.id} data-agent-message-id={`${message.role}:${message.sourceId || message.id}`} className={`agent-console-message agent-console-message-${message.role}`}>
@@ -1432,57 +1489,7 @@ export function AgentSessionConsole({
                     )}
                   </div>
                 )}
-                {outgoing && (
-                  <div className={`agent-console-outgoing agent-console-outgoing-${outgoing.status}`}>
-                  <article className={`agent-console-message agent-console-message-user agent-console-message-outgoing agent-console-message-outgoing-${outgoing.status}`}>
-                    <header className="agent-console-message-meta">
-                      <time dateTime={outgoing.occurredAt}>{formatAgentMessageTime(outgoing.occurredAt, locale)}</time>
-                    </header>
-                    <MarkdownText>{permissionReplyText((sessionQuery.data?.currentRequests ?? sessionQuery.data?.messages)?.flatMap(message => message.questions ?? []) ?? [], outgoing.text)}</MarkdownText>
-                    {command && command.id === outgoing.commandId && command.attachments && selected.agentSessionId
-                      && <ChatAttachments sessionId={selected.agentSessionId} attachments={command.attachments} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />}
-                    {sendingSelected && sendAttempt?.files.length ? <div className="agent-chat-draft-files">
-                      {sendAttempt.files.map((file, index) => <DraftChatFile key={`${file.name}-${index}`} file={file} disabled />)}
-                    </div> : null}
-                  </article>
-                    {!sendingSelected && <AgentReplyFeedback status={outgoing.status} cancelling={cancellingSelected}
-                      onEdit={outgoing.commandId && selected.canReply ? () => cancel.mutate({ sessionId: selected.agentSessionId!, commandId: outgoing.commandId!, text: outgoing.text }) : undefined} />}
-                    {(outgoing.status === "failed" || outgoing.status === "delivery_unknown") && (
-                    <footer className="agent-console-message-delivery" role="alert">
-                      <CircleAlert size={14} />
-                      <span>{outgoing.status === "delivery_unknown"
-                        ? t("agentSessionReplyDeliveryUnknown", { agent: agentName })
-                        : t(outgoingReplyStatusKey(outgoing.status))}{outgoing.error ? `: ${outgoing.error}` : ""}</span>
-                      {outgoing.status === "delivery_unknown" && outgoing.commandId
-                        && sessionQuery.data?.canResolveDelivery && (
-                        <>
-                          <button type="button" className="text-button" disabled={resolveDelivery.isPending}
-                            onClick={() => resolveDelivery.mutate({ sessionId: selected.agentSessionId!, commandId: outgoing.commandId!, outcome: "received", text: outgoing.text })}>
-                            {t("agentSessionReplyConfirmReceived", { agent: agentName })}
-                          </button>
-                          <button type="button" className="text-button" disabled={resolveDelivery.isPending}
-                            onClick={() => resolveDelivery.mutate({ sessionId: selected.agentSessionId!, commandId: outgoing.commandId!, outcome: "not_received", text: outgoing.text })}>
-                            {t("agentSessionReplyConfirmNotReceived")}
-                          </button>
-                        </>
-                      )}
-                      {outgoing.status === "failed" && (
-                        <button
-                          type="button"
-                          className="text-button"
-                          onClick={() => {
-                            setReply(outgoing.text);
-                            if (outgoing.commandId) setDismissedCommandId(outgoing.commandId);
-                            else send.reset();
-                          }}
-                        >
-                          {t("agentSessionEditAndRetry")}
-                        </button>
-                      )}
-                    </footer>
-                    )}
-                  </div>
-                )}
+
                 <AgentHistoryNotice error={sessionQuery.data ? sessionQuery.data.lastError : selected.lastError} />
                 {showFailureCard ? (
                   <AgentSessionFailureNotice status={sessionStatus}
