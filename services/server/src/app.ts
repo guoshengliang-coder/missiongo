@@ -1,3 +1,4 @@
+import { DocumentPlanApprovals } from "./document-plan-approval.js";
 import { CommonCommandStore } from "./common-commands.js";
 import { SessionSendRequests } from "./session-send-requests.js";
 import { StoredSessionMessages } from "./stored-session-messages.js";
@@ -613,6 +614,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const storedMessages = new StoredSessionMessages(store.database);
   const agentApprovalStore = new AgentApprovalStore(store.database);
   const planApprovals = new PlanApprovalService(store.database);
+  const documentApprovals = new DocumentPlanApprovals(store.database);
   const merges = new MergeDeliveries(store);
   const listConsoleSessions = (accountId: string) => {
     const summaries=consoleSessions.list(accountId);
@@ -2986,7 +2988,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...(snapshot.attachmentMessages?{attachmentMessages:snapshot.attachmentMessages}:{}),
       ...(snapshot.progressReports?{progressReports:snapshot.progressReports}:{}),hasPlanRecords, ...(window ? window : {}), canApprovePlan: assessment.status.code === "ready" && session.canApprovePlan,
       planApprovalStatus: assessment.status, ...(assessment.offer ? { planApproval: assessment.offer } : {}), ...(planApprovalState ? {planApprovalState} : {}),
-      ...(implementationPlan ? { implementationPlan } : {}) };
+      ...(implementationPlan ? { implementationPlan } : {}),
+      ...(implementationPlan?.documentId ? {documentPlanApproval:documentApprovals.inspect(accountId,sessionId),
+        canRecoverPlanApproval:Boolean(session.canApprovePlan && !session.archivedAt)} : {}) };
   });
 
   // One scoped action: an explicitly clicked, content-bound chat approval. Never a tool permission decision.
@@ -3001,6 +3005,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         : agentSessionStore.enqueue(requireAccountId(request), sessionId, "批准"), unavailableReason===undefined);
     });
     return reply.status(201).send(command);
+  });
+
+  app.post("/api/v1/agent-sessions/:sessionId/plan-approval/recover", async request => {
+    const {sessionId}=request.params as {sessionId:string};
+    planApprovalContext(request,sessionId,true);
+    const body=objectBody(request.body);
+    const documentId=stringField(body,"documentId")!,revision=stringField(body,"revision")!,requestKey=stringField(body,"requestKey")!;
+    if(requestKey.length>200 || revision.length>200 || documentId.length>200) throw invalidInput("Invalid recovery binding.");
+    return documentApprovals.recover(requireAccountId(request),sessionId,documentId,revision,requestKey);
   });
 
   app.post("/api/v1/agent-sessions/:sessionId/approvals/:approvalId/decision", async (request) => {

@@ -1,4 +1,5 @@
 import { useTranscriptAnchor, revealTranscriptReply } from "./transcript-anchor";
+import { DocumentPlanRecovery } from "./document-plan-recovery";
 import { CommonCommandMenu, CommandMessageMenu, useCommandTarget } from "./common-commands";
 import { SessionSender, SendUnconfirmed, SendSuperseded, commandNotDelivered, sendAttemptHasDraft, type SendInput } from "./session-send";
 import { useSendAttempt, sendAttemptLocked, SessionSendFeedback } from "./session-send-feedback";
@@ -1512,6 +1513,7 @@ export function AgentSessionConsole({
                     </article>
                   );
                 })}
+                {sessionQuery.data && <DocumentPlanRecovery key={`recovery-${selected.id}-${sessionQuery.data.implementationPlan?.revision}`} session={sessionQuery.data} blocked={showPermissionApproval || pending || sendingSelected || cancellingSelected} />}
                 {!planMessages.planMessageId && sessionQuery.data && <UnlinkedPlanRecord session={sessionQuery.data} blocked={showPermissionApproval || pending || sendingSelected || cancellingSelected} />}
                 {!mergePreparation && (!currentPlan(sessionQuery.data)?.plan || !showPlanApproval && selected.attention.kind !== "approval") && !showPermissionApproval && (!suppressDeliveryAttention || showPlanApproval) && (showPlanApproval || !stalePlanAttention && (selected.needsAttention || selected.attention.dismissed) && selected.attention.reason) && (
                   <div className={`agent-console-attention-banner ${selected.attention.dismissed ? "dismissed" : ""}${showPlanApproval ? " agent-console-attention-banner--approval" : ""}`} role="status">

@@ -1312,3 +1312,15 @@ final class OpenCodeTests: XCTestCase {
         return path
     }
 }
+
+
+final class OpenCodeDocumentCompletionTests: XCTestCase {
+    func testCompletionIsNotInferredFromOrdinaryText() throws {
+        let messages = try OpenCodeProtocol.messages(["data": [
+            ["id": "stream", "type": "assistant", "time": ["created": 1000], "content": [["type": "text", "text": "Plan"]]],
+            ["id": "final", "type": "assistant", "time": ["created": 2000, "completed": 3000], "content": [["type": "text", "text": "Plan"]]]
+        ]])
+        XCTAssertNil(messages[0].phase)
+        XCTAssertEqual(messages[1].phase, "final_answer")
+    }
+}

@@ -1149,8 +1149,7 @@ export class DispatchStore {
       const agentFilter = availableAgentKinds
         ? ` AND d.agent_kind IN (${availableAgentKinds.map(() => "?").join(", ")})`
         : "";
-      const candidates = this.database.connection
-        .prepare(
+      const candidates = this.claimStatement("candidates",
           `SELECT d.id, d.agent_kind, d.mode, d.model, d.effort, d.repo_path, COALESCE(n.nickname, n.name) AS node_name
            FROM dispatches d JOIN nodes n ON n.id = d.node_id
            WHERE d.node_id = ? AND d.status = 'queued'
@@ -1170,12 +1169,11 @@ export class DispatchStore {
           }>;
       const row=candidates.find(candidate=>handoffDispatchIsCurrent(this.database,candidate.id));
       if (!row) return undefined;
-      const free = this.database.connection.prepare("SELECT product_id,session_title FROM free_session_starts WHERE dispatch_id=?").get(row.id) as {product_id:string;session_title:string|null}|undefined;
+      const free = this.claimStatement("free", "SELECT product_id,session_title FROM free_session_starts WHERE dispatch_id=?").get(row.id) as {product_id:string;session_title:string|null}|undefined;
       if (free) authorizeProduct?.(free.product_id);
-      if (authorizeProduct) for (const product of this.database.connection.prepare("SELECT DISTINCT w.product_id FROM dispatch_items i JOIN work_items w ON w.id=i.item_id WHERE i.dispatch_id=?").all(row.id) as Array<{product_id:string}>) authorizeProduct(product.product_id);
+      if (authorizeProduct) for (const product of this.claimStatement("products", "SELECT DISTINCT w.product_id FROM dispatch_items i JOIN work_items w ON w.id=i.item_id WHERE i.dispatch_id=?").all(row.id) as Array<{product_id:string}>) authorizeProduct(product.product_id);
       const now = new Date().toISOString();
-      this.database.connection
-        .prepare("UPDATE dispatches SET status = 'delivered', delivered_at = ? WHERE id = ?")
+      this.claimStatement("delivered", "UPDATE dispatches SET status = 'delivered', delivered_at = ? WHERE id = ?")
         .run(now, row.id);
       return {
         dispatchId: row.id,
@@ -1191,6 +1189,20 @@ export class DispatchStore {
         reworkItemKeys: this.listReworkItemKeys(row.id),
       };
     });
+  }
+
+  // Keep the observed connection's statement wrappers: writes must still flush
+  // projections in the claiming transaction. Cache statements, never results or
+  // authorization decisions. The variable agent filter retains only its latest
+  // shape, so callers cannot grow an unbounded cache with filter permutations.
+  private readonly claimStatements = new Map<string, { sql: string; statement: ReturnType<DatabaseSync["prepare"]> }>();
+
+  private claimStatement(slot: "candidates" | "free" | "products" | "delivered", sql: string): ReturnType<DatabaseSync["prepare"]> {
+    const cached = this.claimStatements.get(slot);
+    if (cached?.sql === sql) return cached.statement;
+    const statement = this.database.connection.prepare(sql);
+    this.claimStatements.set(slot, { sql, statement });
+    return statement;
   }
 
   /** Items of this batch that were ever sent back from verification or from done, in batch order. */

@@ -1,3 +1,4 @@
+import { DocumentPlanApprovals } from "./document-plan-approval.js";
 import type { AgentSessionMessageInput } from "./agent-session-store.js";
 import { ImplementationPlans, planDigest } from "./implementation-plans.js";
 import type { MissionGoDatabase } from "./storage/database.js";
@@ -13,6 +14,7 @@ export function isNativePlanRequest(agentKind: string, message: {role: string; s
  * Native Codex emits the complete accepted plan as the next user turn. Freeze its
  * item scope while it is pending; a historical transcript alone cannot invent scope. */
 export function synchronizeNativePlan(database: MissionGoDatabase, accountId: string, sessionId: string): void {
+  new DocumentPlanApprovals(database).synchronize(accountId,sessionId);
   const db = database.connection;
   const dispatch = db.prepare(`SELECT s.dispatch_id,s.agent_kind FROM agent_sessions s JOIN dispatches d ON d.id=s.dispatch_id
     WHERE s.id=? AND d.account_id=? AND s.agent_kind IN ('codex','claude_code') AND s.archived_at IS NULL`).get(sessionId,accountId) as {dispatch_id:string;agent_kind:string}|undefined;

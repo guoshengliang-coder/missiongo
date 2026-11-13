@@ -407,7 +407,9 @@ public enum OpenCodeProtocol {
         return entries.compactMap { entry in
             guard let id = entry["id"] as? String, let type = entry["type"] as? String else { return nil }
             let created = (entry["time"] as? [String: Any])?["created"] as? NSNumber
-            let occurredAt = created.map { ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: $0.doubleValue / 1000)) }
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let occurredAt = created.map { formatter.string(from: Date(timeIntervalSince1970: $0.doubleValue / 1000)) }
             // The server refuses a message whose text is blank (AND-210), so
             // whitespace-only text never becomes a mirrored message.
             if type == "user", let text = entry["text"] as? String,
@@ -421,7 +423,8 @@ public enum OpenCodeProtocol {
             }.joined(separator: "\n\n")
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
             let role = entry["agent"] as? String == "plan" ? "plan" : "agent"
-            return AgentSessionMessage(sourceId: id, role: role, text: text, occurredAt: occurredAt)
+            let completed = (entry["time"] as? [String: Any])?["completed"] as? NSNumber
+            return AgentSessionMessage(sourceId: id, role: role, phase: completed == nil ? nil : "final_answer", text: text, occurredAt: occurredAt)
         }
     }
 
