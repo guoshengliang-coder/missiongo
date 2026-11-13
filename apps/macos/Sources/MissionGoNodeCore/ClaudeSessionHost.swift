@@ -455,6 +455,8 @@ public struct ClaudeStreamSnapshot: Sendable {
         }
         if type == "result" {
             if value["is_error"] as? Bool != true,
+               !(value["subtype"] as? String ?? "").hasPrefix("error"),
+               value["terminal_reason"] as? String != "blocking_limit",
                let result = value["result"] as? String,
                let final = state.messages.last(where: { $0.role == "agent" && $0.questions?.isEmpty != false
                    && $0.turnId == state.activeTurnId && $0.text == result }),

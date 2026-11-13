@@ -46,7 +46,7 @@ export function documentDecision(plan: string, requestedAt: string, messages: re
     || display.turnId && acceptance.turnId && display.turnId === acceptance.turnId) return undefined;
   // Provider-specific progress/revisions between the displayed plan and decision cannot be skipped.
   if (messages.slice(index + 1, messages.indexOf(acceptance)).some(m => m.role === "plan"
-    || m.role === "agent" && m.phase === "final_answer")) return undefined;
+    || m.questions?.length || m.role === "agent" && m.phase === "final_answer")) return undefined;
   return { display, acceptance };
 }
 
@@ -100,20 +100,23 @@ export class DocumentPlanApprovals {
       || document.parentDocumentId || !proposal.requestedAt) return denied("scope_changed");
     const history=new AgentHistory(this.database,new AgentArtifacts(this.database,""));
     const available=history.available(accountId,sessionId);
-    if(!["complete","ready"].includes(available.status) || history.incomplete(accountId,sessionId)) return denied("history_incomplete");
+    if(!["complete","ready"].includes(available.status)) return denied("history_incomplete");
     // Metadata first: refuse unbounded histories before loading bodies.
     const table=binding.external?"external_native_messages":"agent_session_messages";
-    const count=this.db.prepare(`SELECT COUNT(*) AS n,COALESCE(SUM(length(${binding.external?"payload_json":"text"})),0) AS bytes FROM ${table} WHERE session_id=?`)
+    const size=binding.external?"length(CAST(payload_json AS BLOB))":"length(CAST(text AS BLOB))+COALESCE(length(CAST(questions_json AS BLOB)),0)";
+    const count=this.db.prepare(`SELECT COUNT(*) AS n,COALESCE(SUM(${size}),0) AS bytes FROM ${table} WHERE session_id=?`)
       .get(sessionId) as {n:number;bytes:number};
     if(count.n>10000 || count.bytes>32*1024*1024) return denied("history_incomplete");
     const current:Message[]=binding.external
       ? (this.db.prepare("SELECT payload_json FROM external_native_messages WHERE session_id=? ORDER BY position,rowid").all(sessionId) as {payload_json:string}[]).map(r=>JSON.parse(r.payload_json))
-      : this.db.prepare(`SELECT source_id AS sourceId,turn_id AS turnId,role,phase,text,occurred_at AS occurredAt
-          FROM agent_session_messages WHERE session_id=? ORDER BY position,observed_at,rowid`).all(sessionId) as unknown as Message[];
-    const pages=this.db.prepare(`SELECT COUNT(*) AS n,COALESCE(SUM(length(result_json)),0) AS bytes FROM agent_history_pages
+      : (this.db.prepare(`SELECT source_id AS sourceId,turn_id AS turnId,role,phase,text,occurred_at AS occurredAt,questions_json AS questionsJson
+          FROM agent_session_messages WHERE session_id=? ORDER BY position,observed_at,rowid`).all(sessionId) as unknown as (Message & {questionsJson:string|null})[])
+          .map(({questionsJson,...message})=>({...message,...(questionsJson?{questions:JSON.parse(questionsJson)}:{})}));
+    const pages=this.db.prepare(`SELECT COUNT(*) AS n,COALESCE(SUM(length(CAST(result_json AS BLOB))),0) AS bytes FROM agent_history_pages
       WHERE account_id=? AND session_id=? AND node_id=? AND session_ref=? AND status='ready'`)
       .get(accountId,sessionId,binding.node_id,binding.session_ref) as {n:number;bytes:number};
     if(pages.n>512 || pages.bytes>32*1024*1024) return denied("history_incomplete");
+    if(history.incomplete(accountId,sessionId)) return denied("history_incomplete");
     const cached=history.cachedMessages(accountId,sessionId);
     if(cached.length+current.length>10000 || Buffer.byteLength(JSON.stringify(cached))>32*1024*1024) return denied("history_incomplete");
     const bySource=new Map<string,Message>();
@@ -121,8 +124,8 @@ export class DocumentPlanApprovals {
       if(message.phase==="execution") continue;
       if(!message.sourceId || !message.occurredAt || !Number.isFinite(Date.parse(message.occurredAt))) return denied("history_incomplete");
       const previous=bySource.get(message.sourceId);
-      if(previous && hash([previous.role,previous.text,previous.phase??null,Date.parse(previous.occurredAt!),previous.turnId??null])
-        !==hash([message.role,message.text,message.phase??null,Date.parse(message.occurredAt!),message.turnId??null])) return denied("source_conflict");
+      if(previous && hash([previous.role,previous.text,previous.phase??null,Date.parse(previous.occurredAt!),previous.turnId??null,previous.questions??[]])
+        !==hash([message.role,message.text,message.phase??null,Date.parse(message.occurredAt!),message.turnId??null,message.questions??[]])) return denied("source_conflict");
       bySource.set(message.sourceId,message);
     }
     const messages=cached.length ? [...bySource.values()].sort((a,b)=>Date.parse(a.occurredAt!)-Date.parse(b.occurredAt!)) : [...bySource.values()];

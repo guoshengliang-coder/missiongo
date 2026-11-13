@@ -537,3 +537,12 @@ it("AND-515 preserves native completion evidence for OpenCode and Claude documen
   consume({type:"result",result:"Reviewed plan",is_error:false});
   expect((await adapter.snapshot()).messages.find(m=>m.sourceId==="answer")).toMatchObject({phase:"final_answer",turnId:"human",text:"Reviewed plan"});
 });
+
+it.each([{subtype:"error_max_turns"},{terminal_reason:"blocking_limit"}])("AND-515 does not mark an unsuccessful Claude result as a final plan: %j",async failure=>{
+ const adapter=new ClaudeAdapter(job(temporary(),"claude_code"),fixture);adapters.push(adapter);
+ const consume=(value:Wire)=>(adapter as unknown as {event(value:Wire):void}).event(value);
+ consume({type:"user",uuid:"human",origin:{kind:"human"},message:{content:"Prepare plan"}});
+ consume({type:"assistant",uuid:"unfinished",message:{content:[{type:"text",text:"Reviewed plan"}]}});
+ consume({type:"result",result:"Reviewed plan",is_error:false,...failure});
+ expect((await adapter.snapshot()).messages.find(m=>m.sourceId==="unfinished")?.phase).toBeUndefined();
+});

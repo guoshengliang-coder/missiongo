@@ -192,6 +192,27 @@ it("does not use a stored receipt-time fallback as the original decision time",a
  expect(f.plans.canImplement("owner",f.document.identity)).toBe(false);
 });
 
+it.each(["display-question","intervening-question"])("does not reuse a form answer as document approval: %s",async mode=>{
+ const f=await fixture();const messages=f.messages.map(m=>({...m}));
+ const questions=[{title:"Allow the diagnostic command?",options:["批准","拒绝"]}];
+ if(mode==="display-question")messages[0]={...messages[0]!,questions};
+ else messages.splice(1,0,{sourceId:"permission",role:"agent",phase:"commentary",text:"Command permission",questions,
+   occurredAt:new Date(Date.parse(messages[0]!.occurredAt!)+500).toISOString()});
+ f.report(messages);
+ expect(f.recover().code).toBe("evidence_missing");
+ expect(f.plans.canImplement("owner",f.document.identity)).toBe(false);
+});
+
+it.each(["multibyte-text","question-data"])("bounds source evidence before loading it: %s",async mode=>{
+ const f=await fixture();f.report();
+ if(mode==="multibyte-text")f.db.prepare("UPDATE agent_session_messages SET text=? WHERE session_id=? AND source_id='display'")
+   .run("中".repeat(12*1024*1024),f.id);
+ else f.db.prepare("UPDATE agent_session_messages SET questions_json=? WHERE session_id=? AND source_id='display'")
+   .run(JSON.stringify([{title:"x".repeat(33*1024*1024)}]),f.id);
+ expect(f.recover().code).toBe("history_incomplete");
+ expect(f.plans.canImplement("owner",f.document.identity)).toBe(false);
+});
+
 
 it("accepts the known navigation/status footer without granting its text as extra scope",async()=>{
  const f=await fixture();

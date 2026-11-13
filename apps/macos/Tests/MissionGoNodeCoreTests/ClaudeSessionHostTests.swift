@@ -2,6 +2,18 @@ import XCTest
 @testable import MissionGoNodeCore
 
 final class ClaudeStreamSnapshotTests: XCTestCase {
+    func testFailedResultCannotMarkDocumentAsFinal() {
+        for failure in [["subtype": "error_max_turns"], ["terminal_reason": "blocking_limit"]] {
+            var snapshot = ClaudeStreamSnapshot(sessionRef: "native")
+            snapshot.beginInitialTurn(id: "source-turn")
+            snapshot.consume(["type": "assistant", "uuid": "unfinished", "message": ["content": [["type": "text", "text": "Reviewed plan"]]]])
+            var result: [String: Any] = ["type": "result", "is_error": false, "result": "Reviewed plan"]
+            for (key, value) in failure { result[key] = value }
+            snapshot.consume(result)
+            XCTAssertNil(snapshot.state.messages.last?.phase)
+        }
+    }
+
     func testDocumentReplyCompletionUsesActualResult() {
         var snapshot = ClaudeStreamSnapshot(sessionRef: "native")
         snapshot.beginInitialTurn(id: "source-turn")
