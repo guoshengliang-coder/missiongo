@@ -768,3 +768,27 @@ describe("outgoing transcript placement", () => {
     expect(withOutgoingReply(source, {text: "x", occurredAt: "", status: "failed"}).slice(0, 2)).toEqual(source);
   });
 });
+
+describe("command/source identity", () => {
+  const command = {id:"input-2",kind:"message" as const,text:"继续",createdAt:"2026-11-13T00:00:00Z",status:"delivered" as const};
+  const user = (sourceId:string, text="继续", occurredAt=command.createdAt) => ({id:sourceId,sourceId,role:"user" as const,text,occurredAt});
+  it("prefers exact source identity even when source clocks and wrapped text differ", () => {
+    expect(replyMirrorArrived(command,[user(command.id,"Native wrapping","2020-01-01T00:00:00Z")],[])).toBe(true);
+    expect(replyMirrorArrived(command,[user(`answer-${command.id}`)],[])).toBe(true);
+    expect(replyMirrorArrived({...command,sourceMessageId:"native-user"},[user("native-user","wrapped")],[])).toBe(true);
+  });
+  it("does not turn repeated words or a much later input into an association", () => {
+    expect(replyMirrorArrived(command,[user("a"),user("b")],[])).toBe(false);
+    expect(replyMirrorArrived(command,[user("later","继续","2026-11-14T00:00:00Z")],[])).toBe(false);
+    expect(replyMirrorArrived({...command,sourceMessageId:"missing"},[user("same-text")],[])).toBe(false);
+    expect(replyMirrorArrived(command,[{...user(command.id),role:"agent"}],[])).toBe(false);
+  });
+  it("keeps a pending receipt in its native position instead of duplicating it", () => {
+    const native=[user(command.id),{...user("response","Reply"),role:"agent" as const}];
+    const outgoing=outgoingReply({...command,status:"delivering"},undefined,true)!;
+    const visible=withOutgoingReply(native,outgoing);
+    expect(visible).toHaveLength(2);
+    expect(visible[0]?.outgoing?.commandId).toBe(command.id);
+    expect(visible[1]).toEqual(native[1]);
+  });
+});

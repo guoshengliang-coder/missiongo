@@ -70,9 +70,13 @@ function insertChatMessage(messages: AgentChatMessage[], message: AgentChatMessa
 
 export function withOutgoingReply(messages: readonly AgentChatMessage[], outgoing: OutgoingReply | null): AgentChatMessage[] {
   const result = [...messages];
-  if (outgoing) insertChatMessage(result, { id: `outgoing-${outgoing.commandId ?? "request"}`,
+  if (outgoing) {
+    const index = result.findIndex(message => message.role === "user" && [outgoing.sourceMessageId, outgoing.commandId, outgoing.commandId ? `answer-${outgoing.commandId}` : undefined].filter(Boolean).includes(message.sourceId));
+    if (index >= 0) { result[index] = {...result[index]!, outgoing}; return result; }
+    insertChatMessage(result, { id: `outgoing-${outgoing.commandId ?? "request"}`,
     sourceId: outgoing.commandId ?? "outgoing-request", role: "user", text: outgoing.text,
     occurredAt: outgoing.occurredAt, outgoing });
+  }
   return result;
 }
 
@@ -392,6 +396,7 @@ export interface OutgoingReply {
   readonly status: "sending" | "queued" | "delivering" | "delivered" | "delivery_unknown" | "failed";
   readonly error?: string;
   readonly commandId?: string;
+  readonly sourceMessageId?: string;
 }
 
 const outgoingReplyStatusKeys = {
@@ -483,6 +488,7 @@ export function outgoingReply(
       occurredAt: command.createdAt,
       status: command.status,
       commandId: command.id,
+      ...(command.sourceMessageId ? {sourceMessageId: command.sourceMessageId} : {}),
     };
   }
   if (command.status !== "queued" && command.status !== "delivering"
@@ -493,6 +499,7 @@ export function outgoingReply(
     status: command.status,
     ...(command.error ? { error: command.error } : {}),
     commandId: command.id,
+    ...(command.sourceMessageId ? {sourceMessageId: command.sourceMessageId} : {}),
   };
 }
 
@@ -500,10 +507,9 @@ export function outgoingReply(
  * Whether the display receipt is replaced by a mirror or precedes the loaded
  * history window. The latter is a display policy, not evidence of execution.
  * An attachment command mirrors as its own attachment bubble keyed by command
- * id; a plain reply mirrors as a user message with the same text from around
- * the moment the command was created. The clock tolerance is generous on
- * purpose: source and server timestamps can drift, and mistaking an older
- * same-text message for the mirror only hides a bubble the mirror replaces.
+ * id. Plain replies prefer the persisted source association or the native
+ * client message ID; legacy text matching requires one bounded candidate and
+ * remains a display policy, never persisted execution evidence.
  */
 export function replyMirrorArrived(
   command: AgentSessionCommand | undefined,
@@ -523,9 +529,16 @@ export function replyMirrorArrived(
     const times = messages.map(message => Date.parse(message.occurredAt)).filter(Number.isFinite);
     if (times.length > 0 && times.every(time => created < time)) return true;
   }
-  const floor = Number.isNaN(created) ? Number.NEGATIVE_INFINITY : created - 60_000;
-  return messages.some((message) => message.role === "user" && message.text === command.text
-    && Date.parse(message.occurredAt) >= floor);
+  const userMessages = messages.filter(message => message.role === "user" && isConversationMessage(message));
+  const explicitIds = new Set([command.id, `answer-${command.id}`, ...(command.sourceMessageId ? [command.sourceMessageId] : [])]);
+  if (userMessages.some(message => explicitIds.has(message.sourceId))) return true;
+  // A known source outside this window must not be replaced by an unrelated
+  // same-text input. Legacy matching is display-only and intentionally bounded.
+  if (command.sourceMessageId || !Number.isFinite(created)) return false;
+  const delivered = Date.parse(command.deliveredAt ?? "");
+  const ceiling = Number.isFinite(delivered) ? Math.max(created, delivered) + 60_000 : created + 5 * 60_000;
+  return userMessages.filter(message => message.text === command.text
+    && Date.parse(message.occurredAt) >= created - 60_000 && Date.parse(message.occurredAt) <= ceiling).length === 1;
 }
 
 /**
