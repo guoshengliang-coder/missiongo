@@ -13,7 +13,8 @@ export function clearDeniedSession(client: QueryClient, sessionId: string) {
   client.getQueryCache().find({ queryKey: ["agent-session", sessionId], exact: true })
     ?.setState({ data: undefined });
   client.removeQueries({ predicate: query =>
-    ["agent-history-result", "artifact-state", "artifact-bundle", "agent-plan-records", "agent-plan-record", "plan-overview"]
+    ["agent-history-result", "artifact-request", "artifact-state", "artifact-bundle",
+      "plan-overview", "plan-records", "plan-record", "plan-record-parent"]
       .includes(String(query.queryKey[0])) && query.queryKey[1] === sessionId });
 }
 

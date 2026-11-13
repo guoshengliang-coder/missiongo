@@ -72,3 +72,17 @@ test("clearing an observed denied detail retains its error for stable retry UI",
   clearDeniedSession(c, "legacy");
   expect(c.getQueryState(["agent-session", "legacy"])).toMatchObject({ status: "error", error, data: undefined });
 });
+
+test("denial clears the real plan and artifact query keys without touching another conversation", () => {
+  const c = client();
+  const roots = ["plan-overview", "plan-records", "plan-record", "plan-record-parent", "artifact-request", "artifact-state", "artifact-bundle"];
+  for (const root of roots) {
+    c.setQueryData([root, "legacy", "record"], { private: root });
+    c.setQueryData([root, "other", "record"], { keep: root });
+  }
+  clearDeniedSession(c, "legacy");
+  for (const root of roots) {
+    expect(c.getQueryData([root, "legacy", "record"]), root).toBeUndefined();
+    expect(c.getQueryData([root, "other", "record"]), root).toEqual({ keep: root });
+  }
+});
