@@ -1662,7 +1662,8 @@ export function AgentSessionConsole({
                   />
                   {commandUndo}
                   {replyFiles.length > 0 && <div className="agent-chat-draft-files">
-                    {replyFiles.map((file, index) => <DraftChatFile key={`${file.name}-${index}`} file={file} disabled={sendingSelected || cancellingSelected}
+                    {replyFiles.map((file, index) => <DraftChatFile key={`${replySessionId}-${index}`} file={file} disabled={!selected.canReply || pending || sendingSelected || cancellingSelected}
+                      onReplace={(original, annotated) => setReplyFilesFor(replySessionId, current => current.map((entry, fileIndex) => fileIndex === index && entry === original ? annotated : entry))}
                       onRemove={() => setReplyFiles((current) => current.filter((_, fileIndex) => fileIndex !== index))} />)}
                   </div>}
                   {replyFileError && <p className="inline-error" role="alert">{replyFileError}</p>}
