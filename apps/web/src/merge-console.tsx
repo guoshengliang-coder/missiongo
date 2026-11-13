@@ -24,7 +24,7 @@ interface Delivery {
   itemKeys:string[];head:string;requiredArtifacts:string[];noReleaseReason?:string;pullRequestUrl:string;
   reconfirmation?:boolean;blocker?:string;evidence:{checkedAt:string;source:string};
 }
-interface QueueDelivery extends Delivery {queue:IntegrationQueueFacts;previousReviews?:{caseId:string;sessionId:string;createdAt:string;closedAt?:string;closeNote?:string}[]}
+interface QueueDelivery extends Delivery {queue:IntegrationQueueFacts;latestInputAt?:string;previousReviews?:{caseId:string;sessionId:string;createdAt:string;closedAt?:string;closeNote?:string}[]}
 const artifactName=(a:string)=>({web:"Web",macosApp:"macOS",androidApp:"Android",androidSdk:"Android SDK",linuxCli:"Linux CLI"}[a]??a);
 function useIntegrationQueue(productId:string,stage="all") {
   return useInfiniteQuery({queryKey:["merge-deliveries",productId,"queue",stage],initialPageParam:undefined as number|undefined,
@@ -361,7 +361,7 @@ function DeliveryReview({productId,delivery,onClose,onSession}:{productId:string
   const {t}=useI18n(),client=useQueryClient();
   const context=useQuery({queryKey:["merge-deliveries",productId,"queue","review-detail",delivery.id],queryFn:()=>request<QueueDelivery>(`/api/v1/merge-deliveries/${delivery.id}/review`)});
   const current=context.data,review=current?.queue.review;
-  const [configure,setConfigure]=useState(false),[finish,setFinish]=useState(false),[note,setNote]=useState("");
+  const [configure,setConfigure]=useState(false),[finish,setFinish]=useState<{scopeDigest:string;caseId:string}>(),[note,setNote]=useState("");
   const frozen=useRef<{requestKey:string;revision:string;scopeDigest:string;config:FreeSessionConfig}|undefined>(undefined);
   const products=useQuery({queryKey:["products"],queryFn:()=>api.listProducts()});
   const session=useQuery({queryKey:["agent-session",review?.sessionId],queryFn:({signal})=>api.getAgentSession(review!.sessionId!,signal),enabled:Boolean(review?.sessionId)});
@@ -370,7 +370,9 @@ function DeliveryReview({productId,delivery,onClose,onSession}:{productId:string
   const unsettled=Boolean(session.data?.command&&["queued","delivering","delivery_unknown"].includes(session.data.command.status));
   const product=products.data?.find(p=>p.id===productId);
   const mayInvestigate=product?.access?.canOperate!==false&&product?.access?.canUseAi!==false;
-  const status=session.data?.turnState?.waitingForInput?"reviewWaiting":running?"reviewRunning":session.isError||session.data&&["failed","stalled","unavailable"].includes(session.data.status)?"reviewFailed":answer?"reviewAnswer":"reviewQueued";
+  const latestInputAt=current?.latestInputAt;
+  const freshAnswer=Boolean(answer&&Number.isFinite(Date.parse(answer.occurredAt))&&!(latestInputAt&&(!Number.isFinite(Date.parse(latestInputAt))||Date.parse(answer.occurredAt)<Date.parse(latestInputAt)))&&!(session.data?.command?.kind==="message"&&Date.parse(answer.occurredAt)<Date.parse(session.data.command.createdAt)));
+  const status=session.data?.turnState?.waitingForInput?"reviewWaiting":running?"reviewRunning":session.isError||session.data&&["failed","stalled","unavailable"].includes(session.data.status)?"reviewFailed":answer?(freshAnswer?"reviewAnswer":"reviewStaleAnswer"):"reviewQueued";
   const refresh=()=>client.invalidateQueries({queryKey:["merge-deliveries",productId]});
   const open=useMutation({mutationFn:onSession});
   const start=useMutation({mutationFn:(config:FreeSessionConfig)=>{
@@ -378,8 +380,9 @@ function DeliveryReview({productId,delivery,onClose,onSession}:{productId:string
     frozen.current??={requestKey:crypto.randomUUID(),revision:current.revision,scopeDigest:current.queue.review.scopeDigest,config};
     const f=frozen.current;return post<QueueDelivery>(`/api/v1/merge-deliveries/${delivery.id}/review`,{...f.config,revision:f.revision,scopeDigest:f.scopeDigest,requestKey:f.requestKey});
   },onSuccess:async()=>{setConfigure(false);frozen.current=undefined;await refresh();},onError:error=>{if(error instanceof ApiError&&error.status>=400&&error.status<500)frozen.current=undefined;}});
-  const close=useMutation({mutationFn:()=>post<QueueDelivery>(`/api/v1/merge-deliveries/${delivery.id}/review/close`,{scopeDigest:review!.scopeDigest,caseId:review!.caseId,note}),onSuccess:async()=>{await refresh();onClose();},onError:()=>void context.refetch()});
-  const canClose=Boolean(answer&&!(session.data?.command?.kind==="message"&&Date.parse(answer.occurredAt)<Date.parse(session.data.command.createdAt))&&!running&&!session.data?.turnState?.waitingForInput&&!unsettled&&!session.isError&&!["failed","stalled","unavailable"].includes(session.data?.status??""));
+  const close=useMutation({mutationFn:()=>post<QueueDelivery>(`/api/v1/merge-deliveries/${delivery.id}/review/close`,{...finish,note}),onSuccess:async()=>{await refresh();onClose();},onError:()=>void context.refetch()});
+  const canClose=Boolean(freshAnswer&&!running&&!session.data?.turnState?.waitingForInput&&!unsettled&&!session.isError&&!["failed","stalled","unavailable"].includes(session.data?.status??""));
+  const finishChanged=Boolean(finish&&(review?.scopeDigest!==finish.scopeDigest||review?.caseId!==finish.caseId));
   return <><Modal title={t("reviewHandle")} subtitle={delivery.itemKeys.join(" · ")||delivery.summary} onClose={onClose} wide scrolls pending={start.isPending||close.isPending||open.isPending}>
     {context.isPending?<p role="status">{t("mergeLoading")}</p>:context.isError?<p role="alert">{context.error instanceof ApiError&&[404,409].includes(context.error.status)?t("reviewChanged"):localizedErrorText(context.error,t)} <button className="secondary-button" onClick={()=>void context.refetch()}>{t("retry")}</button></p>:current&&<div className="merge-delivery-detail">
       <strong>{current.summary}</strong><QueueFacts d={current}/><p>{t("reviewResponsibility")}</p><p>{t("reviewBoundary")}</p>
@@ -393,14 +396,14 @@ function DeliveryReview({productId,delivery,onClose,onSession}:{productId:string
         {session.isPending&&<p role="status">{t("agentSessionLoading")}</p>}
         {session.isError&&<p role="alert" className="inline-error">{t("reviewSessionError")}</p>}
         {answer&&<section><h3>{t("reviewLatestAnswer")}</h3><MarkdownText>{answer.text}</MarkdownText>{session.data?.history?.nextCursor&&<p>{t("reviewMoreInSession")}</p>}</section>}
-        {canClose&&!review.closedAt&&<button type="button" className="secondary-button" onClick={()=>setFinish(true)}>{t("reviewFinish")}</button>}
+        {canClose&&!review.closedAt&&<button type="button" className="secondary-button" onClick={()=>setFinish({scopeDigest:review.scopeDigest,caseId:review.caseId!})}>{t("reviewFinish")}</button>}
         {review.closedAt&&<p>{t("reviewClosed")}: {review.closeNote}</p>}
       </>}
     </div>}
     {(open.isError||close.isError)&&<p role="alert" className="inline-error">{localizedErrorText(open.error??close.error,t)}</p>}
   </Modal>
-  {finish&&<Modal title={t("reviewFinish")} subtitle={delivery.itemKeys.join(" · ")} onClose={()=>{setFinish(false);setNote("");}} dirty={Boolean(note.trim())} pending={close.isPending}>
-    <form className="dispatch-form" onSubmit={e=>{e.preventDefault();close.mutate();}}><p>{t("reviewCloseBoundary")}</p><label>{t("reviewConclusion")}<textarea data-initial-focus required maxLength={2000} value={note} onChange={e=>setNote(e.target.value)} disabled={close.isPending}/></label><div className="form-footer"><button type="submit" className="primary-button" disabled={!note.trim()||close.isPending}>{t("reviewConfirmClose")}</button></div>{close.isError&&<p role="alert" className="inline-error">{localizedErrorText(close.error,t)}</p>}</form>
+  {finish&&<Modal title={t("reviewFinish")} subtitle={delivery.itemKeys.join(" · ")} onClose={()=>{setFinish(undefined);setNote("");}} dirty={Boolean(note.trim())} pending={close.isPending}>
+    <form className="dispatch-form" onSubmit={e=>{e.preventDefault();if(!finishChanged&&canClose&&!context.isError)close.mutate();}}><p>{t("reviewCloseBoundary")}</p>{context.isError&&<p role="alert" className="inline-error">{context.error instanceof ApiError&&[404,409].includes(context.error.status)?t("reviewChanged"):localizedErrorText(context.error,t)} <button type="button" className="secondary-button" onClick={()=>void context.refetch()}>{t("retry")}</button></p>}{!canClose&&<p role="status">{t(session.isError?"reviewSessionError":"reviewIncomplete")} <button type="button" className="secondary-button" onClick={()=>{void context.refetch();void session.refetch();}}>{t("reviewRefresh")}</button></p>}{finishChanged&&<p role="alert" className="inline-error">{t("reviewChanged")}</p>}<label>{t("reviewConclusion")}<textarea data-initial-focus required maxLength={2000} value={note} onChange={e=>setNote(e.target.value)} disabled={close.isPending}/></label><div className="form-footer"><button type="submit" className="primary-button" disabled={!note.trim()||close.isPending||finishChanged||!canClose||context.isError}>{t("reviewConfirmClose")}</button></div>{close.isError&&<p role="alert" className="inline-error">{localizedErrorText(close.error,t)}</p>}</form>
   </Modal>}
   {configure&&<Modal title={t("reviewDelegate")} subtitle={t("reviewBoundary")} onClose={()=>setConfigure(false)} pending={start.isPending}>
     {!frozen.current?<DispatchDialog items={[]} products={products.data?.filter(p=>p.id===productId)??[]} onClose={()=>setConfigure(false)} onDispatched={()=>{}} newSession={{productId,allowSaveDefaults:false,onConfigured:config=>start.mutate(config)}}/>:<><p role="status">{t(start.isPending?"reviewStarting":"reviewFrozen")}</p>{!start.isPending&&<button className="primary-button" onClick={()=>start.mutate(frozen.current!.config)}>{t("retry")}</button>}</>}

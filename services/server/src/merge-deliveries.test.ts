@@ -448,6 +448,15 @@ describe("planned integration batches",()=>{
     expect(()=>f.merges.closeReview(f.owner.id,d.id,scope,r.caseId!,"Confirmed no integration work")).toThrow(/尚未结束/);
     sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:r.sessionId!,status:"idle",turnState:{turnActive:false,waitingForInput:false},messages:[{sourceId:"answer",role:"agent",text:"No product artifact is required. Formal handover is still missing."}]});
     expect(()=>f.merges.closeReview(f.owner.id,d.id,scope,r.caseId!," ")).toThrow();
+    // A settled interrupt must not hide the newer unanswered user message.
+    const newerInputAt=new Date(Date.now()+1000).toISOString(),messageId=randomUUID(),stopId=randomUUID();
+    f.db.prepare("INSERT INTO agent_session_commands(id,session_id,account_id,kind,text,status,created_at) VALUES (?,?,?,'message','Follow-up','delivered',?)").run(messageId,r.sessionId!,f.owner.id,newerInputAt);
+    f.db.prepare("INSERT INTO agent_session_commands(id,session_id,account_id,kind,text,status,created_at) VALUES (?,?,?,'interrupt','Stop','delivered',?)").run(stopId,r.sessionId!,f.owner.id,new Date(Date.now()+2000).toISOString());
+    expect(sessions.getForAccount(f.owner.id,r.sessionId!).command!.kind).toBe("interrupt");
+    expect(f.merges.reviewContext(f.owner.id,d.id).latestInputAt).toBe(newerInputAt);
+    expect(()=>f.merges.closeReview(f.owner.id,d.id,scope,r.caseId!,"Cannot use an answer from before the follow-up")).toThrow(/尚未结束/);
+    f.db.prepare("DELETE FROM agent_session_commands WHERE id IN (?,?)").run(messageId,stopId);
+
     const closed=f.merges.closeReview(f.owner.id,d.id,scope,r.caseId!,"Confirmed no integration work; preserve missing handover as history");
     expect(closed.queue).toMatchObject({stage:"review",review:{closedAt:expect.any(String),closeNote:expect.any(String)}});
     expect(f.merges.closeReview(f.owner.id,d.id,scope,r.caseId!,closed.queue.review!.closeNote!)).toEqual(closed);

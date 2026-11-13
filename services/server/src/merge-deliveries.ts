@@ -325,7 +325,8 @@ export class MergeDeliveries {
     const q=this.queueFacts(d,this.view(d).blocker);
     if(!q || q.stage!=="review")throw changed();
     const previousReviews=this.db.connection.prepare("SELECT id AS caseId,session_id AS sessionId,created_at AS createdAt,closed_at AS closedAt,close_note AS closeNote FROM delivery_reviews WHERE delivery_id=? AND account_id=? AND scope_digest!=? ORDER BY created_at DESC LIMIT 10").all(id,accountId,q.review?.scopeDigest??"");
-    return {...this.view(d),queue:q,previousReviews};
+    const latestInput=q.review?.sessionId?this.db.connection.prepare("SELECT created_at FROM agent_session_commands WHERE session_id=? AND kind='message' ORDER BY created_at DESC,rowid DESC LIMIT 1").get(q.review.sessionId) as {created_at:string}|undefined:undefined;
+    return {...this.view(d),queue:q,previousReviews,...(latestInput?{latestInputAt:latestInput.created_at}:{})};
   }
   startReview(accountId:string,id:string,expectedRevision:string,scopeDigest:string,requestKey:string,config:FreeSessionConfig) {
     return this.db.transaction(()=>{
@@ -358,7 +359,7 @@ export class MergeDeliveries {
       // Do not hide a running/unknown investigation or one with no Agent answer.
       const answer=[...session.messages].reverse().find(m=>m.role==="agent"&&m.text.trim());
       const pending=this.db.connection.prepare("SELECT 1 FROM agent_session_commands WHERE session_id=? AND status IN ('queued','delivering','delivery_unknown')").get(review.sessionId!);
-      if(pending||session.turnState?.turnActive||session.turnState?.waitingForInput||["active","stalled","unavailable","failed"].includes(session.status)||!answer || !answer.occurredAt || !Number.isFinite(Date.parse(answer.occurredAt)) || session.command?.kind==="message" && (!session.command.createdAt || !Number.isFinite(Date.parse(session.command.createdAt)) || Date.parse(answer.occurredAt)<Date.parse(session.command.createdAt)))
+      if(pending||session.turnState?.turnActive||session.turnState?.waitingForInput||["active","stalled","unavailable","failed"].includes(session.status)||!answer || !answer.occurredAt || !Number.isFinite(Date.parse(answer.occurredAt)) || context.latestInputAt && (!Number.isFinite(Date.parse(context.latestInputAt)) || Date.parse(answer.occurredAt)<Date.parse(context.latestInputAt)))
         throw conflict("delivery_review_incomplete","核查尚未结束或没有可读结论，请先查看核查会话。");
       this.db.connection.prepare("UPDATE delivery_reviews SET closed_at=?,close_note=? WHERE id=? AND account_id=?")
         .run(new Date().toISOString(),note,caseId,accountId);
