@@ -8,6 +8,7 @@ import { useI18n, type MessageKey } from "./i18n";
 import {
   ANNOTATION_COLORS,
   ANNOTATION_JPEG_QUALITY,
+  ImageAnnotationSaveError,
   MAX_ANNOTATION_ZOOM,
   MIN_ANNOTATION_ZOOM,
   annotatedFilename,
@@ -94,11 +95,9 @@ export function ImageAnnotator({
   onCancel,
   onSave,
   staged = false,
-  saveError,
   saveHint,
 }: {
   staged?: boolean;
-  saveError?: string;
   saveHint?: string;
   file: File;
   onCancel: () => void;
@@ -354,10 +353,10 @@ export function ImageAnnotator({
         return;
       }
       await onSave(new File([blob], annotatedFilename(file.name, outputType), { type: outputType, lastModified: Date.now() }));
-    } catch {
+    } catch (error) {
       // Keep the canvas and marks for retry; never turn an export/save failure
       // into an unreadable-image screen that discards the backing canvas.
-      setSaveFailure(t("annotateSaveFailed"));
+      setSaveFailure(error instanceof ImageAnnotationSaveError ? error.message : t("annotateSaveFailed"));
     } finally {
       savingRef.current = false;
       setSaving(false);
@@ -487,8 +486,8 @@ export function ImageAnnotator({
       </div>
 
       <footer className="annotator-actions">
-        <p className={`annotator-hint${saveError || saveFailure ? " inline-error" : ""}`} role={saveError || saveFailure ? "alert" : undefined}>
-          {saveError || saveFailure || saveHint || t(staged ? "stagedAnnotation" : "annotateOverwriteHint")}
+        <p className={`annotator-hint${saveFailure ? " inline-error" : ""}`} role={saveFailure ? "alert" : undefined}>
+          {saveFailure || saveHint || t(staged ? "stagedAnnotation" : "annotateOverwriteHint")}
         </p>
         <div>
           <button type="button" className="secondary-button" onClick={() => void cancel()} disabled={saving}>{t("cancel")}</button>

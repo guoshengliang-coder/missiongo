@@ -18,12 +18,13 @@ async function setup(page: Page, newSession = false) {
   let blockUpload: Promise<void> | undefined;
   let releaseUpload: (() => void) | undefined;
   let command: Record<string, unknown> | undefined;
+  let readOnly = false;
   const summary = (id = "image-a") => ({ id, agentSessionId: id, productId: fixture.productId, source: "external", agentKind: "codex",
     status: "idle", progressStatus: "working", refKind: "native", lastReportedAt: stamp,
     nativeConnection: { state: "connected", nodeId: "node", nodeName: "Fixture", lastSyncedAt: stamp },
     nodeName: "Fixture", nodeRevoked: false, mode: "external", dispatchStatus: "external", updatedAt: stamp, activityAt: stamp,
     createdAt: stamp, sessionName: id === "image-a" ? "图片会话 A" : "图片会话 B", items: [], activities: [],
-    canReply: true, canRetry: false, canStop: false, canArchive: true, settings: { mode: "external", adjustable: false },
+    canReply: !readOnly, canRetry: false, canStop: false, canArchive: true, settings: { mode: "external", adjustable: false },
     attention: { state: "not_needed" }, needsAttention: false, waitingForReply: false, unread: false,
     ...(command && id === "image-a" ? { command } : {}) });
   const dispatch = { id: "image-dispatch", agentSessionId: "image-a", productId: fixture.productId, nodeId: "node", nodeName: "Fixture",
@@ -63,7 +64,7 @@ async function setup(page: Page, newSession = false) {
     await page.locator(".dispatch-form").getByRole("button", { name: "进入会话", exact: true }).click();
   }
   await expect(composer(page).locator("textarea")).toBeEnabled();
-  return { uploads, block: () => { blockUpload = new Promise(resolve => { releaseUpload = resolve; }); }, release: () => releaseUpload?.() };
+  return { uploads, setReadOnly: (value: boolean) => { readOnly = value; }, block: () => { blockUpload = new Promise(resolve => { releaseUpload = resolve; }); }, release: () => releaseUpload?.() };
 }
 async function openImage(page: Page, file = image) {
   await composer(page).locator('input[type="file"]').setInputFiles(file);
@@ -150,6 +151,7 @@ test("export failure and oversize retain the canvas and permit retry", async ({ 
     canvas.toBlob = (callback, type, quality) => {
       calls++;
       if (calls === 1) callback(null);
+      else if (calls === 3) callback(null);
       else if (calls === 2) callback(new Blob([new Uint8Array(21 * 1024 * 1024)], { type: "image/png" }));
       else original(callback, type, quality);
     };
@@ -160,6 +162,9 @@ test("export failure and oversize retain the canvas and permit retry", async ({ 
   await editor(page).getByRole("button", { name: "保存", exact: true }).click();
   await expect(editor(page).getByRole("alert")).toContainText("20 MiB");
   await expect(editor(page).getByRole("button", { name: "撤销上一笔", exact: true })).toBeEnabled();
+  await editor(page).getByRole("button", { name: "保存", exact: true }).click();
+  await expect(editor(page).getByRole("alert")).toContainText("生成失败");
+  await expect(editor(page).getByRole("alert")).not.toContainText("20 MiB");
   await editor(page).getByRole("button", { name: "保存", exact: true }).click();
   await expect(editor(page)).toHaveCount(0);
   await expect(preview(page)).toBeVisible();
@@ -311,4 +316,73 @@ test("pasted and dropped images can be edited independently without changing fil
   expect(Buffer.from(bytes[0]!)).toEqual(png);
   await expectMarked(Buffer.from(bytes[1]!));
   await expect(composer(page).locator("textarea")).toHaveValue("多图草稿");
+});
+
+test("closing preview cancels a pending editor load without reopening in edit mode", async ({ page }) => {
+  await setup(page);
+  let moduleUrl = "";
+  let release: (() => void) | undefined;
+  const loading = new Promise<void>(resolve => { release = resolve; });
+  await page.route(/\/src\/ImageAnnotator\.tsx(?:\?.*)?$/, async route => {
+    moduleUrl = route.request().url();
+    const response = await route.fetch();
+    await loading;
+    await route.fulfill({ response });
+  });
+  await openImage(page);
+  await preview(page).getByRole("button", { name: "编辑图片", exact: true }).click();
+  await expect.poll(() => moduleUrl).not.toBe("");
+  await page.keyboard.press("Escape");
+  await expect(preview(page)).toHaveCount(0);
+  release?.();
+  await page.evaluate(url => import(url).then(() => null), moduleUrl);
+  await composer(page).getByRole("button", { name: "预览 draft.png", exact: true }).click();
+  await expect(preview(page)).toBeVisible();
+  await expect(editor(page)).toHaveCount(0);
+  await expect(preview(page).getByRole("button", { name: "编辑图片", exact: true })).toBeFocused();
+  await enterEditor(page);
+  await expect(editor(page)).toBeVisible();
+});
+
+test("a late export after permission loss never replaces the retained draft", async ({ page }) => {
+  const state = await setup(page);
+  await composer(page).locator("textarea").fill("权限变化仍保留草稿");
+  await openImage(page); await enterEditor(page); await draw(page);
+  await editor(page).locator("canvas").evaluate(canvas => {
+    const original = canvas.toBlob.bind(canvas);
+    canvas.toBlob = (callback, type, quality) => {
+      (window as typeof window & { finishExport?: () => Promise<void> }).finishExport = () => new Promise(resolve => {
+        original(blob => { callback(blob); resolve(); }, type, quality);
+      });
+    };
+  });
+  await editor(page).getByRole("button", { name: "保存", exact: true }).click();
+  state.setReadOnly(true);
+  // Simulate a read-side permission refresh while the native dialog is inert.
+  await page.locator(".agent-console-topbar-refresh").evaluate(button => (button as HTMLButtonElement).click());
+  await expect(editor(page)).toHaveCount(0);
+  await page.evaluate(() => (window as typeof window & { finishExport?: () => Promise<void> }).finishExport?.());
+  state.setReadOnly(false);
+  await page.locator(".agent-console-topbar-refresh").evaluate(button => (button as HTMLButtonElement).click());
+  await expect(composer(page).locator("textarea")).toHaveValue("权限变化仍保留草稿");
+  await composer(page).getByRole("button", { name: "预览 draft.png", exact: true }).click();
+  const bytes = await preview(page).locator("img").evaluate(async (img: HTMLImageElement) => Array.from(new Uint8Array(await (await fetch(img.src)).arrayBuffer())));
+  expect(Buffer.from(bytes)).toEqual(png);
+  expect(state.uploads).toHaveLength(0);
+});
+
+test("an editor chunk failure stays inside preview and retains the unsent image", async ({ page }) => {
+  await setup(page);
+  await composer(page).locator("textarea").fill("加载失败仍保留文字");
+  await page.route(/\/src\/ImageAnnotator\.tsx(?:\?.*)?$/, route => route.fulfill({ status: 404, body: "Unavailable" }));
+  await openImage(page);
+  await preview(page).getByRole("button", { name: "编辑图片", exact: true }).click();
+  const failure = preview(page).locator(".load-failure");
+  await expect(failure).toBeVisible();
+  await failure.getByRole("button", { name: "关闭", exact: true }).click();
+  await expect(failure).toHaveCount(0);
+  await expect(preview(page)).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(composer(page).locator("textarea")).toHaveValue("加载失败仍保留文字");
+  await expect(composer(page).getByRole("button", { name: "预览 draft.png", exact: true })).toBeVisible();
 });
