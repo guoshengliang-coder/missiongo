@@ -24,7 +24,7 @@ export function consoleRefresh(client: QueryClient, idle: () => void) {
       // Join an initial/mutation read, then read after the notification. Never
       // cancel another consumer's request or mistake its old snapshot for ours.
       if (task.query.state.fetchStatus === "fetching") await task.query.promise?.catch(() => {});
-      if (stopped || epoch !== generation) return;
+      if (stopped || epoch !== generation || String(document.visibilityState) === "hidden") return;
       // All events observed before this fresh read are covered by it. Events
       // received after it starts still require the following read.
       const version = task.version;

@@ -293,3 +293,21 @@ it("access reset cancels a list in flight and a queued batch cannot restore revo
  await vi.advanceTimersByTimeAsync(100);await settle();expect(f.client.getQueryData(["agent-sessions"])).toBe("current permissions");
  finish("late secret");await settle();expect(f.client.getQueryData(["agent-sessions"])).toBe("current permissions");
 });
+
+it.each(["resolve","reject"])("defers a scheduled list follow-up if the page hides while joining another consumer's read (%s)",async outcome=>{
+ vi.useFakeTimers();const f=fixture();let finish!:(value:string)=>void;
+ const read=vi.fn().mockImplementationOnce(()=>new Promise<string>((resolve,reject)=>{finish=value=>outcome==="resolve"?resolve(value):reject(new Error("original consumer failed"));})).mockResolvedValue("latest");
+ const list=new QueryObserver(f.client,{queryKey:["agent-sessions"],initialData:"cached",staleTime:Infinity,queryFn:read});
+ cleanup.push(list.subscribe(()=>{}));await settle();
+ const initial=f.client.refetchQueries({queryKey:["agent-sessions"]});await settle();expect(read).toHaveBeenCalledOnce();
+ f.send("change",{resources:[{kind:"sessions"}]},"epoch:1");await settle();await vi.advanceTimersByTimeAsync(100);
+ f.documentTarget.visibilityState="hidden";f.documentTarget.dispatchEvent(new Event("visibilitychange"));await settle();
+ finish("snapshot before the event");await initial;await settle();
+ // The joined read may settle, but no new business read starts while hidden.
+ expect(read).toHaveBeenCalledOnce();
+ f.documentTarget.visibilityState="visible";f.documentTarget.dispatchEvent(new Event("visibilitychange"));await settle();
+ // The deferred event cannot be acknowledged before the foreground read.
+ expect(String(f.fetcher.mock.calls[1]?.[0])).toContain("epoch%3A0");
+ await vi.advanceTimersByTimeAsync(100);await settle();
+ expect(read).toHaveBeenCalledTimes(2);expect(f.client.getQueryData(["agent-sessions"])).toBe("latest");
+});
