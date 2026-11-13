@@ -104,6 +104,10 @@ export class PlanRecords {
     const current=plans.proposal(accountId,row.identity_key);
     const approval=db.prepare("SELECT approved_at,source FROM implementation_plan_approvals WHERE account_id=? AND identity_key=? AND revision=?")
       .get(accountId,row.identity_key,row.revision) as {approved_at:string;source:string}|undefined;
+    const decision=approval ? db.prepare(`SELECT accepted_at AS acceptedAt,recorded_at AS recordedAt,
+      display_source_id AS displaySourceId,acceptance_source_id AS acceptanceSourceId,evidence_digest AS evidenceDigest
+      FROM document_plan_decisions WHERE account_id=? AND identity_key=? AND revision=?`)
+      .get(accountId,row.identity_key,row.revision) as {acceptedAt:string;recordedAt:string;displaySourceId:string;acceptanceSourceId:string;evidenceDigest:string}|undefined : undefined;
     // List polling reads metadata, never every version's Markdown body.
     const metadata=proposal.documentId && !full ? db.prepare(
       `SELECT json_remove(document_json,'$.markdown','$.plan'${includeSummary ? "" : ",'$.summary'"}) AS metadata FROM plan_documents WHERE id=?`)
@@ -118,7 +122,7 @@ export class PlanRecords {
       pending:Boolean(isCurrent && !approval && current?.valid),currentValid:Boolean(isCurrent && current?.valid),
       scopeValid:row.scope_json===plans.scope(keys),legacy:Boolean(row.legacy),
       ...(proposal.submittedAt?{submittedAt:proposal.submittedAt}:{}),
-      ...(approval?{approval:{approvedAt:approval.approved_at,source:approval.source}}:{}),
+      ...(approval?{approval:{approvedAt:approval.approved_at,source:approval.source,...(decision?{documentDecision:decision}:{})}}:{}),
       ...(document?{documentId:document.id,version:document.version,rounds:document.rounds,sha256:document.sha256,
         ...(document.parentDocumentId?{parentDocumentId:document.parentDocumentId,parentApproved:new PlanDocuments(this.store).approved(document)}:{})}:{}),
       ...(includeSummary && document ? {summary:document.summary} : {}),

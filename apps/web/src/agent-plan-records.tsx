@@ -97,7 +97,13 @@ function PlanRecordDetails({sessionId}:{sessionId:string}) {
       <p>{t(status(record))}</p>
       {record.approval && <p>{t("agentPlanApprovalTime")}：{time(record.approval.approvedAt)} · {source(record.approval.source)}</p>}
       {record.parentDocumentId && <button type="button" className="text-button" onClick={()=>enter(()=>setParent(record.parentDocumentId))}>{t("agentPlanParent")}</button>}
-      <details><summary>{t("agentPlanTechnicalDetails")}</summary><p className="account-note">SHA-256：{record.sha256??t("agentPlanUnknownTime")}</p></details>
+      <details><summary>{t("agentPlanTechnicalDetails")}</summary><p className="account-note">SHA-256：{record.sha256??t("agentPlanUnknownTime")}</p>
+        {record.approval?.documentDecision && <>
+          <p>{t("documentOriginalDecision")}：{time(record.approval.documentDecision.acceptedAt)}</p>
+          <p>{t("documentDecisionRecorded")}：{time(record.approval.documentDecision.recordedAt)}</p>
+          <p className="account-note">{record.approval.documentDecision.displaySourceId}<br/>{record.approval.documentDecision.acceptanceSourceId}<br/>{record.approval.documentDecision.evidenceDigest}</p>
+        </>}
+      </details>
       <MarkdownText>{record.markdown ?? [record.plan,record.validation].filter(Boolean).join("\n\n")}</MarkdownText>
     </>}
   </>;
