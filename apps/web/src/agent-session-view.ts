@@ -503,42 +503,48 @@ export function outgoingReply(
   };
 }
 
-/**
- * Whether the display receipt is replaced by a mirror or precedes the loaded
- * history window. The latter is a display policy, not evidence of execution.
- * An attachment command mirrors as its own attachment bubble keyed by command
- * id. Plain replies prefer the persisted source association or the native
- * client message ID; legacy text matching requires one bounded candidate and
- * remains a display policy, never persisted execution evidence.
- */
-export function replyMirrorArrived(
+export type ReplySourceState = "matched" | "outside_window" | "unmatched";
+
+/** A display boundary is not a claim that the command was executed. */
+export function commandPrecedesLoadedWindow(command: AgentSessionCommand | undefined,
+  messages: readonly AgentSessionMessage[], hasOlderHistory: boolean): boolean {
+  const created = Date.parse(command?.createdAt ?? "");
+  if (!hasOlderHistory || !Number.isFinite(created)) return false;
+  const times = messages.filter(isConversationMessage).map(message => Date.parse(message.occurredAt)).filter(Number.isFinite);
+  return times.length > 0 && times.every(time => created < time);
+}
+
+export function replySourceState(
   command: AgentSessionCommand | undefined,
   messages: readonly AgentSessionMessage[],
   attachmentMessages: NonNullable<AgentSession["attachmentMessages"]>,
   hasOlderHistory = false,
-): boolean {
-  if (!command) return true;
-  if (command.attachments?.length) {
-    return attachmentMessages.some((message) => message.commandId === command.id);
-  }
-  const created = Date.parse(command.createdAt);
-  // A recent-history window cannot prove that an older reply never mirrored.
-  // Suppress only its display receipt, and only with an explicit older-page
-  // boundary; complete short histories must retain AND-219's pending receipt.
-  if (command.status === "delivered" && hasOlderHistory && Number.isFinite(created)) {
-    const times = messages.map(message => Date.parse(message.occurredAt)).filter(Number.isFinite);
-    if (times.length > 0 && times.every(time => created < time)) return true;
-  }
+): ReplySourceState {
+  if (!command) return "matched";
   const userMessages = messages.filter(message => message.role === "user" && isConversationMessage(message));
   const explicitIds = new Set([command.id, `answer-${command.id}`, ...(command.sourceMessageId ? [command.sourceMessageId] : [])]);
-  if (userMessages.some(message => explicitIds.has(message.sourceId))) return true;
-  // A known source outside this window must not be replaced by an unrelated
-  // same-text input. Legacy matching is display-only and intentionally bounded.
-  if (command.sourceMessageId || !Number.isFinite(created)) return false;
-  const delivered = Date.parse(command.deliveredAt ?? "");
-  const ceiling = Number.isFinite(delivered) ? Math.max(created, delivered) + 60_000 : created + 5 * 60_000;
-  return userMessages.filter(message => message.text === command.text
-    && Date.parse(message.occurredAt) >= created - 60_000 && Date.parse(message.occurredAt) <= ceiling).length === 1;
+  if (command.attachments?.length
+    ? attachmentMessages.some(message => message.commandId === command.id)
+    : userMessages.some(message => explicitIds.has(message.sourceId))) return "matched";
+  const created = Date.parse(command.createdAt);
+  // Without identity, an equal/earlier same-text input may be a previous command.
+  // Clock drift is tolerated only by exact source identity, not by guessing.
+  if (!command.attachments?.length && !command.sourceMessageId && Number.isFinite(created)) {
+    const delivered = Date.parse(command.deliveredAt ?? "");
+    const ceiling = Number.isFinite(delivered) ? Math.max(created, delivered) + 60_000 : created + 5 * 60_000;
+    if (userMessages.filter(message => message.text === command.text
+      && Date.parse(message.occurredAt) > created && Date.parse(message.occurredAt) <= ceiling).length === 1) return "matched";
+  }
+  return !command.attachments?.length && command.status === "delivered" && commandPrecedesLoadedWindow(command, messages, hasOlderHistory)
+    ? "outside_window" : "unmatched";
+}
+
+/** Compatibility projection: only the display receipt is suppressed outside
+ * the window. Its persisted source and execution facts remain independent. */
+export function replyMirrorArrived(command: AgentSessionCommand | undefined,
+  messages: readonly AgentSessionMessage[], attachmentMessages: NonNullable<AgentSession["attachmentMessages"]>,
+  hasOlderHistory = false): boolean {
+  return replySourceState(command, messages, attachmentMessages, hasOlderHistory) !== "unmatched";
 }
 
 /**
@@ -593,8 +599,8 @@ export function isNearMessageBottom(
  * merely arrive keep respecting the follow-latest position: scrolling up is a
  * request to read something else, not an invitation to be pulled back down.
  */
-export function shouldScrollMessagesAfterChange(outgoingChanged: boolean, followLatest: boolean): boolean {
-  return outgoingChanged || followLatest;
+export function shouldScrollMessagesAfterChange(replySubmitted: boolean, followLatest: boolean): boolean {
+  return replySubmitted || followLatest;
 }
 
 /**

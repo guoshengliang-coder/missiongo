@@ -39,6 +39,7 @@ import {
   questionAnswerValue,
   questionAnswerValues,
   replyMirrorArrived,
+  replySourceState,
   toggleQuestionOption,
   replyBlockedLabelKey,
   resolvedAgentSessionId,
@@ -416,10 +417,10 @@ describe("agent session message view", () => {
     expect(replyMirrorArrived({ ...command, status: "delivered" }, [
       { id: "m2", sourceId: "m2", role: "user", text: "继续", occurredAt: "2026-09-25T00:00:30Z" },
     ], [])).toBe(true);
-    // Clock drift: a mirror stamped slightly before the command still counts.
+    // Without identity, an earlier same-text record may be the previous input.
     expect(replyMirrorArrived({ ...command, status: "delivered" }, [
       { id: "m3", sourceId: "m3", role: "user", text: "继续", occurredAt: "2026-09-24T23:59:30Z" },
-    ], [])).toBe(true);
+    ], [])).toBe(false);
 
     const attachmentCommand = {
       id: "command-2", kind: "message", text: "看图", createdAt: "2026-09-25T00:00:00Z", status: "delivered",
@@ -778,7 +779,8 @@ describe("command/source identity", () => {
     expect(replyMirrorArrived({...command,sourceMessageId:"native-user"},[user("native-user","wrapped")],[])).toBe(true);
   });
   it("does not turn repeated words or a much later input into an association", () => {
-    expect(replyMirrorArrived(command,[user("a"),user("b")],[])).toBe(false);
+    expect(replyMirrorArrived(command,[user("a","继续","2026-11-13T00:00:10Z"),user("b","继续","2026-11-13T00:00:20Z")],[])).toBe(false);
+    expect(replyMirrorArrived(command,[user("previous-same-second")],[])).toBe(false);
     expect(replyMirrorArrived(command,[user("later","继续","2026-11-14T00:00:00Z")],[])).toBe(false);
     expect(replyMirrorArrived({...command,sourceMessageId:"missing"},[user("same-text")],[])).toBe(false);
     expect(replyMirrorArrived(command,[{...user(command.id),role:"agent"}],[])).toBe(false);
@@ -790,5 +792,23 @@ describe("command/source identity", () => {
     expect(visible).toHaveLength(2);
     expect(visible[0]?.outgoing?.commandId).toBe(command.id);
     expect(visible[1]).toEqual(native[1]);
+  });
+});
+
+
+describe("receipt source state", () => {
+  const command = {id:"old-input",kind:"message" as const,text:"继续",status:"delivered" as const,createdAt:"2026-11-12T00:00:00Z"};
+  const recent = [{id:"answer",sourceId:"answer",role:"agent" as const,text:"Later",occurredAt:"2026-11-13T00:00:00Z"}];
+  it("distinguishes an unloaded boundary from an observed source message", () => {
+    expect(replySourceState(command,recent,[],true)).toBe("outside_window");
+    expect(replySourceState(command,recent,[],false)).toBe("unmatched");
+    expect(replySourceState(command,[{...recent[0]!,sourceId:command.id,role:"user"}],[],true)).toBe("matched");
+  });
+  it.each(["queued","delivering","delivery_unknown","failed"] as const)("never hides a %s receipt because it is old", status => {
+    expect(replySourceState({...command,status},recent,[],true)).toBe("unmatched");
+  });
+  it("does not treat unknown timestamps as an unloaded source boundary", () => {
+    expect(replySourceState({...command,createdAt:""},recent,[],true)).toBe("unmatched");
+    expect(replySourceState(command,[{...recent[0]!,occurredAt:""}],[],true)).toBe("unmatched");
   });
 });

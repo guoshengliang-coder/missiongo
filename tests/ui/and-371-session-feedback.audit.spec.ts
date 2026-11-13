@@ -113,7 +113,7 @@ for (const width of [320, 768, 1440]) for (const theme of ["light", "dark"] as c
       await advanceSessionDetailPoll(page);
       await expect(page.locator(`.agent-console-message-outgoing-${status}`)).toBeVisible({ timeout: 10_000 });
       await expect(page.getByRole("button", { name: "撤回编辑" })).toHaveCount(0);
-      if (status === "delivered") await expect(page.locator(".agent-reply-feedback")).toContainText("已送达，待执行");
+      if (status === "delivered") await expect(page.locator(".agent-reply-feedback")).toContainText("已送达");
       if (status === "delivery_unknown" || status === "failed") await expect(page.locator(".agent-console-message-delivery")).toBeVisible();
     }
     // An unavailable image is explicit and retryable, and does not attempt a document fetch.

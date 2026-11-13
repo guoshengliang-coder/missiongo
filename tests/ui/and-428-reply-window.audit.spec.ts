@@ -30,14 +30,14 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
       if (path.endsWith("/history")) {
         historyReads++;
         return route.fulfill({ json: { status: "ready", messages: [
-          { id: "original", sourceId: "original", role: "user", text: "Old reply", occurredAt: stamp },
+          { id: "original", sourceId: "old-command", role: "user", text: "Old reply", occurredAt: stamp },
         ] } });
       }
       if (route.request().method() !== "GET") return route.fulfill({ status: 204 });
       if (path === "/api/v1/agent-sessions") return route.fulfill({ json: { sessions: [summary] } });
       return route.fulfill({ json: { ...summary, command: command(), history: { nextCursor: "older-page" },
         messages: [...Array.from({ length: count }, (_, n) => message(n)), ...(mirror ? [
-          { id: "mirror", sourceId: "mirror", role: "user", text: "Old reply", occurredAt: command().createdAt },
+          { id: "mirror", sourceId: "old-command", role: "user", text: "Old reply", occurredAt: command().createdAt },
         ] : [])] } });
     });
     const url = `/?product=${fixture.productId}&console=agent&session=${id}`;
@@ -60,7 +60,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     // Start with a fresh loaded window, then check receipt → actual mirror.
     withinWindow = true;
     await page.reload();
-    await expect(page.locator(".agent-console-outgoing")).toContainText("已送达，待执行");
+    await expect(page.locator(".agent-console-outgoing")).toContainText("已送达");
     await reply.fill("Preserve while polling");
     mirror = true;
     await advanceSessionDetailPoll(page);

@@ -1,3 +1,4 @@
+import { useTranscriptAnchor, revealTranscriptReply } from "./transcript-anchor";
 import { CommonCommandMenu, CommandMessageMenu, useCommandTarget } from "./common-commands";
 import { SessionSender, SendUnconfirmed, SendSuperseded, commandNotDelivered, sendAttemptHasDraft, type SendInput } from "./session-send";
 import { useSendAttempt, sendAttemptLocked, SessionSendFeedback } from "./session-send-feedback";
@@ -45,7 +46,7 @@ import {
 
 import { api } from "./api";
 import { AgentSessionFailureNotice } from "./agent-session-failure-notice";
-import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, SessionStatusIcon, isHistoryLimited, AgentSessionError } from "./agent-session-feedback";
+import { AgentHistoryNotice, AgentReplyFeedback, AgentReplySourceNotice, AgentRunDetails, SessionStatusIcon, isHistoryLimited, AgentSessionError } from "./agent-session-feedback";
 import { AgentIcon } from "./agent-icons";
 import {
   activityLabelKey,
@@ -79,7 +80,8 @@ import {
   outgoingReplyStatusKey,
   replyBlockedLabelKey,
   externalProgressLabelKey,
-  replyMirrorArrived,
+  replySourceState,
+  commandPrecedesLoadedWindow,
   resolvedAgentSessionId,
   sessionCountsAsUnread,
   sessionInlineError,
@@ -286,6 +288,7 @@ export function AgentSessionConsole({
   const conversationOpenRef = useRef(false);
   const previousMessagesRef = useRef<readonly { id: string; text: string }[]>([]);
   const previousOutgoingRef = useRef("");
+  const previousSubmittedRef = useRef<string | undefined>(undefined);
   const unseenMessageIdsRef = useRef(new Set<string>());
   const hasSessionsError = sessionsError !== null && sessionsError !== undefined;
 
@@ -724,10 +727,13 @@ export function AgentSessionConsole({
   const previousHistoryRevision = useRef(0);
   const mirrorMessages = history.messages;
   const mirrorAttachments = sessionQuery.data?.attachmentMessages ?? [];
-  const outgoingCandidate = outgoingReply(command, sendingRequest,
-    replyMirrorArrived(command, mirrorMessages, mirrorAttachments, history.hasMore));
+  const sourceState = replySourceState(command, mirrorMessages, mirrorAttachments, history.hasMore);
+  const outgoingCandidate = outgoingReply(command, sendingRequest, sourceState !== "unmatched");
   const outgoing = outgoingCandidate?.commandId === dismissedCommandId ? null : outgoingCandidate;
   const outgoingSignature = outgoing ? `${selectedId}:${outgoing.commandId ?? "request"}:${outgoing.status}:${outgoing.text}` : "";
+  const revealOldReply = command && ["failed", "delivery_unknown"].includes(command.status)
+    && commandPrecedesLoadedWindow(command, history.messages, history.hasMore)
+    ? () => revealTranscriptReply(messagesRef.current, [command.id, `answer-${command.id}`, ...(command.sourceMessageId ? [command.sourceMessageId] : [])]) : undefined;
   const sessionStatus = effectiveAgentSessionStatus(
     sessionQuery.data?.status ?? selected?.status ?? "unavailable",
     command,
@@ -741,6 +747,7 @@ export function AgentSessionConsole({
   const attachmentMessages = sessionQuery.data?.attachmentMessages ?? [];
   const visibleMessages = agentChatMessages(messages, attachmentMessages, outgoing?.commandId);
   const planMessages = inlinePlanTranscript(withOutgoingReply(visibleMessages, outgoing), sessionQuery.data);
+  const rememberReadingPosition = useTranscriptAnchor(messagesRef, `${selectedId}:${conversationOpen}`, followLatest, history.revision, history.messages, outgoingSignature);
   const activities = sessionQuery.data?.activities ?? [];
   const turnState = sessionQuery.data?.turnState ?? selected?.turnState;
   // Detail and list notifications may arrive separately. Use the same foreground rule as
@@ -853,6 +860,8 @@ export function AgentSessionConsole({
     const resetView = shouldResetMessageView(changedSession, conversationOpenRef.current, conversationOpen);
     const previousMessages = previousMessagesRef.current;
     const outgoingChanged = previousOutgoingRef.current !== outgoingSignature;
+    const replySubmitted = Boolean(sendAttempt?.requestKey && previousSubmittedRef.current !== sendAttempt.requestKey);
+    previousSubmittedRef.current = sendAttempt?.requestKey;
     observedSessionRef.current = selectedId;
     conversationOpenRef.current = conversationOpen;
     previousMessagesRef.current = messages;
@@ -872,13 +881,13 @@ export function AgentSessionConsole({
       return; // Prepending history is neither new output nor an unread event.
     }
     const changedIds = changedMessageIds(previousMessages, messages);
-    if (changedIds.length === 0 && !outgoingChanged) return;
-    if (shouldScrollMessagesAfterChange(outgoingChanged, followLatest)) scrollToLatest();
+    if (changedIds.length === 0 && !outgoingChanged && !replySubmitted) return;
+    if (shouldScrollMessagesAfterChange(replySubmitted, followLatest)) scrollToLatest();
     else if (changedIds.length > 0) {
       changedIds.forEach((id) => unseenMessageIdsRef.current.add(id));
       setNewMessageCount(unseenMessageIdsRef.current.size);
     }
-  }, [conversationOpen, followLatest, messages, outgoingSignature, scrollToLatest, selectedId, history.revision]);
+  }, [conversationOpen, followLatest, messages, outgoingSignature, scrollToLatest, selectedId, history.revision, sendAttempt?.requestKey]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -1288,6 +1297,7 @@ export function AgentSessionConsole({
                 onScroll={(event) => {
                   const nearBottom = isNearMessageBottom(event.currentTarget);
                   setFollowLatest(nearBottom);
+                  rememberReadingPosition();
                   if (!nearBottom && !history.error && event.currentTarget.scrollTop <= 48) void history.loadMore();
                   if (nearBottom) {
                     unseenMessageIdsRef.current.clear();
@@ -1589,6 +1599,7 @@ export function AgentSessionConsole({
                   <AgentStopFeedback stop={stopCommand}
                     latestCommand={command} turnActive={sessionQuery.data?.turnState?.turnActive ?? false}
                     backgroundRunning={(sessionQuery.data?.activities.length ?? 0) > 0} />
+                {revealOldReply && <AgentReplySourceNotice command={command} state={sourceState} onRevealFailure={revealOldReply} />}
                 {showRunDetails && (<>
                     {["stalled", "unavailable", "failed"].includes(sessionStatus) && <p className="agent-run-warning" role="alert">{activityText}</p>}
                     <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={replyPresentation?.iconStatus ?? (agentWaiting ? "waiting" : visualStatus)} />} actions={stopAction}
@@ -1596,10 +1607,10 @@ export function AgentSessionConsole({
                         : agentWaiting ? t(questionPermission ? "agentRunApproval" : runWaitingLabelKey({ agentKind: selected.agentKind, approval }), { agent: agentName })
                           : claudeBackgroundOnly ? t("agentRunBackground") : sessionStatus === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(sessionStatus, t)}>
                       {!["stalled", "unavailable", "failed"].includes(sessionStatus) && <p>{statusDetail}</p>}
-                      {outgoing && ["queued", "delivering", "delivered"].includes(outgoing.status) && <p>
-                        {outgoing.status === "delivered" ? t("agentSessionReplyAwaitingExecution", { agent: agentName, duration: elapsed(outgoing.occurredAt, clock) ?? "–" })
-                          : t("agentSessionReplyWaitingReason", { duration: elapsed(outgoing.occurredAt, clock) ?? "–",
-                            reason: agentWaiting ? waitingText : activities.length > 0 ? t("agentSessionCurrentTool") : t("agentSessionCurrentTurn") })}
+                      <AgentReplySourceNotice command={command} state={sourceState} />
+                      {outgoing && ["queued", "delivering"].includes(outgoing.status) && <p>
+                        {t("agentSessionReplyWaitingReason", { duration: elapsed(outgoing.occurredAt, clock) ?? "–",
+                          reason: agentWaiting ? waitingText : activities.length > 0 ? t("agentSessionCurrentTool") : t("agentSessionCurrentTurn") })}
                       </p>}
                       {(turnRunning || sessionStatus === "stalled") && (turnState?.lastProgressAt || claudeTurn) && <small>{t("agentSessionLastActivity", { duration: elapsed(turnState?.lastProgressAt ?? selected.activityAt, clock) ?? "–" })}</small>}
                       {turnState?.observedAt && <small>{t("agentSessionLastObserved", { duration: elapsed(turnState.observedAt, clock) ?? "–" })}</small>}

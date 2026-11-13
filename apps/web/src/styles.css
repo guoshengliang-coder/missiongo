@@ -2347,6 +2347,8 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .agent-session-head strong { font-size: var(--text-sm); }
 .agent-session-muted { margin: 0; color: var(--muted); font-size: var(--text-xs); }
 .agent-session-messages { display: flex; flex-direction: column; gap: 8px; max-height: 420px; overflow: auto; }
+.agent-session-outgoing { display: flex; flex-direction: column; gap: 4px; }
+.agent-session-outgoing > .agent-reply-feedback { align-self: flex-end; }
 .agent-session-message { padding: 9px 10px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); }
 .agent-session-message-user { margin-left: 28px; background: var(--accent-bg); border-color: var(--accent-line); }
 .agent-session-message-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted); font-size: var(--text-xs); }

@@ -20,7 +20,7 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     await page.route("**/api/v1/agent-sessions**", route => {
       const command = { id: "reply", kind: "message", status, text, createdAt: stamp };
       return route.fulfill({ json: new URL(route.request().url()).pathname === "/api/v1/agent-sessions" ? { sessions: [summary] }
-        : { ...summary, command, messages: mirrored ? [{ id: "mirror", role: "user", text, occurredAt: stamp }] : [] } });
+        : { ...summary, command, messages: mirrored ? [{ id: "mirror", sourceId: command.id, role: "user", text, occurredAt: stamp }] : [] } });
     });
     await page.route(`**/api/v1/items/${fixture.detailKey}/dispatches`, route => route.fulfill({ json: { dispatches: [{
       id: "receipt-dispatch", agentSessionId: id, agentKind: "codex", mode: "auto", status: "launched", nodeName: "Fixture",
@@ -33,11 +33,18 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     const panel = page.locator(".agent-session-panel");
     const feedback = panel.locator(".agent-reply-feedback");
     await expect(feedback).toContainText("排队中");
-    await expect(panel.locator(".agent-session-messages .agent-reply-feedback")).toHaveCount(0);
+    await expect(panel.getByText("暂时还没有可显示的消息。", {exact:true})).toHaveCount(0);
+    await expect(panel.locator(".agent-session-messages .agent-reply-feedback")).toHaveCount(1);
+    await expect(panel.locator(".agent-session-message .agent-reply-feedback")).toHaveCount(0);
     await expect(panel.getByRole("button", { name: "撤回编辑" })).toBeVisible();
+    const bubble = panel.locator(".agent-session-outgoing > article");
+    const bodyBounds = (await bubble.boundingBox())!;
+    const receiptBounds = (await feedback.boundingBox())!;
+    expect(receiptBounds.y - bodyBounds.y - bodyBounds.height).toBeCloseTo(4, 0);
+    expect(receiptBounds.x + receiptBounds.width).toBeCloseTo(bodyBounds.x + bodyBounds.width, 0);
     status = "delivered";
     await advanceSessionDetailPoll(page);
-    await expect(feedback).toContainText("已送达，待执行");
+    await expect(feedback).toContainText("已送达");
     await expect(panel.getByRole("button", { name: "撤回编辑" })).toHaveCount(0);
     for (const scale of ["small", "medium", "large"]) {
       await page.evaluate(value => { document.documentElement.dataset.fontScale = value; }, scale);

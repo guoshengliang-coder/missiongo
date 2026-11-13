@@ -1,3 +1,4 @@
+import { useTranscriptAnchor } from "./transcript-anchor";
 import { CommonCommandMenu, CommandMessageMenu, useCommandTarget, useCommonCommands } from "./common-commands";
 import { AgentSessionFailureNotice } from "./agent-session-failure-notice";
 import { DraftChatFile } from "./agent-chat-draft-file";
@@ -16,12 +17,12 @@ import { AgentStopFeedback } from "./agent-stop-feedback.js";
 import { Fragment, useState, useContext, useEffect, useLayoutEffect, useRef, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, SessionStatusIcon, isHistoryLimited, AgentSessionError } from "./agent-session-feedback";
+import { AgentHistoryNotice, AgentReplyFeedback, AgentReplySourceNotice, AgentRunDetails, SessionStatusIcon, isHistoryLimited, AgentSessionError } from "./agent-session-feedback";
 import { MarkdownText } from "./markdown-text";
 import { ChatAttachments } from "./chat-attachments";
 import { AgentArtifactMarkdown } from "./agent-artifact-viewer";
 import { api } from "./api";
-import { activityLabelKey, latestAgentSessionCommand, sessionReplyPresentation, formatAgentMessageTime, agentChatMessages, withOutgoingReply, outgoingReply, replyMirrorArrived, replyBlockedLabelKey, runWaitingLabelKey, sessionInlineError, sessionStatusDetail } from "./agent-session-view";
+import { activityLabelKey, latestAgentSessionCommand, sessionReplyPresentation, formatAgentMessageTime, agentChatMessages, withOutgoingReply, outgoingReply, replySourceState, replyBlockedLabelKey, runWaitingLabelKey, sessionInlineError, sessionStatusDetail } from "./agent-session-view";
 import { hasPendingPermissionQuestion } from "@missiongo/domain";
 import { AgentSessionQuestions } from "./agent-session-questions";
 import { useI18n } from "./i18n";
@@ -165,11 +166,13 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
     if ((text || inheritedFiles.length) && !pending && !sendBusy) send.mutate({ sessionId, text });
   };
 
-  const mirrorArrived = replyMirrorArrived(command, history.messages, session.data?.attachmentMessages ?? [], history.hasMore);
+  const sourceState = replySourceState(command, history.messages, session.data?.attachmentMessages ?? [], history.hasMore);
   const outgoing = outgoingReply(command, sendLocked && sendAttempt && !sendAttempt.command
-    ? { text: sendAttempt.text, occurredAt: sendAttempt.occurredAt, status: "sending" } : undefined, mirrorArrived);
+    ? { text: sendAttempt.text, occurredAt: sendAttempt.occurredAt, status: "sending" } : undefined, sourceState !== "unmatched");
   const planMessages = inlinePlanTranscript(withOutgoingReply(agentChatMessages(history.messages,
     session.data?.attachmentMessages ?? [], outgoing?.commandId), outgoing), session.data);
+  const rememberReadingPosition = useTranscriptAnchor(messagesRef, `${sessionId}:${open}`, followLatest.current, history.revision,
+    history.messages, outgoing ? `${outgoing.commandId}:${outgoing.status}:${outgoing.text}` : "");
   const commandTargetId = `panel-${sessionId}`;
   const commandUndo = useCommandTarget(commandTargetId,permissionReplyText((session.data?.currentRequests ?? session.data?.messages ?? []).flatMap(message => message.questions ?? []),reply),text=>setReply(permissionReplyText((session.data?.currentRequests ?? session.data?.messages ?? []).flatMap(message => message.questions ?? []),text,true)),!canReply || pending || sendBusy);
   return (
@@ -188,18 +191,19 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                 <AgentPlanRecords key={sessionId} session={session.data} />
                 <IntegrationDetails productId={productId} sessionId={sessionId} />
               </header>
-              {history.messages.length === 0 && (
+              {planMessages.messages.length === 0 && (
                 <p className="agent-session-muted">{t("agentSessionNoMessages")}</p>
               )}
               <div className="agent-session-messages" ref={messagesRef} onScroll={event => {
                 followLatest.current = event.currentTarget.scrollHeight - event.currentTarget.scrollTop - event.currentTarget.clientHeight <= 32;
+                rememberReadingPosition();
                 if (!history.error && event.currentTarget.scrollTop <= 48 && event.currentTarget.scrollHeight > event.currentTarget.clientHeight + 1) void history.loadMore();
               }}>
                 <AgentHistoryLoader history={history} />
                 <AgentProgressReports session={session.data} />
                 {planMessages.messages.map((message) => {
-                  return (
-                    <Fragment key={message.id}><article data-agent-message-id={`${message.role}:${message.sourceId || message.id}`} className={`agent-session-message agent-session-message-${message.role}`}>
+                  const content = (
+                    <><article data-agent-message-id={`${message.role}:${message.sourceId || message.id}`} className={`agent-session-message agent-session-message-${message.role}`}>
                       <header className="agent-session-message-meta">
                         <small>{messageLabel(message.role, session.data.agentKind, t)}</small>
                         <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
@@ -224,8 +228,10 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                     </article>
                       {message.outgoing && <AgentReplyFeedback status={message.outgoing.status} cancelling={cancel.isPending}
                         onEdit={message.outgoing.commandId && canReply ? () => cancel.mutate({sessionId, commandId: message.outgoing!.commandId!, text: message.text}) : undefined} />}
-                    </Fragment>
+                    </>
                   );
+                  return message.outgoing ? <div key={message.id} className="agent-session-outgoing">{content}</div>
+                    : <Fragment key={message.id}>{content}</Fragment>;
                 })}
               </div>
               {!planMessages.planMessageId && <UnlinkedPlanRecord session={session.data} blocked={questionPermission || pending || sendBusy} />}
@@ -237,7 +243,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                 ? t(questionPermission ? "agentRunApproval" : runWaitingLabelKey(session.data), { agent: agentName })
                 : backgroundOnly ? t("agentRunBackground") : session.data.status === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(session.data.status, t)}>
                 <p>{statusDetail}</p>
-                {outgoing?.status === "delivered" && <p>{t("agentSessionReplyAwaitingExecution", {agent: agentName, duration: ""})}</p>}
+                <AgentReplySourceNotice command={command} state={sourceState} />
                 {session.data.activities.length > 0 && (
                   <section className="agent-session-background" aria-label={t("agentSessionBackgroundTitle")}>
                     <strong>{t("agentSessionBackgroundCount", { count: session.data.activities.length })}</strong>
