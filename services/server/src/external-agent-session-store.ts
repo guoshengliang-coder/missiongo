@@ -255,9 +255,9 @@ export class ExternalAgentSessionStore {
   listForAccount(accountId: string, limit = 100, selectedIds?: readonly string[]): AgentSessionListItem[] {
     if (selectedIds?.length === 0) return [];
     const plans = new ImplementationPlans(this.store.database);
-    const requestIdentities = new Set((this.db.prepare("SELECT identity_key FROM implementation_plan_requests WHERE account_id=?").all(accountId) as {identity_key:string}[]).map(row=>row.identity_key));
     const rows = this.db.prepare(`SELECT s.*,COALESCE(mc.message_at,s.created_at) AS conversation_at FROM external_agent_sessions s LEFT JOIN session_message_clocks mc ON mc.session_key='external:'||s.id WHERE s.account_id = ? ${selectedIds ? "AND s.id IN (SELECT value FROM json_each(?))" : ""} ORDER BY COALESCE(mc.message_at,s.created_at) DESC, s.id DESC LIMIT ?`)
       .all(accountId, ...(selectedIds ? [JSON.stringify(selectedIds)] : []), limit) as unknown as SessionRow[];
+    const planStates = plans.listStates(accountId,rows.map(row => `native:${row.client_id}:${row.agent_kind}:${row.ref_kind}:${row.session_ref}`));
     // AND-383: batch the per-row lookups (latest report, linked items) and
     // reuse one native-session store instead of allocating per row.
     const nativeStore = new ExternalNativeSessionStore(this.store);
@@ -295,7 +295,7 @@ export class ExternalAgentSessionStore {
       const { nativeMessages, ...native } = overlays.get(row.id)!;
       const latest = latestBySession.get(row.id);
       const identity = `native:${row.client_id}:${row.agent_kind}:${row.ref_kind}:${row.session_ref}`;
-      const proposal = requestIdentities.has(identity) ? plans.proposal(accountId,identity) : undefined;
+      const proposal = planStates.get(identity);
       const pendingApproval = proposal && proposal.valid && !proposal.approved;
       const items = itemsBySession.get(row.id) ?? [];
       const revision = latest?.id ?? row.updated_at;

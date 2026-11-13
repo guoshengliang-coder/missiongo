@@ -73,3 +73,35 @@ it("keeps each proposal's submission time stable and returns legacy approval tim
  plans.request("owner","conversation","v2",proposal);
  expect(plans.proposal("owner","conversation")!.approvedAt).toBeUndefined();
 });
+
+it("batches metadata with the same live scope, approval and document-round semantics as full proposals",async()=>{
+ const {PlanDocuments}=await import("./plan-documents.js");
+ const {vi}=await import("vitest");
+ const {plans,item,store}=fixture();
+ const document=new PlanDocuments(store).prepare({accountId:"owner",identity:"document",keys:[item.key],summary:"Reviewed",markdown:"Reviewed\n"+"正文".repeat(10000),origin:"https://fixture.example.test",requestKey:"doc"});
+ const identities=Array.from({length:120},(_,i)=>`session-${i}`);
+ for(const identity of identities) plans.request("owner",identity,"r1",{keys:[item.key,item.key],plan:"Long text ".repeat(4000),validation:"",documentId:document.id,origin:"native"});
+ plans.record({accountId:"owner",identity:identities[1]!,revision:"r1",planHash:"r1",keys:[item.key],source:"web"});
+ // A historical revision approval with a different hash is not current authority.
+ plans.record({accountId:"owner",identity:identities[2]!,revision:"r1",planHash:"different-hash",keys:[item.key],source:"native"});
+ const fields=(proposal:NonNullable<ReturnType<ImplementationPlans["proposal"]>>)=>({revision:proposal.revision,approved:proposal.approved,valid:proposal.valid,
+  ...(proposal.origin?{origin:proposal.origin}:{}),...(proposal.approvedAt?{approvedAt:proposal.approvedAt}:{}),...(proposal.requestedAt?{requestedAt:proposal.requestedAt}:{}),...(proposal.nativeSourceId?{nativeSourceId:proposal.nativeSourceId}:{})});
+ const compare=()=>{
+  const prepare=vi.spyOn(store.database.connection,"prepare");
+  const states=plans.listStates("owner",[...identities,"missing"]);
+  expect(prepare.mock.calls.length).toBeLessThanOrEqual(3);prepare.mockRestore();
+  expect(states.has("missing")).toBe(false);
+  for(const identity of identities)expect(states.get(identity)).toEqual(fields(plans.proposal("owner",identity)!));
+  expect(JSON.stringify([...states.values()])).not.toContain("Long text");
+  expect(plans.listStates("outsider",identities).size).toBe(0);
+  return states;
+ };
+ expect(compare().get(identities[0]!)?.valid).toBe(true);
+ store.database.connection.prepare(`INSERT INTO work_item_events(id,item_id,event_type,actor_kind,from_status,to_status,payload_json,created_at)
+  VALUES ('returned',?,'status_changed','human','pending_verification','ready','{"reason":"verification_failed"}',?)`).run(item.id,new Date().toISOString());
+ const returned=compare();expect(returned.get(identities[0]!)?.valid).toBe(false);expect(returned.get(identities[1]!)?.approved).toBe(true);
+ store.database.connection.prepare("UPDATE work_items SET content_version=content_version+1 WHERE id=?").run(item.id);
+ expect(compare().get(identities[1]!)?.approved).toBe(false);
+ plans.request("owner",identities[1]!,"r2",{keys:[item.key],plan:"Revised",validation:""});
+ expect(compare().get(identities[1]!)?.approved).toBe(false);
+});
