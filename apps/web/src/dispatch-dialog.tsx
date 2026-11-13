@@ -86,7 +86,7 @@ export function DispatchDialog({
   products: readonly Product[];
   onDispatched: (dispatch: Dispatch) => void;
   onClose: () => void;
-  newSession?: { productId: string; initialConfig?: FreeSessionConfig; onConfigured: (config: FreeSessionConfig) => void };
+  newSession?: { allowSaveDefaults?:boolean; productId: string; initialConfig?: FreeSessionConfig; onConfigured: (config: FreeSessionConfig) => void };
   handoff?: {itemKey:string;expectedRevision:number;note:string;idempotencyKey:string};
 }) {
   const { formatTime, t } = useI18n();
@@ -462,7 +462,7 @@ export function DispatchDialog({
       {defaultsQuery.isError && <p className="inline-error" role="alert">{t("dispatchDefaultsUnavailable")}
         <button type="button" className="secondary-button" onClick={() => void defaultsQuery.refetch()}>{t("retry")}</button>
       </p>}
-      {differsFromDefaults && <div className="help-option"><label className="dispatch-conflict-confirm">
+      {differsFromDefaults && newSession?.allowSaveDefaults!==false && <div className="help-option"><label className="dispatch-conflict-confirm">
         <input type="checkbox" checked={saveAsDefault} disabled={mutation.isPending}
           onChange={event => setSaveDefaultsFor(event.target.checked ? defaultsKey : null)} />
         <span>{t("dispatchSetDefaults")}</span>
