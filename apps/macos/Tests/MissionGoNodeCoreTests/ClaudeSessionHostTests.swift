@@ -2,6 +2,17 @@ import XCTest
 @testable import MissionGoNodeCore
 
 final class ClaudeStreamSnapshotTests: XCTestCase {
+    func testDocumentReplyCompletionUsesActualResult() {
+        var snapshot = ClaudeStreamSnapshot(sessionRef: "native")
+        snapshot.beginInitialTurn(id: "source-turn")
+        snapshot.consume(["type": "assistant", "uuid": "final-frame", "timestamp": "2026-11-13T12:00:00Z",
+            "message": ["content": [["type": "text", "text": "Reviewed document plan"]]]])
+        XCTAssertNil(snapshot.state.messages.last?.phase)
+        snapshot.consume(["type": "result", "is_error": false, "result": "Reviewed document plan"])
+        XCTAssertEqual(snapshot.state.messages.last?.phase, "final_answer")
+        XCTAssertEqual(snapshot.state.messages.last?.sourceId, "final-frame")
+    }
+
     func testPermissionAnswerDoesNotReplaceTheNativeTurnIdentity() {
         var snapshot = ClaudeStreamSnapshot(sessionRef: "native")
         snapshot.beginInitialTurn(id: "first-turn")

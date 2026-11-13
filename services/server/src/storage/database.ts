@@ -2740,5 +2740,21 @@ export class MissionGoDatabase {
       });
     }
 
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611131303").get()) {
+      this.transaction(() => {
+        this.connection.exec(`CREATE TABLE document_plan_decisions (
+          account_id TEXT NOT NULL,identity_key TEXT NOT NULL,revision TEXT NOT NULL,document_id TEXT NOT NULL,
+          document_sha256 TEXT NOT NULL,session_id TEXT NOT NULL,node_id TEXT NOT NULL,session_ref TEXT NOT NULL,
+          display_source_id TEXT NOT NULL,acceptance_source_id TEXT NOT NULL,evidence_digest TEXT NOT NULL,
+          accepted_at TEXT NOT NULL,recorded_at TEXT NOT NULL,request_key TEXT NOT NULL,
+          PRIMARY KEY(account_id,identity_key,revision)
+        ) STRICT;
+        CREATE TRIGGER document_plan_decisions_immutable_update BEFORE UPDATE ON document_plan_decisions
+          BEGIN SELECT RAISE(ABORT,'document decision audit is immutable'); END;
+        CREATE TRIGGER document_plan_decisions_immutable_delete BEFORE DELETE ON document_plan_decisions
+          BEGIN SELECT RAISE(ABORT,'document decision audit is immutable'); END;`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202611131303,new Date().toISOString());
+      });
+    }
   }
 }

@@ -142,6 +142,11 @@ export class ClaudeAdapter implements Adapter {
         if (request.subtype === "elicitation") this.add(confirmationCard(request, this.activeTurnId, { withdrawn: true }));
       }
       const cancelled = ["aborted_streaming", "aborted_tools"].includes(event.terminal_reason);
+      if (!event.is_error && !cancelled && typeof event.result === "string") {
+        const final=[...this.state.messages].reverse().find(m=>m.role==="agent" && !m.questions?.length
+          && m.turnId===this.activeTurnId && m.text===event.result);
+        if(final) this.add({...final,phase:"final_answer"});
+      }
       this.state.status = event.is_error && !cancelled ? "failed" : "idle";
       this.state.turnActive = false; this.state.waitingForInput = false; this.requests = [];
     }

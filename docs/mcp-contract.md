@@ -338,3 +338,8 @@ Codex、Claude Code、OpenCode 共用内容完整性契约。`request_plan_appro
 追加 delivery_evidence_added 事件，reason=non_release_supplemented，记录 product_non_release_evidence 授权、精确开发事件、规范化摘要、验证和 preservedStatus；不产生正式发布凭据，不改变人工状态、Builder、处理轮次或既有事件。
 事务保护全部写入；同键同内容返回当前状态不重复，异内容拒绝，旧成功重放不恢复人工打回。原开发身份交接及正式发布补证入口保持独立。
 get_item_context、逐份 deliveries、deliveryExplanations 及无需发布候选原因读取补证结果，现有时间线 DeliveryEvidence 复用展示失败、未运行和限制；补证不意味着验收通过或其他节点已安装。
+
+
+### 原文档批准恢复
+
+recover_plan_approval 是 write 范围的受限领域工具，需 canComment、supportsDocumentPlanApprovalRecovery 和 writeTools 显式包含。参数为 itemKey、documentId、revision、idempotencyKey，以及且仅一种原 dispatchId/sessionId。绑定原账号、外部原 OAuth 客户端和全部文档条目权限；没有跨账号读取、任意 SQL、approved 参数或任务启动能力。restored/already_approved 与 history_incomplete/evidence_missing/scope_changed/source_conflict/identity_unavailable 分开返回。只读方案/历史接口不写审批。HTTP 原会话 POST plan-approval/recover 使用相同领域核验及原会话操作权限；完整来源审计存入 document_plan_decisions。

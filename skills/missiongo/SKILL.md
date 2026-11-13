@@ -1,7 +1,7 @@
 ---
 name: missiongo
 description: 通过 MissionGo MCP 查询项目概览、吞吐、交付周期和验收打回率，或完整读取及处理指定条目、评论、创建和上传附件；核实合并与发布后可靠交接。不修改条目正文与字段，不决定验收。
-version: 5.72.0
+version: 5.73.0
 ---
 
 # MissionGo 条目读取与评论
@@ -787,3 +787,12 @@ MissionGo仓库将完整get_merge_batch返回的batch与完整候选保存到仓
 get_merge_batch 返回 operation、references、publicationScope 时，以该冻结范围为准。references 保留原批次的真实合并事实，禁止再次修复、合并或 report，也不重复开发完成交接；独立核实精确 head、merge commit 在实际目标分支，用 record_merge_integration 的 verify_reference（deliveryId、expectedHead、commit、checkedAt、source）记录核验。计划包含全部选择，引用只读，只有非引用且 mergeReady 的项可合并。publish_only 不授权新的 Git 合并。完成 reference 核验及实际目标组合验证后，才上报发布阶段；未知结果保留原批次。
 
 第二步预览仅是服务端登记元数据，不代替实时 Git、公开产物和仓库发布门禁。发布覆盖包含此前已合并的额外候选，仍读取全量分页并用当前仓库 selection/digest 规划；新候选、轮次、范围或产物变化不得自动沿用旧授权。实际发布前核对 publicationScope，额外范围改变须在原会话重新审阅，不通过删清单、改摘要、重建批次绕过。部分失败的发布决定和恢复仍走原受限流程。旧批次没有这些字段时沿用原语义，不推断已有新授权；运行中旧客户端需显式重读当前 Skill 和工具契约。
+
+
+## 固定文档的原会话批准与恢复（AND-515，5.73）
+
+Codex、Claude Code、OpenCode 在原会话完整展示已登记固定文档后，紧随的独立“批准”可由原节点同步为正式决定；不是任意聊天语义识别。仅当前账号、原会话、当前文档/修订/范围且来源及历史完整时登记。疑问、否定、条件、引用、“好”“继续”、进度和工具权限不授权方案。缺少最终完成标记、原始时间/顺序或发生来源冲突时保留缺口，不推测批准。
+
+服务端 get_current_account 的 supportsDocumentPlanApprovalRecovery 以及 writeTools 含 recover_plan_approval 时，已核实原批准但尚未登记的原会话可调用 recover_plan_approval(itemKey, documentId, revision, idempotencyKey, dispatchId 或 sessionId)，两种身份只选原来一种。外部 sessionId 仍须原账号和 OAuth 客户端；不得借别人的原身份或用新会话恢复。先完整读取固定原文及 get_review_content/get_item_plan_approvals 的当前修订，保持原范围。该工具不接收 approved、批准正文或任意字段，不启动 Agent、不发“批准”、不改变条目状态，不代表发布或验收。原生或 Web 已有有效批准直接复用，不再要求人工批准同一方案。
+
+restored/already_approved 只表示当前决定已登记；仍回读精确方案及真实状态，按正常流程归档和继续。history_incomplete/evidence_missing/source_conflict 表示来源不完整或不可核验，不代表用户拒绝；可在现有只读历史入口取得指定原会话缺页后再显式恢复，同内容重试用原键。scope_changed/identity_unavailable 保留现状，不换账号、文档或会话绕过。普通历史读取、get_plan_document/get_review_content 继续只读，不能声称阅读已自动恢复批准。旧节点缺来源字段时明确需更新或补齐证据，不重复索批、不改用户原消息。
