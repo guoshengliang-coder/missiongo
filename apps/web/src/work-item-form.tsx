@@ -6,12 +6,9 @@
 // request from drifting into a second, smaller form.
 import {
   Fragment,
-  lazy,
-  Suspense,
   useEffect,
   useMemo,
   useState,
-  type ComponentProps,
   type Dispatch as ReactDispatch,
   type ReactNode,
   type SetStateAction,
@@ -38,7 +35,7 @@ import { api } from "./api";
 import { AutoGrowTextarea } from "./auto-grow-textarea";
 import { MediaLightbox } from "./media-lightbox";
 import { ZoomableImage } from "./zoomable-image";
-import { ErrorBoundary, LoadFailureNotice } from "./ErrorBoundary";
+import { ImageAnnotator } from "./lazy-image-annotator";
 import { Select } from "./select";
 import { useI18n } from "./i18n";
 import { localizedErrorText } from "./error-text";
@@ -50,7 +47,6 @@ import {
 } from "./diagnostics";
 import { isAnnotatableImage } from "./image-annotation";
 import { validateAttachment } from "./attachment-validation";
-import type { ImageAnnotator as ImageAnnotatorImpl } from "./ImageAnnotator";
 import type { CaptureDraft, EnvironmentDraft } from "./capture-draft";
 import {
   COMPONENT_KINDS,
@@ -71,19 +67,7 @@ export const TYPE_ICONS: Record<WorkItemType, typeof Inbox> = {
   note: FileText,
 };
 
-const LazyImageAnnotator = lazy(
-  () => import("./ImageAnnotator").then(({ ImageAnnotator }) => ({ default: ImageAnnotator })),
-);
-
-export function ImageAnnotator(props: ComponentProps<typeof ImageAnnotatorImpl>) {
-  return (
-    <ErrorBoundary fallback={(error) => <LoadFailureNotice error={error} onDismiss={props.onCancel} />}>
-      <Suspense fallback={null}>
-        <LazyImageAnnotator {...props} />
-      </Suspense>
-    </ErrorBoundary>
-  );
-}
+export { ImageAnnotator };
 
 export const REPORT_COPY = {
   idea: { title: "ideaDetails", help: "ideaDetailsHelp", overview: "ideaOverview", placeholder: "ideaOverviewPlaceholder" },

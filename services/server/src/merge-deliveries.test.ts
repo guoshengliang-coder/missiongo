@@ -363,7 +363,8 @@ describe("planned integration batches",()=>{
     const timeline=f.store.getTimeline(f.item.key),receipt=timeline.find(e=>e.payload.reason==="non_release_submitted")!;
     expect(receipt.actorKind).toBe("human");expect(receipt.payload.developmentEventId).toBeUndefined();
     expect(f.store.getDeliveryRecords(f.item.key)[0]).toMatchObject({id:event.id,published:false});
-    const queue=f.merges.queue(f.item.productId,f.owner.id);
+    const queue=f.merges.queue(f.item.productId,f.owner.id,"review");
+    expect(f.merges.queue(f.item.productId,f.owner.id).deliveries).toEqual([]);
     expect(queue.counts.review).toBe(1);expect(queue.counts.release??0).toBe(0);
     expect(queue.deliveries[0]!.queue).toMatchObject({stage:"review",blocker:expect.stringContaining("无需发布交接证据")});
     expect(()=>f.merges.publicationPreview(f.owner.id,f.item.productId,[{id:d.id,revision:d.revision}])).toThrow();
@@ -377,7 +378,8 @@ describe("planned integration batches",()=>{
     // Simulate a historical import that lost its exact integration identity.
     f.db.prepare("UPDATE work_item_events SET payload_json=json_remove(payload_json,'$.completion','$.pullRequestUrl') WHERE id=?").run(e.id);
     f.db.prepare("INSERT OR IGNORE INTO merge_display_dirty(kind,id) VALUES ('item',?)").run(f.item.id);
-    const q=f.merges.queue(f.item.productId,f.owner.id);
+    const q=f.merges.queue(f.item.productId,f.owner.id,"review");
+    expect(f.merges.queue(f.item.productId,f.owner.id).deliveries).toEqual([]);
     expect(q.counts.review).toBe(1);expect(q.counts.release??0).toBe(0);
     expect(q.deliveries[0]!.queue).toMatchObject({stage:"review",blocker:expect.any(String)});
     expect(()=>f.merges.publicationPreview(f.owner.id,f.item.productId,[{id:d.id,revision:d.revision}])).toThrow();
@@ -391,11 +393,92 @@ describe("planned integration batches",()=>{
     if(shape==="missing")delete payload.roundKey;else payload.roundKey=shape==="null"?null:"unknown-round";
     f.db.prepare("UPDATE work_item_events SET payload_json=? WHERE id=?").run(JSON.stringify(payload),event.id);
     f.db.prepare("INSERT OR IGNORE INTO merge_display_dirty(kind,id) VALUES ('item',?)").run(f.item.id);
-    const q=f.merges.queue(f.item.productId,f.owner.id);
+    const q=f.merges.queue(f.item.productId,f.owner.id,"review");
+    expect(f.merges.queue(f.item.productId,f.owner.id).deliveries).toEqual([]);
     expect(q.counts.review).toBe(1);expect(q.counts.history??0).toBe(0);
     expect(q.deliveries[0]!.queue).toMatchObject({stage:"review",blocker:"交付处理轮次待核实，请核对原交付。"});
     expect(()=>f.merges.publicationPreview(f.owner.id,f.item.productId,[{id:d.id,revision:d.revision}])).toThrow();
     expect(f.store.getWorkItem(f.item.key).status).toBe("development_complete");
+  });
+  it("keeps exceptions outside all and starts one scoped read-only investigation across retries",async()=>{
+    const f=await batchFixture(1,true),d=f.deliveries[0]!;
+    f.act(f.plan);f.check(d.id);f.merged(d.id);
+    const before=f.store.getTimeline(f.item.key),status=f.store.getWorkItem(f.item.key).status;
+    expect(f.merges.queue(f.item.productId,f.owner.id).deliveries).toEqual([]);
+    const context=f.merges.reviewContext(f.owner.id,d.id),scope=context.queue.review!.scopeDigest;
+    const input=()=>f.merges.startReview(f.owner.id,d.id,d.revision,scope,"review-request-stable",f.config);
+    const first=input(),sessionId=first.queue.review!.sessionId!;
+    expect(input().queue.review!.sessionId).toBe(sessionId);
+    expect(()=>f.merges.startReview(f.owner.id,d.id,d.revision,scope,"review-request-stable",{...f.config,mode:"different"})).toThrow();
+    expect(f.merges.startReview(f.owner.id,d.id,d.revision,scope,"another-human-click",f.config).queue.review!.sessionId).toBe(sessionId);
+    expect(f.db.prepare("SELECT count(*) AS n FROM delivery_reviews").get()).toMatchObject({n:1});
+    const start=f.db.prepare("SELECT initial_text,session_title FROM free_session_starts WHERE dispatch_id=(SELECT dispatch_id FROM delivery_reviews WHERE delivery_id=?)").get(d.id) as {initial_text:string;session_title:string};
+    expect(start.initial_text).toContain("只读核查");expect(start.initial_text).toContain("不领取或创建条目");expect(start.initial_text).toContain(d.repository);expect(start.session_title).toContain("交付核查");
+    expect(()=>f.merges.reviewContext(f.other.id,d.id)).toThrow();
+    expect(()=>f.merges.startReview(f.owner.id,d.id,d.revision,"stale","stale-request-key",f.config)).toThrow();
+    expect(()=>f.merges.closeReview(f.owner.id,d.id,scope,first.queue.review!.caseId!,"No further integration")).toThrow(/尚未结束/);
+    expect(f.store.getTimeline(f.item.key)).toEqual(before);expect(f.store.getWorkItem(f.item.key).status).toBe(status);
+    expect(f.store.getDeliveryRecords(f.item.key)[0]!.published).toBe(false);
+  });
+  it("requires current project operation/AI grants and original delivery ownership for investigation routes",async()=>{
+    const f=await batchFixture(1,true),d=f.deliveries[0]!;f.act(f.plan);f.check(d.id);f.merged(d.id);
+    const login=async(email:string)=>{const r=await f.app.inject({method:"POST",url:"/api/v1/auth/login",payload:{username:email,password:"synthetic password"}});return r.headers["set-cookie"]!.toString().split(";")[0]!;};
+    const cookie=await login(f.owner.email),otherCookie=await login(f.other.email),path=`/api/v1/merge-deliveries/${d.id}/review`;
+    expect((await f.app.inject({method:"GET",url:path,headers:{cookie:otherCookie}})).statusCode).toBe(404);
+    const context=f.merges.reviewContext(f.owner.id,d.id);
+    const payload={...f.config,revision:d.revision,scopeDigest:context.queue.review!.scopeDigest,requestKey:"route-investigation-key"};
+    f.grant(false,true);expect((await f.app.inject({method:"POST",url:path,headers:{cookie},payload})).statusCode).toBe(404);
+    f.grant(true,false);expect((await f.app.inject({method:"POST",url:path,headers:{cookie},payload})).statusCode).toBe(404);
+    expect(f.db.prepare("SELECT count(*) AS n FROM delivery_reviews").get()).toMatchObject({n:0});
+    f.grant();const started=await f.app.inject({method:"POST",url:path,headers:{cookie},payload});expect(started.statusCode).toBe(200);
+    expect(started.json().queue.review.sessionId).toBeTypeOf("string");
+    const queue=await f.app.inject({method:"GET",url:`/api/v1/products/${f.item.productId}/integration-queue?stage=all`,headers:{cookie}});
+    expect(queue.json()).toMatchObject({deliveries:[],counts:{review:1}});
+  });
+  it("archives only a human-confirmed finished investigation and invalidates closure on scope changes",async()=>{
+    const f=await batchFixture(1,true),d=f.deliveries[0]!;f.act(f.plan);f.check(d.id);f.merged(d.id);
+    const before=f.store.getTimeline(f.item.key),context=f.merges.reviewContext(f.owner.id,d.id),scope=context.queue.review!.scopeDigest;
+    const started=f.merges.startReview(f.owner.id,d.id,d.revision,scope,"finished-review-key",f.config),r=started.queue.review!;
+    const dispatchId=(f.db.prepare("SELECT dispatch_id FROM delivery_reviews WHERE id=?").get(r.caseId!) as {dispatch_id:string}).dispatch_id;
+    const dispatches=new DispatchStore(f.store.database);dispatches.claimNextDispatch(f.node.nodeId);dispatches.recordDispatchResult({nodeId:f.node.nodeId,dispatchId,status:"launched"});
+    const sessions=new AgentSessionStore(f.store.database);sessions.createForDispatch({dispatchId,nodeId:f.node.nodeId,sessionRef:randomUUID()});
+    // Synthetic node acknowledgement; no external command is executed.
+    f.db.prepare("UPDATE agent_session_commands SET status='delivered',delivered_at=? WHERE session_id=?").run(new Date().toISOString(),r.sessionId!);
+    sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:r.sessionId!,status:"idle",turnState:{turnActive:false,waitingForInput:true},messages:[{sourceId:"answer",role:"agent",text:"No product artifact is required. Formal handover is still missing."}]});
+    expect(()=>f.merges.closeReview(f.owner.id,d.id,scope,r.caseId!,"Confirmed no integration work")).toThrow(/尚未结束/);
+    sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:r.sessionId!,status:"idle",turnState:{turnActive:false,waitingForInput:false},messages:[{sourceId:"answer",role:"agent",text:"No product artifact is required. Formal handover is still missing."}]});
+    expect(()=>f.merges.closeReview(f.owner.id,d.id,scope,r.caseId!," ")).toThrow();
+    // A settled interrupt must not hide the newer unanswered user message.
+    const newerInputAt=new Date(Date.now()+1000).toISOString(),messageId=randomUUID(),stopId=randomUUID();
+    f.db.prepare("INSERT INTO agent_session_commands(id,session_id,account_id,kind,text,status,created_at) VALUES (?,?,?,'message','Follow-up','delivered',?)").run(messageId,r.sessionId!,f.owner.id,newerInputAt);
+    f.db.prepare("INSERT INTO agent_session_commands(id,session_id,account_id,kind,text,status,created_at) VALUES (?,?,?,'interrupt','Stop','delivered',?)").run(stopId,r.sessionId!,f.owner.id,new Date(Date.now()+2000).toISOString());
+    expect(sessions.getForAccount(f.owner.id,r.sessionId!).command!.kind).toBe("interrupt");
+    expect(f.merges.reviewContext(f.owner.id,d.id).latestInputAt).toBe(newerInputAt);
+    expect(()=>f.merges.closeReview(f.owner.id,d.id,scope,r.caseId!,"Cannot use an answer from before the follow-up")).toThrow(/尚未结束/);
+    f.db.prepare("DELETE FROM agent_session_commands WHERE id IN (?,?)").run(messageId,stopId);
+
+    const closed=f.merges.closeReview(f.owner.id,d.id,scope,r.caseId!,"Confirmed no integration work; preserve missing handover as history");
+    expect(closed.queue).toMatchObject({stage:"review",review:{closedAt:expect.any(String),closeNote:expect.any(String)}});
+    expect(f.merges.closeReview(f.owner.id,d.id,scope,r.caseId!,closed.queue.review!.closeNote!)).toEqual(closed);
+    expect(()=>f.merges.closeReview(f.owner.id,d.id,scope,r.caseId!,"Changed conclusion")).toThrow();
+    expect(f.merges.queue(f.item.productId,f.owner.id,"review").deliveries).toEqual([]);
+    expect(f.merges.queue(f.item.productId,f.owner.id,"reviewed").deliveries[0]!.queue.review!.closedAt).toBeTypeOf("string");
+    expect(f.merges.queue(f.item.productId,f.owner.id,"history").deliveries).toEqual([]);
+    expect(f.merges.queue(f.item.productId,f.owner.id).counts).toMatchObject({reviewed:1});
+    expect(f.store.getDeliveryRecords(f.item.key)[0]!.published).toBe(false);expect(f.store.getTimeline(f.item.key)).toEqual(before);
+    // Synthetic delivery revision change keeps the same exception, but expires its conclusion.
+    const changedDelivery=JSON.parse((f.db.prepare("SELECT data_json FROM merge_deliveries WHERE id=?").get(d.id) as {data_json:string}).data_json);
+    changedDelivery.revision=randomUUID();
+    f.db.prepare("UPDATE merge_deliveries SET data_json=? WHERE id=?").run(JSON.stringify(changedDelivery),d.id);
+    expect(f.merges.queue(f.item.productId,f.owner.id,"review").deliveries).toHaveLength(1);
+    expect(()=>f.merges.closeReview(f.owner.id,d.id,scope,r.caseId!,"Old conclusion")).toThrow();
+    expect(f.db.prepare("SELECT closed_at FROM delivery_reviews WHERE id=?").get(r.caseId!)).toMatchObject({closed_at:expect.any(String)});
+    expect(f.merges.reviewContext(f.owner.id,d.id).previousReviews).toEqual([expect.objectContaining({caseId:r.caseId,closeNote:closed.queue.review!.closeNote})]);
+    // A real content edit begins a new delivery round: the obsolete delivery becomes history.
+    f.store.updateWorkItem(f.item.key,{title:"Changed item content after exception closure"});
+    expect(f.merges.queue(f.item.productId,f.owner.id,"reviewed").deliveries).toEqual([]);
+    expect(f.merges.queue(f.item.productId,f.owner.id,"history").deliveries[0]!.queue.resolution).toBe("historical");
+    expect(()=>f.merges.closeReview(f.owner.id,d.id,scope,r.caseId!,"Old conclusion")).toThrow();
   });
   it("reuses large exact batch templates while returning independent live JSON containers",async()=>{
     const f=await batchFixture(),d=f.deliveries[0]!;

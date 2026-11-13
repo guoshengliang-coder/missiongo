@@ -22,6 +22,7 @@ export function localizedErrorText(error: unknown, t: (key: MessageKey) => strin
 
 export function errorMessageKey(error: unknown): MessageKey | null {
   if (error instanceof ApiError) {
+    if (error.code === "delivery_review_incomplete") return "reviewIncomplete";
     if (error.code === "deployment_in_progress") return "releaseWait";
     if (error.status === 401 || error.code === "authentication_required") return "errorSignedOut";
     if (error.code === "product_operation_not_permitted") return "captureReadOnly";

@@ -39,6 +39,7 @@ const specs: Record<string, Spec> = {
  agent_sessions: { kind: "sessions", account: dispatchOwner(), resource: "$.id", ignore: ["activity_repair_pending"] },
  external_agent_sessions: { kind: "sessions", account: "$.account_id", resource: "$.id", ignore: ["read_at"] },
  agent_session_preferences: { kind: "sessions", account: "$.account_id" },
+ delivery_reviews: { kind: "merge", product: "$.product_id", account: "$.account_id" },
  merge_deliveries: { kind: "merge", product: "$.product_id", account: "$.account_id" },
  merge_batches: { kind: "merge", product: "$.product_id", account: "$.account_id" },
  personal_notifications: { kind: "personal", account: "$.account_id" },

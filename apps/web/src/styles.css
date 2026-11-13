@@ -3548,3 +3548,5 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
   .agent-console-topbar-more-menu button { min-height: 44px; }
   .agent-console-combined-filter { width: 100%; }
 }
+
+.agent-chat-draft-image-note { position: absolute; left: var(--safe-left); right: var(--safe-right); bottom: calc(64px + var(--safe-bottom)); margin: 12px; padding: 12px; color: var(--code-fg); background: var(--code-bg); border-radius: var(--radius-md); font-size: var(--text-base); }
