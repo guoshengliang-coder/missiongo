@@ -87,14 +87,14 @@ for (const width of [320, 1440]) test(`archive and restore stay readable without
   await page.locator(".agent-console-conversation").getByRole("button", { name: "归档", exact: true }).click();
   await page.getByRole("dialog").getByRole("button", { name: /确认|归档/ }).click();
   await expect(page.locator(".agent-console-conversation")).toContainText("归档仍可查看的会话正文");
-  await expect(page.locator(".agent-console-list [role=alert]")).toHaveCount(0);
+  await expect(page.locator(".agent-console-conversation [role=alert]")).toHaveCount(0);
   await page.locator(".agent-console-conversation").getByRole("button", { name: "恢复", exact: true }).click();
   await expect(page.locator(".agent-console-reply textarea")).toBeVisible();
-  await expect(page.locator(".agent-console-list [role=alert]")).toHaveCount(0);
+  await expect(page.locator(".agent-console-conversation [role=alert]")).toHaveCount(0);
   row.archivedAt = now;
   await page.reload();
   await expect(page.locator(".agent-console-conversation")).toContainText("归档仍可查看的会话正文");
-  await expect(page.locator(".agent-console-list [role=alert]")).toHaveCount(0);
+  await expect(page.locator(".agent-console-conversation [role=alert]")).toHaveCount(0);
 });
 for (const phase of ["idle", "failed", "expired"]) test(`upgrade retains draft and recovers without replay: ${phase}`, async ({ page }, info) => {
   const row = { ...session("codex"), turnState: {}, needsAttention: false };
@@ -128,12 +128,13 @@ for (const phase of ["idle", "failed", "expired"]) test(`upgrade retains draft a
 
 test("truly missing conversation still reports access failure and a valid selection clears it", async ({ page }) => {
   const row = { ...session("codex"), needsAttention: false, turnState: {} };
-  await page.route("**/api/v1/agent-sessions**", route => route.fulfill({ json: new URL(route.request().url()).pathname === "/api/v1/agent-sessions"
-    ? { sessions: [row] } : { ...row, messages: [] } }));
+  await page.route("**/api/v1/agent-sessions**", route => route.fulfill(new URL(route.request().url()).pathname.endsWith("/unavailable")
+    ? { status: 404, json: { code: "not_found" } }
+    : { json: new URL(route.request().url()).pathname === "/api/v1/agent-sessions" ? { sessions: [row] } : { ...row, messages: [] } }));
   await page.goto(`/?product=${fixture.productId}&console=agent&session=unavailable`);
-  await expect(page.locator(".agent-console-list [role=alert]")).toContainText("该会话已失效");
+  await expect(page.locator(".agent-console-conversation [role=alert]")).toContainText("该会话已失效");
   await page.locator(".agent-console-session").first().click();
-  await expect(page.locator(".agent-console-list [role=alert]")).toHaveCount(0);
+  await expect(page.locator(".agent-console-conversation [role=alert]")).toHaveCount(0);
 });
 
 for (const width of [375, 1440]) for (const theme of ["light", "dark"] as const) {

@@ -526,28 +526,14 @@ export function shouldResetMessageView(
   return sessionChanged || (!conversationWasOpen && conversationOpen);
 }
 
-/**
- * Keep the conversation a person is reading even when a live status update
- * moves it out of the current list filter. The selection is cleared only when
- * the session itself is gone, or by an explicit navigation/filter action.
- * Before the first response, absence from the empty array proves nothing and
- * must not erase state restored after an Android Activity recreation.
- */
+/** Resolve only explicit server identities. Missing list membership leaves the
+ * requested target intact so the console can verify access and recover it. */
 export function canonicalAgentSessionId(
   selectedId: string | null,
   sessions: readonly Pick<AgentSessionSummary, "id" | "relatedSessionIds">[],
 ): string | null {
   return sessions.find((session) => session.id === selectedId
     || (selectedId !== null && session.relatedSessionIds?.includes(selectedId)))?.id ?? selectedId;
-}
-
-export function resolvedAgentSessionId(
-  requestedId: string | null,
-  availableIds: readonly string[],
-  loaded: boolean,
-): string | null {
-  if (requestedId && (!loaded || availableIds.includes(requestedId))) return requestedId;
-  return null;
 }
 
 /** Small rounding differences must not make a conversation stop following. */
