@@ -76,6 +76,7 @@ const app = buildApp({
   databasePath,
   attachmentsPath,
   logger: true,
+  performance: { enabled: process.env.MISSIONGO_PERFORMANCE !== "0" },
   trustProxy,
   ...(publicOrigin ? { publicOrigin } : {}),
   ...(process.env.DINGTALK_COMMENT_CARD_TEMPLATE_ID?.trim() ? {dingtalkCommentCardTemplateId:process.env.DINGTALK_COMMENT_CARD_TEMPLATE_ID.trim()} : {}),

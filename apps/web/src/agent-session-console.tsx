@@ -1,3 +1,5 @@
+import { useConsolePerformance } from "./use-console-performance";
+import { observePerformanceReply } from "./console-performance";
 import { CommonCommandMenu, CommandMessageMenu, useCommandTarget } from "./common-commands";
 import { SessionSender, SendUnconfirmed, SendSuperseded, commandNotDelivered, sendAttemptHasDraft, type SendInput } from "./session-send";
 import { useSendAttempt, sendAttemptLocked, SessionSendFeedback } from "./session-send-feedback";
@@ -252,6 +254,7 @@ export function AgentSessionConsole({
   // A re-dispatched session keeps the item's name and adds the round (AND-365).
   const roundLabel = (round: number) => t("agentSessionRound", { round });
   const queryClient = useQueryClient();
+  useConsolePerformance(queryClient,productId);
   const [filter, setFilter] = useState<AgentSessionFilter>(initialFilter ?? DEFAULT_AGENT_SESSION_FILTER);
   const [agentFilter, setAgentFilter] = useState<AgentKindFilter>(DEFAULT_AGENT_KIND_FILTER);
   const [association, setAssociation] = useState<AgentAssociationFilter>("all");
@@ -428,6 +431,7 @@ export function AgentSessionConsole({
   const setReply = useCallback((update: string | ((current: string) => string)) => {
     setReplyFor(replySessionId, update);
   }, [replySessionId, setReplyFor]);
+  useConsolePerformance(queryClient,undefined,selected?.agentSessionId);
   const sessionQuery = useQuery({
     queryKey: ["agent-session", selected?.agentSessionId],
     queryFn: async ({ queryKey, signal }) => {
@@ -720,6 +724,7 @@ export function AgentSessionConsole({
     ? { text: sendAttempt.text, occurredAt: sendAttempt.occurredAt, status: "sending" as const }
     : failedRequest;
   const history = useAgentHistory(selected?.agentSessionId ?? null, sessionQuery.data, messagesRef);
+  useEffect(()=>{if(sessionQuery.data)observePerformanceReply(sessionQuery.data.id,sessionQuery.data.performanceTurns??[],history.messages);},[sessionQuery.data,history.messages,documentVisible]);
   const previousHistoryRevision = useRef(0);
   const mirrorMessages = history.messages;
   const mirrorAttachments = sessionQuery.data?.attachmentMessages ?? [];

@@ -233,6 +233,8 @@ export class ClaudeAdapter implements Adapter {
     }
     throw new Error("停止尚未确认：来源未报告原回合结束");
   }
+  private performanceTurns=new Set<string>();
+  performanceTurn(commandId:string){return this.performanceTurns.has(commandId)?commandId:undefined;}
   async deliver(command: Command, options?: { controlOnly: boolean }): Promise<void> {
     if (command.kind === "interrupt") { await this.stop(command); return; }
     const request = this.requests[0];
@@ -253,6 +255,8 @@ export class ClaudeAdapter implements Adapter {
     if (command.text.trim().startsWith("授权请求 ")) throw new InputRejected("授权请求已变化，请重新选择当前请求。");
     if (options?.controlOnly) throw new InputRejected("回复未发送：会话设置未确认，请重新应用设置后重试。");
     const ack = this.wait(command.id); this.send(command.id, command.text); await ack;
+    if(this.performanceTurns.size>=256)this.performanceTurns.delete(this.performanceTurns.values().next().value!);
+    this.performanceTurns.add(command.id);
   }
   async decide(): Promise<void> { throw new Error("Use the displayed Claude question to answer this request"); }
   async settings(settings: NonNullable<Session["desiredSettings"]>): Promise<void> {

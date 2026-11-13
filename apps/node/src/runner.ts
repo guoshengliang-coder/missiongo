@@ -1,3 +1,4 @@
+import { NativePerformanceUploader } from "./console-performance.js";
 import { SessionWorkQueue, SessionUploadGate, SnapshotReports, SnapshotHealth, ControlReports, hasControlWork, observationSession } from "./session-work.js";
 import { sessionName } from "./session-name.js";
 import { probeClaudeCapabilities } from "./claude-capabilities.js";
@@ -108,6 +109,7 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
   const stops = new SessionWorkQueue(failedTask);
   const uploads = new SessionUploadGate();
   const reported = new SnapshotReports();
+  const performanceUploader=new NativePerformanceUploader((session,report)=>api.call("POST",`/api/v1/node/agent-sessions/${encodeURIComponent(session)}/performance`,{...report,platform:"linux",version},undefined,3000));
   const health = new SnapshotHealth();
   const epochs = new Map<string, number>();
   const controlling = new Map<string, number>();
@@ -153,6 +155,11 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
           ...(session.command ? {commandId: session.command.id, commandStatus: session.command.kind === "interrupt" ? "failed" : "delivery_unknown",
             commandError: session.command.kind === "interrupt" ? "停止尚未确认：节点未取得执行结果，请核实来源后重试。" : safeError(error)} : {})};
       }
+      // Metrics are an independent best-effort request, never awaited by the control/observation lane.
+      for(const measurement of snapshot.performance ?? []) {
+        performanceUploader.enqueue(session.id,measurement);
+      }
+      delete snapshot.performance;
       await post(snapshot);
     } finally {
       if (control) { const remaining = (controlling.get(session.id) ?? 1) - 1;

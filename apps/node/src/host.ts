@@ -1,3 +1,4 @@
+import { NativePerformance } from "./console-performance.js";
 import { chmodSync, existsSync, lstatSync, readFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { join } from "node:path";
@@ -93,6 +94,7 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
   const executable = agent.executable ?? (job.agentKind === "claude_code" ? "claude" : job.agentKind);
   let adapter: Adapter | undefined;
   let launchFinished = false;
+  const measurement=new NativePerformance();
   const persist = () => savePrivate(statePath, state);
   const socket = socketPath(root, dispatchId);
   // No deleting stale sockets or reusing hosts with a different native identity.
@@ -114,6 +116,7 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
             const session = JSON.parse(body) as Session;
             if (!adapter || !launchFinished || state.phase !== "launched" || session.sessionRef !== state.sessionRef) throw new Error("Native session identity mismatch");
             const snapshot = boundedSnapshot(await adapter.snapshot());
+            snapshot.performance=measurement.reports(snapshot);
             if (epoch === controlEpoch) { state.snapshot = snapshot; persist(); }
             res.writeHead(200, {"Content-Type":"application/json"}).end(JSON.stringify(snapshot));
           } catch { res.writeHead(409).end(); }
@@ -185,10 +188,11 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
               // The server-side delivery reservation is made by the parent before IPC.
               // The local journal is durable BEFORE any native input side effect.
               state.commands[key] = { status: "delivering" }; persist();
+              if(command.kind!=="interrupt")measurement.begin(key);
               try {
                 if (command.attachments?.length) throw new Error("Attachments are not enabled on this node");
                 if (command.kind === "interrupt") stopSnapshot = await adapter.stop(command);
-                else await adapter.deliver(command, { controlOnly: state.snapshot.settingsError !== undefined });
+                else {await adapter.deliver(command, { controlOnly: state.snapshot.settingsError !== undefined });measurement.delivered(key,adapter.performanceTurn?.(key));}
                 if (command.kind === "interrupt" && stopSnapshot) stopSnapshot.stopConfirmed = true;
                 state.commands[key] = { status: "delivered", ...(stopSnapshot?.stopConfirmed ? { stopConfirmed: true } : {}) };
               } catch (error) { state.commands[key] = { status: command.kind === "interrupt" || error instanceof InputRejected ? "failed" : "delivery_unknown", error: safeError(error) }; }
@@ -213,6 +217,7 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
           if (!snapshot.error) delete state.snapshot.error;
           if (!snapshot.failure) delete state.snapshot.failure;
           if (!snapshot.approval) delete state.snapshot.approval;
+          snapshot.performance=measurement.reports(snapshot);
           state.snapshot = { ...state.snapshot, ...snapshot }; persist();
           res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(state.snapshot));
         } catch (error) { res.writeHead(409, { "Content-Type": "application/json" }).end(JSON.stringify({ error: safeError(error) })); }

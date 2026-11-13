@@ -8,6 +8,7 @@ services:
       target: server
       args:
         MISSIONGO_RELEASE: ${MISSIONGO_RELEASE:-unknown}
+      MISSIONGO_PERFORMANCE: ${MISSIONGO_PERFORMANCE:-1}
     restart: unless-stopped
     environment:
       NODE_ENV: production

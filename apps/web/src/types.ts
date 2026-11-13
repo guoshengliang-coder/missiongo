@@ -557,6 +557,7 @@ export interface AgentSessionAttachment {
 }
 
 export interface AgentSession {
+  readonly performanceTurns?: readonly {commandId:string;turnId:string}[];
   readonly hasPlanRecords?: boolean;
   readonly progressReports?: ReadonlyArray<{ id: string; text: string; occurredAt: string }>;
   readonly progressHistory?: {readonly nextCursor?: string};
