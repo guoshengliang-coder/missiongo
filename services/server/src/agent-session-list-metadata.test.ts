@@ -14,7 +14,7 @@ function fixture(count=4){
   const item=store.createWorkItem({productId:product.id,title:"List",description:"",type:"task",status:"ready",priority:"normal",environment:{platform:"server"}});
   const now=new Date().toISOString(),agents=JSON.stringify([{kind:"codex",models:[{id:"model-a",efforts:["high"]}]},{kind:"claude_code"}]);
   for(const node of ["one","two"])db.prepare("INSERT INTO nodes(id,account_id,installation_id,name,token_hash,agents_json,last_seen_at,created_at,updated_at) VALUES (?,'owner',?,?,?, ?,?,?,?)").run(node,node,node,node,agents,now,now,now);
-  const attachments=new AgentSessionAttachments(store.database,"/tmp/synthetic-list-no-files");
+  const attachments=new AgentSessionAttachments(store.database,"synthetic-list-no-files");
   const sessions=new AgentSessionStore(store.database,attachments);
   const ids:string[]=[];
   for(let n=0;n<count;n++){
