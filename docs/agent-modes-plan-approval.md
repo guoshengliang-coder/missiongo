@@ -85,4 +85,4 @@ Claude 的 `ExitPlanMode` 使用 `can_use_tool`，MCP 的原生方案确认另�
 
 实时认证报告核验可登记原决定；读取保持只读。历史补读只保存证据，显式 recover_plan_approval 或原会话的“核验原批准”使用同一核验器恢复。操作只属于原账号及原会话，不开放跨账号管理，不接受 Agent 自报批准。来源完整性、文档变更、撤权或冲突阻断时给出具体原因，不说用户拒绝。领域批准和 document_plan_decisions 审计同事务保存，保留原决定时间、消息 sourceId 与核验时间。重复恢复不重复批准、不排新回合、不取消在途命令。
 
-两处会话入口共用 DocumentPlanRecovery、既有 agent-plan-record 与主题令牌；原文、位置、聊天草稿不被恢复操作改写。现有 Web/表单批准、归档精确批准门禁、范围变化失效及续办规则保持。回归：document-plan-approval.test.ts、各节点协议测试及 and-515-document-approval.audit.spec.ts。真实客户端与生产恢复需分别验证，测试或主线集成不代表已部署。
+AND-523：两处会话不再在聊天底部展示原批准恢复提示。共用 AgentPlanRecords / DocumentPlanRecovery，在“方案与审批”概览仅对当前精确文档、可恢复且有权限的记录提供“恢复之前的批准记录”；证据不足、范围变化及来源冲突等只在对应版本详情说明原因与下一步。恢复明确反馈处理中、请求失败、未能恢复或原批准已登记；成功刷新会话及审批记录，提交中沿用 Modal 关闭保护，重复点击不发新请求。复用既有 agent-plan-record 与主题令牌；原文、位置、聊天草稿不被恢复操作改写。现有 Web/表单批准、归档精确批准门禁、范围变化失效及续办规则保持。回归：document-plan-approval.test.ts、各节点协议测试及 and-515-document-approval.audit.spec.ts。真实客户端与生产恢复需分别验证，测试或主线集成不代表已部署。

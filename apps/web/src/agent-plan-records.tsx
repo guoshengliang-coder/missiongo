@@ -7,6 +7,7 @@ import { BackButton } from "./back-button";
 import { useOverlay } from "./overlay";
 import { useI18n } from "./i18n";
 import { localizedErrorText } from "./error-text";
+import { DocumentPlanRecovery } from "./document-plan-recovery";
 import { currentPlan } from "./agent-plan-content";
 import type { AgentPlanRecord, AgentSession } from "./types";
 
@@ -14,19 +15,20 @@ import type { AgentPlanRecord, AgentSession } from "./types";
 export const newestPlanRecord = (a:AgentPlanRecord,b:AgentPlanRecord) =>
   (Date.parse(b.submittedAt ?? "") || 0)-(Date.parse(a.submittedAt ?? "") || 0) || b.id-a.id;
 
-export function AgentPlanRecords({session}:{session:AgentSession}) {
+export function AgentPlanRecords({session,blocked=false}:{session:AgentSession;blocked?:boolean}) {
   const {t}=useI18n();
   const [open,setOpen]=useState(false);
-  if(session.hasPlanRecords===false || !session.hasPlanRecords&&!currentPlan(session)) return null;
+  if(!session.implementationPlan?.documentId && (session.hasPlanRecords===false || !session.hasPlanRecords&&!currentPlan(session))) return null;
   return <>
     <button type="button" className="secondary-button" onClick={()=>setOpen(true)}>{t("agentPlanRecords")}</button>
-    {open && <Modal className="agent-plan-modal" title={t("agentPlanRecords")} subtitle="" wide onClose={()=>setOpen(false)}>
-      <PlanRecordDetails key={session.id} sessionId={session.id} />
+    {open && <Modal className="agent-plan-modal" title={t("agentPlanRecords")} subtitle="" pendingNotice={t("documentApprovalChecking")} wide onClose={()=>setOpen(false)}>
+      <PlanRecordDetails key={session.id} session={session} blocked={blocked} />
     </Modal>}
   </>;
 }
 
-function PlanRecordDetails({sessionId}:{sessionId:string}) {
+function PlanRecordDetails({session,blocked}:{session:AgentSession;blocked:boolean}) {
+  const sessionId=session.id;
   const {t,locale}=useI18n();
   const [selected,setSelected]=useState<number>();
   const [parent,setParent]=useState<string>();
@@ -97,6 +99,7 @@ function PlanRecordDetails({sessionId}:{sessionId:string}) {
       <p>{t(status(record))}</p>
       {record.approval && <p>{t("agentPlanApprovalTime")}：{time(record.approval.approvedAt)} · {source(record.approval.source)}</p>}
       {record.parentDocumentId && <button type="button" className="text-button" onClick={()=>enter(()=>setParent(record.parentDocumentId))}>{t("agentPlanParent")}</button>}
+      {record.documentId===session.implementationPlan?.documentId && record.revision===session.implementationPlan?.revision && <DocumentPlanRecovery key={`diagnostic-${record.documentId}-${record.revision}`} session={session} diagnosticOnly />}
       <details><summary>{t("agentPlanTechnicalDetails")}</summary><p className="account-note">SHA-256：{record.sha256??t("agentPlanUnknownTime")}</p>
         {record.approval?.documentDecision && <>
           <p>{t("documentOriginalDecision")}：{time(record.approval.documentDecision.acceptedAt)}</p>
@@ -108,6 +111,7 @@ function PlanRecordDetails({sessionId}:{sessionId:string}) {
     </>}
   </>;
   const listView=<>
+    <DocumentPlanRecovery key={`recovery-${session.id}-${session.implementationPlan?.revision}`} session={session} blocked={blocked} />
     {overview.isPending && <p role="status">{t("agentSessionLoading")}</p>}
     {overview.isError && failure(overview.error,()=>overview.refetch())}
     {overview.data?.historyIncomplete && <p className="account-note">{t("agentPlanHistoryGap")}</p>}
