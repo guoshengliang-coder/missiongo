@@ -3,7 +3,7 @@ import { modeProblem } from "./agent-mode-options";
 import { HelpHint } from "./help-hint";
 import { IntegrationProgress } from "./integration-details";
 import { localizedErrorText } from "./error-text";
-import type { MergeIntegration, MergeBatchPresentation, IntegrationQueueFacts, IntegrationActionMode, PublicationScope } from "@missiongo/contracts";
+import type { MergeIntegration, MergeBatchPresentation, IntegrationQueueFacts, IntegrationQueueOccupancy, IntegrationActionMode, PublicationScope } from "@missiongo/contracts";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { defaultAgentMode, type AgentKind } from "@missiongo/domain";
@@ -28,7 +28,7 @@ interface QueueDelivery extends Delivery {queue:IntegrationQueueFacts;latestInpu
 const artifactName=(a:string)=>({web:"Web",macosApp:"macOS",androidApp:"Android",androidSdk:"Android SDK",linuxCli:"Linux CLI"}[a]??a);
 function useIntegrationQueue(productId:string,stage="all") {
   return useInfiniteQuery({queryKey:["merge-deliveries",productId,"queue",stage],initialPageParam:undefined as number|undefined,
-    queryFn:({pageParam,signal})=>request<{deliveries:QueueDelivery[];counts:Record<string,number>;nextBeforeSequence?:number}>(`/api/v1/products/${encodeURIComponent(productId)}/integration-queue?stage=${stage}${pageParam?`&beforeSequence=${pageParam}`:""}`,{signal}),
+    queryFn:({pageParam,signal})=>request<{deliveries:QueueDelivery[];counts:Record<string,number>;occupancy?:IntegrationQueueOccupancy;nextBeforeSequence?:number}>(`/api/v1/products/${encodeURIComponent(productId)}/integration-queue?stage=${stage}${pageParam?`&beforeSequence=${pageParam}`:""}`,{signal}),
     getNextPageParam:last=>last.nextBeforeSequence,enabled:Boolean(productId)});
 }
 function QueueFacts({d}:{d:Delivery}) {
@@ -52,10 +52,10 @@ function QueueHistory({productId,onClose,onSession}:{productId:string;onClose:()
 }
 export interface Batch {operation?:IntegrationActionMode;references?:Record<string,{batchId:string;head:string;commit:string}>;verifiedReferences?:Record<string,{checkedAt:string;source:string}>;presentation?:MergeBatchPresentation;integration?:MergeIntegration;id:string;sessionId:string;state:string;deliveries:string[];publish:boolean;results:Record<string,{status:string;detail:string}>}
 const post=<T,>(path:string,body:unknown)=>request<T>(path,{method:"POST",body:JSON.stringify(body)});
-export const useDeliveries=(productId:string,sessionId?:string)=>useQuery({
+export const useDeliveries=(productId:string,sessionId?:string,enabled=true)=>useQuery({
   queryKey:sessionId ? ["merge-deliveries",productId,sessionId] : ["merge-deliveries",productId],
   queryFn:({signal})=>request<{deliveries:Delivery[];batches:Batch[];attentionSessionIds?:string[];sessionProgress?:Record<string,MergeProgress>}>(`/api/v1/products/${encodeURIComponent(productId)}/merge-deliveries${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ""}`,{signal}),
-  enabled:Boolean(productId),
+  enabled:Boolean(productId)&&enabled,
 });
 
 export function useMergeProgress(productId:string,sessionId?:string) {
@@ -166,9 +166,12 @@ export function PendingMergeButton({productId,onSession}:{productId:string;onSes
 }
 
 function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=>void;onSession:(id:string)=>Promise<void>}) {
-  const {t,formatTime}=useI18n(),query=useDeliveries(productId);
+  const {t,formatTime}=useI18n();
   const [stage,setStage]=useState("all"),[history,setHistory]=useState(false),[exceptions,setExceptions]=useState(false);
   const queue=useIntegrationQueue(productId,stage);
+  const occupancy=queue.data?.pages[0]?.occupancy;
+  const legacy=queue.isSuccess&&occupancy===undefined;
+  const query=useDeliveries(productId,undefined,legacy);
   const catalog=useRef(new Map<string,QueueDelivery>());
   for(const page of queue.data?.pages??[])for(const d of page.deliveries)catalog.current.set(d.id,d);
   const client=useQueryClient();
@@ -208,10 +211,18 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
   const differsFromDefaults=Boolean(config && integrationDefaults.isSuccess && (integrationDefaults.data?.nodeId!==config.nodeId || integrationDefaults.data?.agentKind!==config.agentKind
     || preference?.mode!==config.mode || (preference?.model??"")!==(config.model??"") || (preference?.effort??"")!==(config.effort??"")));
   const saveAsDefault=differsFromDefaults&&saveDefaultsFor===defaultsKey;
-  if(stage==="all"&&queue.isSuccess&&!queue.hasNextPage) {
+  if(stage==="all"&&queue.isSuccess&&!queue.hasNextPage&&!frozen.current) {
     const visible=new Set(queue.data.pages.flatMap(p=>p.deliveries.map(d=>d.id)));
     for(const id of Object.keys(selected))if(!visible.has(id))catalog.current.delete(id);
   }
+  useEffect(()=>{
+    if(!occupancy?.active||!queue.isSuccess||queue.hasNextPage||queue.isFetching||frozen.current)return;
+    const visible=new Set(queue.data.pages.flatMap(page=>page.deliveries.map(d=>d.id)));
+    setSelected(current=>{
+      const remaining=Object.entries(current).filter(([id])=>visible.has(id)||stage!=="all"&&catalog.current.get(id)?.queue.stage!==stage);
+      return remaining.length===Object.keys(current).length?current:Object.fromEntries(remaining);
+    });
+  },[occupancy?.active,stage,queue.isSuccess,queue.hasNextPage,queue.isFetching,queue.data]);
   const chosen=Object.keys(selected).flatMap(id=>catalog.current.get(id)?[catalog.current.get(id)!]:[]);
   const hasMerge=chosen.some(d=>d.queue.stage==="merge");
   const hasArtifacts=chosen.some(d=>d.requiredArtifacts.length>0);
@@ -236,7 +247,8 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
     void query.refetch();void queue.refetch();if(effectivePublish)void scope.refetch();
   }});
   const locked=start.isPending||openSession.isPending||Boolean(frozen.current);
-  const active=createdBatch??query.data?.batches.find(b=>b.state==="active");
+  const active=createdBatch??(occupancy?.active?{sessionId:occupancy.sessionId}:legacy?query.data?.batches.find(b=>b.state==="active"):undefined);
+  const retryOriginal=Boolean(frozen.current&&occupancy?.active&&occupancy.requestKey===frozen.current.requestKey);
   const candidates=queue.data?.pages.flatMap(p=>p.deliveries)??[];
   const selectable=candidates.filter(d=>d.blocker!=="changed"&&!d.queue.blocker&&d.queue.stage!=="review");
   const allSelected=selectable.length>0&&selectable.every(d=>selected[d.id]===d.revision);
@@ -256,9 +268,10 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
       <ol className="merge-steps" aria-label={t("mergeSteps")}>{([1,2] as const).map(number=><li key={number} aria-current={step===number?"step":undefined} data-complete={step>number}><span className="merge-step-number">{number}</span><span>{t(number===1?"mergeStepSelect":"mergeStepConfigure")}</span>{number===1&&<ArrowRight className="merge-step-arrow" size={16} aria-hidden="true"/>}</li>)}</ol>
       {queue.isPending&&<p role="status">{t("mergeLoading")}</p>}
       {queue.isError&&<p role="alert" className="inline-error">{t("mergeLoadError")} <button type="button" className="secondary-button" onClick={()=>void queue.refetch()}>{t("retry")}</button></p>}
+      {legacy&&query.isError&&<p role="alert" className="inline-error">{t("mergeLoadError")} <button type="button" className="secondary-button" onClick={()=>void query.refetch()}>{t("retry")}</button></p>}
       {openSession.isPending&&<p role="status">{t("agentSessionLoading")}</p>}
       {openSession.isError&&<p role="alert" className="inline-error">{t("mergeSessionOpenError")} <button type="button" className="secondary-button" onClick={()=>openSession.mutate(openSession.variables!)}>{t("retry")}</button></p>}
-      {active&&<section role="status" className="merge-active-notice"><TriangleAlert size={22} aria-hidden="true"/><div><strong>{t("mergeActiveTitle")}</strong><p>{t("mergeActiveShort")}</p><small>{t("mergeActiveTimeout")}</small></div><button type="button" className="secondary-button" disabled={openSession.isPending} onClick={()=>openSession.mutate(active.sessionId)}>{t("mergeOpenSession")}</button></section>}
+      {active&&<section role="status" className="merge-active-notice"><TriangleAlert size={22} aria-hidden="true"/><div><strong>{t("mergeActiveTitle")}</strong><p>{t(active.sessionId?"mergeActiveShort":"mergeActivePrivate")}</p><small>{t("mergeActiveTimeout")}</small></div>{active.sessionId&&<button type="button" className="secondary-button" disabled={openSession.isPending} onClick={()=>openSession.mutate(active.sessionId!)}>{t("mergeOpenSession")}</button>}</section>}
       <div hidden={step!==1} className="merge-selection-step">
       <div className="merge-queue-tabs"><div className="merge-actions" role="group" aria-label={t("queueStages")}>
         {(["all","merge","release"] as const).map(value=><button type="button" className="secondary-button" aria-pressed={stage===value} disabled={locked} key={value} onClick={()=>setStage(value)}>{t(value==="all"?"queueAll":value==="merge"?"queueMerge":"queueRelease")} {value==="all"?(queue.data?.pages[0]?.counts.merge??0)+(queue.data?.pages[0]?.counts.release??0):queue.data?.pages[0]?.counts[value]??0}</button>)}
@@ -273,7 +286,7 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
       </div>)}</div>
       {queue.hasNextPage&&<button type="button" className="secondary-button" disabled={queue.isFetchingNextPage} onClick={()=>void queue.fetchNextPage()}>{t("queueLoadMore")}</button>}
       </div>
-      {!createdBatch&&!selectedValid&&<div role="alert" className="inline-error">{t("mergeSelectionChanged")} <button type="button" className="secondary-button" disabled={locked} onClick={()=>{setSelected(prev=>Object.fromEntries(Object.entries(prev).filter(([id,revision])=>selectable.some(d=>d.id===id&&d.revision===revision))));setStep(1);}}>{t("mergeReviewSelection")}</button></div>}
+      {!createdBatch&&!selectedValid&&!retryOriginal&&<div role="alert" className="inline-error">{t("mergeSelectionChanged")} <button type="button" className="secondary-button" disabled={locked} onClick={()=>{setSelected(prev=>Object.fromEntries(Object.entries(prev).filter(([id,revision])=>selectable.some(d=>d.id===id&&d.revision===revision))));setStep(1);}}>{t("mergeReviewSelection")}</button></div>}
       {step===2&&<div className="merge-configuration-step">
       <section className="merge-config"><div className="help-label"><strong>{t("mergeExecutor")}</strong><HelpHint title={t("mergeExecutor")}><p>{t("mergeExecutorHelp")}</p><p>{t("integrationAuthorization")}</p><p>{t(operation==="publish_only"?"queuePublishOnlyHelp":"mergeAuthorizationShort")}</p></HelpHint></div>
         <div className="merge-config-fields">
@@ -319,8 +332,8 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
       {active&&<p className="merge-next-blocked">{t("mergeBlockedNext")}</p>}
       <div className="form-footer merge-footer">
         {step===2&&<button type="button" className="secondary-button" disabled={locked} onClick={()=>setStep(1)}>{t("mergePrevious")}</button>}
-        {step===1?<button type="button" className="primary-button" disabled={locked||Boolean(active)||!selectedCount||!selectedValid||queue.isError} onClick={()=>setStep(2)}>{t("mergeNext")}</button>:
-        <button type="button" className="primary-button" disabled={start.isPending||openSession.isPending||Boolean(active)||(!frozen.current&&(!configValid||!defaultsReady||!selectedCount||!selectedValid||queue.isError||(effectivePublish&&(!scope.isSuccess||scope.isFetching||scope.data.blockers.length>0))))}
+        {step===1?<button type="button" className="primary-button" disabled={locked||Boolean(active)||!selectedCount||!selectedValid||!queue.isSuccess||(legacy&&!query.isSuccess)} onClick={()=>setStep(2)}>{t("mergeNext")}</button>:
+        <button type="button" className="primary-button" disabled={start.isPending||openSession.isPending||(Boolean(active)&&!retryOriginal)||(!frozen.current&&(!configValid||!defaultsReady||!selectedCount||!selectedValid||!queue.isSuccess||(legacy&&!query.isSuccess)||(effectivePublish&&(!scope.isSuccess||scope.isFetching||scope.data.blockers.length>0))))}
           onClick={()=>start.mutate()}>{t(start.isError&&frozen.current?"mergeRetry":"mergeStart",{count:selectedCount})}</button>}
 
       </div>
