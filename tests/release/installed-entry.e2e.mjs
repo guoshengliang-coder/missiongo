@@ -158,9 +158,13 @@ test("installed real entry plans read-only, retains gates, detects historical mu
     assert.equal(existsSync(f.boundary), false);
     // Exercise new installed read-only actions from the same nested checkout.
     const batchPath = join(f.directory, "batch.json");
-    save(batchPath, { batch: { id: "fixture-batch", productId: f.productId, deliveries: ["readiness-fixture"], entries: [{ id: "readiness-fixture", repository: "https://github.com/fixture/missiongo", head: f.head, requiredArtifacts: ["web"], pullRequest: 1, targetBranch: "main" }] } });
+    save(batchPath, { batch: { id: "fixture-batch", productId: f.productId, publish:true, selection:[{id:"readiness-fixture",revision:"fixture-revision"}], deliveries: ["readiness-fixture"], entries: [{ id: "readiness-fixture", repository: "https://github.com/fixture/missiongo", head: f.head, requiredArtifacts: ["web"], pullRequest: 1, targetBranch: "main" }] } });
     const readiness = f.run("readiness", "--batch", batchPath);
+    assert.ok(readiness.stdout.trim(),readiness.stderr);
     const investigation = JSON.parse(readiness.stdout);
+    assert.deepEqual(investigation.observation.heads,[{deliveryId:"readiness-fixture",head:f.head}]);
+    assert.equal(investigation.observation.batchId,"fixture-batch");
+    assert.match(investigation.observation.scope,/^[a-f0-9]{64}$/);
     assert.equal(investigation.kind, "integration_readiness");
     assert.equal(investigation.head, f.head);
     assert.equal(investigation.checks.find(c => c.name === "main").status, "observed");

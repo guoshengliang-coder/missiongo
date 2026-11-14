@@ -8,3 +8,12 @@ const ENTRY = "missiongo-release.py";
 export const RELEASE_TOOL_FILES = { ...Object.fromEntries(TOOLS.map(name => [name, name])),
   // Install the implementation, not the repo-relative forwarding module.
   "handover-evidence.mjs": "../apps/web/public/downloads/missiongo-handover.mjs", entry: ENTRY };
+
+// Minimum publication contracts, not a requirement to install every new helper.
+export const RELEASE_CAPABILITY_CHECKS = {
+  entry: [/^from release_coverage_options import coverage_options/m, /os\.execv.*release-lock\.py/, /^\s*run\(\["node", str\(TOOLS \/ "release-ci\.mjs"\)/m, /--coverage-config/],
+  "deploy.sh": [/release-coverage-guard\.sh/, /^check_release_coverage\s*$/m, /release-status\.sh/],
+  "release-coverage-guard.sh": [/--candidates/, /--selection-digest/, /^\s*node "\$coverage_tools\/release-preflight\.mjs"/m],
+  "release-coverage.mjs": [/export function assertReleaseCoverage/],
+  "release-ci.mjs": [/^\s*assertReleaseCI\(pages/m], "release-lock.py": [/flock/],
+};

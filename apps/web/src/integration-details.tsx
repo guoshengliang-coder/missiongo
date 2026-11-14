@@ -51,6 +51,14 @@ export function IntegrationProgress({batch}:{batch:Batch}) {
       {!batch.publish&&publication!=="published"&&publication!=="not_required"&&<p className="integration-note">{t("integrationPublicationNotSelected")}</p>}
       {blocked&&<p className="integration-attention" role="status">{t(batch.publish?"integrationPublishHeld":"integrationBlockedHelp")}</p>}
       {!state&&<p className="integration-note">{t("integrationLegacy")}</p>}
+      {batch.state==="active"&&batch.prerequisiteGate?.required&&!batch.prerequisiteGate.ready&&<section className="integration-attention" aria-label={t("integrationPrerequisites")} role="status">
+        <h3>{t("integrationPrerequisites")}</h3>
+        <p>{t("integrationPrerequisitesHelp")}</p>
+        <ul>{batch.prerequisiteGate.blockers.map(b=><li key={b.id}>
+          <strong>{t(b.code==="cycle"?"integrationPrerequisiteCycle":b.code==="stale"?"integrationPrerequisiteStale":b.code==="missing"?"integrationPrerequisiteMissing":"integrationPrerequisitePending")}</strong>
+          <p>{b.reason}</p><p>{t("integrationPrerequisiteOwner")}: {b.owner}</p><p>{t("integrationPrerequisiteResume")}: {b.resumeWhen}</p>
+        </li>)}</ul>
+      </section>}
       <h3>{t("integrationGroups",{count:order.length})}</h3>
       <div className="integration-groups">{order.map(id=>{
         const e=state?.entries[id],p=batch.presentation?.entries[id],phase=integrationStage(batch,id),pub=integrationPublication(batch,id);
@@ -101,6 +109,7 @@ export function IntegrationProgress({batch}:{batch:Batch}) {
       {presentation?.releases.map(r=><section key={`${r.artifact}-${r.sourceCommit}`}><h4>{r.artifact} · {r.version}</h4><p>{formatTime(r.checkedAt)}</p><code>{r.sourceCommit}</code></section>)}
       <section><h4>{t("integrationOriginalRecords")}</h4>{events.map(e=><p key={e.id}>{formatTime(e.at)} · {e.detail}</p>)}{batch.results[selected??""]&&<p>{batch.results[selected??""]!.detail}</p>}</section>
       {(state?.finalValidation||plan)&&<section><h4>{t("integrationBatchEvidence")}</h4>{plan&&<><p>{plan.summary}</p><p>{t("integrationValidation")}: {plan.validation}</p></>}{state?.finalValidation&&<p>{t("integrationCombined")}: {state.finalValidation.validation}</p>}</section>}
+      {state?.prerequisites&&<section><h4>{t("integrationPrerequisites")}</h4>{state.prerequisites.conditions.map(c=><div key={c.id}><p>{c.reason}</p><small>{formatTime(c.checkedAt)} · {c.source}</small><p>{t("integrationPrerequisiteOwner")}: {c.owner}</p><p>{t("integrationPrerequisiteResume")}: {c.resumeWhen}</p></div>)}</section>}
     </div>
     <div className="integration-screen" data-screen="recovery" hidden={screen!=="recovery"}>
       <button type="button" className="secondary-button integration-back" onClick={back}><ArrowLeft size={16}/>{t("integrationBackOverview")}</button>

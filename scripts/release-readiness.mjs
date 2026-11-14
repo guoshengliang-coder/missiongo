@@ -6,7 +6,7 @@ import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { RELEASE_TOOL_FILES } from "./release-tool-files.mjs";
+import { RELEASE_TOOL_FILES, RELEASE_CAPABILITY_CHECKS } from "./release-tool-files.mjs";
 import { releaseCandidatesFromPages, releaseSelectionDigest, candidateIdentity } from "./release-candidates.mjs";
 import { coverageForCheckout, integrationFacts, commitContains, COVERAGE_ARTIFACTS } from "./release-coverage.mjs";
 import { checkArtifacts, planVersionGaps } from "./release-preflight.mjs";
@@ -23,19 +23,78 @@ const regular = path => existsSync(path) && lstatSync(path).isFile() && !lstatSy
 export function inspectInstalledTools(root, { home = homedir(), configHome = process.env.XDG_CONFIG_HOME ?? join(home, ".config") } = {}) {
   if (!configHome.startsWith("/")) throw new Error("Configuration root must be absolute");
   const config = join(configHome, "missiongo"), manifestPath = join(config, "release-tools-manifest.json");
-  const manifest = regular(manifestPath) ? json(manifestPath) : null;
+  let manifest = null, manifestError = null;
+  try { manifest = regular(manifestPath) ? json(manifestPath) : null; }
+  catch { manifestError = "unreadable_manifest"; }
+  const installedTexts=new Map();
   const files = Object.entries(RELEASE_TOOL_FILES).map(([name, source]) => {
     const target = name === "entry" ? join(home, ".local/bin/missiongo-release") : join(config, "release-tools", name);
     const original = join(root, "scripts", source);
-    const installedSha256 = regular(target) ? hash(readFileSync(target)) : null;
+    const installedBytes=regular(target)?readFileSync(target):null;
+    if(installedBytes)installedTexts.set(name,installedBytes.toString("utf8"));
+    const installedSha256 = installedBytes ? hash(installedBytes) : null;
     const sourceSha256 = regular(original) ? hash(readFileSync(original)) : null;
     const recordedSha256 = manifest?.tools?.[name] ?? null;
     return { name, installedSha256, sourceSha256, recordedSha256,
       status: !installedSha256 ? "missing_or_unsafe" : !sourceSha256 ? "source_missing" : installedSha256 !== recordedSha256 ? "manifest_mismatch" : installedSha256 !== sourceSha256 ? "source_differs" : "matching" };
   });
-  return { sourceCommit: manifest?.sourceCommit ?? null, files,
+  // Follow actual fixed local import/call edges, never inventory or capability
+  // table names. An omitted manifest entry cannot hide a missing runtime import.
+  const missing=new Set(),visited=new Set(),pending=Object.keys(RELEASE_CAPABILITY_CHECKS);
+  while(pending.length) {
+    const name=pending.pop();if(visited.has(name))continue;visited.add(name);
+    const source=installedTexts.get(name);
+    if(source===undefined){missing.add(name);continue;}
+    if((RELEASE_CAPABILITY_CHECKS[name]??[]).some(pattern=>!pattern.test(source)))missing.add(name);
+    const dependencies=[
+      ...[...source.matchAll(/^\s*import\s+(?:[^;\n]*?\s+from\s+)?["']\.\/([^"']+)["']/gm)].map(m=>m[1]),
+      ...[...source.matchAll(/^\s*from (release[_a-z]+) import /gm)].map(m=>`${m[1]}.py`),
+      ...[...source.matchAll(/TOOLS \/ ["']([a-zA-Z0-9_.-]+\.(?:mjs|py|sh))["']/g)].map(m=>m[1]),
+      ...[...source.matchAll(/^\s*(?:source|node) ["']\$(?:\{MISSIONGO_RELEASE_TOOLS\}|coverage_tools)\/([a-zA-Z0-9_.-]+)["']/gm)].map(m=>m[1]),
+    ];
+    for(const dependency of dependencies) {
+      if(Object.hasOwn(RELEASE_TOOL_FILES,dependency))pending.push(dependency);
+      else missing.add("unsupported_local_dependency");
+    }
+  }
+  const missingCapabilities=[...missing].sort();
+  return { sourceCommit: manifest?.sourceCommit ?? null, files, manifestError,
+    integrity: manifestError || !manifest ? "unverified" : files.some(f => f.status === "manifest_mismatch"
+      || f.status === "missing_or_unsafe" && Object.hasOwn(manifest.tools ?? {}, f.name)) ? "damaged" : "verified",
+    capabilities: { missing: missingCapabilities, status: missingCapabilities.length ? "missing" : "verified" },
     status: files.every(file => file.status === "matching") ? "matching" : "review_required",
     nextOwner: "本机工具维护者", nextAction: "核实差异及兼容性；获安装授权后用版本化安装器升级，不自动覆盖" };
+}
+
+/** Classifications are observations, never an approval or a deploy receipt. */
+export function classifyReadiness(checks, historicalGaps, batch) {
+  const releaseArtifacts = new Set([...(batch.publicationScope?.requiredArtifacts ?? []), ...batch.entries.flatMap(e => e.requiredArtifacts)]);
+  const publicationRequired = releaseArtifacts.size > 0;
+  return checks.flatMap(check => {
+    const base = { id: check.name, reason: check.reason ?? "核对原始检查结果", owner: check.nextOwner,
+      resumeWhen: "核实所需事实并在原批次刷新受影响证据", state: check.status === "unverified" ? "unknown" : "satisfied" };
+    if (check.name === "tools") {
+      const tools = check.value;
+      return [
+        {...base,id:"installation_integrity",kind:"installation_integrity",category:tools?.integrity==="verified"?"fact":"blocker",stage:"pre_merge",required:publicationRequired,
+          state:tools?.integrity==="verified"?"satisfied":tools?.integrity==="damaged"?"pending":"unknown",dependencies:["tools"],reason:"核对正式工具磁盘摘要与可信安装清单"},
+        {...base,id:"required_capability",kind:"required_capability",category:tools?.capabilities?.status==="verified"?"fact":"blocker",stage:"pre_merge",required:publicationRequired,
+          state:tools?.capabilities?.status==="verified"?"satisfied":"unknown",dependencies:["tools","capabilities"],reason:"核对本次发布必需的锁、CI 与完整范围能力"},
+        {...base,id:"tool_difference",kind:"tool_difference",category:"notice",stage:"pre_merge",required:false,dependencies:["tools"],
+          state:tools?.status==="matching"?"satisfied":"pending",reason:"普通源码差异只提示；不能从差异推断安装授权必要性"},
+      ];
+    }
+    const main = ["main","checkout_consistency"].includes(check.name);
+    const prospective = check.name.startsWith("prospective:");
+    const post = ["versions","patch_bumps"].includes(check.name) || check.name.startsWith("release_notes:");
+    const artifact = check.name.startsWith("artifact:") ? check.name.slice(9) : undefined;
+    const needed = publicationRequired && (main || prospective || !post && (!artifact || releaseArtifacts.has(artifact)));
+    return [{...base,kind:check.name==="main"?"main":post?"version":artifact?"artifact":"investigation",
+      category:post?"work":"fact",stage:main||prospective?"pre_merge":post?"post_merge":"pre_publish",required:needed,
+      dependencies:main||prospective?["base","heads"]:["candidates"],
+      state:post && (check.value?.length || check.value?.missing?.length)?"pending":base.state}];
+  }).concat(historicalGaps.map((gap,index)=>({id:`historical:${index}`,kind:"investigation",category:"fact",stage:"pre_publish",required:publicationRequired,
+    state:"unknown",reason:`${gap.identity}: ${gap.missing.join(", ")}`,owner:gap.nextOwner,resumeWhen:gap.nextAction,dependencies:["candidates"]})));
 }
 
 /** Pure collection seam: independent failures survive in a single bounded report. */
@@ -44,7 +103,9 @@ export function collectReadiness({ config, candidates, batch, now = Date.now() }
   const repository = operations.repository(), head = operations.head(), originMain = operations.originMain();
   if (config?.schemaVersion !== 1 || snapshot.productId !== config.productId || repository.toLowerCase() !== config.repository?.toLowerCase()) throw new Error("Readiness product/repository binding differs");
   if (!sha(head) || !sha(originMain)) throw new Error("Readiness requires exact HEAD and origin/main");
-  if (!batch || batch.productId !== snapshot.productId || typeof batch.id !== "string" || !Array.isArray(batch.deliveries) || batch.deliveries.length === 0 || !Array.isArray(batch.entries)
+  if (!batch || batch.productId !== snapshot.productId || typeof batch.id !== "string" || typeof batch.publish!=="boolean" || !Array.isArray(batch.deliveries) || batch.deliveries.length === 0 || !Array.isArray(batch.entries)
+    || !Array.isArray(batch.selection) || batch.selection.length !== batch.deliveries.length || new Set(batch.selection.map(s=>s.id)).size !== batch.deliveries.length
+    || batch.selection.some(s=>!batch.deliveries.includes(s.id)||typeof s.revision!=="string"||!s.revision.trim())
     || new Set(batch.deliveries).size !== batch.deliveries.length || batch.entries.length !== batch.deliveries.length
     || new Set(batch.entries.map(entry => entry.id)).size !== batch.entries.length
     || batch.entries.some(entry => !Number.isSafeInteger(entry.pullRequest) || entry.pullRequest <= 0 || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,150}$/.test(entry.targetBranch ?? "") || !batch.deliveries.includes(entry.id) || entry.repository?.toLowerCase() !== repository.toLowerCase() || !sha(entry.executionHead ?? entry.head) || !Array.isArray(entry.requiredArtifacts) || new Set(entry.requiredArtifacts).size !== entry.requiredArtifacts.length || !entry.requiredArtifacts.length && (typeof entry.noReleaseReason !== "string" || !entry.noReleaseReason.trim()) || entry.requiredArtifacts.some(a => !COVERAGE_ARTIFACTS.includes(a)))) {
@@ -85,11 +146,19 @@ export function collectReadiness({ config, candidates, batch, now = Date.now() }
     || check.name === "tools" && check.value?.status !== "matching" || check.name === "coverage" && check.value?.ready !== true
     || check.name === "versions" && check.value?.length > 0 || check.name === "patch_bumps" && check.value?.length > 0
     || check.name.startsWith("release_notes:") && check.value?.missing?.length > 0);
-  return { schemaVersion: 1, kind: "integration_readiness", needsFollowUp, checkedAt: new Date(now).toISOString(), productId: snapshot.productId, repository,
+  const conditions=classifyReadiness(checks,historicalGaps,batch);
+  return { schemaVersion: 1, kind: "integration_readiness", needsFollowUp: needsFollowUp || conditions.some(c=>c.state==="pending"||c.state==="unknown"), checkedAt: new Date(now).toISOString(), productId: snapshot.productId, repository,
     head, originMain, batchId: batch.id, batchRevision: batch.integration?.revision ?? null,
     batchDigest: hash(batch), candidatesDigest: releaseSelectionDigest(snapshot), snapshotAt: snapshot.snapshotAt,
     candidates: snapshot.candidates.map(candidate => ({ identity: candidateIdentity(candidate), requiredArtifacts: candidate.requiredArtifacts ?? null })),
     noReleaseItems: snapshot.noReleaseItems, noReleaseDeliveries: snapshot.noReleaseDeliveries, historicalGaps, checks,
+    conditions,
+    observation: {batchId:batch.id,heads:batch.deliveries.map(id=>{const e=batch.entries.find(e=>e.id===id);return {deliveryId:id,head:e.executionHead??e.head};}),
+      scope:hash([batch.selection,batch.operation??null,batch.publish,batch.publicationScope?.digest??null])},
+    evidenceContext: { base: originMain, candidates: releaseSelectionDigest(snapshot),
+      tools: hash(checks.find(c=>c.name==="tools")?.value?.files?.filter(f=>f.installedSha256||f.recordedSha256).map(f=>[f.name,f.installedSha256,f.recordedSha256]) ?? null),
+      capabilities: hash(checks.find(c=>c.name==="tools")?.value?.capabilities ?? null) },
+    prerequisiteBoundary: "分类结果不是首合并许可。原执行者还须核实当前发布范围及原生授权是否必需/有效，在原批次登记 main、installation_integrity、required_capability、authorization、scope；不由 needsFollowUp 或退出码推断许可。",
     decisions: [], // Never invent a human scope choice from a technical failure.
     boundary: "调查快照，不证明已就绪、已安装、已发布或已验收；主线、head、批次或候选变化后重新核查，部署前仍运行实时完整门禁" };
 }

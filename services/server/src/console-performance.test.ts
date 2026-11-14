@@ -25,7 +25,7 @@ it("bounds the request-side queue and does not wait for storage on recording",as
 });
 it("a failed collector remains fail-open and returns an explicitly incomplete report",async()=>{
  const m=new ConsolePerformance("/dev/null/unwritable.sqlite","v1",true);instances.push(m);
- await new Promise(r=>setTimeout(r,150));expect(m.record({id:"failed",scope,source:"server",version:"v1",stage:"submit",result:"success"})).toBe(false);
+ await expect.poll(()=>m.status().degraded).toBe(true);expect(m.record({id:"failed",scope,source:"server",version:"v1",stage:"submit",result:"success"})).toBe(false);
  const result:any=await m.report("owner",()=>true,0,1);expect(result.complete).toBe(false);expect(result.status.degraded).toBe(true);
 });
 it("restarts classify unfinished observations as missing, rather than resuming another monotonic clock",async()=>{

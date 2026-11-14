@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSyn
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { collectReadiness, inspectInstalledTools, parseReadOnlyArgs } from "./release-readiness.mjs";
+import { collectReadiness, inspectInstalledTools, parseReadOnlyArgs, classifyReadiness } from "./release-readiness.mjs";
 import { RELEASE_TOOL_FILES } from "./release-tool-files.mjs";
 import { install } from "./install-release-tools.mjs";
 const repository = "https://github.com/example/project", head = "a".repeat(40), now = Date.parse("2026-01-01T00:00:00Z");
@@ -12,7 +12,7 @@ function setup() {
   const candidates = { pages: [{ requestedBeforeSequence: null, productId: "product", coverageVersion: 2, generatedAt: new Date(now).toISOString(),
     candidates: [{ itemKey: "AND-1", developmentEventId: "first", requiredArtifacts: null }], noReleaseItems: [{ itemKey: "AND-2", noReleaseReason: "Local tools" }], noReleaseDeliveries: [] }] };
   const input = { root: ".", config: { schemaVersion: 1, productId: "product", repository }, candidates, now,
-    batch: { id: "batch", productId: "product", integration: { revision: 7 }, deliveries: ["delivery"], entries: [{ id: "delivery", head, repository, requiredArtifacts: ["web"], pullRequest: 1, targetBranch: "main" }] } };
+    batch: { id: "batch", productId: "product", publish:true, selection:[{id:"delivery",revision:"frozen"}], integration: { revision: 7 }, deliveries: ["delivery"], entries: [{ id: "delivery", head, repository, requiredArtifacts: ["web"], pullRequest: 1, targetBranch: "main" }] } };
   const operations = { repository: () => repository, head: () => head, originMain: () => head, remoteMain: () => head, ancestor: () => true,
     tools: () => ({ status: "review_required" }), live: () => ({}), artifact: name => name === "androidApp" ? (() => { throw new Error("old APK"); })() : [{ artifact: name }],
     coverage: records => ({ ready: false, observedArtifacts: records.length }), versions: () => [{ artifact: "web", blocking: true }], patchBumps: () => [{ artifact: "web", from: "1.0.0", to: "1.0.1" }],
@@ -98,6 +98,73 @@ test("a nonblocking version provenance warning still needs investigation", () =>
   f.operations.notes = () => ({ missing: [] });
   f.operations.versions = () => [{ artifact: "androidSdk", blocking: false, reason: "cannot verify source" }];
   assert.equal(collectReadiness(f.input, f.operations).needsFollowUp, true);
+});
+
+test("AND-521 separates ordinary tool drift, damaged installation and necessary capabilities", t => {
+  const directory=mkdtempSync(join(tmpdir(),"and521-tools-"));t.after(()=>rmSync(directory,{recursive:true,force:true}));
+  const home=join(directory,"home"),configHome=join(home,".config"),root=process.cwd();
+  install({source:root,home,configHome,commit:head});
+  const inspect=()=>inspectInstalledTools(root,{home,configHome});
+  assert.equal(inspect().integrity,"verified");assert.equal(inspect().capabilities.status,"verified");
+  const target=join(configHome,"missiongo/release-tools/release-readiness.mjs");
+  writeFileSync(target,readFileSync(target,"utf8")+"\n// unrelated change\n");
+  assert.equal(inspect().integrity,"damaged");
+  const manifest=join(configHome,"missiongo/release-tools-manifest.json"),data=JSON.parse(readFileSync(manifest,"utf8"));
+  // A trusted, self-consistent old installation may differ from current source.
+  data.tools["release-readiness.mjs"]=inspect().files.find(f=>f.name==="release-readiness.mjs").installedSha256;
+  writeFileSync(manifest,JSON.stringify(data));
+  const drift=inspect();assert.equal(drift.integrity,"verified");assert.equal(drift.status,"review_required");
+  const c=classifyReadiness([{name:"tools",status:"observed",value:drift,nextOwner:"Maintainer"}],[],setup().input.batch);
+  assert.equal(c.find(c=>c.id==="installation_integrity").state,"satisfied");
+  assert.equal(c.find(c=>c.id==="tool_difference").required,false);
+  const entry=join(home,".local/bin/missiongo-release");
+  writeFileSync(entry,readFileSync(entry,"utf8").replaceAll("release-ci.mjs","removed-ci.mjs"));
+  assert.ok(inspect().capabilities.missing.includes("entry"));
+  rmSync(target);assert.equal(inspect().integrity,"damaged");
+  writeFileSync(manifest,"bad JSON");assert.equal(inspect().integrity,"unverified");
+});
+
+test("AND-521 keeps post-merge work and unrelated artifacts out of the first-merge gate",()=>{
+  const f=setup(),r=collectReadiness(f.input,f.operations);
+  assert.equal(r.needsFollowUp,true);
+  assert.equal(r.conditions.find(c=>c.id==="patch_bumps").stage,"post_merge");
+  assert.equal(r.conditions.find(c=>c.id==="artifact:androidApp").required,false);
+  assert.equal(r.conditions.filter(c=>c.kind==="main").length,1);
+  assert.match(r.evidenceContext.tools,/^[a-f0-9]{64}$/);
+  const b={...f.input.batch,entries:f.input.batch.entries.map(e=>({...e,requiredArtifacts:[],noReleaseReason:"Internal tool"}))};
+  assert.ok(classifyReadiness(r.checks,r.historicalGaps,b).every(c=>!c.required));
+});
+
+test("audit 2 detects a required import missing even from an incomplete installation manifest",t=>{
+  const dir=mkdtempSync(join(tmpdir(),"and521-incomplete-"));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const home=join(dir,"home"),configHome=join(home,".config");install({source:process.cwd(),home,configHome,commit:head});
+  const manifestPath=join(configHome,"missiongo/release-tools-manifest.json"),manifest=JSON.parse(readFileSync(manifestPath,"utf8"));
+  rmSync(join(configHome,"missiongo/release-tools/release_coverage_options.py"));
+  delete manifest.tools["release_coverage_options.py"];writeFileSync(manifestPath,JSON.stringify(manifest));
+  const report=inspectInstalledTools(process.cwd(),{home,configHome});
+  assert.equal(report.capabilities.status,"missing");
+  assert.ok(report.capabilities.missing.includes("release_coverage_options.py"));
+  // Current helpers can still inspect older installations whose optional report
+  // module is absent. Do not make every inventory addition a new capability.
+  copyFileSync(join(process.cwd(),"scripts/release_coverage_options.py"),join(configHome,"missiongo/release-tools/release_coverage_options.py"));
+  manifest.tools["release_coverage_options.py"]=inspectInstalledTools(process.cwd(),{home,configHome}).files.find(f=>f.name==="release_coverage_options.py").installedSha256;
+  const candidates=join(configHome,"missiongo/release-tools/release-candidates.mjs"),saved=readFileSync(candidates);
+  rmSync(candidates);delete manifest.tools["release-candidates.mjs"];writeFileSync(manifestPath,JSON.stringify(manifest));
+  assert.ok(inspectInstalledTools(process.cwd(),{home,configHome}).capabilities.missing.includes("release-candidates.mjs"));
+  writeFileSync(candidates,saved);manifest.tools["release-candidates.mjs"]=inspectInstalledTools(process.cwd(),{home,configHome}).files.find(f=>f.name==="release-candidates.mjs").installedSha256;
+  rmSync(join(configHome,"missiongo/release-tools/delivery-report.mjs"));delete manifest.tools["delivery-report.mjs"];writeFileSync(manifestPath,JSON.stringify(manifest));
+  assert.equal(inspectInstalledTools(process.cwd(),{home,configHome}).capabilities.status,"verified");
+});
+
+test("audit 2 requires a complete publication mode and frozen selection in observations",()=>{
+  for(const change of [f=>delete f.input.batch.publish,f=>delete f.input.batch.selection,f=>f.input.batch.selection[0].revision=""]) {
+    const f=setup();change(f);assert.throws(()=>collectReadiness(f.input,f.operations));
+  }
+  const f=setup(),files=[{name:"entry",installedSha256:"a".repeat(64),recordedSha256:"a".repeat(64)}];
+  f.operations.tools=()=>({status:"matching",integrity:"verified",capabilities:{status:"verified",missing:[]},files});
+  const before=collectReadiness(f.input,f.operations);
+  files.push({name:"new-optional-helper",installedSha256:null,recordedSha256:null});
+  assert.equal(collectReadiness(f.input,f.operations).evidenceContext.tools,before.evidenceContext.tools);
 });
 test("empty batches, duplicate artifacts and unexplained no-release scope are refused", () => {
   for (const change of [f => { f.input.batch.deliveries = []; f.input.batch.entries = []; },
