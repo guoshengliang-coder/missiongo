@@ -1,3 +1,4 @@
+import { beginPerformanceSend, bindPerformanceSend, measurePerformance } from "./console-performance";
 import { CommonCommandMenu, useCommandTarget } from "./common-commands";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -51,11 +52,13 @@ export function NewSessionDraft({ draft, projectName, onChange, onBack, onConfig
     setPhase("preparing");
     let sending = { ...draft, config, requestKey: draft.requestKey ?? crypto.randomUUID(), uploaded: [...(draft.uploaded ?? [])] };
     onChange(sending);
+    const context={productId:sending.config.productId,agentKind:sending.config.agentKind,sendKind:"new_send"};
+    beginPerformanceSend(sending.requestKey,context);
     let dispatch = sending.dispatch;
     if (!dispatch) {
       try {
-        dispatch = await api.prepareProjectConversation({ ...sending.config,
-          requestKey: sending.requestKey, text: sending.text, attachmentCount: sending.files.length });
+        dispatch = await measurePerformance(context,sending.requestKey,"prepare",()=>api.prepareProjectConversation({ ...sending.config,
+          requestKey: sending.requestKey, text: sending.text, attachmentCount: sending.files.length }));
       } catch (error) {
         // A rejected reservation created nothing. Keep content editable so the
         // person can repair the configuration; an uncertain response reuses its key.
@@ -71,12 +74,14 @@ export function NewSessionDraft({ draft, projectName, onChange, onBack, onConfig
     if (!dispatch.agentSessionId) throw new Error(t("somethingWentWrong"));
     for (let index = sending.uploaded.length; index < sending.files.length; index++) {
       setPhase("uploading"); setUploadIndex(index + 1);
-      const attachment = await api.uploadAgentSessionAttachment(dispatch.agentSessionId, sending.files[index]!, `${sending.requestKey}-${index}`);
+      const attachment = await measurePerformance(context,sending.requestKey,"upload",()=>api.uploadAgentSessionAttachment(dispatch!.agentSessionId!, sending.files[index]!, `${sending.requestKey}-${index}`));
       sending = { ...sending, uploaded: [...sending.uploaded, attachment.id] };
       onChange(sending);
     }
     setPhase("starting");
-    const started = await api.startProjectConversation(dispatch.id, sending.uploaded);
+    const started = await measurePerformance(context,sending.requestKey,"start",()=>api.startProjectConversation(dispatch!.id, sending.uploaded));
+    const initial=started as Dispatch & {performanceCommandId?:string};
+    if(initial.performanceCommandId&&initial.agentSessionId)bindPerformanceSend(sending.requestKey,initial.performanceCommandId,initial.agentSessionId);
     await onStarted(started);
   } });
   const problemKey = send.error instanceof ApiError ? dispatchProblemKey(send.error.code) : null;

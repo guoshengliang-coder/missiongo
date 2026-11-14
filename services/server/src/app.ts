@@ -1,3 +1,7 @@
+import { randomUUID } from "node:crypto";
+import { ConsolePerformance } from "./console-performance.js";
+import { PerformanceSends } from "./console-performance-sends.js";
+import { validPerformanceEvent } from "@missiongo/domain";
 import { DocumentPlanApprovals } from "./document-plan-approval.js";
 import { CommonCommandStore } from "./common-commands.js";
 import { SessionSendRequests } from "./session-send-requests.js";
@@ -133,6 +137,7 @@ export interface BuildAppOptions {
   readonly statusCheckTime?: string | false;
   readonly managedExecution?: { readonly enabled: boolean; readonly coordinatorClientIds: readonly string[] };
   readonly databasePath?: string;
+  readonly performance?: { enabled?: boolean; path?: string; maxBytes?: number; sampleKind?: "production" | "synthetic" };
   readonly logger?: FastifyServerOptions["logger"];
   readonly adminToken?: string;
   readonly adminAccount?: AdminAccountConfig;
@@ -611,6 +616,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const externalSessionAttachments = new AgentSessionAttachments(store.database, options.attachmentsPath ?? "./data/attachments", true);
   const externalNativeStore = new ExternalNativeSessionStore(store, externalSessionAttachments);
   const consoleSessions = new AgentConsoleSessions(store, agentSessionStore, externalSessionStore);
+  const performanceMetrics = new ConsolePerformance(options.performance?.path ?? (options.databasePath && options.databasePath !== ":memory:" ? `${options.databasePath}.performance` : ":memory:"), options.release ?? "unknown", options.performance?.enabled ?? false, options.performance?.maxBytes,options.performance?.sampleKind??(process.env.NODE_ENV==="production"?"production":"synthetic"));
+  const performanceSends = new PerformanceSends(performanceMetrics);
+  app.addHook("onClose",async()=>{performanceSends.close();await performanceMetrics.close();});
+
   const storedMessages = new StoredSessionMessages(store.database);
   const agentApprovalStore = new AgentApprovalStore(store.database);
   const planApprovals = new PlanApprovalService(store.database);
@@ -2768,6 +2777,96 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...(reason ? { replyBlockedReason: reason } : {}) };
   };
 
+  const performanceScope = (request: FastifyRequest, sessionId: string) => {
+    if(externalSessionStore.has(sessionId)) loadExternalSession(request,sessionId,false,false,undefined,false);
+    else loadAuthorizedAgentSession(request,sessionId,false,false,undefined,false);
+    const members=consoleSessions.members(requireAccountId(request),sessionId);
+    return {account:requireAccountId(request),products:[...new Set(members.flatMap(sessionProducts))],agent:members[0]?.agentKind??"unknown",kind:"existing_send"};
+  };
+  const notePerformanceSend=(request:FastifyRequest,sessionId:string,command:{id:string;createdAt:string},kind="existing_send")=>{
+    if(!performanceMetrics.status().enabled)return;
+    try {performanceSends.accept({...performanceScope(request,sessionId),kind},sessionId,command.id,command.createdAt);} catch { /* Observability cannot change a committed business result. */ }
+  };
+  const performanceLimits = new Map<string,{at:number;n:number}>();
+  const checkPerformanceBatch = (body:Record<string,unknown>,key:string) => {
+    const now=Date.now();
+    // Bound the limiter too; do not retain arbitrary request IDs.
+    for(const [id,v]of performanceLimits)if(now-v.at>=60000)performanceLimits.delete(id);
+    const prior=performanceLimits.get(key) ?? {at:now,n:0};
+    if(performanceLimits.size>=10000&&!performanceLimits.has(key) || ++prior.n>120) throw new MissionGoError("performance_rate_limited","Performance ingestion is busy.",429);
+    performanceLimits.set(key,prior);
+    if(!Array.isArray(body.events)||body.events.length>32||!body.events.every(validPerformanceEvent)||Buffer.byteLength(JSON.stringify(body))>32768)throw invalidInput("Invalid performance batch.");
+    return body.events;
+  };
+  app.post("/api/v1/console/performance",{bodyLimit:32768},async(request,reply)=>{
+    const body=objectBody(request.body);const account=requireAccountId(request);
+    const scope=typeof body.sessionId==="string"?performanceScope(request,body.sessionId):{account,products:typeof body.productId==="string"?[body.productId]:[],agent:typeof body.agentKind==="string"?body.agentKind:"unknown",kind:body.sendKind==="new_send"?"new_send":"refresh"};
+    if(typeof body.sessionId!=="string") {
+      if(typeof body.productId!=="string")throw invalidInput("A session or product is required.");
+      requireProductPermission(request,body.productId,"view");
+    }
+    const events=checkPerformanceBatch(body,`web:${account}`);
+    // Version comes from this deployed Web/Server pair, not free text supplied by the browser.
+    let queued=0;for(const e of events)if(["send_started","http_attempt","prepare","upload","submit","start","reply_visible","background_wait","cache_visible","fresh_visible","detail_cache_visible","detail_fresh_visible","missing"].includes(e.stage))
+      queued+=Number(performanceMetrics.record({...e,scope:{...scope,kind:e.stage.includes("cache_visible")||e.stage.includes("fresh_visible")?"refresh":scope.kind},source:"web",version:typeof body.version==="string"&&/^[a-f0-9]{40}$/.test(body.version)?body.version:"unknown"}));
+    return reply.code(202).send({protocol:1,queued,rejected:events.length-queued});
+  });
+  app.get("/api/v1/console/performance",async(request,reply)=>{
+    const account=requireAccount(request),q=request.query as {from?:string;to?:string;productId?:string};
+    const to=q.to?Number(q.to):Math.floor(Date.now()/300000)*300000,from=q.from?Number(q.from):to-86400000;
+    if(!Number.isSafeInteger(from)||!Number.isSafeInteger(to)||to<=from||to-from>7*86400000||from<Date.now()-7*86400000||to>Date.now()+60000)throw invalidInput("Use a valid performance window within seven days.");
+    if(q.productId)requireProductPermission(request,q.productId,"view");
+    reply.header("cache-control","private, no-store");
+    const result=await performanceMetrics.report(account.id,products=>{
+      const current=requireAccount(request);
+      return (!q.productId||products.includes(q.productId))&&products.every(id=>accountStore.allows(current,id,"view"));
+    },from,to);
+    requireAccount(request); // Even an empty/private report must recheck disablement after asynchronous storage work.
+    return result;
+  });
+  app.post("/api/v1/node/agent-sessions/:sessionId/performance",{bodyLimit:32768},async(request,reply)=>{
+    const node=requireNode(request),{sessionId}=request.params as {sessionId:string};
+    const body=objectBody(request.body);
+    const external=externalSessionStore.has(sessionId);
+    const row=external ? store.database.connection.prepare("SELECT native_node_id AS node_id,account_id,native_generation FROM external_agent_sessions WHERE id=?").get(sessionId) as {node_id:string;account_id:string;native_generation:number}|undefined
+      : store.database.connection.prepare("SELECT s.node_id,d.account_id FROM agent_sessions s JOIN dispatches d ON d.id=s.dispatch_id WHERE s.id=?").get(sessionId) as {node_id:string;account_id:string;native_generation?:number}|undefined;
+    if(!row||row.node_id!==node.nodeId||row.account_id!==node.accountId||(external&&row.native_generation!==body.generation))throw notFound("Performance binding");
+    const group=consoleSessions.members(node.accountId,sessionId),products=[...new Set(group.flatMap(sessionProducts))];
+    products.forEach(id=>requireNodeAccountPermission(node.accountId,id,false));
+    const commandId=stringField(body,"commandId")!;
+    const command=external?externalNativeStore.commandById(sessionId,commandId):agentSessionStore.commandById(sessionId,commandId);
+    if(!command||command.kind!=="message")throw notFound("Performance command");
+    const events=checkPerformanceBatch(body,`node:${node.nodeId}`);
+    if(typeof body.turnId==="string"&&/^[a-zA-Z0-9._:-]{1,160}$/.test(body.turnId))performanceSends.bind(sessionId,commandId,body.turnId);
+    if(events.some(e=>e.stage==="missing"))performanceSends.missing(sessionId,commandId);
+    let queued=0;for(const e of events)if(["node_received","native_delivery","agent_first_output","missing"].includes(e.stage))queued+=Number(performanceMetrics.record({...e,operation:commandId,scope:{account:node.accountId,products,agent:group[0]?.agentKind??"unknown",kind:performanceSends.kind(sessionId,commandId)??"existing_send"},source:body.platform==="macos"?"macos":"linux",version:typeof body.version==="string"?body.version:"unknown"}));
+    return reply.code(202).send({protocol:1,queued,rejected:events.length-queued});
+  });
+  const performanceRequests=new WeakMap<object,number>();
+  app.addHook("onRequest",async request=>{
+    if(["/api/v1/agent-sessions/:sessionId/commands","/api/v1/project-conversations","/api/v1/project-conversations/:dispatchId/start","/api/v1/agent-sessions/:sessionId","/api/v1/agent-sessions"].includes(request.routeOptions.url??""))performanceRequests.set(request,performance.now());
+  });
+  app.addHook("onResponse",async(request,reply)=>{
+    const at=performanceRequests.get(request);if(at===undefined||!performanceMetrics.status().enabled)return;
+    try{
+      const route=request.routeOptions.url,params=request.params as {sessionId?:string;dispatchId?:string};
+      const body=request.body as {productId?:string}|undefined;
+      let scope:{account:string;products:readonly string[];agent?:string;kind?:string};
+      if(params.sessionId)scope={...performanceScope(request,params.sessionId),...(request.method==="GET"?{kind:"refresh"}:{})};
+      else if(params.dispatchId){const dispatch=authorizedDispatch(request,params.dispatchId);scope={account:requireAccountId(request),products:dispatch.productId?[dispatch.productId]:[],kind:"new_send"};}
+      else {const account=requireAccountId(request);if(body?.productId)requireProductPermission(request,body.productId,"view");scope={account,products:body?.productId?[body.productId]:[],kind:request.method==="GET"?"refresh":"new_send"};}
+      const stage=route==="/api/v1/agent-sessions"?"list_read":request.method==="GET"?"detail_read":route==="/api/v1/project-conversations"?"prepare":params.dispatchId?"start":"submit";
+      performanceMetrics.record({id:`http-${randomUUID()}`,scope,source:"server",version:options.release??"unknown",stage,result:reply.statusCode<400?"success":"rejected",durationMs:performance.now()-at});
+    }catch{/* A failed/unauthorized measurement cannot fail a completed response. */}
+  });
+  // Additive observation metadata only. It never replaces a business field or changes a command.
+  app.addHook("onSend",async(request,_reply,payload)=>{
+    if(_reply.statusCode>=400||request.method!=="GET"||request.routeOptions.url!=="/api/v1/agent-sessions/:sessionId"||typeof payload!=="string")return payload;
+    const turns=performanceSends.view((request.params as {sessionId:string}).sessionId);
+    if(!turns.length)return payload;
+    try{return JSON.stringify({...JSON.parse(payload),performanceTurns:turns});}catch{return payload;}
+  });
+
   const artifactSession = (request: FastifyRequest, sessionId: string, operate = false) => {
     const session = externalSessionStore.has(sessionId) ? loadExternalSession(request, sessionId, operate)
       : loadAuthorizedAgentSession(request, sessionId, operate, false).session;
@@ -3218,7 +3317,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       loadExternalSession(request, sessionId, true, true);
       const body = objectBody(request.body);
       const attachmentIds = stringArrayField(body, "attachmentIds") ?? [];
-      return reply.status(201).send(externalNativeStore.enqueue(requireAccountId(request), sessionId, stringField(body, "text", false) ?? "", attachmentIds, stringField(body, "requestKey", false)));
+      const command=externalNativeStore.enqueue(requireAccountId(request), sessionId, stringField(body, "text", false) ?? "", attachmentIds, stringField(body, "requestKey", false));
+      notePerformanceSend(request,sessionId,command);
+    return reply.status(201).send(command);
     }
     const session = authorizedAgentSession(request, sessionId, true);
     if (session.productId && !session.replyable) throw conflict("agent_session_starting", "Wait for this conversation to start.");
@@ -3238,6 +3339,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       false,
       stringField(body, "requestKey", false),
     );
+    notePerformanceSend(request,sessionId,command);
     return reply.status(201).send(command);
   });
 
@@ -3308,7 +3410,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (!dispatch.productId || !dispatch.agentSessionId) throw notFound("Project conversation");
     const attachmentIds = stringArrayField(objectBody(request.body),"attachmentIds") ?? [];
     if (attachmentIds.length) requireAttachmentSupport(request,dispatch.agentSessionId);
-    return freeSessionStore.finish(requireAccountId(request),dispatchId,attachmentIds);
+    const result=freeSessionStore.finish(requireAccountId(request),dispatchId,attachmentIds);
+    const command=agentSessionStore.getForAccount(requireAccountId(request),dispatch.agentSessionId,false).command;
+    if(command)notePerformanceSend(request,dispatch.agentSessionId,command,"new_send");
+    return {...result,...(command?{performanceCommandId:command.id}:{})};
   });
 
   app.post("/api/v1/dispatches/:dispatchId/retry", async (request, reply) => {
@@ -3826,6 +3931,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           ...(commandStatus ? { commandStatus } : {}),
           ...(stringField(body, "commandError", false) ? { commandError: body.commandError as string } : {}),
         }, (productId, execute) => requireNodeAccountPermission(node.accountId, productId, execute));
+        performanceSends.observe(sessionId,typeof body.commandId==="string"?body.commandId:undefined,commandStatus,messages);
         agentHistory.observe(node.accountId, node.nodeId, sessionId, body.history);
         synchronizeNativePlan(store.database,node.accountId,sessionId);
         resumeApprovedPlan(node.accountId,sessionId);
@@ -3869,6 +3975,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         ...(body.clearSessionUrl === true ? { clearSessionUrl: true } : {}),
         ...(stringField(body, "activityAt", false) ? { activityAt: body.activityAt as string } : {}),
       });
+      performanceSends.observe(sessionId,typeof body.commandId==="string"?body.commandId:undefined,commandStatus,messages);
       agentHistory.observe(node.accountId, node.nodeId, sessionId, body.history);
       if (body.approval !== undefined) {
         const approval = objectBody(body.approval);

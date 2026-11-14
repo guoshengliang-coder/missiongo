@@ -380,6 +380,7 @@ export default defineConfig(({ mode }) => {
       // components is how a cache like that breaks a screen rather than
       // speeding it up. See query-persistence.ts.
       MISSIONGO_WEB_VERSION: JSON.stringify(webVersion),
+      MISSIONGO_PERFORMANCE_BUILD: JSON.stringify(sourceCommit),
       MISSIONGO_BUILD_STAMP: JSON.stringify(`${Date.now().toString(36)}`),
     },
     build: {

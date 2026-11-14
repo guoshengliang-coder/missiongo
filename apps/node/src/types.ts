@@ -40,6 +40,7 @@ export interface Session {
   appliedSettingsRevision?: number; archiveInSource?: boolean; restoreInSource?: boolean;
 }
 export interface Snapshot {
+  performance?: import("./console-performance.js").NativePerformanceReport[];
   failure?: CodexSessionFailure | undefined;
   status: "active" | "idle" | "suspended" | "stalled" | "unavailable" | "failed";
   messages: Message[]; activities?: { id: string; title: string; detail?: string }[];
@@ -59,6 +60,7 @@ export interface HostState {
 }
 export interface Adapter {
   readonly initialTurnId?: string;
+  performanceTurn?(commandId: string): string | undefined;
   start(prompt: string): Promise<string>;
   stop(command: Command): Promise<Snapshot>;
   snapshot(): Promise<Snapshot>;

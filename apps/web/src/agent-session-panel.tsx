@@ -1,3 +1,5 @@
+import { useConsolePerformance } from "./use-console-performance";
+import { observePerformanceReply } from "./console-performance";
 import { useTranscriptAnchor } from "./transcript-anchor";
 import { DocumentPlanRecovery } from "./document-plan-recovery";
 import { CommonCommandMenu, CommandMessageMenu, useCommandTarget, useCommonCommands } from "./common-commands";
@@ -55,6 +57,7 @@ function statusLabel(status: AgentSessionStatus, t: ReturnType<typeof useI18n>["
 export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: string; productId?: string }) {
   const { locale, t } = useI18n();
   const queryClient = useQueryClient();
+  useConsolePerformance(queryClient,undefined,sessionId);
   const commonCommands = useCommonCommands();
   const [open, setOpen] = useState(() => Boolean(commonCommands?.returning && commonCommands.activeTarget === `panel-${sessionId}`));
   const [localSender] = useState(() => new SessionSender());
@@ -78,6 +81,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
   } : undefined);
   const messagesRef = useRef<HTMLDivElement>(null);
   const history = useAgentHistory(sessionId, session.data, messagesRef);
+  useEffect(()=>{const observe=()=>{if(session.data)observePerformanceReply(session.data.id,session.data.performanceTurns??[],history.messages);};observe();document.addEventListener("visibilitychange",observe);return()=>document.removeEventListener("visibilitychange",observe);},[session.data,history.messages]);
   const followLatest = useRef(true);
   const previousHistoryRevision = useRef(history.revision);
   useLayoutEffect(() => { followLatest.current = true; }, [sessionId, open]);

@@ -564,6 +564,7 @@ export interface DocumentPlanApprovalState {
   readonly documentId?: string; readonly revision?: string;
 }
 export interface AgentSession {
+  readonly performanceTurns?: readonly {commandId:string;turnId:string}[];
   readonly documentPlanApproval?: DocumentPlanApprovalState;
   readonly canRecoverPlanApproval?: boolean;
   readonly hasPlanRecords?: boolean;

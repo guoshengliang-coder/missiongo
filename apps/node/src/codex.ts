@@ -239,6 +239,8 @@ export class CodexAdapter implements Adapter {
     if (await observe().catch(() => "unknown") === "idle") return { status: "idle", turnActive: false, messages: [] };
     throw new Error(`停止尚未确认：${failure instanceof Error ? failure.message : "来源未报告原回合结束"}`);
   }
+  private performanceTurns = new Map<string,string>();
+  performanceTurn(commandId:string){return this.performanceTurns.get(commandId);}
   async deliver(command: Command, options?: { controlOnly: boolean }): Promise<void> {
     if (command.kind === "interrupt") { await this.stop(command); return; }
     if (options?.controlOnly) throw new InputRejected("回复未发送：会话设置未确认，请重新应用设置后重试。");
@@ -247,7 +249,10 @@ export class CodexAdapter implements Adapter {
     const turn = lastTurn?.status === "inProgress" ? lastTurn : undefined;
     if (turn) await this.rpc.call("turn/steer", { threadId: this.ref, expectedTurnId: turn.id,
       input: [{ type: "text", text: command.text }], clientUserMessageId: command.id });
-    else await this.rpc.call("turn/start", this.turn(command.text, command.id));
+    else {
+      const result=await this.rpc.call("turn/start", this.turn(command.text, command.id));
+      if(typeof result.turn?.id==="string"){if(this.performanceTurns.size>=256)this.performanceTurns.delete(this.performanceTurns.keys().next().value!);this.performanceTurns.set(command.id,result.turn.id);}
+    }
   }
   async decide(decision: { id: string; choice: string }): Promise<void> {
     const request = this.pending.get(decision.id);

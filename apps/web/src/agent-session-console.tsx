@@ -1,3 +1,5 @@
+import { useConsolePerformance } from "./use-console-performance";
+import { observePerformanceReply } from "./console-performance";
 import { useTranscriptAnchor, revealTranscriptReply } from "./transcript-anchor";
 import { DocumentPlanRecovery } from "./document-plan-recovery";
 import { CommonCommandMenu, CommandMessageMenu, useCommandTarget } from "./common-commands";
@@ -256,6 +258,7 @@ export function AgentSessionConsole({
   // A re-dispatched session keeps the item's name and adds the round (AND-365).
   const roundLabel = (round: number) => t("agentSessionRound", { round });
   const queryClient = useQueryClient();
+  useConsolePerformance(queryClient,productId);
   const [filter, setFilter] = useState<AgentSessionFilter>(initialFilter ?? DEFAULT_AGENT_SESSION_FILTER);
   const [agentFilter, setAgentFilter] = useState<AgentKindFilter>(DEFAULT_AGENT_KIND_FILTER);
   const [association, setAssociation] = useState<AgentAssociationFilter>("all");
@@ -487,6 +490,7 @@ export function AgentSessionConsole({
   const setReply = useCallback((update: string | ((current: string) => string)) => {
     setReplyFor(replySessionId, update);
   }, [replySessionId, setReplyFor]);
+  useConsolePerformance(queryClient,undefined,selected?.agentSessionId);
   // List summaries arrive before the transcript. Reveal the whole conversation
   // together, including approval/attention/recovery cards (AND-375). Cached
   // detail stays visible during live updates and refetch errors; dispatches without
@@ -765,6 +769,7 @@ export function AgentSessionConsole({
     ? { text: sendAttempt.text, occurredAt: sendAttempt.occurredAt, status: "sending" as const }
     : failedRequest;
   const history = useAgentHistory(selected?.agentSessionId ?? null, denied ? undefined : sessionQuery.data, messagesRef);
+  useEffect(()=>{if(!denied&&sessionQuery.data)observePerformanceReply(sessionQuery.data.id,sessionQuery.data.performanceTurns??[],history.messages);},[denied,sessionQuery.data,history.messages,documentVisible]);
   const previousHistoryRevision = useRef(0);
   const mirrorMessages = history.messages;
   const mirrorAttachments = sessionQuery.data?.attachmentMessages ?? [];

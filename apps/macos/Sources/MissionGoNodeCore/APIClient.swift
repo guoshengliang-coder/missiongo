@@ -1747,6 +1747,12 @@ public struct APIClient: Sendable {
         }
     }
 
+    public func reportPerformance(sessionId: String, batch: ConsolePerformanceBatch) async throws {
+        let path = "/api/v1/node/agent-sessions/\(APIClient.encodePathComponent(sessionId))/performance"
+        let response = try await send("POST", path, body: batch, bearer: try nodeToken(), timeout: 3)
+        try requireSuccess(response, operation: "上报性能指标")
+    }
+
     public func reportAgentSession(sessionId: String, report: AgentSessionReport) async throws {
         let path = "/api/v1/node/agent-sessions/\(APIClient.encodePathComponent(sessionId))/snapshot"
         let response = try await send(

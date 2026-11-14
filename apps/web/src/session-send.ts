@@ -1,3 +1,4 @@
+import { beginPerformanceSend, bindPerformanceSend, clearPerformanceSends, measurePerformance } from "./console-performance";
 import { api, ApiError } from "./api";
 import type { AgentSessionCommand } from "./types";
 
@@ -37,7 +38,7 @@ export class SessionSender {
   private assertCurrent(attempt: SendAttempt) {
     if (this.get(attempt.sessionId)?.requestKey !== attempt.requestKey) throw new SendSuperseded("The local send attempt was cleared.");
   }
-  clear() { this.busy.clear(); this.attempts.clear(); this.listeners.forEach(listener => listener()); }
+  clear() { clearPerformanceSends(); this.busy.clear(); this.attempts.clear(); this.listeners.forEach(listener => listener()); }
   send(input: SendInput): Promise<AgentSessionCommand> {
     let attempt = this.get(input.sessionId);
     if (input.recovery && (!attempt || (input.requestKey !== undefined && input.requestKey !== attempt.requestKey))) {
@@ -53,6 +54,7 @@ export class SessionSender {
       if (attempt?.phase === "failed") abandoned = attempt;
       attempt = { ...input, requestKey: crypto.randomUUID(), uploaded: [], phase: "uploading" };
       this.attempts.set(input.sessionId, attempt);
+      beginPerformanceSend(attempt.requestKey,{sessionId:attempt.sessionId});
     }
     const frozen = attempt;
     // Register the promise synchronously, before invoking any transport or listener.
@@ -71,7 +73,7 @@ export class SessionSender {
     if (uncertain) {
       attempt = this.update(attempt, { phase: "checking" });
       try {
-        const result = await this.transport.getAgentSendRequest(attempt.sessionId, attempt.requestKey);
+        const result = await measurePerformance({sessionId:attempt.sessionId},attempt.requestKey,"submit",()=>this.transport.getAgentSendRequest(attempt.sessionId, attempt.requestKey));
         this.assertCurrent(attempt);
         if (result.command) return this.finish(attempt, result.command);
       } catch (error) {
@@ -87,7 +89,7 @@ export class SessionSender {
     try {
       attempt = this.update(attempt, { phase: "uploading", error: undefined });
       for (let index = attempt.uploaded.length; index < attempt.files.length; index++) {
-        const file = await this.transport.uploadAgentSessionAttachment(attempt.sessionId, attempt.files[index]!, `${attempt.requestKey}-${index}`);
+        const file = await measurePerformance({sessionId:attempt.sessionId},attempt.requestKey,"upload",()=>this.transport.uploadAgentSessionAttachment(attempt.sessionId, attempt.files[index]!, `${attempt.requestKey}-${index}`));
         this.assertCurrent(attempt);
         attempt = this.update(attempt, { uploaded: [...attempt.uploaded, file.id] });
       }
@@ -99,7 +101,7 @@ export class SessionSender {
     this.assertCurrent(attempt);
     attempt = this.update(attempt, { phase: "submitting" });
     try {
-      return this.finish(attempt, await this.transport.sendAgentSessionCommand(attempt.sessionId, attempt.text, attempt.uploaded, attempt.requestKey));
+      return this.finish(attempt, await measurePerformance({sessionId:attempt.sessionId},attempt.requestKey,"submit",()=>this.transport.sendAgentSessionCommand(attempt.sessionId, attempt.text, attempt.uploaded, attempt.requestKey)));
     } catch (error) {
       this.assertCurrent(attempt);
       if (!uncertain && error instanceof ApiError && error.status >= 400 && error.status < 500) {
@@ -108,7 +110,7 @@ export class SessionSender {
       }
       attempt = this.update(attempt, { phase: "checking", error });
       try {
-        const result = await this.transport.getAgentSendRequest(attempt.sessionId, attempt.requestKey);
+        const result = await measurePerformance({sessionId:attempt.sessionId},attempt.requestKey,"submit",()=>this.transport.getAgentSendRequest(attempt.sessionId, attempt.requestKey));
         this.assertCurrent(attempt);
         if (result.command) return this.finish(attempt, result.command);
       } catch { this.assertCurrent(attempt); /* A read failure proves nothing about submission. */ }
@@ -118,6 +120,7 @@ export class SessionSender {
   }
   private finish(attempt: SendAttempt, command: AgentSessionCommand) {
     this.assertCurrent(attempt);
+    bindPerformanceSend(attempt.requestKey,command.id,attempt.sessionId);
     const keepDraft = commandNotDelivered(command);
     this.update(attempt, { phase: "sent", command, files: keepDraft ? attempt.files : [], uploaded: [], error: undefined });
     if (!keepDraft) this.onSent?.(attempt);
