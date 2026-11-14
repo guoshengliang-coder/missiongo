@@ -8,10 +8,10 @@ services:
       target: server
       args:
         MISSIONGO_RELEASE: ${MISSIONGO_RELEASE:-unknown}
-      MISSIONGO_PERFORMANCE: ${MISSIONGO_PERFORMANCE:-1}
     restart: unless-stopped
     environment:
       NODE_ENV: production
+      MISSIONGO_PERFORMANCE: ${MISSIONGO_PERFORMANCE:-1}
       HTTP_HOST: 0.0.0.0
       HTTP_PORT: 8787
       DATABASE_PATH: /data/missiongo.sqlite
