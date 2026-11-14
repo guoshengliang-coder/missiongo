@@ -3,10 +3,11 @@ import {AUDIT_SOURCE} from './audit-page.mjs';
 
 test.beforeEach(async({page})=>{await page.clock.setFixedTime(new Date('2026-11-14T02:00:00Z'));});
 const at='2026-11-14T02:00:00Z';
-for(const width of [320,1440])for(const theme of ['light','dark'] as const) {
-  test(`AND-520 queue ownership transitions ${width} ${theme}`,async({page,request},testInfo)=>{
+const ownershipViews=[...[320,1440].flatMap(width=>(['light','dark'] as const).map(theme=>({width,theme,stage:'all'}))),{width:320,theme:'light' as const,stage:'release'}];
+for(const {width,theme,stage} of ownershipViews) {
+  test(`AND-520 queue ownership transitions ${stage} ${width} ${theme}`,async({page,request},testInfo)=>{
     await page.setViewportSize({width,height:900});await page.emulateMedia({colorScheme:theme});
-    const product=await(await request.post('/api/v1/products',{data:{name:`Ownership ${width} ${theme}`,keyPrefix:`OWN${width}${theme[0]!.toUpperCase()}`}})).json();
+    const product=await(await request.post('/api/v1/products',{data:{name:`Ownership ${stage} ${width} ${theme}`,keyPrefix:`OWN${width}${theme[0]!.toUpperCase()}${stage==='release'?'R':''}`}})).json();
     const row={id:'released-later',productId:product.id,sessionId:'source',revision:'exact-head',state:'merged',summary:'原批次中的发布范围',validation:'Synthetic',itemKeys:[],head:'a'.repeat(40),requiredArtifacts:['web','macosApp'],pullRequestUrl:'https://github.com/example/project/pull/1',evidence:{checkedAt:at,source:'Fixture'},queue:{stage:'release',publishedArtifacts:['web'],pendingArtifacts:['macosApp'],records:[]}};
     let active=false,privateBatch=false;
     await page.route('**/integration-queue?**',route=>{
@@ -20,6 +21,7 @@ for(const width of [320,1440])for(const theme of ['light','dark'] as const) {
     await page.goto(`/?product=${product.id}&console=agent`);
     await page.getByRole('button',{name:'待集成 1',exact:true}).click();const dialog=page.getByRole('dialog');
     await expect(dialog.locator('.merge-active-notice')).toHaveCount(0);
+    if(stage==='release')await dialog.getByRole('button',{name:'待发布 1',exact:true}).click();
     await dialog.locator('.merge-row input').check();await expect(dialog.getByRole('button',{name:'下一步：配置 Agent'})).toBeEnabled();
     const change=async(title:string)=>{const response=await request.post('/api/v1/items',{data:{productId:product.id,type:'note',priority:'normal',title,description:'',environment:{platform:'web'}}});expect(response.ok()).toBe(true);};
     active=true;await change('Batch accepted');

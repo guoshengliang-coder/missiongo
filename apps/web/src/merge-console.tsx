@@ -216,10 +216,10 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
     for(const id of Object.keys(selected))if(!visible.has(id))catalog.current.delete(id);
   }
   useEffect(()=>{
-    if(!occupancy?.active||stage!=="all"||!queue.isSuccess||queue.hasNextPage||queue.isFetching||frozen.current)return;
+    if(!occupancy?.active||!queue.isSuccess||queue.hasNextPage||queue.isFetching||frozen.current)return;
     const visible=new Set(queue.data.pages.flatMap(page=>page.deliveries.map(d=>d.id)));
     setSelected(current=>{
-      const remaining=Object.entries(current).filter(([id])=>visible.has(id));
+      const remaining=Object.entries(current).filter(([id])=>visible.has(id)||stage!=="all"&&catalog.current.get(id)?.queue.stage!==stage);
       return remaining.length===Object.keys(current).length?current:Object.fromEntries(remaining);
     });
   },[occupancy?.active,stage,queue.isSuccess,queue.hasNextPage,queue.isFetching,queue.data]);

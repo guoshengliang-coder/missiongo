@@ -328,6 +328,46 @@ describe("planned integration batches",()=>{
     const q=f.merges.queue(f.item.productId,f.owner.id);expect(q.deliveries.map(d=>d.id)).toEqual([next.id]);expect(q.counts.merge).toBe(1);expect(q.counts.release??0).toBe(0);
     expect(q.occupancy).toMatchObject({active:true,sessionId:b.sessionId});
   });
+  it("AND-520 audit R1 does not treat a new unmerged offer as the frozen event for the same PR",async()=>{
+    const f=await batchFixture(2);f.act(f.plan);for(const d of f.deliveries){f.check(d.id);f.merged(d.id);}f.finish();
+    const first=f.deliveries[0]!,extra=f.deliveries[1]!,selection=[{id:first.id,revision:first.revision}],scope=f.merges.publicationPreview(f.owner.id,f.item.productId,selection);
+    f.merges.start(f.owner.id,"audit-r1-same-pr",selection,f.config,true,1,false,"publish_only",scope.digest);
+    const next=f.merges.propose(f.owner.id,"original-client",{sessionId:extra.sessionId},"same-pr-new-head",{...proposal(extra.itemKeys[0]!),pullRequest:extra.pullRequest,head:"d".repeat(40),evidence:{...extra.evidence,head:"d".repeat(40)}});
+    f.merges.decide(f.owner.id,next.id,next.revision,"confirm");
+    const q=f.merges.queue(f.item.productId,f.owner.id);expect(q.deliveries.map(d=>d.id)).toEqual([next.id]);expect(q.counts.merge).toBe(1);
+  });
+  it.each(["content","builder","legacy-builder"])("AND-520 audit R1 shows and rejects changed %s on extra item coverage",async change=>{
+    const f=await batchFixture(2);f.act(f.plan);for(const d of f.deliveries){f.check(d.id);f.merged(d.id);}f.finish();
+    const first=f.deliveries[0]!,extra=f.deliveries[1]!,key=extra.itemKeys[0]!,selection=[{id:first.id,revision:first.revision}],scope=f.merges.publicationPreview(f.owner.id,f.item.productId,selection);
+    const b=f.merges.start(f.owner.id,"audit-r1-extra-scope",selection,f.config,true,1,false,"publish_only",scope.digest);
+    const ds=new DispatchStore(f.store.database);ds.claimNextDispatch(f.node.nodeId);ds.recordDispatchResult({nodeId:f.node.nodeId,dispatchId:b.dispatchId,status:"launched"});
+    let current=f.merges.batch(f.owner.id,b.dispatchId,b.id);
+    const act=(action:Parameters<MergeDeliveries['integrate']>[5])=>{current=f.merges.integrate(f.owner.id,b.dispatchId,b.id,current.integration!.revision,randomUUID(),action);};
+    act({kind:"plan",base:"b".repeat(40),summary:"Bound scope",validation:"Verify",entries:[{deliveryId:first.id,head:first.head,dependsOn:[],group:"history",reason:"Frozen",validation:"Verify"}]});
+    act({kind:"verify_reference",deliveryId:first.id,expectedHead:first.head,commit:"c".repeat(40),checkedAt:new Date().toISOString(),source:"Synthetic"});
+    act({kind:"final_validation",head:"c".repeat(40),checkedAt:new Date().toISOString(),validation:"Passed",source:"Synthetic"});
+    if(change==="legacy-builder") {
+      const raw=f.db.prepare("SELECT data_json FROM merge_batches WHERE id=?").get(b.id) as {data_json:string},legacy=JSON.parse(raw.data_json);
+      for(const row of legacy.publicationScope.candidates)delete row.itemScope;
+      f.db.prepare("UPDATE merge_batches SET data_json=? WHERE id=?").run(JSON.stringify(legacy),b.id);
+    }
+    if(change==="content")f.store.updateWorkItem(key,{description:"A new requirement after freezing",attribution:{accountId:f.owner.id}});
+    else f.db.prepare("UPDATE work_items SET builder_account_id=? WHERE item_key=?").run(f.other.id,key);
+    expect(f.merges.queue(f.item.productId,f.owner.id,"review").deliveries).toEqual([]);
+    expect(f.merges.batches(f.item.productId,f.owner.id).find(row=>row.id===b.id)!.presentation.ownedExtras).toMatchObject([{publication:"unknown",blocker:expect.any(String)}]);
+    expect(()=>act({kind:"publication_progress",state:"publishing",resultsDigest:current.resultsDigest,checkedAt:new Date().toISOString(),detail:"Must reject changed coverage"})).toThrow(/范围|变化/);
+  });
+  it("AND-520 audit R3 includes extras in the integrator badge without changing each source's own result",async()=>{
+    const f=await batchFixture(2);f.act(f.plan);for(const d of f.deliveries){f.check(d.id);f.merged(d.id);}f.finish();
+    const first=f.deliveries[0]!,extra=f.deliveries[1]!,selection=[{id:first.id,revision:first.revision}],scope=f.merges.publicationPreview(f.owner.id,f.item.productId,selection);
+    const b=f.merges.start(f.owner.id,"audit-r3-session-outcome",selection,f.config,true,1,false,"publish_only",scope.digest);
+    const ds=new DispatchStore(f.store.database);ds.claimNextDispatch(f.node.nodeId);ds.recordDispatchResult({nodeId:f.node.nodeId,dispatchId:b.dispatchId,status:"launched"});
+    const release=(key:string)=>{const event=f.store.getDeliveryRecords(key)[0]!;f.store.submitForVerification({itemKey:key,developmentEventId:event.id,completion:event.completion!,releases:[{artifact:"web",version:"1",sourceCommit:"e".repeat(40)}],deployedCommit:"e".repeat(40),receiptDigest:"f".repeat(64),idempotencyKey:`audit-r3-${key}`});};
+    release(first.itemKeys[0]!);
+    expect(f.merges.sessionProgress(f.item.productId,f.owner.id)[b.sessionId]).toBe("publication_partial");
+    expect(f.merges.sessionProgress(f.item.productId,f.owner.id)[first.sessionId]).toBe("published");
+    release(extra.itemKeys[0]!);expect(f.merges.sessionProgress(f.item.productId,f.owner.id)[b.sessionId]).toBe("published");
+  });
   it("AND-520 keeps an extra frozen event with a missing legacy round in the original batch's visible responsibilities",async()=>{
     const f=await batchFixture(2);f.act(f.plan);for(const d of f.deliveries){f.check(d.id);f.merged(d.id);}f.finish();
     const extra=f.deliveries[1]!,key=extra.itemKeys[0]!,event=f.store.getDeliveryRecords(key)[0]!;

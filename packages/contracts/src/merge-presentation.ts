@@ -34,6 +34,8 @@ export interface PublicationScopeRow {
   identity:string; title:string; completion?:unknown; requiredArtifacts?:string[];
   expectedRevision?:number|string; itemKey?:string; developmentEventId?:string; roundKey?:string|null;
   deliveryId?:string; noReleaseReason?:string; selected:boolean;
+  /** Frozen item content, Builder and round; optional for legacy batches. */
+  itemScope?:string;
 }
 export interface PublicationScope {
   digest:string; candidates:PublicationScopeRow[]; requiredArtifacts:string[]; blockers:string[];
