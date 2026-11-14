@@ -31,6 +31,41 @@ function fixture(kind: "codex" | "opencode" | "claude_code" = "codex", refKind: 
 }
 afterEach(() => { vi.useRealTimers(); stores.splice(0).forEach((store) => store.close()); });
 
+it("preserves external source clocks across clockless steer receipts", () => {
+  const f = fixture(); f.native.connect("owner", f.id, "node");
+  const startedAt = new Date().toISOString();
+  vi.advanceTimersByTime(11 * 60_000);
+  const observedAt = new Date().toISOString();
+  f.store.database.connection.prepare("UPDATE nodes SET last_seen_at=? WHERE id='node'").run(observedAt);
+  f.report({ status: "active", turnState: { turnActive: true, observedAt, lastProgressAt: startedAt } });
+  const command = f.native.enqueue("owner", f.id, "Check");
+  f.report({ status: "active", turnState: { turnActive: true }, commandId: command.id, commandStatus: "delivering" });
+  f.report({ status: "active", turnState: { turnActive: true }, commandId: command.id, commandStatus: "delivered" });
+  expect(f.progress.getForAccount("owner", f.id)).toMatchObject({ status: "stalled",
+    turnState: { observedAt, lastProgressAt: startedAt } });
+});
+
+it("bounds a new external turn without carrying idle progress into its warning", () => {
+  const f = fixture(); f.native.connect("owner", f.id, "node");
+  const old = new Date().toISOString();
+  vi.advanceTimersByTime(11 * 60_000);
+  const started = new Date().toISOString();
+  const heartbeat = () => f.store.database.connection.prepare("UPDATE nodes SET last_seen_at=? WHERE id='node'").run(new Date().toISOString());
+  heartbeat();
+  f.report({ turnState: { turnActive: false, observedAt: started, lastProgressAt: old } });
+  const command = f.native.enqueue("owner", f.id, "Continue");
+  f.report({ turnState: { turnActive: false }, commandId: command.id, commandStatus: "delivering" });
+  const receipt = { status: "active" as const, turnState: { turnActive: true }, commandId: command.id, commandStatus: "delivered" as const };
+  f.report(receipt);
+  expect(f.progress.getForAccount("owner", f.id)).toMatchObject({ status: "active", turnState: { lastProgressAt: old } });
+  vi.advanceTimersByTime(2 * 60_000); heartbeat(); f.report(receipt);
+  expect(f.progress.getForAccount("owner", f.id).status).toBe("unavailable");
+  f.native.disconnect("owner", f.id); f.native.connect("owner", f.id, "node");
+  expect(() => f.report(receipt)).toThrow(/not found/);
+  f.report({ generation: 3, status: "active", turnState: {} });
+  expect(f.progress.getForAccount("owner", f.id).turnState?.healthStartedAt).toBeUndefined();
+});
+
 it("external snapshot backfill, settings and transport recovery do not recreate unread", () => {
   const f = fixture(); f.native.connect("owner", f.id, "node"); f.report();
   const first = f.progress.listForAccount("owner")[0]!.unreadAt!;

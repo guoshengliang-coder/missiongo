@@ -13,6 +13,23 @@ function fixture() {
  const product=store.createProduct({name:"Synthetic",keyPrefix:"SYN"});
  return {store,feed,db:store.database.connection,product};
 }
+it("notifies the startup observation deadline without another node report or browser poll", async () => {
+ vi.useFakeTimers();vi.setSystemTime("2026-11-09T02:00:00Z");
+ const f=fixture();const old=new Date().toISOString();
+ f.db.prepare(`INSERT INTO nodes(id,account_id,installation_id,name,token_hash,agents_json,created_at,updated_at) VALUES('n','owner','n','N','synthetic','[]',?,?)`).run(old,old);
+ f.db.prepare(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at) VALUES('d','owner','n','codex','auto','launched','synthetic',?)`).run(old);
+ const sessions=new AgentSessionStore(f.store.database);const id=sessions.createForDispatch({dispatchId:"d",nodeId:"n",sessionRef:"native"});
+ sessions.recordSnapshot({nodeId:"n",sessionId:id,status:"idle",messages:[],turnState:{turnActive:false,observedAt:old,lastProgressAt:old}});
+ vi.advanceTimersByTime(11*60_000);
+ const command=sessions.enqueue("owner",id,"Continue");
+ sessions.recordSnapshot({nodeId:"n",sessionId:id,status:"idle",messages:[],commandId:command.id,commandStatus:"delivering"});
+ sessions.recordSnapshot({nodeId:"n",sessionId:id,status:"active",messages:[],turnState:{turnActive:true},commandId:command.id,commandStatus:"delivered"});
+ await Promise.resolve();const start=f.feed.latest();
+ expect(sessions.getForAccount("owner",id).status).toBe("active");
+ vi.advanceTimersByTime(120_001);await Promise.resolve();
+ expect(f.feed.page(start).changes).toContainEqual(expect.objectContaining({kind:"sessions",resource_id:id}));
+ expect(sessions.getForAccount("owner",id).status).toBe("unavailable");
+});
 it("publishes only committed rows, including nested rollback and direct autocommit writes",async()=>{
  const f=fixture();await Promise.resolve();const listener=vi.fn();f.feed.subscribe(listener);const start=f.feed.latest();
  expect(()=>f.store.database.transaction(()=>{f.store.createProduct({name:"rollback",keyPrefix:"ROLL"});throw new Error("abort");})).toThrow();

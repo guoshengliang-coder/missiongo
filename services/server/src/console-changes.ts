@@ -2,6 +2,7 @@ import type { ConsoleChangeKind } from "@missiongo/contracts";
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import type { MissionGoDatabase } from "./storage/database.js";
+import { sessionHealthDeadlines } from "./agent-session-health.js";
 
 export const CONSOLE_CHANGE_SCHEMA = `
 CREATE TABLE console_changes (
@@ -198,7 +199,7 @@ export class ConsoleChanges {
     : "SELECT d.account_id,s.turn_state_json AS snapshot FROM agent_sessions s JOIN dispatches d ON d.id=s.dispatch_id WHERE s.id=?").get(id) as {account_id:string;snapshot:string|null}|undefined;
    if (!row) return; account=row.account_id; resource=id;
    const data=JSON.parse(row.snapshot ?? "{}"); const turn=external ? data.turnState ?? {} : data;
-   times.push(Date.parse(turn.observedAt ?? "")+120_001,Date.parse(turn.lastProgressAt ?? "")+600_001);
+   times.push(...sessionHealthDeadlines(turn).map(deadline=>deadline+1));
   }
   const next=times.filter(t=>Number.isFinite(t) && t>Date.now()).sort((a,b)=>a-b)[0];
   if (!next) return;
