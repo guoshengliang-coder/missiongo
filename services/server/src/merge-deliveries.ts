@@ -108,21 +108,22 @@ export class MergeDeliveries {
     return query(...parameters);
   }
 
-  private readonly batchTemplates=new Map<string,{text:string;value:ReturnType<MergeDeliveries["recomputeBatches"]>[number]}>();
-  private batchTemplateChars=0;
-  private readBatchProjection(id:string,text:string):ReturnType<MergeDeliveries["recomputeBatches"]>[number] {
+  private readonly batchTemplates=new Map<string,{bytes:Uint8Array;value:ReturnType<MergeDeliveries["recomputeBatches"]>[number]}>();
+  private batchTemplateBytes=0;
+  private readBatchProjection(id:string,bytes:Uint8Array):ReturnType<MergeDeliveries["recomputeBatches"]>[number] {
     const previous=this.batchTemplates.get(id);
     // Always read the current scoped DB row first. Exact serialized equality is
     // the invalidation key, including writes within a transaction and rollbacks.
-    if(previous?.text===text)return cloneProjection(previous.value);
-    if(previous){this.batchTemplates.delete(id);this.batchTemplateChars-=previous.text.length;}
+    if(previous && Buffer.compare(previous.bytes,bytes)===0)return cloneProjection(previous.value);
+    if(previous){this.batchTemplates.delete(id);this.batchTemplateBytes-=previous.bytes.length;}
+    const text=Buffer.from(bytes.buffer,bytes.byteOffset,bytes.byteLength).toString("utf8");
     const value=JSON.parse(text) as ReturnType<MergeDeliveries["recomputeBatches"]>[number];
-    if(text.length<16*1024 || text.length>512*1024)return value;
-    while(this.batchTemplates.size>=20 || this.batchTemplateChars+text.length>4*1024*1024){
+    if(bytes.length<16*1024 || bytes.length>512*1024)return value;
+    while(this.batchTemplates.size>=20 || this.batchTemplateBytes+bytes.length>4*1024*1024){
       const oldest=this.batchTemplates.keys().next().value!;
-      this.batchTemplateChars-=this.batchTemplates.get(oldest)!.text.length;this.batchTemplates.delete(oldest);
+      this.batchTemplateBytes-=this.batchTemplates.get(oldest)!.bytes.length;this.batchTemplates.delete(oldest);
     }
-    this.batchTemplates.set(id,{text,value});this.batchTemplateChars+=text.length;
+    this.batchTemplates.set(id,{bytes,value});this.batchTemplateBytes+=bytes.length;
     return cloneProjection(value);
   }
   private read<T>(table: "merge_deliveries" | "merge_batches", id: string): T {
@@ -583,7 +584,9 @@ export class MergeDeliveries {
     });
   }
   batches(productId: string, accountId: string, sessionId?: string): ReturnType<MergeDeliveries["recomputeBatches"]> {
-    const rows=this.displayRows(`SELECT id,data_json,activity_json FROM merge_batch_projection WHERE product_id=? AND account_id=? ${sessionId ? "AND session_id=?" : ""} ORDER BY sequence DESC LIMIT 20`,productId,accountId,...(sessionId ? [sessionId] : [])) as {id:string;data_json:string;activity_json:string}[];
+    // SQLite can return the UTF-8 bytes without decoding the whole history on
+    // every poll. Compare the current scoped bytes before reusing a template.
+    const rows=this.displayRows(`SELECT id,CAST(data_json AS BLOB) AS data_json,activity_json FROM merge_batch_projection WHERE product_id=? AND account_id=? ${sessionId ? "AND session_id=?" : ""} ORDER BY sequence DESC LIMIT 20`,productId,accountId,...(sessionId ? [sessionId] : [])) as {id:string;data_json:Uint8Array;activity_json:string}[];
     type ActivityBoundary={sessionId:string;activity:string;sensitive:boolean};
     const values=rows.map(row=>this.readBatchProjection(row.id,row.data_json));
     // Formal receipts and non-pending history cannot be invalidated by later
