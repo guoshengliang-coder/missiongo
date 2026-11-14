@@ -31,7 +31,15 @@ public final class ConsolePerformanceObserver: @unchecked Sendable {
         let key = session.id + ":" + command.id, turns = known.current[session.id]
         entries.withLock { values in
             values = values.filter { now - $0.value.at < 86400 }
-            guard values[key] == nil, values.count < 256 else { return }
+            guard values[key] == nil else { return }
+            if values.count >= 256 {
+                // Completed observations are deduplicated server-side; they must not block new commands for a day.
+                for old in values.keys.filter({ values[$0]?.done == true }).sorted(by: { values[$0]!.at < values[$1]!.at }) {
+                    values.removeValue(forKey: old)
+                    if values.count < 256 { break }
+                }
+            }
+            guard values.count < 256 else { return }
             values[key] = Pending(session: session.id, command: command.id, at: now, previousTurns: turns)
         }
     }

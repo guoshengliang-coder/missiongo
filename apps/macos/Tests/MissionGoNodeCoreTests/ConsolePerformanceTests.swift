@@ -39,4 +39,16 @@ final class ConsolePerformanceTests: XCTestCase {
         XCTAssertTrue(reports.flatMap(\.events).contains { $0.stage == "agent_first_output" })
     }
 
+    func testCompletedObservationsDoNotExhaustTheNodeAfter256Commands() {
+        let observer = ConsolePerformanceObserver()
+        var count = 0
+        for index in 0..<300 {
+            let id = "command-\(index)"
+            let session = NodeAgentSession(id: "session", sessionRef: "thread", status: "active", command: .init(id: id, text: "private", status: "delivering"))
+            observer.begin(session, now: Double(index))
+            count += observer.observe(session, report: .init(status: "active", messages: [], commandId: id, commandStatus: "delivered"), now: Double(index)+0.1).count
+        }
+        XCTAssertEqual(count, 300)
+    }
+
 }

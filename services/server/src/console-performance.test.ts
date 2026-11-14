@@ -64,3 +64,8 @@ it("P95 requires 100 timed samples in identical dimensions and never mixes versi
  for(let i=100;i<150;i++)m.record({id:`percentile-${i}`,scope,source:"web",version:"new",stage:"submit",result:"success",durationMs:30});
  r=await m.report("owner",()=>true,Date.now()-60000,Date.now()+1);expect(r.rows.find((x:any)=>x.version==="new").p95UpperBoundMs).toBe(64);expect(r.rows.find((x:any)=>x.version==="old").p95UpperBoundMs).toBeNull();
 });
+it("identical client event IDs cannot suppress server metrics or another product's samples",async()=>{
+ const m=await fixture();const event={id:"shared-event",scope,source:"web" as const,version:"v1",stage:"submit" as const,result:"success" as const,durationMs:20};
+ m.record(event);m.record({...event,source:"server"});m.record({...event,scope:{account:"owner",products:["other-product"]}});
+ const r:any=await m.report("owner",()=>true,Date.now()-60000,Date.now()+1);expect(r.rows).toHaveLength(3);
+});

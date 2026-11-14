@@ -1,6 +1,6 @@
 /** Content-free, bounded observability. These intervals overlap; never add them. */
 export const PERFORMANCE_STAGES = ["send_started", "logical_accepted", "list_read", "detail_read", "http_attempt", "prepare", "upload", "submit", "start", "node_received", "native_delivery", "agent_first_output", "reply_visible", "background_wait", "cache_visible", "fresh_visible", "detail_cache_visible", "detail_fresh_visible", "missing"] as const;
-export const PERFORMANCE_RESULTS = ["success", "rejected", "network_failure", "timeout", "unconfirmed", "cancelled", "unsupported", "uncorrelated", "process_restart", "expired", "hidden", "no_cache"] as const;
+export const PERFORMANCE_RESULTS = ["success", "rejected", "network_failure", "timeout", "unconfirmed", "cancelled", "unsupported", "uncorrelated", "process_restart", "expired", "hidden", "no_cache", "inflight_at_entry"] as const;
 export type PerformanceStage = typeof PERFORMANCE_STAGES[number];
 export type PerformanceResult = typeof PERFORMANCE_RESULTS[number];
 export interface ConsolePerformanceEvent {

@@ -15,12 +15,14 @@ for(const width of [320,1440])for(const supported of [true,false])test(`AND-518 
    return route.fulfill({status:201,json:{id:"performance-command",kind:"message",text:privateText,status:"delivered",createdAt:"2026-11-13T14:00:00Z"}});
   }
   if(route.request().method()!=="GET")return route.fulfill({status:204});
+  if(path!=="/api/v1/agent-sessions"&&!submitted)await new Promise(r=>setTimeout(r,200));
   return route.fulfill({json:path==="/api/v1/agent-sessions"?{sessions:[row]}:{...row,
    ...(supported&&submitted?{performanceTurns:[{commandId:"performance-command",turnId:"new-turn"}]}:{}),
    messages:submitted?[{id:"user",sourceId:"performance-command",role:"user",text:privateText,turnId:"new-turn",occurredAt:"2026-11-13T14:00:00Z"},{id:"agent",sourceId:"reply",role:"agent",text:"新的回复",turnId:"new-turn",occurredAt:"2026-11-13T14:00:00Z"}]:[]}});
  });
  await page.goto(`/?product=${fixture.productId}&console=agent&session=${id}`);
  const reply=page.locator(".agent-console-reply textarea");await reply.fill(privateText);
+ if(width===320&&supported)await expect.poll(()=>batches.flatMap(b=>b.events).filter((e:any)=>e.stage==="detail_fresh_visible").length).toBe(1);
  await page.getByRole("button",{name:"发送回复",exact:true}).click();
  await expect(page.locator(".agent-console-messages")).toContainText("新的回复");
  await expect.poll(()=>batches.flatMap(b=>b.events).filter((e:any)=>e.stage==="submit").length).toBe(1);

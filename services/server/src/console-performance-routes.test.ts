@@ -1,8 +1,9 @@
-import { afterEach, expect, it } from "vitest";
+import { ConsolePerformance } from "./console-performance.js";
+import { afterEach, expect, it, vi } from "vitest";
 import { hashPassword } from "./admin-auth.js";
 import { buildApp } from "./app.js";
 const apps:ReturnType<typeof buildApp>[]=[];
-afterEach(async()=>{await Promise.all(apps.splice(0).map(app=>app.close()));});
+afterEach(async()=>{vi.restoreAllMocks();await Promise.all(apps.splice(0).map(app=>app.close()));});
 async function fixture(){
  const app=buildApp({adminAccount:{id:"owner",username:"owner@example.invalid",passwordScrypt:hashPassword("synthetic-password"),sessionSecret:"synthetic-signing",cookieSecure:false},performance:{enabled:true,path:":memory:"},dingtalkWorker:false,release:"fixture-build"});apps.push(app);
  const member=app.missionGoAccounts.createAccount({email:"member@example.invalid",password:"synthetic-password",role:"member"});
@@ -30,4 +31,13 @@ it("rejects free text, invalid duration, excess payload and missing authenticati
  expect((await f.post(f.product.id,Array.from({length:33},()=>({id:"x",stage:"submit",result:"success"})))).statusCode).toBe(400);
  expect((await f.app.inject({url:"/api/v1/console/performance"})).statusCode).toBe(401);
  expect((await f.app.inject({url:"/api/v1/console/performance?from=0&to=999999999999999",headers:f.headers})).statusCode).toBe(400);
+});
+
+it("rechecks account authorization after the asynchronous report even when no rows exist",async()=>{
+ const f=await fixture();
+ vi.spyOn(ConsolePerformance.prototype,"report").mockImplementation(async()=>{
+  f.app.missionGoAccounts.updateAccount(f.member.id,{disabled:true});
+  return {status:{enabled:true,ready:true,degraded:false},rows:[],coverage:[],complete:false};
+ });
+ const result=await f.app.inject({url:"/api/v1/console/performance",headers:f.headers});expect(result.statusCode).toBe(401);
 });

@@ -195,7 +195,7 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
                 else {await adapter.deliver(command, { controlOnly: state.snapshot.settingsError !== undefined });measurement.delivered(key,adapter.performanceTurn?.(key));}
                 if (command.kind === "interrupt" && stopSnapshot) stopSnapshot.stopConfirmed = true;
                 state.commands[key] = { status: "delivered", ...(stopSnapshot?.stopConfirmed ? { stopConfirmed: true } : {}) };
-              } catch (error) { state.commands[key] = { status: command.kind === "interrupt" || error instanceof InputRejected ? "failed" : "delivery_unknown", error: safeError(error) }; }
+              } catch (error) { measurement.failed(key); state.commands[key] = { status: command.kind === "interrupt" || error instanceof InputRejected ? "failed" : "delivery_unknown", error: safeError(error) }; }
               persist();
             }
             const outcome = state.commands[key]!;

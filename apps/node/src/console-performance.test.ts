@@ -16,3 +16,13 @@ it("upload requests run on one bounded lane and retries have a fixed limit",asyn
  uploader.enqueue("session",{commandId:"command",events:[]});
  await new Promise(r=>setTimeout(r,10));expect(send).toHaveBeenCalledTimes(3);
 });
+it("a delivered command awaiting output emits its delivery sample only once",()=>{
+ const p=new NativePerformance();p.begin("command");p.delivered("command","turn");
+ expect(p.reports({messages:[]})[0]?.events).toHaveLength(1);
+ expect(p.reports({messages:[]})).toEqual([]);
+});
+it("native delivery failures release bounded tracking capacity immediately",()=>{
+ const p=new NativePerformance();let reports=0;
+ for(let i=0;i<300;i++){p.begin(`failed-${i}`);p.failed(`failed-${i}`);reports+=p.reports({messages:[]}).length;}
+ expect(reports).toBe(300);
+});

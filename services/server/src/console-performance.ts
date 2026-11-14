@@ -19,7 +19,7 @@ export class ConsolePerformance {
  private waiting = new Map<string,{resolve:(v:any)=>void;timer:ReturnType<typeof setTimeout>}>();
  private heartbeat?: ReturnType<typeof setInterval>;
  private watchdog?: ReturnType<typeof setInterval>;
- private lastAck=Date.now();
+ private lastAck=performance.now();
  private ownDrops=new Map<string,{account:string;products:string[];n:number}>();
  constructor(path: string, readonly version="unknown", enabled=true, maxBytes?: number, readonly sampleKind:"production"|"synthetic"="synthetic") {
   if(!enabled){this.stopped=true;return;}
@@ -29,18 +29,18 @@ export class ConsolePerformance {
     workerData:{path,...(maxBytes?{maxBytes}:{})},...(extension==="ts"?{execArgv:["--experimental-strip-types"]}:{})});
    this.worker.unref();
    this.worker.on("message",m=>{
-    if(m.kind==="ready"){this.ready=true;this.pulse();}
-    if(m.kind==="ack"){this.lastAck=Date.now();this.outstanding=Math.max(0,this.outstanding-m.count);this.accepted=m.accepted;this.duplicates=m.duplicates;this.persistedDrops=m.dropped;}
+    if(m.kind==="ready"){this.lastAck=performance.now();this.ready=true;this.pulse();}
+    if(m.kind==="ack"){this.lastAck=performance.now();this.outstanding=Math.max(0,this.outstanding-m.count);this.accepted=m.accepted;this.duplicates=m.duplicates;this.persistedDrops=m.dropped;}
     if(m.kind==="fault"){this.dropped+=m.count;this.outstanding=Math.max(0,this.outstanding-m.count);this.fail();}
     if(m.kind==="report"){const entry=this.waiting.get(m.request);if(entry){clearTimeout(entry.timer);this.waiting.delete(m.request);entry.resolve(m);}}
    });
    this.worker.on("error",()=>this.fail());this.worker.on("exit",()=>{if(!this.stopped)this.fail();});
    this.heartbeat=setInterval(()=>this.pulse(),60000);this.heartbeat.unref();
-   this.watchdog=setInterval(()=>{if((!this.ready||this.outstanding>0)&&Date.now()-this.lastAck>5000)this.fail();},1000);this.watchdog.unref();
+   this.watchdog=setInterval(()=>{if((!this.ready||this.outstanding>0)&&performance.now()-this.lastAck>5000)this.fail();},1000);this.watchdog.unref();
   }catch{this.fail();}
  }
  private pulse(){if(this.ready&&!this.failed&&!this.stopped)this.worker?.postMessage({kind:"heartbeat",version:this.version},[]);}
- private fail(){this.failed=true;this.ready=false;this.dropped+=this.outstanding;this.outstanding=0;void this.worker?.terminate();for(const w of this.waiting.values()){clearTimeout(w.timer);w.resolve(null);}this.waiting.clear();}
+ private fail(){if(this.failed||this.stopped)return;this.failed=true;if(this.heartbeat)clearInterval(this.heartbeat);if(this.watchdog)clearInterval(this.watchdog);this.ready=false;this.dropped+=this.outstanding;this.outstanding=0;void this.worker?.terminate();for(const w of this.waiting.values()){clearTimeout(w.timer);w.resolve(null);}this.waiting.clear();}
  status(){return {enabled:!this.stopped,ready:this.ready,degraded:this.failed,queued:this.outstanding,accepted:this.accepted,knownDropped:this.dropped+this.persistedDrops,duplicates:this.duplicates,
   limitations:["Client shutdown loss is not fully observable","Agent output includes host/provider/model waiting; model internals are unavailable","Durations from different clocks are never subtracted"]};}
  record(record:PerformanceRecord):boolean {
@@ -48,8 +48,9 @@ export class ConsolePerformance {
   if(!validPerformanceEvent({id:record.id,stage:record.stage,result:record.result,...(record.durationMs===undefined?{}:{durationMs:record.durationMs})}))return false;
   const {scope,operation,...event}=record;
   if(scope.products.length>64)return false;
-  const payload={...event,id:performanceKey(scope.account,record.id),operation:performanceKey(scope.account,operation??record.id),
+  const payload={...event,id:performanceKey(scope.account,JSON.stringify([...new Set(scope.products)].sort()),record.source,record.id),operation:performanceKey(scope.account,operation??record.id),
    account:scope.account,agent:["codex","claude_code","opencode","hermes"].includes(scope.agent??"")?scope.agent:"unknown",kind:["new_send","existing_send","refresh"].includes(scope.kind??"")?scope.kind:"existing_send",scope:JSON.stringify([...new Set(scope.products)].sort()),version:/^[a-zA-Z0-9._-]{1,80}$/.test(record.version)?record.version:"unknown"};
+  if(this.outstanding===0)this.lastAck=performance.now();
   this.outstanding++;try{this.worker!.postMessage({kind:"events",events:[payload]},[]);return true;}catch{this.outstanding--;this.dropped++;return false;}
  }
  async report(account:string,canRead:(products:string[])=>boolean,from:number,to:number){

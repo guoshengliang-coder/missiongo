@@ -2817,7 +2817,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if(!Number.isSafeInteger(from)||!Number.isSafeInteger(to)||to<=from||to-from>7*86400000||from<Date.now()-7*86400000||to>Date.now()+60000)throw invalidInput("Use a valid performance window within seven days.");
     if(q.productId)requireProductPermission(request,q.productId,"view");
     reply.header("cache-control","private, no-store");
-    return performanceMetrics.report(account.id,products=>(!q.productId||products.includes(q.productId))&&products.every(id=>accountStore.allows(account,id,"view")),from,to);
+    const result=await performanceMetrics.report(account.id,products=>{
+      const current=requireAccount(request);
+      return (!q.productId||products.includes(q.productId))&&products.every(id=>accountStore.allows(current,id,"view"));
+    },from,to);
+    requireAccount(request); // Even an empty/private report must recheck disablement after asynchronous storage work.
+    return result;
   });
   app.post("/api/v1/node/agent-sessions/:sessionId/performance",{bodyLimit:32768},async(request,reply)=>{
     const node=requireNode(request),{sessionId}=request.params as {sessionId:string};
