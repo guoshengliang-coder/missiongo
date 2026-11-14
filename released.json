@@ -39,8 +39,8 @@
       ]
     },
     "macosApp": {
-      "version": "0.4.92",
-      "commit": "cab812ed1654047db4b1537a5055803cd5d14264",
+      "version": "0.4.93",
+      "commit": "4597be5d2daa1be547054c2455973374ef434eca",
       "versionFile": "apps/macos/version.properties",
       "versionProperty": "missiongoMacosVersion",
       "paths": [
