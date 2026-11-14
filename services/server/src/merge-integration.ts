@@ -2,11 +2,13 @@ import { z } from "zod";
 import { createHash } from "node:crypto";
 import type { MergeIntegration } from "@missiongo/contracts";
 import { conflict } from "./errors.js";
+import { prerequisitesActionSchema } from "./merge-prerequisites.js";
 const sha=z.string().regex(/^[a-f0-9]{40}$/);
 const text=z.string().trim().min(1).max(4000);
 const id=z.string().min(1).max(200);
 const entry={deliveryId:id,expectedHead:sha};
 export const integrationActionSchema=z.discriminatedUnion("kind",[
+  prerequisitesActionSchema,
   z.object({kind:z.literal("verify_reference"),...entry,commit:sha,checkedAt:z.string().datetime(),source:text}),
   z.object({kind:z.literal("plan"),base:sha,summary:text,validation:text,entries:z.array(z.object({deliveryId:id,head:sha,
     dependsOn:z.array(id).max(20),group:z.string().trim().min(1).max(100),reason:text,validation:text})).min(1).max(20)}),
@@ -38,6 +40,9 @@ export function applyIntegrationAction(state:MergeIntegration, action:Integratio
     const {kind:_kind,...plan}=action;state.plans.push({...plan,at});
     for(const e of Object.values(state.entries)){delete e.check;if(e.progress==="ready")e.progress="queued";}
     delete state.finalValidation;
+  } else if(action.kind==="prerequisites") {
+    // The owning batch validates and binds these conditions before this event.
+    if(!state.prerequisitesOnly&&!state.plans.length)integrationDenied("请先登记整批集成计划。");
   } else if(action.kind==="publication_progress") {
     if (!freshIntegrationCheck(action.checkedAt) || action.resultsDigest !== integrationDigest(results)) integrationDenied("发布阶段的时间或批次结果已变化。");
     state.publication = { state: action.state, checkedAt: action.checkedAt,
@@ -71,7 +76,7 @@ export function applyIntegrationAction(state:MergeIntegration, action:Integratio
   }
   state.revision++;
   state.events.push({id:key,digest:integrationDigest(action),action:action.kind,at,
-    ...("deliveryId" in action?{deliveryId:action.deliveryId}:{}),detail:"detail" in action?action.detail:"reason" in action?action.reason:"summary" in action?action.summary:action.validation});
+    ...("deliveryId" in action?{deliveryId:action.deliveryId}:{}),detail:"detail" in action?action.detail:"reason" in action?action.reason:"summary" in action?action.summary:"validation" in action?action.validation:action.source});
 }
 export function assertIntegrationMerge(state:MergeIntegration,id:string,results:Record<string,{status:string}>) {
   const plan=state.plans.at(-1),e=state.entries[id],check=e?.check;

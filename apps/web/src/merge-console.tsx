@@ -3,7 +3,7 @@ import { modeProblem } from "./agent-mode-options";
 import { HelpHint } from "./help-hint";
 import { IntegrationProgress } from "./integration-details";
 import { localizedErrorText } from "./error-text";
-import type { MergeIntegration, MergeBatchPresentation, IntegrationQueueFacts, IntegrationActionMode, PublicationScope } from "@missiongo/contracts";
+import type { MergeIntegration, MergeBatchPresentation, IntegrationQueueFacts, IntegrationActionMode, PublicationScope, IntegrationPrerequisiteGate } from "@missiongo/contracts";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { defaultAgentMode, type AgentKind } from "@missiongo/domain";
@@ -50,7 +50,7 @@ function QueueHistory({productId,onClose,onSession}:{productId:string;onClose:()
     {q.isSuccess&&reviews.isSuccess&&![...q.data.pages,...reviews.data.pages].some(p=>p.deliveries.length)&&<p>{t("queueHistoryEmpty")}</p>}
   </Modal>;
 }
-export interface Batch {operation?:IntegrationActionMode;references?:Record<string,{batchId:string;head:string;commit:string}>;verifiedReferences?:Record<string,{checkedAt:string;source:string}>;presentation?:MergeBatchPresentation;integration?:MergeIntegration;id:string;sessionId:string;state:string;deliveries:string[];publish:boolean;results:Record<string,{status:string;detail:string}>}
+export interface Batch {prerequisiteGate?:IntegrationPrerequisiteGate;operation?:IntegrationActionMode;references?:Record<string,{batchId:string;head:string;commit:string}>;verifiedReferences?:Record<string,{checkedAt:string;source:string}>;presentation?:MergeBatchPresentation;integration?:MergeIntegration;id:string;sessionId:string;state:string;deliveries:string[];publish:boolean;results:Record<string,{status:string;detail:string}>}
 const post=<T,>(path:string,body:unknown)=>request<T>(path,{method:"POST",body:JSON.stringify(body)});
 export const useDeliveries=(productId:string,sessionId?:string)=>useQuery({
   queryKey:sessionId ? ["merge-deliveries",productId,sessionId] : ["merge-deliveries",productId],

@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSyn
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { collectReadiness, inspectInstalledTools, parseReadOnlyArgs } from "./release-readiness.mjs";
+import { collectReadiness, inspectInstalledTools, parseReadOnlyArgs, classifyReadiness } from "./release-readiness.mjs";
 import { RELEASE_TOOL_FILES } from "./release-tool-files.mjs";
 import { install } from "./install-release-tools.mjs";
 const repository = "https://github.com/example/project", head = "a".repeat(40), now = Date.parse("2026-01-01T00:00:00Z");
@@ -98,6 +98,41 @@ test("a nonblocking version provenance warning still needs investigation", () =>
   f.operations.notes = () => ({ missing: [] });
   f.operations.versions = () => [{ artifact: "androidSdk", blocking: false, reason: "cannot verify source" }];
   assert.equal(collectReadiness(f.input, f.operations).needsFollowUp, true);
+});
+
+test("AND-521 separates ordinary tool drift, damaged installation and necessary capabilities", t => {
+  const directory=mkdtempSync(join(tmpdir(),"and521-tools-"));t.after(()=>rmSync(directory,{recursive:true,force:true}));
+  const home=join(directory,"home"),configHome=join(home,".config"),root=process.cwd();
+  install({source:root,home,configHome,commit:head});
+  const inspect=()=>inspectInstalledTools(root,{home,configHome});
+  assert.equal(inspect().integrity,"verified");assert.equal(inspect().capabilities.status,"verified");
+  const target=join(configHome,"missiongo/release-tools/release-readiness.mjs");
+  writeFileSync(target,readFileSync(target,"utf8")+"\n// unrelated change\n");
+  assert.equal(inspect().integrity,"damaged");
+  const manifest=join(configHome,"missiongo/release-tools-manifest.json"),data=JSON.parse(readFileSync(manifest,"utf8"));
+  // A trusted, self-consistent old installation may differ from current source.
+  data.tools["release-readiness.mjs"]=inspect().files.find(f=>f.name==="release-readiness.mjs").installedSha256;
+  writeFileSync(manifest,JSON.stringify(data));
+  const drift=inspect();assert.equal(drift.integrity,"verified");assert.equal(drift.status,"review_required");
+  const c=classifyReadiness([{name:"tools",status:"observed",value:drift,nextOwner:"Maintainer"}],[],setup().input.batch);
+  assert.equal(c.find(c=>c.id==="installation_integrity").state,"satisfied");
+  assert.equal(c.find(c=>c.id==="tool_difference").required,false);
+  const entry=join(home,".local/bin/missiongo-release");
+  writeFileSync(entry,readFileSync(entry,"utf8").replaceAll("release-ci.mjs","removed-ci.mjs"));
+  assert.ok(inspect().capabilities.missing.includes("entry"));
+  rmSync(target);assert.equal(inspect().integrity,"damaged");
+  writeFileSync(manifest,"bad JSON");assert.equal(inspect().integrity,"unverified");
+});
+
+test("AND-521 keeps post-merge work and unrelated artifacts out of the first-merge gate",()=>{
+  const f=setup(),r=collectReadiness(f.input,f.operations);
+  assert.equal(r.needsFollowUp,true);
+  assert.equal(r.conditions.find(c=>c.id==="patch_bumps").stage,"post_merge");
+  assert.equal(r.conditions.find(c=>c.id==="artifact:androidApp").required,false);
+  assert.equal(r.conditions.filter(c=>c.kind==="main").length,1);
+  assert.match(r.evidenceContext.tools,/^[a-f0-9]{64}$/);
+  const b={...f.input.batch,entries:f.input.batch.entries.map(e=>({...e,requiredArtifacts:[],noReleaseReason:"Internal tool"}))};
+  assert.ok(classifyReadiness(r.checks,r.historicalGaps,b).every(c=>!c.required));
 });
 test("empty batches, duplicate artifacts and unexplained no-release scope are refused", () => {
   for (const change of [f => { f.input.batch.deliveries = []; f.input.batch.entries = []; },
