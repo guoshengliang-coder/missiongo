@@ -13,6 +13,13 @@ test("nested menus consume Back and Escape separately without changing the detai
   await menu.locator(":scope > summary").click();
   await menu.locator(".detail-move-menu > summary").click();
   await expect.poll(() => depth(page)).toBe(2);
+  // One outside gesture retires only the child, even outside both menus.
+  await page.locator(".detail-pane h2").first().click();
+  await expect(menu.locator(".detail-move-menu")).not.toHaveAttribute("open");
+  await expect(menu).toHaveAttribute("open");
+  await expect.poll(() => depth(page)).toBe(1);
+  await menu.locator(".detail-move-menu > summary").click();
+  await expect.poll(() => depth(page)).toBe(2);
   await back(page);
   await expect(menu.locator(".detail-move-menu")).not.toHaveAttribute("open");
   await expect(menu).toHaveAttribute("open");

@@ -1,5 +1,5 @@
 import { OverlayMenu } from "./overlay";
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
 import { MoreHorizontal } from "lucide-react";
 import { useI18n } from "./i18n";
 
@@ -8,17 +8,6 @@ export function CommentMoreActions({itemKey,commentId,onWithdraw,onNotice}:{
 }) {
   const {t}=useI18n();
   const menu=useRef<HTMLDetailsElement>(null);
-  useEffect(()=>{
-    const outside=(event:PointerEvent)=>{if(!menu.current?.contains(event.target as Node))menu.current?.removeAttribute("open");};
-    const escape=(event:KeyboardEvent)=>{
-      if(event.key!=="Escape" || !menu.current?.open)return;
-      event.preventDefault();event.stopPropagation();menu.current.open=false;
-      menu.current.querySelector("summary")?.focus();
-    };
-    document.addEventListener("pointerdown",outside);
-    document.addEventListener("keydown",escape,true);
-    return ()=>{document.removeEventListener("pointerdown",outside);document.removeEventListener("keydown",escape,true);};
-  },[]);
   return <OverlayMenu className="comment-more-actions" ref={menu} onToggle={event=>{
     const target=event.currentTarget;if(!target.open)return;
     const box=target.getBoundingClientRect(),area=target.closest(".detail-scroll")?.getBoundingClientRect();
