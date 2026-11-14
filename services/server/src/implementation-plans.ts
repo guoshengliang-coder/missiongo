@@ -190,6 +190,14 @@ export class ImplementationPlans {
     });
   }
 
+  commandRevisions(commandIds: readonly string[]): ReadonlyMap<string,string> {
+    if (!commandIds.length) return new Map();
+    const rows = this.db.connection.prepare(`SELECT command_id,revision FROM implementation_plan_approvals
+      WHERE command_id IN (SELECT value FROM json_each(?))`)
+      .all(JSON.stringify([...new Set(commandIds)])) as Array<{command_id:string;revision:string}>;
+    return new Map(rows.map(row => [row.command_id,row.revision]));
+  }
+
   commandRevision(commandId: string): string | undefined {
     return (this.db.connection.prepare("SELECT revision FROM implementation_plan_approvals WHERE command_id=?").get(commandId) as {revision:string}|undefined)?.revision;
   }

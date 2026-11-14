@@ -114,6 +114,21 @@ export class AgentSessionAttachments {
     ).all(commandId) as unknown as AttachmentRow[]).map(publicAttachment);
   }
 
+  /** Metadata only; ordering inside each command matches listForCommand. */
+  listForCommands(commandIds: readonly string[]): ReadonlyMap<string, readonly AgentSessionAttachment[]> {
+    const result = new Map<string, AgentSessionAttachment[]>();
+    if (!commandIds.length) return result;
+    const rows = this.database.connection.prepare(
+      `SELECT * FROM ${this.table} WHERE command_id IN (SELECT value FROM json_each(?)) ORDER BY created_at,rowid`,
+    ).all(JSON.stringify([...new Set(commandIds)])) as unknown as AttachmentRow[];
+    for (const row of rows) {
+      const attachments = result.get(row.command_id!) ?? [];
+      attachments.push(publicAttachment(row));
+      result.set(row.command_id!, attachments);
+    }
+    return result;
+  }
+
   listForSession(sessionId: string): readonly (AgentSessionAttachment & { readonly commandId: string })[] {
     return (this.database.connection.prepare(
       `SELECT * FROM ${this.table} WHERE session_id = ? AND command_id IS NOT NULL ORDER BY created_at, rowid`,
