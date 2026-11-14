@@ -222,7 +222,7 @@ import { ProductBadge } from "./product-badge";
 import { AgentSessionPanel } from "./agent-session-panel";
 import { AgentSessionConsole, useAgentConsoleDrafts } from "./agent-session-console";
 import { currentDispatchForStatus, dispatchIssueLabelKey, itemProgressKeys } from "./dispatch-attention";
-import { agentUnreadCounts } from "./agent-session-view";
+import { agentAttentionCounts, agentUnreadCounts } from "./agent-session-view";
 import { registerMissionGoWebMcp } from "./webmcp";
 import { AutoGrowTextarea } from "./auto-grow-textarea";
 import { useMediaQuery } from "./use-media-query";
@@ -969,6 +969,7 @@ export function App() {
   }, [bootstrapQuery.data?.user.id, consoleDrafts.clear]);
   const allAgentSessions = agentSessionsQuery.data?.sessions ?? [];
   const unreadCounts = useMemo(() => agentUnreadCounts(allAgentSessions), [allAgentSessions]);
+  const attentionCounts = useMemo(() => agentAttentionCounts(allAgentSessions), [allAgentSessions]);
 
   useEffect(() => {
     const wasOpen = previousAgentConsoleOpenRef.current;
@@ -1358,6 +1359,7 @@ export function App() {
             products={products}
             selectedProductId={selectedProductId}
             unreadCounts={agentConsoleOpen && products.length > 0 ? unreadCounts.byProduct : undefined}
+            attentionCounts={agentConsoleOpen ? attentionCounts : undefined}
             unreadCountsLoaded={agentSessionsQuery.data !== undefined}
             compactConsole={agentConsoleOpen && agentConsoleCompact}
             onSelect={(productId) => {
@@ -2184,11 +2186,12 @@ function ItemRow({
 }
 /** Product metadata uses the same combobox interaction and popup as forms. */
 function ProductSwitcher({
-  products, selectedProductId, unreadCounts, unreadCountsLoaded, compactConsole = false, onSelect,
+  products, selectedProductId, unreadCounts, attentionCounts, unreadCountsLoaded, compactConsole = false, onSelect,
 }: {
   products: readonly Product[];
   selectedProductId: string;
   unreadCounts: ReadonlyMap<string, number> | undefined;
+  attentionCounts: ReadonlyMap<string, number> | undefined;
   unreadCountsLoaded: boolean;
   compactConsole?: boolean;
   onSelect: (productId: string) => void;
@@ -2198,12 +2201,18 @@ function ProductSwitcher({
     const product = products.find(entry => entry.id === id);
     if (!product) return null;
     const unread = unreadCounts?.get(id) ?? 0;
+    const attention = attentionCounts?.get(id) ?? 0;
     return <>
       <ProductBadge product={product} />
       {expanded
-        ? <span className="product-switcher-option"><strong>{product.name}</strong><small>{product.keyPrefix}</small></span>
+        ? <span className="product-switcher-option"><strong>{product.name}</strong><small>{product.keyPrefix}</small>
+          {unreadCounts && unreadCountsLoaded && <span className="product-switcher-counts">
+            <span className={`product-switcher-count${attention > 0 ? " attention" : ""}`}>{t("agentConsoleProjectAttentionCount", { count: attention })}</span>
+            <span className={`product-switcher-count${unread > 0 ? " unread" : ""}`} aria-label={t("agentConsoleUnreadCount", { count: unread })}>{t("agentConsoleProjectUnreadCount", { count: unread })}</span>
+          </span>}
+        </span>
         : <span className="product-switcher-name">{product.name}</span>}
-      {unreadCounts && unreadCountsLoaded && (!compactConsole || expanded || unread > 0) && <small className="agent-unread-badge"
+      {!expanded && unreadCounts && unreadCountsLoaded && (!compactConsole || unread > 0) && <small className="agent-unread-badge"
         aria-label={t("agentConsoleUnreadCount", { count: unreadCounts.get(id) ?? 0 })}>
         {compactConsole && !expanded && unread > 99 ? "99+" : unread}
       </small>}
@@ -2212,6 +2221,7 @@ function ProductSwitcher({
   if (!products.length) return null;
   return <div className="product-switcher-wrap">
     <Select className="product-switcher" aria-label={t("selectedProduct")}
+      fitContent={Boolean(unreadCounts)}
       value={selectedProductId} onChange={event => onSelect(event.target.value)}
       renderValue={id => content(id, false)} renderOption={id => content(id, true)}>
       {products.map(product => <option key={product.id} value={product.id}>{product.name}</option>)}
