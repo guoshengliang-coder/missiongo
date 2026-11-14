@@ -1,6 +1,6 @@
-/** Local authorized-copy benchmark. Never opens the live database or contacts a provider.
+/** Benchmark an explicitly authorized immutable local backup without writing it or contacting a provider.
  * Build both sources first. Pass the same immutable backup to independent runs. */
-import {mkdtempSync,copyFileSync,chmodSync,rmSync,readFileSync,writeFileSync,mkdirSync} from "node:fs";
+import {mkdtempSync,copyFileSync,chmodSync,rmSync,readFileSync,mkdirSync,openSync,closeSync,fstatSync,lstatSync,writeSync,ftruncateSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join,resolve,dirname} from "node:path";
 import {pathToFileURL} from "node:url";
@@ -17,14 +17,28 @@ const samples=Number(args['--samples']??100),concurrency=Number(args['--concurre
 if(!Number.isInteger(samples)||samples<100||samples>1000||![1,4].includes(concurrency)||samples%concurrency)throw Error('Use 100..1000 samples divisible by concurrency (1|4)');
 const root=resolve(args['--source']),output=resolve(args['--output']);
 if(output===resolve(args['--database']))throw Error('Output must differ from the immutable input');
-mkdirSync(dirname(output),{recursive:true});writeFileSync(output,JSON.stringify({status:'incomplete'}));
 const evaluatedAt=args['--at']?Date.parse(args['--at']):Date.now();
 if(!Number.isFinite(evaluatedAt))throw Error('Invalid fixed evaluation time');
 // Keep age-based fields comparable across independent process/copy runs.
 const RealDate=Date;
-globalThis.Date=class extends RealDate { constructor(...values){if(values.length)super(...values);else super(evaluatedAt);}static now(){return evaluatedAt;} };
-const directory=mkdtempSync(join(tmpdir(),'session-list-copy-'));let app;
+mkdirSync(dirname(output),{recursive:true});
+// Exclusive creation refuses old reports, symlinks and hardlink aliases alike.
+// Keep this descriptor: a later path replacement must never redirect a write.
+const outputFd=openSync(output,'wx',0o600),outputIdentity=fstatSync(outputFd);
+const writeReport=value=>{
+ const current=lstatSync(output);
+ if(current.isSymbolicLink()||current.dev!==outputIdentity.dev||current.ino!==outputIdentity.ino)throw Error('Benchmark output changed during measurement');
+ const bytes=Buffer.from(JSON.stringify(value,null,2)+'\n');
+ let written=0;
+ while(written<bytes.length){const n=writeSync(outputFd,bytes,written,bytes.length-written,written);if(n===0)throw Error('Benchmark output write made no progress');written+=n;}
+ ftruncateSync(outputFd,bytes.length);
+};
+let directory,app,result;
 try{
+ try{
+ writeReport({status:'incomplete'});
+ globalThis.Date=class extends RealDate { constructor(...values){if(values.length)super(...values);else super(evaluatedAt);}static now(){return evaluatedAt;} };
+ directory=mkdtempSync(join(tmpdir(),'session-list-copy-'));
  const database=join(directory,'work.sqlite');copyFileSync(resolve(args['--database']),database);chmodSync(database,0o600);
  restrictToLoopback();
  const load=file=>import(pathToFileURL(join(root,'services/server/dist',file+'.js')));
@@ -48,6 +62,11 @@ try{
  active=false;const cpu=process.cpuUsage(used),sorted=[...values].sort((a,b)=>a-b);
  const paths=['agent-session-store.ts','agent-session-attachments.ts','command-source-message.ts','implementation-plans.ts','agent-settings.ts','app.ts'];const digest=createHash('sha256');
  for(const path of paths)digest.update(path).update(readFileSync(join(root,'services/server/src',path)));
- const result={status:'measured',revision:args['--revision'],sourceDigest:digest.digest('hex'),measuredAt:new RealDate().toISOString(),evaluatedAt:new RealDate(evaluatedAt).toISOString(),node:process.version,environment:'authorized static copy; local Fastify inject; loopback only; not production traffic',concurrency,firstListMs,firstListMeaning:'first list after startup; not OS cold',samples:values,medianMs:sorted[Math.ceil(samples*.5)-1],p95Ms:sorted[Math.ceil(samples*.95)-1],cpuMsPerRequest:(cpu.user+cpu.system)/1000/samples,queriesPerRequest:queries/samples,queryTiming:'statements prepared after startup; execution only',sqlMsPerRequest:sqlMs/samples,serializationMsPerRequest:serializationMs/samples,responseDigests:[...digests],responseBytes:[...sizes],sessionCounts:[...counts]};
- writeFileSync(output,JSON.stringify(result,null,2)+'\n');console.log(JSON.stringify({...result,samples:undefined,responseDigests:undefined}));
-}finally{if(app)await app.close();rmSync(directory,{recursive:true,force:true});}
+ result={status:'measured',revision:args['--revision'],sourceDigest:digest.digest('hex'),measuredAt:new RealDate().toISOString(),evaluatedAt:new RealDate(evaluatedAt).toISOString(),node:process.version,environment:'authorized static copy; local Fastify inject; loopback only; not production traffic',concurrency,firstListMs,firstListMeaning:'first list after startup; not OS cold',samples:values,medianMs:sorted[Math.ceil(samples*.5)-1],p95Ms:sorted[Math.ceil(samples*.95)-1],cpuMsPerRequest:(cpu.user+cpu.system)/1000/samples,queriesPerRequest:queries/samples,queryTiming:'statements prepared after startup; execution only',sqlMsPerRequest:sqlMs/samples,serializationMsPerRequest:serializationMs/samples,responseDigests:[...digests],responseBytes:[...sizes],sessionCounts:[...counts]};
+ }finally{
+  try{if(app)await app.close();}
+  finally{try{if(directory)rmSync(directory,{recursive:true,force:true});}finally{globalThis.Date=RealDate;}}
+ }
+ // Publish a completed report only after shutdown and private-copy cleanup succeed.
+ writeReport(result);console.log(JSON.stringify({...result,samples:undefined,responseDigests:undefined}));
+}finally{closeSync(outputFd);}
