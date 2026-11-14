@@ -695,6 +695,10 @@ export const api = {
     }),
   getAgentSendRequest: (sessionId: string, requestKey: string) =>
     request<{ command: AgentSessionCommand | null }>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/send-requests/${encodeURIComponent(requestKey)}`),
+  recoverAgentSessionPlan: (sessionId: string, documentId: string, revision: string, requestKey: string) =>
+    request<import("./types").DocumentPlanApprovalState>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/plan-approval/recover`, {
+      method: "POST", body: JSON.stringify({documentId,revision,requestKey}),
+    }),
   approveAgentSessionPlan: (sessionId: string, revision: string) =>
     request<AgentPlanApprovalResult>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/plan-approval`, {
       method: "POST", body: JSON.stringify({ revision }),

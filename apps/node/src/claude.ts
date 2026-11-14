@@ -142,7 +142,13 @@ export class ClaudeAdapter implements Adapter {
         if (request.subtype === "elicitation") this.add(confirmationCard(request, this.activeTurnId, { withdrawn: true }));
       }
       const cancelled = ["aborted_streaming", "aborted_tools"].includes(event.terminal_reason);
-      this.state.status = event.is_error && !cancelled ? "failed" : "idle";
+      const failed = Boolean(event.is_error) || String(event.subtype ?? "").startsWith("error") || event.terminal_reason === "blocking_limit";
+      if (!failed && !cancelled && typeof event.result === "string") {
+        const final=[...this.state.messages].reverse().find(m=>m.role==="agent" && !m.questions?.length
+          && m.turnId===this.activeTurnId && m.text===event.result);
+        if(final) this.add({...final,phase:"final_answer"});
+      }
+      this.state.status = failed && !cancelled ? "failed" : "idle";
       this.state.turnActive = false; this.state.waitingForInput = false; this.requests = [];
     }
     if (["assistant", "user"].includes(event.type)) {
@@ -233,6 +239,8 @@ export class ClaudeAdapter implements Adapter {
     }
     throw new Error("停止尚未确认：来源未报告原回合结束");
   }
+  private performanceTurns=new Set<string>();
+  performanceTurn(commandId:string){return this.performanceTurns.has(commandId)?commandId:undefined;}
   async deliver(command: Command, options?: { controlOnly: boolean }): Promise<void> {
     if (command.kind === "interrupt") { await this.stop(command); return; }
     const request = this.requests[0];
@@ -253,6 +261,8 @@ export class ClaudeAdapter implements Adapter {
     if (command.text.trim().startsWith("授权请求 ")) throw new InputRejected("授权请求已变化，请重新选择当前请求。");
     if (options?.controlOnly) throw new InputRejected("回复未发送：会话设置未确认，请重新应用设置后重试。");
     const ack = this.wait(command.id); this.send(command.id, command.text); await ack;
+    if(this.performanceTurns.size>=256)this.performanceTurns.delete(this.performanceTurns.values().next().value!);
+    this.performanceTurns.add(command.id);
   }
   async decide(): Promise<void> { throw new Error("Use the displayed Claude question to answer this request"); }
   async settings(settings: NonNullable<Session["desiredSettings"]>): Promise<void> {

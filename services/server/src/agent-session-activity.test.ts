@@ -302,3 +302,17 @@ it("hides legacy execution records from conversation and preview and ignores old
   expect(f.store.getForAccount("owner", f.sessionId).messages).toEqual([]);
   expect(f.store.listForAccount("owner")[0]?.latestMessage).toBeUndefined();
 });
+
+it.each(["", "answer-"])("links a command only to its own persisted user source (%s)", prefix => {
+  const f = fixture();
+  f.db.prepare(`INSERT INTO agent_session_commands(id,session_id,account_id,kind,text,status,created_at)
+    VALUES ('command-proof',?,'owner','message','Continue','delivered',?)`).run(f.sessionId, time(2));
+  const other = f.create("another-dispatch");
+  f.store.recordSnapshot({nodeId:"node",sessionId:other,status:"idle",messages:[
+    {sourceId:prefix+"command-proof",role:"user",text:"Continue",occurredAt:time(2)}]});
+  expect(f.store.commandById(f.sessionId,"command-proof")?.sourceMessageId).toBeUndefined();
+  f.snapshot({status:"idle",messages:[{sourceId:prefix+"command-proof",role:"agent",text:"Continue",occurredAt:time(2)}]});
+  expect(f.store.commandById(f.sessionId,"command-proof")?.sourceMessageId).toBeUndefined();
+  f.snapshot({status:"idle",messages:[{sourceId:prefix+"command-proof",role:"user",text:"Native wrapping differs",occurredAt:time(2)}]});
+  expect(f.store.commandById(f.sessionId,"command-proof")?.sourceMessageId).toBe(prefix+"command-proof");
+});

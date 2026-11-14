@@ -1,8 +1,8 @@
 import { useId, useState, type ReactNode } from "react";
 import { ChevronDown, CircleAlert, CircleCheck, CircleDot, CirclePause, LoaderCircle } from "lucide-react";
 import { useI18n } from "./i18n";
-import type { AgentSessionStatus } from "./types";
-import type { OutgoingReply } from "./agent-session-view";
+import type { AgentSessionCommand, AgentSessionStatus } from "./types";
+import type { OutgoingReply, ReplySourceState } from "./agent-session-view";
 
 export function isHistoryLimited(error: string | undefined): boolean {
   return error?.startsWith("codex_history_limited:") === true || error?.startsWith("agent_history_limited:") === true;
@@ -88,4 +88,17 @@ export function AgentRunDetails({ label, icon, status, children, actions }: {
     </div>
     <div id={diagnosticsId} className="agent-run-diagnostics" hidden={!open}>{children}</div>
   </div>;
+}
+
+/** Linkage diagnostics stay in the existing run details, never masquerade as execution. */
+export function AgentReplySourceNotice({command, state, onRevealFailure}: {
+  command: AgentSessionCommand | undefined; state: ReplySourceState; onRevealFailure?: (() => void) | undefined;
+}) {
+  const {t} = useI18n();
+  if (!command || command.kind !== "message") return null;
+  if (onRevealFailure && ["failed", "delivery_unknown"].includes(command.status)) {
+    return <button type="button" className="text-button" onClick={onRevealFailure}>{t("agentReplyLocateFailure")}</button>;
+  }
+  if (command.status !== "delivered" || state === "matched") return null;
+  return <p>{t(state === "outside_window" ? "agentReplyOutsideWindow" : "agentReplySourceUnmatched")}</p>;
 }

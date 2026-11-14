@@ -2740,5 +2740,38 @@ export class MissionGoDatabase {
       });
     }
 
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611130731").get()) {
+      this.transaction(() => {
+        this.connection.exec(`CREATE TABLE delivery_reviews (
+          id TEXT PRIMARY KEY,delivery_id TEXT NOT NULL REFERENCES merge_deliveries(id),
+          product_id TEXT NOT NULL,account_id TEXT NOT NULL,scope_digest TEXT NOT NULL,
+          request_key TEXT NOT NULL,session_id TEXT NOT NULL,dispatch_id TEXT NOT NULL,
+          config_json TEXT NOT NULL,created_at TEXT NOT NULL,closed_at TEXT,close_note TEXT,
+          UNIQUE(account_id,request_key),UNIQUE(delivery_id,scope_digest)
+        ) STRICT;
+        CREATE TRIGGER display_review_insert AFTER INSERT ON delivery_reviews BEGIN
+          INSERT OR IGNORE INTO merge_display_dirty(kind,id) VALUES ('delivery',NEW.delivery_id); END;
+        CREATE TRIGGER display_review_update AFTER UPDATE ON delivery_reviews BEGIN
+          INSERT OR IGNORE INTO merge_display_dirty(kind,id) VALUES ('delivery',NEW.delivery_id); END;`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202611130731,new Date().toISOString());
+      });
+    }
+
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611131303").get()) {
+      this.transaction(() => {
+        this.connection.exec(`CREATE TABLE document_plan_decisions (
+          account_id TEXT NOT NULL,identity_key TEXT NOT NULL,revision TEXT NOT NULL,document_id TEXT NOT NULL,
+          document_sha256 TEXT NOT NULL,session_id TEXT NOT NULL,node_id TEXT NOT NULL,session_ref TEXT NOT NULL,
+          display_source_id TEXT NOT NULL,acceptance_source_id TEXT NOT NULL,evidence_digest TEXT NOT NULL,
+          accepted_at TEXT NOT NULL,recorded_at TEXT NOT NULL,request_key TEXT NOT NULL,
+          PRIMARY KEY(account_id,identity_key,revision)
+        ) STRICT;
+        CREATE TRIGGER document_plan_decisions_immutable_update BEFORE UPDATE ON document_plan_decisions
+          BEGIN SELECT RAISE(ABORT,'document decision audit is immutable'); END;
+        CREATE TRIGGER document_plan_decisions_immutable_delete BEFORE DELETE ON document_plan_decisions
+          BEGIN SELECT RAISE(ABORT,'document decision audit is immutable'); END;`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202611131303,new Date().toISOString());
+      });
+    }
   }
 }

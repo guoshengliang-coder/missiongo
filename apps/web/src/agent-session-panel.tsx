@@ -1,3 +1,7 @@
+import { useConsolePerformance } from "./use-console-performance";
+import { observePerformanceReply } from "./console-performance";
+import { useTranscriptAnchor } from "./transcript-anchor";
+import { DocumentPlanRecovery } from "./document-plan-recovery";
 import { CommonCommandMenu, CommandMessageMenu, useCommandTarget, useCommonCommands } from "./common-commands";
 import { AgentSessionFailureNotice } from "./agent-session-failure-notice";
 import { DraftChatFile } from "./agent-chat-draft-file";
@@ -13,14 +17,15 @@ import { AgentOperationFeedback, useAgentOperationFeedback } from "./agent-opera
 import { AgentHistoryLoader, useAgentHistory } from "./agent-history";
 import { UnlinkedPlanRecord, InlinePlanApproval, inlinePlanTranscript, currentPlan } from "./agent-plan-content";
 import { AgentStopFeedback } from "./agent-stop-feedback.js";
-import { useState, useContext, useEffect, useLayoutEffect, useRef, type FormEvent } from "react";
+import { Fragment, useState, useContext, useEffect, useLayoutEffect, useRef, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, SessionStatusIcon, isHistoryLimited, AgentSessionError } from "./agent-session-feedback";
+import { AgentHistoryNotice, AgentReplyFeedback, AgentReplySourceNotice, AgentRunDetails, SessionStatusIcon, isHistoryLimited, AgentSessionError } from "./agent-session-feedback";
 import { MarkdownText } from "./markdown-text";
+import { ChatAttachments } from "./chat-attachments";
 import { AgentArtifactMarkdown } from "./agent-artifact-viewer";
 import { api } from "./api";
-import { activityLabelKey, latestAgentSessionCommand, sessionReplyPresentation, formatAgentMessageTime, isWithdrawnCard, replyMirrorArrived, replyBlockedLabelKey, runWaitingLabelKey, sessionInlineError, sessionStatusDetail } from "./agent-session-view";
+import { activityLabelKey, latestAgentSessionCommand, sessionReplyPresentation, formatAgentMessageTime, agentChatMessages, withOutgoingReply, outgoingReply, replySourceState, replyBlockedLabelKey, runWaitingLabelKey, sessionInlineError, sessionStatusDetail } from "./agent-session-view";
 import { hasPendingPermissionQuestion } from "@missiongo/domain";
 import { AgentSessionQuestions } from "./agent-session-questions";
 import { useI18n } from "./i18n";
@@ -52,6 +57,7 @@ function statusLabel(status: AgentSessionStatus, t: ReturnType<typeof useI18n>["
 export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: string; productId?: string }) {
   const { locale, t } = useI18n();
   const queryClient = useQueryClient();
+  useConsolePerformance(queryClient,undefined,sessionId);
   const commonCommands = useCommonCommands();
   const [open, setOpen] = useState(() => Boolean(commonCommands?.returning && commonCommands.activeTarget === `panel-${sessionId}`));
   const [localSender] = useState(() => new SessionSender());
@@ -75,16 +81,13 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
   } : undefined);
   const messagesRef = useRef<HTMLDivElement>(null);
   const history = useAgentHistory(sessionId, session.data, messagesRef);
+  useEffect(()=>{const observe=()=>{if(session.data)observePerformanceReply(session.data.id,session.data.performanceTurns??[],history.messages);};observe();document.addEventListener("visibilitychange",observe);return()=>document.removeEventListener("visibilitychange",observe);},[session.data,history.messages]);
   const followLatest = useRef(true);
   const previousHistoryRevision = useRef(history.revision);
   useLayoutEffect(() => { followLatest.current = true; }, [sessionId, open]);
-  useLayoutEffect(() => {
-    const prepended = previousHistoryRevision.current !== history.revision;
-    previousHistoryRevision.current = history.revision;
-    const box = messagesRef.current;
-    if (open && box && followLatest.current && !prepended) box.scrollTop = box.scrollHeight;
-  }, [open, sessionId, history.messages, history.revision, session.data?.implementationPlan]);
   const sendAttempt = useSendAttempt(sender, sessionId);
+  const previousSubmittedRef = useRef<string | undefined>(undefined);
+  const replySubmitted = Boolean(sendAttempt?.requestKey && previousSubmittedRef.current !== sendAttempt.requestKey);
   const sendLocked = sendAttemptLocked(sendAttempt);
   const inheritedFiles = sendAttempt && sendAttemptHasDraft(sendAttempt) ? sendAttempt.files : [];
   useEffect(() => {
@@ -164,7 +167,26 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
     if ((text || inheritedFiles.length) && !pending && !sendBusy) send.mutate({ sessionId, text });
   };
 
-  const planMessages = inlinePlanTranscript(history.messages.filter(message => !isWithdrawnCard(message)), session.data);
+  const sourceState = replySourceState(command, history.messages, session.data?.attachmentMessages ?? [], history.hasMore);
+  const outgoing = outgoingReply(command, sendLocked && sendAttempt && !sendAttempt.command
+    ? { text: sendAttempt.text, occurredAt: sendAttempt.occurredAt, status: "sending" } : undefined, sourceState !== "unmatched");
+  const planMessages = inlinePlanTranscript(withOutgoingReply(agentChatMessages(history.messages,
+    session.data?.attachmentMessages ?? []), outgoing), session.data);
+  const outgoingSignature = outgoing ? `${outgoing.commandId}:${outgoing.status}:${outgoing.text}` : "";
+  useLayoutEffect(() => {
+    const prepended = previousHistoryRevision.current !== history.revision;
+    previousHistoryRevision.current = history.revision;
+    previousSubmittedRef.current = sendAttempt?.requestKey;
+    if (replySubmitted) followLatest.current = true;
+    const box = messagesRef.current;
+    if (open && box && followLatest.current && !prepended) box.scrollTop = box.scrollHeight;
+  }, [open, sessionId, history.messages, history.revision, session.data?.implementationPlan, sendAttempt?.requestKey, replySubmitted, outgoingSignature]);
+  const rememberReadingPosition = useTranscriptAnchor(messagesRef, `${sessionId}:${open}`, followLatest.current || replySubmitted, history.revision,
+    history.messages, outgoingSignature);
+  const followLoadedImage = () => {
+    const box = messagesRef.current;
+    if (box && followLatest.current) box.scrollTop = box.scrollHeight;
+  };
   const commandTargetId = `panel-${sessionId}`;
   const commandUndo = useCommandTarget(commandTargetId,permissionReplyText((session.data?.currentRequests ?? session.data?.messages ?? []).flatMap(message => message.questions ?? []),reply),text=>setReply(permissionReplyText((session.data?.currentRequests ?? session.data?.messages ?? []).flatMap(message => message.questions ?? []),text,true)),!canReply || pending || sendBusy);
   return (
@@ -183,18 +205,19 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                 <AgentPlanRecords key={sessionId} session={session.data} />
                 <IntegrationDetails productId={productId} sessionId={sessionId} />
               </header>
-              {history.messages.length === 0 && (
+              {planMessages.messages.length === 0 && (
                 <p className="agent-session-muted">{t("agentSessionNoMessages")}</p>
               )}
               <div className="agent-session-messages" ref={messagesRef} onScroll={event => {
                 followLatest.current = event.currentTarget.scrollHeight - event.currentTarget.scrollTop - event.currentTarget.clientHeight <= 32;
+                rememberReadingPosition();
                 if (!history.error && event.currentTarget.scrollTop <= 48 && event.currentTarget.scrollHeight > event.currentTarget.clientHeight + 1) void history.loadMore();
               }}>
                 <AgentHistoryLoader history={history} />
                 <AgentProgressReports session={session.data} />
                 {planMessages.messages.map((message) => {
-                  return (
-                    <article key={message.id} data-agent-message-id={`${message.role}:${message.sourceId || message.id}`} className={`agent-session-message agent-session-message-${message.role}`}>
+                  const content = (
+                    <><article data-agent-message-id={`${message.role}:${message.sourceId || message.id}`} className={`agent-session-message agent-session-message-${message.role}`}>
                       <header className="agent-session-message-meta">
                         <small>{messageLabel(message.role, session.data.agentKind, t)}</small>
                         <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
@@ -202,6 +225,9 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                       </header>
                       {(message.role === "user" ? <MarkdownText>{permissionReplyText((session.data.currentRequests ?? session.data.messages).flatMap(message => message.questions ?? []), message.text)}</MarkdownText> : <AgentArtifactMarkdown text={message.text} sessionId={sessionId} messageId={message.id} />)}
                       {message.id === planMessages.planMessageId && <InlinePlanApproval onRequestChanges={()=>document.querySelector<HTMLTextAreaElement>(".agent-session-reply textarea")?.focus()} key={`${session.data.id}:${currentPlan(session.data)?.revision}`} session={session.data} blocked={questionPermission || pending || sendBusy} />}
+                      {message.attachmentData && <ChatAttachments sessionId={sessionId} attachments={message.attachmentData} onImageLoad={followLoadedImage} />}
+                      {!message.attachmentData && message.outgoing && command && command.id === message.outgoing.commandId && command.attachments
+                        && <ChatAttachments sessionId={sessionId} attachments={command.attachments} onImageLoad={followLoadedImage} />}
                       {message.questions && (
                         <AgentSessionQuestions
                           questions={message.questions}
@@ -214,9 +240,15 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                           onChange={setReply}
                         />                      )}
                     </article>
+                      {message.outgoing && <AgentReplyFeedback status={message.outgoing.status} cancelling={cancel.isPending}
+                        onEdit={message.outgoing.commandId && canReply ? () => cancel.mutate({sessionId, commandId: message.outgoing!.commandId!, text: message.text}) : undefined} />}
+                    </>
                   );
+                  return message.outgoing ? <div key={message.id} className="agent-session-outgoing">{content}</div>
+                    : <Fragment key={message.id}>{content}</Fragment>;
                 })}
               </div>
+              <DocumentPlanRecovery key={`recovery-${sessionId}-${session.data.implementationPlan?.revision}`} session={session.data} blocked={questionPermission || pending || sendBusy} />
               {!planMessages.planMessageId && <UnlinkedPlanRecord session={session.data} blocked={questionPermission || pending || sendBusy} />}
               <div className="agent-run-status" aria-label={t("agentRunFeedback")}>
                 <AgentOperationFeedback failures={feedback.failures} sessionId={sessionId} onDismiss={feedback.finish} />
@@ -226,6 +258,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                 ? t(questionPermission ? "agentRunApproval" : runWaitingLabelKey(session.data), { agent: agentName })
                 : backgroundOnly ? t("agentRunBackground") : session.data.status === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(session.data.status, t)}>
                 <p>{statusDetail}</p>
+                <AgentReplySourceNotice command={command} state={sourceState} />
                 {session.data.activities.length > 0 && (
                   <section className="agent-session-background" aria-label={t("agentSessionBackgroundTitle")}>
                     <strong>{t("agentSessionBackgroundCount", { count: session.data.activities.length })}</strong>
@@ -248,8 +281,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
               {codexFailed && <AgentSessionFailureNotice status={session.data.status} failure={session.data.failure} legacyError={session.data.lastError} />}
               <AgentHistoryNotice error={session.data.lastError} />
               {!codexFailed && inlineError && !isHistoryLimited(inlineError) && <AgentSessionError error={inlineError} onRetry={()=>void session.refetch()} />}
-              {command?.kind === "message" && !(command.status === "delivered"
-                && replyMirrorArrived(command, history.messages, session.data.attachmentMessages ?? [])) && (
+              {command?.kind === "message" && ["failed", "cancelled", "delivery_unknown"].includes(command.status) && (
                 <div className={`agent-session-command agent-session-command-${command.status}`}>
                   <span>
                     {command.status === "delivery_unknown" && t("agentSessionReplyDeliveryUnknown", { agent: agentName })}

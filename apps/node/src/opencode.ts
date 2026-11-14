@@ -36,7 +36,8 @@ export function openCodeMessages(entries: Wire[]): Message[] {
     const text = entry.type === "user" ? entry.text : (entry.content ?? []).filter((part: Wire) => part.type === "text").map((part: Wire) => part.text).join("\n\n");
     if (!entry.id || typeof text !== "string" || !text.trim() || !["user", "assistant"].includes(entry.type)) return [];
     const occurredAt = messageTimestamp(entry.time?.created ?? entry.createdAt);
-    return [{ ...(occurredAt ? { occurredAt } : {}), sourceId: entry.id, role: entry.type === "user" ? "user" : entry.agent === "plan" ? "plan" : "agent", text }];
+    return [{ ...(occurredAt ? { occurredAt } : {}), sourceId: entry.id, role: entry.type === "user" ? "user" : entry.agent === "plan" ? "plan" : "agent",
+      ...(entry.type === "assistant" && entry.time?.completed ? {phase:"final_answer"} : {}), text }];
   });
 }
 export class OpenCodeAdapter implements Adapter {

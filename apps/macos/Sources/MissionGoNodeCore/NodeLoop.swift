@@ -3,6 +3,7 @@ import Foundation
 
 /// The protocol calls the loop makes, so a test can stand in for the server.
 public protocol NodeAPI: Sendable {
+    func reportPerformance(sessionId: String, batch: ConsolePerformanceBatch) async throws
     func releaseObservationJournalScope() throws -> String?
     func uploadReleaseObservation(productId: String, repoPath: String, observation: ReleaseObservation) async throws
     func managedJobs() async throws -> [ManagedExecutionJob]
@@ -27,6 +28,7 @@ public protocol NodeAPI: Sendable {
 }
 
 public extension NodeAPI {
+    func reportPerformance(sessionId: String, batch: ConsolePerformanceBatch) async throws {}
     func waitForAgentControl(cursor: String?, waitMs: Int) async throws -> NodeControlChange? { nil }
     func permitDispatchStart(dispatchId: String) async throws -> Bool { true }
     func historyJobs() async throws -> [AgentHistoryJob] { [] }
@@ -215,6 +217,8 @@ public final class NodeLoop: @unchecked Sendable {
     public static let maximumExecutingSessions = 10
 
     private let sessionHealth = SessionHealthTracker()
+    private let performanceObserver = ConsolePerformanceObserver()
+    private let performanceUploader = ConsolePerformanceUploader()
     let managedRuntime: ManagedExecutionRuntime
     let managedExecutionEnabled: Bool
     let api: NodeAPI
@@ -741,6 +745,7 @@ public final class NodeLoop: @unchecked Sendable {
             )
             return
         }
+        performanceObserver.begin(session)
         var report: AgentSessionReport
         if let waiting = awaitingReport.current[session.id],
            session.command?.id == waiting.commandId,
@@ -824,6 +829,9 @@ public final class NodeLoop: @unchecked Sendable {
         }
         if let controlEpoch {
             report = await sessionSynchronization.controlReport(report, id: session.id, epoch: controlEpoch)
+        }
+        for batch in performanceObserver.observe(session, report: report) {
+            await performanceUploader.enqueue(sessionId: session.id, batch: batch, api: api)
         }
         await self.uploadAgentSessionReport(
             report, for: session, reported: reported, awaitingReport: awaitingReport,

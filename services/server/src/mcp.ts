@@ -1,3 +1,4 @@
+import { DocumentPlanApprovals } from "./document-plan-approval.js";
 import { releaseCandidatePage } from "./release-candidate-page.js";
 import { nonReleaseSupplementSchema } from "./non-release-evidence.js";
 import { deliveryValidationSchema, evidenceDigest } from "./non-release-evidence.js";
@@ -142,7 +143,7 @@ function accountAccess(ctx: ServerContext): McpAccountAccess {
  */
 export const WRITE_TOOLS_BY_TIER: Readonly<Record<McpWriteTier, readonly string[]>> = {
   none: [],
-  comments: ["request_collaboration_approval", "request_merge_reconciliation_approval", "request_managed_decision_approval", "request_merge_reconciliation", "apply_merge_reconciliation", "record_merge_combined_validation", "propose_merge_delivery", "refresh_merge_delivery", "report_merge_batch", "finish_merge_batch", "record_merge_integration", "prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "prepare_plan_document", "request_plan_approval", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_non_release_for_verification", "submit_for_verification", "submit_release_batch", "supplement_release_evidence", "supplement_non_release_evidence", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
+  comments: ["request_collaboration_approval", "request_merge_reconciliation_approval", "request_managed_decision_approval", "request_merge_reconciliation", "apply_merge_reconciliation", "record_merge_combined_validation", "propose_merge_delivery", "refresh_merge_delivery", "report_merge_batch", "finish_merge_batch", "record_merge_integration", "prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "prepare_plan_document", "request_plan_approval", "recover_plan_approval", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_non_release_for_verification", "submit_for_verification", "submit_release_batch", "supplement_release_evidence", "supplement_non_release_evidence", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
 };
 
 /**
@@ -363,6 +364,7 @@ export function createMissionGoMcpServer(
           supportsNonReleaseHandover: true,
           supportsNonReleaseEvidenceSupplement: true,
           supportsPlanDocuments: true,
+          supportsDocumentPlanApprovalRecovery: true,
           supportsMergeBatches: true,
           supportsMergeReconciliation: true,
           supportsReleaseBatchHandover: true,
@@ -1385,6 +1387,34 @@ export function createMissionGoMcpServer(
     // The native tool result resumes its own caller. Never start a second turn.
     const continuationQueued=false;
     return textResult({approved:true,revision,continuationQueued,...context},"The human approved this exact implementation plan. Native permissions are independent of this approval; only an explicitly selected Plan mode requires a separate transition before writes. Save this revision; do not ask again for this unchanged plan.");
+  });
+
+  server.registerTool(
+    "recover_plan_approval", {
+    title:"Recover an original document approval from authenticated source evidence",
+    description:"Explicitly verify one current fixed document against its original conversation's authenticated messages and complete saved history. Does not ask the human to approve again. Only the original account/conversation may use it; no caller supplied approval, transcript, SQL or arbitrary fields. Returns restored/already_approved or a specific evidence/scope/identity limitation. Never starts a turn, changes item status or publishes.",
+    inputSchema:z.object({itemKey:z.string().min(2).max(50),dispatchId:z.string().min(1).max(200).optional(),sessionId:z.string().uuid().optional(),
+      documentId:z.string().uuid(),revision:z.string().min(1).max(200),idempotencyKey:z.string().min(1).max(200)})
+      .strict().refine(x=>Boolean(x.dispatchId)!==Boolean(x.sessionId),"Use one original conversation identity."),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },async(input,ctx)=>{
+    requireWriteScope(ctx);
+    const access=accountAccess(ctx),key=requireItemAccess(ctx,store,input.itemKey);
+    const document=planDocuments.get(input.documentId,k=>requireItemAccess(ctx,store,k));
+    if(document.accountId!==access.accountId || !document.keys.includes(key)) throw new Error("Document identity or scope changed.");
+    for(const k of document.keys) {
+      const item=store.getWorkItem(k);assertBuilderExecution(store.database,item.id,access.accountId);
+      if(options.canOperate&&!options.canOperate(access.accountId,item.productId)) throw new Error("Product operation is not permitted.");
+    }
+    let id=input.sessionId;
+    if(input.dispatchId) {
+      assertDispatchExecution(store.database,input.dispatchId);
+      if(document.identity!==`dispatch:${input.dispatchId}`) throw new Error("Use the original document conversation.");
+      id=(store.database.connection.prepare("SELECT s.id FROM agent_sessions s JOIN dispatches d ON d.id=s.dispatch_id WHERE s.dispatch_id=? AND d.account_id=?")
+        .get(input.dispatchId,access.accountId) as {id:string}|undefined)?.id;
+    } else sessions.authorize(access,id!,key,k=>requireItemAccess(ctx,store,k));
+    if(!id) return textResult({code:"identity_unavailable"});
+    return textResult({...new DocumentPlanApprovals(store.database).recover(access.accountId,id,input.documentId,input.revision,input.idempotencyKey)});
   });
 
   server.registerTool(
