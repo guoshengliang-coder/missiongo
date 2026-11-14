@@ -1,6 +1,7 @@
 /** Read-only presentation facts. Never grants merge, recovery or release authority. */
 export type IntegrationPublication = "not_required" | "pending" | "partial" | "published" | "unknown";
 export interface MergeBatchPresentation {
+  ownedExtras?: {id:string;title:string;pendingArtifacts:string[];publication:IntegrationPublication;blocker?:string}[];
   entries: Record<string, {
     title: string;
     itemKeys?: string[];
@@ -9,6 +10,7 @@ export interface MergeBatchPresentation {
     requiredArtifacts: string[];
     noReleaseReason?: string | undefined;
     publication: IntegrationPublication;
+    handover?: { pending: boolean; blocker?: string };
     releases: { artifact: string; version: string; sourceCommit: string; checkedAt: string }[];
   }>;
 }
@@ -37,3 +39,6 @@ export interface PublicationScope {
   digest:string; candidates:PublicationScopeRow[]; requiredArtifacts:string[]; blockers:string[];
   exclusions?:{identity:string;title:string;reason:string}[];
 }
+
+/** Product-wide occupancy, without another account's conversation identity. */
+export interface IntegrationQueueOccupancy { active:boolean; sessionId?:string; requestKey?:string; }

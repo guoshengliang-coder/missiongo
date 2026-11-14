@@ -61,6 +61,14 @@ export class MissionGoDatabase {
     }
   }
 
+  /** Deferred read transaction: related queue facts share one SQLite snapshot. */
+  readSnapshot<T>(read: () => T): T {
+    if (this.transactionDepth) return read();
+    this.connection.exec("BEGIN;");
+    try { const result = read(); this.connection.exec("COMMIT;"); return result; }
+    catch (error) { this.connection.exec("ROLLBACK;"); throw error; }
+  }
+
   private readonly projectionWriters = new Map<string, () => void>();
 
   /** Writers run before the outer commit, including single-statement writes.
@@ -2773,5 +2781,17 @@ export class MissionGoDatabase {
         this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202611131303,new Date().toISOString());
       });
     }
+
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611140247").get()) {
+      this.transaction(() => {
+        this.connection.exec(`ALTER TABLE merge_delivery_projection ADD COLUMN processing_batch_id TEXT;
+          CREATE INDEX integration_queue_available ON merge_delivery_projection(product_id,account_id,json_extract(data_json,'$.queue.stage'),sequence DESC) WHERE processing_batch_id IS NULL;
+          CREATE INDEX integration_queue_owner ON merge_delivery_projection(processing_batch_id) WHERE processing_batch_id IS NOT NULL;
+          INSERT OR IGNORE INTO merge_display_dirty(kind,id) SELECT 'delivery',id FROM merge_deliveries;
+          INSERT OR IGNORE INTO merge_display_dirty(kind,id) SELECT 'batch',id FROM merge_batches;`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202611140247,new Date().toISOString());
+      });
+    }
+
   }
 }

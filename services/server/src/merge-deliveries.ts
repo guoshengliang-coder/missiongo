@@ -306,6 +306,27 @@ export class MergeDeliveries {
     // Preserve receipts, while separating obsolete rounds and unresolved evidence.
     return {stage:historical&&!currentPending&&merge?"history":historical||blocker?"review":complete?"history":"release",...(historical?{resolution:"historical" as const}:complete&&!d.requiredArtifacts.length?{resolution:"not_required" as const}:{}),...(merge?{merge}:{}),releases,...(blocker?{blocker}:{}),publishedArtifacts:[...published],pendingArtifacts:pending,records};
   }
+  /** Execution ownership is independent of immutable merge provenance and phase. */
+  private processingBatch(d:Delivery,q:IntegrationQueueFacts|undefined):string|undefined {
+    const active=this.displayRead("queue-owner:"+d.productId,()=>{
+      const row=this.db.connection.prepare("SELECT data_json FROM merge_batches WHERE product_id=? AND state='active'").get(d.productId) as {data_json:string}|undefined;
+      return row?JSON.parse(row.data_json) as Batch:undefined;
+    });
+    if(!active)return;
+    if(active.selection.some(row=>row.id===d.id&&row.revision===d.revision))return active.id;
+    if(!active.publish)return;
+    return active.publicationScope?.candidates.some(c=>this.candidateMatchesDelivery(d,c,q))?active.id:undefined;
+  }
+  private candidateMatchesDelivery(d:Delivery,c:PublicationScopeRow,q?:IntegrationQueueFacts):boolean {
+    if(c.deliveryId)return c.deliveryId===d.id&&c.expectedRevision===d.revision;
+    if(!c.completion||!c.itemKey||!d.itemKeys.includes(c.itemKey))return false;
+    const exact=q?.records.some(r=>r.itemKey===c.itemKey&&r.developmentEventId===c.developmentEventId&&r.roundKey===c.roundKey)
+      // A changed anchor on the same frozen event remains the original batch's responsibility.
+      || this.store.getDeliveryRecords(c.itemKey,true).some(r=>r.id===c.developmentEventId);
+    if(!exact)return false;
+    try{return sameCompletion(normalizeCompletion({completion:c.completion}),{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`});}catch{return false;}
+  }
+
   private reviewScope(d:Delivery,q:IntegrationQueueFacts) {
     let scope:string;try{scope=this.deliveryScope(d);}catch{scope="unavailable";}
     return digest({revision:d.revision,scope,...q,records:q.records.map(({expectedRevision:_revision,...r})=>r)});
@@ -336,6 +357,7 @@ export class MergeDeliveries {
       if(replay&&(replay.delivery_id!==id||replay.scope_digest!==scopeDigest||replay.config_json!==JSON.stringify(config)))throw changed();
       const previous=this.db.connection.prepare("SELECT session_id FROM delivery_reviews WHERE delivery_id=? AND scope_digest=?").get(id,scopeDigest) as {session_id:string}|undefined;
       if(previous)return this.reviewContext(accountId,id);
+      if(this.processingBatch(d,context.queue))throw conflict("delivery_integration_active","该交付仍由活动集成批次处理，请进入原集成会话核对。");
       const prompt=["本次是交付异常的只读核查项目会话，不是工作条目派单。",
         "不领取或创建条目，不修改代码、条目字段或评论，不合并、发布、补写交接证据或代替人工验收；不自动启动其他会话。",
         "先核查真实Git集成、发布范围和正式交接；给出事实依据、结论、缺失证据及需要用户决定的具体事项。若需要写操作，先说明范围并等待新的授权。",
@@ -367,16 +389,22 @@ export class MergeDeliveries {
     });
   }
   queue(productId:string,accountId:string,stage:"all"|"merge"|"release"|"review"|"reviewed"|"history"="all",beforeSequence?:number,limit=50) {
+    return this.db.readSnapshot(()=>{
     const page=(kind:string)=>this.db.connection.prepare(`SELECT sequence,data_json FROM merge_delivery_projection WHERE product_id=? AND account_id=?
+      ${["history","reviewed"].includes(kind)?"":"AND processing_batch_id IS NULL"}
       AND json_extract(data_json,'$.queue.stage')=?
       ${kind==='reviewed'?"AND json_extract(data_json,'$.queue.review.closedAt') IS NOT NULL":"AND json_extract(data_json,'$.queue.review.closedAt') IS NULL"}
       AND (? IS NULL OR sequence<?) ORDER BY sequence DESC LIMIT ?`)
       .all(productId,accountId,kind==="reviewed"?"review":kind,beforeSequence??null,beforeSequence??null,limit) as {sequence:number;data_json:string}[];
     const rows=(stage==="all"?[...page("merge"),...page("release")].sort((a,b)=>b.sequence-a.sequence).slice(0,limit):page(stage));
     const counts=Object.fromEntries((this.db.connection.prepare(`SELECT CASE WHEN json_extract(data_json,'$.queue.review.closedAt') IS NOT NULL THEN 'reviewed' ELSE json_extract(data_json,'$.queue.stage') END AS stage,count(*) AS count FROM merge_delivery_projection
-      WHERE product_id=? AND account_id=? AND json_extract(data_json,'$.queue.stage') IS NOT NULL GROUP BY stage`).all(productId,accountId) as {stage:string;count:number}[]).map(r=>[r.stage,r.count]));
-    return {deliveries:rows.map(r=>JSON.parse(r.data_json) as ReturnType<MergeDeliveries["view"]>&{queue:IntegrationQueueFacts}),counts,
+      WHERE product_id=? AND account_id=? AND json_extract(data_json,'$.queue.stage') IS NOT NULL
+      AND (processing_batch_id IS NULL OR json_extract(data_json,'$.queue.stage')='history' OR json_extract(data_json,'$.queue.review.closedAt') IS NOT NULL) GROUP BY stage`).all(productId,accountId) as {stage:string;count:number}[]).map(r=>[r.stage,r.count]));
+    const active=this.db.connection.prepare("SELECT account_id,request_key,json_extract(data_json,'$.sessionId') AS session_id FROM merge_batches WHERE product_id=? AND state='active'").get(productId) as {account_id:string;request_key:string;session_id:string}|undefined;
+    const occupancy={active:Boolean(active),...(active?.account_id===accountId?{sessionId:active.session_id,requestKey:active.request_key}:{})};
+    return {occupancy,deliveries:rows.map(r=>JSON.parse(r.data_json) as ReturnType<MergeDeliveries["view"]>&{queue:IntegrationQueueFacts}),counts,
       ...(rows.length===limit?{nextBeforeSequence:rows.at(-1)!.sequence}:{})};
+    });
   }
   private selected(accountId:string,productId:string,selection:{id:string;revision:string}[]) {
     if(!selection.length||selection.length>20||new Set(selection.map(s=>s.id)).size!==selection.length)throw changed();
@@ -639,7 +667,26 @@ export class MergeDeliveries {
       if(change.kind==="session")for(const row of this.db.connection.prepare("SELECT id FROM merge_batches WHERE json_extract(data_json,'$.sessionId')=?").all(change.id) as {id:string}[])batches.add(row.id);
     }
     this.db.connection.prepare("DELETE FROM merge_display_dirty").run();
-    for(const id of batches)for(const row of this.db.connection.prepare("SELECT value AS id FROM merge_batches,json_each(data_json,'$.deliveries') WHERE merge_batches.id=?").all(id) as {id:string}[])deliveries.add(row.id);
+    const scopeBatches=new Map<string,Set<string>>();
+    const linkScope=(deliveryId:string,batchId:string)=>{
+      if(!scopeBatches.has(deliveryId))scopeBatches.set(deliveryId,new Set());
+      scopeBatches.get(deliveryId)!.add(batchId);
+    };
+    for(const id of batches) {
+      // Release previous ownership on finish/recovery, including unselected coverage.
+      for(const row of this.db.connection.prepare("SELECT id FROM merge_delivery_projection WHERE processing_batch_id=?").all(id) as {id:string}[])deliveries.add(row.id);
+      const row=this.db.connection.prepare("SELECT data_json FROM merge_batches WHERE id=?").get(id) as {data_json:string}|undefined;
+      if(!row)continue;
+      const b=JSON.parse(row.data_json) as Batch;
+      for(const deliveryId of b.deliveries){deliveries.add(deliveryId);if(b.references?.[deliveryId])linkScope(deliveryId,b.id);}
+      for(const c of b.publicationScope?.candidates??[]) {
+        if(c.deliveryId){deliveries.add(c.deliveryId);linkScope(c.deliveryId,b.id);}
+        if(c.itemKey)for(const linked of this.db.connection.prepare("SELECT delivery_id AS id FROM merge_display_dependencies WHERE kind='item' AND id=?").all(this.store.workItemId(c.itemKey)) as {id:string}[]) {
+          deliveries.add(linked.id);
+          if(this.candidateMatchesDelivery(this.read<Delivery>("merge_deliveries",linked.id),c))linkScope(linked.id,b.id);
+        }
+      }
+    }
     const sessions=new Map<string,{productId:string;accountId:string;sessionId:string}>();
     const remember=(productId:string,accountId:string,sessionId:string)=>{
       sessions.set(JSON.stringify([productId,accountId,sessionId]),{productId,accountId,sessionId});
@@ -650,9 +697,10 @@ export class MergeDeliveries {
     for(const sessionId of activitySessions)for(const row of this.db.connection.prepare("SELECT product_id,account_id FROM merge_display_activity_scopes WHERE session_id=?").all(sessionId) as {product_id:string;account_id:string}[])remember(row.product_id,row.account_id,sessionId);
     for(const id of deliveries) {
       const activityChange=activityOnly.has(id) && !changes.some(change=>change.kind!=="activity");
-      const previous=this.db.connection.prepare("SELECT product_id,account_id,session_id,batch_id FROM merge_delivery_projection WHERE id=?").get(id) as {product_id:string;account_id:string;session_id:string;batch_id:string|null}|undefined;
-      if(previous){remember(previous.product_id,previous.account_id,previous.session_id);if(previous.batch_id&&!activityChange)batches.add(previous.batch_id);}
+      const previous=this.db.connection.prepare("SELECT product_id,account_id,session_id,batch_id,processing_batch_id FROM merge_delivery_projection WHERE id=?").get(id) as {product_id:string;account_id:string;session_id:string;batch_id:string|null;processing_batch_id:string|null}|undefined;
+      if(previous){remember(previous.product_id,previous.account_id,previous.session_id);if(previous.batch_id&&!activityChange)batches.add(previous.batch_id);if(previous.processing_batch_id&&!activityChange)batches.add(previous.processing_batch_id);}
       const source=this.db.connection.prepare("SELECT rowid AS sequence,data_json FROM merge_deliveries WHERE id=?").get(id) as {sequence:number;data_json:string}|undefined;
+      for(const scope of this.db.connection.prepare("SELECT id FROM merge_display_dependencies WHERE delivery_id=? AND kind='scope_batch'").all(id) as {id:string}[]){linkScope(id,scope.id);batches.add(scope.id);}
       this.db.connection.prepare("DELETE FROM merge_display_dependencies WHERE delivery_id=?").run(id);
       if(!source){this.db.connection.prepare("DELETE FROM merge_delivery_projection WHERE id=?").run(id);continue;}
       const d=JSON.parse(source.data_json) as Delivery,view=this.view(d);
@@ -664,13 +712,15 @@ export class MergeDeliveries {
         freshBlocker=d.evidence.checks!=="passed" ? d.evidence.checks : d.evidence.mergeable!=="clean" ? d.evidence.mergeable
           : d.itemKeys.some(key=>collaborationBlockers(this.db,this.store.workItemId(key))>0) ? "dependency" : undefined;
       }
-      const time=Date.parse(d.evidence.checkedAt);
-      this.db.connection.prepare(`INSERT OR REPLACE INTO merge_delivery_projection VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-        d.id,d.productId,d.accountId,d.sessionId,d.batchId??null,source.sequence,Number(visible),Number(attention),JSON.stringify({...view,queue:this.queueFacts(d,view.blocker)}),
-        d.state==="batched"||d.evidence.head!==d.head?null:time-30_000,d.state==="batched"||d.evidence.head!==d.head?null:time+300_000,freshBlocker??null,d.activity);
+      const time=Date.parse(d.evidence.checkedAt),queue=this.queueFacts(d,view.blocker),owner=this.processingBatch(d,queue);
+      this.db.connection.prepare(`INSERT OR REPLACE INTO merge_delivery_projection VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+        d.id,d.productId,d.accountId,d.sessionId,d.batchId??null,source.sequence,Number(visible),Number(attention),JSON.stringify({...view,queue}),
+        d.state==="batched"||d.evidence.head!==d.head?null:time-30_000,d.state==="batched"||d.evidence.head!==d.head?null:time+300_000,freshBlocker??null,d.activity,owner??null);
       const link=(kind:string,key:string)=>this.db.connection.prepare("INSERT OR IGNORE INTO merge_display_dependencies VALUES (?,?,?)").run(id,kind,key);
       link("session",d.sessionId);link("account",d.accountId);link("product",d.productId);
       if(d.batchId){if(!activityChange)batches.add(d.batchId);link("batch",d.batchId);}
+      if(owner){link("batch",owner);if(owner!==d.batchId)linkScope(d.id,owner);if(!activityChange)batches.add(owner);}
+      for(const batchId of scopeBatches.get(d.id)??[]){link("scope_batch",batchId);if(!activityChange)batches.add(batchId);}
       for(const key of d.itemKeys)link("item",this.store.workItemId(key));
       if(d.identity.dispatchId)link("dispatch",d.identity.dispatchId);
       for(const sessionId of [d.sessionId]) {
@@ -771,7 +821,26 @@ export class MergeDeliveries {
    * item status, free-form progress, or the fact that a batch was finished. */
   private presentation(b:Batch,ignoreActivity=false):MergeBatchPresentation {
     return this.displayRead("presentation:"+b.id+":"+ignoreActivity,()=>{
-    return {entries:Object.fromEntries(b.deliveries.map(id=>{
+    const ownedExtras=(b.publicationScope?.candidates??[]).filter(c=>!c.selected).map(c=>{
+      const required=c.requiredArtifacts??[],published=new Set<string>();let blocker:string|undefined;
+      if(c.itemKey) {
+        const record=this.store.getDeliveryRecords(c.itemKey,true).find(r=>r.id===c.developmentEventId);
+        let exact=false;try{exact=Boolean(record?.completion&&c.completion&&sameCompletion(record.completion,normalizeCompletion({completion:c.completion})));}catch{/* Invalid scope is reported below. */}
+        if(!record||!exact||record.roundKey!==c.roundKey)blocker="发布交付依据已变化，请核对原批次范围。";
+        else {
+          for(const release of record.releases)published.add(release.artifact);
+          if(!record.published&&(record.roundKey!==deliveryRound(this.db,this.store.workItemId(c.itemKey))||!["development_complete","pending_verification","done"].includes(this.store.getWorkItem(c.itemKey).status)))blocker="条目处理轮次或状态已变化，请核对原批次范围。";
+        }
+      } else if(c.deliveryId) {
+        const d=this.read<Delivery>("merge_deliveries",c.deliveryId),q=this.baseQueueFacts(d);
+        for(const artifact of q?.publishedArtifacts??[])published.add(artifact);
+        blocker=d.revision!==c.expectedRevision?"交付版本已变化，请核对原批次范围。":q?.blocker;
+      } else blocker="缺少精确交付身份，请核对原批次范围。";
+      const pendingArtifacts=required.filter(a=>!published.has(a));
+      const publication=blocker?"unknown" as const:!pendingArtifacts.length?"published" as const:published.size?"partial" as const:"pending" as const;
+      return {id:c.deliveryId??c.identity,title:c.title,pendingArtifacts,publication,...(blocker?{blocker}:{})};
+    });
+    return {...(ownedExtras.length?{ownedExtras}:{}),entries:Object.fromEntries(b.deliveries.map(id=>{
       const d=this.read<Delivery>("merge_deliveries",id),url=`${d.repository}/pull/${d.pullRequest}`;
       const releases:MergeBatchPresentation["entries"][string]["releases"]=[];
       let publishedItems=0,knownItems=0;
@@ -803,7 +872,8 @@ export class MergeDeliveries {
         if(!releases.some(r=>r.artifact===release.artifact && r.sourceCommit===release.sourceCommit)) releases.push({...release,checkedAt:receipt.at});
       const standalonePublished=!d.itemKeys.length && d.requiredArtifacts.every(a=>releases.some(r=>r.artifact===a));
       const publication=!d.requiredArtifacts.length&&d.noReleaseReason?"not_required":!d.itemKeys.length?(standalonePublished?"published":releases.length?"partial":"pending"):publishedItems===d.itemKeys.length?"published":publishedItems?"partial":knownItems===d.itemKeys.length?"pending":"unknown";
-      return [id,{itemKeys:d.itemKeys,title:d.displayTitle??(d.itemKeys.length?d.itemKeys.map(key=>this.store.getWorkItem(key).title).join(" / "):d.summary),summary:d.summary,pullRequestUrl:url,
+      const facts=this.baseQueueFacts(d),handover=facts?.stage==="review"?{pending:true,...(facts.blocker?{blocker:facts.blocker}:{})}:undefined;
+      return [id,{...(handover?{handover}:{}),itemKeys:d.itemKeys,title:d.displayTitle??(d.itemKeys.length?d.itemKeys.map(key=>this.store.getWorkItem(key).title).join(" / "):d.summary),summary:d.summary,pullRequestUrl:url,
         requiredArtifacts:d.requiredArtifacts,noReleaseReason:d.noReleaseReason,publication,releases}];
     }))};
     });

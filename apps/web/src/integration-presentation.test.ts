@@ -24,3 +24,12 @@ describe("integration reading outcomes",()=>{
     expect(integrationOrder(b)).toEqual(["0","1"]);expect(integrationStage(b,"0")).toBe("queued");
   });
 });
+
+
+it("AND-520 includes extra publication responsibilities in the overall outcome",()=>{
+  const b=batch(["published"]);
+  b.presentation!.ownedExtras=[{id:"extra",title:"Frozen extra",pendingArtifacts:["web"],publication:"pending"}];
+  expect(integrationPublication(b)).toBe("partial");
+  b.presentation!.ownedExtras[0]!.publication="unknown";expect(integrationPublication(b)).toBe("partial");
+  b.presentation!.ownedExtras[0]!.publication="published";expect(integrationPublication(b)).toBe("published");
+});
