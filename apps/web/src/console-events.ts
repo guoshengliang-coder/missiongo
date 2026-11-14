@@ -3,7 +3,7 @@ import { useEffect, useRef, useSyncExternalStore } from "react";
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import { consoleRefresh } from "./console-refresh";
 import { changedSessionIdentities, type SessionIdentityPage } from "./session-identities";
-import { foregroundSyncTargets } from "./foreground-sync";
+import { FOREGROUND_SYNC_STALE_MS, foregroundSyncTargets } from "./foreground-sync";
 import { checkReleaseStatus } from "./release-status";
 
 export type ChangeResource = ConsoleChangeResource;
@@ -149,10 +149,14 @@ export function startConsoleEvents(client:QueryClient, fetcher:typeof fetch=(inp
   if(!connected&&!connecting)void connect();
  };
  const offline=()=>{generation++;connecting=false;connected=false;if(timer)clearTimeout(timer);timer=undefined;controller?.abort();setConnection("disconnected");};
+ const listReturn=()=>refresh.add(client.getQueryCache().findAll({predicate:q=>q.queryKey[0]==="agent-sessions" && q.isActive()
+  && (q.state.isInvalidated || q.state.dataUpdatedAt>0 && Date.now()-q.state.dataUpdatedAt>=FOREGROUND_SYNC_STALE_MS)}),true);
  document.addEventListener("visibilitychange",foreground);window.addEventListener("online",foreground);window.addEventListener("offline",offline);window.addEventListener("focus",foreground);
+ window.addEventListener("missiongo:console-list-return",listReturn);
  void connect();
  return ()=>{stopped=true;unsubscribeIdentities();generation++;controller?.abort();if(timer)clearTimeout(timer);refresh.stop();
-  document.removeEventListener("visibilitychange",foreground);window.removeEventListener("online",foreground);window.removeEventListener("offline",offline);window.removeEventListener("focus",foreground);};
+  document.removeEventListener("visibilitychange",foreground);window.removeEventListener("online",foreground);window.removeEventListener("offline",offline);window.removeEventListener("focus",foreground);
+  window.removeEventListener("missiongo:console-list-return",listReturn);};
 }
 export function useConsoleEvents(client:QueryClient,accountId:string|undefined,initialCursor?:string) {
  const seed=useRef(initialCursor);seed.current=initialCursor;

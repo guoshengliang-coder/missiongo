@@ -973,8 +973,10 @@ export function App() {
   useEffect(() => {
     const wasOpen = previousAgentConsoleOpenRef.current;
     previousAgentConsoleOpenRef.current = agentConsoleOpen;
-    if (wasOpen && !agentConsoleOpen) {
-      void queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
+    if (!wasOpen && agentConsoleOpen) {
+      // Paint the shared account cache immediately; SSE's key scheduler owns
+      // any stale revalidation, including a read already in flight.
+      window.dispatchEvent(new Event("missiongo:console-list-return"));
     }
   }, [agentConsoleOpen, queryClient]);
 

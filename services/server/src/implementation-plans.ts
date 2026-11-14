@@ -5,6 +5,10 @@ import type { MissionGoDatabase } from "./storage/database.js";
 
 export const planDigest = (value: unknown): string => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 interface ApprovalRow { revision: string; plan_hash: string; scope_json: string; command_id: string | null }
+export interface ImplementationPlanState {
+  revision: string; approved: boolean; valid: boolean;
+  origin?: "native" | "attention"; approvedAt?: string; requestedAt?: string; nativeSourceId?: string;
+}
 
 /** Approval facts are written only by an authenticated human route, native elicitation response,
  * or an exact native implementation instruction bound to the original pending plan.
@@ -53,6 +57,64 @@ export class ImplementationPlans {
       return (latest?.id ?? null)===round.eventId;
     }));
     return {...proposal,...(approval ? {approvedAt:approval.approved_at} : {}),revision:row.revision,approved:this.approved(accountId,identity,row.revision),valid:this.scope(proposal.keys)===row.scope_json && (Boolean(approval)||roundsMatch)};
+  }
+
+  /** Request-local list metadata. Never fetch plan text or retain a permission/
+   * scope result across requests; the approving action still uses proposal(). */
+  listStates(accountId: string, identities: readonly string[]): ReadonlyMap<string, ImplementationPlanState> {
+    const result = new Map<string, ImplementationPlanState>();
+    if (!identities.length) return result;
+    const rows = this.db.connection.prepare(`SELECT r.identity_key,r.revision,r.scope_json,
+      json_extract(r.proposal_json,'$.keys') AS keys_json,
+      json_extract(r.proposal_json,'$.documentId') AS document_id,
+      json_extract(r.proposal_json,'$.origin') AS origin,
+      json_extract(r.proposal_json,'$.requestedAt') AS requested_at,
+      json_extract(r.proposal_json,'$.nativeSourceId') AS native_source_id,
+      a.approved_at,a.plan_hash,a.scope_json AS approved_scope
+      FROM implementation_plan_requests r LEFT JOIN implementation_plan_approvals a
+        ON a.account_id=r.account_id AND a.identity_key=r.identity_key AND a.revision=r.revision
+      WHERE r.account_id=? AND r.identity_key IN (SELECT value FROM json_each(?)) AND r.proposal_json IS NOT NULL`)
+      .all(accountId, JSON.stringify([...new Set(identities)])) as unknown as Array<{
+        identity_key:string; revision:string; scope_json:string|null; keys_json:string; document_id:string|null;
+        origin:ImplementationPlanState["origin"]|null; requested_at:string|null; native_source_id:string|null;
+        approved_at:string|null; plan_hash:string|null; approved_scope:string|null;
+      }>;
+    if (!rows.length) return result;
+    const entries = rows.map(row => ({ row, keys: JSON.parse(row.keys_json) as string[],
+      approvedKeys: row.approved_scope ? (JSON.parse(row.approved_scope) as {key:string}[]).map(entry => entry.key) : [] }));
+    const documentIds = [...new Set(rows.flatMap(row => row.document_id ? [row.document_id] : []))];
+    const documents = new Map((documentIds.length ? this.db.connection.prepare(`SELECT id,json_extract(document_json,'$.rounds') AS rounds_json
+      FROM plan_documents WHERE id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(documentIds)) as {id:string;rounds_json:string}[] : [])
+      .map(row => [row.id, JSON.parse(row.rounds_json) as {key:string;eventId:string|null}[]]));
+    const keys = [...new Set([...entries.flatMap(entry => [...entry.keys,...entry.approvedKeys]),
+      ...[...documents.values()].flatMap(rounds => rounds.map(round => round.key))])];
+    const facts = new Map((keys.length ? this.db.connection.prepare(`SELECT w.item_key,w.content_version,
+      (SELECT e.id FROM work_item_events e WHERE e.item_id=w.id AND e.history_source_key IS NULL
+        AND (e.event_type='builder_changed' AND json_extract(e.payload_json,'$.handoverId') IS NOT NULL
+          OR e.event_type='status_changed' AND (e.to_status IN ('cancelled','done') OR e.to_status='ready'
+            AND COALESCE(json_extract(e.payload_json,'$.reason'),'')!='verification_failed'))
+        ORDER BY e.timeline_seq DESC LIMIT 1) AS boundary,
+      (SELECT e.id FROM work_item_events e WHERE e.item_id=w.id AND e.history_source_key IS NULL AND e.event_type='status_changed'
+        AND json_extract(e.payload_json,'$.reason')='verification_failed' ORDER BY e.timeline_seq DESC LIMIT 1) AS round
+      FROM work_items w WHERE w.item_key IN (SELECT value FROM json_each(?))`).all(JSON.stringify(keys)) as {
+        item_key:string;content_version:number;boundary:string|null;round:string|null;
+      }[] : []).map(row => [row.item_key,row]));
+    const scope = (selected: readonly string[]) => JSON.stringify([...new Set(selected)].sort().map(key => {
+      const fact = facts.get(key);
+      if (!fact) throw conflict("implementation_plan_changed", "The approved item no longer exists.");
+      return {key,contentVersion:fact.content_version,boundary:fact.boundary};
+    }));
+    for (const {row,keys,approvedKeys} of entries) {
+      const rounds = row.document_id ? documents.get(row.document_id) : undefined;
+      const roundsMatch = !row.document_id || Boolean(rounds?.every(round => (facts.get(round.key)?.round ?? null) === round.eventId));
+      result.set(row.identity_key, {revision:row.revision,
+        approved: row.plan_hash === row.revision && row.approved_scope === scope(approvedKeys),
+        valid: scope(keys) === row.scope_json && (Boolean(row.approved_at) || roundsMatch),
+        ...(row.origin ? {origin:row.origin} : {}), ...(row.approved_at ? {approvedAt:row.approved_at} : {}),
+        ...(row.requested_at ? {requestedAt:row.requested_at} : {}), ...(row.native_source_id ? {nativeSourceId:row.native_source_id} : {}),
+      });
+    }
+    return result;
   }
 
   assertRequest(accountId:string,identity:string,revision:string): void {

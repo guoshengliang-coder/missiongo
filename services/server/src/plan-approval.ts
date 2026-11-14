@@ -1,5 +1,5 @@
 import { isNativePlanRequest } from "./native-plan-approval.js";
-import { ImplementationPlans, planDigest } from "./implementation-plans.js";
+import { ImplementationPlans, planDigest, type ImplementationPlanState } from "./implementation-plans.js";
 import type { MissionGoDatabase } from "./storage/database.js";
 import { createHash } from "node:crypto";
 
@@ -23,6 +23,15 @@ export interface PlanApprovalAssessment {
 }
 
 type Session = AgentSessionSnapshot & { readonly canReply: boolean; readonly approval?: AgentApproval; readonly attention: AgentSessionAttention; readonly canApprovePlan?: boolean };
+type ListSession = AgentSessionListItem & {approval?: AgentApproval};
+interface ListAttentionContext {
+  proposal?: ImplementationPlanState;
+  user?: {position:number;occurredAt:string};
+  source?: {position:number;phase:string};
+}
+const sourceApprovalPending = (request: AgentApproval | undefined) => Boolean(request && (request.kind === "manual"
+  ? request.status === "pending" && !request.decision || ["unavailable", "reconnecting"].includes(request.status)
+  : request.status === "denied" && (!request.retryId || request.retryStatus === "failed")));
 
 /** Attention is a reminder, never authority to turn ordinary prose into a proposal. */
 export class PlanApprovalService {
@@ -65,14 +74,10 @@ export class PlanApprovalService {
   }
 
   /** List polls use saved proposal metadata and the latest message, never full histories. */
-  withAttention<T extends AgentSessionListItem & {approval?: AgentApproval}>(session: T): T {
+  withAttention<T extends ListSession>(session: T, context?: ListAttentionContext): T {
     if (session.attention.kind !== "approval" || session.attention.state !== "needed") return session;
-    const request = session.approval;
-    const sourcePending = request && (request.kind === "manual"
-      ? request.status === "pending" && !request.decision || ["unavailable", "reconnecting"].includes(request.status)
-      : request.status === "denied" && (!request.retryId || request.retryStatus === "failed"));
-    if (sourcePending) return session;
-    const proposal = this.registered(session);
+    if (sourceApprovalPending(session.approval)) return session;
+    const proposal = context ? context.proposal : this.registered(session);
     const input = session.command;
     const newerInput = input?.kind === "message" && input.text !== "批准"
       && !["failed", "cancelled"].includes(input.status) && proposal?.requestedAt
@@ -83,9 +88,9 @@ export class PlanApprovalService {
     const role = session.source === "external" ? "json_extract(payload_json,'$.role')" : "role";
     const occurred = session.source === "external" ? "json_extract(payload_json,'$.occurredAt')" : "occurred_at";
     const phase = session.source === "external" ? "json_extract(payload_json,'$.phase')" : "phase";
-    const user = proposal && this.database?.connection.prepare(`SELECT position,${occurred} AS occurredAt FROM ${table}
+    const user = context ? context.user : proposal && this.database?.connection.prepare(`SELECT position,${occurred} AS occurredAt FROM ${table}
       WHERE session_id=? AND ${role}='user' ORDER BY position DESC LIMIT 1`).get(session.id) as {position:number;occurredAt:string}|undefined;
-    const source = proposal?.nativeSourceId ? this.database?.connection.prepare(`SELECT position,${phase} AS phase FROM ${table}
+    const source = context ? context.source : proposal?.nativeSourceId ? this.database?.connection.prepare(`SELECT position,${phase} AS phase FROM ${table}
       WHERE session_id=? AND source_id=?`).get(session.id,proposal.nativeSourceId) as {position:number;phase:string}|undefined : undefined;
     const changed = source?.phase === "plan_declined" || user && (source ? user.position > source.position
       : proposal?.requestedAt && Date.parse(user.occurredAt) > Date.parse(proposal.requestedAt));
@@ -95,6 +100,56 @@ export class PlanApprovalService {
       attention: { state: "not_needed", ...(session.attention.revision ? {revision:session.attention.revision} : {}) } };
     return { ...session, attention: { ...session.attention, kind: "uncertain",
       reason: "请核对会话是否还需处理；当前没有可审阅的方案批准请求。" } };
+  }
+
+  /** The account feed already owns its summaries. Batch only the metadata used
+   * above; do not load or cache readable plan/document bodies for list badges. */
+  withAttentionForSessions<T extends ListSession>(accountId: string, sessions: readonly T[]): T[] {
+    const candidates = sessions.filter(session => session.attention.kind === "approval" && session.attention.state === "needed" && !sourceApprovalPending(session.approval));
+    if (!candidates.length || !this.database || !this.plans) return sessions.map(session => this.withAttention(session));
+    const selected = JSON.stringify(candidates.map(session => session.id));
+    const identities = new Map((this.database.connection.prepare(`SELECT s.id,'dispatch:'||s.dispatch_id AS identity
+      FROM agent_sessions s JOIN dispatches d ON d.id=s.dispatch_id WHERE d.account_id=? AND s.id IN (SELECT value FROM json_each(?))
+      UNION ALL SELECT id,'native:'||client_id||':'||agent_kind||':'||ref_kind||':'||session_ref
+      FROM external_agent_sessions WHERE account_id=? AND id IN (SELECT value FROM json_each(?))`)
+      .all(accountId,selected,accountId,selected) as {id:string;identity:string}[]).map(row => [row.id,row.identity]));
+    const states = this.plans.listStates(accountId,[...identities.values()]);
+    const contexts = new Map<string,ListAttentionContext>();
+    for (const session of candidates) {
+      const proposal = states.get(identities.get(session.id) ?? "");
+      contexts.set(session.id, proposal ? {proposal} : {});
+    }
+    for (const external of [false,true]) {
+      const targets = candidates.filter(session => (session.source === "external") === external && contexts.get(session.id)?.proposal)
+        .map(session => ({id:session.id,sourceId:contexts.get(session.id)!.proposal!.nativeSourceId ?? null}));
+      if (!targets.length) continue;
+      const table = external ? "external_native_messages" : "agent_session_messages";
+      const role = (alias:string) => external ? `json_extract(${alias}.payload_json,'$.role')` : `${alias}.role`;
+      const phase = external ? "json_extract(s.payload_json,'$.phase')" : "s.phase";
+      const occurred = external ? "json_extract(u.payload_json,'$.occurredAt')" : "u.occurred_at";
+      const rows = this.database.connection.prepare(`SELECT json_extract(q.value,'$.id') AS id,
+        u.position AS user_position,${occurred} AS occurred_at,s.position AS source_position,${phase} AS phase,
+        ${role("s")} AS role,s.source_id FROM json_each(?) q
+        LEFT JOIN ${table} u ON u.rowid=(SELECT m.rowid FROM ${table} m
+          WHERE m.session_id=json_extract(q.value,'$.id') AND ${role("m")}='user' ORDER BY m.position DESC LIMIT 1)
+        LEFT JOIN ${table} s ON s.session_id=json_extract(q.value,'$.id') AND s.source_id=json_extract(q.value,'$.sourceId')`)
+        .all(JSON.stringify(targets)) as {id:string;user_position:number|null;occurred_at:string;source_position:number|null;phase:string;role:string;source_id:string}[];
+      const byId = new Map(rows.map(row => [row.id,row]));
+      for (const session of candidates.filter(session => (session.source === "external") === external)) {
+        const context = contexts.get(session.id)!;
+        const proposal = context.proposal, row = byId.get(session.id);
+        if (!proposal) continue;
+        if (proposal.origin === "attention" && !proposal.approvedAt || proposal.origin === "native" && !proposal.approvedAt
+          && row?.source_position !== undefined && row.source_position !== null
+          && !isNativePlanRequest(session.agentKind,{role:row.role,phase:row.phase,sourceId:row.source_id})) {
+          delete context.proposal;
+          continue;
+        }
+        if (row?.user_position !== undefined && row.user_position !== null) context.user = {position:row.user_position,occurredAt:row.occurred_at};
+        if (row?.source_position !== undefined && row.source_position !== null) context.source = {position:row.source_position,phase:row.phase};
+      }
+    }
+    return sessions.map(session => this.withAttention(session,contexts.get(session.id)));
   }
 
   /** Readable proposal survives approval, disconnection and scope changes. */

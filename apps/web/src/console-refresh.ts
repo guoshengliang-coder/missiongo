@@ -1,20 +1,33 @@
 import type { Query, QueryClient } from "@tanstack/react-query";
 
+export const SESSION_LIST_REFRESH_WINDOW_MS = 100;
+
 /** Each key owns its retry and dirty version. A slow auxiliary read never holds
  * the conversation's next read behind a Promise.all barrier. */
 export function consoleRefresh(client: QueryClient, idle: () => void) {
   type Task = { query: Query; version: number; running: boolean; failures: number; timer?: ReturnType<typeof setTimeout> | undefined };
   const tasks = new Map<string, Task>();
   let stopped = false, generation = 0, resetting = false;
+  const schedule = (task: Task) => {
+    if (stopped || resetting || task.running || task.timer || document.visibilityState === "hidden") return;
+    if (task.query.queryKey[0] === "agent-sessions" && task.query.isActive()) {
+      // A fixed window, never a trailing debounce: sustained events cannot
+      // postpone a read forever. Detail reads keep their immediate priority.
+      task.timer = setTimeout(() => { task.timer = undefined; void run(task); }, SESSION_LIST_REFRESH_WINDOW_MS);
+    } else void run(task);
+  };
   const run = async (task: Task) => {
     if (stopped || resetting || task.running || task.timer || document.visibilityState === "hidden") return;
-    const epoch = generation, version = task.version;
+    const epoch = generation;
     task.running = true;
     try {
       // Join an initial/mutation read, then read after the notification. Never
       // cancel another consumer's request or mistake its old snapshot for ours.
       if (task.query.state.fetchStatus === "fetching") await task.query.promise?.catch(() => {});
-      if (stopped || epoch !== generation) return;
+      if (stopped || epoch !== generation || String(document.visibilityState) === "hidden") return;
+      // All events observed before this fresh read are covered by it. Events
+      // received after it starts still require the following read.
+      const version = task.version;
       await client.invalidateQueries({ queryKey: task.query.queryKey, exact: true }, { throwOnError: true, cancelRefetch: false });
       if (stopped || epoch !== generation) return;
       task.failures = 0;
@@ -25,7 +38,7 @@ export function consoleRefresh(client: QueryClient, idle: () => void) {
     } finally {
       if (!stopped && epoch === generation) {
         task.running = false;
-        if (tasks.has(task.query.queryHash)) void run(task);
+        if (tasks.has(task.query.queryHash)) schedule(task);
         if (!tasks.size) idle();
       }
     }
@@ -41,12 +54,12 @@ export function consoleRefresh(client: QueryClient, idle: () => void) {
       // Inactive snapshots become stale immediately, including while hidden.
       void client.invalidateQueries({ queryKey: query.queryKey, exact: true, refetchType: "none" });
     }
-    queueMicrotask(() => { tasks.forEach(task => void run(task)); if (!tasks.size && !resetting && !stopped) idle(); });
+    queueMicrotask(() => { tasks.forEach(schedule); if (!tasks.size && !resetting && !stopped) idle(); });
   };
   const clear = () => { generation++; tasks.forEach(task => { if (task.timer) clearTimeout(task.timer); }); tasks.clear(); };
   return {
     add,
-    resume: () => tasks.forEach(task => void run(task)),
+    resume: () => tasks.forEach(schedule),
     reset: async () => {
       clear(); resetting = true; const epoch = generation;
       await client.cancelQueries();

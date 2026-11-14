@@ -271,3 +271,49 @@ it("preserves strict prior-time round counts across statuses, tied timestamps an
     expect(actual.get(row.id),row.id).toBe(row.expected);
   }
 });
+
+it("batch list attention matches individual checks for native provenance, follow-ups and approval changes",async()=>{
+ const {ImplementationPlans}=await import("./implementation-plans.js");
+ const {PlanApprovalService}=await import("./plan-approval.js");
+ const f=fixture(),plans=new ImplementationPlans(f.store.database),service=new PlanApprovalService(f.store.database);
+ const identities=["dispatch:dispatch","native:client:codex:native:native-thread"];
+ const message=f.db.prepare(`INSERT INTO agent_session_messages(id,session_id,source_id,role,text,position,observed_at,occurred_at,phase)
+  VALUES (?,?,?,'plan','Reviewed source plan',0,?,?,'plan')`);
+ const now=new Date().toISOString();message.run("plan",f.sessionId,"plan",now,now);
+ f.db.prepare(`INSERT INTO external_native_messages(id,session_id,source_id,payload_json,position) VALUES ('ext-plan',?,'plan',?,0)`)
+  .run(f.externalId,JSON.stringify({sourceId:"plan",role:"plan",text:"Reviewed source plan",phase:"plan",occurredAt:now}));
+ for(const identity of identities){
+  plans.request("owner",identity,"r1",{keys:[f.item.key],plan:"Reviewed source plan",validation:"",origin:"native"});
+  f.db.prepare("UPDATE implementation_plan_requests SET proposal_json=json_set(proposal_json,'$.nativeSourceId','plan') WHERE account_id='owner' AND identity_key=?").run(identity);
+ }
+ const read=()=>[...f.dispatch.listForAccount("owner"),...f.external.listForAccount("owner")].map(row=>({...row,
+  attention:{state:"needed" as const,kind:"approval" as const,revision:"r1"},needsAttention:true,waitingForReply:true}));
+ const compare=(rows=read())=>{
+  const reference=rows.map(row=>service.withAttention(row));
+  expect(service.withAttentionForSessions("owner",rows)).toEqual(reference);
+  return reference;
+ };
+ expect(compare().every(row=>row.planApprovalPending)).toBe(true);
+ // A latest Agent answer cannot hide the later user input from a metadata-only list.
+ f.db.prepare(`INSERT INTO agent_session_messages(id,session_id,source_id,role,text,position,observed_at,occurred_at)
+  VALUES ('user',?,'user','user','Follow up',1,?,?)`).run(f.sessionId,now,now);
+ f.db.prepare(`INSERT INTO external_native_messages(id,session_id,source_id,payload_json,position) VALUES ('ext-user',?,'user',?,1)`)
+  .run(f.externalId,JSON.stringify({sourceId:"user",role:"user",text:"Follow up",occurredAt:now}));
+ expect(compare().every(row=>!row.planApprovalPending)).toBe(true);
+ f.db.prepare("DELETE FROM agent_session_messages WHERE source_id='user'").run();
+ f.db.prepare("DELETE FROM external_native_messages WHERE source_id='user'").run();
+ compare(read().map(row=>({...row,archivedAt:now})));
+ compare(read().map(row=>({...row,command:{id:"new-input",kind:"message" as const,text:"New request",status:"queued" as const,createdAt:"2026-10-13T02:01:00Z"}})));
+ compare(read().map(row=>({...row,approval:{id:"permission",kind:"manual" as const,status:"pending" as const,turnId:"turn",action:"Shell",startedAtMs:1}})));
+ f.db.prepare("UPDATE agent_session_messages SET phase='commentary' WHERE source_id='plan'").run();
+ f.db.prepare("UPDATE external_native_messages SET payload_json=json_set(payload_json,'$.phase','commentary') WHERE source_id='plan'").run();
+ expect(compare().every(row=>!row.planApprovalPending)).toBe(true);
+ for(const identity of identities)plans.record({accountId:"owner",identity,revision:"r1",planHash:"r1",keys:[f.item.key],source:"web"});
+ expect(compare().every(row=>!row.needsAttention)).toBe(true);
+ f.db.prepare("UPDATE work_items SET content_version=content_version+1 WHERE id=?").run(f.item.id);
+ expect(compare().every(row=>row.needsAttention)).toBe(true);
+ // Classifier-only historical proposals remain non-authoritative.
+ f.db.prepare("DELETE FROM implementation_plan_approvals").run();
+ f.db.prepare("UPDATE implementation_plan_requests SET proposal_json=json_set(proposal_json,'$.origin','attention')").run();
+ compare();
+});

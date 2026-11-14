@@ -628,7 +628,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const listConsoleSessions = (accountId: string) => {
     const summaries=consoleSessions.list(accountId);
     const approvals=agentApprovalStore.forSessions(summaries.filter(session=>session.agentKind==="codex").map(session=>session.id));
-    const rows = summaries.map(session => planApprovals.withAttention(agentApprovalStore.withAttention(session,approvals)));
+    const rows = planApprovals.withAttentionForSessions(accountId,summaries.map(session => agentApprovalStore.withAttention(session,approvals)));
     const handled = new Set(rows.flatMap(sessionProducts).filter((id, index, ids) => ids.indexOf(id) === index)
       .flatMap(productId => merges.attentionSessionIds(productId, accountId)));
     if (aiTitle.attentionEnabled()) for (const id of handled) {
@@ -3136,14 +3136,21 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const { productId } = request.query as { productId?: string };
     const selectedProductId = productId?.trim();
     if (selectedProductId) requireProductPermission(request, selectedProductId, "view");
+    // One authenticated request, no result survives a role/permission change.
+    const permissions = new Map<string,boolean>();
+    const allows = (productId:string,capability:"view"|"operate"|"ai") => {
+      const key = JSON.stringify([productId,capability]);
+      if (!permissions.has(key)) permissions.set(key,accountStore.allows(account,productId,capability));
+      return permissions.get(key)!;
+    };
     const sessions = listConsoleSessions(account.id)
       .filter((session) => sessionProducts(session).length > 0
-        && sessionProducts(session).every((productId) => accountStore.allows(account, productId, "view")))
+        && sessionProducts(session).every((productId) => allows(productId, "view")))
       .filter((session) => !selectedProductId
         || sessionProducts(session).includes(selectedProductId))
       .map((session) => {
-        const canOperate = sessionProducts(session).every((productId) => accountStore.allows(account, productId, "operate"));
-        const canUseAi = sessionProducts(session).every((productId) => accountStore.allows(account, productId, "ai"));
+        const canOperate = sessionProducts(session).every((productId) => allows(productId, "operate"));
+        const canUseAi = sessionProducts(session).every((productId) => allows(productId, "ai"));
         const replyBlockedReason = session.source === "external" && !session.nativeConnection ? "external_progress_only" as const : agentSessionReplyBlockedReason({
           hasSession: Boolean(session.agentSessionId),
           starting: Boolean(session.productId && ["queued", "delivered"].includes(session.dispatchStatus)),

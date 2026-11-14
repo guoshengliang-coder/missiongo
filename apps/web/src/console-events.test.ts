@@ -1,5 +1,5 @@
 import { bootstrapCacheSeeder } from "./bootstrap-cache";
-import { consoleRefresh } from "./console-refresh";
+import { consoleRefresh, SESSION_LIST_REFRESH_WINDOW_MS } from "./console-refresh";
 import { afterEach, expect, it, vi } from "vitest";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { changeAffects, consoleConnectionSnapshot, EventFrames, startConsoleEvents } from "./console-events";
@@ -196,6 +196,7 @@ it("audit: a late bootstrap must not overwrite a newer resource snapshot",async(
  expect(f.client.getQueryData(key)).toBe(1);
 });
 it("audit: a newly merged identity must refresh the existing canonical transcript",async()=>{
+ vi.useFakeTimers();
  const f=fixture();
  const old={sessions:[{id:"a",agentSessionId:"a"},{id:"b",agentSessionId:"b"}]};
  const merged={sessions:[{id:"a",agentSessionId:"a",relatedSessionIds:["a","b"]}]};
@@ -204,6 +205,7 @@ it("audit: a newly merged identity must refresh the existing canonical transcrip
  const detail=new QueryObserver(f.client,{queryKey:["agent-session","a"],initialData:"old transcript",staleTime:Infinity,queryFn:read});
  cleanup.push(list.subscribe(()=>{}),detail.subscribe(()=>{}));await settle();
  f.send("change",{resources:[{kind:"sessions",resourceId:"b"}]},"epoch:1");await settle();
+ await vi.advanceTimersByTimeAsync(SESSION_LIST_REFRESH_WINDOW_MS);await settle();
  expect(f.client.getQueryData(["agent-sessions"])).toEqual(merged);
  expect(f.client.getQueryData(["agent-session","a"])).toBe("merged transcript");
 });
@@ -225,4 +227,87 @@ it("a stopped refresh scheduler does not accept new invalidations",async()=>{
  const refresh=consoleRefresh(f.client,()=>{});refresh.stop();
  const invalidation=vi.spyOn(f.client,"invalidateQueries");refresh.add(f.client.getQueryCache().getAll());await settle();
  expect(invalidation).not.toHaveBeenCalled();
+});
+
+it("coalesces list bursts in a fixed window without delaying details or losing events during a read",async()=>{
+ vi.useFakeTimers();const f=fixture();let finish!:(value:number)=>void;let version=0;
+ const listRead=vi.fn(async()=>version);
+ const list=new QueryObserver(f.client,{queryKey:["agent-sessions"],initialData:0,staleTime:Infinity,queryFn:listRead});
+ const detailRead=vi.fn(async()=>version);
+ const detail=new QueryObserver(f.client,{queryKey:["agent-session","s"],initialData:0,staleTime:Infinity,queryFn:detailRead});
+ cleanup.push(list.subscribe(()=>{}),detail.subscribe(()=>{}));await settle();
+ for(version=1;version<=8;version++)f.send("change",{resources:[{kind:"sessions"}]},`epoch:${version}`);
+ version=8;await settle();expect(listRead).not.toHaveBeenCalled();expect(detailRead.mock.calls.length).toBeGreaterThan(0);
+ await vi.advanceTimersByTimeAsync(80);version=9;f.send("change",{resources:[{kind:"sessions"}]},"epoch:9");await settle();
+ await vi.advanceTimersByTimeAsync(20);expect(listRead).toHaveBeenCalledOnce();expect(f.client.getQueryData(["agent-sessions"])).toBe(9);
+ listRead.mockImplementationOnce(()=>new Promise<number>(resolve=>{finish=resolve;}));
+ version=10;f.send("change",{resources:[{kind:"sessions"}]},"epoch:10");await settle();await vi.advanceTimersByTimeAsync(100);
+ expect(listRead).toHaveBeenCalledTimes(2);
+ version=11;f.send("change",{resources:[{kind:"sessions"}]},"epoch:11");await settle();
+ version=12;f.send("change",{resources:[{kind:"sessions"}]},"epoch:12");await settle();finish(10);await settle();
+ // The old snapshot settles first; a dirty version is still outstanding.
+ expect(f.client.getQueryData(["agent-sessions"])).toBe(10);
+ await vi.advanceTimersByTimeAsync(100);await settle();expect(listRead).toHaveBeenCalledTimes(3);
+ expect(f.client.getQueryData(["agent-sessions"])).toBe(12);
+});
+
+it("sustained list events cannot starve reads and cursor acknowledgement waits for the final window",async()=>{
+ vi.useFakeTimers();const f=fixture();const read=vi.fn(async()=>"fresh");
+ const list=new QueryObserver(f.client,{queryKey:["agent-sessions"],initialData:"cached",staleTime:Infinity,queryFn:read});
+ cleanup.push(list.subscribe(()=>{}));await settle();
+ for(let n=1;n<=10;n++){
+  f.send("change",{resources:[{kind:"sessions"}]},`epoch:${n}`);await settle();await vi.advanceTimersByTimeAsync(25);
+ }
+ expect(read).toHaveBeenCalledTimes(2); // reads at 100 and 200, not ten reads or zero
+ f.streams[0]!.close();await settle();await vi.advanceTimersByTimeAsync(1000);await settle();
+ expect(read).toHaveBeenCalledTimes(3);expect(String(f.fetcher.mock.calls[1]?.[0])).toContain("epoch%3A10");
+});
+
+it("returning to the console keeps fresh cache and shares stale recovery with foreground events",async()=>{
+ vi.useFakeTimers();const f=fixture();let finish!:(value:string)=>void;
+ const read=vi.fn(async()=>"fresh");
+ const list=new QueryObserver(f.client,{queryKey:["agent-sessions"],initialData:"cached",staleTime:Infinity,queryFn:read});
+ cleanup.push(list.subscribe(()=>{}));await settle();
+ f.windowTarget.dispatchEvent(new Event("missiongo:console-list-return"));await settle();await vi.advanceTimersByTimeAsync(100);
+ expect(read).not.toHaveBeenCalled();
+ f.client.setQueryData(["agent-sessions"],"cached",{updatedAt:Date.now()-120_000});
+ read.mockImplementationOnce(()=>new Promise<string>(resolve=>{finish=resolve;}));
+ f.windowTarget.dispatchEvent(new Event("missiongo:console-list-return"));f.windowTarget.dispatchEvent(new Event("focus"));await settle();
+ expect(f.client.getQueryData(["agent-sessions"])).toBe("cached");await vi.advanceTimersByTimeAsync(100);expect(read).toHaveBeenCalledOnce();
+ f.windowTarget.dispatchEvent(new Event("missiongo:console-list-return"));await settle();finish("fresh");await settle();
+ await vi.advanceTimersByTimeAsync(100);expect(read).toHaveBeenCalledOnce();
+ // Invalidated but still recent snapshots also revalidate on entry.
+ await f.client.invalidateQueries({queryKey:["agent-sessions"],refetchType:"none"});
+ f.windowTarget.dispatchEvent(new Event("missiongo:console-list-return"));await settle();await vi.advanceTimersByTimeAsync(100);
+ expect(read).toHaveBeenCalledTimes(2);
+});
+
+it("access reset cancels a list in flight and a queued batch cannot restore revoked content",async()=>{
+ vi.useFakeTimers();const f=fixture();let finish!:(value:string)=>void;
+ const read=vi.fn(async()=>"current permissions");
+ const list=new QueryObserver(f.client,{queryKey:["agent-sessions"],initialData:"old permissions",staleTime:Infinity,queryFn:read});
+ cleanup.push(list.subscribe(()=>{}));await settle();
+ read.mockImplementationOnce(()=>new Promise<string>(resolve=>{finish=resolve;}));
+ f.send("change",{resources:[{kind:"sessions"}]},"epoch:1");await settle();await vi.advanceTimersByTimeAsync(100);
+ f.send("change",{resources:[{kind:"sessions"}]},"epoch:2");f.send("change",{resources:[{kind:"access"}]},"epoch:3");await settle();
+ await vi.advanceTimersByTimeAsync(100);await settle();expect(f.client.getQueryData(["agent-sessions"])).toBe("current permissions");
+ finish("late secret");await settle();expect(f.client.getQueryData(["agent-sessions"])).toBe("current permissions");
+});
+
+it.each(["resolve","reject"])("defers a scheduled list follow-up if the page hides while joining another consumer's read (%s)",async outcome=>{
+ vi.useFakeTimers();const f=fixture();let finish!:(value:string)=>void;
+ const read=vi.fn().mockImplementationOnce(()=>new Promise<string>((resolve,reject)=>{finish=value=>outcome==="resolve"?resolve(value):reject(new Error("original consumer failed"));})).mockResolvedValue("latest");
+ const list=new QueryObserver(f.client,{queryKey:["agent-sessions"],initialData:"cached",staleTime:Infinity,queryFn:read});
+ cleanup.push(list.subscribe(()=>{}));await settle();
+ const initial=f.client.refetchQueries({queryKey:["agent-sessions"]});await settle();expect(read).toHaveBeenCalledOnce();
+ f.send("change",{resources:[{kind:"sessions"}]},"epoch:1");await settle();await vi.advanceTimersByTimeAsync(100);
+ f.documentTarget.visibilityState="hidden";f.documentTarget.dispatchEvent(new Event("visibilitychange"));await settle();
+ finish("snapshot before the event");await initial;await settle();
+ // The joined read may settle, but no new business read starts while hidden.
+ expect(read).toHaveBeenCalledOnce();
+ f.documentTarget.visibilityState="visible";f.documentTarget.dispatchEvent(new Event("visibilitychange"));await settle();
+ // The deferred event cannot be acknowledged before the foreground read.
+ expect(String(f.fetcher.mock.calls[1]?.[0])).toContain("epoch%3A0");
+ await vi.advanceTimersByTimeAsync(100);await settle();
+ expect(read).toHaveBeenCalledTimes(2);expect(f.client.getQueryData(["agent-sessions"])).toBe("latest");
 });
