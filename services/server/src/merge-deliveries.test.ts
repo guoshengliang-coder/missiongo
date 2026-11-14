@@ -484,7 +484,7 @@ describe("planned integration batches",()=>{
     const f=await batchFixture(),d=f.deliveries[0]!;
     f.act(f.plan);f.check(d.id);f.merged(d.id);
     const raw=JSON.parse((f.db.prepare("SELECT data_json FROM merge_batches WHERE id=?").get(f.b.id) as {data_json:string}).data_json);
-    raw.integration.plans[0].summary="Synthetic long history. ".repeat(2000);
+    raw.integration.plans[0].summary="批次历史：😀 café e\u0301。".repeat(2000);
     raw.integration.events[0].detail=JSON.parse('{"__proto__":{"polluted":true},"constructor":"own","nested":[null,false,4,{"text":"original"}]}');
     const save=()=>f.db.prepare("UPDATE merge_batches SET data_json=? WHERE id=?").run(JSON.stringify(raw),f.b.id);
     save();
@@ -513,6 +513,15 @@ describe("planned integration batches",()=>{
       })).toThrow("rollback template input");
       expect(f.merges.batches(f.item.productId,f.owner.id)).toEqual(second);
       save();expect(f.merges.batches(f.item.productId,f.owner.id)[0]!.integration!.plans[0]!.summary).toBe(raw.integration.plans[0].summary);
+      // A same-byte-length change must invalidate the template too; neither
+      // UTF-8 length nor a row identity is sufficient as a freshness key.
+      raw.integration.plans[0].summary="不同历史：😀 café e\u0301。".repeat(2000);save();
+      const before=f.merges.batches(f.item.productId,f.owner.id);
+      raw.integration.plans[0].summary=raw.integration.plans[0].summary.replace("不","相");save();
+      const after=f.merges.batches(f.item.productId,f.owner.id);
+      expect(Buffer.byteLength(JSON.stringify(before))).toBe(Buffer.byteLength(JSON.stringify(after)));
+      expect(after[0]!.integration!.plans[0]!.summary).toBe(raw.integration.plans[0].summary);
+      expect(after).not.toEqual(before);
     } finally {spy.mockRestore();}
   });
   it("aggregates session stages with exact expiry, scope and JSON key preservation",async()=>{
