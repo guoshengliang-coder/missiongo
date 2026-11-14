@@ -12,7 +12,7 @@ function setup() {
   const candidates = { pages: [{ requestedBeforeSequence: null, productId: "product", coverageVersion: 2, generatedAt: new Date(now).toISOString(),
     candidates: [{ itemKey: "AND-1", developmentEventId: "first", requiredArtifacts: null }], noReleaseItems: [{ itemKey: "AND-2", noReleaseReason: "Local tools" }], noReleaseDeliveries: [] }] };
   const input = { root: ".", config: { schemaVersion: 1, productId: "product", repository }, candidates, now,
-    batch: { id: "batch", productId: "product", integration: { revision: 7 }, deliveries: ["delivery"], entries: [{ id: "delivery", head, repository, requiredArtifacts: ["web"], pullRequest: 1, targetBranch: "main" }] } };
+    batch: { id: "batch", productId: "product", publish:true, selection:[{id:"delivery",revision:"frozen"}], integration: { revision: 7 }, deliveries: ["delivery"], entries: [{ id: "delivery", head, repository, requiredArtifacts: ["web"], pullRequest: 1, targetBranch: "main" }] } };
   const operations = { repository: () => repository, head: () => head, originMain: () => head, remoteMain: () => head, ancestor: () => true,
     tools: () => ({ status: "review_required" }), live: () => ({}), artifact: name => name === "androidApp" ? (() => { throw new Error("old APK"); })() : [{ artifact: name }],
     coverage: records => ({ ready: false, observedArtifacts: records.length }), versions: () => [{ artifact: "web", blocking: true }], patchBumps: () => [{ artifact: "web", from: "1.0.0", to: "1.0.1" }],
@@ -133,6 +133,38 @@ test("AND-521 keeps post-merge work and unrelated artifacts out of the first-mer
   assert.match(r.evidenceContext.tools,/^[a-f0-9]{64}$/);
   const b={...f.input.batch,entries:f.input.batch.entries.map(e=>({...e,requiredArtifacts:[],noReleaseReason:"Internal tool"}))};
   assert.ok(classifyReadiness(r.checks,r.historicalGaps,b).every(c=>!c.required));
+});
+
+test("audit 2 detects a required import missing even from an incomplete installation manifest",t=>{
+  const dir=mkdtempSync(join(tmpdir(),"and521-incomplete-"));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const home=join(dir,"home"),configHome=join(home,".config");install({source:process.cwd(),home,configHome,commit:head});
+  const manifestPath=join(configHome,"missiongo/release-tools-manifest.json"),manifest=JSON.parse(readFileSync(manifestPath,"utf8"));
+  rmSync(join(configHome,"missiongo/release-tools/release_coverage_options.py"));
+  delete manifest.tools["release_coverage_options.py"];writeFileSync(manifestPath,JSON.stringify(manifest));
+  const report=inspectInstalledTools(process.cwd(),{home,configHome});
+  assert.equal(report.capabilities.status,"missing");
+  assert.ok(report.capabilities.missing.includes("release_coverage_options.py"));
+  // Current helpers can still inspect older installations whose optional report
+  // module is absent. Do not make every inventory addition a new capability.
+  copyFileSync(join(process.cwd(),"scripts/release_coverage_options.py"),join(configHome,"missiongo/release-tools/release_coverage_options.py"));
+  manifest.tools["release_coverage_options.py"]=inspectInstalledTools(process.cwd(),{home,configHome}).files.find(f=>f.name==="release_coverage_options.py").installedSha256;
+  const candidates=join(configHome,"missiongo/release-tools/release-candidates.mjs"),saved=readFileSync(candidates);
+  rmSync(candidates);delete manifest.tools["release-candidates.mjs"];writeFileSync(manifestPath,JSON.stringify(manifest));
+  assert.ok(inspectInstalledTools(process.cwd(),{home,configHome}).capabilities.missing.includes("release-candidates.mjs"));
+  writeFileSync(candidates,saved);manifest.tools["release-candidates.mjs"]=inspectInstalledTools(process.cwd(),{home,configHome}).files.find(f=>f.name==="release-candidates.mjs").installedSha256;
+  rmSync(join(configHome,"missiongo/release-tools/delivery-report.mjs"));delete manifest.tools["delivery-report.mjs"];writeFileSync(manifestPath,JSON.stringify(manifest));
+  assert.equal(inspectInstalledTools(process.cwd(),{home,configHome}).capabilities.status,"verified");
+});
+
+test("audit 2 requires a complete publication mode and frozen selection in observations",()=>{
+  for(const change of [f=>delete f.input.batch.publish,f=>delete f.input.batch.selection,f=>f.input.batch.selection[0].revision=""]) {
+    const f=setup();change(f);assert.throws(()=>collectReadiness(f.input,f.operations));
+  }
+  const f=setup(),files=[{name:"entry",installedSha256:"a".repeat(64),recordedSha256:"a".repeat(64)}];
+  f.operations.tools=()=>({status:"matching",integrity:"verified",capabilities:{status:"verified",missing:[]},files});
+  const before=collectReadiness(f.input,f.operations);
+  files.push({name:"new-optional-helper",installedSha256:null,recordedSha256:null});
+  assert.equal(collectReadiness(f.input,f.operations).evidenceContext.tools,before.evidenceContext.tools);
 });
 test("empty batches, duplicate artifacts and unexplained no-release scope are refused", () => {
   for (const change of [f => { f.input.batch.deliveries = []; f.input.batch.entries = []; },

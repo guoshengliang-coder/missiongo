@@ -26,19 +26,38 @@ export function inspectInstalledTools(root, { home = homedir(), configHome = pro
   let manifest = null, manifestError = null;
   try { manifest = regular(manifestPath) ? json(manifestPath) : null; }
   catch { manifestError = "unreadable_manifest"; }
+  const installedTexts=new Map();
   const files = Object.entries(RELEASE_TOOL_FILES).map(([name, source]) => {
     const target = name === "entry" ? join(home, ".local/bin/missiongo-release") : join(config, "release-tools", name);
     const original = join(root, "scripts", source);
-    const installedSha256 = regular(target) ? hash(readFileSync(target)) : null;
+    const installedBytes=regular(target)?readFileSync(target):null;
+    if(installedBytes)installedTexts.set(name,installedBytes.toString("utf8"));
+    const installedSha256 = installedBytes ? hash(installedBytes) : null;
     const sourceSha256 = regular(original) ? hash(readFileSync(original)) : null;
     const recordedSha256 = manifest?.tools?.[name] ?? null;
     return { name, installedSha256, sourceSha256, recordedSha256,
       status: !installedSha256 ? "missing_or_unsafe" : !sourceSha256 ? "source_missing" : installedSha256 !== recordedSha256 ? "manifest_mismatch" : installedSha256 !== sourceSha256 ? "source_differs" : "matching" };
   });
-  const missingCapabilities = Object.entries(RELEASE_CAPABILITY_CHECKS).filter(([name, patterns]) => {
-    const target = name === "entry" ? join(home, ".local/bin/missiongo-release") : join(config, "release-tools", name);
-    return !regular(target) || patterns.some(pattern => !pattern.test(readFileSync(target, "utf8")));
-  }).map(([name]) => name);
+  // Follow actual fixed local import/call edges, never inventory or capability
+  // table names. An omitted manifest entry cannot hide a missing runtime import.
+  const missing=new Set(),visited=new Set(),pending=Object.keys(RELEASE_CAPABILITY_CHECKS);
+  while(pending.length) {
+    const name=pending.pop();if(visited.has(name))continue;visited.add(name);
+    const source=installedTexts.get(name);
+    if(source===undefined){missing.add(name);continue;}
+    if((RELEASE_CAPABILITY_CHECKS[name]??[]).some(pattern=>!pattern.test(source)))missing.add(name);
+    const dependencies=[
+      ...[...source.matchAll(/^\s*import\s+(?:[^;\n]*?\s+from\s+)?["']\.\/([^"']+)["']/gm)].map(m=>m[1]),
+      ...[...source.matchAll(/^\s*from (release[_a-z]+) import /gm)].map(m=>`${m[1]}.py`),
+      ...[...source.matchAll(/TOOLS \/ ["']([a-zA-Z0-9_.-]+\.(?:mjs|py|sh))["']/g)].map(m=>m[1]),
+      ...[...source.matchAll(/^\s*(?:source|node) ["']\$(?:\{MISSIONGO_RELEASE_TOOLS\}|coverage_tools)\/([a-zA-Z0-9_.-]+)["']/gm)].map(m=>m[1]),
+    ];
+    for(const dependency of dependencies) {
+      if(Object.hasOwn(RELEASE_TOOL_FILES,dependency))pending.push(dependency);
+      else missing.add("unsupported_local_dependency");
+    }
+  }
+  const missingCapabilities=[...missing].sort();
   return { sourceCommit: manifest?.sourceCommit ?? null, files, manifestError,
     integrity: manifestError || !manifest ? "unverified" : files.some(f => f.status === "manifest_mismatch"
       || f.status === "missing_or_unsafe" && Object.hasOwn(manifest.tools ?? {}, f.name)) ? "damaged" : "verified",
@@ -84,7 +103,9 @@ export function collectReadiness({ config, candidates, batch, now = Date.now() }
   const repository = operations.repository(), head = operations.head(), originMain = operations.originMain();
   if (config?.schemaVersion !== 1 || snapshot.productId !== config.productId || repository.toLowerCase() !== config.repository?.toLowerCase()) throw new Error("Readiness product/repository binding differs");
   if (!sha(head) || !sha(originMain)) throw new Error("Readiness requires exact HEAD and origin/main");
-  if (!batch || batch.productId !== snapshot.productId || typeof batch.id !== "string" || !Array.isArray(batch.deliveries) || batch.deliveries.length === 0 || !Array.isArray(batch.entries)
+  if (!batch || batch.productId !== snapshot.productId || typeof batch.id !== "string" || typeof batch.publish!=="boolean" || !Array.isArray(batch.deliveries) || batch.deliveries.length === 0 || !Array.isArray(batch.entries)
+    || !Array.isArray(batch.selection) || batch.selection.length !== batch.deliveries.length || new Set(batch.selection.map(s=>s.id)).size !== batch.deliveries.length
+    || batch.selection.some(s=>!batch.deliveries.includes(s.id)||typeof s.revision!=="string"||!s.revision.trim())
     || new Set(batch.deliveries).size !== batch.deliveries.length || batch.entries.length !== batch.deliveries.length
     || new Set(batch.entries.map(entry => entry.id)).size !== batch.entries.length
     || batch.entries.some(entry => !Number.isSafeInteger(entry.pullRequest) || entry.pullRequest <= 0 || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,150}$/.test(entry.targetBranch ?? "") || !batch.deliveries.includes(entry.id) || entry.repository?.toLowerCase() !== repository.toLowerCase() || !sha(entry.executionHead ?? entry.head) || !Array.isArray(entry.requiredArtifacts) || new Set(entry.requiredArtifacts).size !== entry.requiredArtifacts.length || !entry.requiredArtifacts.length && (typeof entry.noReleaseReason !== "string" || !entry.noReleaseReason.trim()) || entry.requiredArtifacts.some(a => !COVERAGE_ARTIFACTS.includes(a)))) {
@@ -132,8 +153,10 @@ export function collectReadiness({ config, candidates, batch, now = Date.now() }
     candidates: snapshot.candidates.map(candidate => ({ identity: candidateIdentity(candidate), requiredArtifacts: candidate.requiredArtifacts ?? null })),
     noReleaseItems: snapshot.noReleaseItems, noReleaseDeliveries: snapshot.noReleaseDeliveries, historicalGaps, checks,
     conditions,
+    observation: {batchId:batch.id,heads:batch.deliveries.map(id=>{const e=batch.entries.find(e=>e.id===id);return {deliveryId:id,head:e.executionHead??e.head};}),
+      scope:hash([batch.selection,batch.operation??null,batch.publish,batch.publicationScope?.digest??null])},
     evidenceContext: { base: originMain, candidates: releaseSelectionDigest(snapshot),
-      tools: hash(checks.find(c=>c.name==="tools")?.value?.files?.map(f=>[f.name,f.installedSha256,f.recordedSha256]) ?? null),
+      tools: hash(checks.find(c=>c.name==="tools")?.value?.files?.filter(f=>f.installedSha256||f.recordedSha256).map(f=>[f.name,f.installedSha256,f.recordedSha256]) ?? null),
       capabilities: hash(checks.find(c=>c.name==="tools")?.value?.capabilities ?? null) },
     prerequisiteBoundary: "分类结果不是首合并许可。原执行者还须核实当前发布范围及原生授权是否必需/有效，在原批次登记 main、installation_integrity、required_capability、authorization、scope；不由 needsFollowUp 或退出码推断许可。",
     decisions: [], // Never invent a human scope choice from a technical failure.

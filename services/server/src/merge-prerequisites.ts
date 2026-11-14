@@ -24,6 +24,7 @@ const condition = z.object({
 }).strict().superRefine((value, ctx) => {
   const invalid = (message:string) => ctx.addIssue({code:"custom",message});
   if (new Set(value.dependencies).size !== value.dependencies.length) invalid("Duplicate evidence dependencies");
+  if (new Set(value.dependsOnDeliveries?.map(d=>d.deliveryId)).size !== (value.dependsOnDeliveries?.length??0)) invalid("Duplicate prerequisite deliveries");
   if (core.includes(value.kind as typeof core[number])) {
     if (!value.required || value.stage !== "pre_merge" || !["blocker","fact"].includes(value.category)) invalid("Necessary prerequisites cannot be downgraded");
     if (minimum[value.kind]!.some(key => !value.dependencies.includes(key))) invalid("Missing necessary evidence dependency");
@@ -37,21 +38,35 @@ const condition = z.object({
 });
 export const prerequisitesActionSchema = z.object({
   kind: z.literal("prerequisites"), checkedAt: z.string().datetime(), source: text,
+  observation:z.object({batchId:z.string().min(1).max(200),heads:z.array(z.object({deliveryId:z.string().min(1).max(200),head:sha}).strict()).min(1).max(20),scope:digest}).strict(),
   context: z.object({base:sha,candidates:digest,tools:digest,capabilities:digest}).strict(),
+  dependencyResolutions:z.array(z.object({conditionId:z.string().min(1).max(200),deliveryId:z.string().min(1).max(200),head:sha,
+    via:z.enum(["base","tools","capabilities"]),before:z.string().regex(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/),after:z.string().regex(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/),source:text}).strict()).max(20).default([]),
   // Partial refresh: omitted conditions retain their original evidence bindings.
   conditions: z.array(condition).min(1).max(50),
 }).strict();
 export type PrerequisitesAction = z.infer<typeof prerequisitesActionSchema>;
 export interface PrerequisiteBatch {
+  id:string;
   publish: boolean; state?:string; operation?: string; selection: {id:string;revision:string}[];
   publicationScope?: {digest:string} | undefined; references?: Record<string,unknown>;
   deliveries: string[]; integration?: MergeIntegration;
   results: Record<string,{status:string;head:string}>;
+  entries?:{id:string;head:string;executionHead?:string}[];
 }
-const denied = (message:string):never => { throw conflict("merge_prerequisites_changed",message); };
+function denied(message:string):never { throw conflict("merge_prerequisites_changed",message); }
+export function prerequisiteObservation(batch:PrerequisiteBatch) {
+  return {batchId:batch.id,heads:batch.deliveries.map(id=>{
+    const head=batch.integration?.entries[id]?.head??batch.entries?.find(e=>e.id===id)?.executionHead
+      ??batch.results[id]?.head??batch.entries?.find(e=>e.id===id)?.head;
+    if(!head||!/^[a-f0-9]{40}$/.test(head))denied("缺少实际观察的交付版本，请重新读取完整批次。");
+    return {deliveryId:id,head};
+  }),
+    scope:hash([batch.selection,batch.operation??null,batch.publish,batch.publicationScope?.digest??null])};
+}
 function bindings(batch:PrerequisiteBatch, context:IntegrationPrerequisites["context"]) {
   // No progress, event, timestamp or integration revision in the content scope.
-  return {...context,scope:hash([batch.selection,batch.operation??null,batch.publish,batch.publicationScope?.digest??null]),
+  return {...context,scope:prerequisiteObservation(batch).scope,
     heads:hash(batch.deliveries.map(id=>[id,batch.integration?.entries[id]?.head??batch.results[id]?.head]))};
 }
 export function recordPrerequisites(batch:PrerequisiteBatch, action:PrerequisitesAction) {
@@ -60,16 +75,28 @@ export function recordPrerequisites(batch:PrerequisiteBatch, action:Prerequisite
   if(age < -30_000 || age > 300_000)denied("前置检查时间已过期，请读取实际结果。");
   const previous=state.prerequisites?.conditions??[], conditions=new Map(previous.map(c=>[c.id,c]));
   const values=bindings(batch,action.context);
+  if(hash(action.observation)!==hash(prerequisiteObservation(batch)))denied("前置证据观察的批次、交付版本或发布范围已变化，请重新核实。");
   if(new Set(action.conditions.map(c=>c.id)).size!==action.conditions.length)denied("前置条件不能重复。");
+  const resolved:typeof action.dependencyResolutions=[];
   for(const c of action.conditions) {
     const old=conditions.get(c.id);
     if(old && old.kind!==c.kind)denied("不能用其他类别覆盖原等待原因。");
     if(c.dependsOnDeliveries?.some(d=>!batch.deliveries.includes(d.deliveryId)||state.entries[d.deliveryId]?.head!==d.head))denied("前置依赖的交付或提交已变化。");
+    for(const d of old?.dependsOnDeliveries??[])if(batch.results[d.deliveryId]?.status!=="merged"
+      &&(!c.dependsOnDeliveries?.some(next=>next.deliveryId===d.deliveryId)||old!.required&&old!.stage==="pre_merge"&&(!c.required||c.stage!=="pre_merge"))) {
+      const proof=action.dependencyResolutions.find(r=>r.conditionId===c.id&&r.deliveryId===d.deliveryId&&r.head===d.head);
+      if(!proof||c.state!=="satisfied"||proof.before===proof.after||proof.before!==old!.binding[proof.via]
+        ||proof.after!==values[proof.via]||!c.dependencies.includes(proof.via))denied("不能清除未解除的循环依赖；需记录独立前置修复的实际变化与来源。");
+      resolved.push(proof);
+    }
     conditions.set(c.id,{...c,checkedAt:action.checkedAt,source:action.source,
       binding:Object.fromEntries(c.dependencies.map(key=>[key,values[key]]))});
   }
   if(conditions.size>50 || core.some(kind=>[...conditions.values()].filter(c=>c.kind===kind).length>1))denied("前置条件过多或必要条件重复。");
-  state.prerequisites={context:action.context,conditions:[...conditions.values()]};
+  if(resolved.length!==action.dependencyResolutions.length)denied("解除证据必须逐项匹配原循环依赖，不能重复或用于无关条件。");
+  const resolutions=[...(state.prerequisites?.resolutions??[]),...resolved];
+  if(resolutions.length>100)denied("前置依赖解除记录过多，请保留原批次核对。");
+  state.prerequisites={observation:action.observation,context:action.context,conditions:[...conditions.values()],resolutions};
 }
 export function prerequisiteGate(batch:PrerequisiteBatch, hasRelease:boolean, base?:string, now=Date.now()):IntegrationPrerequisiteGate {
   const required=batch.state!=="finished" && batch.deliveries.some(id=>!batch.references?.[id]&&!batch.results[id])
@@ -77,15 +104,20 @@ export function prerequisiteGate(batch:PrerequisiteBatch, hasRelease:boolean, ba
   const gate:IntegrationPrerequisiteGate={required,ready:true,blockers:[]};
   if(!required)return gate;
   const record=batch.integration?.prerequisites, conditions=record?.conditions??[];
+  if(record&&!record.observation)gate.blockers.push({id:"observation",code:"missing",reason:"旧前置记录缺少实际观察的版本",owner:"集成执行者",resumeWhen:"重新读取并核实原批次版本，不复用旧快照"});
   const names={main:"当前主线",installation_integrity:"工具安装完整性",required_capability:"必需能力",authorization:"原生授权依据",scope:"发布范围"};
   const missing=core.filter(kind=>!conditions.some(c=>c.kind===kind));
   if(missing.length)gate.blockers.push({id:"required_evidence",code:"missing",reason:`尚未核实：${missing.map(kind=>names[kind]).join("、")}`,owner:"集成执行者",resumeWhen:"在原批次核实并登记必要前置条件"});
   if(record) {
     const values=bindings(batch,{...record.context,...(base?{base}:{})});
+    const newerChecks=batch.deliveries.filter(id=>!batch.results[id]&&!batch.references?.[id]).flatMap(id=>{
+      const check=batch.integration?.entries[id]?.check;return check?[check]:[];
+    });
     for(const c of conditions.filter(c=>c.stage==="pre_merge" && c.required)) {
       const age=now-Date.parse(c.checkedAt);
       const cycle=c.dependsOnDeliveries?.some(d=>batch.results[d.deliveryId]?.status!=="merged");
       const stale=!Number.isFinite(age)||age < -30_000||age>300_000||c.dependencies.some(key=>c.binding[key]!==values[key])
+        || !base&&c.dependencies.includes("base")&&newerChecks.some(check=>Date.parse(check.checkedAt)>=Date.parse(c.checkedAt)&&check.base!==c.binding.base)
         || c.dependsOnDeliveries?.some(d=>batch.integration?.entries[d.deliveryId]?.head!==d.head);
       const code=cycle?"cycle":stale?"stale":!["satisfied","not_required"].includes(c.state)?"pending":undefined;
       if(code)gate.blockers.push({id:c.id,code,reason:c.reason,owner:c.owner,resumeWhen:c.resumeWhen});

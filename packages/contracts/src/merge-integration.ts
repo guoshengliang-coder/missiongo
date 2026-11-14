@@ -46,8 +46,10 @@ export interface IntegrationPrerequisite {
   authorizationRef?: string | undefined;
 }
 export interface IntegrationPrerequisites {
+  observation: { batchId:string; heads:{deliveryId:string;head:string}[]; scope:string };
   context: { base: string; candidates: string; tools: string; capabilities: string };
   conditions: (IntegrationPrerequisite & { binding: Record<string,string>; checkedAt: string; source: string })[];
+  resolutions: {conditionId:string;deliveryId:string;head:string;via:"base"|"tools"|"capabilities";before:string;after:string;source:string}[];
 }
 export interface IntegrationPrerequisiteGate {
   required: boolean; ready: boolean;

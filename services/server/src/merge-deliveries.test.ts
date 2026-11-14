@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { legacyIntegratorPrompt } from "./legacy-merge-authorization.js";
 import { recoveryDetailPrefix } from "./merge-recovery-transport.js";
-import { prerequisitesActionSchema } from "./merge-prerequisites.js";
+import { prerequisitesActionSchema, prerequisiteObservation, type PrerequisiteBatch } from "./merge-prerequisites.js";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "./app.js";
@@ -85,8 +85,8 @@ async function fixture(databasePath=":memory:") {
 const proposal = (key: string): DeliveryInput => ({itemKeys:[key],repository:"https://github.com/example/project",pullRequest:12,
   head:"a".repeat(40),targetBranch:"main",summary:"Verified change",validation:"Synthetic regression passed",requiredArtifacts:["web"],
   evidence:{head:"a".repeat(40),base:"b".repeat(40),checkedAt:new Date().toISOString(),checks:"passed",mergeable:"clean",source:"synthetic Git fixture"}});
-const syntheticPrerequisites=()=>prerequisitesActionSchema.parse({kind:"prerequisites",checkedAt:new Date().toISOString(),source:"Synthetic bounded publication preflight",
-  context:{base:"b".repeat(40),candidates:"c".repeat(64),tools:"d".repeat(64),capabilities:"e".repeat(64)},
+const syntheticPrerequisites=(batch:PrerequisiteBatch)=>prerequisitesActionSchema.parse({kind:"prerequisites",checkedAt:new Date().toISOString(),source:"Synthetic bounded publication preflight",
+  observation:prerequisiteObservation(batch),context:{base:"b".repeat(40),candidates:"c".repeat(64),tools:"d".repeat(64),capabilities:"e".repeat(64)},
   conditions:["main","installation_integrity","required_capability","authorization","scope"].map(kind=>({id:kind,kind,category:"fact",stage:"pre_merge",required:true,state:"satisfied",
     reason:"Synthetic required facts verified",owner:"Executor",resumeWhen:"Refresh evidence in original batch",dependencies:["base","heads","scope","candidates","tools","capabilities"],
     ...(kind==="authorization"?{authorizationRef:"Synthetic original permission receipt"}:{})}))});
@@ -323,14 +323,14 @@ describe("planned integration batches",()=>{
     f.act(f.plan);f.check(d.id);
     expect(f.current().entries[0]!.mergeReady).toBe(false);
     expect(()=>f.merged(d.id)).toThrow(/前置/);
-    const wait=syntheticPrerequisites();wait.conditions.find(c=>c.kind==="authorization")!.state="pending";
+    const wait=syntheticPrerequisites(f.current());wait.conditions.find(c=>c.kind==="authorization")!.state="pending";
     const before=f.store.getTimeline(f.item.key);
     const input={batchId:f.b.id,dispatchId:f.b.dispatchId,expectedRevision:f.current().integration!.revision,idempotencyKey:"waiting",action:wait};
     for(const options of [{scopes:["missiongo:read"]},{accountId:f.other.id}])expect((await f.call("record_merge_integration",input,options)).isError).toBe(true);
     f.safe(await f.call("record_merge_integration",input));f.safe(await f.call("record_merge_integration",input));
     expect(f.current().results).toEqual({});expect(f.store.getTimeline(f.item.key)).toEqual(before);
     expect(f.current().integration!.events.filter(e=>e.id==="waiting")).toHaveLength(1);
-    const ready=syntheticPrerequisites();f.act({...ready,conditions:[ready.conditions.find(c=>c.kind==="authorization")!]});
+    const ready=syntheticPrerequisites(f.current());f.act({...ready,conditions:[ready.conditions.find(c=>c.kind==="authorization")!]});
     expect(f.current().entries[0]!.mergeReady).toBe(true);
     f.act({kind:"check",deliveryId:d.id,expectedHead:d.head,base:"b".repeat(40),checkedAt:new Date().toISOString(),source:"Actual failed CI",checks:"failed",local:"passed",mergeable:"clean",validation:"Preserve failed check"});
     expect(f.current().prerequisiteGate.ready).toBe(true);expect(f.current().entries[0]!.mergeReady).toBe(false);
@@ -340,7 +340,7 @@ describe("planned integration batches",()=>{
     const dir=mkdtempSync(join(tmpdir(),"and521-resume-")),path=join(dir,"state.sqlite");
     try {
       const f=await batchFixture(1,false,true,path);f.act(f.plan);
-      const action=syntheticPrerequisites();action.conditions[1]!.state="unknown";
+      const action=syntheticPrerequisites(f.current());action.conditions[1]!.state="unknown";
       const revision=f.current().integration!.revision;f.act(action,"unknown-response",revision);
       await f.app.close();apps.splice(apps.indexOf(f.app),1);
       const reopened=buildApp({databasePath:path,adminAccount:config,writeTools:"comments",statusCheckTime:false});apps.push(reopened);
@@ -362,7 +362,7 @@ describe("planned integration batches",()=>{
     f.act(f.plan);f.check(first.id);
     expect(first.requiredArtifacts).toEqual([]);expect(f.current().prerequisiteGate.required).toBe(true);
     expect(f.current().entries.find(e=>e.id===first.id)!.mergeReady).toBe(false);
-    f.act(syntheticPrerequisites());expect(f.current().entries.find(e=>e.id===first.id)!.mergeReady).toBe(true);
+    f.act(syntheticPrerequisites(f.current()));expect(f.current().entries.find(e=>e.id===first.id)!.mergeReady).toBe(true);
   });
   it("archives a published old round without borrowing its receipt for rework (AND-501/435)",async()=>{
     const f=await batchFixture(),d=f.deliveries[0]!;
@@ -652,7 +652,7 @@ describe("planned integration batches",()=>{
     const f=await batchFixture(1,false,true),d=f.deliveries[0]!;
     const signal=()=>({kind:"publication_progress" as const,state:"publishing" as const,checkedAt:new Date().toISOString(),resultsDigest:f.current().resultsDigest,detail:"Verified release process started"});
     expect(()=>f.act(signal())).toThrow();
-    f.act(f.plan);f.check(d.id);f.act(syntheticPrerequisites());f.merged(d.id);
+    f.act(f.plan);f.check(d.id);f.act(syntheticPrerequisites(f.current()));f.merged(d.id);
     expect(()=>f.act(signal())).toThrow();
     f.act({kind:"final_validation",head:"c".repeat(40),checkedAt:new Date().toISOString(),validation:"Combination passed",source:"Synthetic actual target"});
     expect(()=>f.act({...signal(),resultsDigest:"0".repeat(64)})).toThrow();
@@ -840,7 +840,7 @@ describe("AND-439 batch reconciliation",()=>{
     const approve=(r:{key:string;snapshot:string})=>merges.decideReconciliation(f.owner.id,b.id,r.key,r.snapshot,"approved",true);
     const apply=(key:string)=>merges.applyReconciliation(f.owner.id,b.dispatchId,b.id,key);
     const merged=()=>{
-      if(options.publish)merges.integrate(f.owner.id,b.dispatchId,b.id,0,"preflight",syntheticPrerequisites());
+      if(options.publish)merges.integrate(f.owner.id,b.dispatchId,b.id,0,"preflight",syntheticPrerequisites(merges.batch(f.owner.id,b.dispatchId,b.id)));
       return merges.report(f.owner.id,b.dispatchId,b.id,d.id,{status:"merged",head:d.head,commit:"c".repeat(40),detail:"Verified Git fixture"});
     };
     const evidence={head:"e".repeat(40),commit:"c".repeat(40),targetHead:"f".repeat(40),source:d.pullRequestUrl,checkedAt:new Date().toISOString(),checks:"passed" as const,local:"passed" as const,originalIncluded:true as const,targetIncludesMerge:true as const,validation:"Synthetic external merge and local validation"};
@@ -848,7 +848,7 @@ describe("AND-439 batch reconciliation",()=>{
     return {...f,...launched,merges,d,b,keys,preview,request,approve,apply,merged,evidence,final};
   }
   it("AND-521 lets an old batch record prerequisites without acquiring repair authority",async()=>{
-    const f=await recoveryFixture({publish:true}),action=syntheticPrerequisites();
+    const f=await recoveryFixture({publish:true}),action=syntheticPrerequisites(f.merges.batch(f.owner.id,f.b.dispatchId,f.b.id));
     expect(f.merges.batch(f.owner.id,f.b.dispatchId,f.b.id).integration).toBeUndefined();
     f.merges.integrate(f.owner.id,f.b.dispatchId,f.b.id,0,"legacy-prerequisites",action);
     const b=f.merges.batch(f.owner.id,f.b.dispatchId,f.b.id);
@@ -1237,7 +1237,7 @@ describe("standalone project deliveries",()=>{
     expect(f.snapshot()).toEqual(before);
   });
   it("requires complete publication receipts to finish a publish batch, but explicit no-release work needs none",async()=>{
-    const f=await standalone(["macosApp"],true);f.merges.integrate(f.owner.id,f.b.dispatchId,f.b.id,0,"preflight",syntheticPrerequisites());f.merges.report(f.owner.id,f.b.dispatchId,f.b.id,f.d.id,merged);
+    const f=await standalone(["macosApp"],true);f.merges.integrate(f.owner.id,f.b.dispatchId,f.b.id,0,"preflight",syntheticPrerequisites(f.merges.batch(f.owner.id,f.b.dispatchId,f.b.id)));f.merges.report(f.owner.id,f.b.dispatchId,f.b.id,f.d.id,merged);
     expect(()=>f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id)).toThrow(/发布凭据/);
     const bad={productId:f.item.productId,idempotencyKey:"bad",...proof,deliveries:[{deliveryId:f.d.id,expectedRevision:"0".repeat(64),releases:[{artifact:"macosApp",version:"2",sourceCommit:"e".repeat(40)}]}]};
     expect((await f.call("submit_release_batch",bad)).isError).toBe(true);
@@ -1570,7 +1570,7 @@ describe("AND-511 two-step integration queue",()=>{
     act({kind:"verify_reference",deliveryId:f.d.id,expectedHead:f.d.head,commit:"c".repeat(40),checkedAt:new Date().toISOString(),source:"Synthetic target ancestor"});
     act({kind:"check",deliveryId:d.id,expectedHead:d.head,base:"b".repeat(40),checkedAt:new Date().toISOString(),source:"Synthetic live checks",checks:"passed",mergeable:"clean",local:"passed",validation:"Synthetic local and CI"});
     expect(current.prerequisiteGate.ready).toBe(false);
-    act(syntheticPrerequisites());
+    act(syntheticPrerequisites(current));
     current=f.merges.report(f.owner.id,b.dispatchId,b.id,d.id,{status:"merged",head:d.head,commit:"d".repeat(40),detail:"New merge only"});
     act({kind:"final_validation",head:"d".repeat(40),checkedAt:new Date().toISOString(),validation:"Mixed target verified",source:"Synthetic"});
     expect(()=>act({kind:"publication_progress",state:"publishing",resultsDigest:current.resultsDigest,checkedAt:new Date().toISOString(),detail:"Own new merge is within the frozen scope"})).not.toThrow();
