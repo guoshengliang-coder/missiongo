@@ -308,6 +308,24 @@ export function agentUnreadCounts(
   };
 }
 
+/** Project menu counts use the same membership and attention rule as the
+ * console, independent of its local search/filters. Shared sessions count
+ * once per product, not once per item; the other-project hint stays distinct. */
+export function agentAttentionCounts(
+  sessions: readonly Pick<AgentSessionSummary, "id" | "archivedAt" | "needsAttention" | "items" | "productId">[],
+): ReadonlyMap<string, number> {
+  const byProduct = new Map<string, Set<string>>();
+  for (const session of sessions) {
+    if (session.archivedAt || !session.needsAttention) continue;
+    for (const productId of new Set([...(session.productId ? [session.productId] : []), ...session.items.map(item => item.productId)])) {
+      const ids = byProduct.get(productId) ?? new Set<string>();
+      ids.add(session.id);
+      byProduct.set(productId, ids);
+    }
+  }
+  return new Map([...byProduct].map(([productId, ids]) => [productId, ids.size]));
+}
+
 /**
  * The console lists one project at a time (AND-419). A conversation that
  * reaches the selected project through any item belongs to that project;

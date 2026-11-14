@@ -11,6 +11,7 @@ import {
   waitingStatusLabelKey,
   runWaitingLabelKey,
   agentOtherProjectCounts,
+  agentAttentionCounts,
   agentUnreadCounts,
   agentSessionDetailRefetchInterval,
   agentSessionDispatchFailed,
@@ -144,6 +145,22 @@ describe("agent session message view", () => {
       ["product-1", 2],
       ["product-2", 1],
     ]);
+  });
+
+  it("counts attention once per project without merging it with unread (AND-524)", () => {
+    const shared = { id: "shared", productId: "one", needsAttention: true, unread: false,
+      status: "active", items: [{ productId: "one" }, { productId: "two" }, { productId: "two" }] };
+    const sessions = [shared, shared,
+      { id: "other", productId: "two", needsAttention: true, unread: true, status: "idle", items: [] },
+      { id: "read", productId: "one", needsAttention: false, unread: true, status: "failed", items: [] },
+      { id: "archived", productId: "one", needsAttention: true, archivedAt: "2026-11-14", items: [] },
+      { id: "unlinked", needsAttention: true, items: [] },
+    ] as unknown as AgentSessionSummary[];
+    expect([...agentAttentionCounts(sessions)]).toEqual([["one", 1], ["two", 2]]);
+    expect([...agentAttentionCounts([])]).toEqual([]);
+    expect(agentUnreadCounts(sessions).byProduct.get("one")).toBe(1);
+    // A shared current-project session is excluded from the other-project hint.
+    expect(agentOtherProjectCounts(sessions, "one")).toEqual({ attention: 2, unread: 1 });
   });
 
   it("counts unread as waiting, not as still running (AND-260)", () => {
