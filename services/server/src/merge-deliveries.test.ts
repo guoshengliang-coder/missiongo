@@ -339,6 +339,29 @@ describe("planned integration batches",()=>{
     expect(f.store.getWorkItem(f.item.key).status).toBe("development_complete");
     expect(f.merges.batches(f.item.productId,f.owner.id)[0]!.presentation.entries[d.id]!.publication).toBe("pending");
   });
+  it("ends derivation fact reuse before permission changes, actions and rollback",async()=>{
+    const f=await batchFixture(),d=f.deliveries[0]!;
+    f.act(f.plan);f.check(d.id);
+    const publication=()=>f.merges.recomputeBatches(f.item.productId,f.owner.id)[0]!.presentation.entries[d.id]!.publication;
+    expect(publication()).toBe("pending");
+    f.grant(false);expect(()=>f.merged(d.id)).toThrow();
+    f.grant();expect(publication()).toBe("pending");
+    expect(()=>f.store.database.transaction(()=>{
+      f.db.prepare("UPDATE builder_execution_authorizations SET revoked=1 WHERE item_id=?").run(f.item.id);
+      expect(publication()).toBe("unknown");
+      expect(()=>f.check(d.id)).toThrow();
+      throw new Error("roll back source revocation");
+    })).toThrow("roll back source revocation");
+    expect(publication()).toBe("pending");
+    expect(()=>f.store.database.transaction(()=>{
+      f.db.prepare("UPDATE work_items SET builder_account_id=? WHERE item_key=?").run(f.other.id,f.item.key);
+      expect(publication()).toBe("unknown");
+      expect(()=>f.check(d.id)).toThrow();
+      throw new Error("roll back derived facts");
+    })).toThrow("roll back derived facts");
+    expect(publication()).toBe("pending");
+    f.merged(d.id);expect(f.current().results[d.id]!.status).toBe("merged");
+  });
   it("AND-521 gates first merge, waits without a final result, and composes with existing blockers",async()=>{
     const f=await batchFixture(1,false,true),d=f.deliveries[0]!;
     f.act(f.plan);f.check(d.id);
@@ -1496,6 +1519,9 @@ for(const [itemCount,batchCount] of [[500,100],[1000,200]])it(`AND-484 scale ${i
   const expected={deliveries:f.merges.recomputeList(f.item.productId,f.owner.id),batches:f.merges.recomputeBatches(f.item.productId,f.owner.id),
     attentionSessionIds:f.merges.recomputeAttentionSessionIds(f.item.productId,f.owner.id),sessionProgress:f.merges.recomputeSessionProgress(f.item.productId,f.owner.id)};
   const referenceMs=performance.now()-referenceAt,referenceQueries=queries;queries=0;
+  // Repeated historical identities must not rescan authority and item facts
+  // per delivery; keep the existing timeout and every hot-read assertion.
+  expect(referenceQueries).toBeLessThan(20_000);
   const login=await f.app.inject({method:"POST",url:"/api/v1/auth/login",payload:{username:f.owner.email,password:"synthetic password"}});
   const cookie=login.headers["set-cookie"]!.toString().split(";")[0]!;
   const heavy=vi.spyOn(f.store,"getTimeline").mockImplementation(()=>{throw new Error("Hot read loaded timeline");});

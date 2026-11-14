@@ -128,9 +128,14 @@ export class MergeDeliveries {
     return cloneProjection(value);
   }
   private read<T>(table: "merge_deliveries" | "merge_batches", id: string): T {
-    const row = this.db.connection.prepare(`SELECT data_json FROM ${table} WHERE id=?`).get(id) as {data_json:string}|undefined;
-    if (!row) throw notFound("Merge record");
-    return JSON.parse(row.data_json) as T;
+    const read=()=>{
+      const row = this.db.connection.prepare(`SELECT data_json FROM ${table} WHERE id=?`).get(id) as {data_json:string}|undefined;
+      if (!row) throw notFound("Merge record");
+      return JSON.parse(row.data_json) as T;
+    };
+    // A batch is repeated by every one of its deliveries. Keep only that
+    // shared source; do not retain all delivery descriptions during a rebuild.
+    return table==="merge_batches"?this.displayRead("source-batch:"+id,read):read();
   }
   private save(d: Delivery) {
     this.db.connection.prepare("UPDATE merge_deliveries SET state=?,data_json=? WHERE id=?")
@@ -142,6 +147,13 @@ export class MergeDeliveries {
       .run(b.state, JSON.stringify(stored), b.id);
   }
   private displayReads: Map<string,unknown> | undefined;
+  /** Derivation only: no source writes or action authorization use this scope.
+   * Repeated identities share current facts until this synchronous pass ends. */
+  private withDisplayReads<T>(read:()=>T):T {
+    if(this.displayReads)return read();
+    this.displayReads=new Map();
+    try{return this.store.withProjectionReads(read);}finally{this.displayReads=undefined;}
+  }
   private displayRead<T>(key:string,read:()=>T):T {
     if(!this.displayReads)return read();
     if(!this.displayReads.has(key))this.displayReads.set(key,read());
@@ -270,6 +282,7 @@ export class MergeDeliveries {
     return this.listRaw(productId).filter(d => d.accountId === accountId && !["withdrawn","merged"].includes(d.state)).map(d => this.view(d)).filter(d => d.state === "batched" || d.blocker !== "changed");
   }
   private baseQueueFacts(d:Delivery,offerBlocker?:string):IntegrationQueueFacts|undefined {
+    return this.displayRead("queue:"+JSON.stringify([d.id,offerBlocker]),()=>{
     if(d.state==="confirmed" && offerBlocker!=="changed")return {stage:"merge",publishedArtifacts:[],pendingArtifacts:d.requiredArtifacts,records:[]};
     if(d.state!=="merged")return;
     const published=new Set<string>(),records:IntegrationQueueFacts["records"]=[];
@@ -307,6 +320,7 @@ export class MergeDeliveries {
     if(historical&&currentPending)blocker??="交付包含历史与当前轮次，请逐项核对；旧交付不能覆盖。";
     // Preserve receipts, while separating obsolete rounds and unresolved evidence.
     return {stage:historical&&!currentPending&&merge?"history":historical||blocker?"review":complete?"history":"release",...(historical?{resolution:"historical" as const}:complete&&!d.requiredArtifacts.length?{resolution:"not_required" as const}:{}),...(merge?{merge}:{}),releases,...(blocker?{blocker}:{}),publishedArtifacts:[...published],pendingArtifacts:pending,records};
+    });
   }
   /** Execution ownership is independent of immutable merge provenance and phase. */
   private processingBatch(d:Delivery,q:IntegrationQueueFacts|undefined):string|undefined {
@@ -549,6 +563,7 @@ export class MergeDeliveries {
 
   /** Shared list/detail projection. Historical receipts never become mutable conversation state. */
   recomputeSessionProgress(productId: string, accountId: string, onlySession?: string, now = Date.now(), onPublishing?: (expires:number) => void): Record<string, SessionDeliveryStage> {
+    return this.withDisplayReads(()=>{
     let rows:Delivery[], batches:Batch[];
     if(onlySession) {
       const latest=this.db.connection.prepare("SELECT data_json FROM merge_deliveries WHERE product_id=? AND account_id=? AND json_extract(data_json,'$.sessionId')=? ORDER BY rowid DESC LIMIT 1").get(productId,accountId,onlySession) as {data_json:string}|undefined;
@@ -609,6 +624,7 @@ export class MergeDeliveries {
       if (value) result[b.sessionId] = value;
     }
     return result;
+    });
   }
   /** A declined offer also handles this turn's generic attention; later input never inherits that choice. */
   recomputeAttentionSessionIds(productId: string, accountId: string) {
@@ -662,8 +678,7 @@ export class MergeDeliveries {
     return JSON.parse(rows[0]!.data_json) as Record<string,SessionDeliveryStage>;
   }
   private refreshDisplay() {
-    this.displayReads=new Map();
-    try{this.writeDisplay();}finally{this.displayReads=undefined;}
+    this.withDisplayReads(()=>this.writeDisplay());
   }
   private writeDisplay() {
     const changes=this.db.connection.prepare("SELECT kind,id FROM merge_display_dirty").all() as {kind:string;id:string}[];
@@ -793,12 +808,14 @@ export class MergeDeliveries {
     this.save(d); return this.view(d);
   }
   recomputeBatches(productId: string, accountId: string) {
+    return this.withDisplayReads(()=>{
     return (this.db.connection.prepare("SELECT data_json FROM merge_batches WHERE product_id=? AND account_id=? ORDER BY rowid DESC LIMIT 20")
       .all(productId,accountId) as {data_json:string}[]).map(row => {
         const batch=JSON.parse(row.data_json) as Batch;
         const presentation=this.presentation(batch);
         return {...batch,presentation,prerequisiteGate:prerequisiteGate(batch,Object.values(presentation.entries).some(e=>e.requiredArtifacts.length>0))};
       });
+    });
   }
   /** Stable delivery identities remain in the release ledger after a merge-only batch finishes. */
   releaseCandidates(productId:string,beforeSequence?:number,limit=100) {
@@ -1123,6 +1140,7 @@ export class MergeDeliveries {
   }
   batchProduct(id:string) {return this.read<Batch>("merge_batches",id).productId;}
   private publishedHandoff(d:Delivery,key:string) {
+    return this.displayRead("published:"+JSON.stringify([key,d.repository,d.pullRequest,d.requiredArtifacts]),()=>{
     const item=this.store.getWorkItem(key),e=this.store.getDevelopmentEvidence(key);
     const record=this.store.getDeliveryRecords(key).find(row=>row.completion && sameCompletion(row.completion!,{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`}));
     if(record)return record.published;
@@ -1139,6 +1157,7 @@ export class MergeDeliveries {
       &&typeof p?.receiptDigest==="string"&&/^[a-f0-9]{64}$/.test(p.receiptDigest)
       &&typeof p?.deployedCommit==="string"&&sha.safeParse(p.deployedCommit).success
       &&Array.isArray(artifacts)&&required.every(a=>artifacts.some(r=>r.artifact===a&&sha.safeParse(r.sourceCommit).success&&r.version)));
+    });
   }
   private itemBlocker(d:Delivery,key:string,ignoreActivity=false):string|undefined {
     try {
@@ -1152,7 +1171,10 @@ export class MergeDeliveries {
       // activity. Scope/round/rework/dependency guards above still apply.
       if(this.publishedHandoff(d,key))return undefined;
       if(!ignoreActivity && this.activity(d.sessionId)!==d.activity) return "开发会话收到新的人工输入，请重新核对交付范围。";
-      recoverExecutionAuthorization(this.store,d.accountId,d.clientId,{itemKey:key,...d.identity});
+      this.displayRead("authorization:"+JSON.stringify([d.accountId,d.clientId,key,d.identity]),()=>{
+        recoverExecutionAuthorization(this.store,d.accountId,d.clientId,{itemKey:key,...d.identity});
+        return true;
+      });
     } catch {return "原开发授权、项目或条目范围已失效，请由当前 Builder 核对。";}
     return undefined;
   }
