@@ -36,6 +36,73 @@ afterEach(() => {
   for (const database of databases.splice(0)) database.close();
 });
 
+it("starts a bounded observation window for a new delivered turn without inventing source progress", () => {
+  const f = fixture();
+  vi.setSystemTime(time(14));
+  f.snapshot({ status: "idle", messages: [message], turnState: {
+    turnActive: false, waitingForInput: true, observedAt: time(14), lastProgressAt: time(1),
+  } });
+  const command = f.store.enqueue("owner", f.sessionId, "Continue");
+  f.snapshot({ status: "idle", messages: [], commandId: command.id, commandStatus: "delivering" });
+  const receipt = { status: "active" as const, messages: [], turnState: { turnActive: true },
+    commandId: command.id, commandStatus: "delivered" as const };
+  f.snapshot(receipt);
+  expect(f.store.getForAccount("owner", f.sessionId)).toMatchObject({ status: "active", turnState: {
+    lastProgressAt: time(1), observedAt: time(14), waitingForInput: false,
+  } });
+  expect(f.store.listForAccount("owner")[0]!.status).toBe("active");
+  vi.setSystemTime(time(16));
+  f.snapshot(receipt); // A retried receipt must not renew the two-minute window.
+  expect(f.store.getForAccount("owner", f.sessionId).status).toBe("unavailable");
+  f.snapshot({ status: "active", messages: [], turnState: {
+    turnActive: true, observedAt: time(16), lastProgressAt: time(1),
+  } });
+  expect(f.store.getForAccount("owner", f.sessionId).status).toBe("active");
+  vi.setSystemTime(time(24));
+  f.snapshot({ status: "active", messages: [], turnState: {
+    turnActive: true, observedAt: time(24), lastProgressAt: time(1),
+  } });
+  expect(f.store.getForAccount("owner", f.sessionId).status).toBe("stalled");
+  expect(f.store.countExecutionSlots("node")).toBe(1);
+  f.snapshot({ status: "idle", messages: [], turnState: { turnActive: false, observedAt: time(24) } });
+  f.snapshot(receipt); // A cached delivery result cannot reactivate an ended turn.
+  expect(f.store.getForAccount("owner", f.sessionId).status).toBe("idle");
+  f.snapshot({ status: "failed", messages: [], error: "Known failure" });
+  f.snapshot(receipt);
+  expect(f.store.getForAccount("owner", f.sessionId)).toMatchObject({ status: "failed", lastError: "Known failure" });
+});
+
+it("does not refresh a stalled turn when steering, including repeated delivery receipts", () => {
+  const f = fixture();
+  vi.setSystemTime(time(14));
+  f.snapshot({ status: "active", messages: [], turnState: {
+    turnActive: true, observedAt: time(14), lastProgressAt: time(1),
+  } });
+  const command = f.store.enqueue("owner", f.sessionId, "Check progress");
+  f.snapshot({ status: "active", messages: [], commandId: command.id, commandStatus: "delivering" });
+  const receipt = { status: "active" as const, messages: [], turnState: { turnActive: true },
+    commandId: command.id, commandStatus: "delivered" as const };
+  f.snapshot(receipt);
+  f.snapshot(receipt);
+  expect(f.store.getForAccount("owner", f.sessionId)).toMatchObject({ status: "stalled",
+    turnState: { lastProgressAt: time(1), observedAt: time(14) } });
+});
+
+it("does not count a long delivery preparation as execution of a new turn", () => {
+  const f = fixture();
+  vi.setSystemTime(time(14));
+  f.snapshot({ status: "idle", messages: [], turnState: {
+    turnActive: false, observedAt: time(14), lastProgressAt: time(1),
+  } });
+  const command = f.store.enqueue("owner", f.sessionId, "Continue after preparing attachments");
+  f.snapshot({ status: "idle", messages: [], commandId: command.id, commandStatus: "delivering" });
+  vi.setSystemTime(time(26));
+  f.snapshot({ status: "idle", messages: [], turnState: { turnActive: false, observedAt: time(26) } });
+  f.snapshot({ status: "active", messages: [], turnState: { turnActive: true }, commandId: command.id, commandStatus: "delivered" });
+  expect(f.store.getForAccount("owner", f.sessionId)).toMatchObject({ status: "active",
+    turnState: { lastProgressAt: time(1), healthStartedAt: time(26) } });
+});
+
 it("old execution/history backfill after reconnect preserves read state, while offline replies stay unread", () => {
   const f = fixture();
   const first = f.store.listForAccount("owner")[0]!.unreadAt!;
