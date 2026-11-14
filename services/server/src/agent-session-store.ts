@@ -1,4 +1,4 @@
-import { commandSourceMessage } from "./command-source-message.js";
+import { commandSourceMessage, commandSourceMessages } from "./command-source-message.js";
 import { SessionSendRequests } from "./session-send-requests.js";
 import { observeMessageTimes, recordMessageTime } from "./session-message-clock.js";
 import { acknowledgeSessionUnread, observeSessionUnread } from "./session-unread.js";
@@ -329,13 +329,23 @@ interface SessionSettingsColumns {
   node_agents_json: string;
 }
 
-function nodeAgentModels(agentsJson: string, agentKind: AgentKind) {
+type NodeModelsCache = Map<string, Map<AgentKind, ReturnType<typeof parseAgentModels>>>;
+
+function nodeAgentModels(agentsJson: string, agentKind: AgentKind, cache?: NodeModelsCache) {
+  const cached = cache?.get(agentsJson);
+  if (cached?.has(agentKind)) return cached.get(agentKind);
   const agents = JSON.parse(agentsJson) as Array<{ kind: string; models?: unknown }>;
   const agent = agents.find((entry) => entry.kind === agentKind);
-  return agent ? parseAgentModels(agent.models) : undefined;
+  const models = agent ? parseAgentModels(agent.models) : undefined;
+  if (cache) {
+    const byKind = cached ?? new Map();
+    byKind.set(agentKind, models);
+    cache.set(agentsJson, byKind);
+  }
+  return models;
 }
 
-function sessionSettings(row: SessionSettingsColumns, open: boolean): AgentSessionSettings {
+function sessionSettings(row: SessionSettingsColumns, open: boolean, modelsCache?: NodeModelsCache): AgentSessionSettings {
   const desired = row.desired_settings_json ? JSON.parse(row.desired_settings_json) as AgentRunSettings : undefined;
   const requestedModel = desired?.model ?? row.dispatch_model;
   const revision = row.settings_revision ?? 0;
@@ -355,7 +365,7 @@ function sessionSettings(row: SessionSettingsColumns, open: boolean): AgentSessi
     ...(row.settings_error && (row.settings_error_revision ?? 0) >= (row.applied_settings_revision ?? 0)
       ? { error: row.settings_error }
       : {}),
-    adjustable: open && nodeAgentModels(row.node_agents_json, row.agent_kind) !== undefined,
+    adjustable: open && nodeAgentModels(row.node_agents_json, row.agent_kind, modelsCache) !== undefined,
   };
 }
 
@@ -390,6 +400,12 @@ interface SessionListRow {
 }
 
 type SessionListSettingsRow = SessionListRow & SessionSettingsColumns;
+
+interface CommandMetadata {
+  readonly attachments: ReadonlyMap<string, readonly AgentSessionAttachment[]>;
+  readonly sources: ReadonlyMap<string, string>;
+  readonly revisions: ReadonlyMap<string, string>;
+}
 
 interface CommandRow {
   stop_confirmed?: number;
@@ -816,7 +832,7 @@ export class AgentSessionStore {
                 s.implementation_mode, s.mode AS session_mode, s.model AS session_model,
                 s.model_endpoint AS session_model_endpoint, s.effort AS session_effort,
                 s.desired_settings_json, s.settings_revision, s.applied_settings_revision,
-                s.settings_error, s.settings_error_revision, n.agents_json AS node_agents_json
+                s.settings_error, s.settings_error_revision, NULL AS node_agents_json
          FROM dispatches d
          LEFT JOIN agent_sessions s ON s.dispatch_id = d.id
          LEFT JOIN session_message_clocks mc ON mc.session_key = 'dispatch:' || d.id
@@ -835,6 +851,14 @@ export class AgentSessionStore {
     // account passed a few hundred dispatches, which pinned the single-
     // threaded event loop for hundreds of milliseconds on every console read.
     // One batched statement per lookup now feeds the exact same row mapping.
+    // Capabilities belong to nodes, not dispatches. Avoid copying the same large
+    // JSON column for every historical session, and keep parsing request-local.
+    const nodeIds = [...new Set(rows.map(row => row.node_id))];
+    const nodeCapabilities = new Map(nodeIds.length ? (db.prepare(
+      "SELECT id,agents_json FROM nodes WHERE id IN (SELECT value FROM json_each(?))",
+    ).all(JSON.stringify(nodeIds)) as Array<{id:string;agents_json:string}>).map(row => [row.id,row.agents_json]) : []);
+    for (const row of rows) row.node_agents_json = nodeCapabilities.get(row.node_id) ?? "[]";
+    const modelsCache: NodeModelsCache = new Map();
     const integrationIds = this.integrationSessionIds(accountId);
     const dispatchIds = [...new Set(rows.map((row) => row.dispatch_id))];
     const sessionIds = rows.flatMap((row) => (row.session_id ? [row.session_id as string] : []));
@@ -935,6 +959,14 @@ export class AgentSessionStore {
       ? (db.prepare(`SELECT dispatch_id FROM builder_revoked_dispatches WHERE dispatch_id IN ${holes(dispatchIds)}`)
         .all(...dispatchIds) as unknown as Array<{ dispatch_id: string }>).map((row) => row.dispatch_id)
       : []);
+    const commands = [...new Map([...commandBySession.values(), ...stopBySession.values()].map(row => [row.id,row])).values()];
+    const commandIds = commands.map(row => row.id);
+    const metadata: CommandMetadata = {
+      attachments: this.attachments?.listForCommands(commandIds) ?? new Map(),
+      sources: commandSourceMessages(db, commandIds),
+      revisions: new ImplementationPlans(this.database).commandRevisions(commandIds),
+    };
+    const mappedCommands = new Map(commands.map(row => [row.id,this.mapCommand(row,metadata)]));
     return rows.map((row) => {
       const free = freeByDispatch.get(row.dispatch_id);
       const itemRows = itemRowsByDispatch.get(row.dispatch_id) ?? [];
@@ -1060,8 +1092,8 @@ export class AgentSessionStore {
         createdAt: row.created_at,
         items: itemRows.map((item) => ({ key: item.item_key, title: item.title, productId: item.product_id })),
         ...(message ? { latestMessage: { role: message.role, text: message.text, sourceId: message.source_id, ...(message.phase ? {phase:message.phase} : {}) } } : {}),
-        ...(command ? { command: this.mapCommand(command) } : {}),
-        ...(stopCommand ? { stopCommand: this.mapCommand(stopCommand) } : {}),
+        ...(command ? { command: mappedCommands.get(command.id)! } : {}),
+        ...(stopCommand ? { stopCommand: mappedCommands.get(stopCommand.id)! } : {}),
         attention: alertAttention,
         needsAttention,
         activities: row.session_activities_json
@@ -1078,12 +1110,13 @@ export class AgentSessionStore {
           && (!free || free.ready === 1))
           || Boolean(row.dispatch_status === "launched" && row.session_id && !binding && !itemsCompleted
             && hasStoppableAgentTurn({ status, turnState,
-              command: command ? this.mapCommand(command) : undefined,
-              stopCommand: stopCommand ? this.mapCommand(stopCommand) : undefined })),
+              command: command ? mappedCommands.get(command.id)! : undefined,
+              stopCommand: stopCommand ? mappedCommands.get(stopCommand.id)! : undefined })),
         replyable: row.session_id && (!free || free.dispatch_status === "launched") ? !revokedDispatches.has(row.dispatch_id) && !binding && !itemsCompleted : false,
         settings: sessionSettings(
           row,
           Boolean(row.session_id) && (!free || free.dispatch_status === "launched") && !archivedAt && !(row.session_id && (itemsCompleted || binding)),
+          modelsCache,
         ),
         unread: Boolean(row.unread_at && (!row.read_at || row.unread_at > row.read_at)),
         ...(row.unread_at ? { unreadAt: row.unread_at } : {}),
@@ -2316,14 +2349,16 @@ export class AgentSessionStore {
       .get(sessionId) as unknown as CommandRow | undefined;
   }
 
-  private mapCommand(row: CommandRow): AgentSessionCommand {
-    const attachments = this.attachments?.listForCommand(row.id) ?? [];
+  private mapCommand(row: CommandRow, metadata?: CommandMetadata): AgentSessionCommand {
+    const attachments = metadata ? metadata.attachments.get(row.id) ?? [] : this.attachments?.listForCommand(row.id) ?? [];
+    const sourceMessageId = metadata ? metadata.sources.get(row.id) : (row.kind === "message" ? commandSourceMessage(this.database.connection, row.id).sourceMessageId : undefined);
+    const revision = metadata ? metadata.revisions.get(row.id) : new ImplementationPlans(this.database).commandRevision(row.id);
     return {
       id: row.id,
       kind: row.kind,
-      ...(row.kind === "message" ? commandSourceMessage(this.database.connection, row.id) : {}),
+      ...(row.kind === "message" && sourceMessageId ? {sourceMessageId} : {}),
       text: row.text,
-      ...(new ImplementationPlans(this.database).commandRevision(row.id) ? { planApprovalRevision: new ImplementationPlans(this.database).commandRevision(row.id) } : {}),
+      ...(revision ? { planApprovalRevision: revision } : {}),
       ...(attachments.length ? { attachments } : {}),
       ...(row.turn_id ? { turnId: row.turn_id } : {}),
       ...(row.kind === "interrupt" && row.stop_confirmed === 1 ? { stopConfirmed: true } : {}),

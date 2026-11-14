@@ -14,3 +14,16 @@ export function commandSourceMessage(db: DatabaseSync, commandId: string, extern
     .get(commandId) as {source_id: string} | undefined;
   return row ? {sourceMessageId: row.source_id} : {};
 }
+
+/** Request-local list projection, with the same exact-session provenance as a single read. */
+export function commandSourceMessages(db: DatabaseSync, commandIds: readonly string[]): ReadonlyMap<string, string> {
+  if (!commandIds.length) return new Map();
+  const rows = db.prepare(`SELECT c.id, m.source_id FROM agent_session_commands c
+    JOIN agent_session_messages m ON m.session_id=c.session_id AND m.source_id IN (c.id,'answer-'||c.id)
+    WHERE c.id IN (SELECT value FROM json_each(?)) AND m.role='user' AND COALESCE(m.phase,'')<>'execution'
+    ORDER BY CASE WHEN m.source_id=c.id THEN 0 ELSE 1 END`)
+    .all(JSON.stringify([...new Set(commandIds)])) as Array<{id:string;source_id:string}>;
+  const result = new Map<string,string>();
+  for (const row of rows) if (!result.has(row.id)) result.set(row.id,row.source_id);
+  return result;
+}
