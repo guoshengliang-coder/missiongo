@@ -316,8 +316,29 @@ describe("planned integration batches",()=>{
     const plan={kind:"plan" as const,base:"b".repeat(40),summary:"Foundation, dependent feature, independent fix",validation:"Verify the final combined target",entries:deliveries.map((d,i)=>({deliveryId:d.id,head:d.head,dependsOn:i===1?[deliveries[0]!.id]:[],group:i<2?"shared interface":"independent",reason:"Read overlapping changes",validation:"Behavior and compatibility tests"}))};
     const check=(id:string,head="a".repeat(40))=>act({kind:"check",deliveryId:id,expectedHead:head,base:"b".repeat(40),checkedAt:new Date().toISOString(),checks:"passed",mergeable:"clean",local:"passed",source:"Synthetic CI",validation:"Local and remote checks passed"});
     const merged=(id:string,head="a".repeat(40))=>f.merges.report(f.owner.id,b.dispatchId,b.id,id,{status:"merged",head,commit:"c".repeat(40),detail:"Verified real merge in synthetic fixture"});
-    return {...f,b,deliveries,current,act,plan,check,merged};
+    const finish=()=>{act({kind:"final_validation",head:"c".repeat(40),checkedAt:new Date().toISOString(),validation:"Finished original synthetic batch",source:"Synthetic"});return f.merges.finish(f.owner.id,b.dispatchId,b.id);};
+    return {...f,b,deliveries,current,act,plan,check,merged,finish};
   }
+  it("keeps AND-520 ownership while AND-521 waits and resumes the same batch",async()=>{
+    const f=await batchFixture(1,false,true),d=f.deliveries[0]!;
+    f.act(f.plan);f.check(d.id);
+    const queue=()=>f.merges.queue(f.item.productId,f.owner.id);
+    expect(queue().deliveries).toEqual([]);
+    expect(queue().occupancy).toMatchObject({active:true,sessionId:f.b.sessionId});
+    expect(f.current().entries[0]!.mergeReady).toBe(false);
+    const wait=syntheticPrerequisites(f.current());
+    wait.conditions.find(c=>c.kind==="authorization")!.state="pending";
+    f.act(wait);
+    expect(f.current().prerequisiteGate.ready).toBe(false);
+    expect(queue().deliveries).toEqual([]);
+    f.act(syntheticPrerequisites(f.current()));
+    expect(f.current().entries[0]!.mergeReady).toBe(true);
+    f.merged(d.id);
+    expect(queue().deliveries).toEqual([]);
+    expect(queue().counts.release??0).toBe(0);
+    expect(f.store.getWorkItem(f.item.key).status).toBe("development_complete");
+    expect(f.merges.batches(f.item.productId,f.owner.id)[0]!.presentation.entries[d.id]!.publication).toBe("pending");
+  });
   it("AND-521 gates first merge, waits without a final result, and composes with existing blockers",async()=>{
     const f=await batchFixture(1,false,true),d=f.deliveries[0]!;
     f.act(f.plan);f.check(d.id);
@@ -364,6 +385,72 @@ describe("planned integration batches",()=>{
     expect(f.current().entries.find(e=>e.id===first.id)!.mergeReady).toBe(false);
     f.act(syntheticPrerequisites(f.current()));expect(f.current().entries.find(e=>e.id===first.id)!.mergeReady).toBe(true);
   });
+  it("AND-520 owns extra item events exactly and keeps a later offer for the same item independent",async()=>{
+    const f=await batchFixture(2);f.act(f.plan);
+    for(const d of f.deliveries){f.check(d.id);f.merged(d.id);}f.finish();
+    const first=f.deliveries[0]!,extra=f.deliveries[1]!,selection=[{id:first.id,revision:first.revision}];
+    const coverageBefore=await f.call("list_release_candidates",{productId:f.item.productId,includeUnscoped:true});f.safe(coverageBefore);
+    const scope=f.merges.publicationPreview(f.owner.id,f.item.productId,selection);
+    const b=f.merges.start(f.owner.id,"item-event-ownership",selection,f.config,true,1,false,"publish_only",scope.digest);
+    const coverageAfter=await f.call("list_release_candidates",{productId:f.item.productId,includeUnscoped:true});f.safe(coverageAfter);expect(coverageAfter.structuredContent!.candidates).toEqual(coverageBefore.structuredContent!.candidates);
+    expect(f.merges.queue(f.item.productId,f.owner.id).deliveries).toEqual([]);
+    expect(f.merges.batches(f.item.productId,f.owner.id)[0]!.presentation.ownedExtras).toMatchObject([{pendingArtifacts:["web"],publication:"pending"}]);
+    const next=f.merges.propose(f.owner.id,"original-client",{sessionId:extra.sessionId},"independent-new-item-delivery",{...proposal(extra.itemKeys[0]!),pullRequest:29});
+    f.merges.decide(f.owner.id,next.id,next.revision,"confirm");
+    const q=f.merges.queue(f.item.productId,f.owner.id);expect(q.deliveries.map(d=>d.id)).toEqual([next.id]);expect(q.counts.merge).toBe(1);expect(q.counts.release??0).toBe(0);
+    expect(q.occupancy).toMatchObject({active:true,sessionId:b.sessionId});
+  });
+  it("AND-520 audit R1 does not treat a new unmerged offer as the frozen event for the same PR",async()=>{
+    const f=await batchFixture(2);f.act(f.plan);for(const d of f.deliveries){f.check(d.id);f.merged(d.id);}f.finish();
+    const first=f.deliveries[0]!,extra=f.deliveries[1]!,selection=[{id:first.id,revision:first.revision}],scope=f.merges.publicationPreview(f.owner.id,f.item.productId,selection);
+    f.merges.start(f.owner.id,"audit-r1-same-pr",selection,f.config,true,1,false,"publish_only",scope.digest);
+    const next=f.merges.propose(f.owner.id,"original-client",{sessionId:extra.sessionId},"same-pr-new-head",{...proposal(extra.itemKeys[0]!),pullRequest:extra.pullRequest,head:"d".repeat(40),evidence:{...extra.evidence,head:"d".repeat(40)}});
+    f.merges.decide(f.owner.id,next.id,next.revision,"confirm");
+    const q=f.merges.queue(f.item.productId,f.owner.id);expect(q.deliveries.map(d=>d.id)).toEqual([next.id]);expect(q.counts.merge).toBe(1);
+  });
+  it.each(["content","builder","legacy-builder"])("AND-520 audit R1 shows and rejects changed %s on extra item coverage",async change=>{
+    const f=await batchFixture(2);f.act(f.plan);for(const d of f.deliveries){f.check(d.id);f.merged(d.id);}f.finish();
+    const first=f.deliveries[0]!,extra=f.deliveries[1]!,key=extra.itemKeys[0]!,selection=[{id:first.id,revision:first.revision}],scope=f.merges.publicationPreview(f.owner.id,f.item.productId,selection);
+    const b=f.merges.start(f.owner.id,"audit-r1-extra-scope",selection,f.config,true,1,false,"publish_only",scope.digest);
+    const ds=new DispatchStore(f.store.database);ds.claimNextDispatch(f.node.nodeId);ds.recordDispatchResult({nodeId:f.node.nodeId,dispatchId:b.dispatchId,status:"launched"});
+    let current=f.merges.batch(f.owner.id,b.dispatchId,b.id);
+    const act=(action:Parameters<MergeDeliveries['integrate']>[5])=>{current=f.merges.integrate(f.owner.id,b.dispatchId,b.id,current.integration!.revision,randomUUID(),action);};
+    act({kind:"plan",base:"b".repeat(40),summary:"Bound scope",validation:"Verify",entries:[{deliveryId:first.id,head:first.head,dependsOn:[],group:"history",reason:"Frozen",validation:"Verify"}]});
+    act({kind:"verify_reference",deliveryId:first.id,expectedHead:first.head,commit:"c".repeat(40),checkedAt:new Date().toISOString(),source:"Synthetic"});
+    act({kind:"final_validation",head:"c".repeat(40),checkedAt:new Date().toISOString(),validation:"Passed",source:"Synthetic"});
+    if(change==="legacy-builder") {
+      const raw=f.db.prepare("SELECT data_json FROM merge_batches WHERE id=?").get(b.id) as {data_json:string},legacy=JSON.parse(raw.data_json);
+      for(const row of legacy.publicationScope.candidates)delete row.itemScope;
+      f.db.prepare("UPDATE merge_batches SET data_json=? WHERE id=?").run(JSON.stringify(legacy),b.id);
+    }
+    if(change==="content")f.store.updateWorkItem(key,{description:"A new requirement after freezing",attribution:{accountId:f.owner.id}});
+    else f.db.prepare("UPDATE work_items SET builder_account_id=? WHERE item_key=?").run(f.other.id,key);
+    expect(f.merges.queue(f.item.productId,f.owner.id,"review").deliveries).toEqual([]);
+    expect(f.merges.batches(f.item.productId,f.owner.id).find(row=>row.id===b.id)!.presentation.ownedExtras).toMatchObject([{publication:"unknown",blocker:expect.any(String)}]);
+    expect(()=>act({kind:"publication_progress",state:"publishing",resultsDigest:current.resultsDigest,checkedAt:new Date().toISOString(),detail:"Must reject changed coverage"})).toThrow(/范围|变化/);
+  });
+  it("AND-520 audit R3 includes extras in the integrator badge without changing each source's own result",async()=>{
+    const f=await batchFixture(2);f.act(f.plan);for(const d of f.deliveries){f.check(d.id);f.merged(d.id);}f.finish();
+    const first=f.deliveries[0]!,extra=f.deliveries[1]!,selection=[{id:first.id,revision:first.revision}],scope=f.merges.publicationPreview(f.owner.id,f.item.productId,selection);
+    const b=f.merges.start(f.owner.id,"audit-r3-session-outcome",selection,f.config,true,1,false,"publish_only",scope.digest);
+    const ds=new DispatchStore(f.store.database);ds.claimNextDispatch(f.node.nodeId);ds.recordDispatchResult({nodeId:f.node.nodeId,dispatchId:b.dispatchId,status:"launched"});
+    const release=(key:string)=>{const event=f.store.getDeliveryRecords(key)[0]!;f.store.submitForVerification({itemKey:key,developmentEventId:event.id,completion:event.completion!,releases:[{artifact:"web",version:"1",sourceCommit:"e".repeat(40)}],deployedCommit:"e".repeat(40),receiptDigest:"f".repeat(64),idempotencyKey:`audit-r3-${key}`});};
+    release(first.itemKeys[0]!);
+    expect(f.merges.sessionProgress(f.item.productId,f.owner.id)[b.sessionId]).toBe("publication_partial");
+    expect(f.merges.sessionProgress(f.item.productId,f.owner.id)[first.sessionId]).toBe("published");
+    release(extra.itemKeys[0]!);expect(f.merges.sessionProgress(f.item.productId,f.owner.id)[b.sessionId]).toBe("published");
+  });
+  it("AND-520 keeps an extra frozen event with a missing legacy round in the original batch's visible responsibilities",async()=>{
+    const f=await batchFixture(2);f.act(f.plan);for(const d of f.deliveries){f.check(d.id);f.merged(d.id);}f.finish();
+    const extra=f.deliveries[1]!,key=extra.itemKeys[0]!,event=f.store.getDeliveryRecords(key)[0]!;
+    const first=f.deliveries[0]!,selection=[{id:first.id,revision:first.revision}],scope=f.merges.publicationPreview(f.owner.id,f.item.productId,selection);
+    const b=f.merges.start(f.owner.id,"legacy-extra-responsibility",selection,f.config,true,1,false,"publish_only",scope.digest);
+    const raw=f.db.prepare("SELECT payload_json FROM work_item_events WHERE id=?").get(event.id) as {payload_json:string},payload=JSON.parse(raw.payload_json);payload.roundKey=null;
+    f.db.prepare("UPDATE work_item_events SET payload_json=? WHERE id=?").run(JSON.stringify(payload),event.id);
+    f.db.prepare("INSERT OR IGNORE INTO merge_display_dirty(kind,id) VALUES ('item',?)").run(f.store.workItemId(key));
+    expect(f.merges.queue(f.item.productId,f.owner.id,"review").deliveries).toEqual([]);
+    expect(f.merges.batches(f.item.productId,f.owner.id).find(v=>v.id===b.id)!.presentation.ownedExtras).toMatchObject([{publication:"unknown",blocker:expect.stringContaining("已变化")}]);
+  });
   it("archives a published old round without borrowing its receipt for rework (AND-501/435)",async()=>{
     const f=await batchFixture(),d=f.deliveries[0]!;
     f.act(f.plan);f.check(d.id);f.merged(d.id);
@@ -409,7 +496,7 @@ describe("planned integration batches",()=>{
   });
   it("keeps an early human no-release transition in review without inventing formal handover",async()=>{
     const f=await batchFixture(1,true),d=f.deliveries[0]!;
-    f.act(f.plan);f.check(d.id);f.merged(d.id);
+    f.act(f.plan);f.check(d.id);f.merged(d.id);f.finish();
     const event=f.store.getDeliveryRecords(f.item.key)[0]!;
     f.store.transitionWorkItem({itemKey:f.item.key,actor:"human",to:"pending_verification",reason:"non_release_submitted",attribution:{accountId:config.id}});
     const timeline=f.store.getTimeline(f.item.key),receipt=timeline.find(e=>e.payload.reason==="non_release_submitted")!;
@@ -425,7 +512,7 @@ describe("planned integration batches",()=>{
   });
   it("separates missing evidence into review and refuses publication selection",async()=>{
     const f=await batchFixture(),d=f.deliveries[0]!;
-    f.act(f.plan);f.check(d.id);f.merged(d.id);
+    f.act(f.plan);f.check(d.id);f.merged(d.id);f.finish();
     const e=f.store.getDeliveryRecords(f.item.key)[0]!;
     // Simulate a historical import that lost its exact integration identity.
     f.db.prepare("UPDATE work_item_events SET payload_json=json_remove(payload_json,'$.completion','$.pullRequestUrl') WHERE id=?").run(e.id);
@@ -438,7 +525,7 @@ describe("planned integration batches",()=>{
   });
   it.each(["missing","null","unknown"])("keeps %s delivery rounds in review instead of silently archiving",async shape=>{
     const f=await batchFixture(),d=f.deliveries[0]!;
-    f.act(f.plan);f.check(d.id);f.merged(d.id);
+    f.act(f.plan);f.check(d.id);f.merged(d.id);f.finish();
     const event=f.store.getDeliveryRecords(f.item.key)[0]!;
     const raw=f.db.prepare("SELECT payload_json FROM work_item_events WHERE id=?").get(event.id) as {payload_json:string};
     const payload=JSON.parse(raw.payload_json);
@@ -454,7 +541,7 @@ describe("planned integration batches",()=>{
   });
   it("keeps exceptions outside all and starts one scoped read-only investigation across retries",async()=>{
     const f=await batchFixture(1,true),d=f.deliveries[0]!;
-    f.act(f.plan);f.check(d.id);f.merged(d.id);
+    f.act(f.plan);f.check(d.id);f.merged(d.id);f.finish();
     const before=f.store.getTimeline(f.item.key),status=f.store.getWorkItem(f.item.key).status;
     expect(f.merges.queue(f.item.productId,f.owner.id).deliveries).toEqual([]);
     const context=f.merges.reviewContext(f.owner.id,d.id),scope=context.queue.review!.scopeDigest;
@@ -473,7 +560,7 @@ describe("planned integration batches",()=>{
     expect(f.store.getDeliveryRecords(f.item.key)[0]!.published).toBe(false);
   });
   it("requires current project operation/AI grants and original delivery ownership for investigation routes",async()=>{
-    const f=await batchFixture(1,true),d=f.deliveries[0]!;f.act(f.plan);f.check(d.id);f.merged(d.id);
+    const f=await batchFixture(1,true),d=f.deliveries[0]!;f.act(f.plan);f.check(d.id);f.merged(d.id);f.finish();
     const login=async(email:string)=>{const r=await f.app.inject({method:"POST",url:"/api/v1/auth/login",payload:{username:email,password:"synthetic password"}});return r.headers["set-cookie"]!.toString().split(";")[0]!;};
     const cookie=await login(f.owner.email),otherCookie=await login(f.other.email),path=`/api/v1/merge-deliveries/${d.id}/review`;
     expect((await f.app.inject({method:"GET",url:path,headers:{cookie:otherCookie}})).statusCode).toBe(404);
@@ -488,7 +575,7 @@ describe("planned integration batches",()=>{
     expect(queue.json()).toMatchObject({deliveries:[],counts:{review:1}});
   });
   it("archives only a human-confirmed finished investigation and invalidates closure on scope changes",async()=>{
-    const f=await batchFixture(1,true),d=f.deliveries[0]!;f.act(f.plan);f.check(d.id);f.merged(d.id);
+    const f=await batchFixture(1,true),d=f.deliveries[0]!;f.act(f.plan);f.check(d.id);f.merged(d.id);f.finish();
     const before=f.store.getTimeline(f.item.key),context=f.merges.reviewContext(f.owner.id,d.id),scope=context.queue.review!.scopeDigest;
     const started=f.merges.startReview(f.owner.id,d.id,d.revision,scope,"finished-review-key",f.config),r=started.queue.review!;
     const dispatchId=(f.db.prepare("SELECT dispatch_id FROM delivery_reviews WHERE id=?").get(r.caseId!) as {dispatch_id:string}).dispatch_id;
@@ -536,7 +623,7 @@ describe("planned integration batches",()=>{
     const f=await batchFixture(),d=f.deliveries[0]!;
     f.act(f.plan);f.check(d.id);f.merged(d.id);
     const raw=JSON.parse((f.db.prepare("SELECT data_json FROM merge_batches WHERE id=?").get(f.b.id) as {data_json:string}).data_json);
-    raw.integration.plans[0].summary="Synthetic long history. ".repeat(2000);
+    raw.integration.plans[0].summary="批次历史：😀 café e\u0301。".repeat(2000);
     raw.integration.events[0].detail=JSON.parse('{"__proto__":{"polluted":true},"constructor":"own","nested":[null,false,4,{"text":"original"}]}');
     const save=()=>f.db.prepare("UPDATE merge_batches SET data_json=? WHERE id=?").run(JSON.stringify(raw),f.b.id);
     save();
@@ -565,6 +652,15 @@ describe("planned integration batches",()=>{
       })).toThrow("rollback template input");
       expect(f.merges.batches(f.item.productId,f.owner.id)).toEqual(second);
       save();expect(f.merges.batches(f.item.productId,f.owner.id)[0]!.integration!.plans[0]!.summary).toBe(raw.integration.plans[0].summary);
+      // A same-byte-length change must invalidate the template too; neither
+      // UTF-8 length nor a row identity is sufficient as a freshness key.
+      raw.integration.plans[0].summary="不同历史：😀 café e\u0301。".repeat(2000);save();
+      const before=f.merges.batches(f.item.productId,f.owner.id);
+      raw.integration.plans[0].summary=raw.integration.plans[0].summary.replace("不","相");save();
+      const after=f.merges.batches(f.item.productId,f.owner.id);
+      expect(Buffer.byteLength(JSON.stringify(before))).toBe(Buffer.byteLength(JSON.stringify(after)));
+      expect(after[0]!.integration!.plans[0]!.summary).toBe(raw.integration.plans[0].summary);
+      expect(after).not.toEqual(before);
     } finally {spy.mockRestore();}
   });
   it("aggregates session stages with exact expiry, scope and JSON key preservation",async()=>{
@@ -672,7 +768,8 @@ describe("planned integration batches",()=>{
     const f=await batchFixture(1,true),d=f.deliveries[0]!;
     f.act(f.plan);f.check(d.id);f.merged(d.id);
     f.store.transitionWorkItem({itemKey:f.item.key,actor:"human",to:"pending_verification",reason:"manual_override",note:"Human move without release evidence",attribution:{accountId:config.id}});
-    expect(f.merges.queue(f.item.productId,f.owner.id).counts.review).toBe(1);
+    expect(f.merges.queue(f.item.productId,f.owner.id).counts.review??0).toBe(0);
+    expect(f.merges.batches(f.item.productId,f.owner.id)[0]!.presentation.entries[d.id]!.handover).toMatchObject({pending:true,blocker:expect.stringContaining("无需发布交接证据")});
     expect(f.merges.queue(f.item.productId,f.owner.id).counts.release??0).toBe(0);
     const e=f.store.getDevelopmentEvidence(f.item.key),item=f.store.getWorkItem(f.item.key);
     f.store.submitNonReleaseForVerification({itemKey:item.key,completion:e.completion!,expectedRevision:item.revision,
@@ -1492,7 +1589,7 @@ describe("AND-497 scoped conversation delivery reads",()=>{
 });
 
 describe("AND-511 two-step integration queue",()=>{
-  async function mergedProject(artifacts=["web","macosApp"],databasePath=":memory:") {
+  async function mergedProject(artifacts=["web","macosApp"],databasePath=":memory:",finishBatch=true) {
     const f=await fixture(databasePath),launched=f.launch("codex"),merges=new MergeDeliveries(f.store);
     const input={...proposal(f.item.key),itemKeys:[],productId:f.item.productId,requiredArtifacts:artifacts};
     const d=merges.propose(f.owner.id,"original-client",{dispatchId:launched.dispatch.id},"queue-offer",input);
@@ -1502,9 +1599,100 @@ describe("AND-511 two-step integration queue",()=>{
     const launchBatch=(b:{dispatchId:string})=>{const dispatches=new DispatchStore(f.store.database);dispatches.claimNextDispatch(launched.node.nodeId);dispatches.recordDispatchResult({nodeId:launched.node.nodeId,dispatchId:b.dispatchId,status:"launched"});};
     launchBatch(original);
     merges.report(f.owner.id,original.dispatchId,original.id,d.id,{status:"merged",head:d.head,commit:"c".repeat(40),detail:"Synthetic verified merge"});
-    merges.finish(f.owner.id,original.dispatchId,original.id);
+    if(finishBatch)merges.finish(f.owner.id,original.dispatchId,original.id);
     return {...f,...launched,merges,input,d,conf,original,launchBatch,selection:[{id:d.id,revision:d.revision}]};
   }
+  it("AND-520 active original merged delivery stays owned until finish while the project lock protects execution",async()=>{
+    const f=await mergedProject(["web","macosApp"],":memory:",false);
+    const queue=f.merges.queue(f.item.productId,f.owner.id);
+    expect(queue.counts.release??0).toBe(0);expect(queue.occupancy).toEqual({active:true,sessionId:f.original.sessionId,requestKey:f.original.requestKey});
+    expect(f.merges.batches(f.item.productId,f.owner.id).find(b=>b.id===f.original.id)?.state).toBe("active");
+    expect(()=>f.merges.start(f.owner.id,"must-not-start",f.selection,f.conf,false)).toThrow(/已有合并批次/);
+    f.merges.finish(f.owner.id,f.original.dispatchId,f.original.id);
+    const finished=f.merges.queue(f.item.productId,f.owner.id);expect(finished.counts.release).toBe(1);expect(finished.occupancy).toEqual({active:false});
+  });
+  it("AND-520 active publish-only reference stays owned with partial artifacts and immutable origin",async()=>{
+    const f=await mergedProject();const scope=f.merges.publicationPreview(f.owner.id,f.item.productId,f.selection);
+    const b=f.merges.start(f.owner.id,"audit-publish",f.selection,f.conf,true,1,false,"publish_only",scope.digest);f.launchBatch(b);
+    f.merges.recordRelease(f.owner.id,"original-client",{productId:f.item.productId,idempotencyKey:"audit-partial",deployedCommit:"e".repeat(40),receiptDigest:"f".repeat(64),deliveries:[{deliveryId:f.d.id,expectedRevision:f.d.revision,releases:[{artifact:"web",version:"1",sourceCommit:"e".repeat(40)}]}]});
+    const q=f.merges.queue(f.item.productId,f.owner.id);
+    expect(q.counts.release??0).toBe(0);expect(q.deliveries).toEqual([]);
+    expect(JSON.parse((f.db.prepare("SELECT data_json FROM merge_deliveries WHERE id=?").get(f.d.id) as {data_json:string}).data_json).batchId).toBe(f.original.id);expect(b.references?.[f.d.id]?.batchId).toBe(f.original.id);
+  });
+  it("AND-520 reviewed extra publication candidate is also owned by the current batch",async()=>{
+    const f=await mergedProject(["web"]);
+    const extra=f.merges.propose(f.owner.id,"original-client",{dispatchId:f.dispatch.id},"audit-extra",{...f.input,pullRequest:14,summary:"Reviewed extra"});
+    f.merges.decide(f.owner.id,extra.id,extra.revision,"confirm");
+    const prior=f.merges.start(f.owner.id,"audit-extra-merge",[{id:extra.id,revision:extra.revision}],f.conf,false);f.launchBatch(prior);
+    f.merges.report(f.owner.id,prior.dispatchId,prior.id,extra.id,{status:"merged",head:extra.head,commit:"d".repeat(40),detail:"Synthetic merge"});f.merges.finish(f.owner.id,prior.dispatchId,prior.id);
+    const scope=f.merges.publicationPreview(f.owner.id,f.item.productId,f.selection);
+    expect(scope.candidates.find(c=>c.deliveryId===extra.id)?.selected).toBe(false);
+    const batch=f.merges.start(f.owner.id,"audit-extra-publish",f.selection,f.conf,true,1,false,"publish_only",scope.digest);
+    expect(batch.deliveries).not.toContain(extra.id);expect(f.merges.queue(f.item.productId,f.owner.id).counts.release??0).toBe(0);
+  });
+  it("AND-520 project lock is global but another authorized account gets only a permission-safe occupancy summary",async()=>{
+    const f=await mergedProject(["web"],":memory:",false);
+    expect(f.merges.batches(f.item.productId,f.other.id)).toEqual([]);
+    expect(f.merges.queue(f.item.productId,f.other.id).occupancy).toEqual({active:true});
+    expect(()=>f.merges.start(f.other.id,"audit-other-account",f.selection,f.conf,false)).toThrow(/已有合并批次/);
+  });
+
+
+  it("AND-520 preserves ownership through timeouts and new source input, but leaves new independent offers selectable",async()=>{
+    const f=await mergedProject(["web"],":memory:",false);
+    const next=f.merges.propose(f.owner.id,"original-client",{dispatchId:f.dispatch.id},"new-independent",{...f.input,pullRequest:19});
+    f.merges.decide(f.owner.id,next.id,next.revision,"confirm");
+    let q=f.merges.queue(f.item.productId,f.owner.id);
+    expect(q.deliveries.map(d=>d.id)).toEqual([next.id]);expect(q.counts.merge).toBe(1);expect(q.counts.release??0).toBe(0);
+    const clock=vi.spyOn(Date,"now").mockReturnValue(Date.now()+86_400_000);
+    try{q=f.merges.queue(f.item.productId,f.owner.id);expect(q.occupancy.active).toBe(true);expect(q.counts.release??0).toBe(0);}finally{clock.mockRestore();}
+    new AgentSessionStore(f.store.database).enqueue(f.owner.id,f.projectSessionId,"A separate discussion",[]);
+    q=f.merges.queue(f.item.productId,f.owner.id);expect(q.deliveries).toEqual([]);expect(q.occupancy.active).toBe(true);
+    expect(f.merges.releaseCandidates(f.item.productId).map(c=>c.delivery.id)).toContain(f.d.id);
+  });
+  it("AND-520 rolls back ownership with a rejected batch and rebuilds active ownership on upgrade",async()=>{
+    const dir=mkdtempSync(join(tmpdir(),"and520-owner-upgrade-")),path=join(dir,"data.sqlite");let reopened:ReturnType<typeof buildApp>|undefined;
+    try{
+      const f=await mergedProject(["web"],path),scope=f.merges.publicationPreview(f.owner.id,f.item.productId,f.selection);
+      expect(()=>f.store.database.transaction(()=>{f.merges.start(f.owner.id,"rolled-back",f.selection,f.conf,true,1,false,"publish_only",scope.digest);throw Error("Synthetic rollback");})).toThrow("Synthetic rollback");
+      expect(f.merges.queue(f.item.productId,f.owner.id)).toMatchObject({occupancy:{active:false},counts:{release:1}});
+      const b=f.merges.start(f.owner.id,"active-upgrade",f.selection,f.conf,true,1,false,"publish_only",scope.digest);
+      const source=f.db.prepare("SELECT data_json FROM merge_deliveries WHERE id=?").get(f.d.id),batch=f.db.prepare("SELECT data_json FROM merge_batches WHERE id=?").get(b.id),timeline=f.store.getTimeline(f.item.key);
+      f.db.exec("DROP INDEX integration_queue_available; DROP INDEX integration_queue_owner; ALTER TABLE merge_delivery_projection DROP COLUMN processing_batch_id; DELETE FROM schema_migrations WHERE version=202611140247;");
+      await f.app.close();reopened=buildApp({databasePath:path,adminAccount:config,writeTools:"comments",statusCheckTime:false});
+      const merges=new MergeDeliveries(reopened.missionGoStore),q=merges.queue(f.item.productId,f.owner.id);
+      expect(q.occupancy).toEqual({active:true,sessionId:b.sessionId,requestKey:b.requestKey});expect(q.deliveries).toEqual([]);expect(q.counts.release??0).toBe(0);
+      const db=reopened.missionGoStore.database.connection;
+      expect(db.prepare("SELECT data_json FROM merge_deliveries WHERE id=?").get(f.d.id)).toEqual(source);
+      expect(db.prepare("SELECT data_json FROM merge_batches WHERE id=?").get(b.id)).toEqual(batch);
+      expect(reopened.missionGoStore.getTimeline(f.item.key)).toEqual(timeline);
+    }finally{await reopened?.close();rmSync(dir,{recursive:true,force:true});}
+  });
+  it("AND-520 publishes the same complete candidates while selected and extra deliveries are owned",async()=>{
+    const f=await mergedProject(["web"]),before=f.merges.releaseCandidates(f.item.productId);
+    const scope=f.merges.publicationPreview(f.owner.id,f.item.productId,f.selection);
+    const b=f.merges.start(f.owner.id,"full-candidates-owned",f.selection,f.conf,true,1,false,"publish_only",scope.digest);f.launchBatch(b);
+    expect(f.merges.queue(f.item.productId,f.owner.id).deliveries).toEqual([]);
+    expect(f.merges.releaseCandidates(f.item.productId)).toEqual(before);
+    expect(f.merges.batch(f.owner.id,b.dispatchId,b.id).references?.[f.d.id]?.batchId).toBe(f.original.id);
+  });
+  it("AND-520 refreshes ended reference history when a later batch supplies formal publication receipts",async()=>{
+    const f=await mergedProject(["web"]),scope=f.merges.publicationPreview(f.owner.id,f.item.productId,f.selection);
+    const b=f.merges.start(f.owner.id,"deferred-reference-history",f.selection,f.conf,true,1,false,"publish_only",scope.digest);f.launchBatch(b);
+    let current=f.merges.batch(f.owner.id,b.dispatchId,b.id);
+    const act=(action:Parameters<MergeDeliveries['integrate']>[5])=>{current=f.merges.integrate(f.owner.id,b.dispatchId,b.id,current.integration!.revision,randomUUID(),action);};
+    act({kind:"plan",base:"b".repeat(40),summary:"Historical reference",validation:"Verify",entries:[{deliveryId:f.d.id,head:f.d.head,dependsOn:[],group:"history",reason:"Read existing merge",validation:"Verify"}]});
+    act({kind:"verify_reference",deliveryId:f.d.id,expectedHead:f.d.head,commit:"c".repeat(40),checkedAt:new Date().toISOString(),source:"Synthetic"});
+    act({kind:"final_validation",head:"c".repeat(40),checkedAt:new Date().toISOString(),validation:"Verified",source:"Synthetic"});
+    const snapshot=f.merges.preview(f.owner.id,b.id).snapshot;
+    f.merges.requestReconciliation(f.owner.id,b.dispatchId,b.id,"defer-history",snapshot,{kind:"defer_publication",reason:"Explicit synthetic human choice"});
+    f.merges.decideReconciliation(f.owner.id,b.id,"defer-history",snapshot,"approved",true);
+    f.merges.applyReconciliation(f.owner.id,b.dispatchId,b.id,"defer-history");f.merges.finish(f.owner.id,b.dispatchId,b.id);
+    expect(f.merges.queue(f.item.productId,f.owner.id).counts.release).toBe(1);
+    f.merges.recordRelease(f.owner.id,"original-client",{productId:f.item.productId,idempotencyKey:"later-publication",deployedCommit:"e".repeat(40),receiptDigest:"f".repeat(64),deliveries:[{deliveryId:f.d.id,expectedRevision:f.d.revision,releases:[{artifact:"web",version:"1",sourceCommit:"e".repeat(40)}]}]});
+    expect(f.merges.batches(f.item.productId,f.owner.id).find(row=>row.id===b.id)!.presentation.entries[f.d.id]!.publication).toBe("published");
+    expect(f.merges.queue(f.item.productId,f.owner.id).deliveries).toEqual([]);
+  });
   it("keeps merge-only work visible after source input; partial receipts stay pending until every artifact is covered",async()=>{
     const f=await mergedProject();
     expect(f.merges.list(f.item.productId,f.owner.id)).toEqual([]); // old offer API is unchanged
@@ -1620,6 +1808,8 @@ describe("AND-511 two-step integration queue",()=>{
     const scope=f.merges.publicationPreview(f.owner.id,f.item.productId,f.selection);
     expect(scope.candidates.find(c=>c.deliveryId===d.id)?.selected).toBe(false);
     const b=f.merges.start(f.owner.id,"publish-all",f.selection,f.conf,true,1,false,"publish_only",scope.digest);f.launchBatch(b);
+    expect(f.merges.queue(f.item.productId,f.owner.id).deliveries).toEqual([]);
+    expect(f.merges.batches(f.item.productId,f.owner.id)[0]!.presentation.ownedExtras).toMatchObject([{id:d.id,pendingArtifacts:["web"]}]);
     let current=f.merges.batch(f.owner.id,b.dispatchId,b.id);
     const act=(action:Parameters<MergeDeliveries['integrate']>[5])=>{current=f.merges.integrate(f.owner.id,b.dispatchId,b.id,current.integration!.revision,randomUUID(),action);};
     act({kind:"plan",base:"b".repeat(40),summary:"Read selected reference",validation:"Verify",entries:[{deliveryId:f.d.id,head:f.d.head,dependsOn:[],group:"history",reason:"Already merged",validation:"Verify"}]});
@@ -1659,4 +1849,30 @@ describe("AND-511 two-step integration queue",()=>{
     expect((await f.app.inject({method:"POST",url:`/api/v1/products/${f.item.productId}/integration-preview`,headers:{cookie:owner},payload:{selection:f.selection}})).statusCode).toBe(404);
   });
 
+});
+
+describe("AND-520 item-linked intermediate lifecycle",()=>{
+  it("AND-520 item-backed merged delivery stays owned while its original batch remains active",async()=>{
+    const f=await prepared();f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
+    const b=f.merges.start(f.owner.id,"audit-item-active",[{id:f.d.id,revision:f.d.revision}],f.config,false);
+    const ds=new DispatchStore(f.store.database);ds.claimNextDispatch(f.node.nodeId);ds.recordDispatchResult({nodeId:f.node.nodeId,dispatchId:b.dispatchId,status:"launched"});
+    f.merges.report(f.owner.id,b.dispatchId,b.id,f.d.id,{status:"merged",head:f.d.head,commit:"c".repeat(40),detail:"Synthetic integration"});
+    const q=f.merges.queue(f.item.productId,f.owner.id);
+    expect(q.counts.release??0).toBe(0);expect(q.deliveries).toEqual([]);
+    expect(f.store.getWorkItem(f.item.key).status).toBe("development_complete");
+    expect(f.merges.batches(f.item.productId,f.owner.id)[0]!.state).toBe("active");
+  });
+  it("AND-520 no-release work does not create a separate exception before normal batch handover finishes",async()=>{
+    const f=await prepared();
+    const d=f.merges.propose(f.owner.id,"original-client",f.identity,"audit-no-release",{...f.input,requiredArtifacts:[],noReleaseReason:"Only test fixtures"});
+    f.merges.decide(f.owner.id,d.id,d.revision,"confirm");
+    const b=f.merges.start(f.owner.id,"audit-no-release-active",[{id:d.id,revision:d.revision}],f.config,false);
+    const ds=new DispatchStore(f.store.database);ds.claimNextDispatch(f.node.nodeId);ds.recordDispatchResult({nodeId:f.node.nodeId,dispatchId:b.dispatchId,status:"launched"});
+    f.merges.report(f.owner.id,b.dispatchId,b.id,d.id,{status:"merged",head:d.head,commit:"c".repeat(40),detail:"Synthetic integration awaiting normal handover"});
+    const q=f.merges.queue(f.item.productId,f.owner.id,"review");
+    expect(q.counts.review??0).toBe(0);expect(q.deliveries).toEqual([]);
+    const context=f.merges.reviewContext(f.owner.id,d.id);expect(context.queue.blocker).toContain("无需发布交接证据待核实");
+    expect(()=>f.merges.startReview(f.owner.id,d.id,d.revision,context.queue.review!.scopeDigest,"no-duplicate-review",f.config)).toThrow(/活动集成批次/);
+    expect(f.merges.batches(f.item.productId,f.owner.id)[0]!.state).toBe("active");
+  });
 });

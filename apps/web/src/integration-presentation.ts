@@ -10,7 +10,7 @@ export function integrationStage(batch:Batch,id:string) {
 }
 export function integrationPublication(batch:Batch,id?:string):IntegrationPublication {
   if(id)return batch.presentation?.entries[id]?.publication??"unknown";
-  const states=integrationOrder(batch).map(key=>integrationPublication(batch,key));
+  const states=[...integrationOrder(batch).map(key=>integrationPublication(batch,key)),...(batch.presentation?.ownedExtras?.map(row=>row.publication)??[])];
   if(!states.length)return "unknown";
   if(states.every(s=>s==="not_required"))return "not_required";
   if(states.every(s=>s==="published"||s==="not_required"))return "published";

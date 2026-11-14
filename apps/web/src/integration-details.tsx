@@ -63,10 +63,11 @@ export function IntegrationProgress({batch}:{batch:Batch}) {
       <div className="integration-groups">{order.map(id=>{
         const e=state?.entries[id],p=batch.presentation?.entries[id],phase=integrationStage(batch,id),pub=integrationPublication(batch,id);
         return <button type="button" className="integration-group" key={id} onClick={()=>enter("detail",id)}>
-          <span className="integration-group-copy">{batch.references?.[id]&&<small>{t(batch.verifiedReferences?.[id]?"queueReferenceVerified":"queueReferencePending")}</small>}<strong>{p?.title||e?.itemKeys.join(" · ")||t("integrationUnknownGroup")}</strong><small>{(e?.itemKeys??p?.itemKeys)?.join(" · ")}</small></span>
+          <span className="integration-group-copy">{batch.references?.[id]&&<small>{t(batch.verifiedReferences?.[id]?"queueReferenceVerified":"queueReferencePending")}</small>}<strong>{p?.title||e?.itemKeys.join(" · ")||t("integrationUnknownGroup")}</strong>{p?.handover?.pending&&<small>{t("integrationHandoverPending")}{p.handover.blocker?` · ${p.handover.blocker}`:""}</small>}<small>{(e?.itemKeys??p?.itemKeys)?.join(" · ")}</small></span>
           <span className="integration-group-state"><span data-outcome="merge" data-complete={phase==="merged"}>{t(integrationStageLabels[phase])}</span><span data-outcome="publication" data-complete={pub==="published"}>{t(integrationPublicationLabels[pub])}</span></span><ChevronRight size={18} aria-hidden="true"/>
         </button>;
       })}</div>
+      {batch.presentation?.ownedExtras?.length?<section><h3>{t("integrationOwnedExtras")}</h3>{batch.presentation.ownedExtras.map(row=><div key={row.id}><strong>{row.title}</strong><p>{t(integrationPublicationLabels[row.publication])}</p>{row.pendingArtifacts.length>0&&<p>{t("queuePendingArtifacts")}: {row.pendingArtifacts.join(" / ")}</p>}{row.blocker&&<p role="status" className="integration-attention">{row.blocker}</p>}</div>)}</section>:null}
       {!order.length&&<p>{t("integrationPlanning")}</p>}
       <button type="button" className="integration-drill" onClick={()=>enter("recovery")}>{t("recoveryOpen")}<ChevronRight size={18} aria-hidden="true"/></button>
     </div>
@@ -75,6 +76,7 @@ export function IntegrationProgress({batch}:{batch:Batch}) {
       <h3 className="integration-group-title">{step?.group||t("integrationGroup")}</h3><p className="integration-note">{(entry?.itemKeys??presentation?.itemKeys)?.join(" · ")}</p>
       <div className="integration-statuses"><span data-outcome="merge" data-complete={stage==="merged"}>{t(integrationStageLabels[stage])}</span><span data-outcome="publication" data-complete={integrationPublication(batch,selected)==="published"}>{t(integrationPublicationLabels[integrationPublication(batch,selected)])}</span></div>
       {selected&&batch.references?.[selected]&&<p className="integration-note">{t(batch.verifiedReferences?.[selected]?"queueReferenceVerified":"queueReferencePending")}</p>}
+      {presentation?.handover?.pending&&<p role="status" className="integration-attention">{t("integrationHandoverPending")}{presentation.handover.blocker?` · ${presentation.handover.blocker}`:""}</p>}
       <section><h4>{t("integrationChangeDescription")}</h4><p>{title}</p></section>
       <dl className="integration-facts">
         <dt>{t("integrationRepairOutcome")}</dt><dd>{t(entry?.repair?"integrationRepairPending":entry?.repairs.length?"integrationRepairsRecorded":"integrationNoRepairs")}</dd>
