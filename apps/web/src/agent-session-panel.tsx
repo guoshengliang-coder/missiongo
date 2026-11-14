@@ -1,7 +1,6 @@
 import { useConsolePerformance } from "./use-console-performance";
 import { observePerformanceReply } from "./console-performance";
 import { useTranscriptAnchor } from "./transcript-anchor";
-import { DocumentPlanRecovery } from "./document-plan-recovery";
 import { CommonCommandMenu, CommandMessageMenu, useCommandTarget, useCommonCommands } from "./common-commands";
 import { AgentSessionFailureNotice } from "./agent-session-failure-notice";
 import { DraftChatFile } from "./agent-chat-draft-file";
@@ -202,7 +201,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
             <>
               <header className="agent-session-head">
                 <strong>{t("agentSessionTitle")}</strong>
-                <AgentPlanRecords key={sessionId} session={session.data} />
+                <AgentPlanRecords key={sessionId} session={session.data} blocked={Boolean(questionPermission) || pending || sendBusy} />
                 <IntegrationDetails productId={productId} sessionId={sessionId} />
               </header>
               {planMessages.messages.length === 0 && (
@@ -248,7 +247,6 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                     : <Fragment key={message.id}>{content}</Fragment>;
                 })}
               </div>
-              <DocumentPlanRecovery key={`recovery-${sessionId}-${session.data.implementationPlan?.revision}`} session={session.data} blocked={questionPermission || pending || sendBusy} />
               {!planMessages.planMessageId && <UnlinkedPlanRecord session={session.data} blocked={questionPermission || pending || sendBusy} />}
               <div className="agent-run-status" aria-label={t("agentRunFeedback")}>
                 <AgentOperationFeedback failures={feedback.failures} sessionId={sessionId} onDismiss={feedback.finish} />
