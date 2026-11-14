@@ -9,7 +9,7 @@ import {performance} from "node:perf_hooks";
 import {restrictToLoopback} from "./release-performance-network.mjs";
 const args={};
 for(let i=2;i<process.argv.length;i+=2){
- if(!['--source','--database','--account','--output','--samples','--concurrency','--revision'].includes(process.argv[i])||!process.argv[i+1])throw Error('Expected explicit source/database/account/output and optional samples/concurrency/revision');
+ if(!['--source','--database','--account','--output','--samples','--concurrency','--revision','--at'].includes(process.argv[i])||!process.argv[i+1])throw Error('Expected explicit source/database/account/output and optional samples/concurrency/revision');
  args[process.argv[i]]=process.argv[i+1];
 }
 if(!args['--source']||!args['--database']||!args['--account']||!args['--output']||!args['--revision'])throw Error('Explicit source, database, account, output and verified source revision required');
@@ -18,6 +18,11 @@ if(!Number.isInteger(samples)||samples<100||samples>1000||![1,4].includes(concur
 const root=resolve(args['--source']),output=resolve(args['--output']);
 if(output===resolve(args['--database']))throw Error('Output must differ from the immutable input');
 mkdirSync(dirname(output),{recursive:true});writeFileSync(output,JSON.stringify({status:'incomplete'}));
+const evaluatedAt=args['--at']?Date.parse(args['--at']):Date.now();
+if(!Number.isFinite(evaluatedAt))throw Error('Invalid fixed evaluation time');
+// Keep age-based fields comparable across independent process/copy runs.
+const RealDate=Date;
+globalThis.Date=class extends RealDate { constructor(...values){if(values.length)super(...values);else super(evaluatedAt);}static now(){return evaluatedAt;} };
 const directory=mkdtempSync(join(tmpdir(),'session-list-copy-'));let app;
 try{
  const database=join(directory,'work.sqlite');copyFileSync(resolve(args['--database']),database);chmodSync(database,0o600);
@@ -43,6 +48,6 @@ try{
  active=false;const cpu=process.cpuUsage(used),sorted=[...values].sort((a,b)=>a-b);
  const paths=['agent-session-store.ts','agent-session-attachments.ts','command-source-message.ts','implementation-plans.ts','agent-settings.ts','app.ts'];const digest=createHash('sha256');
  for(const path of paths)digest.update(path).update(readFileSync(join(root,'services/server/src',path)));
- const result={status:'measured',revision:args['--revision'],sourceDigest:digest.digest('hex'),measuredAt:new Date().toISOString(),node:process.version,environment:'authorized static copy; local Fastify inject; loopback only; not production traffic',concurrency,firstListMs,firstListMeaning:'first list after startup; not OS cold',samples:values,medianMs:sorted[Math.ceil(samples*.5)-1],p95Ms:sorted[Math.ceil(samples*.95)-1],cpuMsPerRequest:(cpu.user+cpu.system)/1000/samples,queriesPerRequest:queries/samples,queryTiming:'statements prepared after startup; execution only',sqlMsPerRequest:sqlMs/samples,serializationMsPerRequest:serializationMs/samples,responseDigests:[...digests],responseBytes:[...sizes],sessionCounts:[...counts]};
+ const result={status:'measured',revision:args['--revision'],sourceDigest:digest.digest('hex'),measuredAt:new RealDate().toISOString(),evaluatedAt:new RealDate(evaluatedAt).toISOString(),node:process.version,environment:'authorized static copy; local Fastify inject; loopback only; not production traffic',concurrency,firstListMs,firstListMeaning:'first list after startup; not OS cold',samples:values,medianMs:sorted[Math.ceil(samples*.5)-1],p95Ms:sorted[Math.ceil(samples*.95)-1],cpuMsPerRequest:(cpu.user+cpu.system)/1000/samples,queriesPerRequest:queries/samples,queryTiming:'statements prepared after startup; execution only',sqlMsPerRequest:sqlMs/samples,serializationMsPerRequest:serializationMs/samples,responseDigests:[...digests],responseBytes:[...sizes],sessionCounts:[...counts]};
  writeFileSync(output,JSON.stringify(result,null,2)+'\n');console.log(JSON.stringify({...result,samples:undefined,responseDigests:undefined}));
 }finally{if(app)await app.close();rmSync(directory,{recursive:true,force:true});}
