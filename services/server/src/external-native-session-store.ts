@@ -1,3 +1,4 @@
+import { commandSourceMessage } from "./command-source-message.js";
 import { SessionSendRequests } from "./session-send-requests.js";
 import { observeMessageTimes, recordMessageTime } from "./session-message-clock.js";
 import { observeSessionUnread } from "./session-unread.js";
@@ -105,6 +106,7 @@ export class ExternalNativeSessionStore {
       : this.db.prepare("SELECT * FROM external_native_commands WHERE session_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(id)) as CommandRow | undefined;
     const attachments = row ? this.attachments.listForCommand(row.id) : [];
     return row ? { id: row.id, kind: "message", text: row.text,
+      ...commandSourceMessage(this.db, row.id, true),
       ...(new ImplementationPlans(this.store.database).commandRevision(row.id) ? { planApprovalRevision: new ImplementationPlans(this.store.database).commandRevision(row.id) } : {}), status: row.status, createdAt: row.created_at,
       ...(attachments.length ? { attachments } : {}),
       ...(row.error ? { error: row.error } : {}), ...(row.delivering_at ? { deliveringAt: row.delivering_at } : {}),

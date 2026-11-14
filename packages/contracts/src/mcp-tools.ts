@@ -55,6 +55,7 @@ export const MCP_TOOL_DEFINITIONS = [
   { name: "get_plan_document", access: "read", purpose: "Read the exact fixed Markdown and version with all covered item permissions." },
   { name: "prepare_plan_document", access: "write", purpose: "Save immutable plan Markdown and return the same summary and link for every client." },
   { name: "request_plan_approval", access: "write", purpose: "Request native human approval for the exact current implementation plan and validation scope; never an Agent-supplied approval fact." },
+  { name: "recover_plan_approval", access: "write", purpose: "Recover one original fixed document approval from authenticated source evidence without a new human decision." },
   { name: "claim_item", access: "write", purpose: "Claim ready work or join in-progress work within current Builder/executor authority using the original conversation identity. Claiming and implementation approval are independent; claiming does not authorize implementation. Explicit handoffs keep their separate authorization checks." },
   { name: "recover_execution_authorization", access: "write", purpose: "Recover only this original conversation's unrevoked claim credential in the current round, without claiming or changing status." },
   { name: "submit_development_complete", access: "write", purpose: "Record verified GitHub/GitLab or local Git integration and its release requirements, or an explicit reason no release is needed." },

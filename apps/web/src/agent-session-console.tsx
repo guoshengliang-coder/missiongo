@@ -1,5 +1,7 @@
 import { useConsolePerformance } from "./use-console-performance";
 import { observePerformanceReply } from "./console-performance";
+import { useTranscriptAnchor, revealTranscriptReply } from "./transcript-anchor";
+import { DocumentPlanRecovery } from "./document-plan-recovery";
 import { CommonCommandMenu, CommandMessageMenu, useCommandTarget } from "./common-commands";
 import { SessionSender, SendUnconfirmed, SendSuperseded, commandNotDelivered, sendAttemptHasDraft, type SendInput } from "./session-send";
 import { useSendAttempt, sendAttemptLocked, SessionSendFeedback } from "./session-send-feedback";
@@ -45,9 +47,10 @@ import {
   X,
 } from "lucide-react";
 
-import { api } from "./api";
+import { api, type ApiError } from "./api";
+import { clearDeniedSession, isSessionAccessError, recoverAgentSession } from "./agent-session-recovery";
 import { AgentSessionFailureNotice } from "./agent-session-failure-notice";
-import { AgentHistoryNotice, AgentReplyFeedback, AgentRunDetails, SessionStatusIcon, isHistoryLimited, AgentSessionError } from "./agent-session-feedback";
+import { AgentHistoryNotice, AgentReplyFeedback, AgentReplySourceNotice, AgentRunDetails, SessionStatusIcon, isHistoryLimited, AgentSessionError } from "./agent-session-feedback";
 import { AgentIcon } from "./agent-icons";
 import {
   activityLabelKey,
@@ -58,6 +61,7 @@ import {
   waitingStatusLabelKey,
   planApprovalStatusKey,
   agentChatMessages,
+  withOutgoingReply,
   projectConversationMessages,
   agentSessionMatches,
   agentSessionCategory,
@@ -80,8 +84,8 @@ import {
   outgoingReplyStatusKey,
   replyBlockedLabelKey,
   externalProgressLabelKey,
-  replyMirrorArrived,
-  resolvedAgentSessionId,
+  replySourceState,
+  commandPrecedesLoadedWindow,
   sessionCountsAsUnread,
   sessionInlineError,
   sessionReplyDraft,
@@ -282,12 +286,13 @@ export function AgentSessionConsole({
   // The item a dispatch chip opened a preview of (AND-159). A preview, not a
   // page: reading what the session is working on must not walk away from it.
   const [previewItemKey, setPreviewItemKey] = useState<string | null>(null);
-  const [unavailableSessionId, setUnavailableSessionId] = useState<string | null>(null);
+  const [deniedDetails, setDeniedDetails] = useState<Readonly<Record<string, ApiError>>>({});
   const messagesRef = useRef<HTMLDivElement>(null);
   const observedSessionRef = useRef<string | null>(null);
   const conversationOpenRef = useRef(false);
   const previousMessagesRef = useRef<readonly { id: string; text: string }[]>([]);
   const previousOutgoingRef = useRef("");
+  const previousSubmittedRef = useRef<string | undefined>(undefined);
   const unseenMessageIdsRef = useRef(new Set<string>());
   const hasSessionsError = sessionsError !== null && sessionsError !== undefined;
 
@@ -348,17 +353,23 @@ export function AgentSessionConsole({
   // A reply resolves "needs attention" and removes this row from that filter.
   // Keep the conversation the person is still reading; explicit filter and
   // navigation handlers remain responsible for leaving it (AND-147).
-  const selectedId = resolvedAgentSessionId(
-    canonicalAgentSessionId(selectedSessionId, allSessions),
-    allSessions.map((session) => session.id),
-    sessionsLoaded,
-  );
-
+  // Keep the requested route while a missing summary is checked. Only explicit
+  // navigation clears the target; identity mappings may canonicalize it.
+  const selectedId = canonicalAgentSessionId(selectedSessionId, allSessions);
+  const linked = draftView ? undefined : allSessions.find(session => session.id === selectedId);
+  const missingTarget = !draftView && Boolean(selectedId) && !linked;
+  const recoveryEnabled = missingTarget && sessionsLoaded && documentVisible;
+  const recovery = useQuery({
+    queryKey: ["agent-session-recovery", selectedId],
+    queryFn: ({ signal }) => recoverAgentSession(queryClient, selectedId!, signal),
+    enabled: recoveryEnabled,
+    retry: false, staleTime: 0, gcTime: 0,
+    refetchOnWindowFocus: false,
+  });
   useEffect(() => {
-    if (!sessionsLoaded || !selectedSessionId) return;
-    const linked = allSessions.find((session) => session.id === canonicalAgentSessionId(selectedSessionId, allSessions));
-    setUnavailableSessionId(linked ? null : selectedSessionId);
-  }, [allSessions, selectedSessionId, sessionsLoaded]);
+    if (!recoveryEnabled) return;
+    return () => { void queryClient.cancelQueries({ queryKey: ["agent-session-recovery", selectedId], exact: true }); };
+  }, [queryClient, recoveryEnabled, selectedId]);
 
   useEffect(() => {
     const update = () => setDocumentVisible(document.visibilityState === "visible");
@@ -389,13 +400,61 @@ export function AgentSessionConsole({
   }, [bulkMode]);
 
   useEffect(() => {
-    if (draftView || selectedId === selectedSessionId) return;
+    if (draftView || !linked || selectedId === selectedSessionId) return;
     onSelectSession(selectedId, conversationOpen && Boolean(selectedId));
-  }, [conversationOpen, draftView, onSelectSession, selectedId, selectedSessionId]);
+  }, [conversationOpen, draftView, linked, onSelectSession, selectedId, selectedSessionId]);
 
   const selectedVisible = visibleSessions.some(session => session.id === selectedId);
   const sessionListRef = useSelectedSessionScroll(selectedId, selectedVisible, conversationOpen);
-  const selected = draftView ? undefined : allSessions.find((session) => session.id === selectedId);
+  const denialIds = useMemo(() => [...new Set([selectedId, linked?.agentSessionId, ...(linked?.relatedSessionIds ?? [])]
+    .filter((id): id is string => Boolean(id)))], [selectedId, linked?.agentSessionId, linked?.relatedSessionIds]);
+  const latchedError = denialIds.map(id => deniedDetails[id]).find(Boolean);
+  const sessionQuery = useQuery({
+    queryKey: ["agent-session", linked?.agentSessionId],
+    queryFn: async ({ queryKey, signal }) => {
+      const sessionId = queryKey[1] as string;
+      const requestStarted = queryClient.getQueryData<AgentSession>(["agent-session", sessionId]);
+      const incoming = await api.getAgentSession(sessionId, signal);
+      return mergeAgentSessionSnapshot(
+        requestStarted,
+        queryClient.getQueryData<AgentSession>(["agent-session", sessionId]),
+        incoming,
+      );
+    },
+    enabled: Boolean(linked?.agentSessionId) && documentVisible,
+    retry: (failures, error) => !isSessionAccessError(error) && failures < 1,
+    ...(latchedError ? { staleTime: 0 } : {}),
+  });
+  const detailAccessError = isSessionAccessError(sessionQuery.error) ? sessionQuery.error : undefined;
+  const recoveryAccessError = recovery.data?.kind === "unavailable" ? recovery.data.error : undefined;
+  // A retry must obtain a new readable snapshot before restoring controls.
+  const detailRechecked = sessionQuery.isSuccess && sessionQuery.isFetchedAfterMount && Boolean(sessionQuery.data);
+  const denied = Boolean(detailAccessError || !detailRechecked && (recoveryAccessError || latchedError));
+  const recoveryError = (denied ? sessionQuery.error ?? latchedError : undefined)
+    ?? recoveryAccessError ?? recovery.error ?? sessionsError;
+  // Permission failures must hide cached content and all of its controls on
+  // this render, before asynchronous cache cleanup or list refresh completes.
+  const selected = denied ? undefined : linked;
+  useEffect(() => {
+    if (detailRechecked && !detailAccessError) {
+      // Reading B cannot revoke A's denial. Only this verified identity group
+      // may be unlocked, including an old ID mapped to its canonical session.
+      setDeniedDetails(current => {
+        if (!denialIds.some(id => current[id])) return current;
+        const next = { ...current };
+        for (const id of denialIds) delete next[id];
+        return next;
+      });
+      return;
+    }
+    const error = detailAccessError ?? recoveryAccessError;
+    const id = linked?.agentSessionId ?? selectedId;
+    if (error && id) {
+      setDeniedDetails(current => current[id] === error ? current : { ...current, [id]: error });
+      clearDeniedSession(queryClient, id);
+    }
+  }, [detailAccessError, recoveryAccessError, linked?.agentSessionId, selectedId, detailRechecked, denialIds, queryClient]);
+
   // A claimed session names its items; an integration session has none of its
   // own and lists the batch it runs instead (AND-449).
   const integrationItemKeys = selected?.sessionPurpose === "integration"
@@ -432,20 +491,6 @@ export function AgentSessionConsole({
     setReplyFor(replySessionId, update);
   }, [replySessionId, setReplyFor]);
   useConsolePerformance(queryClient,undefined,selected?.agentSessionId);
-  const sessionQuery = useQuery({
-    queryKey: ["agent-session", selected?.agentSessionId],
-    queryFn: async ({ queryKey, signal }) => {
-      const sessionId = queryKey[1] as string;
-      const requestStarted = queryClient.getQueryData<AgentSession>(["agent-session", sessionId]);
-      const incoming = await api.getAgentSession(sessionId, signal);
-      return mergeAgentSessionSnapshot(
-        requestStarted,
-        queryClient.getQueryData<AgentSession>(["agent-session", sessionId]),
-        incoming,
-      );
-    },
-    enabled: Boolean(selected?.agentSessionId) && documentVisible,
-  });
   // List summaries arrive before the transcript. Reveal the whole conversation
   // together, including approval/attention/recovery cards (AND-375). Cached
   // detail stays visible during live updates and refetch errors; dispatches without
@@ -723,15 +768,18 @@ export function AgentSessionConsole({
   const sendingRequest = sendingSelected && sendAttempt
     ? { text: sendAttempt.text, occurredAt: sendAttempt.occurredAt, status: "sending" as const }
     : failedRequest;
-  const history = useAgentHistory(selected?.agentSessionId ?? null, sessionQuery.data, messagesRef);
-  useEffect(()=>{if(sessionQuery.data)observePerformanceReply(sessionQuery.data.id,sessionQuery.data.performanceTurns??[],history.messages);},[sessionQuery.data,history.messages,documentVisible]);
+  const history = useAgentHistory(selected?.agentSessionId ?? null, denied ? undefined : sessionQuery.data, messagesRef);
+  useEffect(()=>{if(!denied&&sessionQuery.data)observePerformanceReply(sessionQuery.data.id,sessionQuery.data.performanceTurns??[],history.messages);},[denied,sessionQuery.data,history.messages,documentVisible]);
   const previousHistoryRevision = useRef(0);
   const mirrorMessages = history.messages;
   const mirrorAttachments = sessionQuery.data?.attachmentMessages ?? [];
-  const outgoingCandidate = outgoingReply(command, sendingRequest,
-    replyMirrorArrived(command, mirrorMessages, mirrorAttachments, history.hasMore));
+  const sourceState = replySourceState(command, mirrorMessages, mirrorAttachments, history.hasMore);
+  const outgoingCandidate = outgoingReply(command, sendingRequest, sourceState !== "unmatched");
   const outgoing = outgoingCandidate?.commandId === dismissedCommandId ? null : outgoingCandidate;
   const outgoingSignature = outgoing ? `${selectedId}:${outgoing.commandId ?? "request"}:${outgoing.status}:${outgoing.text}` : "";
+  const revealOldReply = command && ["failed", "delivery_unknown"].includes(command.status)
+    && commandPrecedesLoadedWindow(command, history.messages, history.hasMore)
+    ? () => revealTranscriptReply(messagesRef.current, [command.id, `answer-${command.id}`, ...(command.sourceMessageId ? [command.sourceMessageId] : [])]) : undefined;
   const sessionStatus = effectiveAgentSessionStatus(
     sessionQuery.data?.status ?? selected?.status ?? "unavailable",
     command,
@@ -743,8 +791,9 @@ export function AgentSessionConsole({
     : sessionReplyPresentation(sessionQuery.data?.status ?? selected?.status ?? "unavailable", command, sendInFlight, stopCommand);
   const messages = projectConversationMessages(history.messages, Boolean(selected?.productId));
   const attachmentMessages = sessionQuery.data?.attachmentMessages ?? [];
-  const visibleMessages = agentChatMessages(messages, attachmentMessages, outgoing?.commandId);
-  const planMessages = inlinePlanTranscript(visibleMessages, sessionQuery.data);
+  const visibleMessages = agentChatMessages(messages, attachmentMessages);
+  const planMessages = inlinePlanTranscript(withOutgoingReply(visibleMessages, outgoing), sessionQuery.data);
+  const rememberReadingPosition = useTranscriptAnchor(messagesRef, `${selectedId}:${conversationOpen}`, followLatest, history.revision, history.messages, outgoingSignature);
   const activities = sessionQuery.data?.activities ?? [];
   const turnState = sessionQuery.data?.turnState ?? selected?.turnState;
   // Detail and list notifications may arrive separately. Use the same foreground rule as
@@ -857,6 +906,8 @@ export function AgentSessionConsole({
     const resetView = shouldResetMessageView(changedSession, conversationOpenRef.current, conversationOpen);
     const previousMessages = previousMessagesRef.current;
     const outgoingChanged = previousOutgoingRef.current !== outgoingSignature;
+    const replySubmitted = Boolean(sendAttempt?.requestKey && previousSubmittedRef.current !== sendAttempt.requestKey);
+    previousSubmittedRef.current = sendAttempt?.requestKey;
     observedSessionRef.current = selectedId;
     conversationOpenRef.current = conversationOpen;
     previousMessagesRef.current = messages;
@@ -876,13 +927,13 @@ export function AgentSessionConsole({
       return; // Prepending history is neither new output nor an unread event.
     }
     const changedIds = changedMessageIds(previousMessages, messages);
-    if (changedIds.length === 0 && !outgoingChanged) return;
-    if (shouldScrollMessagesAfterChange(outgoingChanged, followLatest)) scrollToLatest();
+    if (changedIds.length === 0 && !outgoingChanged && !replySubmitted) return;
+    if (shouldScrollMessagesAfterChange(replySubmitted, followLatest)) scrollToLatest();
     else if (changedIds.length > 0) {
       changedIds.forEach((id) => unseenMessageIdsRef.current.add(id));
       setNewMessageCount(unseenMessageIdsRef.current.size);
     }
-  }, [conversationOpen, followLatest, messages, outgoingSignature, scrollToLatest, selectedId, history.revision]);
+  }, [conversationOpen, followLatest, messages, outgoingSignature, scrollToLatest, selectedId, history.revision, sendAttempt?.requestKey]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -1063,7 +1114,6 @@ export function AgentSessionConsole({
       </aside>
 
       <section className="agent-console-list" aria-label={t("agentConsoleSessions")}>
-        {unavailableSessionId && <p className="inline-error" role="alert">{t("agentConsoleUnavailableLink")}</p>}
         {otherProjectHint}
         <div className="agent-console-list-controls">
           {compact ? <button type="button" className="single-select agent-console-combined-filter"
@@ -1201,7 +1251,6 @@ export function AgentSessionConsole({
                   className={`agent-console-session ${session.id === selectedId ? "active" : ""} ${session.unread ? "unread" : ""}`}
                   aria-pressed={bulkMode && selectable ? checked : undefined}
                   onClick={() => {
-                    setUnavailableSessionId(null);
                     if (bulkMode) {
                       if (selectable) {
                         setSelectedForArchive((current) => {
@@ -1259,7 +1308,26 @@ export function AgentSessionConsole({
       <section className="agent-console-conversation" aria-live="polite">
         {draftView}
         {selected && favoriteErrors.has(selected.id) && <p className="inline-error" role="alert">{t("agentSessionFavoriteFailed")}</p>}
-        {!draftView && !selected && <div className="agent-console-empty agent-console-empty-conversation"><MessageSquare size={24} /><p>{t("agentConsoleChoose")}</p></div>}
+        {!draftView && !selected && <>
+          {selectedId && <header className="agent-console-conversation-head">
+            <BackButton label={t(backToItem ? "agentConsoleBackToItem" : "agentConsoleBackToSessions")}
+              onClick={() => { if (backToItem || conversationOpen) onBackToSessions(); else onSelectSession(null, false); }} />
+          </header>}
+          <div className="agent-console-empty agent-console-empty-conversation">
+          {selectedId ? <>
+            {(denied || recovery.data?.kind === "unavailable" || recovery.isError || hasSessionsError) ? <div role="alert">
+              <p className="inline-error">{isSessionAccessError(recoveryError) && recoveryError.status === 404
+                ? t("agentConsoleUnavailableLink") : localizedErrorText(recoveryError, t)}</p>
+              <button type="button" className="text-button" disabled={recovery.isFetching || sessionQuery.isFetching}
+                onClick={() => void (denied && linked?.agentSessionId ? sessionQuery.refetch() : recovery.refetch())}>{t("retry")}</button>
+            </div> : recovery.data?.kind === "sync_pending" && !recovery.isFetching ? <div role="status">
+              <p>{t("agentConsoleSessionSyncPending")}</p>
+              <button type="button" className="text-button" disabled={recovery.isFetching}
+                onClick={() => void recovery.refetch()}>{t("retry")}</button>
+            </div> : <div role="status"><LoaderCircle className="spin" size={20} /><p>{t("agentSessionLoading")}</p></div>}
+          </> : <><MessageSquare size={24} /><p>{t("agentConsoleChoose")}</p></>}
+          </div>
+        </>}
         {selected && (
           <>
             <header className="agent-console-conversation-head">
@@ -1292,6 +1360,7 @@ export function AgentSessionConsole({
                 onScroll={(event) => {
                   const nearBottom = isNearMessageBottom(event.currentTarget);
                   setFollowLatest(nearBottom);
+                  rememberReadingPosition();
                   if (!nearBottom && !history.error && event.currentTarget.scrollTop <= 48) void history.loadMore();
                   if (nearBottom) {
                     unseenMessageIdsRef.current.clear();
@@ -1365,80 +1434,11 @@ export function AgentSessionConsole({
                 )}
                 <AgentProgressReports session={sessionQuery.data} />
                 {planMessages.messages.map((message) => {
-                  const labelKey = messageLabelKey(message.role, selected.agentKind);
-                  return (
-                    <article key={message.id} data-agent-message-id={`${message.role}:${message.sourceId || message.id}`} className={`agent-console-message agent-console-message-${message.role}`}>
-                      <header className="agent-console-message-meta">
-                        {labelKey && <small>{t(labelKey)}</small>}
-                        <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
-                        {message.role === "user" && <CommandMessageMenu text={permissionReplyText((sessionQuery.data?.currentRequests ?? sessionQuery.data?.messages)?.flatMap(message => message.questions ?? []) ?? [], message.text)} />}
-                      </header>
-                      {message.text && (selected.agentSessionId && ["agent", "plan"].includes(message.role)
-                        ? <AgentArtifactMarkdown text={message.text} sessionId={selected.agentSessionId} messageId={message.id} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />
-                        : <MarkdownText>{permissionReplyText((sessionQuery.data?.currentRequests ?? sessionQuery.data?.messages)?.flatMap(message => message.questions ?? []) ?? [], message.text)}</MarkdownText>)}
-                      {message.attachmentData && selected.agentSessionId && <ChatAttachments sessionId={selected.agentSessionId} attachments={message.attachmentData} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />}
-                      {message.id === planMessages.planMessageId && sessionQuery.data && <InlinePlanApproval onRequestChanges={()=>document.querySelector<HTMLTextAreaElement>(".agent-console-reply textarea")?.focus()} key={`${sessionQuery.data.id}:${currentPlan(sessionQuery.data)?.revision}`} session={sessionQuery.data} blocked={showPermissionApproval || pending || sendingSelected || cancellingSelected} />}
-                      {message.questions && (
-                        <AgentSessionQuestions
-                          questions={message.questions}
-                          sessionId={selected.agentSessionId}
-                          sourceId={message.sourceId}
-                          historical={message.historical || message.id.startsWith("history:")}
-                          agentKind={selected.agentKind}
-                          reply={reply}
-                          canReply={selected.canReply && !message.id.startsWith("history:") && !pending && !sendingSelected && !cancellingSelected}
-                          onChange={setReply}
-                        />
-                      )}
-                    </article>
-                  );
-                })}
-                {!planMessages.planMessageId && sessionQuery.data && <UnlinkedPlanRecord session={sessionQuery.data} blocked={showPermissionApproval || pending || sendingSelected || cancellingSelected} />}
-                {!mergePreparation && (!currentPlan(sessionQuery.data)?.plan || !showPlanApproval && selected.attention.kind !== "approval") && !showPermissionApproval && (!suppressDeliveryAttention || showPlanApproval) && (showPlanApproval || !stalePlanAttention && (selected.needsAttention || selected.attention.dismissed) && selected.attention.reason) && (
-                  <div className={`agent-console-attention-banner ${selected.attention.dismissed ? "dismissed" : ""}${showPlanApproval ? " agent-console-attention-banner--approval" : ""}`} role="status">
-                    <BellRing size={16} />
-                    <details open={planContentMissing || undefined}>
-                      <summary>{selected.attention.dismissed
-                        ? t("agentAttentionDismissedTitle")
-                        : showPlanApproval && planApproved ? t("agentPlanApproved") : showPlanApproval ? t("agentPlanReview") : attentionLabel(selected, t)}
-                      </summary>
-                      <div className="agent-console-attention-detail">
-                        {(!showPlanApproval || !planApproved) && <p>{selected.attention.reason}</p>}
-                        {showPlanApproval && <p>{planApproved ? t(planApproved.continuationQueued ? "agentPlanApprovedQueued" : planApproved.continuationPending ? "agentPlanApprovedWaiting" : "agentPlanApprovedNoReply") : t("agentPlanReviewHelp")}</p>}
-                        {showPlanApproval && !planApproved && !canApprovePlan && <p className="agent-console-approve-reason" role="status">
-                          {sessionQuery.isPending ? t("agentPlanChecking") : sessionQuery.isError ? t("agentPlanCheckFailed")
-                            : t(planApprovalStatusKey(planContentMissing ? "content_unavailable" : planApprovalStatus?.code ?? "reply_unavailable"))}
-                        </p>}
-                      </div>
-                    </details>
-                    {showPlanApproval && !planApproved && <div className="agent-console-approve-action">
-                      {planContentMissing && <button type="button" className="secondary-button" disabled={sessionQuery.isFetching}
-                        onClick={() => void sessionQuery.refetch()}>{t("retry")}</button>}
-                      <button type="button" className="primary-button"
-                        disabled={!canApprovePlan || dismissAttention.isPending}
-                        onClick={approvePlan}>{t("agentPlanApprove")}</button>
-                    </div>}
-                    {(!showPlanApproval || !planApproved) && (showPlanApproval || selected.needsAttention
-                      && selected.status !== "stalled"
-                      && selected.agentSessionId
-                      && selected.attention.revision) && (
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        disabled={dismissAttention.isPending || !selected.agentSessionId || !selected.attention.revision || selected.status === "stalled"}
-                        onClick={() => dismissAttention.mutate({
-                          sessionId: selected.agentSessionId!,
-                          revision: selected.attention.revision!,
-                        })}
-                      >
-                        {dismissAttention.isPending && <LoaderCircle className="spin" size={14} />}
-                        {t("agentAttentionDismiss")}
-                      </button>
-                    )}
-                  </div>
-                )}
-                {outgoing && (
-                  <div className={`agent-console-outgoing agent-console-outgoing-${outgoing.status}`}>
+                  if (message.outgoing) {
+                    const outgoing = message.outgoing;
+                    return (
+
+                  <div key={message.id} data-agent-message-id={`user:${message.sourceId}`} className={`agent-console-outgoing agent-console-outgoing-${outgoing.status}`}>
                   <article className={`agent-console-message agent-console-message-user agent-console-message-outgoing agent-console-message-outgoing-${outgoing.status}`}>
                     <header className="agent-console-message-meta">
                       <time dateTime={outgoing.occurredAt}>{formatAgentMessageTime(outgoing.occurredAt, locale)}</time>
@@ -1487,7 +1487,83 @@ export function AgentSessionConsole({
                     </footer>
                     )}
                   </div>
+
+                    );
+                  }
+                  const labelKey = messageLabelKey(message.role, selected.agentKind);
+                  return (
+                    <article key={message.id} data-agent-message-id={`${message.role}:${message.sourceId || message.id}`} className={`agent-console-message agent-console-message-${message.role}`}>
+                      <header className="agent-console-message-meta">
+                        {labelKey && <small>{t(labelKey)}</small>}
+                        <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
+                        {message.role === "user" && <CommandMessageMenu text={permissionReplyText((sessionQuery.data?.currentRequests ?? sessionQuery.data?.messages)?.flatMap(message => message.questions ?? []) ?? [], message.text)} />}
+                      </header>
+                      {message.text && (selected.agentSessionId && ["agent", "plan"].includes(message.role)
+                        ? <AgentArtifactMarkdown text={message.text} sessionId={selected.agentSessionId} messageId={message.id} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />
+                        : <MarkdownText>{permissionReplyText((sessionQuery.data?.currentRequests ?? sessionQuery.data?.messages)?.flatMap(message => message.questions ?? []) ?? [], message.text)}</MarkdownText>)}
+                      {message.attachmentData && selected.agentSessionId && <ChatAttachments sessionId={selected.agentSessionId} attachments={message.attachmentData} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />}
+                      {message.id === planMessages.planMessageId && sessionQuery.data && <InlinePlanApproval onRequestChanges={()=>document.querySelector<HTMLTextAreaElement>(".agent-console-reply textarea")?.focus()} key={`${sessionQuery.data.id}:${currentPlan(sessionQuery.data)?.revision}`} session={sessionQuery.data} blocked={showPermissionApproval || pending || sendingSelected || cancellingSelected} />}
+                      {message.questions && (
+                        <AgentSessionQuestions
+                          questions={message.questions}
+                          sessionId={selected.agentSessionId}
+                          sourceId={message.sourceId}
+                          historical={message.historical || message.id.startsWith("history:")}
+                          agentKind={selected.agentKind}
+                          reply={reply}
+                          canReply={selected.canReply && !message.id.startsWith("history:") && !pending && !sendingSelected && !cancellingSelected}
+                          onChange={setReply}
+                        />
+                      )}
+                    </article>
+                  );
+                })}
+                {sessionQuery.data && <DocumentPlanRecovery key={`recovery-${selected.id}-${sessionQuery.data.implementationPlan?.revision}`} session={sessionQuery.data} blocked={showPermissionApproval || pending || sendingSelected || cancellingSelected} />}
+                {!planMessages.planMessageId && sessionQuery.data && <UnlinkedPlanRecord session={sessionQuery.data} blocked={showPermissionApproval || pending || sendingSelected || cancellingSelected} />}
+                {!mergePreparation && (!currentPlan(sessionQuery.data)?.plan || !showPlanApproval && selected.attention.kind !== "approval") && !showPermissionApproval && (!suppressDeliveryAttention || showPlanApproval) && (showPlanApproval || !stalePlanAttention && (selected.needsAttention || selected.attention.dismissed) && selected.attention.reason) && (
+                  <div className={`agent-console-attention-banner ${selected.attention.dismissed ? "dismissed" : ""}${showPlanApproval ? " agent-console-attention-banner--approval" : ""}`} role="status">
+                    <BellRing size={16} />
+                    <details open={planContentMissing || undefined}>
+                      <summary>{selected.attention.dismissed
+                        ? t("agentAttentionDismissedTitle")
+                        : showPlanApproval && planApproved ? t("agentPlanApproved") : showPlanApproval ? t("agentPlanReview") : attentionLabel(selected, t)}
+                      </summary>
+                      <div className="agent-console-attention-detail">
+                        {(!showPlanApproval || !planApproved) && <p>{selected.attention.reason}</p>}
+                        {showPlanApproval && <p>{planApproved ? t(planApproved.continuationQueued ? "agentPlanApprovedQueued" : planApproved.continuationPending ? "agentPlanApprovedWaiting" : "agentPlanApprovedNoReply") : t("agentPlanReviewHelp")}</p>}
+                        {showPlanApproval && !planApproved && !canApprovePlan && <p className="agent-console-approve-reason" role="status">
+                          {sessionQuery.isPending ? t("agentPlanChecking") : sessionQuery.isError ? t("agentPlanCheckFailed")
+                            : t(planApprovalStatusKey(planContentMissing ? "content_unavailable" : planApprovalStatus?.code ?? "reply_unavailable"))}
+                        </p>}
+                      </div>
+                    </details>
+                    {showPlanApproval && !planApproved && <div className="agent-console-approve-action">
+                      {planContentMissing && <button type="button" className="secondary-button" disabled={sessionQuery.isFetching}
+                        onClick={() => void sessionQuery.refetch()}>{t("retry")}</button>}
+                      <button type="button" className="primary-button"
+                        disabled={!canApprovePlan || dismissAttention.isPending}
+                        onClick={approvePlan}>{t("agentPlanApprove")}</button>
+                    </div>}
+                    {(!showPlanApproval || !planApproved) && (showPlanApproval || selected.needsAttention
+                      && selected.status !== "stalled"
+                      && selected.agentSessionId
+                      && selected.attention.revision) && (
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={dismissAttention.isPending || !selected.agentSessionId || !selected.attention.revision || selected.status === "stalled"}
+                        onClick={() => dismissAttention.mutate({
+                          sessionId: selected.agentSessionId!,
+                          revision: selected.attention.revision!,
+                        })}
+                      >
+                        {dismissAttention.isPending && <LoaderCircle className="spin" size={14} />}
+                        {t("agentAttentionDismiss")}
+                      </button>
+                    )}
+                  </div>
                 )}
+
                 <AgentHistoryNotice error={sessionQuery.data ? sessionQuery.data.lastError : selected.lastError} />
                 {showFailureCard ? (
                   <AgentSessionFailureNotice status={sessionStatus}
@@ -1587,6 +1663,7 @@ export function AgentSessionConsole({
                   <AgentStopFeedback stop={stopCommand}
                     latestCommand={command} turnActive={sessionQuery.data?.turnState?.turnActive ?? false}
                     backgroundRunning={(sessionQuery.data?.activities.length ?? 0) > 0} />
+                {revealOldReply && <AgentReplySourceNotice command={command} state={sourceState} onRevealFailure={revealOldReply} />}
                 {showRunDetails && (<>
                     {["stalled", "unavailable", "failed"].includes(sessionStatus) && <p className="agent-run-warning" role="alert">{activityText}</p>}
                     <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={replyPresentation?.iconStatus ?? (agentWaiting ? "waiting" : visualStatus)} />} actions={stopAction}
@@ -1594,10 +1671,10 @@ export function AgentSessionConsole({
                         : agentWaiting ? t(questionPermission ? "agentRunApproval" : runWaitingLabelKey({ agentKind: selected.agentKind, approval }), { agent: agentName })
                           : claudeBackgroundOnly ? t("agentRunBackground") : sessionStatus === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(sessionStatus, t)}>
                       {!["stalled", "unavailable", "failed"].includes(sessionStatus) && <p>{statusDetail}</p>}
-                      {outgoing && ["queued", "delivering", "delivered"].includes(outgoing.status) && <p>
-                        {outgoing.status === "delivered" ? t("agentSessionReplyAwaitingExecution", { agent: agentName, duration: elapsed(outgoing.occurredAt, clock) ?? "–" })
-                          : t("agentSessionReplyWaitingReason", { duration: elapsed(outgoing.occurredAt, clock) ?? "–",
-                            reason: agentWaiting ? waitingText : activities.length > 0 ? t("agentSessionCurrentTool") : t("agentSessionCurrentTurn") })}
+                      <AgentReplySourceNotice command={command} state={sourceState} />
+                      {outgoing && ["queued", "delivering"].includes(outgoing.status) && <p>
+                        {t("agentSessionReplyWaitingReason", { duration: elapsed(outgoing.occurredAt, clock) ?? "–",
+                          reason: agentWaiting ? waitingText : activities.length > 0 ? t("agentSessionCurrentTool") : t("agentSessionCurrentTurn") })}
                       </p>}
                       {(turnRunning || sessionStatus === "stalled") && (turnState?.lastProgressAt || claudeTurn) && <small>{t("agentSessionLastActivity", { duration: elapsed(turnState?.lastProgressAt ?? selected.activityAt, clock) ?? "–" })}</small>}
                       {turnState?.observedAt && <small>{t("agentSessionLastObserved", { duration: elapsed(turnState.observedAt, clock) ?? "–" })}</small>}
@@ -1667,7 +1744,8 @@ export function AgentSessionConsole({
                   />
                   {commandUndo}
                   {replyFiles.length > 0 && <div className="agent-chat-draft-files">
-                    {replyFiles.map((file, index) => <DraftChatFile key={`${file.name}-${index}`} file={file} disabled={sendingSelected || cancellingSelected}
+                    {replyFiles.map((file, index) => <DraftChatFile key={`${replySessionId}-${index}`} file={file} disabled={!selected.canReply || pending || sendingSelected || cancellingSelected}
+                      onReplace={(original, annotated) => setReplyFilesFor(replySessionId, current => current.map((entry, fileIndex) => fileIndex === index && entry === original ? annotated : entry))}
                       onRemove={() => setReplyFiles((current) => current.filter((_, fileIndex) => fileIndex !== index))} />)}
                   </div>}
                   {replyFileError && <p className="inline-error" role="alert">{replyFileError}</p>}

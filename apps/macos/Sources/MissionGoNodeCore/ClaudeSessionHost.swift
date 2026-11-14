@@ -413,7 +413,7 @@ public struct ClaudeStreamSnapshot: Sendable {
             // Gateways may reuse the API message id for every response. The
             // stream event UUID identifies each complete content frame instead.
             let sourceId = (value["uuid"] as? String) ?? (message["id"] as? String) ?? UUID().uuidString
-            let turnId = (value["user_message_uuid"] as? String) ?? latestTurnId() ?? sourceId
+            let turnId = (value["user_message_uuid"] as? String) ?? latestTurnId() ?? state.activeTurnId ?? sourceId
             let text = content.compactMap { block -> String? in
                 guard block["type"] as? String == "text" else { return nil }
                 return block["text"] as? String
@@ -454,6 +454,16 @@ public struct ClaudeStreamSnapshot: Sendable {
             return
         }
         if type == "result" {
+            if value["is_error"] as? Bool != true,
+               !(value["subtype"] as? String ?? "").hasPrefix("error"),
+               value["terminal_reason"] as? String != "blocking_limit",
+               let result = value["result"] as? String,
+               let final = state.messages.last(where: { $0.role == "agent" && $0.questions?.isEmpty != false
+                   && $0.turnId == state.activeTurnId && $0.text == result }),
+               !["aborted_streaming", "aborted_tools"].contains(value["terminal_reason"] as? String ?? "") {
+                upsert(AgentSessionMessage(sourceId: final.sourceId, turnId: final.turnId,
+                    role: final.role, phase: "final_answer", text: final.text, occurredAt: final.occurredAt))
+            }
             state.turnActive = false
             state.turnStartedAt = nil
             finishThinking()

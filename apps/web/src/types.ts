@@ -532,6 +532,8 @@ export interface AgentSessionMessage {
 
 export interface AgentSessionCommand {
   readonly id: string;
+  /** Persisted source association; delivery alone is not execution evidence. */
+  readonly sourceMessageId?: string;
   readonly kind: "message" | "interrupt";
   readonly text: string;
   readonly attachments?: readonly AgentSessionAttachment[];
@@ -556,8 +558,15 @@ export interface AgentSessionAttachment {
   readonly createdAt: string;
 }
 
+export interface DocumentPlanApprovalState {
+  readonly code: "ready_to_restore" | "restored" | "already_approved" | "evidence_missing" | "history_incomplete"
+    | "scope_changed" | "source_conflict" | "identity_unavailable" | "no_document";
+  readonly documentId?: string; readonly revision?: string;
+}
 export interface AgentSession {
   readonly performanceTurns?: readonly {commandId:string;turnId:string}[];
+  readonly documentPlanApproval?: DocumentPlanApprovalState;
+  readonly canRecoverPlanApproval?: boolean;
   readonly hasPlanRecords?: boolean;
   readonly progressReports?: ReadonlyArray<{ id: string; text: string; occurredAt: string }>;
   readonly progressHistory?: {readonly nextCursor?: string};
@@ -785,7 +794,7 @@ export interface RedispatchEligibility {
 export interface AgentPlanRecord {
   id:number; revision:string; keys:string[]; kind:"proposal"|"rework"; current:boolean; effective:boolean;
   scopeValid:boolean; legacy:boolean; submittedAt?:string; pending?:boolean; currentValid?:boolean; summary?:string;
-  approval?:{approvedAt:string;source:string}; documentId?:string; version?:number;
+  approval?:{approvedAt:string;source:string;documentDecision?:{acceptedAt:string;recordedAt:string;displaySourceId:string;acceptanceSourceId:string;evidenceDigest:string}}; documentId?:string; version?:number;
   rounds?:{key:string;number:number}[]; sha256?:string; parentDocumentId?:string; parentApproved?:boolean;
   plan?:string; validation?:string; markdown?:string;
 }

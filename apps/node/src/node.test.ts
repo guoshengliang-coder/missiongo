@@ -524,3 +524,25 @@ it("does not accept a Codex choice whose explanation exceeds the transport limit
  expect(approval.options?.[0]?.detail).toContain("展示上限");
  await expect(adapter.decide({id:approval.id,choice:"choice-0"})).rejects.toThrow(/unsupported/);
 });
+
+it("AND-515 preserves native completion evidence for OpenCode and Claude document replies",async()=>{
+  const entries=[{id:"streaming",type:"assistant",time:{created:1},content:[{type:"text",text:"Plan"}]},
+    {id:"completed",type:"assistant",time:{created:2,completed:3},content:[{type:"text",text:"Plan"}]}];
+  expect(openCodeMessages(entries).map(m=>m.phase)).toEqual([undefined,"final_answer"]);
+  const adapter=new ClaudeAdapter(job(temporary(),"claude_code"),fixture);adapters.push(adapter);
+  const consume=(value:Wire)=>(adapter as unknown as {event(value:Wire):void}).event(value);
+  consume({type:"user",uuid:"human",origin:{kind:"human"},timestamp:"2026-11-13T12:00:00Z",message:{content:"Prepare plan"}});
+  consume({type:"assistant",uuid:"answer",timestamp:"2026-11-13T12:00:01Z",message:{content:[{type:"text",text:"Reviewed plan"}]}});
+  expect((await adapter.snapshot()).messages.find(m=>m.sourceId==="answer")?.phase).toBeUndefined();
+  consume({type:"result",result:"Reviewed plan",is_error:false});
+  expect((await adapter.snapshot()).messages.find(m=>m.sourceId==="answer")).toMatchObject({phase:"final_answer",turnId:"human",text:"Reviewed plan"});
+});
+
+it.each([{subtype:"error_max_turns"},{terminal_reason:"blocking_limit"}])("AND-515 does not mark an unsuccessful Claude result as a final plan: %j",async failure=>{
+ const adapter=new ClaudeAdapter(job(temporary(),"claude_code"),fixture);adapters.push(adapter);
+ const consume=(value:Wire)=>(adapter as unknown as {event(value:Wire):void}).event(value);
+ consume({type:"user",uuid:"human",origin:{kind:"human"},message:{content:"Prepare plan"}});
+ consume({type:"assistant",uuid:"unfinished",message:{content:[{type:"text",text:"Reviewed plan"}]}});
+ consume({type:"result",result:"Reviewed plan",is_error:false,...failure});
+ expect((await adapter.snapshot()).messages.find(m=>m.sourceId==="unfinished")?.phase).toBeUndefined();
+});

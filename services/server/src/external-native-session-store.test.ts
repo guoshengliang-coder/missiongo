@@ -524,3 +524,15 @@ it("AND-499 reuses an external send key before and after delivery, rejecting cha
   expect(f.native.commandById(f.id, first.id)?.id).toBe(first.id);
   expect(f.native.commandById("other-session", first.id)).toBeUndefined();
 });
+
+it("retains an exact external command/source association outside the recent window", () => {
+  const f = fixture(); f.native.connect("owner",f.id,"node"); f.report();
+  const command = f.native.enqueue("owner",f.id,"Continue");
+  f.report({commandId:command.id,commandStatus:"delivering"});
+  f.report({commandId:command.id,commandStatus:"delivered",messages:[
+    {sourceId:command.id,role:"user",text:"Source wrapper differs"}]});
+  f.report({messages:Array.from({length:70},(_,n)=>({sourceId:`later-${n}`,role:"agent" as const,text:`Later ${n}`}))});
+  expect(f.native.commandById(f.id,command.id)?.sourceMessageId).toBe(command.id);
+  expect(f.native.overlay("owner",f.id,false).command?.sourceMessageId).toBe(command.id);
+  expect(f.native.commandById(f.id,command.id)?.status).toBe("delivered");
+});
