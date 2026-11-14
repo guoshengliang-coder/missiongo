@@ -10,7 +10,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { hasStoppableAgentTurn, hasPendingPermissionQuestion, normalizeAgentMode, sessionErrorFields, storedSessionError, type CodexSessionFailure, isAcceptedSessionUrl, nodeConnectionState, type AgentKind, type NodeConnectionState } from "@missiongo/domain";
 
-import { sessionHealth, executionTurnState } from "./agent-session-health.js";
+import { sessionHealth, executionTurnState, mergeSessionHealth } from "./agent-session-health.js";
 
 import type { AgentAttentionClassification, AgentAttentionKind as ClassifiedAttentionKind } from "./ai-title.js";
 import type { AgentSessionAttachment, AgentSessionAttachments } from "./agent-session-attachments.js";
@@ -78,6 +78,8 @@ export interface AgentSessionActivity {
 }
 
 export interface AgentSessionTurnState {
+  /** Server-owned start boundary; a delivery receipt is not source progress. */
+  readonly healthStartedAt?: string;
   /** Derived by the server from the current snapshot, never a node-supplied grant. */
   readonly waitingForPermission?: boolean;
   readonly observedAt?: string;
@@ -1715,19 +1717,6 @@ export class AgentSessionStore {
       sourceOccurredAt: normalizedSourceTimestamp(message.occurredAt, now, "message occurredAt"),
       position,
     }));
-    const latestMessage = messages.at(-1);
-    const messageHash = attentionMessageHash(input.status, latestMessage ? {
-      source_id: latestMessage.sourceId,
-      role: latestMessage.role,
-      phase: latestMessage.phase,
-      text: latestMessage.text,
-      questions_json: latestMessage.questionsJson,
-    } : undefined);
-    const initialAttentionState = initialAttention(input.status, latestMessage ? {
-      role: latestMessage.role,
-      text: latestMessage.text,
-      questions_json: latestMessage.questionsJson,
-    } : undefined);
     const session = this.database.connection
       .prepare(
         `SELECT id, dispatch_id, agent_kind, status, last_error, archived_at, archive_source, activities_json, turn_state_json, activity_at,
@@ -1766,10 +1755,33 @@ export class AgentSessionStore {
     // A failed source read may synthesize turnActive=false. Keep the last
     // trustworthy execution state so recovery of the same turn is not progress
     // (AND-438). The unavailable status still reports the connection failure.
-    const turnStateJson = JSON.stringify(input.status === "unavailable" ? storedTurnState
-      : { ...storedTurnState, ...incomingTurnState, ...permissionState });
+    const command = input.commandId && input.commandStatus
+      ? this.database.connection.prepare("SELECT status, kind FROM agent_session_commands WHERE id = ? AND session_id = ?")
+        .get(input.commandId, input.sessionId) as { status: string; kind: string } | undefined
+      : undefined;
+    const health = mergeSessionHealth(session.status, storedTurnState, input.status,
+      { ...incomingTurnState, ...permissionState }, command ? {
+        kind: command.kind, status: input.commandStatus!, previousStatus: command.status,
+        acceptedAt: now,
+      } : undefined);
+    input.status = health.status;
+    const latestMessage = messages.at(-1);
+    const messageHash = attentionMessageHash(input.status, latestMessage ? {
+      source_id: latestMessage.sourceId,
+      role: latestMessage.role,
+      phase: latestMessage.phase,
+      text: latestMessage.text,
+      questions_json: latestMessage.questionsJson,
+    } : undefined);
+    const initialAttentionState = initialAttention(input.status, latestMessage ? {
+      role: latestMessage.role,
+      text: latestMessage.text,
+      questions_json: latestMessage.questionsJson,
+    } : undefined);
+    const turnStateJson = JSON.stringify(health.turnState);
     const sourceActivityAt = normalizedSourceTimestamp(input.activityAt, now, "activityAt");
-    const error = storedSessionError(input.error, input.status === "failed" ? input.failure : undefined);
+    const error = health.ignoredExecution ? session.last_error
+      : storedSessionError(input.error, input.status === "failed" ? input.failure : undefined);
     const sessionUrl = input.sessionUrl?.trim();
     if (sessionUrl && input.clearSessionUrl) {
       throw invalidInput("Cannot set and clear session URL in one report.");
@@ -1817,11 +1829,7 @@ export class AgentSessionStore {
     // progress. Keep the last task snapshot through an empty error fallback,
     // so receiving it again on recovery also cannot make an old session new.
     const healthy = input.status !== "unavailable";
-    const nextActivitiesJson = !healthy && activities.length === 0 ? session.activities_json : activitiesJson;
-    const command = input.commandId && input.commandStatus
-      ? this.database.connection.prepare("SELECT status FROM agent_session_commands WHERE id = ? AND session_id = ?")
-        .get(input.commandId, input.sessionId) as { status: string } | undefined
-      : undefined;
+    const nextActivitiesJson = health.ignoredExecution || (!healthy && activities.length === 0) ? session.activities_json : activitiesJson;
     const activityChanged = (healthy && session.status !== "unavailable" && session.status !== input.status)
       || messagesChanged
       || (healthy && (session.activities_json !== nextActivitiesJson
@@ -2030,27 +2038,29 @@ export class AgentSessionStore {
           );
         }
       }
-      this.database.connection.prepare(
-        `INSERT INTO agent_session_attention
-          (session_id, message_hash, state, kind, reason, model, updated_at)
-         VALUES (?, ?, ?, ?, ?, NULL, ?)
-         ON CONFLICT(session_id) DO UPDATE SET
-           message_hash = excluded.message_hash,
-           state = excluded.state,
-           kind = excluded.kind,
-           reason = excluded.reason,
-           model = NULL,
-           delivery_only = NULL,
-           updated_at = excluded.updated_at
-         WHERE agent_session_attention.message_hash <> excluded.message_hash`,
-      ).run(
-        input.sessionId,
-        messageHash,
-        initialAttentionState.state,
-        initialAttentionState.kind ?? null,
-        initialAttentionState.reason ?? null,
-        now,
-      );
+      if (!health.ignoredExecution) {
+        this.database.connection.prepare(
+          `INSERT INTO agent_session_attention
+            (session_id, message_hash, state, kind, reason, model, updated_at)
+           VALUES (?, ?, ?, ?, ?, NULL, ?)
+           ON CONFLICT(session_id) DO UPDATE SET
+             message_hash = excluded.message_hash,
+             state = excluded.state,
+             kind = excluded.kind,
+             reason = excluded.reason,
+             model = NULL,
+             delivery_only = NULL,
+             updated_at = excluded.updated_at
+           WHERE agent_session_attention.message_hash <> excluded.message_hash`,
+        ).run(
+          input.sessionId,
+          messageHash,
+          initialAttentionState.state,
+          initialAttentionState.kind ?? null,
+          initialAttentionState.reason ?? null,
+          now,
+        );
+      }
       if (input.commandId && input.commandStatus) {
         const current = this.database.connection
           .prepare("SELECT status, error, kind FROM agent_session_commands WHERE id = ? AND session_id = ?")

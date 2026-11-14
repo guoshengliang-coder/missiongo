@@ -10,7 +10,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { nodeConnectionState } from "@missiongo/domain";
 
-import { sessionHealth } from "./agent-session-health.js";
+import { sessionHealth, mergeSessionHealth } from "./agent-session-health.js";
 
 import type { AgentSessionActivity, AgentSessionCommand, AgentSessionMessageInput, AgentSessionStatus, AgentSessionTurnState } from "./agent-session-store.js";
 import { parseAgentModels, requireAvailableMode, requireOfferedModel, type AgentRunSettings } from "./agent-settings.js";
@@ -410,7 +410,15 @@ export class ExternalNativeSessionStore {
       const clock = new Date(Math.max(Date.now(), Date.parse(clocks.activity_at) + 1, clocks.unread_at ? Date.parse(clocks.unread_at) + 1 : 0)).toISOString();
       const storedUnreadMessages = (this.db.prepare("SELECT payload_json FROM external_native_messages WHERE session_id=?").all(row.id) as { payload_json: string }[])
         .map(message => JSON.parse(message.payload_json) as AgentSessionMessageInput);
-      const previousSnapshot = row.native_snapshot_json ? JSON.parse(row.native_snapshot_json) as { status?: string } : undefined;
+      const previousSnapshot = row.native_snapshot_json ? JSON.parse(row.native_snapshot_json) as NativeSnapshot : undefined;
+      const command = input.commandId && input.commandStatus
+        ? this.db.prepare("SELECT * FROM external_native_commands WHERE id=? AND session_id=?").get(input.commandId, row.id) as CommandRow | undefined
+        : undefined;
+      const health = mergeSessionHealth(previousSnapshot?.status ?? "unavailable", previousSnapshot?.turnState ?? {},
+        input.status, input.turnState, command ? { kind: "message", status: input.commandStatus!,
+          previousStatus: command.status, acceptedAt: now } : undefined);
+      input.status = health.status;
+      input.turnState = health.turnState;
       const unreadEvent = observeSessionUnread(this.store.database, {
         key: `external:${row.id}`, previousStatus: previousSnapshot?.status ?? "unavailable", status: input.status,
         now: clock, stored: storedUnreadMessages, messages: input.messages,
@@ -447,7 +455,7 @@ export class ExternalNativeSessionStore {
           }
         }
       }
-      const activities = input.activities ?? [];
+      const activities = health.ignoredExecution ? previousSnapshot?.activities ?? [] : input.activities ?? [];
       if (activities.length > 100 || activities.some((activity) => !activity.id || activity.id.length > 200
         || !activity.title || activity.title.length > 500 || (activity.detail?.length ?? 0) > 500
         || (activity.startedAt !== undefined && (!Number.isFinite(Date.parse(activity.startedAt))
@@ -471,14 +479,15 @@ export class ExternalNativeSessionStore {
           this.db.prepare("UPDATE external_agent_sessions SET native_settings_json=? WHERE id=?").run(JSON.stringify(settings), row.id);
         }
       }
+      const error = health.ignoredExecution ? previousSnapshot?.error : input.error;
+      const sourceArchived = health.ignoredExecution ? previousSnapshot?.sourceArchived : input.sourceArchived;
       const snapshot = JSON.stringify({ ...(input.settingsSupport ? { settingsSupport: input.settingsSupport } : {}),
-        ...(input.mode ? { mode: input.mode } : {}), ...(input.model ? { model: input.model } : {}), ...(input.effort ? { effort: input.effort } : {}), supportsAttachments: input.supportsAttachments === true, status: input.status, turnState: input.turnState, activities, ...(input.error ? { error: input.error } : {}), ...(input.sourceArchived ? { sourceArchived: true } : {}) });
+        ...(input.mode ? { mode: input.mode } : {}), ...(input.model ? { model: input.model } : {}), ...(input.effort ? { effort: input.effort } : {}), supportsAttachments: input.supportsAttachments === true, status: input.status, turnState: input.turnState, activities, ...(error ? { error } : {}), ...(sourceArchived ? { sourceArchived: true } : {}) });
 
       this.db.prepare(`UPDATE external_agent_sessions SET native_snapshot_json=?,native_synced_at=?,
         activity_at=CASE WHEN ? THEN ? ELSE activity_at END, unread_at=CASE WHEN ? THEN ? ELSE unread_at END WHERE id=?`)
         .run(snapshot, now, changed ? 1 : 0, clock, unreadEvent ? 1 : 0, clock, row.id);
       if (input.commandId && input.commandStatus) {
-        const command = this.db.prepare("SELECT * FROM external_native_commands WHERE id=? AND session_id=?").get(input.commandId, row.id) as CommandRow | undefined;
         if (!command) throw notFound("Native reply");
         if (input.commandStatus === "delivering") {
           if (command.status !== "queued" && !(command.status === "delivering" && command.worker_id === input.workerId)) throw conflict("agent_reply_changed", "The reply can no longer be reserved.");
