@@ -2197,6 +2197,8 @@ function ProductSwitcher({
   onSelect: (productId: string) => void;
 }) {
   const { t } = useI18n();
+  const maxAttention = Math.max(0, ...products.map(product => attentionCounts?.get(product.id) ?? 0));
+  const maxUnread = Math.max(0, ...products.map(product => unreadCounts?.get(product.id) ?? 0));
   const content = (id: string, expanded: boolean) => {
     const product = products.find(entry => entry.id === id);
     if (!product) return null;
@@ -2205,10 +2207,11 @@ function ProductSwitcher({
     return <>
       <ProductBadge product={product} />
       {expanded
-        ? <span className="product-switcher-option"><strong>{product.name}</strong><small>{product.keyPrefix}</small>
+        ? <span className={`product-switcher-option${unreadCounts ? " with-counts" : ""}`}>
+          <span className="product-switcher-identity"><strong>{product.name}</strong><small>{product.keyPrefix}</small></span>
           {unreadCounts && unreadCountsLoaded && <span className="product-switcher-counts">
-            <span className={`product-switcher-count${attention > 0 ? " attention" : ""}`}>{t("agentConsoleProjectAttentionCount", { count: attention })}</span>
-            <span className={`product-switcher-count${unread > 0 ? " unread" : ""}`} aria-label={t("agentConsoleUnreadCount", { count: unread })}>{t("agentConsoleProjectUnreadCount", { count: unread })}</span>
+            <span className={`product-switcher-count${attention > 0 ? " attention" : ""}`} data-width-label={t("agentConsoleProjectAttentionCount", { count: maxAttention })}><span>{t("agentConsoleProjectAttentionCount", { count: attention })}</span></span>
+            <span className={`product-switcher-count${unread > 0 ? " unread" : ""}`} data-width-label={t("agentConsoleProjectUnreadCount", { count: maxUnread })} aria-label={t("agentConsoleUnreadCount", { count: unread })}><span>{t("agentConsoleProjectUnreadCount", { count: unread })}</span></span>
           </span>}
         </span>
         : <span className="product-switcher-name">{product.name}</span>}
