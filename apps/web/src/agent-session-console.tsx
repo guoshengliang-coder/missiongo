@@ -1,3 +1,4 @@
+import { useSessionListPerformance } from "./session-list-performance";
 import { useConsolePerformance } from "./use-console-performance";
 import { observePerformanceReply } from "./console-performance";
 import { useTranscriptAnchor, revealTranscriptReply } from "./transcript-anchor";
@@ -257,7 +258,7 @@ export function AgentSessionConsole({
   // A re-dispatched session keeps the item's name and adds the round (AND-365).
   const roundLabel = (round: number) => t("agentSessionRound", { round });
   const queryClient = useQueryClient();
-  useConsolePerformance(queryClient,productId);
+  const listSinglePane = useMediaQuery("(max-width: 520px)");
   const [filter, setFilter] = useState<AgentSessionFilter>(initialFilter ?? DEFAULT_AGENT_SESSION_FILTER);
   const [agentFilter, setAgentFilter] = useState<AgentKindFilter>(DEFAULT_AGENT_KIND_FILTER);
   const [association, setAssociation] = useState<AgentAssociationFilter>("all");
@@ -345,6 +346,7 @@ export function AgentSessionConsole({
     () => byLatestActivity(productSessions.filter((session) => agentSessionMatches(session, filter, agentFilter, search, association))),
     [agentFilter, association, filter, search, productSessions],
   );
+  useSessionListPerformance(queryClient,productId,allSessions,visibleSessions.length,sessionsLoaded,!conversationOpen||!listSinglePane);
   const archivableIds = useMemo(() => archivableVisibleSessionIds(visibleSessions), [visibleSessions]);
   const allArchivableSelected = archivableIds.length > 0
     && archivableIds.every((sessionId) => selectedForArchive.has(sessionId));

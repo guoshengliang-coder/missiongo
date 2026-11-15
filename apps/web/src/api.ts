@@ -1,3 +1,4 @@
+import { measureSessionListRequest } from "./session-list-performance";
 import type { CommonCommands, CommonCommandAction } from "@missiongo/contracts";
 import { checkReleaseStatus, deploymentInProgress } from "./release-status";
 import type { DeliveryExplanation } from "@missiongo/contracts";
@@ -684,10 +685,10 @@ export const api = {
       method: "POST", body: JSON.stringify({}),
     }),
   listAgentSessions: (productId?: string, signal?: AbortSignal) =>
-    request<{ sessions: AgentSessionSummary[] }>(
+    measureSessionListRequest(headers=>request<{ sessions: AgentSessionSummary[] }>(
       `/api/v1/agent-sessions${productId ? `?productId=${encodeURIComponent(productId)}` : ""}`,
-      signal ? {signal} : {},
-    ),
+      {headers,...(signal?{signal}:{})},
+    ),productId),
   sendAgentSessionCommand: (sessionId: string, text: string, attachmentIds: readonly string[] = [], requestKey?: string) =>
     request<AgentSessionCommand>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/commands`, {
       method: "POST",

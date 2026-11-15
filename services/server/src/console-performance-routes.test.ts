@@ -41,3 +41,19 @@ it("rechecks account authorization after the asynchronous report even when no ro
  });
  const result=await f.app.inject({url:"/api/v1/console/performance",headers:f.headers});expect(result.statusCode).toBe(401);
 });
+
+it("authenticates account-feed observations and prevents browser forgery of server measurements",async()=>{
+ const f=await fixture();
+ const list={protocol:1,device:"phone",scenario:"first_entry",dataset:"account_feed",visitId:"visit-528"};
+ const post=(events:unknown,extra:Record<string,unknown>={})=>f.app.inject({method:"POST",url:"/api/v1/console/performance",headers:f.headers,payload:{list:true,events,...extra}});
+ expect((await post([{id:"start",stage:"list_visit",result:"success",list}])).statusCode).toBe(202);
+ expect((await post([{id:"forged",stage:"list_server",result:"success",durationMs:0,list}])).json().queued).toBe(0);
+ expect((await post([{id:"wrong-scope",stage:"list_visit",result:"success",list}],{productId:f.product.id})).statusCode).toBe(400);
+ expect((await post([{id:"sensitive",stage:"list_visit",result:"success",list:{...list,message:"private"}}])).statusCode).toBe(400);
+ const r=await f.app.inject({url:`/api/v1/console/performance?to=${Date.now()+1}`,headers:f.headers});expect(r.json().rows.find((r:any)=>r.stage==="list_visit").n).toBe(1);
+ expect((await f.app.inject({url:"/api/v1/console/performance",headers:f.owner})).json().rows).toEqual([]);
+ const actual=await f.app.inject({url:"/api/v1/agent-sessions",headers:{...f.headers,"x-missiongo-list-observation":JSON.stringify({...list,rows:999,responseBytes:999,dataset:"project_view"})}});expect(actual.statusCode).toBe(200);
+ const serverReport=await f.app.inject({url:`/api/v1/console/performance?to=${Date.now()+1}`,headers:f.headers});
+ const row=serverReport.json().rows.find((r:any)=>r.stage==="list_server");expect(row.dimensions.dataset).toBe("account_feed");expect(row.measures.rows.total).toBe(0);expect(row.measures.responseBytes.total).toBe(Buffer.byteLength(actual.body));
+ expect(JSON.stringify(serverReport.json())).not.toContain("visit-528");
+});
