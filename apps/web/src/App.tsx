@@ -1,3 +1,4 @@
+import { shareSessionListData, useSessionListIntent } from "./session-list-performance";
 import { useCommonCommands } from "./common-commands";
 import { SessionSenderContext } from "./session-send-feedback";
 import { bootstrapCacheSeeder } from "./bootstrap-cache";
@@ -420,6 +421,7 @@ export function App() {
   const [listPaneWidth, setListPaneWidth] = useState(readListPaneWidth);
   const agentConsoleSinglePane = useMediaQuery("(max-width: 520px)");
   const agentConsoleCompact = useMediaQuery("(max-width: 1023px)");
+  useSessionListIntent(agentConsoleOpen && !(agentConsoleSinglePane && (agentConversationOpen || newSessionOpen)));
   const agentConsoleLayout = agentConsoleSinglePane ? "single" : "wide";
 
   const applyListPaneWidth = useCallback((width: number) => {
@@ -952,6 +954,7 @@ export function App() {
   // request, and the header counts keep updating while the console is closed.
   const agentSessionsQuery = useQuery({
     queryKey: ["agent-sessions"],
+    structuralSharing: shareSessionListData,
     queryFn: ({signal}) => api.listAgentSessions(undefined, signal),
     enabled: bootstrapQuery.isSuccess && products.length > 0,
   });

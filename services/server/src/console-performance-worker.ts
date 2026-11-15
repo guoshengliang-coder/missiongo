@@ -2,7 +2,7 @@ import { parentPort, workerData } from "node:worker_threads";
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { PERFORMANCE_BUCKETS } from "@missiongo/domain";
+import { PERFORMANCE_BUCKETS, LIST_MEASURE_LIMITS, LIST_COUNT_BUCKETS, LIST_BYTE_BUCKETS } from "@missiongo/domain";
 
 const DAY = 86400000, cap = workerData.maxBytes ?? 64 * 1024 * 1024;
 if (workerData.path !== ":memory:") mkdirSync(dirname(workerData.path), { recursive: true });
@@ -16,9 +16,14 @@ db.exec(`PRAGMA page_size=4096; PRAGMA max_page_count=${Math.floor(cap * .75 / 4
  CREATE TABLE IF NOT EXISTS coverage(minute INTEGER PRIMARY KEY,version TEXT);
  CREATE TABLE IF NOT EXISTS pending(id TEXT PRIMARY KEY,account TEXT,scope TEXT,source TEXT,version TEXT,agent TEXT,kind TEXT,at INTEGER);
  CREATE INDEX IF NOT EXISTS seen_at ON seen(at); CREATE INDEX IF NOT EXISTS samples_bucket ON samples(bucket);`);
+db.exec(`CREATE TABLE IF NOT EXISTS list_samples(bucket INTEGER,account TEXT,scope TEXT,source TEXT,version TEXT,agent TEXT,kind TEXT,stage TEXT,result TEXT,
+ dimensions TEXT,n INTEGER,timed INTEGER,total REAL,lo REAL,hi REAL,histogram TEXT,measures TEXT,
+ PRIMARY KEY(bucket,account,scope,source,version,agent,kind,stage,result,dimensions));
+ CREATE INDEX IF NOT EXISTS list_samples_bucket ON list_samples(bucket);`);
 let dropped = 0, accepted = 0, duplicates = 0;
 const clean = (now: number) => {
  db.prepare("DELETE FROM samples WHERE bucket<?").run(now - 7 * DAY);
+ db.prepare("DELETE FROM list_samples WHERE bucket<?").run(now - 7 * DAY);
  db.prepare("DELETE FROM health WHERE bucket<?").run(now - 7 * DAY);
  db.prepare("DELETE FROM seen WHERE at<?").run(now - DAY);
  db.prepare("DELETE FROM coverage WHERE minute<?").run(now - 7 * DAY);
@@ -31,11 +36,31 @@ function health(e:any,now:number,kind:"accepted"|"dropped"|"duplicates"){
  if(!exists&&(db.prepare("SELECT count(*) AS n FROM health").get() as any).n>=30000)throw new Error("Health capacity exhausted");
  db.prepare(`INSERT INTO health VALUES (?,?,?,?,?,?) ON CONFLICT(bucket,account,scope) DO UPDATE SET ${kind}=${kind}+1`).run(bucket,e.account,e.scope,kind==="accepted"?1:0,kind==="dropped"?1:0,kind==="duplicates"?1:0);
 }
+function aggregateList(e:any,now:number){
+ const bucket=Math.floor(now/300000)*300000;
+ const {device,scenario,dataset,load}=e.list;
+ const dimensions=JSON.stringify({protocol:1,device,scenario,dataset,load});
+ const key=[bucket,e.account,e.scope,e.source,e.version,e.agent,e.kind,e.stage,e.result,dimensions];
+ const prior=db.prepare("SELECT * FROM list_samples WHERE bucket=? AND account=? AND scope=? AND source=? AND version=? AND agent=? AND kind=? AND stage=? AND result=? AND dimensions=?").get(...key) as any;
+ if(!prior && (db.prepare("SELECT (SELECT count(*) FROM samples)+(SELECT count(*) FROM list_samples) AS n").get() as any).n>=30000){dropped++;return false;}
+ const h:number[]=prior?JSON.parse(prior.histogram):Array(PERFORMANCE_BUCKETS.length).fill(0);
+ const v=e.durationMs;if(v!==undefined)h[PERFORMANCE_BUCKETS.findIndex(b=>v<=b)]!++;
+ const measures=JSON.parse(prior?.measures??"{}");
+ for(const k of Object.keys(LIST_MEASURE_LIMITS)){
+  const value=e.list[k];if(value===undefined)continue;
+  const buckets=k.endsWith("Bytes")?LIST_BYTE_BUCKETS:LIST_COUNT_BUCKETS;
+  const p=measures[k]??{n:0,total:0,lo:value,hi:value,histogram:Array(buckets.length).fill(0)};
+  p.n++;p.total+=value;p.lo=Math.min(p.lo,value);p.hi=Math.max(p.hi,value);p.histogram[buckets.findIndex(b=>value<=b)]++;measures[k]=p;
+ }
+ db.prepare("INSERT OR REPLACE INTO list_samples VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(...key,(prior?.n??0)+1,(prior?.timed??0)+(v===undefined?0:1),(prior?.total??0)+(v??0),v===undefined?prior?.lo??null:Math.min(prior?.lo??v,v),v===undefined?prior?.hi??null:Math.max(prior?.hi??v,v),JSON.stringify(h),JSON.stringify(measures));
+ return true;
+}
 function aggregate(e: any, now: number) {
+ if(e.list)return aggregateList(e,now);
  const bucket = Math.floor(now / 300000) * 300000;
  const key = [bucket,e.account,e.scope,e.source,e.version,e.agent,e.kind,e.stage,e.result];
  const prior = db.prepare("SELECT * FROM samples WHERE bucket=? AND account=? AND scope=? AND source=? AND version=? AND agent=? AND kind=? AND stage=? AND result=?").get(...key) as any;
- if (!prior && (db.prepare("SELECT count(*) AS n FROM samples").get() as any).n >= 30000) { dropped++; return false; }
+ if (!prior && (db.prepare("SELECT (SELECT count(*) FROM samples)+(SELECT count(*) FROM list_samples) AS n").get() as any).n >= 30000) { dropped++; return false; }
  const h: number[] = prior ? JSON.parse(prior.histogram) : Array(PERFORMANCE_BUCKETS.length).fill(0);
  const value = e.durationMs;
  if (value !== undefined) h[PERFORMANCE_BUCKETS.findIndex(b => value <= b)]!++;
@@ -72,10 +97,11 @@ parentPort!.on("message", (m: any) => {
    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
   } else if(m.kind === "report") {
    const rows = db.prepare("SELECT * FROM samples WHERE account=? AND bucket>=? AND bucket<? ORDER BY bucket LIMIT 30001").all(m.account,Math.floor(m.from/300000)*300000,m.to);
+   const listRows=db.prepare("SELECT * FROM list_samples WHERE account=? AND bucket>=? AND bucket<? ORDER BY bucket LIMIT 30001").all(m.account,Math.floor(m.from/300000)*300000,m.to);
    const coverage = db.prepare("SELECT minute,version FROM coverage WHERE minute>=? AND minute<? ORDER BY minute LIMIT 10081").all(m.from,m.to);
    const healthRows=db.prepare("SELECT scope,sum(accepted) AS accepted,sum(dropped) AS dropped,sum(duplicates) AS duplicates FROM health WHERE account=? AND bucket>=? AND bucket<? GROUP BY scope LIMIT 30001").all(m.account,Math.floor(m.from/300000)*300000,m.to);
    const pending=db.prepare("SELECT scope,count(*) AS n FROM pending WHERE account=? GROUP BY scope LIMIT 10001").all(m.account);
-   parentPort!.postMessage({kind:"report",request:m.request,rows,coverage,pending,health:healthRows,accepted,dropped,duplicates},[]);
+   parentPort!.postMessage({kind:"report",request:m.request,rows,listRows,coverage,pending,health:healthRows,accepted,dropped,duplicates},[]);
   }
  }catch { parentPort!.postMessage({kind:"fault",request:m.request,count:m.events?.length ?? 0},[]); }
 });
