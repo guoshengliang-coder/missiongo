@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const capture=vi.hoisted(()=>({events:[] as any[][],epoch:0}));
 vi.mock("./console-performance",()=>({emitPerformance:(...args:any[])=>capture.events.push(args),performanceGeneration:()=>capture.epoch,performanceNow:()=>performance.now(),performanceResult:()=>"network_failure"}));
-import { startListVisit,endListVisit,commitList,measureSessionListRequest,shareSessionListData,clearSessionListPerformance,listDevice } from "./session-list-performance";
+import { startListVisit,endListVisit,commitList,measureSessionListRequest,shareSessionListData,clearSessionListPerformance,listDevice,noteListIntent } from "./session-list-performance";
 let frames:FrameRequestCallback[]=[];
 beforeEach(()=>{
  capture.events=[];frames=[];vi.stubGlobal("window",new EventTarget());vi.stubGlobal("document",{visibilityState:"visible"});
@@ -50,4 +50,12 @@ it("does not infer phones from viewport width or call tablets PCs",()=>{
  vi.stubGlobal("navigator",{userAgent:"Macintosh",maxTouchPoints:5});expect(listDevice()).toBe("unknown");
  vi.stubGlobal("navigator",{userAgent:"unrecognized",maxTouchPoints:1});expect(listDevice()).toBe("unknown");
  expect(capture.events).toEqual([]);
+});
+
+it("resuming uses a new monotonic origin even when an earlier navigation intent exists",()=>{
+ const clock=vi.spyOn(performance,"now").mockReturnValue(0),data=[{}];
+ startListVisit(data,false);drain();clock.mockReturnValue(40);noteListIntent();
+ clock.mockReturnValue(200);endListVisit("hidden");clock.mockReturnValue(500);startListVisit(data,false,true);
+ clock.mockReturnValue(600);drain();
+ expect(events("list_cache_visible").at(-1)![4]).toBe(100);clock.mockRestore();
 });

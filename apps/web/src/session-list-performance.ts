@@ -34,7 +34,7 @@ export function startListVisit(data:readonly unknown[]|undefined,joined:boolean,
  const id=crypto.randomUUID(),scenario=resume?"background_resume":!entered?"first_entry":data?"cache_return":"unknown";
  entered=true;
  const list:ListObservation={protocol:1,device:listDevice(),scenario,dataset:"account_feed",visitId:id,...(data?{rows:Math.min(data.length,1000000)}:{})};
- const v:Visit={id,at:intentAt??performanceNow(),list,requests:0,refreshes:0,joined,hasData:data!==undefined,entrySettled:false,data,sequence:0};intentAt=undefined;current=v;
+ const v:Visit={id,at:resume?performanceNow():intentAt??performanceNow(),list,requests:0,refreshes:0,joined,hasData:data!==undefined,entrySettled:false,data,sequence:0};intentAt=undefined;current=v;
  emit(v,"begin","list_visit");
  if(data)paint(v,"cache","list_cache_visible",v.at,"success",{rows:Math.min(data.length,1000000)});
  else emit(v,"cache","list_cache_visible","no_cache");
@@ -110,10 +110,11 @@ export function useSessionListPerformance(client:QueryClient,productId:string,da
 
 /** Record navigation intent before bootstrap/list prefetch, but upload only once
  * an authenticated list operation or the actual list component confirms entry. */
+export function noteListIntent(){intentActive=true;if(!current)intentAt??=performanceNow();}
 export function useSessionListIntent(enabled:boolean){
  useEffect(()=>{
   if(!enabled)return;
-  intentActive=true;intentAt??=performanceNow();
+  noteListIntent();
   return()=>{intentActive=false;queueMicrotask(()=>{if(!intentActive){intentAt=undefined;endListVisit("cancelled");}});};
  },[enabled]);
 }

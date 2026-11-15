@@ -79,4 +79,4 @@ try{
  await browser.close();browser=undefined;await app.close();app=undefined;
  const bytes=Buffer.from(JSON.stringify(report,null,2)+'\n');let offset=0;while(offset<bytes.length){const n=writeSync(fd,bytes,offset,bytes.length-offset,offset);if(!n)throw Error('No write progress');offset+=n;}
  console.log(JSON.stringify({status:report.status,round:report.round,source:report.sourceCommit,samples:samples.length}));
-}finally{if(browser)await browser.close();if(vite){vite.kill('SIGTERM');await new Promise(r=>vite.once('exit',r));}if(app)await app.close();closeSync(fd);}
+}finally{if(browser)await browser.close();if(vite&&vite.exitCode===null){vite.kill('SIGTERM');await new Promise(r=>vite.once('exit',r));}if(app)await app.close();closeSync(fd);}

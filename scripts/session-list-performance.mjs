@@ -2,8 +2,9 @@
  * database, node, AI provider or production traffic is used by this runner. */
 import {performance} from 'node:perf_hooks';
 import {pathToFileURL,fileURLToPath} from 'node:url';
-import {readFileSync,mkdirSync,openSync,writeSync,ftruncateSync,closeSync,existsSync} from 'node:fs';
-import {resolve,dirname} from 'node:path';
+import {readFileSync,mkdirSync,openSync,writeSync,ftruncateSync,closeSync,existsSync,mkdtempSync,readdirSync,statSync,rmSync} from 'node:fs';
+import {resolve,dirname,join} from 'node:path';
+import {tmpdir} from 'node:os';
 import {execFileSync} from 'node:child_process';
 import {createHash,scryptSync} from 'node:crypto';
 const args={};
@@ -29,7 +30,8 @@ const {ExternalAgentSessionStore}=await load('external-agent-session-store');
 const {ImplementationPlans}=await load('implementation-plans');
 const {PlanDocuments}=await load('plan-documents');
 const salt=Buffer.from('synthetic-list-only');
-const app=buildApp({performance:{enabled:collect,path:':memory:',sampleKind:'synthetic'},dingtalkWorker:false,adminAccount:{id:'owner',username:'owner@example.test',passwordScrypt:`scrypt:${salt.toString('base64url')}:${scryptSync('fixture-password',salt,64).toString('base64url')}`,sessionSecret:'synthetic-list-benchmark',cookieSecure:false}});
+const collectorDirectory=collect?mkdtempSync(join(tmpdir(),'and528-collector-')):undefined;
+const app=buildApp({performance:{enabled:collect,path:collectorDirectory?join(collectorDirectory,'metrics.sqlite'):':memory:',sampleKind:'synthetic'},dingtalkWorker:false,adminAccount:{id:'owner',username:'owner@example.test',passwordScrypt:`scrypt:${salt.toString('base64url')}:${scryptSync('fixture-password',salt,64).toString('base64url')}`,sessionSecret:'synthetic-list-benchmark',cookieSecure:false}});
 let report;
 try {
  const store=app.missionGoStore,db=store.database.connection;
@@ -117,8 +119,8 @@ try {
  const source=args['--revision']?{commit:args['--revision'],kind:'git-archive',dirty:null}:{commit:execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim(),kind:'checkout',dirty:Boolean(execFileSync('git',['status','--porcelain'],{cwd:root,encoding:'utf8'}).trim())};
  report={version:1,status:'measured',evaluatedAt:new RealDate(evaluatedAt).toISOString(),collection:collect?'on':'off',measuredAt:new RealDate().toISOString(),source:{...source,digest:sourceDigest.digest('hex'),files:paths.filter(path=>existsSync(resolve(root,path)))},runtime:{node:process.version,platform:process.platform,arch:process.arch},client:'fastify-inject',cache:'memory-sqlite; first list then warm; not OS cold',shape:{scenario,sessions:200,mirrors,longHistory:10000,otherHistory:20,textBytes:1024,planBodyBytes:['plans','external-plans'].includes(scenario)?40000:0,concurrency,...(scenario==='commands'?{commandsPerSession:4,nodeCapabilityBytes:Buffer.byteLength(nodeAgents)}:{})},cold,
   warm:{samples:count,medianMs:percentile(.5),p95Ms:percentile(.95),cpuMsPerRequest:(used.user+used.system)/1000/count,sqlPerRequest:queryCount/count,sqlMsPerRequest:sqlMs/count,responseBytes:[...new Set(measured.map(value=>value.responseBytes))],nestedStagesMsPerRequest:Object.fromEntries(Object.entries(stages).map(([key,value])=>[key,value/count]))},samples:measured};
- if(collect){const r=await app.inject({url:`/api/v1/console/performance?to=${RealDate.now()+1}`,headers});const health=r.json();report.collectionHealth={status:health.status,collectionEvents:health.collectionEvents,knownDropRate:health.knownDropRate,truncated:health.truncated};}
+ if(collect){const r=await app.inject({url:`/api/v1/console/performance?to=${RealDate.now()+1}`,headers});const health=r.json();report.collectionHealth={status:health.status,collectionEvents:health.collectionEvents,knownDropRate:health.knownDropRate,truncated:health.truncated};const full=process.cpuUsage(cpu);report.collectionSettledCpuMsPerRequest=(full.user+full.system)/1000/count;}
 } finally {
- try{await app.close();if(report){writeReport(report);console.log(JSON.stringify({...report,samples:undefined},null,2));}}
- finally{globalThis.Date=RealDate;closeSync(outputFd);}
+ try{await app.close();if(report){if(collectorDirectory)report.collectionStorageBytes=readdirSync(collectorDirectory).reduce((n,name)=>n+statSync(join(collectorDirectory,name)).size,0);writeReport(report);console.log(JSON.stringify({...report,samples:undefined},null,2));}}
+ finally{globalThis.Date=RealDate;closeSync(outputFd);if(collectorDirectory)rmSync(collectorDirectory,{recursive:true,force:true});}
 }
