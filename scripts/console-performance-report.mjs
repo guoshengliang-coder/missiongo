@@ -20,6 +20,7 @@ if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
 /** List counts have different denominators. Never derive visits from requests or add timing stages. */
 export function renderListPerformance(report){
  const rows=(report.rows??[]).filter(r=>r.dimensions?.protocol===1);
+ if(!rows.length)return "## 会话列表分层观测\n\n本窗口没有新协议样本；独立访问次数、设备及场景未知，不能用旧请求次数补算访问，也不能将未采集视为零访问。\n";
  const n=stage=>rows.filter(r=>r.stage===stage).reduce((sum,r)=>sum+r.n,0);
  const visits=n("list_visit"),ends=n("list_visit_end"),requests=n("list_request");
  const measure=(r,k)=>r.measures?.[k]?`${r.measures[k].lo}–${r.measures[k].hi} (n=${r.measures[k].n})`:"未知";

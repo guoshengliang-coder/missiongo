@@ -8,14 +8,15 @@ beforeEach(()=>{
  vi.stubGlobal("navigator",{userAgent:"Synthetic Android Mobile",maxTouchPoints:1});vi.stubGlobal("location",{origin:"https://synthetic.invalid"});
  vi.stubGlobal("requestAnimationFrame",(fn:FrameRequestCallback)=>frames.push(fn));
 });
-afterEach(()=>{clearSessionListPerformance();vi.unstubAllGlobals();});
+afterEach(()=>{clearSessionListPerformance();vi.useRealTimers();vi.unstubAllGlobals();});
 const drain=()=>{for(const f of frames.splice(0))f(0);};
 const events=(stage:string)=>capture.events.filter(e=>e[2]===stage);
-it("does not turn cache-only visits or project switching into refresh failures or extra visits",()=>{
+it("does not turn cache-only visits or project switching into refresh failures or extra visits",async()=>{
+ vi.useFakeTimers({toFake:["setTimeout","clearTimeout","Date","performance"]});
  const data=[{}];startListVisit(data,false);commitList(data,"product-a",1,true);commitList(data,"product-b",0,true);drain();
  expect(events("list_visit")).toHaveLength(1);expect(events("list_view")).toHaveLength(2);expect(events("list_view")[0]![5].rows).toBeUndefined();
  expect(events("list_entry_fresh_visible")[0]![3]).toBe("no_refresh");
- expect(capture.events.some(e=>e[3]==="timeout")).toBe(false);
+ await vi.advanceTimersByTimeAsync(30001);expect(capture.events.some(e=>e[3]==="timeout")).toBe(false);
  endListVisit();expect(events("list_visit_end")[0]![5].requests).toBe(0);
 });
 it("keeps equal-data network responses observable without disabling normal structural sharing",async()=>{
@@ -59,4 +60,11 @@ it("resuming uses a new monotonic origin even when an earlier navigation intent 
  clock.mockReturnValue(200);endListVisit("hidden");clock.mockReturnValue(500);startListVisit(data,false,true);
  clock.mockReturnValue(600);drain();
  expect(events("list_cache_visible").at(-1)![4]).toBe(100);clock.mockRestore();
+});
+
+it("a new authenticated entry starts after human login waiting, not at a prior refused navigation",()=>{
+ const clock=vi.spyOn(performance,"now").mockReturnValue(0);noteListIntent();
+ clock.mockReturnValue(5000);clearSessionListPerformance();noteListIntent();
+ clock.mockReturnValue(5010);startListVisit([{}],false);clock.mockReturnValue(5040);drain();
+ expect(events("list_cache_visible").at(-1)![4]).toBe(40);clock.mockRestore();
 });

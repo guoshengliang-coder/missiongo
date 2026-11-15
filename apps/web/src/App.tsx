@@ -1,4 +1,5 @@
-import { shareSessionListData, useSessionListIntent } from "./session-list-performance";
+import { clearPerformanceSends } from "./console-performance";
+import { shareSessionListData, useSessionListIntent, noteListIntent } from "./session-list-performance";
 import { useCommonCommands } from "./common-commands";
 import { SessionSenderContext } from "./session-send-feedback";
 import { bootstrapCacheSeeder } from "./bootstrap-cache";
@@ -1282,6 +1283,8 @@ export function App() {
           <p>{t("connectBody")}</p>
           <LoginForm
             onAuthenticated={(session) => {
+              clearPerformanceSends();
+              if (agentConsoleOpen && !(agentConsoleSinglePane && (agentConversationOpen || newSessionOpen))) noteListIntent();
               queryClient.removeQueries({ queryKey: ["items"] });
               queryClient.removeQueries({ queryKey: ["components"] });
               queryClient.removeQueries({ queryKey: ["project-insights"] });

@@ -11,3 +11,8 @@ test("list report distinguishes visit, request and completed-visit distributions
  const text=renderPerformanceReport({source:"synthetic",coverage:[],rows:[{dimensions,stage:"list_visit",n:2,timed:0},{dimensions,stage:"list_request",n:5,timed:5},{dimensions,stage:"list_visit_end",n:1,timed:1,measures:{requests:{n:1,lo:3,hi:3}}}]});
  assert.match(text,/观测访问开始 2/);assert.match(text,/浏览器请求 5/);assert.match(text,/未知/);assert.match(text,/no_refresh/);assert.match(text,/不足100/);assert.match(text,/不能用差值声称精确丢失/);
 });
+
+test("legacy-only rows report unknown visits, never inferred zero visits",()=>{
+ const text=renderPerformanceReport({source:"production",coverage:[],rows:[{stage:"list_read",source:"server",version:"old",result:"success",n:120,timed:120}]});
+ assert.match(text,/独立访问次数、设备及场景未知/);assert.doesNotMatch(text,/观测访问开始 0/);
+});
