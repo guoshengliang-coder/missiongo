@@ -19,6 +19,7 @@ export interface Question {
 }
 export interface Message {
   sourceId: string; role: "user" | "agent" | "plan"; text: string; turnId?: string;
+  clientMessageId?: string;
   occurredAt?: string; phase?: string; questions?: Question[];
 }
 export interface Approval {

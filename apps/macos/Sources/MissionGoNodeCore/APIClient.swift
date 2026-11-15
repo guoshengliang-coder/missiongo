@@ -803,6 +803,7 @@ public struct AgentSessionActivity: Codable, Equatable, Sendable {
 
 public struct AgentSessionMessage: Codable, Equatable, Sendable {
     public let sourceId: String
+    public let clientMessageId: String?
     public let turnId: String?
     public let role: String
     public let phase: String?
@@ -810,8 +811,9 @@ public struct AgentSessionMessage: Codable, Equatable, Sendable {
     public let occurredAt: String?
     public let questions: [AgentSessionQuestion]?
 
-    public init(sourceId: String, turnId: String? = nil, role: String, phase: String? = nil, text: String, occurredAt: String? = nil, questions: [AgentSessionQuestion]? = nil) {
+    public init(sourceId: String, turnId: String? = nil, role: String, phase: String? = nil, text: String, occurredAt: String? = nil, questions: [AgentSessionQuestion]? = nil, clientMessageId: String? = nil) {
         self.sourceId = sourceId
+        self.clientMessageId = clientMessageId
         self.turnId = turnId
         self.role = role
         self.phase = phase
@@ -1814,7 +1816,8 @@ public struct APIClient: Sendable {
                         ? APIClient.questionOnlyMessagePlaceholder
                         : text,
                     occurredAt: message.occurredAt,
-                    questions: message.questions
+                    questions: message.questions,
+                    clientMessageId: message.clientMessageId
                 )
             }
         var uploadable = report.replacingMessages(messages)

@@ -150,3 +150,30 @@ it.each(["opencode","claude_code"])("queues %s source reads without execution an
   expect(()=>f.history.request("owner",f.id,"unissued")).toThrow();
   expect(f.db.prepare("SELECT COUNT(*) AS n FROM agent_session_commands").get()).toEqual({n:0});
 });
+
+it("AND-527 backfills a stored user identity from its exact read-only history page", () => {
+  const f = fixture();
+  const native = { sourceId: "late-native", role: "user" as const, text: "Continue" };
+  const command = f.sessions.enqueue("owner", f.id, native.text);
+  f.sessions.recordSnapshot({ nodeId: "node", sessionId: f.id, status: "idle", messages: [native] });
+  f.history.observe("owner", "node", f.id, { cursor: "items-v1:late", complete: false });
+  const page = f.head(); f.history.request("owner", f.id, page);
+  f.history.complete("owner", "node", page, { messages: [{ ...native, clientMessageId: command.id }] });
+  expect(f.history.get("owner", f.id, page).messages[0]).toMatchObject({ ...native, clientMessageId: command.id });
+  expect(f.sessions.commandById(f.id, command.id)?.sourceMessageId).toBe(native.sourceId);
+  expect(f.sessions.getForAccount("owner", f.id).messages).toHaveLength(1);
+  f.history.complete("owner", "node", page, { messages: [native] });
+  expect(f.sessions.commandById(f.id, command.id)?.sourceMessageId).toBe(native.sourceId);
+});
+
+it("AND-527 rejects contradictory history identity without overwriting the source or caching the page", () => {
+  const f = fixture();
+  f.sessions.recordSnapshot({ nodeId: "node", sessionId: f.id, status: "idle", messages: [
+    { sourceId: "native", role: "user", text: "Continue", clientMessageId: "original-client" }] });
+  f.history.observe("owner", "node", f.id, { cursor: "items-v1:conflicting", complete: false });
+  const page = f.head(); f.history.request("owner", f.id, page);
+  expect(() => f.history.complete("owner", "node", page, { messages: [
+    { sourceId: "native", role: "user", text: "Continue", clientMessageId: "different-client" }] })).toThrow(/identity changed/);
+  expect(f.sessions.getForAccount("owner", f.id).messages[0]?.clientMessageId).toBe("original-client");
+  expect(f.history.get("owner", f.id, page).messages).toEqual([]);
+});

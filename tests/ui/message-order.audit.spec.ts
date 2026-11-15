@@ -54,7 +54,8 @@ for (const width of [320, 900, 1440]) for (const colorScheme of ["light", "dark"
     expect((await receipt.boundingBox())!.y).toBeLessThan((await later.boundingBox())!.y);
     mirrored = true;
     await advanceSessionDetailPoll(page);
-    await expect(receipt).toHaveCount(0);
+    await expect(receipt).toHaveCount(1);
+    await expect(receipt).toContainText("已送达");
     await expect(page.locator(".agent-console-messages").getByText(command.text, {exact:true})).toHaveCount(1);
     const user=page.locator(`[data-agent-message-id="user:${command.id}"]`);
     expect(await user.evaluate((node,later)=>Boolean(node.compareDocumentPosition(later)&Node.DOCUMENT_POSITION_FOLLOWING),await later.elementHandle())).toBe(true);
@@ -132,7 +133,8 @@ for(const surface of ["console","panel"] as const) {
     mirrored=true;
     await advanceSessionDetailPoll(page);
     await expect(area.getByText(command.text,{exact:true})).toHaveCount(1);
-    await expect(area.locator(".agent-reply-feedback")).toHaveCount(0);
+    await expect(area.locator(".agent-reply-feedback")).toHaveCount(1);
+    await expect(area.locator(".agent-reply-feedback")).toContainText("已送达");
     await expect.poll(async()=>Math.abs(await top()-before)).toBeLessThanOrEqual(1);
     const native=area.locator(`[data-agent-message-id="user:${command.id}"]`);
     const following=area.locator('[data-agent-message-id="agent:m-21"]');
@@ -206,3 +208,39 @@ test("panel follows a new explicit send while the reader was in older history",a
   await expect(area.getByText("Show my newly sent input",{exact:true})).toHaveCount(1);
   await expect.poll(()=>area.evaluate(box=>box.scrollHeight-box.scrollTop-box.clientHeight)).toBeLessThanOrEqual(2);
 });
+
+for (const surface of ["console", "panel"] as const) for (const width of [320, 1440]) {
+  test(`AND-527 ${surface} delayed client echo and repeated words ${width}`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.clock.install();
+    await page.clock.setFixedTime(new Date("2026-11-15T04:30:00Z"));
+    const text = "现在上线最新的交付以后，效果是怎么样的？请做一下复盘？";
+    const first: AgentSessionCommand = { id: "and527-first", kind: "message", text, status: "delivered", createdAt: "2026-11-15T04:24:24Z", deliveredAt: "2026-11-15T04:24:30Z" };
+    const native: AgentSessionMessage = { id: "and527-native", sourceId: "native-item-first", clientMessageId: first.id,
+      role: "user", text, occurredAt: "2026-11-15T04:26:35Z" };
+    let command = first;
+    let messages: AgentSessionMessage[] = [];
+    const area = await openReceiptFixture(page, surface, () => ({ command, messages }));
+    await expect(area.getByText(text, { exact: true })).toHaveCount(1);
+    await expect(area.getByText("已送达", { exact: true })).toHaveCount(1);
+    messages = [native, { ...native, id: "answer", sourceId: "answer-native", role: "agent", text: "已收到这条输入" }];
+    await advanceSessionDetailPoll(page);
+    await expect(area.getByText(text, { exact: true })).toHaveCount(1);
+    await expect(area.locator(`[data-agent-message-id="user:${native.sourceId}"]`)).toHaveCount(1);
+    await expect(area.getByText("已送达", { exact: true })).toHaveCount(1);
+    await expect(area.locator("time").first()).toHaveText("12:26");
+    await page.reload();
+    if (surface === "panel") {
+      await page.locator(".execution-history > summary").click();
+      await page.locator(".execution-record > summary").filter({ hasText: "派单 · Fixture" }).click();
+      await page.locator(".agent-session-toggle").click();
+    }
+    await expect(area.getByText(text, { exact: true })).toHaveCount(1);
+    command = { ...first, id: "and527-second", sourceMessageId: "native-item-second", createdAt: "2026-11-15T04:28:00Z" };
+    messages = [...messages, { ...native, id: "second", sourceId: "native-item-second", clientMessageId: command.id, occurredAt: "2026-11-15T04:28:10Z" }];
+    await advanceSessionDetailPoll(page);
+    await expect(area.getByText(text, { exact: true })).toHaveCount(2);
+    await expect(area.locator('[data-agent-message-id="user:native-item-second"]')).toHaveCount(1);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
+  });
+}

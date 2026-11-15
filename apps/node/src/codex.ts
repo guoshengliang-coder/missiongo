@@ -35,7 +35,8 @@ export function codexMessages(thread: Wire): Message[] {
     const dated = occurredAt ? { occurredAt } : {};
     if (item.type === "userMessage") {
       const text = (item.content ?? []).filter((c: Wire) => c.type === "text").map((c: Wire) => c.text).join("\n");
-      if (text.trim()) messages.push({ sourceId, turnId: turn.id, role: "user", text, ...dated });
+      if (text.trim()) messages.push({ sourceId, turnId: turn.id, role: "user", text, ...dated,
+        ...(typeof item.clientId === "string" && item.clientId.trim().length > 0 && item.clientId.length <= 200 ? { clientMessageId: item.clientId } : {}) });
     } else if (item.type === "imageGeneration" && item.status === "completed" && !item.failure
       && typeof item.savedPath === "string" && localArtifactPath(item.savedPath)
       && /\.(?:png|jpe?g|gif|webp|svg)$/i.test(item.savedPath)) {

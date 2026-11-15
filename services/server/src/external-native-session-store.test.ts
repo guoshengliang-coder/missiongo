@@ -571,3 +571,20 @@ it("retains an exact external command/source association outside the recent wind
   expect(f.native.overlay("owner",f.id,false).command?.sourceMessageId).toBe(command.id);
   expect(f.native.commandById(f.id,command.id)?.status).toBe("delivered");
 });
+
+it("AND-527 retains client aliases after an external reconnect and clockless refresh", () => {
+  const f = fixture(); f.native.connect("owner", f.id, "node"); f.report();
+  const command = f.native.enqueue("owner", f.id, "Continue");
+  f.report({ commandId: command.id, commandStatus: "delivering" });
+  f.report({ commandId: command.id, commandStatus: "delivered" });
+  const native = { sourceId: "native-source", clientMessageId: command.id, role: "user" as const, text: "Continue" };
+  f.report({ messages: [native] });
+  expect(f.native.commandById(f.id, command.id)?.sourceMessageId).toBe(native.sourceId);
+  const { clientMessageId: _, ...oldSnapshot } = native;
+  f.report({ messages: [oldSnapshot] });
+  expect(f.native.commandById(f.id, command.id)?.sourceMessageId).toBe(native.sourceId);
+  expect(() => f.report({ messages: [{ ...native, clientMessageId: "different" }] })).toThrow(/identity changed/);
+  f.native.disconnect("owner", f.id); f.native.connect("owner", f.id, "node");
+  f.report({ generation: 3, messages: [oldSnapshot] });
+  expect(f.native.commandById(f.id, command.id)?.sourceMessageId).toBe(native.sourceId);
+});
