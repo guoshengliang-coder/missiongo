@@ -41,7 +41,7 @@ function ChatImage({ sessionId, attachment, onImageLoad }: {
       <button type="button" className="secondary-button" onClick={retry}><RotateCcw size={16} />{t("retry")}</button>
     </div>}
     {open && <MediaLightbox title={attachment.filename} onClose={() => setOpen(false)} actions={
-      <button type="button" disabled={downloading} onClick={() => void download()} aria-label={t("download")}>
+      <button type="button" data-initial-focus={!downloading ? true : undefined} disabled={downloading} onClick={() => void download()} aria-label={t("download")}>
         {downloading ? <LoaderCircle className="spin" size={18} /> : <Download size={18} />}
       </button>
     }>
