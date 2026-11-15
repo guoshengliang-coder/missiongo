@@ -130,6 +130,7 @@ export function DraftChatFile({ file, disabled, onRemove, onReplace }: {
     </span>
     {previewOpen && imageFile && thumbnail && <MediaLightbox title={file.name} onClose={closePreview} actions={onReplace && <button
       type="button" disabled={disabled || imageFailed || !annotatable}
+      data-initial-focus={!disabled && !imageFailed && annotatable ? true : undefined}
       aria-label={t("agentImageEdit")} title={t("agentImageEdit")} onClick={() => void edit()}><Highlighter size={20} /></button>}>
       {imageFailed ? <p className="agent-chat-draft-image-note" role="alert">{t(onReplace && !annotatable ? "annotateUnsupported" : "attachmentFailed")}</p> : <ZoomableImage src={thumbnail} alt={file.name} />}
       {onReplace && !annotatable && !imageFailed && <p className="agent-chat-draft-image-note" role="note">{t("annotateUnsupported")}</p>}

@@ -13,7 +13,8 @@ const htmlBundle = { skippedResources: ["evidence.jsonl"], entry: "prototype.htm
 
 for (const width of [375, 1440]) test(`historical artifacts preview, isolation, offline cache and errors at ${width}px`, async ({ page }) => {
   await page.setViewportSize({ width, height: 900 });
-  const stamp = new Date().toISOString();
+  const stamp = "2026-11-15T03:00:00Z";
+  await page.clock.setFixedTime(new Date(stamp));
   let missing = false; let saved = false; const requests: string[] = []; let network = 0;
   const summary = { id: "artifact-session", agentSessionId: "artifact-session", source: "external", agentKind: "codex", status: "idle",
     nodeName: "Fixture", nodeRevoked: false, mode: "external", dispatchStatus: "external", updatedAt: stamp, activityAt: stamp, createdAt: stamp,
@@ -71,25 +72,25 @@ for (const width of [375, 1440]) test(`historical artifacts preview, isolation, 
   expect(offlineHtml).toContain("data:text/javascript;base64,");
   expect(offlineHtml).toContain("data:text/css;base64,");
   await page.screenshot({ path: test.info().outputPath(`artifact-preview-${width}.png`) });
-  await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+  await dialog.getByRole("button", { name: /^关闭(?:预览)?$/, exact: true }).click();
   await page.getByRole("button", { name: "可点击原型", exact: true }).click();
   await expect(dialog.getByText("已保存，原设备离线后仍可查看。")).toBeVisible();
   expect(requests.filter((href) => href.endsWith("prototype.html"))).toHaveLength(1);
-  await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+  await dialog.getByRole("button", { name: /^关闭(?:预览)?$/, exact: true }).click();
   await page.getByRole("button", { name: "说明", exact: true }).click();
   await expect(dialog.getByRole("heading", { name: "已保存说明" })).toBeVisible();
   await expect(dialog.locator(".markdown-table-scroll table")).toBeVisible();
   expect(await dialog.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
   await expect(dialog.getByRole("img", { name: "本地图" })).toBeVisible();
   await expect(dialog.getByRole("img", { name: "本地图" })).toHaveAttribute("src", /^data:image\/svg\+xml;base64,/);
-  await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+  await dialog.getByRole("button", { name: /^关闭(?:预览)?$/, exact: true }).click();
   await page.getByRole("button", { name: "效果图", exact: true }).click();
   await expect(dialog.getByRole("img")).toBeVisible();
   await expect.poll(() => dialog.getByRole("img").evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(1);
-  await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+  await dialog.getByRole("button", { name: /^关闭(?:预览)?$/, exact: true }).click();
   await page.getByRole("button", { name: "文档", exact: true }).click();
   await expect(dialog.locator('iframe[title="report.pdf"]')).toHaveAttribute("src", /^blob:/);
-  await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+  await dialog.getByRole("button", { name: /^关闭(?:预览)?$/, exact: true }).click();
   missing = true;
   detail.messages[0]!.text += "\n[缺失原型](/tmp/fixture-output/missing.html)";
   await advanceSessionDetailPoll(page);

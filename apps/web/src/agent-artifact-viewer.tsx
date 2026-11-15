@@ -1,11 +1,12 @@
 import { OverlayDialog } from "./overlay";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Download, LoaderCircle, RotateCcw, X } from "lucide-react";
-import { localArtifactLinks, localArtifactImageLinks, localArtifactPath, artifactResourceName, type AgentArtifactBundle } from "@missiongo/domain";
+import { ChevronLeft, ChevronRight, Download, LoaderCircle, RotateCcw } from "lucide-react";
+import { ARTIFACT_CONTENT_TYPES, localArtifactLinks, localArtifactImageLinks, localArtifactPath, artifactResourceName, type AgentArtifactBundle } from "@missiongo/domain";
 import { createPortal } from "react-dom";
 
 import { ZoomableImage } from "./zoomable-image";
+import { MediaLightboxFrame } from "./media-lightbox";
 import { artifactGalleryLinks } from "./agent-artifact-gallery";
 
 import { api } from "./api";
@@ -61,15 +62,15 @@ function ArtifactImage({ sessionId, messageId, href, onOpen, onLoad }: {
 }) {
   const { t } = useI18n();
   const { request, state, bundle, status, waiting, retry } = useArtifact(sessionId, messageId, href);
-  const [decodeFailed, setDecodeFailed] = useState(false);
+  const [decodeFailedSrc, setDecodeFailedSrc] = useState<string>();
   const entry = bundle.data?.files.find((file) => file.name === bundle.data?.entry);
   const url = useMemo(() => entry?.contentType.startsWith("image/") ? artifactDataUrl(entry) : undefined, [entry]);
-  const failed = request.isError || state.isError || bundle.isError || status?.status === "failed" || decodeFailed || Boolean(entry && !url);
+  const failed = request.isError || state.isError || bundle.isError || status?.status === "failed" || Boolean(url && decodeFailedSrc === url) || Boolean(entry && !url);
   return <div className="agent-output-image">
     {failed ? <div className="agent-output-image-state" role="alert"><span>{t(errorKeys[status?.error ?? ""] ?? "agentImageUnavailable")}</span>{status?.errorResource && artifactResourceName(status.errorResource) && <span>{t("artifactProblemResource", { name: status.errorResource })}</span>}
-      <button type="button" className="artifact-link" onClick={() => { setDecodeFailed(false); void retry(); }}>{t("retry")}</button></div>
+      <button type="button" className="artifact-link" onClick={() => { setDecodeFailedSrc(undefined); void retry(); }}>{t("retry")}</button></div>
       : url ? <button type="button" className="agent-output-image-open" aria-label={t("agentImagePreview")} onClick={onOpen}>
-        <img src={url} alt={t("agentImagePreview")} onLoad={onLoad} onError={() => setDecodeFailed(true)} />
+        <img src={url} alt={t("agentImagePreview")} onLoad={onLoad} onError={() => setDecodeFailedSrc(url)} />
       </button> : <div className="agent-output-image-state" role="status"><LoaderCircle size={16} className="spin" aria-hidden="true" />
         <span>{t(waiting ? "artifactWaiting" : "agentImageLoading")}</span>
         {waiting && <button type="button" className="artifact-link" onClick={() => void retry()}>{t("retry")}</button>}
@@ -82,20 +83,24 @@ function ArtifactViewer({ sessionId, messageId, initialHref, links, onClose }: {
 }) {
   const { t } = useI18n();
   const [index, setIndex] = useState(() => Math.max(0, links.indexOf(initialHref)));
+  const href = links[index]!;
+  const path = localArtifactPath(href);
+  const imageView = ARTIFACT_CONTENT_TYPES[path?.split(".").at(-1)?.toLowerCase() ?? ""]?.startsWith("image/") ?? false;
+  const title = path?.split("/").at(-1) ?? t("artifactPreview");
   const navigation = useRef<HTMLElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
   const retainFocus = () => (navigation.current ?? closeButton.current)?.focus({ preventScroll: true });
   const navigate = (direction: "previous" | "next") => {
     const focused = document.activeElement;
     const leavingSlide = focused instanceof Element && navigation.current?.parentElement?.contains(focused)
-      && !focused.closest(".artifact-viewer > header, .artifact-navigation");
+      && !focused.closest("header > .icon-button, .artifact-navigation");
     // Slide controls are removed during navigation; edge buttons become disabled.
     // Both must hand focus to a stable part of the same modal before replacement.
     if (leavingSlide || (navigation.current?.contains(focused)
       && (direction === "previous" ? index <= 1 : index >= links.length - 2))) retainFocus();
     setIndex(current => Math.max(0, Math.min(links.length - 1, current + (direction === "previous" ? -1 : 1))));
   };
-  return <OverlayDialog className="artifact-backdrop" onClose={onClose} aria-label={t("artifactPreview")}
+  return <OverlayDialog className={imageView ? "selected-media-lightbox artifact-media-lightbox" : "artifact-backdrop"} onClose={onClose} aria-label={t("artifactPreview")}
     onKeyDown={event => {
       if (links.length < 2 || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
         || !(event.target instanceof Element) || event.target.closest('input, textarea, select, video, iframe, [contenteditable]:not([contenteditable="false"]), [role="slider"], [role="combobox"]')) return;
@@ -104,15 +109,14 @@ function ArtifactViewer({ sessionId, messageId, initialHref, links, onClose }: {
         navigate(event.key === "ArrowLeft" ? "previous" : "next");
       }
     }}>
-    <div className="artifact-viewer">
-      <header><strong tabIndex={0}>{localArtifactPath(links[index]!)?.split("/").at(-1) ?? t("artifactPreview")}</strong><button ref={closeButton} className="icon-button" type="button" onClick={onClose} aria-label={t("close")}><X size={20} /></button></header>
-      <ArtifactSlide key={links[index]} sessionId={sessionId} messageId={messageId} href={links[index]!} onNavigate={navigate} onRetainFocus={retainFocus} />
+    <MediaLightboxFrame title={title} onClose={onClose} closeButtonRef={closeButton} closeLabel={t(imageView ? "closePreview" : "close")} className={imageView ? undefined : "artifact-viewer"} expandTitle={imageView}>
+      <ArtifactSlide key={href} sessionId={sessionId} messageId={messageId} href={href} onNavigate={navigate} onRetainFocus={retainFocus} />
       {links.length > 1 && <footer ref={navigation} tabIndex={-1} className="artifact-navigation" aria-label={t("artifactNavigation")}>
         <button className="secondary-button" type="button" disabled={index === 0} onClick={() => navigate("previous")} aria-label={t("previousMedia")}><ChevronLeft size={20} /></button>
         <div aria-live="polite" aria-atomic="true"><strong>{index + 1} / {links.length}</strong><span>{t("artifactMessageOnly")}</span></div>
         <button className="secondary-button" type="button" disabled={index === links.length - 1} onClick={() => navigate("next")} aria-label={t("nextMedia")}><ChevronRight size={20} /></button>
       </footer>}
-    </div>
+    </MediaLightboxFrame>
   </OverlayDialog>;
 }
 
@@ -135,10 +139,13 @@ function ArtifactContent({ bundle, previewUrl, onNavigate, onRetry }: { bundle: 
   const { t } = useI18n();
   const entry = bundle.files.find((file) => file.name === bundle.entry)!;
   const [url, setUrl] = useState("");
-  const [imageFailed, setImageFailed] = useState(false);
+  const [imageFailedSrc, setImageFailedSrc] = useState<string>();
   const [imageAttempt, setImageAttempt] = useState(0);
   const [imageRetrying, setImageRetrying] = useState(false);
   const imageUrl = useMemo(() => entry.contentType.startsWith("image/") ? artifactDataUrl(entry) : undefined, [entry]);
+  // Retry completion can precede the cache notification. An old decode error
+  // must not hide the fresh bytes when that notification reaches this viewer.
+  const imageFailed = Boolean(imageUrl && imageFailedSrc === imageUrl);
   const html = useMemo(() => entry.contentType === "text/html" ? artifactHtml(bundle) : undefined, [entry, bundle]);
   useEffect(() => {
     const bytes = Uint8Array.from(atob(entry.base64), (c) => c.charCodeAt(0));
@@ -147,17 +154,19 @@ function ArtifactContent({ bundle, previewUrl, onNavigate, onRetry }: { bundle: 
     return () => URL.revokeObjectURL(value);
   }, [entry, html]);
   return <>
-    <div className="artifact-toolbar"><span>{t("artifactSaved")}</span><a className="secondary-button" href={url || undefined} download={entry.name.split("/").at(-1)}><Download size={16} />{t("download")}</a></div>
+    {entry.contentType.startsWith("image/")
+      ? <a className="media-viewer-download" href={url || undefined} download={entry.name.split("/").at(-1)} aria-label={t("download")} title={t("download")}><Download size={18} /></a>
+      : <div className="artifact-toolbar"><span>{t("artifactSaved")}</span><a className="secondary-button" href={url || undefined} download={entry.name.split("/").at(-1)}><Download size={16} />{t("download")}</a></div>}
     {Boolean(bundle.skippedResources?.length) && <div className="artifact-help" role="status" tabIndex={0}>{t("artifactSkippedHelp")}<ul>{bundle.skippedResources!.map(name => <li key={name}>{name}</li>)}</ul></div>}
     {html !== undefined ? <><p className="artifact-help">{t("artifactHtmlHelp")}</p><iframe title={entry.name} sandbox="allow-scripts" referrerPolicy="no-referrer" src={previewUrl} onLoad={(event) => {
         event.currentTarget.contentWindow?.postMessage({ type: "missiongo-artifact-preview", html }, "*");
       }} /></>
-      : entry.contentType.startsWith("image/") ? <div className="artifact-image">{imageFailed ? <div className="artifact-status" role="alert" tabIndex={0}><p>{t("agentImageUnavailable")}</p><button className="secondary-button" type="button" disabled={imageRetrying} onClick={async () => {
+      : entry.contentType.startsWith("image/") ? <><div className="artifact-image">{imageFailed ? <div className="artifact-status" role="alert" tabIndex={0}><p>{t("agentImageUnavailable")}</p><button className="secondary-button" type="button" disabled={imageRetrying} onClick={async () => {
           setImageRetrying(true);
-          try { await onRetry(); setImageFailed(false); setImageAttempt(value => value + 1); }
+          try { await onRetry(); setImageFailedSrc(undefined); setImageAttempt(value => value + 1); }
           finally { setImageRetrying(false); }
         }}>{t("retry")}</button></div>
-        : imageUrl && <ZoomableImage key={imageAttempt} src={imageUrl} alt={entry.name} onSwipe={onNavigate} onError={() => setImageFailed(true)} />}</div>
+        : imageUrl && <ZoomableImage key={imageAttempt} src={imageUrl} alt={entry.name} onSwipe={onNavigate} onError={() => setImageFailedSrc(imageUrl)} />}</div><p className="artifact-media-status">{t("artifactSaved")}</p></>
       : entry.contentType === "application/pdf" ? <iframe title={entry.name} sandbox="allow-scripts allow-same-origin" src={url || undefined} />
       : entry.contentType === "text/markdown" ? <div className="artifact-document"><MarkdownText resolveResourceUrl={(href) => {
         try {
