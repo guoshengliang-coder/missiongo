@@ -14,3 +14,10 @@ it("uses native catalog efforts and preserves defaults without synthesizing mode
   ]);
   expect(modelOptions("claude_code", { models: [{ value: "default" }, { value: "gateway-model", displayName: "Gateway", supportedEffortLevels: ["low", "low", "high"] }] })).toEqual([{ id: "gateway-model", label: "Gateway", efforts: ["low", "high"] }]);
 });
+
+it("keeps valid models when neighboring records and effort catalogs are malformed",()=>{
+  for(const kind of ["codex","claude_code","opencode"] as const){
+    const entries=[null,false,{model:"native",value:"native",modelID:"native",providerID:"gateway",capabilities:{tools:true},supportedEffortLevels:"wrong",variants:{},supportedReasoningEfforts:[null,{reasoningEffort:"high"}]}];
+    expect(modelOptions(kind,kind === "claude_code" ? {models:entries}:{data:entries})).toMatchObject([{id:kind === "opencode" ? "gateway/native":"native",efforts:kind === "codex" ? ["high"]:[]}]);
+  }
+});
