@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, TextQuote, Paperclip, Image, ChevronRight, Settings, Bookmark, ArrowUp, ArrowDown, Pencil, Trash2, MoreHorizontal, Copy } from "lucide-react";
 import { COMMON_COMMAND_CONTENT_LIMIT, COMMON_COMMAND_NAME_LIMIT, COMMON_COMMAND_COUNT_LIMIT, type CommonCommand, type CommonCommandAction, type CommonCommands } from "@missiongo/contracts";
@@ -49,19 +49,47 @@ export function CommonCommandProvider({children}:{children:ReactNode}) {
  const context:CommandContext={generation,pending,error,change,returning,activeTarget:target.current,
   register:(id,value)=>{targets.current.set(id,value);if(preservedTarget.current?.id===id && preservedTarget.current.value!==value.value){value.set(preservedTarget.current.value)}return()=>{if(targets.current.get(id)===value)targets.current.delete(id)}},
   open:id=>{const el=document.querySelector<HTMLTextAreaElement>(`textarea[data-command-target="${CSS.escape(id)}"]`);target.current=id;caret.current=el?.selectionStart??0;openedValue.current=targets.current.get(id)?.value??"";setError("");setPicker(true)},
-  edit:(command,content)=>{setError("");setEditor({revision:client.getQueryData<CommonCommands>(["common-commands"])?.revision,...(command?{command}:{}),...(content!==undefined?{content}:{}),back:picker});setPicker(false)},
+  edit:(command,content)=>{setError("");const next={revision:client.getQueryData<CommonCommands>(["common-commands"])?.revision,...(command?{command}:{}),...(content!==undefined?{content}:{}),back:picker};if(picker){setPicker(false);afterTopOverlayCloses(()=>setEditor(next))}else setEditor(next)},
   manage:()=>{const active=targets.current.get(target.current);if(active)preservedTarget.current={id:target.current,value:active.value};scroll.current=list.current?.scrollTop??0;restore.current=[".agent-console-messages",".agent-session-messages",".detail-scroll"].flatMap(selector=>{const el=document.querySelector(selector);return el?[{element:selector,top:el.scrollTop}]:[]});setPicker(false);setReturning(true);afterTopOverlayCloses(()=>window.dispatchEvent(new Event("missiongo:common-command-settings")))},
   resume:()=>{if(!returning)return;setReturning(false);setPicker(true);requestAnimationFrame(()=>{revealTarget(target.current);requestAnimationFrame(()=>restore.current.forEach(s=>{const el=document.querySelector(s.element);if(el)el.scrollTop=s.top}))});preservedTarget.current=null},
   clear:()=>{epoch.current++;setGeneration(epoch.current);target.current="";lock.current=false;setPending(false);setNotice("");preservedTarget.current=null;setPicker(false);setEditor(null);setQuery("");setReturning(false);setError("");attempt.current=null;targets.current.clear();client.removeQueries({queryKey:["common-commands"]})},
  };
  const rows=(data.data?.commands??[]).filter(c=>(c.content+" "+c.name).toLowerCase().includes(query.trim().toLowerCase()));
+ const closeEditor=(back:boolean)=>{setEditor(null);if(back)afterTopOverlayCloses(()=>setPicker(true))};
  return <Context.Provider value={context}>{children}
- {picker&&<Modal title={t("commonCommands")} subtitle="" className="common-command-picker" onClose={()=>{scroll.current=list.current?.scrollTop??0;setPicker(false)}} headerActions={<><button type="button" className="icon-button" aria-label={t("commandManage")} onClick={context.manage}><Settings size={18}/></button><button type="button" className="icon-button" aria-label={t("commandNew")} onClick={()=>context.edit()}><Plus size={19}/></button></>}>
+ {picker&&<Modal title={t("commonCommands")} subtitle="" className="common-command-picker" onClose={()=>{scroll.current=list.current?.scrollTop??0;setPicker(false)}} headerActions={<><button type="button" className="icon-button" data-initial-focus aria-label={t("commandManage")} onClick={context.manage}><Settings size={18}/></button><button type="button" className="icon-button" aria-label={t("commandNew")} onClick={()=>context.edit()}><Plus size={19}/></button></>}>
  <div className="dialog-form"><input aria-label={t("commandSearch")} placeholder={t("commandSearch")} value={query} onChange={e=>setQuery(e.target.value)}/><CommandReadStatus loading={data.isPending} failed={data.isError} retry={()=>void data.refetch()}/>{error&&<p role="alert" className="inline-error">{error}</p>}
- <div className="common-command-list" ref={list} onScroll={e=>{scroll.current=e.currentTarget.scrollTop}}>{[true,false].map(favorite=><div key={String(favorite)}>{rows.some(c=>c.favorite===favorite)&&<p className="sidebar-label">{t(favorite?"commandFavorites":"commandOthers")}</p>}{rows.filter(c=>c.favorite===favorite).map(c=><button type="button" className="common-command-choice" key={c.id} onClick={()=>{const current=targets.current.get(target.current);if(!current||current.blocked){setPicker(false);return}const next=insertCommonCommand(current.value,c.content,current.value===openedValue.current?caret.current:current.value.length);if(next===null){setError(t("commandTooLong"));return}current.insert(next,current.value);setPicker(false);afterTopOverlayCloses(()=>document.querySelector<HTMLTextAreaElement>(`textarea[data-command-target="${CSS.escape(target.current)}"]`)?.focus())}}><span>{c.content}{c.name&&<small>{c.name}</small>}</span><ChevronRight size={16}/></button>)}</div>)}{!data.isPending&&!data.isError&&!rows.length&&<p className="account-note">{t("commandEmpty")}</p>}</div></div></Modal>}
- {editor&&<CommandEditor key={editor.command?.id??"new"} command={editor.command} initialContent={editor.content} loading={data.isPending} loadFailed={data.isError} ready={Boolean(data.data)} retry={()=>void data.refetch()} pending={pending} error={error} latestContent={error===t("commandConflict")?data.data?.commands.find(c=>c.id===editor.command?.id)?.content:undefined} close={()=>{setEditor(null);if(editor.back)setPicker(true)}} save={async fields=>{try{await change(editor.command?{kind:"edit",id:editor.command.id,...fields}:{kind:"create",...fields},editor.revision);setEditor(null);if(editor.back)setPicker(true);setNotice(t("commandSaved"))}catch{/* form retains the draft */}}}/>}
+ <div className="common-command-list" ref={list} onScroll={e=>{scroll.current=e.currentTarget.scrollTop}}>{[true,false].map(favorite=><div key={String(favorite)}>{rows.some(c=>c.favorite===favorite)&&<p className="sidebar-label">{t(favorite?"commandFavorites":"commandOthers")}</p>}{rows.filter(c=>c.favorite===favorite).map(c=><CommandChoice command={c} key={c.id} onChoose={()=>{const current=targets.current.get(target.current);if(!current||current.blocked){setPicker(false);return}const next=insertCommonCommand(current.value,c.content,current.value===openedValue.current?caret.current:current.value.length);if(next===null){setError(t("commandTooLong"));return}current.insert(next,current.value);setPicker(false);afterTopOverlayCloses(()=>document.querySelector<HTMLTextAreaElement>(`textarea[data-command-target="${CSS.escape(target.current)}"]`)?.focus())}}/>)}</div>)}{!data.isPending&&!data.isError&&!rows.length&&<p className="account-note">{t("commandEmpty")}</p>}</div></div></Modal>}
+ {editor&&<CommandEditor key={editor.command?.id??"new"} command={editor.command} initialContent={editor.content} loading={data.isPending} loadFailed={data.isError} ready={Boolean(data.data)} retry={()=>void data.refetch()} pending={pending} error={error} latestContent={error===t("commandConflict")?data.data?.commands.find(c=>c.id===editor.command?.id)?.content:undefined} close={()=>closeEditor(editor.back)} save={async fields=>{try{await change(editor.command?{kind:"edit",id:editor.command.id,...fields}:{kind:"create",...fields},editor.revision);closeEditor(editor.back);setNotice(t("commandSaved"))}catch{/* form retains the draft */}}}/>}
  {notice&&<div className="common-command-notice" role="status">{notice}</div>}
  </Context.Provider>
+}
+function CommandChoice({command,onChoose}:{command:CommonCommand;onChoose:()=>void}) {
+ const {t}=useI18n(),id=useId(),text=useRef<HTMLSpanElement>(null),choice=useRef<HTMLButtonElement>(null),disclosure=useRef<HTMLButtonElement>(null);
+ const [expanded,setExpanded]=useState(false),[truncated,setTruncated]=useState(false);
+ useLayoutEffect(()=>{
+  if(expanded||!text.current)return;
+  const blocks=Array.from(text.current.children) as HTMLElement[];
+  const measure=()=>{
+   const clipped=blocks.some(el=>el.scrollHeight>el.clientHeight+1);
+   if(!clipped&&disclosure.current===document.activeElement)choice.current?.focus({preventScroll:true});
+   setTruncated(clipped);
+  };
+  measure();
+  const observer=new ResizeObserver(measure);
+  blocks.forEach(el=>observer.observe(el));
+  return()=>observer.disconnect();
+ },[command.name,command.content,expanded]);
+ return <div className="common-command-card" data-expanded={expanded}>
+  <button ref={choice} type="button" className="common-command-choice" onClick={onChoose}>
+   <span ref={text} id={id}>
+    {command.name&&<span className="common-command-title">{command.name}</span>}
+    <span className={`common-command-preview${command.name?"":" common-command-preview-unnamed"}`}>{command.content}</span>
+   </span>
+   <ChevronRight size={16}/>
+  </button>
+  {(truncated||expanded)&&<button ref={disclosure} type="button" className="text-button common-command-disclosure" aria-expanded={expanded} aria-controls={id} onClick={()=>setExpanded(!expanded)}>{t(expanded?"commandCollapse":"commandShowFull")}</button>}
+ </div>;
 }
 function CommandReadStatus({loading,failed,retry}:{loading:boolean;failed:boolean;retry:()=>void}){const {t}=useI18n();return loading?<p role="status">{t("settingsLoading")}</p>:failed?<div role="alert"><p>{t("commandLoadError")}</p><button type="button" className="secondary-button" onClick={retry}>{t("retry")}</button></div>:null}
 function CommandEditor({command,initialContent,loading,loadFailed,ready,retry,pending,error,latestContent,close,save}:{command?:CommonCommand|undefined;initialContent?:string|undefined;loading:boolean;loadFailed:boolean;ready:boolean;retry:()=>void;pending:boolean;error:string;latestContent?:string|undefined;close:()=>void;save:(fields:{content:string;name:string;favorite:boolean})=>Promise<void>}) {
