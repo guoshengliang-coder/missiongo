@@ -168,7 +168,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
 
   const sourceState = replySourceState(command, history.messages, session.data?.attachmentMessages ?? [], history.hasMore);
   const outgoing = outgoingReply(command, sendLocked && sendAttempt && !sendAttempt.command
-    ? { text: sendAttempt.text, occurredAt: sendAttempt.occurredAt, status: "sending" } : undefined, sourceState !== "unmatched");
+    ? { text: sendAttempt.text, occurredAt: sendAttempt.occurredAt, status: "sending" } : undefined, sourceState);
   const planMessages = inlinePlanTranscript(withOutgoingReply(agentChatMessages(history.messages,
     session.data?.attachmentMessages ?? []), outgoing), session.data);
   const outgoingSignature = outgoing ? `${outgoing.commandId}:${outgoing.status}:${outgoing.text}` : "";

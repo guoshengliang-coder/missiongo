@@ -663,7 +663,8 @@ public enum CodexProtocol {
                     if !text.isEmpty {
                         messages.append(AgentSessionMessage(
                             sourceId: sourceId, turnId: turnId, role: "user", text: text,
-                            occurredAt: occurredAt
+                            occurredAt: occurredAt,
+                            clientMessageId: (item["clientId"] as? String).flatMap { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.utf16.count <= 200 ? $0 : nil }
                         ))
                     }
                 case "agentMessage":

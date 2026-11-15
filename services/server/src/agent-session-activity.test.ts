@@ -383,3 +383,40 @@ it.each(["", "answer-"])("links a command only to its own persisted user source 
   f.snapshot({status:"idle",messages:[{sourceId:prefix+"command-proof",role:"user",text:"Native wrapping differs",occurredAt:time(2)}]});
   expect(f.store.commandById(f.sessionId,"command-proof")?.sourceMessageId).toBe(prefix+"command-proof");
 });
+
+it("AND-527 persists client identity through delayed source arrival and old snapshots", () => {
+  const f = fixture();
+  const command = f.store.enqueue("owner", f.sessionId, "Continue");
+  f.snapshot({ status: "active", messages: [], commandId: command.id, commandStatus: "delivering" });
+  f.snapshot({ status: "active", messages: [], commandId: command.id, commandStatus: "delivered" });
+  vi.setSystemTime(time(5));
+  const native = { sourceId: "native-input", clientMessageId: command.id, turnId: "native-turn", role: "user" as const, text: "Continue", occurredAt: time(5) };
+  f.snapshot({ status: "idle", messages: [native] });
+  expect(f.store.commandById(f.sessionId, command.id)?.sourceMessageId).toBe(native.sourceId);
+  expect(f.store.listForAccount("owner")[0]?.command?.sourceMessageId).toBe(native.sourceId);
+  const before = f.store.getForAccount("owner", f.sessionId).messages.find(m => m.sourceId === native.sourceId)!;
+  const { clientMessageId: _, ...oldSnapshot } = native;
+  f.snapshot({ status: "idle", messages: [oldSnapshot] });
+  expect(f.store.getForAccount("owner", f.sessionId).messages.find(m => m.sourceId === native.sourceId)).toEqual(before);
+  expect(() => f.snapshot({ status: "idle", messages: [{ ...native, clientMessageId: "different" }] })).toThrow(/identity changed/);
+  expect(f.store.commandById(f.sessionId, command.id)?.sourceMessageId).toBe(native.sourceId);
+});
+
+it("AND-527 isolates client aliases, repeated words and ambiguous sources", () => {
+  const f = fixture();
+  const first = f.store.enqueue("owner", f.sessionId, "Continue");
+  f.snapshot({ status: "active", messages: [], commandId: first.id, commandStatus: "delivering" });
+  f.snapshot({ status: "active", messages: [], commandId: first.id, commandStatus: "delivered" });
+  const second = f.store.enqueue("owner", f.sessionId, "Continue");
+  const user = { sourceId: "first-native", role: "user" as const, text: "Continue", clientMessageId: first.id };
+  const other = f.create("client-other");
+  f.store.recordSnapshot({ nodeId: "node", sessionId: other, status: "idle", messages: [user] });
+  f.snapshot({ status: "idle", messages: [{ ...user, role: "agent" }] });
+  expect(f.store.commandById(f.sessionId, first.id)?.sourceMessageId).toBeUndefined();
+  f.snapshot({ status: "idle", messages: [user, { ...user, sourceId: "second-native", clientMessageId: second.id }] });
+  expect(f.store.commandById(f.sessionId, first.id)?.sourceMessageId).toBe("first-native");
+  expect(f.store.commandById(f.sessionId, second.id)?.sourceMessageId).toBe("second-native");
+  f.snapshot({ status: "idle", messages: [{ ...user, sourceId: "ambiguous" }] });
+  expect(f.store.commandById(f.sessionId, first.id)?.sourceMessageId).toBeUndefined();
+  expect(f.store.listForAccount("owner")[0]?.command?.sourceMessageId).toBe("second-native");
+});

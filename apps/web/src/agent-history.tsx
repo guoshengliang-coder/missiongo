@@ -16,7 +16,15 @@ export function mergeMessages(older: readonly AgentSessionMessage[], latest: rea
   const incoming = latest.filter(isConversationMessage);
   const indexes = new Map(prefix.map((message, index) => [historyMessageKey(message), index]));
   const split = incoming.reduce((start, message) => Math.min(start, indexes.get(historyMessageKey(message)) ?? prefix.length), prefix.length);
-  const values = new Map([...prefix, ...incoming].map(message => [historyMessageKey(message), message]));
+  const values = new Map(prefix.map(message => [historyMessageKey(message), message]));
+  for (const message of incoming) {
+    const key = historyMessageKey(message);
+    const knownClientId = values.get(key)?.clientMessageId;
+    // Late windows from before an identity backfill may omit this optional
+    // field. Keep the observed identity, while current body/time/requests win.
+    values.set(key, message.clientMessageId === undefined && knownClientId
+      ? { ...message, clientMessageId: knownClientId } : message);
+  }
   const incomingKeys = new Set(incoming.map(historyMessageKey));
   const beforeAnchor = new Map<string, string[]>();
   let pending: string[] = [];

@@ -55,3 +55,29 @@ it("serves recent cached messages, queues an exact read-only page and authorizes
     expect((await app.inject({ method: "GET", url: `${url}?cursor=${job.id}` })).statusCode).toBe(401);
   } finally { await app.close(); }
 });
+
+it("AND-527 accepts a native client identity at the snapshot HTTP boundary and rejects invalid ones", async () => {
+  const salt = Buffer.from("client-identity-route");
+  const app = buildApp({ databasePath: ":memory:", adminAccount: {
+    id: "owner", username: "owner@example.test", passwordScrypt: `scrypt:${salt.toString("base64url")}:${scryptSync("test-password", salt, 64).toString("base64url")}`,
+    sessionSecret: "synthetic-client-identity-route-secret", cookieSecure: false,
+  } });
+  try {
+    const database = app.missionGoStore.database;
+    const node = new DispatchStore(database).registerNode({ accountId: "owner", name: "Fixture", installationId: "client-identity-node" });
+    database.connection.prepare(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at)
+      VALUES ('client-identity-dispatch','owner',?,'codex','default','launched','synthetic',?)`).run(node.nodeId, new Date().toISOString());
+    const sessions = new AgentSessionStore(database);
+    const id = sessions.createForDispatch({ dispatchId: "client-identity-dispatch", nodeId: node.nodeId, sessionRef: "exact-client-thread" });
+    const command = sessions.enqueue("owner", id, "Continue");
+    const headers = { authorization: `Bearer ${node.token}` };
+    const url = `/api/v1/node/agent-sessions/${id}/snapshot`;
+    const native = { sourceId: "native-client-message", clientMessageId: command.id, role: "user", text: command.text };
+    for (const clientMessageId of [42, "", "x".repeat(201)]) {
+      expect((await app.inject({ method: "POST", url, headers, payload: { status: "idle", messages: [{ ...native, clientMessageId }] } })).statusCode).toBe(400);
+    }
+    expect((await app.inject({ method: "POST", url, headers, payload: { status: "idle", messages: [native] } })).statusCode).toBe(204);
+    expect(sessions.commandById(id, command.id)?.sourceMessageId).toBe(native.sourceId);
+    expect(sessions.getForAccount("owner", id).messages[0]).toMatchObject(native);
+  } finally { await app.close(); }
+});

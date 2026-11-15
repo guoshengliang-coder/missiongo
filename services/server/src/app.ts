@@ -3892,6 +3892,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         }
         return {
           sourceId: stringField(message, "sourceId")!,
+          ...(message.clientMessageId !== undefined ? { clientMessageId: stringField(message, "clientMessageId")! } : {}),
           ...(stringField(message, "turnId", false) ? { turnId: message.turnId as string } : {}),
           role,
           ...(stringField(message, "phase", false) ? { phase: message.phase as string } : {}),

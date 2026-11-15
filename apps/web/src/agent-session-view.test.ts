@@ -845,3 +845,39 @@ describe("audited attachment receipt identity",()=>{
     expect(output.filter(message=>message.role==="user")).toHaveLength(1);
   });
 });
+
+describe("AND-527 client identities", () => {
+  const command = { id: "command-client", kind: "message" as const, text: "Continue", status: "delivered" as const,
+    createdAt: "2026-11-15T04:24:24Z", deliveredAt: "2026-11-15T04:24:30Z" };
+  const native = { id: "native", sourceId: "native-uuid", clientMessageId: command.id, role: "user" as const,
+    text: "Native text", occurredAt: "2026-11-15T04:26:35Z" };
+  it("merges a late receipt onto the original user message without changing its body, time or position", () => {
+    const source = [{ ...native, id: "before", sourceId: "before", role: "agent" as const }, native];
+    const state = replySourceState(command, source, []);
+    expect(state).toBe("matched");
+    const visible = withOutgoingReply(source, outgoingReply(command, undefined, state));
+    expect(visible).toHaveLength(2);
+    expect(visible[1]).toMatchObject({ ...native, outgoing: { status: "delivered", commandId: command.id } });
+    expect(visible[0]).toEqual(source[0]);
+  });
+  it("does not substitute a different known identity with repeated words or ambiguous aliases", () => {
+    expect(replySourceState(command, [{ ...native, text: command.text, clientMessageId: "other", occurredAt: "2026-11-15T04:24:40Z" }], [])).toBe("unmatched");
+    expect(replySourceState(command, [native, { ...native, sourceId: "duplicate" }], [])).toBe("unmatched");
+    expect(replySourceState(command, [native, { ...native, sourceId: "duplicate" },
+      { id: "legacy", sourceId: "legacy", role: "user", text: command.text, occurredAt: "2026-11-15T04:24:40Z" }], [])).toBe("unmatched");
+    expect(replySourceState({ ...command, sourceMessageId: "not-loaded" }, [native], [])).toBe("unmatched");
+    expect(outgoingReply(command, undefined, "outside_window")).toBeNull();
+  });
+});
+
+it("AND-527 keeps an attachment receipt on its canonical bubble when the server knows the native source ID", () => {
+  const attachment = { id: "image", filename: "image.png", kind: "image" as const, contentType: "image/png", sizeBytes: 1, sha256: "synthetic", createdAt: "2026-11-15T04:24:00Z" };
+  const native = { id: "native-image", sourceId: "native-image-id", clientMessageId: "image-command", role: "user" as const,
+    text: "See image\n[MissionGo attachment command image-command]", occurredAt: "2026-11-15T04:26:00Z" };
+  const command = { id: "image-command", kind: "message" as const, status: "delivered" as const, text: "See image", sourceMessageId: native.sourceId,
+    createdAt: attachment.createdAt, attachments: [attachment] };
+  const files = [{ commandId: command.id, text: command.text, status: command.status, createdAt: command.createdAt, attachments: [attachment] }];
+  const visible = withOutgoingReply(agentChatMessages([native], files), outgoingReply(command, undefined, replySourceState(command, [native], files)));
+  expect(visible).toHaveLength(1);
+  expect(visible[0]).toMatchObject({ text: "See image", attachmentData: [attachment], outgoing: { status: "delivered" } });
+});

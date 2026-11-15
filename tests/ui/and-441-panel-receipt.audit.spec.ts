@@ -5,7 +5,7 @@ import { advanceSessionDetailPoll } from "./polling";
 const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as { productId: string; detailKey: string };
 
 for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const) {
-  test(`panel receipt disappears only after its user mirror ${width} ${theme}`, async ({ page }, testInfo) => {
+  test(`panel user mirror carries one delivered receipt ${width} ${theme}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 900 });
     await page.emulateMedia({ colorScheme: theme });
     await page.clock.install();
@@ -55,6 +55,12 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     mirrored = true;
     await advanceSessionDetailPoll(page);
     await expect(panel.locator(".agent-session-messages")).toContainText(text);
-    await expect(feedback).toHaveCount(0);
+    // AND-527: the native bubble takes over the receipt; delivery evidence
+    // remains visible without a second user message or an editable send row.
+    await expect(panel.getByText(text, { exact: true })).toHaveCount(1);
+    await expect(panel.locator('[data-agent-message-id="user:reply"]')).toHaveCount(1);
+    await expect(feedback).toHaveCount(1);
+    await expect(feedback).toContainText("已送达");
+    await expect(panel.getByRole("button", { name: "撤回编辑" })).toHaveCount(0);
   });
 }

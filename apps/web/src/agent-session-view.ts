@@ -70,14 +70,31 @@ function insertChatMessage(messages: AgentChatMessage[], message: AgentChatMessa
   messages.splice(index < 0 ? messages.length : index, 0, message);
 }
 
+/** A supplied native identity is authoritative; an alias is used only when
+ * it uniquely identifies one user source in this conversation. */
+function replySourceMessage(messages: readonly AgentSessionMessage[], commandId?: string, sourceMessageId?: string): AgentSessionMessage | undefined {
+  const users = messages.filter(message => message.role === "user" && isConversationMessage(message));
+  if (sourceMessageId) return users.find(message => message.sourceId === sourceMessageId);
+  if (!commandId) return undefined;
+  const direct = users.find(message => message.sourceId === commandId)
+    ?? users.find(message => message.sourceId === `answer-${commandId}`);
+  if (direct) return direct;
+  const aliases = users.filter(message => message.clientMessageId === commandId);
+  return new Set(aliases.map(message => message.sourceId)).size === 1 ? aliases[0] : undefined;
+}
+
 export function withOutgoingReply(messages: readonly AgentChatMessage[], outgoing: OutgoingReply | null): AgentChatMessage[] {
   const result = [...messages];
   if (outgoing) {
-    const index = result.findIndex(message => message.role === "user" && [outgoing.sourceMessageId, outgoing.commandId, outgoing.commandId ? `answer-${outgoing.commandId}` : undefined].filter(Boolean).includes(message.sourceId));
-    if (index >= 0) { result[index] = {...result[index]!, outgoing}; return result; }
+    const source = result.find(message => message.attachmentData && message.sourceId === outgoing.commandId)
+      ?? replySourceMessage(result, outgoing.commandId, outgoing.sourceMessageId);
+    if (source) { const index = result.indexOf(source); result[index] = {...result[index]!, outgoing}; return result; }
+    // Legacy same-text display matching may suppress a receipt, but cannot
+    // supply an authoritative source to attach a delivery badge to.
+    if (outgoing.sourceMatched) return result;
     insertChatMessage(result, { id: `outgoing-${outgoing.commandId ?? "request"}`,
-    sourceId: outgoing.commandId ?? "outgoing-request", role: "user", text: outgoing.text,
-    occurredAt: outgoing.occurredAt, outgoing });
+      sourceId: outgoing.commandId ?? "outgoing-request", role: "user", text: outgoing.text,
+      occurredAt: outgoing.occurredAt, outgoing });
   }
   return result;
 }
@@ -417,6 +434,7 @@ export interface OutgoingReply {
   readonly error?: string;
   readonly commandId?: string;
   readonly sourceMessageId?: string;
+  readonly sourceMatched?: boolean;
 }
 
 const outgoingReplyStatusKeys = {
@@ -488,8 +506,9 @@ export function mergeAgentSessionSnapshot(
 /**
  * The POST starts before MissionGo has a command id. Once it does, the mirrored
  * command carries the same bubble through queueing and delivery. A delivered
- * reply disappears once its mirror arrives or it precedes an explicitly
- * paginated loaded window. The node reports delivery and message in one
+ * reply attaches to its identified native message, or stays outside an explicitly
+ * paginated loaded window. Boolean callers retain the legacy suppression contract.
+ * The node reports delivery and message in one
  * snapshot, but a transcript read that
  * failed would otherwise make the reply vanish for good beside a command that
  * says delivered (AND-219). Cancelled replies return to the editor instead of
@@ -498,16 +517,17 @@ export function mergeAgentSessionSnapshot(
 export function outgoingReply(
   command: AgentSessionCommand | undefined,
   request?: { readonly text: string; readonly occurredAt: string; readonly status: "sending" | "failed"; readonly error?: string },
-  mirrorArrived = true,
+  mirrorArrived: boolean | ReplySourceState = true,
 ): OutgoingReply | null {
   if (request) return request;
   if (!command || command.kind !== "message") return null;
-  if (command.status === "delivered" && !mirrorArrived) {
+  if (command.status === "delivered" && mirrorArrived !== true && mirrorArrived !== "outside_window") {
     return {
       text: command.text,
       occurredAt: command.createdAt,
       status: command.status,
       commandId: command.id,
+      ...(mirrorArrived === "matched" ? {sourceMatched: true} : {}),
       ...(command.sourceMessageId ? {sourceMessageId: command.sourceMessageId} : {}),
     };
   }
@@ -542,17 +562,17 @@ export function replySourceState(
 ): ReplySourceState {
   if (!command) return "matched";
   const userMessages = messages.filter(message => message.role === "user" && isConversationMessage(message));
-  const explicitIds = new Set([command.id, `answer-${command.id}`, ...(command.sourceMessageId ? [command.sourceMessageId] : [])]);
   if (command.attachments?.length
     ? attachmentMessages.some(message => message.commandId === command.id)
-    : userMessages.some(message => explicitIds.has(message.sourceId))) return "matched";
+    : Boolean(replySourceMessage(userMessages, command.id, command.sourceMessageId))) return "matched";
   const created = Date.parse(command.createdAt);
   // Without identity, an equal/earlier same-text input may be a previous command.
   // Clock drift is tolerated only by exact source identity, not by guessing.
-  if (!command.attachments?.length && !command.sourceMessageId && Number.isFinite(created)) {
+  if (!command.attachments?.length && !command.sourceMessageId && Number.isFinite(created)
+    && !userMessages.some(message => message.clientMessageId === command.id)) {
     const delivered = Date.parse(command.deliveredAt ?? "");
     const ceiling = Number.isFinite(delivered) ? Math.max(created, delivered) + 60_000 : created + 5 * 60_000;
-    if (userMessages.filter(message => message.text === command.text
+    if (userMessages.filter(message => !message.clientMessageId && message.text === command.text
       && Date.parse(message.occurredAt) > created && Date.parse(message.occurredAt) <= ceiling).length === 1) return "matched";
   }
   return !command.attachments?.length && command.status === "delivered" && commandPrecedesLoadedWindow(command, messages, hasOlderHistory)

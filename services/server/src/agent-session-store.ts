@@ -41,6 +41,7 @@ export interface AgentSessionAttention {
 
 export interface AgentSessionMessageInput {
   readonly sourceId: string;
+  readonly clientMessageId?: string;
   readonly turnId?: string;
   readonly role: AgentMessageRole;
   readonly phase?: string;
@@ -752,11 +753,11 @@ export class AgentSessionStore {
     const free = this.freeSession(row.dispatch_id);
     const messages = includeMessages ? this.database.connection
       .prepare(
-        `SELECT id, source_id, turn_id, role, phase, text, questions_json, occurred_at
+        `SELECT id, source_id, client_message_id, turn_id, role, phase, text, questions_json, occurred_at
          FROM agent_session_messages WHERE session_id = ? AND (phase IS NULL OR phase <> 'execution') ORDER BY position, observed_at, rowid`,
       )
       .all(sessionId) as unknown as Array<{
-        id: string; source_id: string; turn_id: string | null; role: AgentMessageRole;
+        id: string; source_id: string; client_message_id: string | null; turn_id: string | null; role: AgentMessageRole;
         phase: string | null; text: string; questions_json: string | null; occurred_at: string;
       }> : [];
     const command = this.latestCommand(sessionId);
@@ -782,6 +783,7 @@ export class AgentSessionStore {
       messages: messages.map((message) => ({
         id: message.id,
         sourceId: message.source_id,
+        ...(message.client_message_id ? { clientMessageId: message.client_message_id } : {}),
         ...(message.turn_id ? { turnId: message.turn_id } : {}),
         role: message.role,
         ...(message.phase ? { phase: message.phase } : {}),
@@ -1742,6 +1744,7 @@ export class AgentSessionStore {
     };
     const messages = input.messages.filter(isConversationMessage).map((message, position) => ({
       sourceId: requiredText(message.sourceId, "sourceId", 200),
+      clientMessageId: message.clientMessageId === undefined ? null : requiredText(message.clientMessageId, "clientMessageId", 200, true),
       turnId: message.turnId?.slice(0, 200) || null,
       role: message.role,
       phase: message.phase?.slice(0, 50) || null,
@@ -1824,11 +1827,12 @@ export class AgentSessionStore {
     }
     const storedMessages = this.database.connection
       .prepare(
-        `SELECT source_id, turn_id, role, phase, text, questions_json, position, occurred_at
+        `SELECT source_id, client_message_id, turn_id, role, phase, text, questions_json, position, occurred_at
          FROM agent_session_messages WHERE session_id = ?`,
       )
       .all(input.sessionId) as unknown as Array<{
         source_id: string;
+        client_message_id: string | null;
         turn_id: string | null;
         role: AgentMessageRole;
         phase: string | null;
@@ -1838,12 +1842,18 @@ export class AgentSessionStore {
         occurred_at: string;
       }>;
     const storedBySource = new Map(storedMessages.map((message) => [message.source_id, message]));
+    for (const message of messages) {
+      const prior = storedBySource.get(message.sourceId)?.client_message_id;
+      if (prior && message.clientMessageId && prior !== message.clientMessageId) throw invalidInput("Message client identity changed.");
+      message.clientMessageId ??= prior ?? null;
+    }
     const messagesChanged = messages.some((message) => {
       const stored = storedBySource.get(message.sourceId);
       // Position is deliberately not compared: stored messages keep the
       // position they were first written with, so a mirror that arrives
       // trimmed to its newest messages does not count as a change (AND-222).
       return !stored
+        || stored.client_message_id !== message.clientMessageId
         || stored.turn_id !== message.turnId
         || stored.role !== message.role
         || stored.phase !== message.phase
@@ -2019,12 +2029,12 @@ export class AgentSessionStore {
       ));
       const insertMessage = this.database.connection.prepare(
         `INSERT INTO agent_session_messages
-          (id, session_id, source_id, turn_id, role, phase, text, questions_json, position, observed_at, occurred_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, session_id, source_id, client_message_id, turn_id, role, phase, text, questions_json, position, observed_at, occurred_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       const refreshMessage = this.database.connection.prepare(
         `UPDATE agent_session_messages
-         SET turn_id = ?, role = ?, phase = ?, text = ?, questions_json = ?, observed_at = ?, occurred_at = ?
+         SET client_message_id = ?, turn_id = ?, role = ?, phase = ?, text = ?, questions_json = ?, observed_at = ?, occurred_at = ?
          WHERE session_id = ? AND source_id = ?`,
       );
       let nextPosition = maxStoredPosition + 1;
@@ -2034,13 +2044,13 @@ export class AgentSessionStore {
           ?? now;
         if (storedBySource.has(message.sourceId)) {
           refreshMessage.run(
-            message.turnId, message.role, message.phase, message.text,
+            message.clientMessageId, message.turnId, message.role, message.phase, message.text,
             message.questionsJson, now, occurredAt, input.sessionId, message.sourceId,
           );
           return;
         }
         insertMessage.run(
-          randomUUID(), input.sessionId, message.sourceId, message.turnId,
+          randomUUID(), input.sessionId, message.sourceId, message.clientMessageId, message.turnId,
           message.role, message.phase, message.text,
           message.questionsJson, nextPosition, now, occurredAt,
         );

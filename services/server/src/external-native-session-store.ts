@@ -428,11 +428,14 @@ export class ExternalNativeSessionStore {
         if (!message.sourceId || message.sourceId.length > 200 || message.text.length > 4_000_000) throw invalidInput("Invalid native message.");
         const old = this.db.prepare("SELECT payload_json FROM external_native_messages WHERE session_id=? AND source_id=?").get(row.id, message.sourceId) as { payload_json: string } | undefined;
         const previous = old ? JSON.parse(old.payload_json) as AgentSessionMessageInput : undefined;
+        if (message.clientMessageId !== undefined && (typeof message.clientMessageId !== "string" || !message.clientMessageId.trim() || message.clientMessageId.length > 200)) throw invalidInput("Invalid client message identity.");
+        if (previous?.clientMessageId && message.clientMessageId && previous.clientMessageId !== message.clientMessageId) throw invalidInput("Message client identity changed.");
+        const clientMessageId = message.clientMessageId ?? previous?.clientMessageId;
         const questions = message.questions?.map((question, index) => {
           const prior = previous?.questions?.[index];
           return { ...question, ...(prior?.answered !== undefined ? { answered: prior.answered } : {}), ...(prior?.withdrawn ? { withdrawn: true } : {}) };
         }) ?? previous?.questions?.map((question) => ({ ...question, ...(question.answered === undefined ? { withdrawn: true } : {}) }));
-        const payload = JSON.stringify({ ...message, ...(questions ? { questions } : {}), occurredAt: message.occurredAt ?? previous?.occurredAt ?? now });
+        const payload = JSON.stringify({ ...message, ...(clientMessageId ? { clientMessageId } : {}), ...(questions ? { questions } : {}), occurredAt: message.occurredAt ?? previous?.occurredAt ?? now });
         if (payload !== old?.payload_json) {
           changed = true;
           this.db.prepare(`INSERT INTO external_native_messages(id,session_id,source_id,payload_json,position) VALUES (?,?,?,?,?)
