@@ -3,12 +3,12 @@ import { expect, test } from "@playwright/test";
 
 const { productId } = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8"));
 const longContent = Array.from({ length: 8 }, (_, i) => `核对第${i + 1}项入口，保留已有修改，检查布局、交互和验证结果。`).join("\n");
-const unnamedContent = "无短名称的完整指令\n" + "连续长文本".repeat(150);
+const unnamedContent = "请逐项核对本次改动涉及的入口，保留已有草稿并记录验证结果。\n" + "检查布局与交互，确认完整指令可读。".repeat(60);
 
 for (const width of [320, 1440]) for (const appearance of ["light", "dark"]) for (const scale of ["small", "medium", "large"]) {
  test.describe(`${width}px ${appearance} ${scale} instructions`, () => {
   test.use({ viewport: { width, height: 900 }, hasTouch: width === 320, isMobile: width === 320 });
-  test("keeps focus out of search and discloses long instructions without inserting", async ({ page }, testInfo) => {
+  test("keeps focus out of search and discloses long instructions without inserting", async ({ page, browserName }, testInfo) => {
    await page.clock.setFixedTime(new Date("2026-11-15T02:00:00Z"));
    const id = "command-display", stamp = "2026-11-15T01:00:00Z";
    const session = { id, agentSessionId: id, dispatchId: id, productId, agentKind: "codex", status: "idle", dispatchStatus: "launched", sessionName: "指令展示验证", nodeName: "Fixture", nodeConnectionState: "online", nodeRevoked: false, mode: "auto", createdAt: stamp, updatedAt: stamp, activityAt: stamp, items: [], canReply: true, canAttach: false, canRetry: false, canStop: false, canArchive: true, unread: false, settings: { adjustable: false }, attention: { state: "not_needed" }, needsAttention: false, waitingForReply: false, activities: [], turnState: { turnActive: false } };
@@ -35,9 +35,13 @@ for (const width of [320, 1440]) for (const appearance of ["light", "dark"]) for
    await expect(search).not.toBeFocused();
    // Keyboard navigation remains available without an automatic input focus.
    await page.keyboard.press("Tab");
-   await expect(picker.getByRole("button", { name: "新建指令", exact: true })).toBeFocused();
+   // WebKit on macOS follows the system's input-only Tab navigation default.
+   if (browserName === "webkit") await expect(search).toBeFocused();
+   else await expect(picker.getByRole("button", { name: "新建指令", exact: true })).toBeFocused();
    const cards = picker.locator(".common-command-card");
    await expect(cards).toHaveCount(5);
+   await expect(cards.nth(2).locator(".common-command-title")).toHaveCount(0);
+   await expect(cards.nth(2).locator(".common-command-preview")).toHaveText(unnamedContent);
    await expect(cards.nth(0).locator(".common-command-title")).toHaveText("简短名称");
    await expect(cards.nth(0).locator(".common-command-preview")).toHaveText("简短正文");
    await expect(cards.nth(0).getByRole("button", { name: "查看全文", exact: true })).toHaveCount(0);
@@ -50,7 +54,8 @@ for (const width of [320, 1440]) for (const appearance of ["light", "dark"]) for
     await expect(preview).toHaveCSS("-webkit-line-clamp", index === 2 ? "3" : "2");
     await expect(card.getByRole("button", { name: "查看全文", exact: true })).toBeVisible();
     const collapsedHeight = await preview.evaluate(el => el.clientHeight);
-    await card.getByRole("button", { name: "查看全文", exact: true }).click();
+    const expand = card.getByRole("button", { name: "查看全文", exact: true });
+    await expand.focus(); await expand.press("Enter");
     const collapse = card.getByRole("button", { name: "收起", exact: true });
     await expect(collapse).toHaveAttribute("aria-expanded", "true");
     await expect(collapse).toBeFocused();
