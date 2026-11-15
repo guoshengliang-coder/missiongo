@@ -64,6 +64,7 @@ try{
    await page.evaluate(()=>{Object.defineProperty(document,'visibilityState',{configurable:true,value:'hidden'});document.dispatchEvent(new Event('visibilitychange'));});
    await page.evaluate(()=>{Object.defineProperty(document,'visibilityState',{configurable:true,value:'visible'});document.dispatchEvent(new Event('visibilitychange'));});
    await flush();
+   await page.evaluate(()=>{Object.defineProperty(document,'visibilityState',{configurable:true,value:'hidden'});document.dispatchEvent(new Event('visibilitychange'));});await flush();
    const visits=events.filter(e=>e.stage==='list_visit');
    for(const scenario of ['first_entry','cache_return','background_resume']){
     const visit=visits.find(e=>e.list.scenario===scenario);if(!visit)throw Error(`Missing ${scenario} ${device} ${iteration}`);
