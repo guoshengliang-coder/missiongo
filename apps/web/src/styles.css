@@ -3139,10 +3139,19 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .single-select-error { color: var(--danger); font-size: var(--text-sm); }
 .single-select-option-content .product-switcher-option { display: flex; flex-direction: column; min-width: 0; }
 .single-select-option-content .product-switcher-option small { color: var(--muted); font-size: var(--text-sm); }
-.product-switcher-counts { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 4px; }
-.product-switcher-count { padding: 2px 6px; border-radius: var(--radius-xs); font-size: var(--text-sm); font-weight: 500; color: var(--muted); background: var(--badge-bg); white-space: nowrap; }
+.single-select-option-content .product-switcher-option.with-counts { flex: 1; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 4px 24px; }
+.product-switcher-identity { display: flex; flex-direction: column; min-width: 0; flex: 1 1 max-content; }
+.product-switcher-counts { display: flex; flex-wrap: wrap; flex: 0 1 auto; gap: 4px 8px; }
+.product-switcher-count { display: grid; padding: 2px 6px; border-radius: var(--radius-xs); font-size: var(--text-sm); font-weight: 500; color: var(--muted); background: var(--badge-bg); white-space: nowrap; }
+/* Current labels determine column width, including translated text and large
+   numbers. No fixed menu width or surplus space between identity and counts. */
+.product-switcher-count::after { content: attr(data-width-label); visibility: hidden; }
+.product-switcher-count > span, .product-switcher-count::after { grid-area: 1 / 1; }
 .product-switcher-count.attention { color: var(--warn-text); background: var(--warn-bg); }
 .product-switcher-count.unread { color: var(--status-ready-fg); background: var(--status-ready-bg); }
+@media (max-width: 520px) {
+  .single-select-option-content .product-switcher-option.with-counts { flex-direction: column; align-items: stretch; }
+}
 .list-filter-builder, .list-filter-type { border-color: var(--select-border); background: var(--surface-strong); }
 :root .list-filter-controls button.single-select.single-select { min-height: 36px; border: 0; padding: 6px 10px; font-size: var(--text-sm); background: transparent; }
 .list-filter-builder:focus-within, .list-filter-type:focus-within { outline: 2px solid var(--focus-ring); outline-offset: 2px; }

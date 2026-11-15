@@ -114,6 +114,90 @@ test("unloaded counts are hidden and an event updates the open project menu", as
   await expect(page.locator(".agent-console-other-projects")).toContainText("待我处理 1");
 });
 
+for (const theme of ["light", "dark"] as const) test(`PC menu keeps identities and aligned counts compact, with narrow fallback ${theme}`, async ({ page, request }, info) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.emulateMedia({ colorScheme: theme });
+  const f = await data(request);
+  await stream(page);
+  const names = new Map([[fixture.productId, "HITGO-ALG"], [f.current.id, "Mission GO"], [f.other.id, "Hermes GO"], [f.third.id, "HitGO"]]);
+  const prefixes = new Map([[fixture.productId, "HITALG"], [f.current.id, "AND"], [f.other.id, "HG"], [f.third.id, "HIG"]]);
+  const projects = (list: { id: string }[]) => list.filter(p => names.has(p.id)).map(p => ({ ...p, name: names.get(p.id), keyPrefix: prefixes.get(p.id) }));
+  await page.route(/\/api\/v1\/bootstrap(?:\?.*)?$/, async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({ json: { ...body, products: projects(body.products) } });
+  });
+  await page.route(/\/api\/v1\/products(?:\?.*)?$/, async route => {
+    const response = await route.fetch();
+    await route.fulfill({ json: projects(await response.json()) });
+  });
+  f.sessions = Array.from({ length: 5 }, (_, i) => ({ ...f.sessions[0]!, id: `pending-${i}`, agentSessionId: `pending-${i}` }));
+  await page.route("**/api/v1/agent-sessions**", route => route.fulfill({ json: { sessions: f.sessions } }));
+  await page.goto(`/?product=${f.current.id}&console=agent`);
+  const trigger = page.getByRole("combobox", { name: "当前产品", exact: true });
+  await expect(trigger.locator(".agent-unread-badge")).toHaveText("0");
+  await trigger.click();
+  const menu = page.getByRole("listbox");
+  const current = menu.locator(`[data-value="${f.current.id}"]`);
+  await expect(menu.getByRole("option")).toHaveCount(4);
+  await expect(current.locator("strong")).toHaveText("Mission GO");
+  const assertHorizontal = async () => {
+    await expect(async () => {
+      const boxes = await menu.evaluate(el => [...el.querySelectorAll("[role=option]")].map(option => {
+        const identity = option.querySelector(".product-switcher-identity")!.getBoundingClientRect();
+        const counts = option.querySelector(".product-switcher-counts")!.getBoundingClientRect();
+        const parts = [...option.querySelectorAll(".product-switcher-count")].map(part => part.getBoundingClientRect().toJSON());
+        const textRight = Math.max(...[...option.querySelectorAll("strong,small")].map(part => {
+          const range = document.createRange(); range.selectNodeContents(part); return range.getBoundingClientRect().right;
+        }));
+        return { identity: identity.toJSON(), counts: counts.toJSON(), parts, textRight };
+      }));
+      const first = boxes[0]!;
+      for (const box of boxes) {
+        expect(box.counts.left - box.identity.right).toBeGreaterThanOrEqual(23);
+        expect(box.counts.left - box.identity.right).toBeLessThanOrEqual(25);
+        expect(Math.abs((box.counts.top + box.counts.bottom) - (box.identity.top + box.identity.bottom))).toBeLessThanOrEqual(2);
+        box.parts.forEach((part, i) => {
+          expect(Math.abs(part.left - first.parts[i]!.left)).toBeLessThanOrEqual(1);
+          expect(Math.abs(part.width - first.parts[i]!.width)).toBeLessThanOrEqual(1);
+        });
+      }
+      expect(first.counts.left - Math.max(...boxes.map(box => box.textRight))).toBeLessThanOrEqual(26);
+    }).toPass();
+  };
+  for (const scale of ["small", "medium", "large"]) {
+    await page.evaluate(value => { document.documentElement.dataset.fontScale = value; }, scale);
+    await assertHorizontal();
+  }
+  await page.evaluate(() => { document.documentElement.dataset.fontScale = "medium"; });
+  await assertHorizontal();
+  await page.screenshot({ path: info.outputPath(`compact-pc-${theme}.png`) });
+  // Counter columns keep their shared widths when a current count gains digits.
+  f.sessions.push(...Array.from({ length: 120 }, (_, i) => ({ ...f.sessions[0]!, id: `other-${i}`, agentSessionId: `other-${i}`, productId: f.other.id, unread: true })));
+  await page.evaluate(() => (window as unknown as { projectCountsChanged: () => void }).projectCountsChanged());
+  await expect(menu.locator(`[data-value="${f.other.id}"] .product-switcher-count`)).toHaveText(["待处理 120", "未读 120"]);
+  await assertHorizontal();
+  await expect(current.locator(".product-switcher-count")).toHaveText(["待处理 5", "未读 0"]);
+  // A small desktop window needs the same fallback as a phone: no device sniffing.
+  await page.setViewportSize({ width: 320, height: 900 });
+  await current.scrollIntoViewIfNeeded();
+  await expect(async () => {
+    const boxes = await menu.evaluate(el => ({ overflow: el.scrollWidth > el.clientWidth + 1,
+      rows: [...el.querySelectorAll("[role=option]")].map(option => ({
+        bottom: option.querySelector(".product-switcher-identity")!.getBoundingClientRect().bottom,
+        top: option.querySelector(".product-switcher-counts")!.getBoundingClientRect().top,
+      })),
+    }));
+    for (const box of boxes.rows) expect(box.top).toBeGreaterThanOrEqual(box.bottom);
+    expect(boxes.overflow).toBe(false);
+  }).toPass();
+  await page.screenshot({ path: info.outputPath(`compact-narrow-${theme}.png`) });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await assertHorizontal();
+  await page.keyboard.press("Escape");
+  await expect(trigger).toBeFocused();
+});
+
 for (const width of [320, 375, 520, 521, 768, 1023, 1024, 1440]) for (const theme of ["light", "dark"] as const) {
   test.describe(`${width}px ${theme}`, () => {
     test.use({ viewport: { width, height: 900 }, colorScheme: theme, hasTouch: width <= 1023 });
