@@ -62,15 +62,15 @@ function ArtifactImage({ sessionId, messageId, href, onOpen, onLoad }: {
 }) {
   const { t } = useI18n();
   const { request, state, bundle, status, waiting, retry } = useArtifact(sessionId, messageId, href);
-  const [decodeFailed, setDecodeFailed] = useState(false);
+  const [decodeFailedSrc, setDecodeFailedSrc] = useState<string>();
   const entry = bundle.data?.files.find((file) => file.name === bundle.data?.entry);
   const url = useMemo(() => entry?.contentType.startsWith("image/") ? artifactDataUrl(entry) : undefined, [entry]);
-  const failed = request.isError || state.isError || bundle.isError || status?.status === "failed" || decodeFailed || Boolean(entry && !url);
+  const failed = request.isError || state.isError || bundle.isError || status?.status === "failed" || Boolean(url && decodeFailedSrc === url) || Boolean(entry && !url);
   return <div className="agent-output-image">
     {failed ? <div className="agent-output-image-state" role="alert"><span>{t(errorKeys[status?.error ?? ""] ?? "agentImageUnavailable")}</span>{status?.errorResource && artifactResourceName(status.errorResource) && <span>{t("artifactProblemResource", { name: status.errorResource })}</span>}
-      <button type="button" className="artifact-link" onClick={() => { setDecodeFailed(false); void retry(); }}>{t("retry")}</button></div>
+      <button type="button" className="artifact-link" onClick={() => { setDecodeFailedSrc(undefined); void retry(); }}>{t("retry")}</button></div>
       : url ? <button type="button" className="agent-output-image-open" aria-label={t("agentImagePreview")} onClick={onOpen}>
-        <img src={url} alt={t("agentImagePreview")} onLoad={onLoad} onError={() => setDecodeFailed(true)} />
+        <img src={url} alt={t("agentImagePreview")} onLoad={onLoad} onError={() => setDecodeFailedSrc(url)} />
       </button> : <div className="agent-output-image-state" role="status"><LoaderCircle size={16} className="spin" aria-hidden="true" />
         <span>{t(waiting ? "artifactWaiting" : "agentImageLoading")}</span>
         {waiting && <button type="button" className="artifact-link" onClick={() => void retry()}>{t("retry")}</button>}
@@ -139,10 +139,13 @@ function ArtifactContent({ bundle, previewUrl, onNavigate, onRetry }: { bundle: 
   const { t } = useI18n();
   const entry = bundle.files.find((file) => file.name === bundle.entry)!;
   const [url, setUrl] = useState("");
-  const [imageFailed, setImageFailed] = useState(false);
+  const [imageFailedSrc, setImageFailedSrc] = useState<string>();
   const [imageAttempt, setImageAttempt] = useState(0);
   const [imageRetrying, setImageRetrying] = useState(false);
   const imageUrl = useMemo(() => entry.contentType.startsWith("image/") ? artifactDataUrl(entry) : undefined, [entry]);
+  // Retry completion can precede the cache notification. An old decode error
+  // must not hide the fresh bytes when that notification reaches this viewer.
+  const imageFailed = Boolean(imageUrl && imageFailedSrc === imageUrl);
   const html = useMemo(() => entry.contentType === "text/html" ? artifactHtml(bundle) : undefined, [entry, bundle]);
   useEffect(() => {
     const bytes = Uint8Array.from(atob(entry.base64), (c) => c.charCodeAt(0));
@@ -160,10 +163,10 @@ function ArtifactContent({ bundle, previewUrl, onNavigate, onRetry }: { bundle: 
       }} /></>
       : entry.contentType.startsWith("image/") ? <><div className="artifact-image">{imageFailed ? <div className="artifact-status" role="alert" tabIndex={0}><p>{t("agentImageUnavailable")}</p><button className="secondary-button" type="button" disabled={imageRetrying} onClick={async () => {
           setImageRetrying(true);
-          try { await onRetry(); setImageFailed(false); setImageAttempt(value => value + 1); }
+          try { await onRetry(); setImageFailedSrc(undefined); setImageAttempt(value => value + 1); }
           finally { setImageRetrying(false); }
         }}>{t("retry")}</button></div>
-        : imageUrl && <ZoomableImage key={imageAttempt} src={imageUrl} alt={entry.name} onSwipe={onNavigate} onError={() => setImageFailed(true)} />}</div><p className="artifact-media-status">{t("artifactSaved")}</p></>
+        : imageUrl && <ZoomableImage key={imageAttempt} src={imageUrl} alt={entry.name} onSwipe={onNavigate} onError={() => setImageFailedSrc(imageUrl)} />}</div><p className="artifact-media-status">{t("artifactSaved")}</p></>
       : entry.contentType === "application/pdf" ? <iframe title={entry.name} sandbox="allow-scripts allow-same-origin" src={url || undefined} />
       : entry.contentType === "text/markdown" ? <div className="artifact-document"><MarkdownText resolveResourceUrl={(href) => {
         try {

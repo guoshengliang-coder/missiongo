@@ -389,3 +389,25 @@ for (const theme of ["light", "dark"] as const) test.describe(`audit long image 
     await close.tap(); await expect(viewer).toHaveCount(0);
   });
 });
+
+test("decode failures stay bound to old bytes when cache notifications arrive after retry", async ({ page }) => {
+  await page.addInitScript(() => {
+    const schedule = window.setTimeout.bind(window);
+    window.setTimeout = ((handler: TimerHandler, delay?: number, ...args: unknown[]) =>
+      schedule(handler, delay === 0 ? 100 : delay, ...args)) as typeof window.setTimeout;
+  });
+  const state = await setup(page, false, false, { corruptImage: true });
+  await open(page, "第一张");
+  await expect(dialog(page).getByRole("alert")).toBeVisible();
+  state.fixImage();
+  await dialog(page).getByRole("button", { name: "重试", exact: true }).click();
+  await expect.poll(() => dialog(page).locator(".zoomable-image img").evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(1200);
+  await expect(page.locator(".agent-output-images img")).toHaveCount(2);
+  await page.keyboard.press("Escape");
+  const thumbnail = page.locator(".agent-output-images").getByRole("button", { name: "查看原图", exact: true }).first();
+  await expect(thumbnail).toBeVisible();
+  await expect.poll(() => thumbnail.locator("img").evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(1200);
+  await thumbnail.click();
+  await expect(dialog(page).locator(".zoomable-image img")).toBeVisible();
+  expect(state.bundleFetches.get("first.png")).toBeGreaterThan(1);
+});
