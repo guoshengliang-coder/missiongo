@@ -254,11 +254,12 @@ export class ClaudeAdapter implements Adapter {
   }
   private performanceTurns=new Set<string>();
   performanceTurn(commandId:string){return this.performanceTurns.has(commandId)?commandId:undefined;}
-  async deliver(command: Command, options?: { controlOnly: boolean }): Promise<void> {
+  async deliver(command: Command, options?: { controlOnly: boolean; terminalPermissionsOnly?: boolean }): Promise<void> {
     if (this.suspended) throw new InputRejected("先显式恢复原 Claude 会话，再发送消息");
     if (command.kind === "interrupt") { await this.stop(command); return; }
     const request = this.requests[0];
     if (request) {
+      if (options?.terminalPermissionsOnly && request.tool_name !== "AskUserQuestion") throw new InputRejected("请在原桥接终端确认权限，Web 文字不能代替工具授权");
       if(request.tool_name==="ExitPlanMode" && !command.planApprovalRevision) throw new Error("请使用方案批准按钮；文字同意不能退出 Plan。");
       const response = claudeAnswer(request, command.text);
       const question = (await this.snapshot()).messages.find((message) => message.sourceId === `request-${request.requestId}`);

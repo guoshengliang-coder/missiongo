@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { windowsManifest, windowsUpdate, checkWindowsFiles, checkWindowsArtifacts } from "./windows-release-tools.mjs";
+import { readWindowsSnapshot, windowsManifest, windowsUpdate, checkWindowsFiles, checkWindowsArtifacts } from "./windows-release-tools.mjs";
 import { install } from "./install-release-tools.mjs";
 import { RELEASE_TOOL_FILES } from "./release-tool-files.mjs";
 import { publicReleaseEvidence } from "./handover-evidence.mjs";
@@ -58,4 +58,14 @@ test("updater release notes are plain YAML strings and malformed note catalogs a
   const manifest={version:"0.1.0",sourceCommit:"a".repeat(40),platform:"win32",arch:"x64",signed:true,certificateSha256:"b".repeat(64),filename:"fixture-0.1.0-x64-setup.exe",size:1,sha256:"c".repeat(64),releaseNotes:[{items:[{title:'新增 Windows: "原生" 客户端'},{title:"可取消更新"}]}]};
   assert.match(windowsUpdate(windowsManifest(manifest),Buffer.from("x")),/releaseNotes: "新增 Windows/);
   assert.throws(()=>windowsManifest({...manifest,releaseNotes:[{items:[{title:123}]}]}),/notes/);
+});
+
+test("an invalid existing live package blocks rather than masquerading as an unpublished client",()=>{
+  const options={host:"fixture",currentLink:"/fixture/current"};
+  assert.equal(readWindowsSnapshot(options,()=>""),null);
+  assert.throws(()=>readWindowsSnapshot(options,()=>"malformed"));
+  const manifest={version:"0.1.0",sourceCommit:"a".repeat(40),platform:"win32",arch:"x64",signed:true,certificateSha256:"b".repeat(64),filename:"fixture-0.1.0-x64-setup.exe",size:1,sha256:"c".repeat(64)};
+  assert.throws(()=>windowsManifest({...manifest,filename:"fixture-0.1.1-x64-setup.exe"}),/version/);
+  assert.throws(()=>readWindowsSnapshot(options,command=>command.startsWith("if ") ? JSON.stringify(manifest):"wrong digest"),/digest/);
+  assert.equal(readWindowsSnapshot(options,command=>command.startsWith("if ") ? JSON.stringify(manifest):manifest.sha256+" installer").version,"0.1.0");
 });

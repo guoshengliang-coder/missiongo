@@ -60,8 +60,8 @@ export async function hostCall(root: string, dispatchId: string, session?: Sessi
   return callHost<Snapshot>(root, dispatchId, modern ? lane === "control" ? "/control" : "/observe" : "/sync", session ?? {}, signal);
 }
 /** A read-only control view must not wait for the full transcript or mutate its journal. */
-export async function inspectHost(root: string, dispatchId: string, session: Session): Promise<Snapshot> {
-  try { return await callHost<Snapshot>(root,dispatchId,"/inspect",{sessionRef:session.sessionRef}); }
+export async function inspectHost(root: string, dispatchId: string, session: Session): Promise<Snapshot & {externalPermissionProtocol?:number}> {
+  try { return await callHost<Snapshot & {externalPermissionProtocol?:number}>(root,dispatchId,"/inspect",{sessionRef:session.sessionRef}); }
   catch(error) { if (!(error instanceof HostHTTPError) || error.status !== 404) throw error; }
   return hostCall(root,dispatchId,{id:session.id,sessionRef:session.sessionRef,agentKind:session.agentKind},"observation");
 }
@@ -134,7 +134,7 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
             const input=JSON.parse(body) as {sessionRef?:unknown};
             if (!adapter || !launchFinished || state.phase !== "launched" || input.sessionRef !== state.sessionRef) throw new Error("Native session identity mismatch");
             const snapshot=adapter.controlSnapshot ? await adapter.controlSnapshot() : { ...state.snapshot,messages:[] };
-            res.writeHead(200,{"Content-Type":"application/json"}).end(JSON.stringify(boundedSnapshot(snapshot)));
+            res.writeHead(200,{"Content-Type":"application/json"}).end(JSON.stringify({...boundedSnapshot(snapshot),externalPermissionProtocol:1}));
           } catch { res.writeHead(409).end(); }
         })(); return;
       }
@@ -191,6 +191,7 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
             } catch (error) { state.snapshot.settingsError = safeError(error); }
             state.snapshot.settingsRevision = session.desiredSettings.revision;
           }
+          if (session.terminalPermissionsOnly && (session.approvalDecision || session.approvalRetry)) throw new InputRejected("请在原桥接终端确认权限");
           if (session.approvalDecision && !decisions.has(session.approvalDecision.id)) {
             await adapter.decide(session.approvalDecision); decisions.add(session.approvalDecision.id);
           }
@@ -237,7 +238,7 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
               try {
                 if (command.attachments?.some((attachment) => !attachment.localPath)) throw new InputRejected("Attachment download was not completed");
                 if (command.kind === "interrupt") stopSnapshot = await adapter.stop(command);
-                else {await adapter.deliver(command, { controlOnly: state.snapshot.settingsError !== undefined });measurement.delivered(key,adapter.performanceTurn?.(key));}
+                else {await adapter.deliver(command, { controlOnly: state.snapshot.settingsError !== undefined, terminalPermissionsOnly: session.terminalPermissionsOnly === true });measurement.delivered(key,adapter.performanceTurn?.(key));}
                 if (command.kind === "interrupt" && stopSnapshot) stopSnapshot.stopConfirmed = true;
                 state.commands[key] = { status: "delivered", ...(stopSnapshot?.stopConfirmed ? { stopConfirmed: true } : {}) };
               } catch (error) { measurement.failed(key); state.commands[key] = { status: command.kind === "interrupt" || error instanceof InputRejected ? "failed" : "delivery_unknown", error: safeError(error) }; }

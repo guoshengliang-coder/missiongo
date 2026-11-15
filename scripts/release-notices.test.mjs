@@ -195,3 +195,7 @@ test("AND-503 post-release handover keeps exclusions and cannot reuse a changed 
   assert.throws(()=>matchReleaseSelection({...receipt,deployedCommit:"b".repeat(40)},snapshot,selection,repository,()=>null),/selection changed/);
   assert.throws(()=>matchReleaseSelection(receipt,{...snapshot,candidates:[...rows,{itemKey:"AND-3"}]},selection,repository,()=>null),/selection changed/);
 });
+
+test("Windows release coverage includes shared UI contracts and locked runtime dependencies",()=>{
+  for(const path of ["apps/web/src/unsaved-changes.ts","apps/web/src/dialog-state.tsx","apps/web/src/branding.generated.ts","package-lock.json"])assert(affectsArtifact(path,"windowsApp"),path);
+});

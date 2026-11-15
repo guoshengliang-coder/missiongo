@@ -45,10 +45,20 @@ it.each([["是", true], ["否", false], ["Yes", true], ["No", false]])("encodes 
 
 it("uses a lightweight read for source permissions, denies Web text grants and still allows stopping",async()=>{
   const root=temporary();saveConfig(root,{...loadConfig(root),nodeId:"node",agents:{codex:{}}});saveBinding(root,{kind:"codex",sessionRef:"native",nodeId:"node",dispatchId:"host"});
-  const inspect=vi.spyOn(host,"inspectHost").mockResolvedValue({status:"active",messages:[],approval:{id:"permission",kind:"native",status:"pending"} as never});
+  const inspect=vi.spyOn(host,"inspectHost").mockResolvedValue({status:"active",messages:[],externalPermissionProtocol:1,approval:{id:"permission",kind:"native",status:"pending"} as never});
   const deliver=vi.spyOn(host,"hostCall").mockResolvedValue({status:"idle",messages:[],stopConfirmed:true});
   const session={id:"external",sessionRef:"native",agentKind:"codex" as const,command:{id:"input",status:"queued",text:"yes"}};
   await expect(synchronizeExternal(root,session,new API("https://missiongo.example.com"),new AbortController().signal,"control")).rejects.toThrow("Web");expect(deliver).not.toHaveBeenCalled();
   await synchronizeExternal(root,{...session,command:{...session.command,kind:"interrupt",turnId:"turn"}},new API("https://missiongo.example.com"),new AbortController().signal,"control");
   expect(inspect).toHaveBeenCalledTimes(2);expect(deliver).toHaveBeenCalledExactlyOnceWith(root,"host",expect.objectContaining({command:expect.objectContaining({kind:"interrupt"})}),"control");
+});
+
+it("requires the atomic source-permission protocol before forwarding external text",async()=>{
+  const root=temporary();saveConfig(root,{...loadConfig(root),nodeId:"node",agents:{claude_code:{}}});saveBinding(root,{kind:"claude_code",sessionRef:"native",nodeId:"node",dispatchId:"host"});
+  const inspect=vi.spyOn(host,"inspectHost").mockResolvedValue({status:"idle",messages:[]});const deliver=vi.spyOn(host,"hostCall").mockResolvedValue({status:"idle",messages:[]});
+  const session={id:"external",sessionRef:"native",agentKind:"claude_code" as const,command:{id:"input",status:"queued",text:"yes"}};
+  await expect(synchronizeExternal(root,session,new API("https://missiongo.example.com"),new AbortController().signal,"control")).rejects.toThrow("需更新");expect(deliver).not.toHaveBeenCalled();
+  inspect.mockResolvedValue({status:"idle",messages:[],externalPermissionProtocol:1});
+  await synchronizeExternal(root,session,new API("https://missiongo.example.com"),new AbortController().signal,"control");
+  expect(deliver).toHaveBeenCalledWith(root,"host",expect.objectContaining({terminalPermissionsOnly:true}),"control");
 });

@@ -109,7 +109,7 @@ else void app.whenReady().then(async () => {
   autoUpdater.on("error", () => { updates.failed(); });
   autoUpdater.on("download-progress", (progress) => updates.progress(progress));
   autoUpdater.on("update-downloaded", (info) => {
-    if (!updates.verifying()) return;
+    if (!updates.verifying(info.version)) return;
     // Unsigned developer builds cannot authorize an unattended installer.
     const program = "$ErrorActionPreference='Stop'; [Console]::InputEncoding=[Text.UTF8Encoding]::new($false); $r=[Console]::In.ReadLine() | ConvertFrom-Json; $s=Get-AuthenticodeSignature -LiteralPath $r.path; if ($s.Status -ne 'Valid' -or $s.SignerCertificate.GetNameInfo('SimpleName',$false) -ne $r.publisher) { exit 1 }; exit 0";
     const checked = WINDOWS_PUBLISHER && spawnSync(windowsSystemExecutable("powershell.exe"), ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(program, "utf16le").toString("base64")], {
@@ -150,11 +150,14 @@ else void app.whenReady().then(async () => {
         if (current.server) await shell.openExternal(serverOrigin(current.server)); return {};
       }
       case "checkUpdates": {
-        const current = await backend.request({ method: "snapshot" }) as DesktopSnapshot;
-        if (!current.server) throw new Error("先登录服务器，再检查更新");
-        if (!app.isPackaged) throw new Error("开发运行不安装更新，请使用已签名安装包验证");
-        autoUpdater.setFeedURL({ provider: "generic", url: `${serverOrigin(current.server)}/downloads/windows/` });
-        updates.checking(); await autoUpdater.checkForUpdates(); return updates.snapshot;
+        updates.checking();
+        try {
+          const current = await backend.request({ method: "snapshot" }) as DesktopSnapshot;
+          if (!current.server) throw new Error("先登录服务器，再检查更新");
+          if (!app.isPackaged) throw new Error("开发运行不安装更新，请使用已签名安装包验证");
+          autoUpdater.setFeedURL({ provider: "generic", url: `${serverOrigin(current.server)}/downloads/windows/` });
+          await autoUpdater.checkForUpdates(); return updates.snapshot;
+        } catch(error) { updates.failed(); throw error; }
       }
       case "cancelUpdate": updates.cancel(); return updates.snapshot;
       case "installUpdate": {

@@ -38,6 +38,7 @@ export interface Session {
   managedExecution?: ManagedSession;
   externalBindingGeneration?: number;
   externalAutoConnect?: boolean;
+  terminalPermissionsOnly?: boolean;
   id: string; dispatchId?: string; agentKind: Kind; sessionRef: string; lifecycle?: string;
   occupiesExecutionSlot?: boolean; command?: Command; approvalDecision?: { id: string; choice: string };
   approvalRetry?: { id: string; reviewId: string; status: string }; approvalReviewMode?: string;
@@ -83,7 +84,7 @@ export interface Adapter {
   controlSnapshot?(): Promise<Snapshot>;
   historyPage?(cursor: string): Promise<{ messages: Message[]; nextCursor?: string; error?: string }>;
   /** controlOnly permits answers to existing native requests, never a new prompt. */
-  deliver(command: Command, options?: { controlOnly: boolean }): Promise<void>;
+  deliver(command: Command, options?: { controlOnly: boolean; terminalPermissionsOnly?: boolean }): Promise<void>;
   decide(decision: { id: string; choice: string }): Promise<void>;
   settings?(settings: NonNullable<Session["desiredSettings"]>): Promise<void>;
   archive?(restore: boolean): Promise<void>;

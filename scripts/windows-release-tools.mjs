@@ -15,6 +15,7 @@ export function windowsManifest(value) {
   if (value.releaseNotes !== undefined && (!Array.isArray(value.releaseNotes) || value.releaseNotes.length > 100
     || value.releaseNotes.some(note => !note || !Array.isArray(note.items) || note.items.length > 100
       || note.items.some(item => !item || typeof item.title !== "string" || item.title.length > 1000)))) throw new Error("Invalid Windows release notes");
+  if (!value.filename.includes(`-${value.version}-x64-setup.exe`)) throw new Error("Windows installer filename version differs from manifest");
   return value;
 }
 export function checkWindowsFiles(root, record) {
@@ -44,18 +45,17 @@ export function checkWindowsArtifacts(root, live) {
   if (!live || live.version !== record.version || live.sourceCommit !== record.commit || live.sha256 !== record.sha256) throw new Error("No matching local or verified live Windows package");
   return live;
 }
-export function readWindowsSnapshot({ host, currentLink }) {
+export function readWindowsSnapshot({ host, currentLink }, readRemote) {
   if (!host || !currentLink?.startsWith("/")) return null;
   const directory = `${currentLink}/${WINDOWS_PATH}`;
-  const run = command => execFileSync("ssh", [host, command], { encoding: "utf8", timeout: 20_000 }).trim();
+  const run = readRemote ?? (command => execFileSync("ssh", [host, command], { encoding: "utf8", timeout: 20_000 }).trim());
   const text = run(`if [ -s ${quote(`${directory}/latest.json`)} ]; then cat ${quote(`${directory}/latest.json`)}; fi`);
   if (!text) return null;
-  try {
-    const manifest = windowsManifest(JSON.parse(text));
-    const sha = run(`sha256sum ${quote(`${directory}/${manifest.filename}`)}`);
-    if (!sha.startsWith(manifest.sha256 + " ")) return null;
-    return { version: manifest.version, sourceCommit: manifest.sourceCommit, sha256: manifest.sha256, filename: manifest.filename };
-  } catch { return null; }
+  // An existing but unverifiable package must block inheritance, not disappear as unpublished.
+  const manifest = windowsManifest(JSON.parse(text));
+  const sha = run(`sha256sum ${quote(`${directory}/${manifest.filename}`)}`);
+  if (!sha.startsWith(manifest.sha256 + " ")) throw new Error("Live Windows installer digest differs from manifest");
+  return { version: manifest.version, sourceCommit: manifest.sourceCommit, sha256: manifest.sha256, filename: manifest.filename };
 }
 export async function verifyWindowsPublic(origin, release) {
   if (!release) return false;

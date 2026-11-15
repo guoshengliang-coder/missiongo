@@ -32,7 +32,7 @@ export function affectsArtifact(path, artifact) {
   if (artifact === "androidSdk") return /^(sdks\/android-feedback\/missiongo-feedback\/|sdks\/android-feedback\/gradle\.properties$)/.test(path);
   if (artifact === "macosApp") return /^(apps\/macos\/|product\.json$)/.test(path);
   if (artifact === "linuxCli") return /^(apps\/node\/|packages\/domain\/|scripts\/(?:build-node|publish-linux)\.mjs$)/.test(path);
-  if (artifact === "windowsApp") return /^(apps\/(?:windows|node)\/|packages\/|apps\/web\/src\/(?:styles|modal|overlay|select|i18n|draft)|product\.json$|scripts\/(?:build-windows|publish-windows|windows-release-tools)\.mjs$)/.test(path);
+  if (artifact === "windowsApp") return /^(apps\/(?:windows|node)\/|packages\/|apps\/web\/src\/|(?:product|package-lock)\.json$|scripts\/(?:build-windows|publish-windows|windows-release-tools)\.mjs$)/.test(path);
   return false;
 }
 

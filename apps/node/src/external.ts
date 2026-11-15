@@ -21,6 +21,8 @@ export async function synchronizeExternal(root: string, session: Session, api: A
   if (binding) {
     if (session.externalAutoConnect || lane === "observation") return hostCall(root, binding.dispatchId, probe, "observation");
     const observed = await inspectHost(root,binding.dispatchId,probe);
+    if (session.agentKind !== "opencode" && (session.approvalDecision || session.approvalRetry)) throw new InputRejected("请在原桥接终端确认权限");
+    if (session.agentKind !== "opencode" && session.command && session.command.kind !== "interrupt" && observed.externalPermissionProtocol !== 1) throw new InputRejected("桥接宿主需更新后才能安全接收 Web 回答；请先在原终端回复");
     // A user-owned bridge keeps its native permission decisions in the source
     // terminal. A normal Web text message must not turn into a tool grant.
     if (session.command && session.command.kind !== "interrupt" && session.agentKind !== "opencode" && (observed.approval?.status === "pending"
@@ -28,7 +30,7 @@ export async function synchronizeExternal(root: string, session: Session, api: A
       throw new InputRejected("请在原桥接终端按请求标识确认权限，Web 文字不能代替工具授权");
     }
     const prepared = session.command ? { ...session, command: await prepareAttachments(root, session.id, session.command, api) } : session;
-    return hostCall(root, binding.dispatchId, prepared, lane);
+    return hostCall(root, binding.dispatchId, { ...prepared, terminalPermissionsOnly: session.agentKind !== "opencode" }, lane);
   }
   if (session.agentKind !== "opencode") throw new InputRejected("原生会话未接入此执行环境的桥接宿主；请在来源端使用本机桥接入口，不会自动启动或恢复其他会话");
   const launch = await resolveAgentLaunch("opencode", settings);

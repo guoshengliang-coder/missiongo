@@ -15,3 +15,9 @@ it("requires trusted verification, rejects concurrent checks and keeps invalid p
   expect(update.verifying()).toBe(true); expect(() => update.cancel()).toThrow(); update.verified(false); update.settled();
   expect(() => update.installing()).toThrow(); expect(update.snapshot).toMatchObject({state:"failed",version:"0.1.1"});
 });
+
+it("rejects overlapping checks and stale completion from a different target version",()=>{
+  const update=new DesktopUpdates();update.checking();expect(()=>update.checking()).toThrow();
+  update.available("0.1.2");update.begin(()=>{});expect(update.verifying("0.1.1")).toBe(false);expect(update.snapshot.state).toBe("downloading");
+  expect(update.verifying("0.1.2")).toBe(true);update.verified(true);update.settled();update.installing();expect(()=>update.checking()).toThrow();
+});

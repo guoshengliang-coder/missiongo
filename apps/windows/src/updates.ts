@@ -6,7 +6,7 @@ export class DesktopUpdates {
   private cancelDownload: (() => void) | undefined;
   get snapshot(): DesktopUpdate { return { ...this.value }; }
   get active(): boolean { return this.cancelDownload !== undefined; }
-  checking() { if (this.active) throw new Error("更新仍在进行，请先等待或取消下载"); this.value = { state: "checking" }; }
+  checking() { if (this.active || ["checking","installing"].includes(this.value.state)) throw new Error("更新仍在进行，请先等待或取消下载"); this.value = { state: "checking" }; }
   available(version: string, notes?: unknown) { if (!this.active) this.value = { state: "available", version, ...(typeof notes === "string" && notes.length <= 20000 ? {notes} : {}) }; }
   current() { if (!this.active) this.value = { state: "current" }; }
   begin(cancel: () => void) {
@@ -18,8 +18,8 @@ export class DesktopUpdates {
     if (this.value.state !== "downloading" || ![value.percent, value.transferred, value.total].every(Number.isFinite)) return;
     this.value = { ...this.value, percent: Math.max(0, Math.min(100, value.percent)), transferred: Math.max(0, value.transferred), total: Math.max(0, value.total) };
   }
-  verifying(): boolean {
-    if (this.value.state !== "downloading") return false;
+  verifying(version = this.value.version): boolean {
+    if (this.value.state !== "downloading" || version !== this.value.version) return false;
     this.value = { ...this.value, state: "verifying" }; return true;
   }
   verified(trusted: boolean) {
