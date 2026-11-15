@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { API } from "./api.js";
 import { findBinding, nativeKey } from "./bindings.js";
-import { boundedSnapshot, hostCall } from "./host.js";
+import { boundedSnapshot, hostCall, inspectHost } from "./host.js";
 import { resolveAgentLaunch } from "./environment.js";
 import { prepareAttachments } from "./attachments.js";
 import { OpenCodeAPI, OpenCodeAdapter } from "./opencode.js";
@@ -19,11 +19,11 @@ export async function synchronizeExternal(root: string, session: Session, api: A
   const binding = findBinding(root, session.agentKind, session.sessionRef, config.nodeId);
   const probe: Session = { id: session.id, sessionRef: session.sessionRef, agentKind: session.agentKind };
   if (binding) {
-    const observed = await hostCall(root, binding.dispatchId, probe, "observation");
-    if (session.externalAutoConnect || lane === "observation") return observed;
+    if (session.externalAutoConnect || lane === "observation") return hostCall(root, binding.dispatchId, probe, "observation");
+    const observed = await inspectHost(root,binding.dispatchId,probe);
     // A user-owned bridge keeps its native permission decisions in the source
     // terminal. A normal Web text message must not turn into a tool grant.
-    if (session.command && session.agentKind !== "opencode" && (observed.approval?.status === "pending"
+    if (session.command && session.command.kind !== "interrupt" && session.agentKind !== "opencode" && (observed.approval?.status === "pending"
       || observed.messages.some((message) => message.questions?.some((question) => question.key?.startsWith("授权请求 "))))) {
       throw new InputRejected("请在原桥接终端按请求标识确认权限，Web 文字不能代替工具授权");
     }
@@ -36,7 +36,7 @@ export async function synchronizeExternal(root: string, session: Session, api: A
   if (session.externalAutoConnect || lane === "observation") return boundedSnapshot(await adapter.snapshot());
   const path = join(root, "external-journals", `${nativeKey(session.agentKind, session.id)}.json`);
   const journal = readPrivate<Journal>(path) ?? { commands: {} };
-  const snapshot = await adapter.snapshot();
+  const snapshot = lane === "control" ? await adapter.controlSnapshot() : await adapter.snapshot();
   if (session.archiveInSource) snapshot.sourceArchiveError = "OpenCode 共享服务未提供可核实的来源归档操作，请在来源端处理";
   if (session.restoreInSource) snapshot.sourceRestored = true;
   if (session.desiredSettings && session.desiredSettings.revision > (journal.settingsRevision ?? 0)) {

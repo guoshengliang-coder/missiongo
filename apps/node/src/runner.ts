@@ -187,7 +187,7 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
           snapshot = await managed.synchronize(prepared, signal, lane === "observation");
         } else if (session.externalBindingGeneration !== undefined) {
           snapshot = await synchronizeExternal(root, prepared, sessionAPI, signal, lane === "control" && !modernControl ? "combined" : lane);
-          if (!session.externalAutoConnect) savePrivate(join(root, "external-artifacts", `${nativeKey(session.agentKind, session.sessionRef)}.json`), { sessionRef: session.sessionRef, agentKind: session.agentKind, snapshot });
+          if (!session.externalAutoConnect && lane !== "control") savePrivate(join(root, "external-artifacts", `${nativeKey(session.agentKind, session.sessionRef)}.json`), { sessionRef: session.sessionRef, agentKind: session.agentKind, snapshot });
         } else snapshot = await hostCall(root, session.dispatchId!, prepared, lane === "control" && !modernControl ? "combined" : lane);
       } catch (error) {
         if (error instanceof APIError) throw error;

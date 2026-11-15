@@ -59,6 +59,12 @@ export async function hostCall(root: string, dispatchId: string, session?: Sessi
   // request's unknown outcome, and never restart a surviving old host.
   return callHost<Snapshot>(root, dispatchId, modern ? lane === "control" ? "/control" : "/observe" : "/sync", session ?? {}, signal);
 }
+/** A read-only control view must not wait for the full transcript or mutate its journal. */
+export async function inspectHost(root: string, dispatchId: string, session: Session): Promise<Snapshot> {
+  try { return await callHost<Snapshot>(root,dispatchId,"/inspect",{sessionRef:session.sessionRef}); }
+  catch(error) { if (!(error instanceof HostHTTPError) || error.status !== 404) throw error; }
+  return hostCall(root,dispatchId,{id:session.id,sessionRef:session.sessionRef,agentKind:session.agentKind},"observation");
+}
 export async function hostHistoryCall(root: string, dispatchId: string, sessionRef: string, cursor: string): Promise<HistoryResult> {
   return callHost<HistoryResult>(root, dispatchId, "/history", { sessionRef, cursor });
 }
@@ -121,6 +127,16 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
     req.on("end", () => {
       if (req.method === "POST" && req.url === "/capabilities") {
         res.writeHead(200, {"Content-Type":"application/json"}).end(JSON.stringify({protocol:1})); return;
+      }
+      if (req.method === "POST" && req.url === "/inspect") {
+        void (async()=>{
+          try {
+            const input=JSON.parse(body) as {sessionRef?:unknown};
+            if (!adapter || !launchFinished || state.phase !== "launched" || input.sessionRef !== state.sessionRef) throw new Error("Native session identity mismatch");
+            const snapshot=adapter.controlSnapshot ? await adapter.controlSnapshot() : { ...state.snapshot,messages:[] };
+            res.writeHead(200,{"Content-Type":"application/json"}).end(JSON.stringify(boundedSnapshot(snapshot)));
+          } catch { res.writeHead(409).end(); }
+        })(); return;
       }
       if (req.method === "POST" && req.url === "/observe") {
         const epoch = controlEpoch;

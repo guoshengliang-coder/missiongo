@@ -3,6 +3,7 @@ import { mkdtemp, writeFile, symlink, rm, mkdir, open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readImageArtifact, completeImageArtifacts } from "./artifacts.js";
+import { nativeKey } from "./bindings.js";
 import { privateDir, savePrivate } from "./storage.js";
 import { hostDirectory } from "./host.js";
 import type { HostState, Message } from "./types.js";
@@ -120,4 +121,17 @@ it("reports diagnostics only when the existing job advertises the new protocol",
     } });
     expect(reports).toEqual([{ error: "resource_missing" }, { error: "resource_missing", errorResource: "missing.png" }]);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+it("preserves the last external artifact proof when a control snapshot has no transcript",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"mg-artifact-mirror-"));
+  try {
+    const path=join(root,"image.png");await writeFile(path,"fixture");
+    const state={phase:"launched",sessionRef:"native",dispatch:{agentKind:"codex"},snapshot:{messages:[]}};
+    savePrivate(join(hostDirectory(root,"host"),"state.json"),state);
+    savePrivate(join(root,"external-artifacts",`${nativeKey("codex","native")}.json`),{sessionRef:"native",agentKind:"codex",snapshot:{messages:[{sourceId:"source",role:"agent",text:`![Image](<${path}>)`}]}});
+    const reports:unknown[]=[];
+    await completeImageArtifacts(root,{call:async(method,_path,body)=>{if(method === "GET")return {jobs:[{id:"job",sessionRef:"native",agentKind:"codex",sourceId:"source",href:path}]};reports.push(body);}});
+    expect(reports).toMatchObject([{bundle:{entry:"image.png"}}]);
+  } finally {await rm(root,{recursive:true,force:true});}
 });

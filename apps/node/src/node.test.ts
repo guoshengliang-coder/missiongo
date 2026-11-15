@@ -15,7 +15,7 @@ import { serviceUnit } from "./service.js";
 import { serverOrigin } from "./api.js";
 import { detectAgents } from "./runner.js";
 import { boundedSnapshot } from "./host.js";
-import type { Adapter, Dispatch, Wire } from "./types.js";
+import type { Adapter, Dispatch, Wire, Snapshot } from "./types.js";
 
 const roots: string[] = [];
 const adapters: Adapter[] = [];
@@ -558,4 +558,12 @@ it.each([{subtype:"error_max_turns"},{terminal_reason:"blocking_limit"}])("AND-5
  consume({type:"assistant",uuid:"unfinished",message:{content:[{type:"text",text:"Reviewed plan"}]}});
  consume({type:"result",result:"Reviewed plan",is_error:false,...failure});
  expect((await adapter.snapshot()).messages.find(m=>m.sourceId==="unfinished")?.phase).toBeUndefined();
+});
+
+it("can read and update a bounded host snapshot larger than the old private-file limit",()=>{
+  const root=temporary();const path=join(root,"large-state.json");
+  const snapshot=boundedSnapshot({status:"idle",messages:Array.from({length:22},(_,i)=>({sourceId:String(i),role:"agent",text:"x".repeat(800_000)}))});
+  savePrivate(path,{snapshot,commands:{}});expect(readPrivate<{snapshot:Snapshot}>(path)?.snapshot.messages).toHaveLength(22);
+  savePrivate(path,{snapshot,commands:{once:{status:"delivered"}}});
+  expect(readPrivate<{commands:unknown}>(path)?.commands).toEqual({once:{status:"delivered"}});
 });

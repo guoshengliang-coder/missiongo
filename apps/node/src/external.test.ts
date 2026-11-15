@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import * as host from "./host.js";
 import { API } from "./api.js";
 import { saveBinding, findBinding } from "./bindings.js";
 import { loadConfig, saveConfig } from "./storage.js";
@@ -40,4 +41,14 @@ it.each([["是", true], ["否", false], ["Yes", true], ["No", false]])("encodes 
   await adapter.deliver({ id: "reply", text: String(text), status: "queued" });
   expect(call).toHaveBeenLastCalledWith("POST", "/api/session/native/form/form/reply", { answer: { confirm: expected } });
   await expect(adapter.deliver({ id: "invalid", text: "not an answer", status: "queued" })).rejects.toThrow("Invalid boolean");
+});
+
+it("uses a lightweight read for source permissions, denies Web text grants and still allows stopping",async()=>{
+  const root=temporary();saveConfig(root,{...loadConfig(root),nodeId:"node",agents:{codex:{}}});saveBinding(root,{kind:"codex",sessionRef:"native",nodeId:"node",dispatchId:"host"});
+  const inspect=vi.spyOn(host,"inspectHost").mockResolvedValue({status:"active",messages:[],approval:{id:"permission",kind:"native",status:"pending"} as never});
+  const deliver=vi.spyOn(host,"hostCall").mockResolvedValue({status:"idle",messages:[],stopConfirmed:true});
+  const session={id:"external",sessionRef:"native",agentKind:"codex" as const,command:{id:"input",status:"queued",text:"yes"}};
+  await expect(synchronizeExternal(root,session,new API("https://missiongo.example.com"),new AbortController().signal,"control")).rejects.toThrow("Web");expect(deliver).not.toHaveBeenCalled();
+  await synchronizeExternal(root,{...session,command:{...session.command,kind:"interrupt",turnId:"turn"}},new API("https://missiongo.example.com"),new AbortController().signal,"control");
+  expect(inspect).toHaveBeenCalledTimes(2);expect(deliver).toHaveBeenCalledExactlyOnceWith(root,"host",expect.objectContaining({command:expect.objectContaining({kind:"interrupt"})}),"control");
 });

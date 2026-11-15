@@ -113,8 +113,8 @@ export async function completeImageArtifacts(root: string, api: Pick<API, "call"
       const state = directories(join(root, "sessions")).map((key) => readPrivate<HostState>(join(hostDirectory(root, key), "state.json")))
         .find((entry) => entry?.phase === "launched" && entry.sessionRef === job.sessionRef && entry.dispatch.agentKind === job.agentKind);
       const externalPath = join(root, "external-artifacts", `${nativeKey(job.agentKind, job.sessionRef)}.json`);
-      const external = !state && existsSync(externalPath) ? readPrivate<{sessionRef:string; agentKind:string; snapshot: {messages:Message[]}}>(externalPath) : undefined;
-      const messages = state?.snapshot.messages ?? (external?.sessionRef === job.sessionRef && external.agentKind === job.agentKind ? external.snapshot.messages : undefined);
+      const external = !state?.snapshot.messages.some(message=>message.sourceId === job.sourceId) && existsSync(externalPath) ? readPrivate<{sessionRef:string; agentKind:string; snapshot: {messages:Message[]}}>(externalPath) : undefined;
+      const messages = state?.snapshot.messages.some(message=>message.sourceId === job.sourceId) ? state.snapshot.messages : (external?.sessionRef === job.sessionRef && external.agentKind === job.agentKind ? external.snapshot.messages : undefined);
       if (!messages) throw new ArtifactError("node_unavailable");
       result = { bundle: await readImageArtifact(job, messages) };
     } catch (error) { result = { error: error instanceof ArtifactError ? error.message : "node_unavailable", ...(job.diagnosticsProtocol === 1 && error instanceof ArtifactError && error.resource ? { errorResource: error.resource } : {}) }; }
