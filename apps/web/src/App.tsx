@@ -2496,11 +2496,6 @@ function ListRowActions(props: {item:WorkItemRow;onEdit:()=>void;onNotice:(messa
   const requests=useRef(0);
   const pendingMenu=useRef<HTMLDetailsElement>(null);
   const [openLoaded,setOpenLoaded]=useState(false);
-  useEffect(()=>{
-    const close=(event:MouseEvent)=>{if(pendingMenu.current&&!pendingMenu.current.contains(event.target as Node))pendingMenu.current.open=false;};
-    document.addEventListener("mousedown",close);
-    return ()=>document.removeEventListener("mousedown",close);
-  },[]);
   useEffect(()=>()=>{requests.current++;},[props.item.key]);
   const [loading,setLoading]=useState(false);
   const {t}=useI18n();
@@ -2567,21 +2562,6 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork, openInitially = f
     else if (action.reason === "manual_override" || transitionRequiresNote(item.status, action.to)) setNoteAction(action);
     else mutation.mutate({ action });
   };
-
-  useEffect(() => {
-    const closeMoreActions = (event: MouseEvent) => {
-      if (!moreActionsRef.current?.contains(event.target as Node)) moreActionsRef.current?.removeAttribute("open");
-    };
-    const closeMoreActionsOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") moreActionsRef.current?.removeAttribute("open");
-    };
-    document.addEventListener("mousedown", closeMoreActions);
-    document.addEventListener("keydown", closeMoreActionsOnEscape);
-    return () => {
-      document.removeEventListener("mousedown", closeMoreActions);
-      document.removeEventListener("keydown", closeMoreActionsOnEscape);
-    };
-  }, []);
 
   if (item.transferred) return null;
 
@@ -2857,21 +2837,6 @@ function DetailPane({
   useEffect(() => {
     setEditing(openInEdit);
   }, [itemKey, openInEdit]);
-
-  useEffect(() => {
-    const closeMoreActions = (event: MouseEvent) => {
-      if (!moreActionsRef.current?.contains(event.target as Node)) moreActionsRef.current?.removeAttribute("open");
-    };
-    const closeMoreActionsOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") moreActionsRef.current?.removeAttribute("open");
-    };
-    document.addEventListener("mousedown", closeMoreActions);
-    document.addEventListener("keydown", closeMoreActionsOnEscape);
-    return () => {
-      document.removeEventListener("mousedown", closeMoreActions);
-      document.removeEventListener("keydown", closeMoreActionsOnEscape);
-    };
-  }, []);
 
   const refreshItem = async () => {
     await Promise.all([
