@@ -436,6 +436,16 @@ if [ ! -s "${local_linux}.tgz" ]; then
 fi
 # END LINUX CLI INHERITANCE
 
+# BEGIN WINDOWS CLIENT INHERITANCE
+local_windows="apps/web/public/downloads/windows"
+if [ ! -s "${local_windows}/latest.json" ]; then
+  echo "==> Preserving the current signed Windows package and updater metadata"
+  remote "if [ -s '${current_link}/${local_windows}/latest.json' ]; then \
+    sudo mkdir -p '${target}/${local_windows}' && \
+    sudo cp -a '${current_link}/${local_windows}/.' '${target}/${local_windows}/'; fi"
+fi
+# END WINDOWS CLIENT INHERITANCE
+
 # The Android update manifest rides with the APK that is actually being served,
 # not with the snapshot alone. When this deploy does not publish an APK -- a
 # checkout without one, or an explicit --no-publish-apk -- the manifest the live

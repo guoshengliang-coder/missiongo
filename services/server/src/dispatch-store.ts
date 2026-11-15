@@ -13,6 +13,7 @@ import {
   isAcceptedSessionUrl,
   isNodeOnline,
   isSupportedDispatchMode,
+  isAbsoluteRepositoryPath,
   type AgentKind,
   type AgentResourceSnapshot,
   type AgentSkillSnapshot,
@@ -547,7 +548,7 @@ export class DispatchStore {
     // path field. They are a convenience, not a permission: a mapping is still
     // only what a person saved, and a path outside this list can still be typed.
     const candidates = repoCandidates
-      .filter((candidate) => candidate.path.startsWith("/"))
+      .filter((candidate) => isAbsoluteRepositoryPath(candidate.path))
       .slice(0, MAX_REPO_CANDIDATES)
       .map((candidate) => ({
         path: candidate.path.slice(0, 500),
@@ -669,7 +670,7 @@ export class DispatchStore {
         const repoPath = text(repo.repoPath, "Repository path", 500);
         // The machine checks that the path is a git checkout it can use; the
         // server only checks the shape, because it cannot see that disk.
-        if (!repoPath.startsWith("/")) throw invalidInput("Repository path must be absolute.");
+        if (!isAbsoluteRepositoryPath(repoPath)) throw invalidInput("Repository path must be absolute.");
         if (existing.some((old) => old.product_id === repo.productId && old.repo_path === repoPath)) continue;
         insert.run(randomUUID(), nodeId, repo.productId, repoPath, now, now);
       }

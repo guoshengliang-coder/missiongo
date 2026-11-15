@@ -1,6 +1,7 @@
 {
   "files": [],
   "references": [
+    { "path": "./apps/windows" },
     { "path": "./apps/node" },
     { "path": "./apps/web" },
     { "path": "./packages/domain" },

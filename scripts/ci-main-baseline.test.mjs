@@ -9,7 +9,7 @@ import { selectPlatforms, assertPlatformResult } from './ci-platform-plan.mjs';
 import { parseDiff } from './ui-test-plan.mjs';
 
 const head = 'a'.repeat(40), base = 'b'.repeat(40);
-const names = ['web-and-server', 'ui', 'android', 'macos', 'linux-node', 'android-build', 'macos-build', 'linux-node (ubuntu-22.04)', 'linux-node (ubuntu-24.04)'];
+const names = ['web-and-server', 'ui', 'android', 'macos', 'linux-node', 'windows', 'windows-build', 'android-build', 'macos-build', 'linux-node (ubuntu-22.04)', 'linux-node (ubuntu-24.04)'];
 const run = () => ({id: 123, run_attempt: 1, head_sha: base, head_branch: 'main', event: 'push', path: '.github/workflows/ci.yml', repository: {full_name:'owner/repo'}, status:'completed', conclusion:'success'});
 const jobs = () => names.map(name => ({name, status:'completed', conclusion:'success', head_sha:base, run_id:123}));
 function api(runs = [run()], buildJobs = jobs()) {

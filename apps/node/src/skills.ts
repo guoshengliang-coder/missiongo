@@ -1,11 +1,11 @@
-import { existsSync, lstatSync, readFileSync, mkdirSync, writeFileSync, renameSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, copyFileSync, mkdirSync, writeFileSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Kind } from "./types.js";
 
 export function skillPaths(kind: Kind, env = process.env): string[] {
-  const home = env.HOME ?? homedir();
+  const home = (process.platform === "win32" ? env.USERPROFILE : env.HOME) ?? homedir();
   if (kind === "claude_code") return [join(env.CLAUDE_CONFIG_DIR ?? join(home, ".claude"), "skills/missiongo/SKILL.md")];
   if (kind === "opencode") return [join(env.XDG_CONFIG_HOME ?? join(home, ".config"), "opencode/skills/missiongo/SKILL.md")];
   const paths = [join(env.CODEX_HOME ?? join(home, ".codex"), "skills/missiongo/SKILL.md")];
@@ -29,12 +29,15 @@ export async function syncSkill(kind: Kind, server: string, expected?: string, e
     // Parent symlinks must not be used to silently overwrite someone else's skill.
     let link = path;
     while (link !== dirname(link)) { if (existsSync(link) && lstatSync(link).isSymbolicLink()) throw new Error("MissionGo Skill path is a symlink; update it manually"); link = dirname(link); }
-    if (expected && current && compare(current, expected) > 0) throw new Error("Local Skill is newer than the server; it was preserved");
     if (downloaded === undefined) {
       const response = await fetch(`${server}/downloads/missiongo-skill/SKILL.md`, { redirect: "error", signal: AbortSignal.timeout(15_000) });
       if (!response.ok) throw new Error("Skill download failed");
       downloaded = await response.text();
       if (downloaded.length > 200_000 || !skillVersion(downloaded) || (expected && skillVersion(downloaded) !== expected)) throw new Error("Skill version could not be verified");
+    }
+    if (current && downloaded && compare(current, skillVersion(downloaded)!) > 0) {
+      if (!expected) throw new Error("Local Skill is newer than an unconfirmed server download; it was preserved");
+      copyFileSync(path, `${path}.before-rollback-${randomUUID()}`);
     }
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     const temp = `${path}.${randomUUID()}.tmp`; writeFileSync(temp, downloaded, { mode: 0o600, flag: "wx" }); renameSync(temp, path);

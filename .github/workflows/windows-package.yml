@@ -1,0 +1,45 @@
+name: Signed Windows package
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2025
+    timeout-minutes: 30
+    environment: windows-signing
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - run: npm ci
+      - run: npm run build:types
+      - run: npm run typecheck --workspace @missiongo/windows-workspace
+      - run: npm run test --workspace @missiongo/windows-workspace
+      - name: Build and verify the signed installer
+        env:
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          MISSIONGO_WINDOWS_PUBLISHER: ${{ vars.WINDOWS_PUBLISHER }}
+        run: npm run build:windows -- --package
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            apps/windows/dist/installer/*-x64-setup.exe
+            apps/windows/dist/installer/latest.json
+      - uses: actions/upload-artifact@v5
+        with:
+          name: windows-signed-package
+          path: |
+            apps/windows/dist/installer/*-x64-setup.exe
+            apps/windows/dist/installer/latest.json
+          retention-days: 30

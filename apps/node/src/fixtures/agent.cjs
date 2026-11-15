@@ -3,9 +3,10 @@
 const { createInterface } = require("node:readline");
 const { appendFileSync, existsSync } = require("node:fs");
 const args = process.argv.slice(2);
-if (args.includes("--version")) { console.log("fixture 1.0.0"); process.exit(0); }
+if (args.includes("--version")) { console.log("codex-cli 1.0.0\n1.0.0 (Claude Code)"); process.exit(0); }
 const codex = args[0] === "app-server";
-const session = args[args.indexOf("--session-id") + 1];
+const session = args[args.indexOf(args.includes("--resume") ? "--resume" : "--session-id") + 1];
+if (process.env.TEST_AGENT_EVENTS) appendFileSync(process.env.TEST_AGENT_EVENTS, JSON.stringify({ fixture: "startup", args }) + "\n");
 const emit = (data) => process.stdout.write(JSON.stringify(data) + "\n");
 let turn = { id: "turn-1", status: "completed", items: [] };
 let ref = "thread-1";
@@ -16,9 +17,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line);
   if (process.env.TEST_AGENT_EVENTS) appendFileSync(process.env.TEST_AGENT_EVENTS, line + "\n");
   if (codex) {
-    if (message.method === "initialize") emit({ id: message.id, result: {} });
+    if (message.method === "initialize") emit({ id: message.id, result: { userAgent: process.env.FAKE_MANAGED ? "codex/0.155.0-alpha.16.3 fixture" : "codex/1.0.0 fixture" } });
+    else if (message.method === "model/list" && process.env.TEST_CATALOG_FAILURE) emit({ id: message.id, error: { code: -1 } });
+    else if (message.method === "mcpServer/list") emit({ id: message.id, result: { data: [{ runtimeStatus: process.env.FAKE_LIVE_MCP ? "connected" : "disabled", tools: {} }] } });
     else if (["thread/start","thread/resume"].includes(message.method)) {
-      if (message.method === "thread/start" || !process.env.FAKE_IGNORE_RESUME) policy={...policy,...message.params,model:"fixture-model"};
+      if (message.method === "thread/start" || !process.env.FAKE_IGNORE_RESUME) policy={...policy,...message.params,model:process.env.FAKE_MANAGED ? "fixture-managed-model" : "fixture-model"};
       emit({ id: message.id, result: {...policy,thread:{id:ref,status:{type:"idle"}},
         sandbox:{type:process.env.FAKE_BAD_POLICY ? "dangerFullAccess" : policy.sandbox==="read-only" ? "readOnly" : "workspaceWrite",writableRoots:policy.runtimeWorkspaceRoots}} });
     }
@@ -82,7 +85,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       }
       if (message.request.subtype === "set_permission_mode") claudeMode = message.request.mode;
       emit({ type: "control_response", response: { subtype: "success", request_id: message.request_id,
-        response: message.request.subtype==="set_permission_mode" ? {mode:claudeMode} : {remote_control_available:false} } });
+        response: message.request.subtype==="set_permission_mode" ? {mode:claudeMode} : process.env.TEST_CATALOG_FAILURE ? {models:[null]} : {remote_control_available:false} } });
     };
     if (message.request.subtype === "set_permission_mode" && process.env.FAKE_CLAUDE_ACK_DELAY) setTimeout(respond, Number(process.env.FAKE_CLAUDE_ACK_DELAY));
     else respond();

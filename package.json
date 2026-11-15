@@ -16,7 +16,7 @@
     "admin:hash-password": "node ./scripts/create-admin-password-hash.mjs",
     "backup": "node ./scripts/backup.mjs",
     "restore": "node ./scripts/restore.mjs",
-    "build": "npm run build:types && npm run build:node && npm run build:web",
+    "build": "npm run build:types && npm run build:node && npm run build:web && npm run build:windows",
     "build:node": "node scripts/build-node.mjs",
     "publish:linux": "./scripts/publish-linux.sh",
     "build:types": "tsc -b",
@@ -41,11 +41,14 @@
     "test:scripts": "node --test scripts/*.test.mjs && node --test tests/release/installed-entry.e2e.mjs",
     "test:ui": "playwright test --project=audit",
     "test:ui:visual": "playwright test --project=visual",
-    "typecheck": "tsc -b --pretty false",
+    "typecheck": "tsc -b --pretty false && npm run typecheck --workspace @missiongo/windows-workspace",
     "version:web": "node scripts/web-version.mjs bump",
-    "generate:branding": "node scripts/product-branding.mjs"
+    "generate:branding": "node scripts/product-branding.mjs",
+    "build:windows": "node scripts/build-windows.mjs"
   },
   "devDependencies": {
+    "cross-spawn": "7.0.6",
+    "@types/cross-spawn": "^6.0.6",
     "@playwright/test": "^1.63.0",
     "@types/node": "^26.4.1",
     "es-module-lexer": "^2.3.2",

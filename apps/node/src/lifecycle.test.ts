@@ -79,7 +79,8 @@ it.each([false,true])("reconnects the original detached host and never replays a
   const logs: string[] = [];
   const until = async (predicate: () => boolean) => {
     for (let n = 0; n < 120; n++) { if (predicate()) return; await delay(100); }
-    throw new Error(`Timed out waiting for node behavior: ${logs.join("; ")}`);
+    const state = existsSync(statePath) ? readPrivate<HostState>(statePath) : undefined;
+    throw new Error(`Timed out waiting for node behavior: ${logs.join("; ")}; host ${state?.phase}: ${state?.launchError}`);
   };
   const statePath = join(hostDirectory(stateRoot, "cycle"), "state.json");
   const firstController = new AbortController();

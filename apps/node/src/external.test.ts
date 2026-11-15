@@ -1,0 +1,43 @@
+import { afterEach, expect, it, vi } from "vitest";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { API } from "./api.js";
+import { saveBinding, findBinding } from "./bindings.js";
+import { loadConfig, saveConfig } from "./storage.js";
+import { synchronizeExternal } from "./external.js";
+import { OpenCodeAdapter, type OpenCodeAPI } from "./opencode.js";
+const roots: string[] = [];
+const temporary = () => { const root = realpathSync(mkdtempSync(join(tmpdir(), "mg-external-"))); roots.push(root); return root; };
+afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+it("binds exact Agent, native identity and node and excludes managed sessions from external attachment", () => {
+  const root = temporary(); saveBinding(root, { kind: "codex", sessionRef: "native", nodeId: "node-1", dispatchId: "dispatch" });
+  expect(findBinding(root, "codex", "native", "node-1")?.dispatchId).toBe("dispatch");
+  expect(findBinding(root, "codex", "native", "node-2")).toBeUndefined();
+  expect(findBinding(root, "claude_code", "native", "node-1")).toBeUndefined();
+  saveBinding(root, { kind: "codex", sessionRef: "native", nodeId: "node-1", dispatchId: "dispatch", managed: true });
+  expect(findBinding(root, "codex", "native", "node-1")).toBeUndefined();
+});
+it.each(["codex", "claude_code"] as const)("does not discover, start or restore an unbridged %s native id", async (agentKind) => {
+  const root = temporary(); saveConfig(root, { ...loadConfig(root), nodeId: "node-1", agents: { [agentKind]: {} } });
+  const fetch = vi.spyOn(globalThis, "fetch");
+  await expect(synchronizeExternal(root, { id: "session", agentKind, sessionRef: "foreign-native" }, new API("https://missiongo.example.com", "fixture"), new AbortController().signal)).rejects.toThrow("不会自动启动");
+  expect(fetch).not.toHaveBeenCalled();
+});
+it("attaches OpenCode using a read of the exact registered session and refuses a different id", async () => {
+  const call = vi.fn(async () => ({ data: { id: "native" } }));
+  await OpenCodeAdapter.attach("native", { call } as unknown as OpenCodeAPI);
+  expect(call).toHaveBeenCalledExactlyOnceWith("GET", "/api/session/native");
+  await expect(OpenCodeAdapter.attach("foreign", { call } as unknown as OpenCodeAPI)).rejects.toThrow("identity");
+});
+it.each([["是", true], ["否", false], ["Yes", true], ["No", false]])("encodes Web boolean answer %s as its native boolean", async (text, expected) => {
+  const call = vi.fn(async (method: string, path: string) => {
+    if (path.endsWith("/form") && method === "GET") return { data: [{ id: "form", fields: [{ key: "confirm", title: "Confirm", type: "boolean", required: true }] }] };
+    if (path.endsWith("/permission")) return { data: [] };
+    return { data: { id: "native" } };
+  });
+  const adapter = await OpenCodeAdapter.attach("native", { call } as unknown as OpenCodeAPI);
+  await adapter.deliver({ id: "reply", text: String(text), status: "queued" });
+  expect(call).toHaveBeenLastCalledWith("POST", "/api/session/native/form/form/reply", { answer: { confirm: expected } });
+  await expect(adapter.deliver({ id: "invalid", text: "not an answer", status: "queued" })).rejects.toThrow("Invalid boolean");
+});

@@ -1,0 +1,23 @@
+{
+  "name": "@missiongo/windows-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/app/main.cjs",
+  "scripts": {
+    "build": "node ../../scripts/build-windows.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.11",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "lucide-react": "^1.40.0",
+    "builder-util-runtime": "9.7.0"
+  },
+  "devDependencies": {
+    "electron": "45.2.2",
+    "electron-builder": "26.18.0"
+  }
+}

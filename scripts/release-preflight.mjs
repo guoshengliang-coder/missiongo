@@ -23,6 +23,9 @@ const releaseStateTools = existsSync(releaseStateHelperPath) ? await import(path
 
 import { coverageForCheckout, assertReleaseCoverage } from "./release-coverage.mjs";
 
+const windowsHelperPath = process.cwd() + "/scripts/windows-release-tools.mjs";
+const windowsReleaseTools = existsSync(windowsHelperPath) ? await import(pathToFileURL(windowsHelperPath).href) : null;
+
 const SHA = /^[a-f0-9]{40}$/;
 const VERSION = /^[0-9]+(?:\.[0-9]+)*$/;
 const git = (root, ...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -109,6 +112,11 @@ export function checkArtifacts(root, live, { publishApk = true, onlyArtifacts } 
     if (ledger.linuxCli && !linuxReleaseTools) throw new Error("Current checkout lacks Linux release verification");
     const linux = linuxReleaseTools?.checkLinuxArtifacts(root, live?.linuxCli);
     if (linux) result.push({ artifact: "linuxCli", ...linux });
+  }
+  if (includes("windowsApp")) {
+    if (ledger.windowsApp && !windowsReleaseTools) throw new Error("Current checkout lacks Windows release verification");
+    const windows = windowsReleaseTools?.checkWindowsArtifacts(root, live?.windowsApp);
+    if (windows) result.push({ artifact: "windowsApp", ...windows });
   }
   return result;
 }

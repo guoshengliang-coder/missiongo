@@ -1,8 +1,9 @@
-import { constants } from "node:fs";
+import { constants, existsSync } from "node:fs";
 import { open, realpath, lstat, type FileHandle } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { localArtifactLinks, localArtifactPath, ARTIFACT_CONTENT_TYPES, artifactResourceName, artifactReferences, artifactRelativeResource, type AgentArtifactBundle } from "@missiongo/domain";
 import type { Message, HostState } from "./types.js";
+import { nativeKey } from "./bindings.js";
 import { directories, readPrivate } from "./storage.js";
 import { hostDirectory } from "./host.js";
 import type { API } from "./api.js";
@@ -15,24 +16,29 @@ const extension = (name: string) => extname(name).slice(1).toLowerCase();
 const flags = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
 
 /** On Linux walk relative to held directory descriptors, including during directory renames. */
-async function readFile(root: string, directory: FileHandle, name: string): Promise<Buffer> {
+async function readFile(root: string, directory: FileHandle | undefined, name: string): Promise<Buffer> {
   const handles: FileHandle[] = [];
   let parent = directory, physical = root;
   try {
     const segments = name.split("/");
     for (const [index, part] of segments.entries()) {
       physical = join(physical, part);
-      const anchored = process.platform === "linux" ? `/proc/self/fd/${parent.fd}/${part}` : physical;
+      const anchored = process.platform === "linux" ? `/proc/self/fd/${parent!.fd}/${part}` : physical;
+      if (process.platform === "win32" && (await lstat(physical)).isSymbolicLink()) throw new ArtifactError("file_denied", name);
+      if (process.platform === "win32" && index < segments.length - 1) {
+        if (!(await lstat(physical)).isDirectory()) throw new ArtifactError("file_denied", name);
+        continue;
+      }
       const handle = await open(anchored, flags | (index < segments.length - 1 ? constants.O_DIRECTORY : 0));
       handles.push(handle); parent = handle;
     }
-    const stat = await parent.stat();
+    const stat = await parent!.stat();
     if (!stat.isFile()) throw new ArtifactError("file_denied", name);
     if (stat.size <= 0 || stat.size > 20 * 1024 * 1024) throw new ArtifactError("too_large", name);
     const parts: Buffer[] = []; let total = 0;
     for (;;) {
       const part = Buffer.alloc(64 * 1024);
-      const { bytesRead } = await parent.read(part, 0, part.length, null);
+      const { bytesRead } = await parent!.read(part, 0, part.length, null);
       if (!bytesRead) break;
       total += bytesRead;
       if (total > 20 * 1024 * 1024) throw new ArtifactError("too_large", name);
@@ -41,7 +47,7 @@ async function readFile(root: string, directory: FileHandle, name: string): Prom
     // macOS is a development host without procfs. Also recheck the path after
     // the bounded read so a replaced directory cannot publish another file.
     if (process.platform !== "linux") {
-      if (await realpath(physical) !== physical) throw new ArtifactError("file_denied", name);
+      if ((process.platform === "win32" ? (await realpath(physical)).toLowerCase() !== physical.toLowerCase() : await realpath(physical) !== physical)) throw new ArtifactError("file_denied", name);
       const current = await lstat(physical);
       if (current.ino !== stat.ino || current.dev !== stat.dev) throw new ArtifactError("file_denied", name);
     }
@@ -57,9 +63,9 @@ export async function readArtifact(job: Pick<ArtifactJob, "sourceId" | "href" | 
   const entry = basename(path);
   if (!artifactResourceName(entry)) throw new ArtifactError("file_denied");
   if (!ARTIFACT_CONTENT_TYPES[extension(entry)] || /\.(?:css|m?js|woff2?|ttf)$/i.test(entry)) throw new ArtifactError("unsupported", entry);
-  let directory: FileHandle;
+  let directory: FileHandle | undefined;
   let root: string;
-  try { root = await realpath(dirname(path)); directory = await open(root, flags | constants.O_DIRECTORY); }
+  try { root = await realpath(dirname(path)); directory = process.platform === "win32" ? undefined : await open(root, flags | constants.O_DIRECTORY); }
   catch (error) { throw new ArtifactError((error as NodeJS.ErrnoException).code === "ENOENT" ? "file_missing" : "file_denied", entry); }
   try {
     const pending = [entry], seen = new Set<string>(), skipped = new Set<string>();
@@ -92,7 +98,7 @@ export async function readArtifact(job: Pick<ArtifactJob, "sourceId" | "href" | 
       }
     }
     return { entry, files, ...(skipped.size ? { skippedResources: [...skipped] } : {}) };
-  } finally { await directory.close(); }
+  } finally { await directory?.close(); }
 }
 
 // Compatibility names for the existing runner; these now handle all preview types.
@@ -106,8 +112,11 @@ export async function completeImageArtifacts(root: string, api: Pick<API, "call"
     try {
       const state = directories(join(root, "sessions")).map((key) => readPrivate<HostState>(join(hostDirectory(root, key), "state.json")))
         .find((entry) => entry?.phase === "launched" && entry.sessionRef === job.sessionRef && entry.dispatch.agentKind === job.agentKind);
-      if (!state) throw new ArtifactError("node_unavailable");
-      result = { bundle: await readImageArtifact(job, state.snapshot.messages) };
+      const externalPath = join(root, "external-artifacts", `${nativeKey(job.agentKind, job.sessionRef)}.json`);
+      const external = !state && existsSync(externalPath) ? readPrivate<{sessionRef:string; agentKind:string; snapshot: {messages:Message[]}}>(externalPath) : undefined;
+      const messages = state?.snapshot.messages ?? (external?.sessionRef === job.sessionRef && external.agentKind === job.agentKind ? external.snapshot.messages : undefined);
+      if (!messages) throw new ArtifactError("node_unavailable");
+      result = { bundle: await readImageArtifact(job, messages) };
     } catch (error) { result = { error: error instanceof ArtifactError ? error.message : "node_unavailable", ...(job.diagnosticsProtocol === 1 && error instanceof ArtifactError && error.resource ? { errorResource: error.resource } : {}) }; }
     await api.call("POST", `/api/v1/node/agent-artifacts/${encodeURIComponent(job.id)}`, result);
   }

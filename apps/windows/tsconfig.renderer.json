@@ -1,0 +1,6 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "jsx": "react-jsx", "lib": ["ES2022", "DOM", "DOM.Iterable"], "noEmit": true, "types": ["node", "vite/client"] },
+  "references": [{ "path": "../../packages/domain" }, { "path": "../../packages/contracts" }, { "path": "../node" }],
+  "include": ["src/renderer.tsx"]
+}

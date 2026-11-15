@@ -14,7 +14,7 @@
     "downloads": {
       "entry": "downloads-panel.tsx",
       "consumers": ["App.tsx"],
-      "tests": ["linux-download.audit.spec.ts"]
+      "tests": ["linux-download.audit.spec.ts", "windows-download.audit.spec.ts"]
     },
     "agent-artifacts": {
       "entry": "agent-artifact-viewer.tsx",

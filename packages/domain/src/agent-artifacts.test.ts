@@ -24,3 +24,8 @@ it("distinguishes download links from rendering dependencies without interpretin
   for (const ref of ["../../secret", "/absolute", "%2fabsolute", "%5csecret", ".hidden/../image.png", "%00.png"]) expect(() => artifactRelativeResource(ref, "report.html")).toThrow();
   expect(artifactRelativeResource("https://example.test/a.png", "report.html")).toBeUndefined();
 });
+it("recognizes Windows drive artifacts without allowing SMB, device paths, traversal or alternate streams", () => {
+  expect(localArtifactPath("file:///C:/Users/fixture/my%20image.png")).toBe("C:/Users/fixture/my image.png");
+  expect(localArtifactPath("D:\\output\\chart.png")).toBe("D:/output/chart.png");
+  for (const path of ["\\\\server\\share\\secret.png", "file://server/share/secret.png", "C:relative.png", "C:/x/%2e%2e/secret.png", "C:/secret.txt:stream", "file:///C:/x%00.png"]) expect(localArtifactPath(path), path).toBeUndefined();
+});

@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { spawnAgent, killProcessTree, agentEnvironment } from "./launch.js";
+import { readPowerShellEnvironment } from "./windows-environment.js";
 import { randomUUID } from "node:crypto";
 import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -8,7 +9,7 @@ import type { AgentConfig } from "./types.js";
 export interface ClaudeLaunch { executable: string; env: NodeJS.ProcessEnv }
 
 export function validateLaunchPaths(settings: AgentConfig): void {
-  for (const [path, executable] of [[settings.environmentScript, false], [settings.executable, true]] as const) {
+  for (const [path, executable] of [[settings.environmentScript, false], [settings.executable, true], [settings.shellExecutable, true], [settings.serviceRegistration, false]] as const) {
     if (path === undefined) continue;
     if (!isAbsolute(path) || /[\r\n\0]/.test(path)) throw new Error("Agent configuration paths must be absolute file paths");
     try {
@@ -19,27 +20,36 @@ export function validateLaunchPaths(settings: AgentConfig): void {
 }
 
 /** Only explicitly configured scripts run. No profiles, aliases, output or resolved secrets are persisted. */
-export async function resolveClaudeLaunch(settings: AgentConfig, base = process.env, timeoutMs = 5000): Promise<ClaudeLaunch> {
+export async function resolveClaudeLaunch(settings: AgentConfig, base = agentEnvironment(), timeoutMs = 5000): Promise<ClaudeLaunch> {
   validateLaunchPaths(settings);
   const executable = settings.executable ?? "claude";
   if (!settings.environmentScript) return { executable, env: { ...base } };
+  if (process.platform === "win32" && /\.ps1$/i.test(settings.environmentScript)) {
+    return { executable, env: await readPowerShellEnvironment(settings.environmentScript, base, timeoutMs, settings.shellExecutable) };
+  }
+  if (process.platform === "win32" && !settings.shellExecutable) throw new Error("Select a PowerShell .ps1 environment script, an explicit Bash executable, or WSL");
   const marker = `__MISSIONGO_ENV_${randomUUID()}__`;
+  // /usr/bin/env belongs to MSYS and exports POSIX paths. Export through our
+  // trusted native Node instead, so MSYS performs its native environment conversion.
+  const reader = process.platform === "win32"
+    ? 'source "$1" >/dev/null || exit 1; reader=$(/usr/bin/cygpath -u "$3") || exit 1; "$reader" -e "$4" "$2"'
+    : 'source "$1" >/dev/null || exit 1; printf "\\0%s\\0" "$2"; /usr/bin/env -0; printf "\\0%s\\0" "$2"';
+  const nativeExport = 'const f="\\0"+process.argv[1]+"\\0"; process.stdout.write(f+Object.entries(process.env).map(([k,v])=>k+"="+v).join("\\0")+f)';
   const env = await new Promise<NodeJS.ProcessEnv>((resolve, reject) => {
-    const child = spawn("/bin/bash", ["--noprofile", "--norc", "-c",
-      'source "$1" >/dev/null || exit 1; printf "\\0%s\\0" "$2"; /usr/bin/env -0; printf "\\0%s\\0" "$2"',
-      "missiongo-env", settings.environmentScript!, marker], {
-      cwd: base.HOME ?? homedir(), env: { ...base, BASH_ENV: "/dev/null", ENV: "/dev/null" },
+    const child = spawnAgent(settings.shellExecutable ?? "/bin/bash", ["--noprofile", "--norc", "-c",
+      reader, "missiongo-env", settings.environmentScript!, marker, process.execPath, nativeExport], {
+      cwd: (process.platform === "win32" ? base.USERPROFILE : base.HOME) ?? homedir(), env: { ...base, BASH_ENV: "/dev/null", ENV: "/dev/null" },
       detached: true, stdio: ["ignore", "pipe", "ignore"],
     });
     let output = Buffer.alloc(0);
     let settled = false;
-    const stop = () => { try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch { /* Already exited. */ } };
+    const stop = () => killProcessTree(child.pid);
     const fail = (message: string) => {
       if (settled) return;
       settled = true; clearTimeout(timer); stop(); reject(new Error(message));
     };
     const timer = setTimeout(() => fail("Agent environment script timed out; check the script and recheck the Agent"), timeoutMs);
-    child.stdout.on("data", (part: Buffer) => {
+    child.stdout!.on("data", (part: Buffer) => {
       if (settled) return;
       if (output.length + part.length > 2_000_000) { fail("Agent environment script output exceeded the limit"); return; }
       output = Buffer.concat([output, part]);
@@ -66,6 +76,11 @@ export async function resolveClaudeLaunch(settings: AgentConfig, base = process.
     });
   });
   return { executable, env };
+}
+
+export async function resolveAgentLaunch(kind: string, settings: AgentConfig, base = agentEnvironment()): Promise<ClaudeLaunch> {
+  const launch = await resolveClaudeLaunch(settings, base);
+  return { ...launch, executable: settings.executable ?? (kind === "claude_code" ? "claude" : kind) };
 }
 
 /** Heartbeats reuse memory; manual checks and each new host resolve afresh. Failed reads stay failed. */

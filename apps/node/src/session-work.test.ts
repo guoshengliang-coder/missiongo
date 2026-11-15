@@ -95,3 +95,12 @@ it("uses the legacy lane when control v1 does not advertise reservation proofs",
   vi.spyOn(globalThis,"fetch").mockResolvedValue(Response.json({protocol:1,cursor:"fixture"}));
   expect(await new API("https://example.test").controlChanges(undefined,0)).toBeUndefined();
 });
+
+it("preserves reservation proofs when scoping an external binding header",async()=>{
+  const fetch=vi.spyOn(globalThis,"fetch").mockImplementation(async input=>String(input).includes("control-changes")
+    ? Response.json({protocol:1,reservationProtocol:1,cursor:"fixture"})
+    : new Response(null,{status:204}));
+  const api=new API("https://example.test");await api.controlChanges(undefined,0);
+  await expect(api.withHeaders({"X-MissionGo-External-Generation":"4"}).call("POST","/api/v1/node/agent-sessions/external/snapshot",{commandId:"message",commandStatus:"delivering"})).rejects.toMatchObject({status:409});
+  expect(fetch.mock.calls.at(-1)?.[1]?.headers).toMatchObject({"X-MissionGo-External-Generation":"4"});
+});

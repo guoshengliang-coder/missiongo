@@ -279,8 +279,21 @@ describe("Claude native control", () => {
     expect(control.messages.every(message => message.sourceId.startsWith("request-") || message.sourceId.startsWith("permission-"))).toBe(true);
     await adapter.deliver({ id: "reply-deny", status: "queued", text: "授权请求 claude-native-1: 拒绝" }); await delay(30);
     snapshot = await adapter.snapshot(); expect(snapshot.messages.some((m) => m.text === "deny")).toBe(true); expect(snapshot.waitingForInput).toBe(false);
+    expect(snapshot.messages.find((message) => message.sourceId === "request-claude-native-1")?.questions?.[0]?.answered).toContain("拒绝");
     await adapter.deliver({ id: "reply-next", status: "queued", text: "continue" });
     expect((await adapter.snapshot()).messages.some((m) => m.text === "continue")).toBe(true);
+  });
+  it("archives the owned Claude tree and resumes only the same explicitly restored native session without replaying a user turn", async () => {
+    const root = temporary(); const log = join(root, "events"); vi.stubEnv("TEST_AGENT_EVENTS", log);
+    const adapter = new ClaudeAdapter(job(root, "claude_code"), fixture); adapters.push(adapter);
+    const ref = await adapter.start("one user turn"); await delay(30);
+    await adapter.archive(false); expect((await adapter.snapshot()).status).toBe("suspended");
+    await expect(adapter.deliver({ id: "not-restored", status: "queued", text: "never-send" })).rejects.toThrow("恢复");
+    await adapter.archive(true); expect((await adapter.snapshot()).status).toBe("idle");
+    const events = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    const starts = events.filter((event) => event.fixture === "startup");
+    expect(starts).toHaveLength(2); expect(starts[1].args).toContain("--resume"); expect(starts[1].args).toContain(ref);
+    expect(events.filter((event) => event.type === "user")).toHaveLength(1);
   });
 });
 describe("OpenCode shared-service control", () => {

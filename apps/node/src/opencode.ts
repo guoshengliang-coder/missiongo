@@ -1,26 +1,34 @@
 import { messageTimestamp } from "./message-time.js";
 import { sessionName } from "./session-name.js";
-import { readFileSync, lstatSync } from "node:fs";
+import { readFileSync, lstatSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { labelledAnswers } from "./claude.js";
 import type { Adapter, Command, Dispatch, Message, Question, Session, Snapshot, Wire } from "./types.js";
 import { id, object, InputRejected } from "./types.js";
+import { verifyNativePrivateFile } from "./storage.js";
 
 class OpenCodeHTTPError extends Error {
   constructor(readonly status: number, readonly validation: boolean) { super(`OpenCode HTTP ${status}`); }
 }
 
 export class OpenCodeAPI {
-  constructor(private registrationPath = join(homedir(), ".local/state/opencode/service.json")) {}
+  private registrationPath: string;
+  constructor(registrationPath?: string, env = process.env) {
+    const home = (process.platform === "win32" ? env.USERPROFILE : env.HOME) ?? homedir();
+    const candidates = [join(env.XDG_STATE_HOME ?? join(home, ".local/state"), "opencode/service.json"),
+      ...(process.platform === "win32" && env.LOCALAPPDATA ? [join(env.LOCALAPPDATA, "opencode/service.json")] : [])];
+    this.registrationPath = registrationPath ?? candidates.find(existsSync) ?? candidates[0]!;
+  }
   async call(method: string, path: string, body?: unknown): Promise<Wire> {
     const stat = lstatSync(this.registrationPath);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid?.()) throw new Error("Invalid OpenCode service registration owner");
+    if (!stat.isFile() || stat.isSymbolicLink() || (process.platform !== "win32" && stat.uid !== process.getuid?.())) throw new Error("Invalid OpenCode service registration owner");
+    if (process.platform === "win32") verifyNativePrivateFile(this.registrationPath);
     const registration = object(JSON.parse(readFileSync(this.registrationPath, "utf8")));
     const url = new URL(registration.url);
     if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || !registration.password
-      || Number(String(registration.version).split(".")[0]) < 2) throw new Error("Start the registered OpenCode 2 shared service first");
+      || !(Number(String(registration.version).split(".")[0]) >= 2)) throw new Error("Start the registered OpenCode 2 shared service first");
     const response = await fetch(new URL(path, url.origin), { method, redirect: "error", signal: AbortSignal.timeout(15_000),
       headers: { Authorization: `Basic ${Buffer.from(`opencode:${registration.password}`).toString("base64")}`, "Content-Type": "application/json" },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
@@ -45,6 +53,14 @@ export class OpenCodeAdapter implements Adapter {
   initialTurnId?: string;
   private path = "";
   constructor(private job: Dispatch, readonly api = new OpenCodeAPI()) {}
+  static async attach(ref: string, api: OpenCodeAPI): Promise<OpenCodeAdapter> {
+    id(ref);
+    const details = await api.call("GET", `/api/session/${encodeURIComponent(ref)}`);
+    if (details.data?.id !== ref) throw new Error("OpenCode native identity could not be confirmed");
+    const adapter = new OpenCodeAdapter({ dispatchId: "external", itemKeys: [], repoPath: "", agentKind: "opencode", mode: "default" }, api);
+    adapter.ref = ref; adapter.path = `/api/session/${encodeURIComponent(ref)}`;
+    return adapter;
+  }
   async start(prompt: string): Promise<string> {
     const info = await this.api.call("GET", "/api/info");
     if (!(Number(String(info.version).split(".")[0]) >= 2)) throw new Error("OpenCode 2 is required");
@@ -183,9 +199,11 @@ export class OpenCodeAdapter implements Adapter {
           if (field.options?.length && !option && !field.custom) throw new Error("Unsupported form option");
           return option?.value ?? label;
         };
+        const boolean = /^(?:true|yes|是)$/i.test(raw) ? true : /^(?:false|no|否)$/i.test(raw) ? false : undefined;
+        if (field.type === "boolean" && boolean === undefined) throw new Error("Invalid boolean form answer");
         answer[field.key] = field.type === "multiselect" ? raw.split(/[、,]/).map((s) => value(s.trim()))
-          : ["number", "integer"].includes(field.type) ? Number(raw) : field.type === "boolean" ? raw === "true" : value(raw);
-        if (typeof answer[field.key] === "number" && !Number.isFinite(answer[field.key])) throw new Error("Invalid numeric form answer");
+          : ["number", "integer"].includes(field.type) ? Number(raw) : field.type === "boolean" ? boolean : value(raw);
+        if (typeof answer[field.key] === "number" && (!raw.trim() || !Number.isFinite(answer[field.key]) || field.type === "integer" && !Number.isSafeInteger(answer[field.key]))) throw new Error("Invalid numeric form answer");
       }
       await this.api.call("POST", `${this.path}/form/${encodeURIComponent(form.id)}/reply`, { answer }); return;
     }

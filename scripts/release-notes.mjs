@@ -29,6 +29,10 @@ const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
  * and the feedback SDK it compiles in.
  */
 export const CLIENTS = {
+  windowsApp: {
+    label: "Windows client", notesDir: "release-notes/windows", allowUnlinkedNotes: true,
+    clientRoots: ["apps/windows/", "apps/node/"], versionOnlyPaths: ["product.json"],
+  },
   androidApp: {
     label: "Android client",
     notesDir: "release-notes/android",
@@ -215,6 +219,16 @@ export function releaseNotesFor({ artifact, from, to } = {}) {
   return notesFrom(merged, declarations);
 }
 
+/** The first Windows release starts where that client was introduced, not at Linux's first release. */
+export function releaseNotesStart(root, artifact, ledger) {
+  const published = ledger.artifacts?.[artifact]?.commit;
+  if (published) return published;
+  if (artifact !== "windowsApp") throw new Error("A previous release commit is required");
+  const additions = git(root,"log","--first-parent","--diff-filter=A","--format=%H","--","apps/windows/package.json").split("\n").filter(Boolean);
+  if (!additions.length) throw new Error("Windows introduction must be committed before collecting release notes");
+  return git(root,"rev-parse",`${additions.at(-1)}^1`);
+}
+
 function main() {
   const args = process.argv.slice(2);
   const valueOf = (flag) => {
@@ -223,9 +237,9 @@ function main() {
   };
   const artifact = valueOf("--artifact") ?? DEFAULT_ARTIFACT;
   const ledger = JSON.parse(readFileSync(join(repositoryRoot, "released.json"), "utf8"));
-  const from = valueOf("--from") ?? ledger.artifacts?.[artifact]?.commit;
+  const from = valueOf("--from") ?? releaseNotesStart(repositoryRoot, artifact, ledger);
   const to = valueOf("--to") ?? "HEAD";
-  if (!from || !to) throw new Error("Usage: release-notes.mjs [--artifact macosApp|androidApp] [--from commit] [--to commit]");
+  if (!from || !to) throw new Error("Usage: release-notes.mjs [--artifact macosApp|androidApp|windowsApp] [--from commit] [--to commit]");
   process.stdout.write(`${JSON.stringify(releaseNotesFor({ artifact, from, to }))}\n`);
 }
 

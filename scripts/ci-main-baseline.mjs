@@ -2,7 +2,7 @@
 // cannot anchor another skip, so no recursive trust chain or failed gap is hidden.
 const shaPattern = /^[a-f0-9]{40}$/;
 const fullJobs = ['web-and-server', 'ui', 'android', 'macos', 'linux-node',
-  'android-build', 'macos-build', 'linux-node (ubuntu-22.04)', 'linux-node (ubuntu-24.04)'];
+  'windows', 'windows-build', 'android-build', 'macos-build', 'linux-node (ubuntu-22.04)', 'linux-node (ubuntu-24.04)'];
 export function fullBuildEvidence(jobs, run) {
   return fullJobs.every(name => {
     const matches = jobs.filter(j => j.name === name);

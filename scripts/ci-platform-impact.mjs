@@ -1,8 +1,10 @@
 import { isDeepStrictEqual } from 'node:util';
 
-export const platforms = ['android', 'macos', 'linuxNode'];
+export const platforms = ['android', 'macos', 'linuxNode', 'windows'];
 // Reviewed implementation boundary: returns server-side execution health;
 // wire schemas, authorization and native dispatch protocols live elsewhere.
+// Shared desktop UI imports (including their transitive contracts); the graph regression below guards additions.
+const windowsWeb = new Set(['agent-session-view.ts','android-bridge.ts','branding.ts','branding.generated.ts','collaboration-messages.ts','common-command-messages.ts','dialog-state.tsx','i18n.tsx','item-filters.ts','modal.tsx','navigation.ts','overlay.tsx','select.tsx','settings-state.ts','styles.css','types.ts','unsaved-changes.ts']);
 const serverInternal = new Set(['item-execution-blockers.ts', 'item-execution-blockers.test.ts']);
 const androidWeb = new Set(['android-bridge.ts', 'android-update.ts', 'android-update.test.ts',
   'AndroidUpdateNotice.tsx', 'SdkFeedback.tsx', 'overlay.tsx', 'App.tsx']);
@@ -10,6 +12,7 @@ const scripts = {
   android: ['publish-android-internal.sh', 'publish-android-sdk.sh', 'check-android-contract.mjs'],
   macos: ['build-macos-app.sh', 'sign-macos-app.sh', 'publish-macos.sh', 'macos-ci-cache.mjs',
     'macos-ci-cache.test.mjs', 'macos-ci-watchdog.py', 'macos-ci-watchdog.test.mjs', 'macos-permissions.test.mjs', 'check-macos-contract.mjs'],
+  windows: ['build-windows.mjs', 'publish-windows.sh', 'publish-windows.mjs', 'windows-release-tools.mjs', 'windows-release.test.mjs'],
   linuxNode: ['build-node.mjs', 'test-node-install.mjs', 'publish-linux.sh', 'publish-linux.mjs', 'linux-release-tools.mjs', 'linux-release.test.mjs', 'enable-linux-release.mjs'],
 };
 
@@ -21,7 +24,7 @@ export function productPlatforms(before, after) {
   for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
     if (isDeepStrictEqual(before[key], after[key])) continue;
     if (!Object.hasOwn(before, key) || !Object.hasOwn(after, key)) return null;
-    if (['android', 'macos', 'linuxNode'].includes(key)) selected.add(key);
+    if (['android', 'macos', 'linuxNode', 'windows'].includes(key)) selected.add(key);
     else if (key === 'web' && [before.web, after.web].every(v => v && Object.keys(v).join() === 'version' && /^\d+\.\d+\.\d+$/.test(v.version))) continue;
     else return null;
   }
@@ -33,15 +36,20 @@ export function pathPlatforms(path) {
     || /^docs\/review-evidence\/.*\.(png|jpg|jpeg|webp)$/.test(path)
     || /^release-notes\/web\/\d+\.\d+\.\d+\.md$/.test(path)
     || path.startsWith('tests/ui/')) return [];
+  if (path.startsWith('apps/node/')) return ['linuxNode', 'windows'];
+  if (path.startsWith('apps/windows/') || path.startsWith('tests/windows/') || path === 'playwright.windows.config.ts') return ['windows'];
+  if (path === 'scripts/build-node.mjs') return ['linuxNode', 'windows'];
   for (const [prefix, platform] of [['apps/android/', 'android'], ['sdks/android-feedback/', 'android'],
     ['apps/macos/', 'macos'], ['apps/node/', 'linuxNode']]) if (path.startsWith(prefix)) return [platform];
   for (const platform of platforms) if (scripts[platform].some(file => path === `scripts/${file}`)) return [platform];
   if (path.startsWith('services/server/src/') && serverInternal.has(path.slice('services/server/src/'.length))) return [];
   if (path.startsWith('apps/web/')) {
     // The macOS package reads the generated product icon from this tree.
-    if (path.startsWith('apps/web/public/icon')) return ['android', 'macos'];
-    if (path === 'apps/web/vite.config.ts' || androidWeb.has(path.slice('apps/web/src/'.length))) return ['android'];
-    return [];
+    if (path.startsWith('apps/web/public/icon')) return ['android', 'macos', 'windows'];
+    const selected=[];
+    if (path === 'apps/web/vite.config.ts' || androidWeb.has(path.slice('apps/web/src/'.length))) selected.push('android');
+    if (path.startsWith('apps/web/src/') && windowsWeb.has(path.slice('apps/web/src/'.length))) selected.push('windows');
+    return selected;
   }
   return null;
 }

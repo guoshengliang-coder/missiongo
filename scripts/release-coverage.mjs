@@ -8,7 +8,7 @@ import { candidateIdentity, readReleaseSelection, releaseCandidatesFromPages } f
 import { repositoryIdentity } from "./handover-evidence.mjs";
 
 const SHA = /^[a-f0-9]{40}$/;
-export const COVERAGE_ARTIFACTS = ["web", "androidApp", "androidSdk", "macosApp", "linuxCli"];
+export const COVERAGE_ARTIFACTS = ["web", "androidApp", "androidSdk", "macosApp", "linuxCli", "windowsApp"];
 
 export function releaseScope(onlyArtifacts, reason) {
   if (onlyArtifacts === undefined) {

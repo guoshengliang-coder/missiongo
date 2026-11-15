@@ -109,7 +109,7 @@ async function fixture() {
   const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
   const header = `#!${process.execPath}\nconst fs=require('node:fs'),cp=require('node:child_process');const args=process.argv.slice(2);const state=JSON.parse(fs.readFileSync(${JSON.stringify(statePath)}));fs.appendFileSync(${JSON.stringify(tracePath)},JSON.stringify({tool:require('node:path').basename(process.argv[1]),args,cwd:process.cwd()})+'\\n');\n`;
   writeFileSync(join(bin, "git"), header + `if(args.includes('fetch'))process.exit(0); if(args.includes('ls-remote')){console.log(${JSON.stringify(head + ' refs/heads/main')});process.exit(0);} if(args.includes('push'))process.exit(92);process.exit(cp.spawnSync(${JSON.stringify(realGit)},args,{stdio:'inherit'}).status??1);`, { mode: 0o700 });
-  writeFileSync(join(bin, "gh"), header + `if(args[0]==='pr'&&args[1]==='view'&&args[2]==='https://github.com/fixture/missiongo/pull/1'){console.log(JSON.stringify({state:'OPEN',headRefOid:${JSON.stringify(head)},baseRefName:'main'}));process.exit(0);} if(args[0]!=='api'||!args.some(a=>a.includes('/check-runs')))process.exit(92);const runs=['web-and-server','ui','android','macos','linux-node'].map((name,id)=>({id,name,status:'completed',conclusion:state.ciFailure?'failure':'success'}));console.log(args.includes('--jq')?runs.map(r=>r.status+'/'+r.conclusion).join(' '):JSON.stringify([{check_runs:runs}]));`, { mode: 0o700 });
+  writeFileSync(join(bin, "gh"), header + `if(args[0]==='pr'&&args[1]==='view'&&args[2]==='https://github.com/fixture/missiongo/pull/1'){console.log(JSON.stringify({state:'OPEN',headRefOid:${JSON.stringify(head)},baseRefName:'main'}));process.exit(0);} if(args[0]!=='api'||!args.some(a=>a.includes('/check-runs')))process.exit(92);const runs=['web-and-server','ui','android','macos','linux-node','windows'].map((name,id)=>({id,name,status:'completed',conclusion:state.ciFailure?'failure':'success'}));console.log(args.includes('--jq')?runs.map(r=>r.status+'/'+r.conclusion).join(' '):JSON.stringify([{check_runs:runs}]));`, { mode: 0o700 });
   // Emulate only read-only remote responses. No command is sent to a shell or
   // an actual host. Unknown commands are refused and remain visible in the trace.
   const remoteFiles = {
@@ -135,6 +135,7 @@ async function fixture() {
 const backupCommands=${JSON.stringify(backupCommands)};
 if(Object.hasOwn(backupCommands,command)){const job=backupCommands[command];if(job.kind==='discovery'&&state.backupFailure)process.exit(93);const r=cp.spawnSync('python3',job.args,{stdio:'inherit'});process.exit(r.status??1);}
 if(Object.hasOwn(exact,command)){process.stdout.write(exact[command]);process.exit(0);}
+if(command === "if [ -s '/fixture/current/apps/web/public/downloads/windows/latest.json' ]; then cat '/fixture/current/apps/web/public/downloads/windows/latest.json'; fi")process.exit(0);
 if(command.startsWith("if [ -s '/fixture/current/apps/web/public/downloads/missiongo-linux-latest.tgz' ]; then cat "))process.exit(0);
 if(command.startsWith("if [ -f '/fixture/current/apps/web/public/maven/")&&command.includes('Published Maven coordinate differs:'))process.exit(0);
 console.error('UNEXPECTED_REMOTE_COMMAND');process.exit(92);`, { mode: 0o700 });

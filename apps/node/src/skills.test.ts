@@ -11,7 +11,7 @@ const roots: string[] = [];
 afterEach(() => { vi.unstubAllGlobals(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const setup = () => {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "mg-skill-upgrade-"))); roots.push(home);
-  return { HOME: home, CODEX_HOME: join(home, ".codex"), CLAUDE_CONFIG_DIR: join(home, ".claude"), XDG_CONFIG_HOME: join(home, ".config") };
+  return { HOME: home, USERPROFILE: home, CODEX_HOME: join(home, ".codex"), CLAUDE_CONFIG_DIR: join(home, ".claude"), XDG_CONFIG_HOME: join(home, ".config") };
 };
 const seed = (path: string) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, "---\nname: missiongo\nversion: 5.34.0\n---\nOld workflow\n"); };
 
@@ -35,4 +35,13 @@ it("rejects a stale download and preserves the local Skill until versions agree"
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(before)));
   await expect(syncSkill("codex", "https://missiongo.test", version, env)).rejects.toThrow("version could not be verified");
   expect(readFileSync(path, "utf8")).toBe(before);
+});
+
+it("backs up a newer Skill only when the downloaded version exactly matches the server rollback", async () => {
+  const env=setup(); const path=skillPaths("codex",env)[0]!;
+  mkdirSync(dirname(path),{recursive:true}); writeFileSync(path,"---\nversion: 99.0.0\n---\nnewer local\n");
+  vi.stubGlobal("fetch",vi.fn().mockResolvedValue(new Response(source)));
+  await expect(syncSkill("codex","https://missiongo.test",version,env)).resolves.toMatchObject({syncState:"ready",localVersion:version});
+  const {readdirSync}=await import("node:fs"); const backups=readdirSync(dirname(path)).filter(name=>name.includes("before-rollback"));
+  expect(backups).toHaveLength(1);expect(readFileSync(join(dirname(path),backups[0]!),"utf8")).toContain("newer local");
 });

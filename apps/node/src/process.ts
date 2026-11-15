@@ -1,4 +1,5 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawnAgent, killProcessTree, agentEnvironment } from "./launch.js";
 import { StringDecoder } from "node:string_decoder";
 import type { Wire } from "./types.js";
 import { object } from "./types.js";
@@ -6,11 +7,12 @@ import { object } from "./types.js";
 export class JsonProcess {
   readonly child: ChildProcessWithoutNullStreams;
   private nextId = 0;
+  private closed = false;
   private pending = new Map<string, { resolve: (v: Wire) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
   onEvent: (event: Wire) => void = () => {};
   onClose: () => void = () => {};
   constructor(executable: string, args: string[], cwd: string, env = process.env) {
-    this.child = spawn(executable, args, { cwd, env, stdio: "pipe" });
+    this.child = spawnAgent(executable, args, { cwd, env, detached: true, stdio: "pipe" }) as ChildProcessWithoutNullStreams;
     this.child.stderr.resume(); // Model config and tool output must not enter node logs.
     const decoder = new StringDecoder("utf8");
     let buffer = "";
@@ -32,14 +34,17 @@ export class JsonProcess {
       }
     });
     const closed = () => {
+      if (this.closed) return;
+      this.closed = true;
       for (const waiting of this.pending.values()) { clearTimeout(waiting.timer); waiting.reject(new Error("Agent control channel closed")); }
       this.pending.clear(); this.onClose();
     };
     this.child.on("error", closed); this.child.on("exit", closed);
     this.child.stdin.on("error", closed);
   }
+  close(): void { if (this.child.exitCode === null && this.child.signalCode === null) killProcessTree(this.child.pid); }
   write(value: unknown): void {
-    if (this.child.stdin.destroyed || !this.child.stdin.writable) throw new Error("Agent input is closed");
+    if (this.closed || this.child.stdin.destroyed || !this.child.stdin.writable) throw new Error("Agent input is closed");
     this.child.stdin.write(JSON.stringify(value) + "\n");
   }
   call(method: string, params: unknown = {}, timeout = 60_000): Promise<Wire> {
@@ -52,19 +57,19 @@ export class JsonProcess {
   }
 }
 
-export async function probe(executable: string, args: string[], cwd?: string, env = process.env, timeoutMs = 10_000): Promise<string> {
+export async function probe(executable: string, args: string[], cwd?: string, env = agentEnvironment(), timeoutMs = 10_000): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { ...(cwd ? { cwd } : {}), env, detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawnAgent(executable, args, { ...(cwd ? { cwd } : {}), env, detached: true, stdio: ["ignore", "pipe", "ignore"] });
     let text = "";
     let settled = false;
     const fail = (message: string) => {
       if (settled) return;
       settled = true; clearTimeout(timer);
-      try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch { /* Already exited. */ }
+      if (child.exitCode === null && child.signalCode === null) killProcessTree(child.pid);
       reject(new Error(message));
     };
     const timer = setTimeout(() => fail("Agent version check timed out"), timeoutMs);
-    child.stdout.on("data", (bytes: Buffer) => {
+    child.stdout!.on("data", (bytes: Buffer) => {
       if (settled) return;
       if (text.length + bytes.length > 1024 * 1024) { fail("Agent version check output exceeded the limit"); return; }
       text += bytes.toString();

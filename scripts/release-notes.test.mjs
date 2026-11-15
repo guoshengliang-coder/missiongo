@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 
-import { CLIENTS, generateReleaseNotes, pullRequest, undeclaredClientPullRequests } from "./release-notes.mjs";
+import { CLIENTS, releaseNotesStart, generateReleaseNotes, pullRequest, undeclaredClientPullRequests } from "./release-notes.mjs";
 
 const macos = CLIENTS.macosApp;
 const android = CLIENTS.androidApp;
@@ -230,4 +230,15 @@ test("macOS retains compatibility with installed native update readers", () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("first Windows notes start at its introduction and later releases use the published ledger",()=>{
+  const {root,git,from}=repository();
+  try {
+    write(root,{"apps/windows/package.json":"{}"});git("add",".");git("commit","-qm","Windows introduction");
+    const introduced=git("rev-parse","HEAD");
+    assert.equal(releaseNotesStart(root,"windowsApp",{artifacts:{windowsApp:{commit:null}}}),from);
+    assert.equal(releaseNotesStart(root,"windowsApp",{artifacts:{windowsApp:{commit:introduced}}}),introduced);
+    assert.throws(()=>releaseNotesStart(root,"macosApp",{artifacts:{}}),/previous release/);
+  } finally {rmSync(root,{recursive:true,force:true});}
 });

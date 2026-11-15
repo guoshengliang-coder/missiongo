@@ -15,6 +15,7 @@ export function nativeModeResult(mode: string, response: Wire, model?: string): 
 export async function probeClaudeCapabilities(executable: string, cwd: string, env: NodeJS.ProcessEnv) {
   const rpc=new JsonProcess(executable,["--safe-mode","--strict-mcp-config","--no-chrome","--output-format","stream-json",
     "--verbose","--input-format","stream-json","--permission-mode","plan"],cwd,env);
+  const deadline=setTimeout(() => rpc.close(),20_000);
   const pending=new Map<string,{resolve:(value:Wire)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
   const call=(request:Wire):Promise<Wire>=>new Promise((resolve,reject)=>{
     const requestId=randomUUID(); const timer=setTimeout(()=>{pending.delete(requestId);reject(new Error("Native mode probe timed out"));},5000);
@@ -29,7 +30,8 @@ export async function probeClaudeCapabilities(executable: string, cwd: string, e
   try {
     const initialized=await call({subtype:"initialize"});
     if(initialized.subtype!=="success") throw new Error("Native probe initialization rejected");
-    const models=(initialized.response?.models ?? []).filter((model:Wire)=>typeof model.value==="string" && model.value!=="default")
+    const raw=Array.isArray(initialized.response?.models) ? initialized.response.models : [];
+    const models=raw.filter((model:Wire)=>model && typeof model.value==="string" && model.value!=="default")
       .slice(0,14).map((model:Wire)=>({id:model.value as string,label:String(model.displayName ?? model.value),efforts:(model.supportedEffortLevels ?? []) as string[]}));
     const modes:AgentModeCapability[]=[];
     for(const mode of ["default","acceptEdits","bypassPermissions","plan","auto"]) modes.push(nativeModeResult(mode,await call({subtype:"set_permission_mode",mode})));
@@ -38,5 +40,5 @@ export async function probeClaudeCapabilities(executable: string, cwd: string, e
       if(changed.subtype==="success") modes.push(nativeModeResult("auto",await call({subtype:"set_permission_mode",mode:"auto"}),model.id));
     }
     return {models,modes};
-  } finally {rpc.child.kill();}
+  } finally {clearTimeout(deadline);rpc.close();}
 }

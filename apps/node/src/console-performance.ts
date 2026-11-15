@@ -1,6 +1,6 @@
 import { firstPerformanceReply, type ConsolePerformanceEvent } from "@missiongo/domain";
 import type { Snapshot } from "./types.js";
-export interface NativePerformanceReport {commandId:string;turnId?:string;events:ConsolePerformanceEvent[]}
+export interface NativePerformanceReport {commandId:string;turnId?:string;generation?:number;events:ConsolePerformanceEvent[]}
 /** Host-local monotonic timing. Never carries native transcript text to the collector. */
 export class NativePerformance {
  private pending=new Map<string,{at:number;turn?:string;delivery?:number;reportedDelivery?:boolean;failed?:boolean;done:boolean}>();

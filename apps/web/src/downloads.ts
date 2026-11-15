@@ -8,6 +8,15 @@ export { MACOS_CLIENT_DOWNLOAD_PATH } from "./node-install";
 export const ANDROID_APK_DOWNLOAD_PATH = "/downloads/missiongo-android-latest.apk";
 export const LINUX_CLIENT_DOWNLOAD_PATH = "/downloads/missiongo-linux-latest.tgz";
 export const LINUX_CLIENT_MANIFEST_PATH = "/downloads/missiongo-linux-latest.json";
+export const WINDOWS_CLIENT_MANIFEST_PATH = "/downloads/windows/latest.json";
+export function windowsDownload(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return;
+  const manifest = value as Record<string, unknown>;
+  if (manifest.signed !== true || manifest.platform !== "win32" || manifest.arch !== "x64" || typeof manifest.version !== "string"
+    || !/^[0-9]+\.[0-9]+\.[0-9]+$/.test(manifest.version) || typeof manifest.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(manifest.sha256)
+    || typeof manifest.filename !== "string" || !/^[a-z0-9-]+-[0-9]+\.[0-9]+\.[0-9]+-x64-setup\.exe$/.test(manifest.filename)) return;
+  return `/downloads/windows/${manifest.filename}`;
+}
 
 // Keep in sync with MISSIONGO_SKILL_DOWNLOAD_PATH in packages/contracts/src/skill.ts
 export const SKILL_DOWNLOAD_PATH = "/downloads/missiongo-skill/SKILL.md";

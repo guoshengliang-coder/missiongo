@@ -26,9 +26,11 @@ export function uiContractViolations(file, source) {
 
 function main() {
   const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-  const directory = join(root, "apps/web/src");
-  const failures = sourceFiles(directory, ".tsx").filter(file => !file.endsWith(".test.tsx")).flatMap(file =>
-    uiContractViolations(relative(directory, file), readFileSync(file, "utf8")).map(message => `${relative(root, file)}: ${message}`));
+  const failures = ["apps/web/src", "apps/windows/src"].flatMap(path => {
+    const directory = join(root, path);
+    return sourceFiles(directory, ".tsx").filter(file => !file.endsWith(".test.tsx")).flatMap(file =>
+      uiContractViolations(relative(directory, file), readFileSync(file, "utf8")).map(message => `${relative(root, file)}: ${message}`));
+  });
   if (failures.length) { console.error(failures.join("\n")); process.exitCode = 1; }
   else console.log("UI surfaces use the shared modal/menu lifecycle. Browser contract tests verify behavior.");
 }
