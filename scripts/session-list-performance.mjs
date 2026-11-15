@@ -9,7 +9,7 @@ import {execFileSync} from 'node:child_process';
 import {createHash,scryptSync} from 'node:crypto';
 const args={};
 for(let i=2;i<process.argv.length;i+=2){
- if(!['--source','--output','--scenario','--samples','--concurrency','--revision','--at','--collect'].includes(process.argv[i])||!process.argv[i+1])throw Error('Expected --source/--output/--scenario/--samples/--concurrency/--revision value');
+ if(!['--source','--output','--scenario','--samples','--concurrency','--revision','--at','--collect'].includes(process.argv[i])||!process.argv[i+1])throw Error('Expected --source/--output/--scenario/--samples/--concurrency/--revision/--at/--collect value');
  args[process.argv[i]]=process.argv[i+1];
 }
 const root=resolve(args['--source']??fileURLToPath(new URL('../',import.meta.url)));
@@ -18,6 +18,7 @@ const scenario=args['--scenario']??'normal',samples=Number(args['--samples']??10
 if(!['normal','plans','external-plans','commands'].includes(scenario)||!Number.isInteger(samples)||samples<20||samples>1000||![1,4].includes(concurrency))throw Error('Invalid scenario, samples (20..1000) or concurrency (1|4)');
 const RealDate=Date,evaluatedAt=args['--at']?Date.parse(args['--at']):Date.now(),collect=args['--collect']==='on';
 if(!Number.isFinite(evaluatedAt)||args['--collect']&&!['on','off'].includes(args['--collect']))throw Error('Invalid --at or --collect on|off');
+if(collect&&Math.abs(RealDate.now()-evaluatedAt)>30000)throw Error('Collection health requires --at within 30 seconds of the real clock');
 mkdirSync(dirname(output),{recursive:true});
 const outputFd=openSync(output,'wx',0o600);
 const writeReport=value=>{const bytes=Buffer.from(JSON.stringify(value,null,2)+'\n');let offset=0;while(offset<bytes.length){const n=writeSync(outputFd,bytes,offset,bytes.length-offset,offset);if(!n)throw Error('No write progress');offset+=n;}ftruncateSync(outputFd,bytes.length);};
@@ -119,7 +120,7 @@ try {
  const source=args['--revision']?{commit:args['--revision'],kind:'git-archive',dirty:null}:{commit:execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim(),kind:'checkout',dirty:Boolean(execFileSync('git',['status','--porcelain'],{cwd:root,encoding:'utf8'}).trim())};
  report={version:1,status:'measured',evaluatedAt:new RealDate(evaluatedAt).toISOString(),collection:collect?'on':'off',measuredAt:new RealDate().toISOString(),source:{...source,digest:sourceDigest.digest('hex'),files:paths.filter(path=>existsSync(resolve(root,path)))},runtime:{node:process.version,platform:process.platform,arch:process.arch},client:'fastify-inject',cache:'memory-sqlite; first list then warm; not OS cold',shape:{scenario,sessions:200,mirrors,longHistory:10000,otherHistory:20,textBytes:1024,planBodyBytes:['plans','external-plans'].includes(scenario)?40000:0,concurrency,...(scenario==='commands'?{commandsPerSession:4,nodeCapabilityBytes:Buffer.byteLength(nodeAgents)}:{})},cold,
   warm:{samples:count,medianMs:percentile(.5),p95Ms:percentile(.95),cpuMsPerRequest:(used.user+used.system)/1000/count,sqlPerRequest:queryCount/count,sqlMsPerRequest:sqlMs/count,responseBytes:[...new Set(measured.map(value=>value.responseBytes))],nestedStagesMsPerRequest:Object.fromEntries(Object.entries(stages).map(([key,value])=>[key,value/count]))},samples:measured};
- if(collect){const r=await app.inject({url:`/api/v1/console/performance?to=${RealDate.now()+1}`,headers});const health=r.json();report.collectionHealth={status:health.status,collectionEvents:health.collectionEvents,knownDropRate:health.knownDropRate,truncated:health.truncated};const full=process.cpuUsage(cpu);report.collectionSettledCpuMsPerRequest=(full.user+full.system)/1000/count;}
+ if(collect){const r=await app.inject({url:`/api/v1/console/performance?to=${evaluatedAt+60000}`,headers});const health=r.json();if(r.statusCode!==200||!(health.collectionEvents?.accepted>0))throw Error('Collector health window missing measured events');report.collectionHealth={status:health.status,collectionEvents:health.collectionEvents,knownDropRate:health.knownDropRate,truncated:health.truncated};const full=process.cpuUsage(cpu);report.collectionSettledCpuMsPerRequest=(full.user+full.system)/1000/count;}
 } finally {
  try{await app.close();if(report){if(collectorDirectory)report.collectionStorageBytes=readdirSync(collectorDirectory).reduce((n,name)=>n+statSync(join(collectorDirectory,name)).size,0);writeReport(report);console.log(JSON.stringify({...report,samples:undefined},null,2));}}
  finally{globalThis.Date=RealDate;closeSync(outputFd);if(collectorDirectory)rmSync(collectorDirectory,{recursive:true,force:true});}

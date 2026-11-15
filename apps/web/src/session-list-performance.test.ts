@@ -47,6 +47,7 @@ it("account generation changes discard late results; failed collection cannot re
 });
 it("does not infer phones from viewport width or call tablets PCs",()=>{
  vi.stubGlobal("navigator",{userAgent:"Synthetic Desktop X11",maxTouchPoints:0});expect(listDevice()).toBe("pc");
+ vi.stubGlobal("navigator",{userAgent:"Linux Android 13",userAgentData:{mobile:false},maxTouchPoints:5});expect(listDevice()).toBe("unknown");
  vi.stubGlobal("navigator",{userAgent:"Macintosh",maxTouchPoints:5});expect(listDevice()).toBe("unknown");
  vi.stubGlobal("navigator",{userAgent:"unrecognized",maxTouchPoints:1});expect(listDevice()).toBe("unknown");
  expect(capture.events).toEqual([]);

@@ -14,7 +14,7 @@ export function listDevice():ListObservation["device"]{
  const mobile=(navigator as Navigator & {userAgentData?:{mobile?:boolean}}).userAgentData?.mobile;
  // Inspect only in memory; tablets/ambiguous touch Macs are explicitly unknown.
  const ua=navigator.userAgent;
- if(/iPad|Tablet/i.test(ua)||(/Macintosh/i.test(ua)&&navigator.maxTouchPoints>1))return "unknown";
+ if((/Android/i.test(ua)&&!/Mobile/i.test(ua))||/iPad|Tablet/i.test(ua)||(/Macintosh/i.test(ua)&&navigator.maxTouchPoints>1))return "unknown";
  if(mobile===true||/iPhone|iPod|Android.*Mobile/i.test(ua))return "phone";
  if(mobile===false||/Windows NT|Macintosh|X11|CrOS/i.test(ua))return "pc";
  return "unknown";
