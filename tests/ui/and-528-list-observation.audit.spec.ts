@@ -1,6 +1,15 @@
 import { readFileSync } from "node:fs";
 import { expect,test } from "@playwright/test";
 const fixture=JSON.parse(readFileSync(new URL("./.auth/fixture.json",import.meta.url),"utf8"));
+for(const path of ["/settings/profile", "/?planDocument=00000000-0000-0000-0000-000000000000"])test(`AND-528 non-list route does not invent visits: ${path}`,async({page})=>{
+ const events:any[]=[];let requests=0;
+ await page.route("**/api/v1/console/performance",async route=>{events.push(...route.request().postDataJSON().events);await route.fulfill({status:202,json:{protocol:1}});});
+ await page.route("**/api/v1/agent-sessions",async route=>{requests++;await route.fulfill({json:{sessions:[]}});});
+ await page.goto(`${path}${path.includes("?")?"&":"?"}product=${fixture.productId}&console=agent`);
+ await expect.poll(()=>requests).toBeGreaterThan(0);
+ await page.evaluate(async()=>{const modulePath="/src/console-performance.ts";const m=await import(modulePath);await m.flushPerformance();});
+ expect(events.filter(e=>e.stage==="list_visit")).toHaveLength(0);
+});
 for(const phone of [true,false])test(`AND-528 visible visits, equal-data refresh and cache-only return phone=${phone}`,async({page})=>{
  await page.clock.setFixedTime(new Date("2026-11-15T02:00:00Z"));
  await page.setViewportSize({width:phone?375:1440,height:900});

@@ -422,7 +422,8 @@ export function App() {
   const [listPaneWidth, setListPaneWidth] = useState(readListPaneWidth);
   const agentConsoleSinglePane = useMediaQuery("(max-width: 520px)");
   const agentConsoleCompact = useMediaQuery("(max-width: 1023px)");
-  useSessionListIntent(agentConsoleOpen && !(agentConsoleSinglePane && (agentConversationOpen || newSessionOpen)));
+  const listEntryVisible = agentConsoleOpen && !settings.route && !new URLSearchParams(window.location.search).get("planDocument") && !(agentConsoleSinglePane && (agentConversationOpen || newSessionOpen));
+  useSessionListIntent(listEntryVisible);
   const agentConsoleLayout = agentConsoleSinglePane ? "single" : "wide";
 
   const applyListPaneWidth = useCallback((width: number) => {
@@ -1284,7 +1285,7 @@ export function App() {
           <LoginForm
             onAuthenticated={(session) => {
               clearPerformanceSends();
-              if (agentConsoleOpen && !(agentConsoleSinglePane && (agentConversationOpen || newSessionOpen))) noteListIntent();
+              if (listEntryVisible) noteListIntent();
               queryClient.removeQueries({ queryKey: ["items"] });
               queryClient.removeQueries({ queryKey: ["components"] });
               queryClient.removeQueries({ queryKey: ["project-insights"] });

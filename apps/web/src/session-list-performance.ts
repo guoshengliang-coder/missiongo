@@ -69,7 +69,8 @@ export async function measureSessionListRequest<T extends {sessions:readonly unk
   }catch{/* Instrumentation must not fail a successful read. */}
   return value;
  }catch(error){
-  if(epoch===performanceGeneration())emitPerformance(productId?{productId}:{list:true},`${id}:request`,"list_request",performanceResult(error),performanceNow()-at,list);
+  const result=error instanceof DOMException&&error.name==="AbortError"?"cancelled":performanceResult(error);
+  if(epoch===performanceGeneration())emitPerformance(productId?{productId}:{list:true},`${id}:request`,"list_request",result,performanceNow()-at,list);
   throw error;
  }
 }

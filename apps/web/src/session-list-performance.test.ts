@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const capture=vi.hoisted(()=>({events:[] as any[][],epoch:0}));
-vi.mock("./console-performance",()=>({emitPerformance:(...args:any[])=>capture.events.push(args),performanceGeneration:()=>capture.epoch,performanceNow:()=>performance.now(),performanceResult:()=>"network_failure"}));
+vi.mock("./console-performance",async importOriginal=>({...await importOriginal<typeof import("./console-performance")>(),emitPerformance:(...args:any[])=>capture.events.push(args),performanceGeneration:()=>capture.epoch,performanceNow:()=>performance.now()}));
 import { startListVisit,endListVisit,commitList,measureSessionListRequest,shareSessionListData,clearSessionListPerformance,listDevice,noteListIntent } from "./session-list-performance";
 let frames:FrameRequestCallback[]=[];
 beforeEach(()=>{
@@ -11,6 +11,14 @@ beforeEach(()=>{
 afterEach(()=>{clearSessionListPerformance();vi.useRealTimers();vi.unstubAllGlobals();});
 const drain=()=>{for(const f of frames.splice(0))f(0);};
 const events=(stage:string)=>capture.events.filter(e=>e[2]===stage);
+it("reports an explicit request abort as cancellation rather than a deadline",async()=>{
+ const error=new DOMException("Navigation cancelled", "AbortError");
+ await expect(measureSessionListRequest(async()=>{throw error;})).rejects.toBe(error);
+ expect(events("list_request")[0]![3]).toBe("cancelled");
+ const deadline=new DOMException("Deadline expired", "TimeoutError");
+ await expect(measureSessionListRequest(async()=>{throw deadline;})).rejects.toBe(deadline);
+ expect(events("list_request")[1]![3]).toBe("timeout");
+});
 it("does not turn cache-only visits or project switching into refresh failures or extra visits",async()=>{
  vi.useFakeTimers({toFake:["setTimeout","clearTimeout","Date","performance"]});
  const data=[{}];startListVisit(data,false);commitList(data,"product-a",1,true);commitList(data,"product-b",0,true);drain();
