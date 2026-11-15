@@ -1,7 +1,23 @@
-import { useRef, type ReactNode } from "react";
+import { useRef, type ReactNode, type Ref } from "react";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { OverlayDialog } from "./overlay";
 import { useI18n } from "./i18n";
+
+/** Shared media container; mixed file galleries keep their existing dialog/history. */
+export function MediaLightboxFrame({ title, onClose, children, actions, className, closeButtonRef, closeLabel }: {
+  title: string; onClose: () => void; children: ReactNode; actions?: ReactNode;
+  className?: string | undefined; closeButtonRef?: Ref<HTMLButtonElement>; closeLabel?: string;
+}) {
+  const { t } = useI18n();
+  return <section className={className}>
+    <header>
+      <strong tabIndex={0}>{title}</strong>
+      {actions}
+      <button ref={closeButtonRef} type="button" className="icon-button" onClick={onClose} aria-label={closeLabel ?? t("closePreview")}><X size={20} /></button>
+    </header>
+    {children}
+  </section>;
+}
 
 export function MediaLightbox({
   title,
@@ -59,12 +75,7 @@ export function MediaLightbox({
         (dx > 0 ? onPrevious : onNext)?.();
       }}
     >
-      <section>
-        <header>
-          <strong>{title}</strong>
-          {actions}
-          <button type="button" onClick={onClose} aria-label={t("closePreview")}><X size={20} /></button>
-        </header>
+      <MediaLightboxFrame title={title} onClose={onClose} actions={actions}>
         {showNavigation ? (
           <div className="media-gallery-stage">
             {children}
@@ -72,7 +83,7 @@ export function MediaLightbox({
             <button type="button" className="media-gallery-nav next" disabled={!onNext} onClick={onNext} aria-label={t("nextMedia")}><ChevronRight size={24} /></button>
           </div>
         ) : children}
-      </section>
+      </MediaLightboxFrame>
     </OverlayDialog>
   );
 }

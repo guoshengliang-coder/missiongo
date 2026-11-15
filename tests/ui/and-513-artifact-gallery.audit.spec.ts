@@ -9,9 +9,11 @@ const file = (name: string, contentType: string, text: string) => ({ name, conte
 const html = `<h1>交互原型</h1><input aria-label="原型输入" value="hello"><button onclick="document.querySelector('output').textContent='已点击'">原型按钮</button><output>初始</output><div style="width:200px;overflow:auto"><div style="width:1000px">横向内容</div></div>`;
 const text = "[第一张](/tmp/fixture-output/first.png) [原型](/tmp/fixture-output/prototype.html) [最后图片](/tmp/fixture-output/last.png) [缺失](/tmp/fixture-output/missing.html) [重复](file:///tmp/fixture-output/first.png) [文档](/tmp/fixture-output/note.md)";
 
-async function setup(page: Page, panel = false, longName = false, options: { corruptImage?: boolean; longError?: boolean; singleImage?: boolean } = {}) {
+async function setup(page: Page, panel = false, longName = false, options: { corruptImage?: boolean; longError?: boolean; singleImage?: boolean; imageName?: string } = {}) {
+  await page.clock.setFixedTime(new Date(stamp));
   const requests: { messageId: string; href: string }[] = [];
-  const pngBytes = new Map(await Promise.all(["first.png", "last.png"].map(async name => [name,
+  const firstName = options.imageName ?? "first.png";
+  const pngBytes = new Map(await Promise.all([firstName, "last.png"].map(async name => [name,
     await sharp({ create: { width: 1200, height: 900, channels: 3, background: name === "first.png" ? "#dddddd" : "#aabbcc" } }).png().toBuffer(),
   ] as const)));
   let missing = true;
@@ -25,7 +27,7 @@ async function setup(page: Page, panel = false, longName = false, options: { cor
   const row = { id: "gallery-session", agentSessionId: "gallery-session", dispatchId: "gallery-dispatch", agentKind: "codex", status: "idle", mode: "auto", dispatchStatus: "launched", nodeName: "Fixture",
     createdAt: stamp, updatedAt: stamp, activityAt: stamp, activities: [], items: [{ key: fixture.detailKey, productId: fixture.productId, title: "Gallery" }],
     settings: { mode: "auto", adjustable: false }, canReply: true, canAttach: false, canResolveDelivery: false, canArchive: true, canStop: false, canRetry: false, attention: { state: "not_needed" }, turnState: {} };
-  const detail = { ...row, messages: [{ id: "gallery-message", role: "agent", text: options.singleImage ? "[第一张](/tmp/fixture-output/first.png)" : longName ? text.replace("prototype.html", "long-filename-".repeat(24) + ".html") : text, occurredAt: stamp }, { id: "solo-message", role: "agent", text: "[另一条消息](/tmp/fixture-output/solo.html)", occurredAt: stamp }] };
+  const detail = { ...row, messages: [{ id: "gallery-message", role: "agent", text: options.singleImage ? `[第一张](</tmp/fixture-output/${firstName}>)` : longName ? text.replace("prototype.html", "long-filename-".repeat(24) + ".html") : text, occurredAt: stamp }, { id: "solo-message", role: "agent", text: "[另一条消息](/tmp/fixture-output/solo.html)", occurredAt: stamp }] };
   await page.addInitScript(() => { (window as any).MissionGoAndroid = { setBackDepth: (n: number) => { (window as any).galleryDepth = n; } }; });
   await page.route("**/api/v1/agent-sessions**", async route => {
     const path = new URL(route.request().url()).pathname;
@@ -36,7 +38,7 @@ async function setup(page: Page, panel = false, longName = false, options: { cor
       return route.fulfill({ json: { id: name, filename: name, status: name === "missing.html" && missing ? "failed" : "ready", ...(name === "missing.html" && missing ? { error: options.longError ? "resource_missing" : "file_missing", ...(options.longError ? { errorResource: "assets/" + "unbroken-name".repeat(65) + ".css" } : {}) } : {}) } });
     }
     if (path.endsWith("/bundle")) {
-      const name = path.split("/").at(-2)!;
+      const name = decodeURIComponent(path.split("/").at(-2)!);
       bundleFetches.set(name, (bundleFetches.get(name) ?? 0) + 1);
       if ((hold && name === "prototype.html") || (holdImage && name === "first.png")) await gate;
       if (name === "prototype.html" && bundleFailures > 0) { bundleFailures--; return route.fulfill({ status: 503, json: { error: "temporary_failure" } }); }
@@ -46,7 +48,7 @@ async function setup(page: Page, panel = false, longName = false, options: { cor
       return route.fulfill({ json: validateArtifactBundle({ entry: name, files: [entry] }) });
     }
     if (path.includes("/artifacts/")) {
-      const name = path.split("/").at(-1)!;
+      const name = decodeURIComponent(path.split("/").at(-1)!);
       return route.fulfill({ json: { id: name, filename: name, status: name === "missing.html" && missing ? "failed" : "ready", ...(name === "missing.html" && missing ? { error: options.longError ? "resource_missing" : "file_missing", ...(options.longError ? { errorResource: "assets/" + "unbroken-name".repeat(65) + ".css" } : {}) } : {}) } });
     }
     if (route.request().method() !== "GET") return route.fulfill({ status: 204 });
@@ -69,6 +71,10 @@ for (const panel of [false, true]) test(`mixed message gallery preserves context
   const state = await setup(page, panel);
   const editor = page.locator(panel ? ".agent-session-panel textarea" : ".agent-console-reply textarea");
   await editor.fill("未发送草稿");
+  // Measure the reading position after inline thumbnails have their final height.
+  const thumbnails = page.locator(".agent-output-images img");
+  await expect(thumbnails).toHaveCount(2);
+  for (const image of await thumbnails.all()) await expect.poll(() => image.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(1200);
   const trigger = page.getByRole("button", { name: "原型", exact: true });
   const url = page.url();
   await trigger.scrollIntoViewIfNeeded();
@@ -77,6 +83,7 @@ for (const panel of [false, true]) test(`mixed message gallery preserves context
   const depth = await page.evaluate(() => (window as any).galleryDepth);
   await open(page);
   await expect(count(page)).toHaveText("2 / 4");
+  const surface = await dialog(page).elementHandle();
   const frame = page.frameLocator('iframe[title="prototype.html"]');
   await frame.getByRole("textbox").fill("保留输入键盘操作");
   await frame.getByRole("textbox").press("ArrowLeft");
@@ -97,7 +104,7 @@ for (const panel of [false, true]) test(`mixed message gallery preserves context
   await expect(count(page)).toHaveText("2 / 4");
   await previous.click();
   await expect(dialog(page).locator(".zoomable-image")).toBeVisible();
-  await dialog(page).getByRole("button", { name: "关闭", exact: true }).focus();
+  await dialog(page).getByRole("button", { name: /^关闭(?:预览)?$/, exact: true }).focus();
   await page.keyboard.press("ArrowRight");
   await expect(count(page)).toHaveText("2 / 4");
   await page.keyboard.press("ArrowRight");
@@ -113,6 +120,7 @@ for (const panel of [false, true]) test(`mixed message gallery preserves context
   await dialog(page).getByRole("button", { name: "重试", exact: true }).click();
   await expect(page.frameLocator('iframe[title="missing.html"]').getByRole("heading")).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as any).galleryDepth)).toBe(depth + 1);
+  expect(await surface!.evaluate(el => el.isConnected && el.getAttribute("open") !== null)).toBe(true);
   await page.evaluate(() => history.back());
   await expect(dialog(page)).toHaveCount(0);
   await expect(trigger).toBeFocused();
@@ -121,7 +129,7 @@ for (const panel of [false, true]) test(`mixed message gallery preserves context
   await expect(page).toHaveURL(url);
   await open(page, "另一条消息");
   await expect(dialog(page).locator(".artifact-navigation")).toHaveCount(0);
-  await dialog(page).getByRole("button", { name: "关闭", exact: true }).click();
+  await dialog(page).getByRole("button", { name: /^关闭(?:预览)?$/, exact: true }).click();
   await open(page, "文档");
   await expect(dialog(page).locator(".artifact-navigation")).toHaveCount(0);
   await page.keyboard.press("Escape");
@@ -304,4 +312,38 @@ test("audit 3: single-image retry keeps focus inside its modal", async ({ page }
   await dialog(page).getByRole("button", { name: "重试", exact: true }).click();
   await expect(dialog(page).locator(".zoomable-image img")).toBeVisible();
   expect(await dialog(page).evaluate(el => el.contains(document.activeElement))).toBe(true);
+});
+
+for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const) test(`artifact images share the full-screen media container at ${width}px ${theme}`, async ({ page }) => {
+  const height = width === 320 ? 568 : 900;
+  await page.setViewportSize({ width, height });
+  await page.emulateMedia({ colorScheme: theme });
+  await setup(page, false, false, { singleImage: true, imageName: "an image (v1).png" });
+  const trigger = page.getByRole("button", { name: "第一张", exact: true });
+  await trigger.click();
+  const viewer = dialog(page);
+  await expect(viewer).toHaveClass("selected-media-lightbox artifact-media-lightbox");
+  await expect(viewer.locator(".artifact-viewer, .artifact-toolbar, .artifact-navigation")).toHaveCount(0);
+  await expect(viewer.getByText("已保存，原设备离线后仍可查看。", { exact: true })).toBeVisible();
+  await expect.poll(() => viewer.locator("img").evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(1200);
+  for (const scale of ["small", "medium", "large"]) {
+    await page.evaluate(value => { document.documentElement.dataset.fontScale = value; }, scale);
+    const bounds = (await viewer.boundingBox())!;
+    expect(bounds).toEqual({ x: 0, y: 0, width, height });
+    expect(await viewer.evaluate(el => getComputedStyle(el).backgroundColor)).toBe(await viewer.evaluate(el => getComputedStyle(el.querySelector("section")!).backgroundColor));
+    const imageBox = (await viewer.locator(".zoomable-image").boundingBox())!;
+    expect(imageBox.x).toBe(0); expect(imageBox.width).toBe(width);
+    for (const control of [viewer.getByRole("link", { name: "下载", exact: true }), viewer.getByRole("button", { name: "关闭预览", exact: true }), ...await viewer.locator(".image-zoom-controls button").all()]) {
+      const box = (await control.boundingBox())!;
+      expect(box.width).toBeGreaterThanOrEqual(44); expect(box.height).toBeGreaterThanOrEqual(44);
+      expect(box.x).toBeGreaterThanOrEqual(0); expect(box.y).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(width); expect(box.y + box.height).toBeLessThanOrEqual(height);
+    }
+  }
+  await viewer.getByRole("button", { name: "放大图片", exact: true }).click();
+  await expect(viewer.locator(".zoomable-image")).toHaveAttribute("data-zoomed", "true");
+  await viewer.getByRole("button", { name: "适应屏幕", exact: true }).click();
+  await page.screenshot({ path: test.info().outputPath(`artifact-lightbox-${width}-${theme}.png`) });
+  await viewer.getByRole("button", { name: "关闭预览", exact: true }).click();
+  await expect(viewer).toHaveCount(0); await expect(trigger).toBeFocused();
 });

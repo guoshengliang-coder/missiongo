@@ -82,7 +82,7 @@ for (const width of [320, 768, 1440]) for (const theme of ["light", "dark"] as c
     await expect(viewer.getByRole("img")).toBeVisible();
     const download = page.waitForEvent("download"); await viewer.getByRole("link", { name: "下载", exact: true }).click();
     expect((await download).suggestedFilename()).toBe("preview.svg");
-    await viewer.getByRole("button", { name: "关闭", exact: true }).click();
+    await viewer.getByRole("button", { name: /^关闭(?:预览)?$/, exact: true }).click();
     await expect(thumbnail).toBeFocused();
     expect(artifactRequests).toHaveLength(1);
     for (const scale of ["small", "medium", "large"]) {
