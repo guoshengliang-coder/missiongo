@@ -177,3 +177,18 @@ it("AND-527 rejects contradictory history identity without overwriting the sourc
   expect(f.sessions.getForAccount("owner", f.id).messages[0]?.clientMessageId).toBe("original-client");
   expect(f.history.get("owner", f.id, page).messages).toEqual([]);
 });
+
+it("AND-527 audit rolls back all identity enrichment when a later entry conflicts", () => {
+  const f = fixture();
+  const first = { sourceId: "first-native", role: "user" as const, text: "Same words" };
+  const second = { sourceId: "second-native", role: "user" as const, text: "Same words", clientMessageId: "original-second" };
+  f.sessions.recordSnapshot({ nodeId: "node", sessionId: f.id, status: "idle", messages: [first, second] });
+  const before = f.sessions.getForAccount("owner", f.id).messages;
+  f.history.observe("owner", "node", f.id, { cursor: "items-v1:audit-atomic", complete: false });
+  const page = f.head(); f.history.request("owner", f.id, page);
+  expect(() => f.history.complete("owner", "node", page, { messages: [
+    { ...first, clientMessageId: "first-client" }, { ...second, clientMessageId: "conflicting-second" },
+  ] })).toThrow(/identity changed/);
+  expect(f.sessions.getForAccount("owner", f.id).messages).toEqual(before);
+  expect(f.history.get("owner", f.id, page)).toMatchObject({ status: "pending", messages: [] });
+});

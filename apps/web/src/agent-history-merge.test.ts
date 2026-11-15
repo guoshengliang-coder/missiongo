@@ -28,3 +28,11 @@ it("keeps late items in the older page before already cached replies",()=>{
   const cached=[message("a"),message("c"),message("d")];
   expect(ids(mergeMessages(page,cached))).toEqual(["a","b","c","d"]);
 });
+
+it("AND-527 keeps an observed client identity when an older in-flight window omits the optional field", () => {
+  const observed = { ...message("native-source"), clientMessageId: "command", text: "Original body" };
+  const inFlight = { ...message("native-source"), text: "Current body", occurredAt: "2026-11-15T04:26:35Z" };
+  const merged = mergeMessages([observed], [inFlight]);
+  expect(merged).toEqual([{ ...inFlight, clientMessageId: "command" }]);
+  expect(mergeMessages([inFlight], [observed])).toEqual([observed]);
+});

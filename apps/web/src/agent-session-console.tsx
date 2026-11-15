@@ -1441,7 +1441,7 @@ export function AgentSessionConsole({
                   <article className={`agent-console-message agent-console-message-user agent-console-message-outgoing agent-console-message-outgoing-${outgoing.status}`}>
                     <header className="agent-console-message-meta">
                       <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
-                      <CommandMessageMenu text={message.text} />
+                      <CommandMessageMenu text={permissionReplyText((sessionQuery.data?.currentRequests ?? sessionQuery.data?.messages)?.flatMap(message => message.questions ?? []) ?? [], message.text)} />
                     </header>
                     <MarkdownText>{permissionReplyText((sessionQuery.data?.currentRequests ?? sessionQuery.data?.messages)?.flatMap(message => message.questions ?? []) ?? [], message.text)}</MarkdownText>
                     {command && command.id === outgoing.commandId && command.attachments && selected.agentSessionId

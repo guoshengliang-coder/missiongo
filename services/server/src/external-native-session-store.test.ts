@@ -588,3 +588,14 @@ it("AND-527 retains client aliases after an external reconnect and clockless ref
   f.report({ generation: 3, messages: [oldSnapshot] });
   expect(f.native.commandById(f.id, command.id)?.sourceMessageId).toBe(native.sourceId);
 });
+
+it("AND-527 audit rejects an external partial identity overwrite atomically", () => {
+  const f = fixture(); f.native.connect("owner", f.id, "node"); f.report();
+  const first = { sourceId: "audit-first", role: "user" as const, text: "Continue" };
+  const second = { sourceId: "audit-second", role: "user" as const, text: "Continue", clientMessageId: "original-second" };
+  f.report({ messages: [first, second] });
+  const before = f.native.overlay("owner", f.id).nativeMessages;
+  expect(() => f.report({ messages: [{ ...first, clientMessageId: "first-client" },
+    { ...second, clientMessageId: "contradictory-second" }] })).toThrow(/identity changed/);
+  expect(f.native.overlay("owner", f.id).nativeMessages).toEqual(before);
+});

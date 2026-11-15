@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import type { AgentSession, AgentSessionCommand, AgentSessionMessage } from "../../apps/web/src/types";
 import { advanceSessionDetailPoll } from "./polling";
+import { permissionReplyText } from "../../apps/web/src/permission-presentation";
 test.use({timezoneId:"Asia/Shanghai"});
 
 const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as {productId: string; detailKey: string};
@@ -63,11 +64,11 @@ for (const width of [320, 900, 1440]) for (const colorScheme of ["light", "dark"
 }
 
 async function openReceiptFixture(page: Page, surface:"console"|"panel", read:()=>{
-  command:AgentSessionCommand; messages:AgentSessionMessage[]; history?:{nextCursor:string}; attachmentMessages?:AgentSession["attachmentMessages"];
-}, older?:()=>AgentSessionMessage[]) {
+  command:AgentSessionCommand; messages:AgentSessionMessage[]; history?:{nextCursor:string}; attachmentMessages?:AgentSession["attachmentMessages"]; currentRequests?:AgentSessionMessage[];
+}, older?:()=>AgentSessionMessage[], agentKind: AgentSession["agentKind"] = "codex") {
   const id="receipt-history";
   const stamp="2026-11-13T00:00:00Z";
-  const summary={id,agentSessionId:id,dispatchId:"receipt-dispatch",productId:fixture.productId,agentKind:"codex",status:"idle",
+  const summary={id,agentSessionId:id,dispatchId:"receipt-dispatch",productId:fixture.productId,agentKind,status:"idle",
     createdAt:stamp,updatedAt:stamp,activityAt:stamp,nodeName:"Fixture",nodeConnectionState:"online",nodeRevoked:false,
     dispatchStatus:"launched",mode:"plan",settings:{},activities:[],turnState:{turnActive:false,observedAt:stamp},
     canReply:true,canResolveDelivery:true,canStop:false,canArchive:true,canRetry:false,unread:false,needsAttention:false,
@@ -229,6 +230,13 @@ for (const surface of ["console", "panel"] as const) for (const width of [320, 1
     await expect(area.locator(`[data-agent-message-id="user:${native.sourceId}"]`)).toHaveCount(1);
     await expect(area.getByText("已送达", { exact: true })).toHaveCount(1);
     await expect(area.locator("time").first()).toHaveText("12:26");
+    // An older in-flight detail response cannot erase an observed identity.
+    const { clientMessageId: _client, ...withoutClient } = native;
+    messages = [withoutClient, messages[1]!];
+    await advanceSessionDetailPoll(page);
+    await expect(area.getByText(text, { exact: true })).toHaveCount(1);
+    await expect(area.getByText("已送达", { exact: true })).toHaveCount(1);
+    messages = [native, messages[1]!];
     await page.reload();
     if (surface === "panel") {
       await page.locator(".execution-history > summary").click();
@@ -242,5 +250,32 @@ for (const surface of ["console", "panel"] as const) for (const width of [320, 1
     await expect(area.getByText(text, { exact: true })).toHaveCount(2);
     await expect(area.locator('[data-agent-message-id="user:native-item-second"]')).toHaveCount(1);
     expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
+  });
+}
+
+for (const surface of ["console", "panel"] as const) {
+  test(`AND-527 audit ${surface} copies and saves the displayed permission reply`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.clock.install();
+    await page.clock.setFixedTime(new Date("2026-11-15T04:30:00Z"));
+    const question = { key: "授权请求 audit-permission", header: "授权请求", title: "Claude Code 请求使用 Edit", options: ["批准", "拒绝"] };
+    const wire = `${question.key}: 批准`;
+    const readable = permissionReplyText([question], wire);
+    const command: AgentSessionCommand = { id: "permission-client", kind: "message", text: wire,
+      sourceMessageId: "answer-permission-client", status: "delivered", createdAt: "2026-11-15T04:24:24Z" };
+    const user: AgentSessionMessage = { id: "reply", sourceId: command.sourceMessageId!, role: "user", text: wire, occurredAt: "2026-11-15T04:26:35Z" };
+    const request: AgentSessionMessage = { id: "request", sourceId: "permission-request", role: "agent", text: "Request", occurredAt: "2026-11-15T04:20:00Z", questions: [question] };
+    const area = await openReceiptFixture(page, surface, () => ({ command, messages: [user], currentRequests: [request] }), undefined, "claude_code");
+    const bubble = area.locator(`[data-agent-message-id="user:${user.sourceId}"]`);
+    await expect(bubble).toContainText(readable);
+    await page.evaluate(() => Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+      writeText: async (text: string) => { document.documentElement.dataset.auditCopied = text; },
+    } }));
+    await bubble.getByLabel("消息操作", { exact: true }).click();
+    await page.getByRole("button", { name: "复制", exact: true }).click();
+    await expect(page.locator("html")).toHaveAttribute("data-audit-copied", readable);
+    await bubble.getByLabel("消息操作", { exact: true }).click();
+    await page.getByRole("button", { name: "保存为常用指令", exact: true }).click();
+    await expect(page.getByRole("dialog").getByRole("textbox", { name: "指令内容", exact: true })).toHaveValue(readable);
   });
 }
