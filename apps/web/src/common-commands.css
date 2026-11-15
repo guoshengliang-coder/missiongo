@@ -5,11 +5,19 @@
 .common-command-list { max-height: 58dvh; overflow-y: auto; overscroll-behavior: contain; display: grid; gap: 12px; }
 .common-command-list > div { display: grid; gap: 12px; }
 .common-command-list .sidebar-label { margin: 0; }
-.common-command-choice { width: 100%; display: flex; align-items: center; gap: 10px; padding: 13px; text-align: left; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); cursor: pointer; font: inherit; min-height: 52px; }
+.common-command-card { min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); }
+.common-command-choice { width: 100%; display: flex; align-items: center; gap: 10px; padding: 13px; text-align: left; color: var(--ink); background: transparent; border: 0; border-radius: var(--radius-lg); cursor: pointer; font: inherit; min-height: 52px; }
 .common-command-choice > span { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; }
 .common-command-choice svg { flex-shrink: 0; color: var(--muted); }
-.common-command-choice small { display: block; margin-top: 7px; color: var(--muted); font-size: var(--text-sm); }
-@media (hover: hover) { .common-command-choice:hover { background: var(--row-hover); border-color: var(--line-dark); } }
+.common-command-title, .common-command-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.common-command-title { font-size: var(--text-base); font-weight: 500; }
+.common-command-preview { color: var(--muted); font-size: var(--text-md); font-weight: 400; }
+.common-command-title + .common-command-preview { margin-top: 7px; }
+.common-command-preview-unnamed { -webkit-line-clamp: 3; color: var(--ink); font-size: var(--text-base); }
+.common-command-card[data-expanded="true"] .common-command-title, .common-command-card[data-expanded="true"] .common-command-preview { display: block; overflow: visible; }
+.common-command-disclosure { display: block; margin: 0 13px 6px; min-height: 32px; font-size: var(--text-md); }
+@media (pointer: coarse) { .common-command-disclosure { min-width: 44px; min-height: 44px; } }
+@media (hover: hover) { .common-command-card:hover { background: var(--row-hover); border-color: var(--line-dark); } }
 .common-command-choice:active { background: var(--surface-inset); }
 .common-command-name-toggle { justify-self: start; padding-left: 0; }
 .modal .dialog-form .common-command-checkbox { display: flex; flex-direction: row; align-items: center; gap: 9px; min-height: 44px; font-weight: 400; }
