@@ -232,10 +232,10 @@ test("a failed bundle can be retried without losing gallery navigation", async (
   await expect(count(page)).toHaveText("3 / 4");
 });
 
-for (const control of ["zoom", "download"]) test(`audit 1: ${control} focus survives replacing its slide`, async ({ page }) => {
+for (const control of ["zoom", "download", "title"]) test(`audit 1: ${control} focus survives replacing its slide`, async ({ page }) => {
   await setup(page); await open(page, "第一张");
   await expect(dialog(page).locator(".zoomable-image img")).toBeVisible();
-  const target = control === "zoom" ? dialog(page).getByRole("button", { name: "放大图片", exact: true }) : dialog(page).getByRole("link", { name: "下载", exact: true });
+  const target = control === "title" ? dialog(page).locator("header summary") : control === "zoom" ? dialog(page).getByRole("button", { name: "放大图片", exact: true }) : dialog(page).getByRole("link", { name: "下载", exact: true });
   await target.focus();
   await page.keyboard.press("Control+ArrowRight");
   await expect(count(page)).toHaveText("1 / 4");
@@ -346,4 +346,46 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
   await page.screenshot({ path: test.info().outputPath(`artifact-lightbox-${width}-${theme}.png`) });
   await viewer.getByRole("button", { name: "关闭预览", exact: true }).click();
   await expect(viewer).toHaveCount(0); await expect(trigger).toBeFocused();
+});
+
+for (const theme of ["light", "dark"] as const) test.describe(`audit long image title and safe insets ${theme}`, () => {
+  test.use({ hasTouch: true, colorScheme: theme, viewport: { width: 320, height: 390 } });
+  test("title can be read by touch and keyboard while download and close remain separate", async ({ page }) => {
+    const name = "截图-" + "long-image-filename-".repeat(9) + ".png";
+    await setup(page, false, false, { singleImage: true, imageName: name });
+    await open(page, "第一张");
+    const viewer = dialog(page);
+    await expect(viewer.locator("img")).toBeVisible();
+    await page.evaluate(() => {
+      const root = document.documentElement;
+      root.dataset.fontScale = "large";
+      for (const edge of ["top", "right", "bottom", "left"]) root.style.setProperty(`--safe-${edge}`, "24px");
+    });
+    const close = viewer.getByRole("button", { name: "关闭预览", exact: true });
+    const download = viewer.getByRole("link", { name: "下载", exact: true });
+    const closeBox = (await close.boundingBox())!, downloadBox = (await download.boundingBox())!;
+    expect(closeBox.x).toBeGreaterThanOrEqual(downloadBox.x + downloadBox.width);
+    expect(Math.abs(closeBox.y - downloadBox.y)).toBeLessThanOrEqual(1);
+    const title = viewer.locator("header summary");
+    await title.tap();
+    await expect(viewer.locator("header details")).toHaveAttribute("open", "");
+    await expect(title.locator("strong")).toHaveText(name);
+    expect(await title.locator("strong").evaluate(el => getComputedStyle(el).whiteSpace)).not.toBe("nowrap");
+    expect(await title.locator("strong").evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+    expect((await title.locator("strong").boundingBox())!.y).toBeGreaterThanOrEqual((await title.boundingBox())!.y);
+    await title.focus();
+    await title.press("End");
+    await expect.poll(() => title.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+    await expect.poll(() => title.locator("strong").evaluate(el => {
+      const range = document.createRange(), text = el.firstChild!;
+      range.setStart(text, text.textContent!.length - 1); range.setEnd(text, text.textContent!.length);
+      return range.getBoundingClientRect().bottom - el.parentElement!.getBoundingClientRect().bottom;
+    })).toBeLessThanOrEqual(1);
+    await title.press("Enter");
+    await expect(viewer.locator("header details")).not.toHaveAttribute("open", "");
+    const downloaded = page.waitForEvent("download");
+    await download.tap();
+    expect((await downloaded).suggestedFilename()).toBe(name);
+    await close.tap(); await expect(viewer).toHaveCount(0);
+  });
 });

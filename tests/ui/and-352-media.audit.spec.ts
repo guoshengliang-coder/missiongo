@@ -163,3 +163,27 @@ test("list evidence excludes comment files and video tiles open the preview with
   await page.goto(`/?product=${fixture.productId}&status=all`);
   await expect(row.locator(".item-media-thumb")).toHaveCount(0);
 });
+
+
+test.describe("shared media title gestures", () => {
+  test.use({ hasTouch: true, viewport: { width: 375, height: 568 } });
+  test("swiping the title does not change the selected image", async ({ page, context }) => {
+    const { item } = await seed(page);
+    await page.goto(`/?product=${fixture.productId}&status=all&item=${item.key}`);
+    await page.locator(".media-tile").getByRole("button", { name: "预览 original.png", exact: true }).click();
+    const viewer = page.locator(".selected-media-lightbox");
+    const title = viewer.locator("header summary");
+    await expect(viewer.locator("img")).toBeVisible();
+    const box = (await title.boundingBox())!, x = box.x + box.width - 5, y = box.y + box.height / 2;
+    const cdp = await context.newCDPSession(page);
+    const touch = async (type: string, points: { x: number; y: number; id: number }[]) => {
+      await cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points });
+      await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+    };
+    await touch("touchStart", [{ x, y, id: 1 }]);
+    await touch("touchMove", [{ x: x - 70, y, id: 1 }]);
+    await touch("touchEnd", []);
+    await expect(viewer.locator("header strong")).toHaveText("图片 1 · 1/2");
+    await cdp.detach();
+  });
+});

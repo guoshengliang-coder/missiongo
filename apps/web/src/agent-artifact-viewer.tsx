@@ -93,7 +93,7 @@ function ArtifactViewer({ sessionId, messageId, initialHref, links, onClose }: {
   const navigate = (direction: "previous" | "next") => {
     const focused = document.activeElement;
     const leavingSlide = focused instanceof Element && navigation.current?.parentElement?.contains(focused)
-      && !focused.closest("header, .artifact-navigation");
+      && !focused.closest("header > .icon-button, .artifact-navigation");
     // Slide controls are removed during navigation; edge buttons become disabled.
     // Both must hand focus to a stable part of the same modal before replacement.
     if (leavingSlide || (navigation.current?.contains(focused)
@@ -109,7 +109,7 @@ function ArtifactViewer({ sessionId, messageId, initialHref, links, onClose }: {
         navigate(event.key === "ArrowLeft" ? "previous" : "next");
       }
     }}>
-    <MediaLightboxFrame title={title} onClose={onClose} closeButtonRef={closeButton} closeLabel={t(imageView ? "closePreview" : "close")} className={imageView ? undefined : "artifact-viewer"}>
+    <MediaLightboxFrame title={title} onClose={onClose} closeButtonRef={closeButton} closeLabel={t(imageView ? "closePreview" : "close")} className={imageView ? undefined : "artifact-viewer"} expandTitle={imageView}>
       <ArtifactSlide key={href} sessionId={sessionId} messageId={messageId} href={href} onNavigate={navigate} onRetainFocus={retainFocus} />
       {links.length > 1 && <footer ref={navigation} tabIndex={-1} className="artifact-navigation" aria-label={t("artifactNavigation")}>
         <button className="secondary-button" type="button" disabled={index === 0} onClick={() => navigate("previous")} aria-label={t("previousMedia")}><ChevronLeft size={20} /></button>

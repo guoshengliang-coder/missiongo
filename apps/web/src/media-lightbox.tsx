@@ -4,14 +4,15 @@ import { OverlayDialog } from "./overlay";
 import { useI18n } from "./i18n";
 
 /** Shared media container; mixed file galleries keep their existing dialog/history. */
-export function MediaLightboxFrame({ title, onClose, children, actions, className, closeButtonRef, closeLabel }: {
+export function MediaLightboxFrame({ title, onClose, children, actions, className, closeButtonRef, closeLabel, expandTitle = false }: {
   title: string; onClose: () => void; children: ReactNode; actions?: ReactNode;
   className?: string | undefined; closeButtonRef?: Ref<HTMLButtonElement>; closeLabel?: string;
+  expandTitle?: boolean;
 }) {
   const { t } = useI18n();
   return <section className={className}>
     <header>
-      <strong tabIndex={0}>{title}</strong>
+      {expandTitle ? <details className="media-lightbox-title"><summary><strong>{title}</strong></summary></details> : <strong tabIndex={0}>{title}</strong>}
       {actions}
       <button ref={closeButtonRef} type="button" className="icon-button" onClick={onClose} aria-label={closeLabel ?? t("closePreview")}><X size={20} /></button>
     </header>
@@ -58,7 +59,7 @@ export function MediaLightbox({
       }}
       onTouchStart={(event) => {
         const zoomed = event.target instanceof Element && event.target.closest('[data-zoomed="true"]');
-        if (!showNavigation || event.touches.length !== 1 || zoomed || (event.target instanceof Element && Boolean(event.target.closest("button, video, input, a")))) { touchStart.current = null; return; }
+        if (!showNavigation || event.touches.length !== 1 || zoomed || (event.target instanceof Element && Boolean(event.target.closest("button, video, input, a, .media-lightbox-title")))) { touchStart.current = null; return; }
         touchStart.current = { x: event.touches[0]!.clientX, y: event.touches[0]!.clientY };
       }}
       onTouchMove={(event) => {
@@ -75,7 +76,7 @@ export function MediaLightbox({
         (dx > 0 ? onPrevious : onNext)?.();
       }}
     >
-      <MediaLightboxFrame title={title} onClose={onClose} actions={actions}>
+      <MediaLightboxFrame title={title} onClose={onClose} actions={actions} expandTitle>
         {showNavigation ? (
           <div className="media-gallery-stage">
             {children}
