@@ -178,7 +178,7 @@ public struct ConsentedAgentAdapter: AgentAdapter {
             throw LaunchError("\(agent.title) 本地集成未启用，会话暂不同步；请在 MissionGo 菜单中启用或重新检查。")
         }
         let report = try await base.synchronize(session)
-        let reviews = LocalDevelopmentReviews.read(agentKind: session.agentKind, sessionRef: session.sessionRef)
-        return report.reportingDevelopmentReviews(reviews, required: LocalDevelopmentReviews.required(agentKind: session.agentKind, sessionRef: session.sessionRef) ? true : nil)
+        let reviews = LocalDevelopmentReviews.readSnapshot(agentKind: session.agentKind, sessionRef: session.sessionRef)
+        return report.reportingDevelopmentReviews(reviews?.records, required: LocalDevelopmentReviews.required(agentKind: session.agentKind, sessionRef: session.sessionRef) ? true : nil, activeTaskId: reviews?.taskId, ledgerRevision: reviews?.revision)
     }
 }

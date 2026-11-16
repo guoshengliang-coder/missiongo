@@ -3974,7 +3974,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           ...(commandStatus ? { commandStatus } : {}),
           ...(stringField(body, "commandError", false) ? { commandError: body.commandError as string } : {}),
         }, (productId, execute) => requireNodeAccountPermission(node.accountId, productId, execute));
-        recordDevelopmentReviews(store.database,node.nodeId,sessionId,body.developmentReviews,body.developmentReviewRequired,body.developmentReviewTaskId);
+        recordDevelopmentReviews(store.database,node.nodeId,sessionId,body.developmentReviews,body.developmentReviewRequired,body.developmentReviewTaskId,body.developmentReviewRevision);
         performanceSends.observe(sessionId,typeof body.commandId==="string"?body.commandId:undefined,commandStatus,messages);
         agentHistory.observe(node.accountId, node.nodeId, sessionId, body.history);
         synchronizeNativePlan(store.database,node.accountId,sessionId);
@@ -4019,7 +4019,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         ...(body.clearSessionUrl === true ? { clearSessionUrl: true } : {}),
         ...(stringField(body, "activityAt", false) ? { activityAt: body.activityAt as string } : {}),
       });
-      recordDevelopmentReviews(store.database,node.nodeId,sessionId,body.developmentReviews,body.developmentReviewRequired,body.developmentReviewTaskId);
+      recordDevelopmentReviews(store.database,node.nodeId,sessionId,body.developmentReviews,body.developmentReviewRequired,body.developmentReviewTaskId,body.developmentReviewRevision);
       performanceSends.observe(sessionId,typeof body.commandId==="string"?body.commandId:undefined,commandStatus,messages);
       agentHistory.observe(node.accountId, node.nodeId, sessionId, body.history);
       if (body.approval !== undefined) {

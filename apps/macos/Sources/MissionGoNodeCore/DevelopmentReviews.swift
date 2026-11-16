@@ -59,6 +59,15 @@ public struct DevelopmentReviewEvidence: Codable, Equatable, Sendable {
 /// Reads the same local ledger as the three native integrations. Offline use
 /// never depends on MissionGo and observation never starts or resumes an Agent.
 public enum LocalDevelopmentReviews {
+    public struct Snapshot: Sendable {
+        public let records: [DevelopmentReviewEvidence]
+        public let taskId: String?
+        public let revision: Int?
+    }
+    public static func read(agentKind: String, sessionRef: String, root: URL? = nil) -> [DevelopmentReviewEvidence]? {
+        readSnapshot(agentKind: agentKind, sessionRef: sessionRef, root: root)?.records
+    }
+
     public static func required(agentKind: String, sessionRef: String, root: URL? = nil) -> Bool {
         let directory = root ?? FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath().appendingPathComponent(".local/state/missiongo-review", isDirectory: true)
         let key = SHA256.hash(data: Data((agentKind + ":" + sessionRef).utf8)).map { String(format: "%02x", $0) }.joined()
@@ -73,7 +82,7 @@ public enum LocalDevelopmentReviews {
         return value["version"] as? Int == 1 && value["agentKind"] as? String == agentKind && value["sessionRef"] as? String == sessionRef && value["required"] as? Bool == true
     }
 
-    public static func read(agentKind: String, sessionRef: String, root: URL? = nil) -> [DevelopmentReviewEvidence]? {
+    public static func readSnapshot(agentKind: String, sessionRef: String, root: URL? = nil) -> Snapshot? {
         let directory = root ?? FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath()
             .appendingPathComponent(".local/state/missiongo-review", isDirectory: true)
         func readJSON(_ name: String) throws -> Any {
@@ -87,9 +96,11 @@ public enum LocalDevelopmentReviews {
             return try JSONSerialization.jsonObject(with: Data(contentsOf: url))
         }
         let key = SHA256.hash(data: Data((agentKind + ":" + sessionRef).utf8)).map { String(format: "%02x", $0) }.joined()
-        guard let tasks = try? readJSON("session-" + key) as? [String], tasks.count <= 32,
+        guard let index = try? readJSON("session-" + key) else { return nil }
+        let ledger = index as? [String: Any]
+        guard let tasks = (index as? [String]) ?? (ledger?["taskIds"] as? [String]), tasks.count <= 32,
               tasks.allSatisfy({ $0.range(of: "^[A-Za-z0-9_-]{1,150}$", options: .regularExpression) != nil }) else { return nil }
-        return tasks.map { taskId in
+        let records: [DevelopmentReviewEvidence] = tasks.map { taskId in
             do {
                 guard let state = try readJSON(taskId) as? [String: Any], state["version"] as? Int == 1,
                       state["taskId"] as? String == taskId, let binding = state["binding"] as? [String: Any],
@@ -131,5 +142,8 @@ public enum LocalDevelopmentReviews {
                     checksPassed: false, blockingFindings: 0, limitations: ["Local review evidence unavailable"], proof: nil)
             }
         }
+        let active = ledger?["activeTaskId"] as? String, revision = ledger?["revision"] as? Int
+        let valid = ledger?["version"] as? Int == 1 && (revision ?? 0)>0 && active.map { tasks.contains($0) } == true
+        return Snapshot(records: records, taskId: valid ? active : nil, revision: valid ? revision : nil)
     }
 }

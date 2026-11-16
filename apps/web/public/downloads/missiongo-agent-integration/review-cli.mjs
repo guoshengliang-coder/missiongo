@@ -108,20 +108,26 @@ export async function reviewAction(action, input, options = {}) {
       if (match) repositoryUrl = "https://github.com/"+match[1];
     } catch { /* A local-only task can be reviewed, but has no GitHub delivery proof. */ }
     const requestKey = "request-" + digest(JSON.stringify([input.agentKind, input.sessionRef, input.requestId, repositoryId(input.repository)]));
-    const binding = store.transaction(requestKey, () => {
-      const path = store.path(requestKey); const prior = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : null;
-      const state = store.begin({ ...input, repositoryUrl, taskId: prior?.taskId ?? input.taskId, scopeDigest: input.scopeDigest ?? digest(JSON.stringify([input.requestId, input.requirements, input.scope ?? []])), requiredChecks: input.checkCommands.map(command => command.name) });
-      return { taskId: state.taskId };
-    });
-    const state = store.read(binding.taskId);
-    // An exact identity index avoids scanning other native conversations.
     const indexId = "session-" + digest(input.agentKind + ":" + input.sessionRef);
-    store.transaction(indexId, () => {
-      const path = store.path(indexId);
-      const tasks = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : [];
-      return [...tasks.filter(taskId => taskId !== state.taskId),state.taskId].slice(-32);
+    let state;
+    const ledger = store.transaction(indexId, () => {
+      const indexPath = store.path(indexId), previous = existsSync(indexPath) ? JSON.parse(readFileSync(indexPath,"utf8")) : null;
+      const current = Array.isArray(previous) ? {version:1,revision:previous.length,taskIds:previous,activeTaskId:previous.at(-1)??null}
+        : previous ?? {version:1,revision:0,taskIds:[],activeTaskId:null};
+      const binding = store.transaction(requestKey, () => {
+        const path = store.path(requestKey), prior = existsSync(path) ? JSON.parse(readFileSync(path,"utf8")) : null;
+        state = store.begin({...input,repositoryUrl,taskId:prior?.taskId??input.taskId,
+          scopeDigest:input.scopeDigest??digest(JSON.stringify([input.requestId,input.requirements,input.scope??[]])),requiredChecks:input.checkCommands.map(command=>command.name)});
+        const legacySequence = current.taskIds.indexOf(state.taskId)+1;
+        return {taskId:state.taskId,sequence:prior?.sequence??(prior ? legacySequence : current.revision+1)};
+      });
+      if (binding.sequence>current.revision) {
+        current.revision=binding.sequence; current.activeTaskId=state.taskId;
+        current.taskIds=[...current.taskIds.filter(taskId=>taskId!==state.taskId),state.taskId].slice(-32);
+      }
+      return current;
     });
-    return publicReview(state);
+    return {...publicReview(state),activeTaskId:ledger.activeTaskId,ledgerRevision:ledger.revision};
   }
   let state = store.read(input.taskId);
   if (action === "status") return publicReview(state);

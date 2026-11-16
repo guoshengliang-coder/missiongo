@@ -41,6 +41,7 @@ export interface Session {
   appliedSettingsRevision?: number; archiveInSource?: boolean; restoreInSource?: boolean;
 }
 export interface Snapshot {
+  developmentReviewRevision?: number;
   developmentReviewTaskId?: string;
   developmentReviewRequired?: boolean;
   developmentReviews?: import("@missiongo/domain").DevelopmentReviewEvidence[];

@@ -43,6 +43,15 @@ test("a clean reviewer cannot hide a failing behavior test",async t=>{
   assert.equal(state.status,"incomplete");assert.equal(state.checks[0].result,"failed");
   assert.equal((await f.action("verify")).proof.valid,false);
 });
+
+test("reentering an old request cannot displace a newer unfinished development unit",async t=>{
+  const f=await fixture(t);await f.action("review",{},f.options);await f.action("check");
+  assert.equal((await f.action("verify")).proof.valid,true);
+  const newer=await f.action("begin",{taskId:"new-task",requestId:"next-human"});
+  assert.equal(newer.activeTaskId,"new-task");assert.equal(newer.ledgerRevision,2);
+  const old=await f.action("begin");assert.equal(old.status,"passed");assert.equal(old.activeTaskId,"new-task");
+  assert.equal(old.ledgerRevision,2);assert.equal((await f.action("status",{taskId:"new-task"})).status,"developing");
+});
 test("scope omissions fail closed before launching a reviewer",async t=>{
   const f=await fixture(t);writeFileSync(join(f.repo,"extra.mjs"),"export const extra = 1;\n");f.git(["add","extra.mjs"]);
   await assert.rejects(f.action("review",{},f.options),/outside the frozen review scope/);

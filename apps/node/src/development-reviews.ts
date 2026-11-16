@@ -6,7 +6,7 @@ import type { DevelopmentReviewEvidence } from "@missiongo/domain";
 
 /** Reads only the exact native session's bounded private index. No model,
  * repository scan, subprocess, network, or automatic continuation is involved. */
-export async function localDevelopmentReviews(agentKind: string, sessionRef: string, root?: string): Promise<DevelopmentReviewEvidence[] | undefined> {
+export async function localDevelopmentReviewSnapshot(agentKind: string, sessionRef: string, root?: string): Promise<{records:DevelopmentReviewEvidence[];taskId?:string;revision?:number}|undefined> {
   const directory = root ?? join(await realpath(homedir()), ".local/state/missiongo-review");
   const read = async (name: string) => {
     const path = join(directory, name + ".json"), info = await lstat(path);
@@ -14,8 +14,9 @@ export async function localDevelopmentReviews(agentKind: string, sessionRef: str
     return JSON.parse(await readFile(path, "utf8"));
   };
   const key = createHash("sha256").update(agentKind + ":" + sessionRef).digest("hex");
-  let tasks: unknown;
-  try { tasks = await read("session-" + key); } catch { return undefined; }
+  let ledger: any;
+  try { ledger = await read("session-" + key); } catch { return undefined; }
+  const tasks:unknown=Array.isArray(ledger)?ledger:ledger?.taskIds;
   if (!Array.isArray(tasks) || tasks.length > 32 || !tasks.every(id => typeof id === "string" && /^[A-Za-z0-9_-]{1,150}$/.test(id))) return undefined;
   const result: DevelopmentReviewEvidence[] = [];
   for (const taskId of tasks) {
@@ -40,7 +41,11 @@ export async function localDevelopmentReviews(agentKind: string, sessionRef: str
         base: "0".repeat(40), checksPassed: false, blockingFindings: 0, limitations: ["Local review evidence unavailable"] });
     }
   }
-  return result;
+  const valid = !Array.isArray(ledger) && ledger?.version===1 && Number.isSafeInteger(ledger.revision) && ledger.revision>0 && tasks.includes(ledger.activeTaskId);
+  return {records:result,...(valid?{taskId:ledger.activeTaskId as string,revision:ledger.revision as number}:{})};
+}
+export async function localDevelopmentReviews(agentKind:string,sessionRef:string,root?:string):Promise<DevelopmentReviewEvidence[]|undefined> {
+  return (await localDevelopmentReviewSnapshot(agentKind,sessionRef,root))?.records;
 }
 
 export async function localDevelopmentReviewRequired(agentKind: string, sessionRef: string, root?: string): Promise<boolean> {

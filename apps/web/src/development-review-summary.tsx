@@ -3,7 +3,7 @@ import { useI18n } from "./i18n";
 
 /** The same read-only summary in both conversation surfaces. Review history is
  * quality evidence, never a running background task or a new stop control. */
-export function DevelopmentReviewSummary({ value }: { value?: { required: boolean; activeTaskId?: string; records: readonly DevelopmentReviewEvidence[] } | undefined }) {
+export function DevelopmentReviewSummary({ value }: { value?: { required: boolean; unavailable?: boolean; activeTaskId?: string; records: readonly DevelopmentReviewEvidence[] } | undefined }) {
   const { t } = useI18n();
   if (!value?.required) return null;
   const labels = { developing: "developmentReviewDeveloping", reviewing: "developmentReviewRunning", repairing: "developmentReviewRepairing", validating: "developmentReviewValidating",
@@ -11,6 +11,7 @@ export function DevelopmentReviewSummary({ value }: { value?: { required: boolea
     needs_decision: "developmentReviewNeedsDecision", unsupported: "developmentReviewUnsupported" } as const;
   return <section className="agent-session-background development-review-summary" aria-label={t("developmentReviewTitle")}>
     <strong>{t("developmentReviewTitle")}</strong>
+    {value.unavailable && <p role="status">{t("developmentReviewUnavailable")}</p>}
     {!value.records.length ? <p>{t("developmentReviewMissing")}</p> : <ul>{value.records.map(record => <li key={record.taskId}>
       <strong>{t(record.taskId === (value.activeTaskId ?? value.records[0]?.taskId) ? "developmentReviewCurrent" : "developmentReviewHistory")}</strong> ·
       {t("developmentReviewRound", { round: record.round })} · {t(labels[record.status as keyof typeof labels] ?? "developmentReviewIncomplete")}

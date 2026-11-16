@@ -13,7 +13,7 @@ final class DevelopmentReviewsTests: XCTestCase {
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         }
         let key = SHA256.hash(data: Data("codex:native".utf8)).map { String(format: "%02x", $0) }.joined()
-        try write("session-" + key, ["task"])
+        try write("session-" + key, ["version": 1, "revision": 2, "taskIds": ["task"], "activeTaskId": "task"])
         let binding: [String: Any] = ["agentKind": "codex", "sessionRef": "native", "requestId": "human", "scopeDigest": String(repeating: "a", count: 64), "base": String(repeating: "b", count: 40), "requiredChecks": ["behavior"]]
         try write("task", ["version": 1, "taskId": "task", "binding": binding, "revision": 4, "generation": 2,
             "status": "passed", "rounds": [["result": ["findings": [], "limitations": []]]],
@@ -23,9 +23,12 @@ final class DevelopmentReviewsTests: XCTestCase {
         XCTAssertTrue(reviews[0].checks?.first?.method.hasPrefix("local validation; argvSha256=") == true)
         XCTAssertFalse(reviews[0].checks?.first?.method.contains("node test.mjs") == true)
         XCTAssertEqual(reviews[0].requiredChecks, ["behavior"])
+        let snapshot = try XCTUnwrap(LocalDevelopmentReviews.readSnapshot(agentKind: "codex", sessionRef: "native", root: root))
+        XCTAssertEqual(snapshot.taskId, "task"); XCTAssertEqual(snapshot.revision, 2)
         XCTAssertNil(LocalDevelopmentReviews.read(agentKind: "codex", sessionRef: "unrelated", root: root))
-        let report = AgentSessionReport(status: "idle", messages: []).reportingDevelopmentReviews(reviews)
-        XCTAssertEqual(try APIClient.uploadableSnapshot(report).developmentReviews, reviews)
+        let report = AgentSessionReport(status: "idle", messages: []).reportingDevelopmentReviews(reviews, activeTaskId: snapshot.taskId, ledgerRevision: snapshot.revision)
+        let uploadable = try APIClient.uploadableSnapshot(report)
+        XCTAssertEqual(uploadable.developmentReviews, reviews); XCTAssertEqual(uploadable.developmentReviewRevision, 2)
         try write("task", ["version": 2])
         XCTAssertEqual(LocalDevelopmentReviews.read(agentKind: "codex", sessionRef: "native", root: root)?[0].status, "incomplete")
     }

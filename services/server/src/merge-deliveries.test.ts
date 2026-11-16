@@ -111,11 +111,11 @@ describe("AND-423 explicit merge deliveries",()=>{
         status:"passed",round:1,base:f.input.evidence.base,repository:f.input.repository,candidateDigest:"d".repeat(64),checksPassed:true,blockingFindings:0,limitations:[],findings:[],requiredChecks:["behavior"],checks:[{name:"behavior",method:"node test",result:"passed",evidence:"exit=0"}],
         reviewer:{sessionRef:"readonly-child",model:"model",provider:"provider",readOnly:true},
         proof:{head:f.input.head,base:f.input.evidence.base,candidateDigest:"d".repeat(64),clean:true,valid:true,checkedAt:new Date(now-240000).toISOString()}};
-      recordDevelopmentReviews(f.store.database,f.node.nodeId,f.projectSessionId,[review],true,review.taskId);
+      recordDevelopmentReviews(f.store.database,f.node.nodeId,f.projectSessionId,[review],true,review.taskId,1);
       expect(f.merges.list(f.item.productId,f.owner.id)[0]?.blocker).toBeUndefined();
       vi.setSystemTime(now+61000);
       expect(f.merges.list(f.item.productId,f.owner.id)[0]?.blocker).toBe("stale");
-      recordDevelopmentReviews(f.store.database,f.node.nodeId,f.projectSessionId,[{...review,revision:2,status:"incomplete"}],true,review.taskId);
+      recordDevelopmentReviews(f.store.database,f.node.nodeId,f.projectSessionId,[{...review,revision:2,status:"incomplete"}],true,review.taskId,1);
       expect(f.merges.recomputeList(f.item.productId,f.owner.id)[0]?.blocker).toBe("review_incomplete");
     } finally {vi.useRealTimers();}
   });

@@ -11,7 +11,7 @@ CREATE TABLE development_reviews (
   digest TEXT NOT NULL, payload_json TEXT NOT NULL, recorded_at TEXT NOT NULL,
   UNIQUE(session_id,task_id,revision)
 ) STRICT;
-CREATE TABLE development_review_policy(session_id TEXT PRIMARY KEY, node_id TEXT NOT NULL, required INTEGER NOT NULL CHECK(required=1), unavailable INTEGER NOT NULL DEFAULT 0, active_task_id TEXT) STRICT;
+CREATE TABLE development_review_policy(session_id TEXT PRIMARY KEY, node_id TEXT NOT NULL, required INTEGER NOT NULL CHECK(required=1), unavailable INTEGER NOT NULL DEFAULT 0, active_task_id TEXT, revision INTEGER NOT NULL DEFAULT 0) STRICT;
 CREATE INDEX development_review_session ON development_reviews(session_id,task_id,revision DESC);
 CREATE TRIGGER development_review_immutable_update BEFORE UPDATE ON development_reviews
 BEGIN SELECT RAISE(ABORT,'review evidence is immutable'); END;
@@ -40,23 +40,27 @@ const evidence = z.object({ version: z.literal(1), taskId: z.string().regex(/^[A
 
 /** Called only after the existing node snapshot ownership/generation checks.
  * MCP model-written comments and normal session text cannot write this table. */
-export function recordDevelopmentReviews(db: MissionGoDatabase, nodeId: string, sessionId: string, input: unknown, required?: unknown, activeTaskId?: unknown) {
-  if (input === undefined && required === undefined) return;
+export function recordDevelopmentReviews(db: MissionGoDatabase, nodeId: string, sessionId: string, input: unknown, required?: unknown, activeTaskId?: unknown, ledgerRevision?: unknown) {
+  if (input === undefined && required === undefined && !db.connection.prepare("SELECT 1 FROM development_review_policy WHERE session_id=?").get(sessionId)) return;
   if (required !== undefined && typeof required !== "boolean") throw invalidInput("Invalid development review policy.");
   const parsed = z.array(evidence).max(32).safeParse(input ?? []);
   if (!parsed.success) throw invalidInput("Invalid development review evidence.");
   if (activeTaskId !== undefined && (typeof activeTaskId !== "string" || !parsed.data.some(value => value.taskId === activeTaskId))) throw invalidInput("Active review must be present in this snapshot.");
+  if (ledgerRevision !== undefined && (!Number.isSafeInteger(ledgerRevision) || (ledgerRevision as number)<1 || typeof activeTaskId!=="string")) throw invalidInput("Invalid review ledger revision.");
   const owner = db.connection.prepare(`SELECT agent_kind,agent_session_ref AS session_ref FROM agent_sessions WHERE id=? AND node_id=?
     UNION ALL SELECT agent_kind,session_ref FROM external_agent_sessions WHERE id=? AND native_node_id=?`).get(sessionId,nodeId,sessionId,nodeId) as {agent_kind:string;session_ref:string}|undefined;
   if (!owner) throw conflict("review_evidence_conflict", "Review evidence must belong to the reporting native node.");
   db.transaction(() => {
+    const policy=db.connection.prepare("SELECT revision,active_task_id FROM development_review_policy WHERE session_id=?").get(sessionId) as {revision:number;active_task_id:string|null}|undefined;
+    if(policy && ledgerRevision!==undefined && (ledgerRevision as number)<policy.revision) return;
+    if(policy && ledgerRevision===policy.revision && policy.active_task_id!==activeTaskId) throw conflict("review_evidence_conflict","Review ledger revision has another active task.");
     if (required === true) db.connection.prepare("INSERT OR IGNORE INTO development_review_policy(session_id,node_id,required) VALUES (?,?,1)").run(sessionId,nodeId);
     if (required === true || parsed.data.length) {
       db.connection.prepare("INSERT OR IGNORE INTO development_review_policy(session_id,node_id,required) VALUES (?,?,1)").run(sessionId,nodeId);
       db.connection.prepare("UPDATE development_review_policy SET unavailable=? WHERE session_id=? AND node_id=?")
-        .run(input === undefined || parsed.data.some(value => value.revision === 0) ? 1 : 0,sessionId,nodeId);
+        .run(input === undefined || ((policy?.revision??0)>0 || parsed.data.length>0) && ledgerRevision===undefined || parsed.data.some(value => value.taskId===activeTaskId && value.revision === 0) ? 1 : 0,sessionId,nodeId);
     }
-    if (activeTaskId !== undefined) db.connection.prepare("UPDATE development_review_policy SET active_task_id=? WHERE session_id=? AND node_id=?").run(activeTaskId as string,sessionId,nodeId);
+    if (activeTaskId !== undefined && ledgerRevision!==undefined) db.connection.prepare("UPDATE development_review_policy SET active_task_id=?,revision=? WHERE session_id=? AND node_id=?").run(activeTaskId as string,ledgerRevision as number,sessionId,nodeId);
     for (const value of parsed.data) {
       if (value.agentKind !== owner.agent_kind || value.sessionRef !== owner.session_ref) throw invalidInput("Review source identity mismatch.");
       const json = JSON.stringify(value), hash = createHash("sha256").update(json).digest("hex");
@@ -104,6 +108,6 @@ export function developmentReviewBlocker(db: MissionGoDatabase, sessionId: strin
 export function developmentReviewSummary(db: MissionGoDatabase, sessionId: string) {
   const records = sessionDevelopmentReviews(db,sessionId);
   const required = records.length > 0 || Boolean(db.connection.prepare("SELECT 1 FROM development_review_policy WHERE session_id=?").get(sessionId));
-  const policy = db.connection.prepare("SELECT active_task_id FROM development_review_policy WHERE session_id=?").get(sessionId) as {active_task_id:string|null}|undefined;
-  return required ? {required,records,...(policy?.active_task_id ? {activeTaskId:policy.active_task_id} : {})} : undefined;
+  const policy = db.connection.prepare("SELECT active_task_id,unavailable FROM development_review_policy WHERE session_id=?").get(sessionId) as {active_task_id:string|null;unavailable:number}|undefined;
+  return required ? {required,records,unavailable:Boolean(policy?.unavailable),...(policy?.active_task_id ? {activeTaskId:policy.active_task_id} : {})} : undefined;
 }

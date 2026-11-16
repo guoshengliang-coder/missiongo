@@ -10,6 +10,7 @@ export type Locale = "zh-CN" | "en";
 
 const EN_MESSAGES = {
   developmentReviewTitle: "Development review",
+  developmentReviewUnavailable: "Current review evidence is unavailable; delivery is not ready. Previous records remain below.",
   developmentReviewEvidence: "Review and validation evidence",
   developmentReviewTrigger: "Trigger",
   developmentReviewExpected: "Expected",
@@ -2000,6 +2001,7 @@ export type MessageKey = keyof typeof EN_MESSAGES;
 
 const ZH_MESSAGES: Record<MessageKey, string> = {
   developmentReviewTitle: "研发审查",
+  developmentReviewUnavailable: "当前审查证据暂不可用，交付尚未就绪；下方保留历史记录。",
   developmentReviewEvidence: "审查与验证依据",
   developmentReviewTrigger: "触发条件",
   developmentReviewExpected: "预期行为",

@@ -146,7 +146,7 @@ export interface AgentSessionSnapshot {
     readonly status: AgentSessionCommandStatus;
     readonly attachments: readonly AgentSessionAttachment[];
   }[];
-  readonly developmentReview?: { required: boolean; activeTaskId?: string; records: import("@missiongo/domain").DevelopmentReviewEvidence[] } | undefined;
+  readonly developmentReview?: { required: boolean; unavailable?: boolean; activeTaskId?: string; records: import("@missiongo/domain").DevelopmentReviewEvidence[] } | undefined;
   readonly activities: readonly AgentSessionActivity[];
   readonly turnState: AgentSessionTurnState;
   readonly command?: AgentSessionCommand;
