@@ -1345,7 +1345,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .timeline-pull-request { margin: 4px 0 0; font-size: var(--text-xs); }
 /* A person's reason for moving the item. Wraps like a comment, because that is
    what it is -- several lines of what failed, not a label. */
-.timeline-note { margin: 4px 0 0; color: var(--ink); font-size: var(--text-sm); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.timeline-event .timeline-note { margin: 4px 0 0; color: var(--ink); font-size: var(--text-base); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .transition-note-form { display: grid; gap: 16px; }
 .transition-note-field { display: grid; gap: 8px; min-width: 0; }
 .transition-note-field label { font-size: var(--text-base); font-weight: 650; }
@@ -3209,7 +3209,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 
 /* Compact comment evidence stays on one row, including mixed file types. */
 .comment-attachments { min-width: 0; margin-top: 8px; }
-.comment-attachment-strip { display: flex; gap: 8px; min-width: 0; }
+.comment-attachment-strip { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
 .comment-attachment-tile { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 4px; flex: 0 0 76px; min-width: 0; min-height: 88px; padding: 4px; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--ink); background: var(--surface-strong); cursor: pointer; }
 .comment-attachment-tile.is-media { position: relative; aspect-ratio: 1; min-height: 76px; padding: 0; gap: 0; }
 .comment-attachment-tile.is-media .comment-attachment-thumb { flex: 1; height: auto; border-radius: inherit; }
@@ -3316,7 +3316,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .timeline-event--comment > .timeline-dot { display: none; }
 .timeline-event--comment .comment-body { margin-top: 2px; }
 /* Timeline metadata must never shrink Markdown paragraphs or turn inline bold into blocks. */
-.timeline-event--comment :is(.comment-text, .analysis-details .markdown-text) { font-size: calc(14px * var(--text-scale)); color: var(--ink); line-height: 1.6; }
+.timeline-event--comment :is(.comment-text, .analysis-details .markdown-text) { font-size: var(--text-base); color: var(--ink); line-height: 1.6; }
 .timeline-event--comment .markdown-text p { font-size: inherit; color: inherit; }
 .timeline-event--comment .markdown-text :is(strong, b) { display: inline; font-size: inherit; }
 .comment-more-actions { --comment-menu-height: 240px; position: relative; margin-inline-start: auto; flex: none; }
@@ -3340,7 +3340,7 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .comment-message .analysis-details { padding: 0; border: 0; background: transparent; }
 @container (max-width: 360px) { .comment-thread-reply { margin-inline-start: 16px; } .comment-message { padding: 4px 8px 8px; } .comment-heading { column-gap: 4px; } }
 @media (pointer: coarse) { .comment-header-actions .comment-reply-button, .comment-more-actions > summary, .comment-notification-details > summary, .comment-discussion-footer > button { min-height: 44px; } .comment-more-actions > summary { width: 44px; } }
-@media (max-width: 640px) { .timeline-event--comment :is(.comment-text, .analysis-details .markdown-text) { font-size: calc(15px * var(--text-scale)); } }
+@media (max-width: 640px) { .timeline-event .timeline-note, .timeline-event--comment :is(.comment-text, .analysis-details .markdown-text) { font-size: var(--text-lg); } }
 
 /* Shared native top-layer surfaces retain each viewer's existing layout. */
 :where(dialog.item-preview-backdrop, dialog.item-preview-media-viewer, dialog.artifact-backdrop) { margin: 0; width: 100%; max-width: none; height: 100vh; height: 100dvh; max-height: none; border: 0; color: var(--ink); overscroll-behavior: contain; }

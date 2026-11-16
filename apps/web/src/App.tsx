@@ -3318,7 +3318,7 @@ function StatusNoteLine({ payload, item }: { payload: Readonly<Record<string, un
   const note = statusChangeNote(payload);
   const ids = Array.isArray(payload.attachmentIds) ? payload.attachmentIds : [];
   const attachments = item.attachments.filter(file => ids.includes(file.id));
-  return <>{note && <p className="timeline-note">{note}</p>}{attachments.length > 0 && <AttachmentSection itemKey={item.key} attachments={attachments} compact />}</>;
+  return <>{note && <p className="timeline-note">{note}</p>}{attachments.length > 0 && <CommentAttachments itemKey={item.key} attachments={attachments} />}</>;
 }
 
 /** The `dispatched` timeline line, when the payload can say where it went. */
