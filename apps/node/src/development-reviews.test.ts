@@ -1,0 +1,23 @@
+import { expect, it } from "vitest";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { localDevelopmentReviewRequired, localDevelopmentReviews } from "./development-reviews.js";
+it("reads only the exact native index, reports known missing records, and never treats a model claim as a passed test",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"review-node-"));
+  const key=createHash("sha256").update("codex:native").digest("hex");
+  const save=(name:string,value:unknown)=>writeFile(join(root,name+".json"),JSON.stringify(value),{mode:0o600});
+  try {
+    await save("policy-"+key,{version:1,agentKind:"codex",sessionRef:"native",required:true});
+    expect(await localDevelopmentReviewRequired("codex","native",root)).toBe(true);
+    expect(await localDevelopmentReviewRequired("codex","other",root)).toBe(false);
+    await save("session-"+key,["task"]);
+    expect((await localDevelopmentReviews("codex","native",root))?.[0]?.status).toBe("incomplete");
+    await save("task",{version:1,taskId:"task",revision:4,generation:2,status:"passed",binding:{agentKind:"codex",sessionRef:"native",requestId:"human",scopeDigest:"a".repeat(64),base:"b".repeat(40),requiredChecks:["behavior"]},rounds:[{result:{findings:[],limitations:[]}}],checks:[]});
+    const evidence=(await localDevelopmentReviews("codex","native",root))?.[0];
+    expect(evidence?.status).toBe("passed");expect(evidence?.checksPassed).toBe(false);
+    expect(JSON.stringify(evidence)).not.toContain(root);
+    expect(await localDevelopmentReviews("codex","unrelated",root)).toBeUndefined();
+  } finally {await rm(root,{recursive:true,force:true});}
+});

@@ -3,6 +3,7 @@ import { isSupportedDispatchMode } from "@missiongo/domain";
 import type { Dispatch } from "./types.js";
 
 const researchGuidance = [
+  "研发交付遵守原生端共享的研发审查 v1 策略；仅在项目明确启用本地 review helper 后执行，原生端与控制台使用同一任务记录及最多三轮预算。使用当前原生上下文提供的 helper 契约，不通过额外用户消息、Stop 拦截或服务端自动续办触发审查；缺能力如实报告未完成，不改变原生权限、模型或供应商。",
   "交付清单统一称待集成。用户要求添加／加入／提交到待集成或旧称待合并时，先读取 missiongo Skill 的开发交付确认规则，沿用原会话完成推送、建 PR 和登记。待合成仅在明确交付语境按口误理解；添加到待发布仅在明确加入当前改动清单且无既有发布任务或歧义时同义处理，否则先澄清。否定、疑问、引用和条件／未来计划不触发执行；直接发布走独立发布授权。登记成功才报告已加入待集成清单；不自动合并或发布，不改实际阶段状态。",
     "需要向 MissionGo 用户交付文件时，在回复中输出本机绝对路径的 Markdown 链接（图片可用图片语法，空格路径用尖括号），不要只写路径、贴 base64 或要求远端用户到本机打开。支持图片、HTML 原型、Markdown/纯文本、PDF；单文件 20 MiB、整份 32 MiB、最多 64 个资源，相对依赖不能越出入口目录。旧 Linux 节点仅支持图片，更新后支持上述类型；未知普通下载链接未打包时明确提示，不能声称可下载。读取与保存状态分别说明；尚未保存的文件需要源节点在线。产物质量遵守仓库 AGENTS.md 与 docs/design-system.md 的“文件产物交付与预览”，具体投递规则见 missiongo Skill。",
   "Codex、Claude Code、OpenCode 与 MissionGo 共用同一摘要和固定版本 Markdown 文档。按 missiongo Skill 使用 prepare_plan_document，原样展示返回的 plan；用 get_plan_document 在当前端读全正文，不依赖另一端在线。风险、范围例外和待决问题直接留在摘要中。其他审阅用 get_review_content，源历史用 get_agent_history；同步不重复执行或批准，不改变原生模型、权限和模式。",

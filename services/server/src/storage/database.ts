@@ -1,3 +1,4 @@
+import { DEVELOPMENT_REVIEW_SCHEMA } from "../development-reviews.js";
 import { COMMON_COMMAND_SCHEMA } from "../common-commands.js";
 import { CONSOLE_CHANGE_SCHEMA } from "../console-changes.js";
 import { sourceMutation } from "./sql-mutation.js";
@@ -2799,6 +2800,13 @@ export class MissionGoDatabase {
           CREATE INDEX agent_message_client_identity ON agent_session_messages(session_id, client_message_id);
           CREATE INDEX external_message_client_identity ON external_native_messages(session_id, json_extract(payload_json,'$.clientMessageId'));`);
         this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202611150551,new Date().toISOString());
+      });
+    }
+
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611160445").get()) {
+      this.transaction(() => {
+        this.connection.exec(DEVELOPMENT_REVIEW_SCHEMA);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202611160445,new Date().toISOString());
       });
     }
 

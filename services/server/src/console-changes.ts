@@ -24,6 +24,8 @@ const dispatchOwner = (column = "dispatch_id") => `(SELECT account_id FROM dispa
 const sessionOwner = `(SELECT d.account_id FROM agent_sessions s JOIN dispatches d ON d.id=s.dispatch_id WHERE s.id=$.session_id)`;
 const externalOwner = `(SELECT account_id FROM external_agent_sessions WHERE id=$.session_id)`;
 const specs: Record<string, Spec> = {
+ development_reviews: { kind: "sessions", account: `COALESCE(${sessionOwner},${externalOwner})`, resource: "$.session_id" },
+ development_review_policy: { kind: "sessions", account: `COALESCE(${sessionOwner},${externalOwner})`, resource: "$.session_id" },
  account_common_commands: { kind: "config", account: "$.account_id" },
  products: { kind: "products", product: "$.id", ignore: ["next_item_sequence"] },
  components: { kind: "products", product: "$.product_id" },

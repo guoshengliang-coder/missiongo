@@ -1,7 +1,7 @@
 ---
 name: missiongo
 description: 通过 MissionGo MCP 查询项目概览、吞吐、交付周期和验收打回率，或完整读取及处理指定条目、评论、创建和上传附件；核实合并与发布后可靠交接。不修改条目正文与字段，不决定验收。
-version: 5.73.0
+version: 5.74.0
 ---
 
 # MissionGo 条目读取与评论
@@ -796,3 +796,15 @@ Codex、Claude Code、OpenCode 在原会话完整展示已登记固定文档后�
 服务端 get_current_account 的 supportsDocumentPlanApprovalRecovery 以及 writeTools 含 recover_plan_approval 时，已核实原批准但尚未登记的原会话可调用 recover_plan_approval(itemKey, documentId, revision, idempotencyKey, dispatchId 或 sessionId)，两种身份只选原来一种。外部 sessionId 仍须原账号和 OAuth 客户端；不得借别人的原身份或用新会话恢复。先完整读取固定原文及 get_review_content/get_item_plan_approvals 的当前修订，保持原范围。该工具不接收 approved、批准正文或任意字段，不启动 Agent、不发“批准”、不改变条目状态，不代表发布或验收。原生或 Web 已有有效批准直接复用，不再要求人工批准同一方案。
 
 restored/already_approved 只表示当前决定已登记；仍回读精确方案及真实状态，按正常流程归档和继续。history_incomplete/evidence_missing/source_conflict 表示来源不完整或不可核验，不代表用户拒绝；可在现有只读历史入口取得指定原会话缺页后再显式恢复，同内容重试用原键。scope_changed/identity_unavailable 保留现状，不换账号、文档或会话绕过。普通历史读取、get_plan_document/get_review_content 继续只读，不能声称阅读已自动恢复批准。旧节点缺来源字段时明确需更新或补齐证据，不重复索批、不改用户原消息。
+
+
+## 原生端共享研发交付审查（AND-531，5.74）
+
+已明确启用本项目本地研发审查集成时，Codex、Claude Code、OpenCode 的原生会话与 MissionGo 控制台遵守同一研发审查 v1。使用原生上下文提供的 `review-cli.mjs help` 契约；不得猜安装位置或下载运行未核实脚本。首次启用集成仍须用户明确授权并完成原生信任，不自动修改全机设置。普通讨论、查询、等待方案批准不启动审查。
+
+- 用户批准的研发完成后、最终交付前，由原会话 `begin` 绑定真实原生会话、实际用户请求锚点、模型/供应商、完整 base SHA、验收标准、必要检查及代码范围。同一请求、重连或切换入口复用原 taskId，不通过换 ID 重置预算。
+- `review` 启动同类原生 Agent 的独立只读上下文，保留当前模型及供应商；问题由原会话核实并在已有授权内补修。无有效阻塞问题可提前结束；最多三轮，每轮至多一次 `confirm`，复用该轮原 reviewer 定向复核。必要验证由原执行上下文 `check` 运行，reviewer 未运行测试不冒充验证成功。
+- 普通已授权问题自动补修后统一交付结果；新增产品取舍、范围、权限、破坏性动作或外部依赖才暂停相应动作。第三轮未解决、模型不符、权限无法核实、输出缺失、停止或超时均报告未完成。未知 reviewer 不替换、不自动重试；保留原执行标识核查。
+- 提交后在原工作区执行 `verify`，将相同审查内容绑定实际干净 HEAD 与 base。代码变化、范围遗漏、检查失败、证据缺失或超过有效期须重新核实，不拿历史通过作当前依据。节点认证同步只读取当前原生会话的本地事实；控制台不会启动另一轮，审查不改变条目状态。
+- 原生端离线仍可完成本地审查；服务端离线不阻断普通研发。未安装、未启用、原生版本不支持或权限缺失时如实说明，不承诺已启用。新集成启用后的交付门禁不能用旧客户端缺字段绕过；历史未启用会话继续兼容，不回填虚假失败。
+- 不拦截 Stop、不伪造用户输入/批准、不启用其他托管执行、不更换主会话模型/权限、不自动安装、推送、合并、发布或验收。审查记录是质量证据，不是人工授权；同模型审查仍有共同盲区。
