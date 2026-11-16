@@ -100,7 +100,13 @@ export async function handleDesktopRequest(request: DesktopRequest): Promise<unk
     case "logout": {
       login?.abort(); await stop(); delete config.token; saveConfig(root, config); profileCache = { products: [], repos: [] }; profileAt = 0; return {};
     }
-    case "rename": await api().call("PATCH", "/api/v1/node/me", { nickname: request.name }); config.name = request.name; saveConfig(root, config); return {};
+    case "rename": {
+      await api().call("PATCH", "/api/v1/node/me", { nickname: request.name });
+      const current=loadConfig(root);
+      if (current.server !== config.server || current.token !== config.token || current.nodeId !== config.nodeId
+        || current.installationId !== config.installationId) throw new Error("登录状态已变化，旧设备名称结果未写入本地");
+      current.name=request.name;saveConfig(root,current);return {};
+    }
     case "agent": {
       if (!["claude_code", "codex", "opencode"].includes(request.kind)) throw new Error("不支持的 Agent");
       if (request.enabled) {
@@ -142,7 +148,7 @@ if (process.argv[2] === "_bridge") {
   await runNode(root, entry, abort.signal, (text) => event({ type: "status", text }), observe(), { managedAllowed: true }).catch((error) => { event({ type: "status", text: safeError(error) }); process.exitCode = 1; });
 } else if (process.argv[2] === "_host") {
   await runHost(root, process.argv[3] ?? "").catch((error) => { event({ type: "status", text: safeError(error) }); process.exitCode = 1; });
-} else {
+} else if (process.argv[2] === "--worker") {
   // Stdout is a bounded local RPC stream. It never contains node credentials.
   const input = createInterface({ input: process.stdin });
   input.on("line", (line) => {
