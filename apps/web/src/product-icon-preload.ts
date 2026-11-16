@@ -60,7 +60,12 @@ export class ProductIconPreloader {
     if (this.disposed) return;
     this.allowed = new Set(urls.slice(0, PRODUCT_ICON_PRELOAD_LIMIT));
     for (const url of this.completed) if (!this.allowed.has(url)) this.completed.delete(url);
-    for (const [url, controller] of this.active) if (!this.allowed.has(url)) controller.abort();
+    for (const [url, controller] of this.active) if (!this.allowed.has(url)) {
+      // Cancellation stops browser I/O now; its promise may settle in a later
+      // microtask, after the same URL has already returned to the warm set.
+      this.active.delete(url);
+      controller.abort();
+    }
     this.pending = [...this.allowed].filter(url => !this.active.has(url) && !this.completed.has(url));
     if (this.timer === undefined) this.timer = setTimeout(() => { this.timer = undefined; this.pump(); }, START_DELAY_MS);
   }
@@ -69,6 +74,7 @@ export class ProductIconPreloader {
     this.disposed = true;
     clearTimeout(this.timer);
     for (const controller of this.active.values()) controller.abort();
+    this.active.clear();
     this.pending = [];
     this.completed.clear();
   }
@@ -81,6 +87,7 @@ export class ProductIconPreloader {
       this.active.set(url, controller);
       void Promise.resolve().then(() => controller.signal.aborted ? false : this.load(url, controller.signal))
         .catch(() => false).then(success => {
+          if (this.active.get(url) !== controller) return;
           this.active.delete(url);
           if (!this.disposed && !controller.signal.aborted && success && this.allowed.has(url)) this.completed.add(url);
           this.pump();

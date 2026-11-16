@@ -59,6 +59,41 @@ describe("project icon warming", () => {
     f.queue.dispose();
   });
 
+  it("requeues an icon that returns before its cancelled request settles", async () => {
+    vi.useFakeTimers();
+    const f = controlled();
+    try {
+      f.queue.update(["a"]);
+      await vi.advanceTimersByTimeAsync(200);
+      f.queue.update(["b"]);
+      f.queue.update(["a"]);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(f.calls.map(call => call.url)).toEqual(["a", "a"]);
+      expect(f.calls[1]!.signal.aborted).toBe(false);
+    } finally { f.queue.dispose(); }
+  });
+
+  it("ignores a cancelled request's late result when its URL has a new request", async () => {
+    vi.useFakeTimers();
+    const calls: { url: string; finish: (success: boolean) => void }[] = [];
+    const queue = new ProductIconPreloader((url: string) => new Promise<boolean>(finish => calls.push({ url, finish })));
+    try {
+      queue.update(["a"]);
+      await vi.advanceTimersByTimeAsync(200);
+      queue.update(["b"]);
+      queue.update(["a", "c", "d"]);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(calls.map(call => call.url)).toEqual(["a", "a", "c"]);
+      calls[0]!.finish(true);
+      await vi.advanceTimersByTimeAsync(0);
+      // The old result cannot remove the new active A and free a third slot.
+      expect(calls.map(call => call.url)).toEqual(["a", "a", "c"]);
+      calls[1]!.finish(true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls.map(call => call.url)).toEqual(["a", "a", "c", "d"]);
+    } finally { queue.dispose(); }
+  });
+
   it("does not retry failed URLs in a loop, but permits a later snapshot to retry", async () => {
     vi.useFakeTimers();
     const f = controlled();
