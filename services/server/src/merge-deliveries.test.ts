@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { legacyIntegratorPrompt } from "./legacy-merge-authorization.js";
 import { recoveryDetailPrefix } from "./merge-recovery-transport.js";
+import { releaseCandidatePage } from "./release-candidate-page.js";
 import { prerequisitesActionSchema, prerequisiteObservation, type PrerequisiteBatch } from "./merge-prerequisites.js";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -379,6 +380,31 @@ describe("planned integration batches",()=>{
     f.act({kind:"check",deliveryId:d.id,expectedHead:d.head,base:"b".repeat(40),checkedAt:new Date().toISOString(),source:"Actual failed CI",checks:"failed",local:"passed",mergeable:"clean",validation:"Preserve failed check"});
     expect(f.current().prerequisiteGate.ready).toBe(true);expect(f.current().entries[0]!.mergeReady).toBe(false);
     f.check(d.id);f.merged(d.id);expect(f.current().prerequisiteGate.required).toBe(false);
+  });
+  it("applies a human whole-batch deferral before first merge while retaining merge checks and pending releases",async()=>{
+    const f=await batchFixture(2,false,true),first=f.deliveries[0]!,second=f.deliveries[1]!;
+    f.act(f.plan);f.check(first.id);
+    expect(f.current().prerequisiteGate.ready).toBe(false);
+    const snapshot=f.merges.preview(f.owner.id,f.b.id).snapshot,key="defer-frozen-batch";
+    f.merges.requestReconciliation(f.owner.id,f.b.dispatchId,f.b.id,key,snapshot,{kind:"defer_publication",reason:"Complete the selected integrations; publish later"});
+    expect(()=>f.merges.applyReconciliation(f.owner.id,f.b.dispatchId,f.b.id,key)).toThrow(/人工/);
+    expect(f.current().prerequisiteGate.required).toBe(true);
+    f.merges.decideReconciliation(f.owner.id,f.b.id,key,snapshot,"approved",true);
+    expect(f.current().prerequisiteGate.required).toBe(true);
+    f.merges.applyReconciliation(f.owner.id,f.b.dispatchId,f.b.id,key);
+    expect(f.current()).toMatchObject({publish:true,publicationDeferred:true,prerequisiteGate:{required:false,ready:true}});
+    f.act({kind:"check",deliveryId:first.id,expectedHead:first.head,base:"b".repeat(40),checkedAt:new Date().toISOString(),
+      checks:"failed",local:"passed",mergeable:"clean",source:"Actual failed CI",validation:"A deferral is not permission to merge a failing head"});
+    expect(f.current().entries[0]!.mergeReady).toBe(false);expect(()=>f.merged(first.id)).toThrow();
+    f.check(first.id);f.grant(false);expect(()=>f.merged(first.id)).toThrow();f.grant();
+    f.merged(first.id);f.check(second.id);f.merged(second.id);
+    expect(f.current().publicationDeferred).toBe(true);
+    f.merges.recordCombinedValidation(f.owner.id,f.b.dispatchId,f.b.id,{head:"c".repeat(40),checkedAt:new Date().toISOString(),source:"Synthetic actual target",validation:"The merged combination passed"});
+    expect(()=>f.act({kind:"publication_progress",state:"publishing",checkedAt:new Date().toISOString(),resultsDigest:f.current().resultsDigest,
+      detail:"Publishing is forbidden after this whole-batch choice"})).toThrow();
+    expect(f.finish()).toMatchObject({state:"finished",publish:true,publicationDeferred:true});
+    for(const d of f.deliveries)expect(f.store.getWorkItem(d.itemKeys[0]!).status).toBe("development_complete");
+    expect(releaseCandidatePage(f.store,f.merges,f.item.productId).candidates).toHaveLength(2);
   });
   it("AND-521 persists waiting across database reopen and replays the original uncertain request",async()=>{
     const dir=mkdtempSync(join(tmpdir(),"and521-resume-")),path=join(dir,"state.sqlite");

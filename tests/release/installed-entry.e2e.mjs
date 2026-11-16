@@ -129,7 +129,7 @@ async function fixture() {
     "if [ -e '/fixture/current' ]; then readlink -f '/fixture/current'; fi": "/fixture/live",
     "readlink -f '/fixture/downloads/missiongo-android-latest.apk' 2>/dev/null": "/fixture/downloads/MissionGo-Android-1.0.0-1.apk",
     ...Object.fromEntries(Object.entries(remoteFiles).map(([path, content]) => [`cat ${quote(path)} 2>/dev/null`, content])),
-    ...Object.fromEntries(["/fixture/downloads/MissionGo-Android-1.0.0-1.apk", "/fixture/live/apps/web/public/downloads/missiongo-macos-latest.zip", "/fixture/live/apps/web/public/maven/io/missiongo/missiongo-feedback/1.0.0/missiongo-feedback-1.0.0.pom"].map(path => [`sha256sum ${quote(path)} 2>/dev/null | cut -d ' ' -f 1`, path.endsWith(".pom") ? digest("<version>1.0.0</version>") : hash])),
+    ...Object.fromEntries(["/fixture/downloads/MissionGo-Android-1.0.0-1.apk", "/fixture/live/apps/web/public/downloads/missiongo-macos-latest.zip", "/fixture/live/apps/web/public/maven/io/missiongo/missiongo-feedback/1.0.0/missiongo-feedback-1.0.0.pom", "/fixture/live/apps/web/public/maven/io/missiongo/missiongo-feedback/1.0.0/missiongo-feedback-1.0.0.aar"].map(path => [`sha256sum ${quote(path)} 2>/dev/null | cut -d ' ' -f 1`, path.endsWith(".pom") ? digest("<version>1.0.0</version>") : path.endsWith(".aar") ? digest("fixture archive") : hash])),
   };
   writeFileSync(join(bin, "ssh"), header + `const command=args.at(-2)==='date'&&args.at(-1)==='+%Y%m%d-%H%M%S'?'date +%Y%m%d-%H%M%S':args.at(-1);if(!args.includes('fixture'))process.exit(92);const exact=${JSON.stringify(exact)};
 const backupCommands=${JSON.stringify(backupCommands)};
