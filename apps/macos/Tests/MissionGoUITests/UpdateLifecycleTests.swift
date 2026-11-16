@@ -201,10 +201,19 @@ final class UpdateLifecycleTests: XCTestCase {
                         scroll.scrollerStyle = style
                         let beforeWidth = scroll.documentView?.frame.width ?? 0
                         let beforeViewport = scroll.contentView.bounds.width
-                        // Match MainWindowLayoutTests: finish AppKit's scroller
-                        // tiling before measuring the SwiftUI document after a resize.
-                        scroll.tile()
-                        host.layoutSubtreeIfNeeded()
+                        // AppKit tiling alone does not flush SwiftUI's deferred
+                        // first layout on macOS 15. Allow the native render cycle
+                        // to settle, bounded to one second; keep the fit assertion.
+                        for _ in 0..<50 {
+                            scroll.tile()
+                            host.layoutSubtreeIfNeeded()
+                            controller.window.displayIfNeeded()
+                            if let document = scroll.documentView,
+                               document.frame.width <= scroll.contentView.bounds.width + 1 {
+                                break
+                            }
+                            try await Task.sleep(nanoseconds: 20_000_000)
+                        }
                         let document = try XCTUnwrap(scroll.documentView)
                         XCTAssertEqual(scroll.scrollerStyle, style)
                         if beforeWidth > beforeViewport + 1 || document.frame.width > scroll.contentView.bounds.width + 1 {
