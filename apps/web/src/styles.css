@@ -417,8 +417,12 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .product-switcher > svg { flex: 0 0 auto; color: var(--muted); }
 
 /* An icon, or the item prefix on a colour derived from the product id. */
-.product-badge { flex: 0 0 auto; display: grid; place-items: center; border-radius: 7px; object-fit: cover; }
+.product-badge { position: relative; flex: 0 0 auto; display: grid; place-items: center; border-radius: 7px; object-fit: cover; }
 .product-badge.generated { color: #fff; font-weight: 760; letter-spacing: -0.02em; line-height: 1; }
+.product-badge-label { white-space: nowrap; }
+.product-badge-image { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: inherit; object-fit: cover; opacity: 0; }
+.product-badge[data-icon-state="ready"] .product-badge-image { opacity: 1; }
+.product-badge[data-icon-state="ready"] .product-badge-label { visibility: hidden; }
 
 .product-icon-field { display: flex; align-items: center; gap: 12px; }
 /* The form styles its labels as stacked fields; this one is a checkbox and its text. */

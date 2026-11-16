@@ -426,6 +426,8 @@ Builder 转交（AND-510）对外部来源复用实际活动判定：历史记�
 
 ### 单选控件（AND-322）
 
+项目图标加载（AND-530）：`ProductBadge` 在图片等待、失败及解码失败时显示原彩色项目前缀，当前版本图片解码成功后才原位替换；固定尺寸、名称与选择操作不依赖图片就绪。条目页和控制台项目菜单使用及时加载的小图标，后台预热仅针对当前账号可访问项目，最多8个、并发2个，失败不循环重试，重开菜单可恢复。共用设置列表及图标编辑页沿用同一兜底；更换/删除及旧解码完成不能恢复旧图。保留服务端私有缓存、权限与公共选择器行为，无新增样式豁免。契约与验证见 [项目图标加载](and-530-project-icons.md)、`product-icon-preload.test.ts` 和 `and-530-project-icons.audit.spec.ts`；浏览器模拟不替代生产弱网或真实 WebView 验证。
+
 - Web、Android/macOS 内嵌 Web 页面及反馈 SDK 页统一使用 `Select`（`apps/web/src/select.tsx`），提供可访问的 select-only combobox。独立原生选择器保留系统行为，详见[覆盖清单](and-322-select-audit.md)。
 - 默认使用 `--surface-strong` 底色、`--select-border` 边界、`--ink` 值文字、`--muted` 箭头；边界在明暗主题单独声明，不把普通分隔线用作控件边界。箭头与值分开布局，左右留白 12px、间隔 10px。
 - 表单至少 44px 高；紧凑筛选、Agent 快捷设置至少 36px。触控设备上统一至少 44px、字号至少 16px。使用最小高度，让字体放大后仍能容纳文字。
