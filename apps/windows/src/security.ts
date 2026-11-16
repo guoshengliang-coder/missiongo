@@ -3,6 +3,7 @@ import { existsSync, lstatSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
 import { installFileSecurity, type NativeFileSecurity } from "../../node/src/storage.js";
 import { windowsSystemExecutable } from "../../node/src/launch.js";
+import { windowsFailure } from "../../node/src/windows-failure.js";
 
 // Fixed program text. Paths and credential bytes are supplied only through
 // stdin. Neither command arguments nor error messages contain secret values.
@@ -52,7 +53,7 @@ function nativeCall(action: string, payload: { path?: string; value?: string }):
   const result = spawnSync(windowsSystemExecutable("powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(program, "utf16le").toString("base64")], {
     windowsHide: true, input: JSON.stringify({ action, ...payload }) + "\n", encoding: "utf8", timeout: 10_000, maxBuffer: 2 * 1024 * 1024,
   });
-  if (result.error || result.status !== 0) throw new Error("Windows credential or file protection failed; use a private local NTFS directory owned by this user");
+  if (result.error || result.status !== 0) throw new Error(`Windows credential or file protection failed (${windowsFailure(result.stderr ?? "", (result.error as NodeJS.ErrnoException | undefined)?.code, result.status)}); use a private local NTFS directory owned by this user`);
   try { return JSON.parse(result.stdout.trim()); } catch { throw new Error("Windows protection returned an invalid response"); }
 }
 
