@@ -4,6 +4,15 @@ import { existsSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join, isAbsolute, extname, win32, dirname } from "node:path";
 
+// PowerShell 7 can pass its module path into Windows PowerShell 5.1. Load
+// built-ins from the selected interpreter, preserving user module settings.
+export const windowsPowerShellBootstrap = `$ErrorActionPreference='Stop'; foreach ($module in @('Microsoft.PowerShell.Utility','Microsoft.PowerShell.Management','Microsoft.PowerShell.Security')) { Import-Module ($PSHOME + '/Modules/' + $module + '/' + $module + '.psd1') -ErrorAction Stop }; `;
+
+/** Worker environments on Windows can be case sensitive even though Win32 is not. */
+export function windowsEnvironmentValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  return env[Object.keys(env).find(key => key.toLowerCase() === name.toLowerCase()) ?? name];
+}
+
 /** Also applies after an explicit environment script: cmd's implicit cwd lookup
  * must not let an npm shim load a repository's node.exe. */
 export function safeWindowsEnvironment(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -25,13 +34,14 @@ export function agentEnvironment(base = process.env, platform = process.platform
   const env = { ...base };
   const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
   for (const key of Object.keys(env)) if (key !== pathKey && key.toLowerCase() === "path") delete env[key];
-  const home = (platform === "win32" ? env.USERPROFILE : env.HOME) ?? homedir();
+  const value = (name: string) => windowsEnvironmentValue(env, name);
+  const home = (platform === "win32" ? value("USERPROFILE") : env.HOME) ?? homedir();
   const defaults = platform === "win32" ? [
     dirname(process.execPath), join(home, ".local", "bin"), join(home, ".volta", "bin"), join(home, "scoop", "shims"),
-    ...(env.APPDATA ? [join(env.APPDATA, "npm")] : []), ...(env.NVM_SYMLINK ? [env.NVM_SYMLINK] : []),
-    ...(env.LOCALAPPDATA ? [join(env.LOCALAPPDATA, "Microsoft", "WinGet", "Links"), join(env.LOCALAPPDATA, "Microsoft", "WindowsApps")] : []),
-    ...(env.ProgramFiles ? [join(env.ProgramFiles, "nodejs"), join(env.ProgramFiles, "Git", "cmd"), join(env.ProgramFiles, "GitHub CLI")] : []),
-    ...(env.SystemRoot ? [join(env.SystemRoot, "System32"), join(env.SystemRoot, "System32", "WindowsPowerShell", "v1.0")] : []),
+    ...(value("APPDATA") ? [join(value("APPDATA")!, "npm")] : []), ...(value("NVM_SYMLINK") ? [value("NVM_SYMLINK")!] : []),
+    ...(value("LOCALAPPDATA") ? [join(value("LOCALAPPDATA")!, "Microsoft", "WinGet", "Links"), join(value("LOCALAPPDATA")!, "Microsoft", "WindowsApps")] : []),
+    ...(value("ProgramFiles") ? [join(value("ProgramFiles")!, "nodejs"), join(value("ProgramFiles")!, "Git", "cmd"), join(value("ProgramFiles")!, "GitHub CLI")] : []),
+    ...(value("SystemRoot") ? [join(value("SystemRoot")!, "System32"), join(value("SystemRoot")!, "System32", "WindowsPowerShell", "v1.0")] : []),
   ] : [dirname(process.execPath), join(home, ".local", "bin"), "/usr/local/bin", "/usr/bin", "/bin"];
   const separator = platform === "win32" ? ";" : delimiter;
   env[pathKey] = [...new Set([...(env[pathKey] ?? "").split(separator).filter(Boolean), ...defaults.filter(existsSync)])].join(separator);
@@ -77,7 +87,7 @@ export function spawnAgent(executable: string, args: readonly string[], options:
 
 /** Terminate the owned process tree on timeout, never a name-based selection. */
 export function windowsSystemExecutable(name: "powershell.exe" | "taskkill.exe" | "wsl.exe"): string {
-  const root = process.env.SystemRoot;
+  const root = windowsEnvironmentValue(process.env, "SystemRoot");
   if (!root || !isAbsolute(root)) throw new Error("Windows system directory is unavailable");
   return name === "powershell.exe" ? join(root, "System32", "WindowsPowerShell", "v1.0", name) : join(root, "System32", name);
 }

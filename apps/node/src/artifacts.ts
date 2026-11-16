@@ -33,6 +33,7 @@ async function readFile(root: string, directory: FileHandle | undefined, name: s
       handles.push(handle); parent = handle;
     }
     const stat = await parent!.stat();
+    const identity = process.platform === "win32" ? await parent!.stat({ bigint: true }) : undefined;
     if (!stat.isFile()) throw new ArtifactError("file_denied", name);
     if (stat.size <= 0 || stat.size > 20 * 1024 * 1024) throw new ArtifactError("too_large", name);
     const parts: Buffer[] = []; let total = 0;
@@ -48,8 +49,18 @@ async function readFile(root: string, directory: FileHandle | undefined, name: s
     // the bounded read so a replaced directory cannot publish another file.
     if (process.platform !== "linux") {
       if ((process.platform === "win32" ? (await realpath(physical)).toLowerCase() !== physical.toLowerCase() : await realpath(physical) !== physical)) throw new ArtifactError("file_denied", name);
-      const current = await lstat(physical);
-      if (current.ino !== stat.ino || current.dev !== stat.dev) throw new ArtifactError("file_denied", name);
+      if (process.platform === "win32") {
+        // Windows path stat may report dev=0 while fstat returns the volume ID.
+        // Compare two held handles instead of discarding the volume check.
+        const verify = await open(physical, flags); handles.push(verify);
+        const current = await verify.stat({ bigint: true });
+        if (current.ino !== identity!.ino || current.dev !== identity!.dev
+          || (await lstat(physical)).isSymbolicLink()
+          || (await realpath(physical)).toLowerCase() !== physical.toLowerCase()) throw new ArtifactError("file_denied", name);
+      } else {
+        const current = await lstat(physical);
+        if (current.ino !== stat.ino || current.dev !== stat.dev) throw new ArtifactError("file_denied", name);
+      }
     }
     return Buffer.concat(parts);
   } finally { for (const handle of handles.reverse()) await handle.close(); }

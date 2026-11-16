@@ -20,8 +20,9 @@ if (process.platform !== "win32") {
   try {
     report.stdin = capture(run("$ErrorActionPreference='Stop'; [Console]::InputEncoding=[Text.UTF8Encoding]::new($false); [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $r=[Console]::In.ReadLine() | ConvertFrom-Json; [Console]::Out.WriteLine(($r | ConvertTo-Json -Compress))", { value: "synthetic 中文" }));
     const source = readFileSync(new URL("../apps/windows/src/security.ts", import.meta.url), "utf8").match(/const program = `([\s\S]*?)`;/)?.[1];
-    if (!source) throw new Error("Fixed security program unavailable");
-    report.privateDirectory = capture(run(source, { action: "directory", path: join(root, "private", "nested") }));
+    const bootstrap = readFileSync(new URL("../apps/node/src/launch.ts", import.meta.url), "utf8").match(/export const windowsPowerShellBootstrap = `([^`]+)`;/)?.[1];
+    if (!source || !bootstrap) throw new Error("Fixed security program unavailable");
+    report.privateDirectory = capture(run(bootstrap + source, { action: "directory", path: join(root, "private", "nested") }));
     const file = join(root, "fixture.txt"); writeFileSync(file, "synthetic");
     const fd = openSync(file, "r");
     try {
@@ -32,6 +33,15 @@ if (process.platform !== "win32") {
     const launcher = join(root, "agent with spaces.cmd");
     writeFileSync(launcher, `@echo off\r\n"${process.execPath}" "%~dp0fixture.cjs" %*\r\n`);
     report.cmd = capture(crossSpawn.sync(launcher, ["synthetic", "中文"], { cwd: root, env: { ...process.env, NoDefaultCurrentDirectoryInExePath: "1" }, encoding: "utf8", timeout: 15000 }));
+    for (const detached of [false, true]) {
+      report[`cmdAsyncDetached${detached}`] = await new Promise(resolve => {
+        const child = crossSpawn(launcher, ["synthetic", "中文"], { cwd: root, env: { ...process.env, NoDefaultCurrentDirectoryInExePath: "1" }, detached, stdio: ["ignore", "pipe", "pipe"], timeout: 15000 });
+        let stdout = "", stderr = "";
+        child.stdout.on("data", b => { stdout += b.toString(); }); child.stderr.on("data", b => { stderr += b.toString(); });
+        child.on("error", error => resolve(capture({ error })));
+        child.on("close", status => resolve(capture({ status, stdout, stderr })));
+      });
+    }
     report.knownGit = Object.fromEntries(["ProgramFiles", "PROGRAMFILES", "ProgramW6432"].map(key => [key, Boolean(process.env[key] && existsSync(join(process.env[key], "Git", "cmd", "git.exe")))]));
     report.nodeDirectoryPresent = existsSync(dirname(process.execPath));
     console.log(JSON.stringify(report, null, 2));

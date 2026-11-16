@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { spawnAgent, killProcessTree } from "./launch.js";
+import { spawnAgent, killProcessTree, windowsPowerShellBootstrap } from "./launch.js";
 
 /** The script is explicitly selected locally. Paths/data enter over stdin,
  * never PowerShell source text. No user profile is evaluated implicitly.
  */
 export async function readPowerShellEnvironment(path: string, base: NodeJS.ProcessEnv, timeoutMs: number, executable = "powershell.exe"): Promise<NodeJS.ProcessEnv> {
   const marker = `__MISSIONGO_ENV_${randomUUID()}__`;
-  const source = `$ErrorActionPreference='Stop'; [Console]::InputEncoding=[Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); `
+  const source = windowsPowerShellBootstrap + `$ErrorActionPreference='Stop'; [Console]::InputEncoding=[Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); `
     + `$request=[Console]::In.ReadLine() | ConvertFrom-Json; . $request.path | Out-Null; `
     + `$values=@{}; Get-ChildItem Env: | ForEach-Object { $values[$_.Name]=$_.Value }; `
     + `[Console]::Out.WriteLine($request.marker); [Console]::Out.WriteLine(($values | ConvertTo-Json -Compress)); [Console]::Out.WriteLine($request.marker);`;
