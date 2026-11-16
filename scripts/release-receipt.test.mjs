@@ -83,6 +83,9 @@ test("reads versions and source commits from the live release and the published 
 
     const pom = "<project><version>0.2.6</version></project>";
     put(join(release, "apps/web/public/maven/io/missiongo/missiongo-feedback/0.2.6/missiongo-feedback-0.2.6.pom"), pom);
+    const aar = Buffer.from("sdk-build");
+    const aarPath = join(release, "apps/web/public/maven/io/missiongo/missiongo-feedback/0.2.6/missiongo-feedback-0.2.6.aar");
+    put(aarPath, aar);
     put(join(release, "released.json"), JSON.stringify({ artifacts: { androidSdk: { version: "0.2.6", commit: newCommit } } }));
 
     const snapshot = readSnapshot({ host: "fake", currentLink: current, downloadsDir: downloads });
@@ -91,6 +94,9 @@ test("reads versions and source commits from the live release and the published 
     assert.equal(snapshot.androidApp?.version, "0.1.12");
     assert.equal(snapshot.macosApp?.sourceCommit, newCommit);
     assert.equal(snapshot.androidSdk?.sourceCommit, newCommit);
+    assert.equal(snapshot.androidSdk?.aarSha256, sha(aar));
+    rmSync(aarPath);
+    assert.equal(readSnapshot({ host: "fake", currentLink: current, downloadsDir: downloads }).androidSdk, null);
   } finally {
     process.env.PATH = priorPath;
     rmSync(root, { recursive: true, force: true });
