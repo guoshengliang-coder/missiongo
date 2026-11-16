@@ -17,7 +17,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line);
   if (process.env.TEST_AGENT_EVENTS) appendFileSync(process.env.TEST_AGENT_EVENTS, line + "\n");
   if (codex) {
-    if (message.method === "initialize") emit({ id: message.id, result: { userAgent: process.env.FAKE_MANAGED ? "codex/0.155.0-alpha.16.3 fixture" : "codex/1.0.0 fixture" } });
+    if (message.method === "initialize" && process.env.TEST_CONTROL_REJECT) emit({ id: message.id, error: { code: -1 } });
+    else if (message.method === "initialize") emit({ id: message.id, result: { userAgent: process.env.FAKE_MANAGED ? "codex/0.155.0-alpha.16.3 fixture" : "codex/1.0.0 fixture" } });
     else if (message.method === "model/list" && process.env.TEST_CATALOG_ENDLESS) emit({id:message.id,result:{data:[],nextCursor:String(Number(message.params.cursor ?? 0)+1)}});
     else if (message.method === "model/list" && process.env.TEST_CATALOG_FAILURE) emit({ id: message.id, error: { code: -1 } });
     else if (message.method === "mcpServer/list") emit({ id: message.id, result: { data: [{ runtimeStatus: process.env.FAKE_LIVE_MCP ? "connected" : "disabled", tools: {} }] } });

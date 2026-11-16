@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { JsonProcess } from "./process.js";
 import { OpenCodeAPI } from "./opencode.js";
@@ -33,9 +33,15 @@ export function modelOptions(kind: Kind, value: Wire): AgentModel[] {
 }
 
 const cache = new Map<string, { at: number; models: Promise<AgentModel[]> }>();
+/** Configuration paths alone do not identify the environment a launcher uses.
+ * Keep only a digest: provider credentials must not become cache-key text. */
+export function agentProbeKey(kind: Kind, settings: AgentConfig, launch: ClaudeLaunch): string {
+  return createHash("sha256").update(JSON.stringify([kind, settings, launch.executable,
+    Object.entries(launch.env).filter(([,value])=>value !== undefined).sort(([a],[b])=>a.localeCompare(b))])).digest("hex");
+}
 /** Read-only local metadata. Never sends a user message, runs hooks or asks a model. */
 export function availableModels(kind: Kind, settings: AgentConfig, launch: ClaudeLaunch): Promise<AgentModel[]> {
-  const key = JSON.stringify([kind, settings]); const previous = cache.get(key);
+  const key = agentProbeKey(kind, settings, launch); const previous = cache.get(key);
   if (previous && Date.now() - previous.at < 10 * 60_000) return previous.models;
   const models = (async () => {
     if (kind === "opencode") {

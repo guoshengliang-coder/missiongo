@@ -181,3 +181,23 @@ it("bounds empty catalog pagination and keeps Claude's full sanitized catalog be
   expect(claude?.models).toHaveLength(20);expect(claude?.models?.[0]?.efforts).toEqual([]);
   expect(claude?.modes?.filter(mode=>mode.model)).toHaveLength(14);
 });
+
+it("does not reuse a successful control handshake after the resolved Agent environment changes",async()=>{
+  const root=temporary();chmodSync(fixture,0o755);
+  const path=script(root,"export TEST_CONTROL_REJECT=''\n");
+  vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response("---\nversion: 1.0.0\n---\n"));
+  const config={installationId:"fixture",server:"https://missiongo.example.com",agents:{codex:{executable:fixture,environmentScript:path}}};
+  expect((await detectAgents(config,"1.0.0"))[0]).toMatchObject({ready:true});
+  writeFileSync(path,"export TEST_CONTROL_REJECT=1\n");
+  expect((await detectAgents(config,"1.0.0"))[0]).toMatchObject({ready:false,unavailableReason:"Agent rejected protocol request"});
+});
+
+it("refreshes native mode evidence when the resolved Claude environment changes",async()=>{
+  const root=temporary();chmodSync(fixture,0o755);
+  const path=script(root,"export FAKE_CLAUDE_REJECT_MODE=''\n");
+  vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response("---\nversion: 1.0.0\n---\n"));
+  const config={installationId:"fixture",server:"https://missiongo.example.com",agents:{claude_code:{executable:fixture,environmentScript:path}}};
+  expect((await detectAgents(config,"1.0.0"))[0]?.modes).toContainEqual({mode:"auto",state:"available"});
+  writeFileSync(path,"export FAKE_CLAUDE_REJECT_MODE=auto\n");
+  expect((await detectAgents(config,"1.0.0"))[0]?.modes).toContainEqual({mode:"auto",state:"unavailable",reason:"native_mode_rejected"});
+});

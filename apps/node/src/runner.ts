@@ -17,7 +17,7 @@ import { syncSkill } from "./skills.js";
 import { OpenCodeAPI } from "./opencode.js";
 import { ClaudeEnvironmentCache, resolveClaudeLaunch, resolveAgentLaunch } from "./environment.js";
 import { prepareAttachments } from "./attachments.js";
-import { availableModels } from "./models.js";
+import { availableModels, agentProbeKey } from "./models.js";
 import { synchronizeExternal } from "./external.js";
 import { readSessionHistory } from "./session-history.js";
 import { nativeKey } from "./bindings.js";
@@ -46,7 +46,7 @@ export async function detectAgents(config: Config, expected?: string, resolveCla
       const skill = await syncSkill(kind, config.server!, expected, launch.env);
       let native: Awaited<ReturnType<typeof probeClaudeCapabilities>> | undefined;
       if (kind === "claude_code") {
-        const key=JSON.stringify([config.server,settings]);
+        const key=JSON.stringify([config.server,agentProbeKey(kind,settings,launch)]);
         let cached=nativeCapabilities.get(key);
         if (!cached || Date.now()-cached.at > 10*60_000) {
           if (nativeCapabilities.size >= 100) nativeCapabilities.delete(nativeCapabilities.keys().next().value!);

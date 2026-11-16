@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { modelOptions } from "./models.js";
+import { agentProbeKey, modelOptions } from "./models.js";
 
 it("keeps provider-qualified model identities and excludes unavailable tool models", () => {
   expect(modelOptions("opencode", { data: [
@@ -20,4 +20,13 @@ it("keeps valid models when neighboring records and effort catalogs are malforme
     const entries=[null,false,{model:"native",value:"native",modelID:"native",providerID:"gateway",capabilities:{tools:true},supportedEffortLevels:"wrong",variants:{},supportedReasoningEfforts:[null,{reasoningEffort:"high"}]}];
     expect(modelOptions(kind,kind === "claude_code" ? {models:entries}:{data:entries})).toMatchObject([{id:kind === "opencode" ? "gateway/native":"native",efforts:kind === "codex" ? ["high"]:[]}]);
   }
+});
+
+it("keys probe caches by resolved launch identity without retaining environment secrets",()=>{
+  const settings={executable:"/fixture/agent"};
+  const launch={executable:settings.executable,env:{PATH:"/fixture/bin",PROVIDER_TOKEN:"synthetic-secret"}};
+  const key=agentProbeKey("codex",settings,launch);
+  expect(key).toMatch(/^[a-f0-9]{64}$/);expect(key).not.toContain("synthetic-secret");
+  expect(agentProbeKey("codex",settings,{...launch,env:{PROVIDER_TOKEN:"synthetic-secret",PATH:"/fixture/bin"}})).toBe(key);
+  expect(agentProbeKey("codex",settings,{...launch,env:{...launch.env,PROVIDER_TOKEN:"rotated-synthetic"}})).not.toBe(key);
 });
