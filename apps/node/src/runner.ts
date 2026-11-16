@@ -64,7 +64,14 @@ export async function verifyRepo(path: string): Promise<string> {
   if (!isAbsolute(path)) throw new Error("Repository path must be absolute");
   const canonical = realpathSync(path);
   const top = await probe("git", ["rev-parse", "--show-toplevel"], canonical);
-  if (realpathSync(top) !== canonical) throw new Error("Map the repository root, not a subdirectory");
+  if (realpathSync(top) !== canonical) {
+    // Git may expand an 8.3 alias or change drive/path casing on Windows.
+    // A nonempty prefix still rejects a subdirectory; string inequality alone
+    // is not proof that two Windows spellings designate different roots.
+    if (process.platform !== "win32" || await probe("git", ["-C", canonical, "rev-parse", "--show-prefix"]) !== "") {
+      throw new Error("Map the repository root, not a subdirectory");
+    }
+  }
   return canonical;
 }
 export async function launch(root: string, job: Dispatch, entry: string, options: { externalPrompt?: string; signal?: AbortSignal } = {}): Promise<HostState> {

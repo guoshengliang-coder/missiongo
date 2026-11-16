@@ -7,6 +7,7 @@ import type { Config } from "./types.js";
 /** Installed by a native entrypoint before any Windows state is accessed. */
 export interface NativeFileSecurity {
   directory(path: string): void;
+  createdFile(path: string): void;
   file(path: string): void;
   protect(value: string): string;
   unprotect(value: string): string;
@@ -53,7 +54,12 @@ export function savePrivate(path: string, value: unknown): void {
   if (existsSync(path)) readPrivate(path);
   const temporary = `${path}.${randomUUID()}.tmp`;
   const fd = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
-  try { writeFileSync(fd, JSON.stringify(value)); fsyncSync(fd); } finally { closeSync(fd); }
+  try {
+    // Only the exclusively-created temporary file may be assigned an ACL.
+    // Existing files continue through the strict readPrivate check above.
+    if (process.platform === "win32") windowsSecurity().createdFile(temporary);
+    writeFileSync(fd, JSON.stringify(value)); fsyncSync(fd);
+  } finally { closeSync(fd); }
   renameSync(temporary, path);
   if (process.platform !== "win32") {
     const parent = openSync(dirname(path), constants.O_RDONLY);

@@ -82,7 +82,10 @@ export function spawnAgent(executable: string, args: readonly string[], options:
       return spawnAgent(interpreter, [...words, executable, ...args], { ...options, env }, interpreterDepth + 1);
     }
   }
-  return crossSpawn(executable, [...args], { ...options, env, windowsHide: true, shell: false });
+  // Windows detached CMD children can exit successfully without executing the
+  // launcher or retaining its pipes. taskkill /T already owns tree termination;
+  // only Unix needs a separate process group for kill(-pid).
+  return crossSpawn(executable, [...args], { ...options, env, detached: process.platform === "win32" ? false : options.detached, windowsHide: true, shell: false });
 }
 
 /** Terminate the owned process tree on timeout, never a name-based selection. */

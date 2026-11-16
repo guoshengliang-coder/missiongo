@@ -24,6 +24,12 @@ if (process.platform !== "win32") {
     if (!source || !bootstrap) throw new Error("Fixed security program unavailable");
     report.privateDirectory = capture(run(bootstrap + source, { action: "directory", path: join(root, "private", "nested") }));
     const file = join(root, "fixture.txt"); writeFileSync(file, "synthetic");
+    report.fileBeforeAssignment = capture(run(bootstrap + source, { action: "file", path: file }));
+    report.createdFile = capture(run(bootstrap + source, { action: "created_file", path: file }));
+    report.fileAfterAssignment = capture(run(bootstrap + source, { action: "file", path: file }));
+    const protectedValue = run(bootstrap + source, { action: "protect", value: "synthetic-only" });
+    report.protect = capture(protectedValue);
+    if (protectedValue.status === 0) report.unprotect = capture(run(bootstrap + source, { action: "unprotect", value: JSON.parse(protectedValue.stdout.trim()) }));
     const fd = openSync(file, "r");
     try {
       const path = lstatSync(file, { bigint: true }), handle = fstatSync(fd, { bigint: true });

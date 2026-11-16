@@ -36,6 +36,16 @@ switch ($r.action) {
     [Console]::Out.WriteLine('true')
   }
   'file' { AssertPrivate $r.path; if ((Get-Item -LiteralPath $r.path -Force).PSIsContainer) { throw 'Not file' }; [Console]::Out.WriteLine('true') }
+  'created_file' {
+    $item=Get-Item -LiteralPath $r.path -Force
+    if ($item.PSIsContainer -or (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { throw 'Not regular file' }
+    $acl=New-Object Security.AccessControl.FileSecurity
+    $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true,$false)
+    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid,'FullControl','Allow')))
+    Set-Acl -LiteralPath $r.path -AclObject $acl
+    AssertPrivate $r.path
+    [Console]::Out.WriteLine('true')
+  }
   'protect' {
     Add-Type -AssemblyName System.Security
     $bytes=[Text.Encoding]::UTF8.GetBytes($r.value)
@@ -49,11 +59,11 @@ switch ($r.action) {
   default { throw 'Unsupported operation' }
 }`;
 
-function nativeCall(action: string, payload: { path?: string; value?: string }): unknown {
+function nativeCall(action: "directory" | "file" | "created_file" | "protect" | "unprotect", payload: { path?: string; value?: string }): unknown {
   const result = spawnSync(windowsSystemExecutable("powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(windowsPowerShellBootstrap + program, "utf16le").toString("base64")], {
     windowsHide: true, input: JSON.stringify({ action, ...payload }) + "\n", encoding: "utf8", timeout: 10_000, maxBuffer: 2 * 1024 * 1024,
   });
-  if (result.error || result.status !== 0) throw new Error(`Windows credential or file protection failed (${windowsFailure(result.stderr ?? "", (result.error as NodeJS.ErrnoException | undefined)?.code, result.status)}); use a private local NTFS directory owned by this user`);
+  if (result.error || result.status !== 0) throw new Error(`Windows credential or file protection failed (${action}; ${windowsFailure(result.stderr ?? "", (result.error as NodeJS.ErrnoException | undefined)?.code, result.status)}); use a private local NTFS directory owned by this user`);
   try { return JSON.parse(result.stdout.trim()); } catch { throw new Error("Windows protection returned an invalid response"); }
 }
 
@@ -72,6 +82,10 @@ export function windowsFileSecurity(): NativeFileSecurity {
   const files = new Map<string, string>();
   const decrypted = new Map<string, string>();
   return {
+    createdFile(path) {
+      rejectReparsePoints(path);
+      nativeCall("created_file", { path });
+    },
     directory(path) {
       rejectReparsePoints(path);
       const stamp = existsSync(path) ? lstatSync(path).birthtimeMs : undefined;
