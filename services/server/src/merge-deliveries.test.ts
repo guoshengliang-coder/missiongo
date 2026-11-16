@@ -877,6 +877,7 @@ describe("planned integration batches",()=>{
     expect(f.current().integration!.entries[b!.id]!.repairs).toHaveLength(1);
     expect(f.current().entries.find(d=>d.id===b!.id)).toMatchObject({head:b!.head,executionHead:repair.head});
     f.act({kind:"check",deliveryId:b!.id,expectedHead:repair.head,base:"c".repeat(40),checkedAt:new Date().toISOString(),checks:"pending",mergeable:"clean",local:"passed",source:"CI still running",validation:"Wait for CI"});
+    expect(f.current().entries.find(d=>d.id===b!.id)?.mergeReady).toBe(true);
     expect(()=>f.merged(b!.id,repair.head)).toThrow();
     // Independent work can proceed while a dependent repair is waiting.
     f.check(c!.id);f.merged(c!.id);
@@ -886,6 +887,22 @@ describe("planned integration batches",()=>{
     expect(f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id).state).toBe("finished");
     expect(f.current().integration!.plans).toHaveLength(1);
     expect(f.current().integration!.finalValidation).toBeDefined();
+  });
+  it("admits auto-merge with pending CI only when local checks and conflict checks pass, without admitting a merged report",async()=>{
+    const f=await batchFixture(1),d=f.deliveries[0]!;
+    f.act(f.plan);
+    const check={kind:"check" as const,deliveryId:d.id,expectedHead:d.head,base:"c".repeat(40),checkedAt:new Date().toISOString(),checks:"pending" as const,mergeable:"clean" as const,local:"passed" as const,source:"Live CI and local checks",validation:"GitHub required checks own the actual merge"};
+    for(const change of [{checks:"failed" as const},{checks:"unknown" as const},{local:"failed" as const},{local:"pending" as const},{mergeable:"conflicting" as const},{mergeable:"unknown" as const}]) {
+      f.act({...check,...change});
+      expect(f.current().entries.find(e=>e.id===d.id)?.mergeReady).toBe(false);
+      expect(()=>f.merged(d.id)).toThrow();
+    }
+    f.act(check);
+    expect(f.current().entries.find(e=>e.id===d.id)?.mergeReady).toBe(true);
+    expect(()=>f.merged(d.id)).toThrow();
+    f.check(d.id);
+    f.merged(d.id);
+    expect(f.current().results[d.id]?.status).toBe("merged");
   });
   it("rejects stale writes, changed source scope, cross-session calls and altered retries",async()=>{
     const f=await batchFixture();f.act(f.plan,"plan");

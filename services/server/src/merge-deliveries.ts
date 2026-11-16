@@ -1001,7 +1001,7 @@ export class MergeDeliveries {
     return {...b, dispatchId, publicationDeferred:batchPublicationDeferred(b), prerequisiteGate:gate, resultsDigest:digest(b.results), entries:b.deliveries.map(id=>{
       const d=this.view(this.read<Delivery>("merge_deliveries",id));
       let mergeReady=!b.references?.[id]&&!d.blocker&&!b.results[id]&&b.state==="active";
-      if(b.integration&&!b.integration.prerequisitesOnly){try{assertIntegrationMerge(b.integration,id,b.results);}catch{mergeReady=false;}}
+      if(b.integration&&!b.integration.prerequisitesOnly){try{assertIntegrationMerge(b.integration,id,b.results,{allowPendingCI:true});}catch{mergeReady=false;}}
       if(!gate.ready||!prerequisiteGate(b,hasRelease,b.integration?.entries[id]?.check?.base).ready)mergeReady=false;
       return {...d,...(b.references?.[id]?{reference:b.references[id],referenceVerified:b.verifiedReferences?.[id],blocker:d.itemKeys.map(key=>this.itemBlocker(this.read<Delivery>("merge_deliveries",id),key,true)).find(Boolean)}:{}),executionHead:b.integration?.entries[id]?.head??d.head,expectedBase:b.integration?.entries[id]?.check?.base,mergeReady};
     })};
