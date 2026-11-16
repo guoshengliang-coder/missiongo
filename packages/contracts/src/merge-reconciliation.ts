@@ -15,7 +15,7 @@ export interface MergeReconciliationState {
     decision?:"approved"|"rejected";decidedAt?:string;decidedBy?:string;appliedAt?:string}[];
   history:{at:string;action:string;requestId?:string;deliveryId?:string;previous?:unknown;detail:string}[];
   handoffs:Record<string,{status:"completed"|"blocked";detail:string;at:string}>;
-  publication?:{decision:"defer_publication"|"allow_partial_publication";reason:string;requestId:string;resultsDigest:string};
+  publication?:{decision:"defer_publication"|"allow_partial_publication";reason:string;requestId:string;resultsDigest:string;batchScopeDigest?:string};
   finalValidation?:{head:string;checkedAt:string;source:string;validation:string;resultsDigest:string};
 }
 export interface MergeReconciliationPreview {

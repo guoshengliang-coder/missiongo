@@ -6,7 +6,7 @@ import type { NonReleaseVerification } from "./non-release-evidence.js";
 import { AccountStore } from "./accounts-store.js";
 import { MissionGoError } from "./errors.js";
 import { normalizeCompletion, sameCompletion } from "./completion.js";
-import { reconciliationActionSchema, combinedValidationSchema, type ReconciliationAction, type ReconciliationState } from "./merge-reconciliation.js";
+import { reconciliationActionSchema, combinedValidationSchema, deferredPublicationScope, batchPublicationDeferred, type ReconciliationAction, type ReconciliationState } from "./merge-reconciliation.js";
 import { legacyIntegratorPrompt } from "./legacy-merge-authorization.js";
 import { readRecoveryTransport } from "./merge-recovery-transport.js";
 import type { MergeIntegration, MergeReconciliationPreview, MergeBatchPresentation, SessionDeliveryStage } from "@missiongo/contracts";
@@ -141,8 +141,8 @@ export class MergeDeliveries {
     this.db.connection.prepare("UPDATE merge_deliveries SET state=?,data_json=? WHERE id=?")
       .run(d.state, JSON.stringify(d), d.id);
   }
-  private saveBatch(b: Batch & {entries?:unknown;resultsDigest?:string;prerequisiteGate?:unknown}) {
-    const {entries:_entries,resultsDigest:_resultsDigest,prerequisiteGate:_gate,...stored}=b;
+  private saveBatch(b: Batch & {entries?:unknown;resultsDigest?:string;prerequisiteGate?:unknown;publicationDeferred?:boolean}) {
+    const {entries:_entries,resultsDigest:_resultsDigest,prerequisiteGate:_gate,publicationDeferred:_deferred,...stored}=b;
     this.db.connection.prepare("UPDATE merge_batches SET state=?,data_json=? WHERE id=?")
       .run(b.state, JSON.stringify(stored), b.id);
   }
@@ -662,7 +662,7 @@ export class MergeDeliveries {
     const activity=new Map((sessionIds.length ? this.db.connection.prepare(`SELECT session_id,activity FROM merge_display_activity WHERE session_id IN (${sessionIds.map(()=>"?").join(",")})`).all(...sessionIds) as {session_id:string;activity:string}[] : []).map(row=>[row.session_id,row.activity]));
     return values.map((value,index)=>{
       for(const entry of boundaries[index]!)if(activity.get(entry.sessionId)!==entry.activity)value.presentation.entries[entry.id]!.publication="unknown";
-      return {...value,prerequisiteGate:prerequisiteGate(value,Object.values(value.presentation.entries).some(e=>e.requiredArtifacts.length>0))};
+      return {...value,publicationDeferred:batchPublicationDeferred(value),prerequisiteGate:prerequisiteGate(value,Object.values(value.presentation.entries).some(e=>e.requiredArtifacts.length>0))};
     });
   }
   attentionSessionIds(productId: string, accountId: string, sessionId?: string): string[] {
@@ -813,7 +813,7 @@ export class MergeDeliveries {
       .all(productId,accountId) as {data_json:string}[]).map(row => {
         const batch=JSON.parse(row.data_json) as Batch;
         const presentation=this.presentation(batch);
-        return {...batch,presentation,prerequisiteGate:prerequisiteGate(batch,Object.values(presentation.entries).some(e=>e.requiredArtifacts.length>0))};
+        return {...batch,presentation,publicationDeferred:batchPublicationDeferred(batch),prerequisiteGate:prerequisiteGate(batch,Object.values(presentation.entries).some(e=>e.requiredArtifacts.length>0))};
       });
     });
   }
@@ -998,7 +998,7 @@ export class MergeDeliveries {
     if(gate.required)try{this.assertPublicationScope(b);}catch{
       gate.ready=false;gate.blockers.push({id:"publication_scope",code:"stale",reason:"发布范围尚未核实或已经变化，不能沿用原范围证据",owner:"集成执行者与原授权用户",resumeWhen:"在原会话重新核对范围；有变化时重新审阅"});
     }
-    return {...b, dispatchId, prerequisiteGate:gate, resultsDigest:digest(b.results), entries:b.deliveries.map(id=>{
+    return {...b, dispatchId, publicationDeferred:batchPublicationDeferred(b), prerequisiteGate:gate, resultsDigest:digest(b.results), entries:b.deliveries.map(id=>{
       const d=this.view(this.read<Delivery>("merge_deliveries",id));
       let mergeReady=!b.references?.[id]&&!d.blocker&&!b.results[id]&&b.state==="active";
       if(b.integration&&!b.integration.prerequisitesOnly){try{assertIntegrationMerge(b.integration,id,b.results);}catch{mergeReady=false;}}
@@ -1063,7 +1063,7 @@ export class MergeDeliveries {
       if (action.kind === "publication_progress") {
         const validation = b.reconciliation?.finalValidation;
         const partial = b.reconciliation?.publication;
-        if (!b.publish || b.deliveries.some(id=>!b.results[id]) || !validation || validation.resultsDigest !== digest(b.results)
+        if (!b.publish || batchPublicationDeferred(b) || b.deliveries.some(id=>!b.results[id]) || !validation || validation.resultsDigest !== digest(b.results)
           || !b.deliveries.some(id=>this.read<Delivery>("merge_deliveries",id).requiredArtifacts.length)
           || (Object.values(b.results).some(r=>r.status==="blocked") && !(partial?.decision==="allow_partial_publication" && partial.resultsDigest===digest(b.results)))
           || b.deliveries.some(id=>b.results[id]?.status==="merged" && this.read<Delivery>("merge_deliveries",id).itemKeys.some(key=>this.itemBlocker(this.read<Delivery>("merge_deliveries",id),key,Boolean(b.references?.[id]))))
@@ -1308,7 +1308,8 @@ export class MergeDeliveries {
         } else {if(previous?.status!=="merged")throw changed();this.handoff(b,d,requestId);}
         r.history.push({at,action:action.kind,deliveryId:d.id,requestId,previous,detail:action.kind==="accept_merge"?action.evidence.validation:action.kind==="retry_blocked"?action.reason:"按人工确认补充证据并重试逐条交接。"});
       } else {
-        r.publication={decision:action.kind,reason:action.reason,requestId,resultsDigest:digest(b.results)};
+        r.publication={decision:action.kind,reason:action.reason,requestId,resultsDigest:digest(b.results),
+          ...(action.kind==="defer_publication"?{batchScopeDigest:deferredPublicationScope(b)}:{})};
         r.history.push({at,action:action.kind,requestId,detail:action.reason});
       }
       request.appliedAt=at;this.saveBatch(b);return this.preview(accountId,id);
@@ -1324,8 +1325,9 @@ export class MergeDeliveries {
     });
   }
   private assertPublication(b:Batch) {
+    if(batchPublicationDeferred(b))return;
     const decision=b.reconciliation?.publication;
-    if(decision?.resultsDigest===digest(b.results)&&decision.decision==="defer_publication")return;
+    if(decision?.batchScopeDigest===undefined&&decision?.resultsDigest===digest(b.results)&&decision.decision==="defer_publication")return;
     if(Object.values(b.results).some(r=>r.status==="blocked")&&!(decision?.resultsDigest===digest(b.results)&&decision.decision==="allow_partial_publication"))throw conflict("partial_publication_decision_required","部分交付受阻，请人工决定本次暂不发布或授权部分发布。");
     if(b.publicationScope)for(const row of b.publicationScope.candidates) {
       let complete=false;

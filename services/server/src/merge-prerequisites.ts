@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { IntegrationPrerequisite, IntegrationPrerequisites, IntegrationPrerequisiteGate, MergeIntegration } from "@missiongo/contracts";
 import { conflict } from "./errors.js";
+import { batchPublicationDeferred } from "./merge-reconciliation.js";
+import type { MergeReconciliationState } from "@missiongo/contracts";
 
 const text = z.string().trim().min(1).max(4000);
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
@@ -53,6 +55,7 @@ export interface PrerequisiteBatch {
   deliveries: string[]; integration?: MergeIntegration;
   results: Record<string,{status:string;head:string}>;
   entries?:{id:string;head:string;executionHead?:string}[];
+  reconciliation?:MergeReconciliationState;
 }
 function denied(message:string):never { throw conflict("merge_prerequisites_changed",message); }
 export function prerequisiteObservation(batch:PrerequisiteBatch) {
@@ -100,7 +103,7 @@ export function recordPrerequisites(batch:PrerequisiteBatch, action:Prerequisite
 }
 export function prerequisiteGate(batch:PrerequisiteBatch, hasRelease:boolean, base?:string, now=Date.now()):IntegrationPrerequisiteGate {
   const required=batch.state!=="finished" && batch.deliveries.some(id=>!batch.references?.[id]&&!batch.results[id])
-    && batch.publish && batch.operation!=="merge_only" && batch.operation!=="publish_only" && hasRelease;
+    && batch.publish && batch.operation!=="merge_only" && batch.operation!=="publish_only" && hasRelease && !batchPublicationDeferred(batch);
   const gate:IntegrationPrerequisiteGate={required,ready:true,blockers:[]};
   if(!required)return gate;
   const record=batch.integration?.prerequisites, conditions=record?.conditions??[];
