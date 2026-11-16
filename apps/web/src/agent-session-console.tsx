@@ -1,3 +1,4 @@
+import { useSessionListPerformance } from "./session-list-performance";
 import { useConsolePerformance } from "./use-console-performance";
 import { observePerformanceReply } from "./console-performance";
 import { useTranscriptAnchor, revealTranscriptReply } from "./transcript-anchor";
@@ -257,7 +258,7 @@ export function AgentSessionConsole({
   // A re-dispatched session keeps the item's name and adds the round (AND-365).
   const roundLabel = (round: number) => t("agentSessionRound", { round });
   const queryClient = useQueryClient();
-  useConsolePerformance(queryClient,productId);
+  const listSinglePane = useMediaQuery("(max-width: 520px)");
   const [filter, setFilter] = useState<AgentSessionFilter>(initialFilter ?? DEFAULT_AGENT_SESSION_FILTER);
   const [agentFilter, setAgentFilter] = useState<AgentKindFilter>(DEFAULT_AGENT_KIND_FILTER);
   const [association, setAssociation] = useState<AgentAssociationFilter>("all");
@@ -345,6 +346,7 @@ export function AgentSessionConsole({
     () => byLatestActivity(productSessions.filter((session) => agentSessionMatches(session, filter, agentFilter, search, association))),
     [agentFilter, association, filter, search, productSessions],
   );
+  useSessionListPerformance(queryClient,productId,allSessions,visibleSessions.length,sessionsLoaded,!conversationOpen||!listSinglePane);
   const archivableIds = useMemo(() => archivableVisibleSessionIds(visibleSessions), [visibleSessions]);
   const allArchivableSelected = archivableIds.length > 0
     && archivableIds.every((sessionId) => selectedForArchive.has(sessionId));
@@ -773,7 +775,7 @@ export function AgentSessionConsole({
   const mirrorMessages = history.messages;
   const mirrorAttachments = sessionQuery.data?.attachmentMessages ?? [];
   const sourceState = replySourceState(command, mirrorMessages, mirrorAttachments, history.hasMore);
-  const outgoingCandidate = outgoingReply(command, sendingRequest, sourceState !== "unmatched");
+  const outgoingCandidate = outgoingReply(command, sendingRequest, sourceState);
   const outgoing = outgoingCandidate?.commandId === dismissedCommandId ? null : outgoingCandidate;
   const outgoingSignature = outgoing ? `${selectedId}:${outgoing.commandId ?? "request"}:${outgoing.status}:${outgoing.text}` : "";
   const revealOldReply = command && ["failed", "delivery_unknown"].includes(command.status)
@@ -1440,9 +1442,10 @@ export function AgentSessionConsole({
                   <div key={message.id} data-agent-message-id={`user:${message.sourceId}`} className={`agent-console-outgoing agent-console-outgoing-${outgoing.status}`}>
                   <article className={`agent-console-message agent-console-message-user agent-console-message-outgoing agent-console-message-outgoing-${outgoing.status}`}>
                     <header className="agent-console-message-meta">
-                      <time dateTime={outgoing.occurredAt}>{formatAgentMessageTime(outgoing.occurredAt, locale)}</time>
+                      <time dateTime={message.occurredAt}>{formatAgentMessageTime(message.occurredAt, locale)}</time>
+                      <CommandMessageMenu text={permissionReplyText((sessionQuery.data?.currentRequests ?? sessionQuery.data?.messages)?.flatMap(message => message.questions ?? []) ?? [], message.text)} />
                     </header>
-                    <MarkdownText>{permissionReplyText((sessionQuery.data?.currentRequests ?? sessionQuery.data?.messages)?.flatMap(message => message.questions ?? []) ?? [], outgoing.text)}</MarkdownText>
+                    <MarkdownText>{permissionReplyText((sessionQuery.data?.currentRequests ?? sessionQuery.data?.messages)?.flatMap(message => message.questions ?? []) ?? [], message.text)}</MarkdownText>
                     {command && command.id === outgoing.commandId && command.attachments && selected.agentSessionId
                       && <ChatAttachments sessionId={selected.agentSessionId} attachments={command.attachments} onImageLoad={() => { if (followLatest) scrollToLatest("auto"); }} />}
                     {sendingSelected && sendAttempt?.files.length ? <div className="agent-chat-draft-files">

@@ -153,8 +153,9 @@ describe("agent console responsive layout", () => {
   });
 
   it("shows a semantic occurrence time on mirrored and outgoing messages", () => {
-    expect(consoleSource).toContain('<time dateTime={message.occurredAt}>');
-    expect(consoleSource).toContain('<time dateTime={outgoing.occurredAt}>');
+    // Both render paths use the canonical row time: a merged receipt must not
+    // replace the native occurrence time with the earlier send time (AND-527).
+    expect(consoleSource.match(/<time dateTime=\{message\.occurredAt\}>/g)).toHaveLength(2);
     expect(styles).toContain(".agent-console-message-meta time");
   });
 });

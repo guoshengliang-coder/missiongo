@@ -56,7 +56,16 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     await page.getByRole("button", { name: "加载更早消息", exact: true }).click();
     await expect.poll(() => historyReads).toBe(1);
     await expect(page.getByText("Old reply", { exact: true })).toBeVisible();
-    await expect(outgoing).toHaveCount(0);
+    // The loaded native source now owns the sole bubble and delivery receipt.
+    const original = page.locator('[data-agent-message-id="user:old-command"]');
+    await expect(original).toHaveCount(1);
+    await expect(page.getByText("Old reply", { exact: true })).toHaveCount(1);
+    await expect(page.locator("[data-agent-message-id]")).toHaveCount(3);
+    await expect(original.locator("time")).toHaveAttribute("datetime", stamp);
+    await expect(outgoing).toHaveCount(1);
+    await expect(page.locator(".agent-reply-feedback")).toHaveCount(1);
+    await expect(page.locator(".agent-reply-feedback")).toContainText("已送达");
+    await expect(page.getByRole("button", { name: "撤回编辑" })).toHaveCount(0);
     await expect(reply).toHaveValue("Keep this draft");
     // Start with a fresh loaded window, then check receipt → actual mirror.
     withinWindow = true;
@@ -65,7 +74,14 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     await reply.fill("Preserve while polling");
     mirror = true;
     await advanceSessionDetailPoll(page);
-    await expect(outgoing).toHaveCount(0);
+    await expect(original).toHaveCount(1);
+    await expect(page.getByText("Old reply", { exact: true })).toHaveCount(1);
+    await expect(page.locator("[data-agent-message-id]")).toHaveCount(3);
+    await expect(original.locator("time")).toHaveAttribute("datetime", command().createdAt);
+    await expect(outgoing).toHaveCount(1);
+    await expect(page.locator(".agent-reply-feedback")).toHaveCount(1);
+    await expect(page.locator(".agent-reply-feedback")).toContainText("已送达");
+    await expect(page.getByRole("button", { name: "撤回编辑" })).toHaveCount(0);
     await expect(reply).toHaveValue("Preserve while polling");
     await context.close();
   });

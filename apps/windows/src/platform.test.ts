@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { readArtifact } from "../../node/src/artifacts.js";
+import { CodexAdapter } from "../../node/src/codex.js";
 import { prepareRuntime } from "./runtime.js";
 import { acquireNodeLease } from "./lease.js";
 import { initializeNativeSecurity } from "./security.js";
@@ -145,3 +146,20 @@ it.skipIf(process.platform !== "win32")("identifies real native shim protocols a
   expect(ready.every(entry=>entry.ready && entry.planApprovalProtocol === 1 && entry.version === "1.0.0")).toBe(true);
   expect((await detectAgents({...config,agents:{codex:{executable:process.execPath}}},"1.0.0"))[0]?.ready).toBe(false);
 },60_000);
+
+it.skipIf(process.platform !== "win32")("preserves native client identities through a Windows npm launcher and history",async()=>{
+  const root=temporary(),repo=join(root,"仓库 with spaces");mkdirSync(repo);
+  copyFileSync(fileURLToPath(new URL("../../node/src/fixtures/agent.cjs",import.meta.url)),join(root,"fixture.cjs"));
+  const launcher=join(root,"codex.cmd");writeFileSync(launcher,`@echo off\r\n"${process.execPath}" "%~dp0fixture.cjs" %*\r\n`);
+  const env={...process.env,HOME:root,USERPROFILE:root,CODEX_HOME:join(root,".codex")};
+  const adapter=new CodexAdapter({dispatchId:"initial",repoPath:realpathSync(repo),itemKeys:[],freeSession:true,agentKind:"codex",mode:"default"},launcher,undefined,env);
+  try{
+    await adapter.start("start");
+    for(const id of ["first","second"])await adapter.deliver({id,status:"queued",text:"identical words"});
+    for(const messages of [(await adapter.snapshot()).messages,(await adapter.historyPage("items-v1:older")).messages]){
+      const matching=messages.filter(message=>message.role === "user" && message.text === "identical words");
+      expect(matching.map(message=>message.clientMessageId)).toEqual(["first","second"]);
+      expect(new Set(matching.map(message=>message.sourceId)).size).toBe(2);
+    }
+  }finally{await adapter.close();}
+},30_000);

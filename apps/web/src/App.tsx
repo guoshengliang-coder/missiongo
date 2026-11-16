@@ -1,3 +1,5 @@
+import { clearPerformanceSends } from "./console-performance";
+import { shareSessionListData, useSessionListIntent, noteListIntent } from "./session-list-performance";
 import { useCommonCommands } from "./common-commands";
 import { SessionSenderContext } from "./session-send-feedback";
 import { bootstrapCacheSeeder } from "./bootstrap-cache";
@@ -420,6 +422,8 @@ export function App() {
   const [listPaneWidth, setListPaneWidth] = useState(readListPaneWidth);
   const agentConsoleSinglePane = useMediaQuery("(max-width: 520px)");
   const agentConsoleCompact = useMediaQuery("(max-width: 1023px)");
+  const listEntryVisible = agentConsoleOpen && !settings.route && !new URLSearchParams(window.location.search).get("planDocument") && !(agentConsoleSinglePane && (agentConversationOpen || newSessionOpen));
+  useSessionListIntent(listEntryVisible);
   const agentConsoleLayout = agentConsoleSinglePane ? "single" : "wide";
 
   const applyListPaneWidth = useCallback((width: number) => {
@@ -952,6 +956,7 @@ export function App() {
   // request, and the header counts keep updating while the console is closed.
   const agentSessionsQuery = useQuery({
     queryKey: ["agent-sessions"],
+    structuralSharing: shareSessionListData,
     queryFn: ({signal}) => api.listAgentSessions(undefined, signal),
     enabled: bootstrapQuery.isSuccess && products.length > 0,
   });
@@ -1279,6 +1284,8 @@ export function App() {
           <p>{t("connectBody")}</p>
           <LoginForm
             onAuthenticated={(session) => {
+              clearPerformanceSends();
+              if (listEntryVisible) noteListIntent();
               queryClient.removeQueries({ queryKey: ["items"] });
               queryClient.removeQueries({ queryKey: ["components"] });
               queryClient.removeQueries({ queryKey: ["project-insights"] });
@@ -2197,6 +2204,8 @@ function ProductSwitcher({
   onSelect: (productId: string) => void;
 }) {
   const { t } = useI18n();
+  const maxAttention = Math.max(0, ...products.map(product => attentionCounts?.get(product.id) ?? 0));
+  const maxUnread = Math.max(0, ...products.map(product => unreadCounts?.get(product.id) ?? 0));
   const content = (id: string, expanded: boolean) => {
     const product = products.find(entry => entry.id === id);
     if (!product) return null;
@@ -2205,10 +2214,11 @@ function ProductSwitcher({
     return <>
       <ProductBadge product={product} />
       {expanded
-        ? <span className="product-switcher-option"><strong>{product.name}</strong><small>{product.keyPrefix}</small>
+        ? <span className={`product-switcher-option${unreadCounts ? " with-counts" : ""}`}>
+          <span className="product-switcher-identity"><strong>{product.name}</strong><small>{product.keyPrefix}</small></span>
           {unreadCounts && unreadCountsLoaded && <span className="product-switcher-counts">
-            <span className={`product-switcher-count${attention > 0 ? " attention" : ""}`}>{t("agentConsoleProjectAttentionCount", { count: attention })}</span>
-            <span className={`product-switcher-count${unread > 0 ? " unread" : ""}`} aria-label={t("agentConsoleUnreadCount", { count: unread })}>{t("agentConsoleProjectUnreadCount", { count: unread })}</span>
+            <span className={`product-switcher-count${attention > 0 ? " attention" : ""}`} data-width-label={t("agentConsoleProjectAttentionCount", { count: maxAttention })}><span>{t("agentConsoleProjectAttentionCount", { count: attention })}</span></span>
+            <span className={`product-switcher-count${unread > 0 ? " unread" : ""}`} data-width-label={t("agentConsoleProjectUnreadCount", { count: maxUnread })} aria-label={t("agentConsoleUnreadCount", { count: unread })}><span>{t("agentConsoleProjectUnreadCount", { count: unread })}</span></span>
           </span>}
         </span>
         : <span className="product-switcher-name">{product.name}</span>}
@@ -2496,11 +2506,6 @@ function ListRowActions(props: {item:WorkItemRow;onEdit:()=>void;onNotice:(messa
   const requests=useRef(0);
   const pendingMenu=useRef<HTMLDetailsElement>(null);
   const [openLoaded,setOpenLoaded]=useState(false);
-  useEffect(()=>{
-    const close=(event:MouseEvent)=>{if(pendingMenu.current&&!pendingMenu.current.contains(event.target as Node))pendingMenu.current.open=false;};
-    document.addEventListener("mousedown",close);
-    return ()=>document.removeEventListener("mousedown",close);
-  },[]);
   useEffect(()=>()=>{requests.current++;},[props.item.key]);
   const [loading,setLoading]=useState(false);
   const {t}=useI18n();
@@ -2567,21 +2572,6 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork, openInitially = f
     else if (action.reason === "manual_override" || transitionRequiresNote(item.status, action.to)) setNoteAction(action);
     else mutation.mutate({ action });
   };
-
-  useEffect(() => {
-    const closeMoreActions = (event: MouseEvent) => {
-      if (!moreActionsRef.current?.contains(event.target as Node)) moreActionsRef.current?.removeAttribute("open");
-    };
-    const closeMoreActionsOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") moreActionsRef.current?.removeAttribute("open");
-    };
-    document.addEventListener("mousedown", closeMoreActions);
-    document.addEventListener("keydown", closeMoreActionsOnEscape);
-    return () => {
-      document.removeEventListener("mousedown", closeMoreActions);
-      document.removeEventListener("keydown", closeMoreActionsOnEscape);
-    };
-  }, []);
 
   if (item.transferred) return null;
 
@@ -2857,21 +2847,6 @@ function DetailPane({
   useEffect(() => {
     setEditing(openInEdit);
   }, [itemKey, openInEdit]);
-
-  useEffect(() => {
-    const closeMoreActions = (event: MouseEvent) => {
-      if (!moreActionsRef.current?.contains(event.target as Node)) moreActionsRef.current?.removeAttribute("open");
-    };
-    const closeMoreActionsOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") moreActionsRef.current?.removeAttribute("open");
-    };
-    document.addEventListener("mousedown", closeMoreActions);
-    document.addEventListener("keydown", closeMoreActionsOnEscape);
-    return () => {
-      document.removeEventListener("mousedown", closeMoreActions);
-      document.removeEventListener("keydown", closeMoreActionsOnEscape);
-    };
-  }, []);
 
   const refreshItem = async () => {
     await Promise.all([

@@ -2649,6 +2649,25 @@ final class CodexLauncherTests: XCTestCase {
         XCTAssertTrue(control.replies.current.isEmpty)
     }
 
+    /// AND-527: a different native item ID still acknowledges the already
+    /// received client input without issuing another turn/start.
+    func testClientIdentifiedCodexReplyIsAcknowledgedWithoutSendingAgain() async throws {
+        let control = RecordingControl(threadId: "thread-1")
+        control.snapshot = CodexThreadSnapshot(status: "idle", messages: [
+            AgentSessionMessage(sourceId: "native-different", role: "user", text: "Continue", clientMessageId: "command-1")
+        ])
+        let launcher = CodexLauncher(
+            environment: try codexOnPath(), serverUrl: nil, run: fakeCodex(),
+            location: CodexLocation(codexHome: "/tmp/codex"), control: control
+        )
+        let report = try await launcher.synchronize(NodeAgentSession(
+            id: "session-1", sessionRef: "thread-1", status: "idle",
+            command: AgentSessionCommand(id: "command-1", text: "Continue", status: "delivering")
+        ))
+        XCTAssertEqual(report.commandStatus, "delivered")
+        XCTAssertTrue(control.replies.current.isEmpty)
+    }
+
     /// AND-219: the delivered report re-reads the thread, so the reply it just
     /// delivered travels with the delivery confirmation instead of arriving
     /// one poll later.

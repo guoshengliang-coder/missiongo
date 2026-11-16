@@ -1,7 +1,7 @@
 declare const MISSIONGO_PERFORMANCE_BUILD:string;
-import { firstPerformanceReply, type ConsolePerformanceEvent, type PerformanceStage, type PerformanceResult } from "@missiongo/domain";
+import { firstPerformanceReply, type ConsolePerformanceEvent, type PerformanceStage, type PerformanceResult, type ListObservation } from "@missiongo/domain";
 
-type Context = {sessionId:string}|{productId:string;agentKind?:string;sendKind?:string};
+type Context = {sessionId:string}|{productId:string;agentKind?:string;sendKind?:string}|{list:true};
 type Pending = {context:Context;event:ConsolePerformanceEvent;tries:number};
 const queue:Pending[]=[];
 const sends=new Map<string,{context:Context;at:number;command?:string;session?:string;expires:number;hiddenAt?:number;hiddenSequence:number}>();
@@ -21,12 +21,12 @@ export function performanceResult(error:unknown):PerformanceResult {
  if(error&&typeof error==="object"&&"status"in error&&Number((error as {status:unknown}).status)>=400)return "rejected";
  return "network_failure";
 }
-export function emitPerformance(context:Context,id:string,stage:PerformanceStage,result:PerformanceResult="success",durationMs?:number){
+export function emitPerformance(context:Context,id:string,stage:PerformanceStage,result:PerformanceResult="success",durationMs?:number,list?:ListObservation){
  if(typeof window==="undefined"||queue.length>=256||Date.now()<disabledUntil)return;
- queue.push({context,event:{id,stage,result,...(durationMs===undefined?{}:{durationMs:Math.min(86400000,Math.max(0,durationMs))})},tries:0});
- if(!timer)timer=setTimeout(()=>{timer=undefined;void flush();},500);
+ queue.push({context,event:{id,stage,result,...(list?{list}:{}),...(durationMs===undefined?{}:{durationMs:Math.min(86400000,Math.max(0,durationMs))})},tries:0});
+ if(!timer)timer=setTimeout(()=>{timer=undefined;void flushPerformance();},500);
 }
-async function flush(){
+export async function flushPerformance(){
  if(running||!queue.length)return;running=true;
  const epoch=generation,first=queue.shift()!,batch=[first];
  for(let i=0;i<queue.length&&batch.length<32;)if(JSON.stringify(queue[i]!.context)===JSON.stringify(first.context))batch.push(queue.splice(i,1)[0]!);else i++;
@@ -37,7 +37,7 @@ async function flush(){
   if([401,403,404].includes(response.status)){disabledUntil=Date.now()+60000;queue.length=0;}
   else if(!response.ok)throw new Error("Collection unavailable");
  }catch{for(const p of batch)if(epoch===generation&&++p.tries<3&&queue.length<256)queue.push(p);}
- finally{running=false;if(queue.length&&!timer)timer=setTimeout(()=>{timer=undefined;void flush();},2000);}
+ finally{running=false;if(queue.length&&!timer)timer=setTimeout(()=>{timer=undefined;void flushPerformance();},2000);}
 }
 export function beginPerformanceSend(root:string,context:Context){
  if(typeof window==="undefined")return;
@@ -46,7 +46,8 @@ export function beginPerformanceSend(root:string,context:Context){
  sends.set(root,{context,at:performanceNow(),expires:Date.now()+86400000,hiddenSequence:0,...(typeof document!=="undefined"&&document.visibilityState==="hidden"?{hiddenAt:performanceNow()}:{})});trackVisibility();emitPerformance(context,`${root}:begin`,"send_started");
 }
 export function bindPerformanceSend(root:string,command:string,session:string){const p=sends.get(root);if(p){p.command=command;p.session=session;}}
-export function clearPerformanceSends(){generation++;disabledUntil=0;sends.clear();queue.length=0;if(timer)clearTimeout(timer);timer=undefined;if(expiryTimer)clearInterval(expiryTimer);expiryTimer=undefined;visibilityDocument?.removeEventListener("visibilitychange",visibilityChanged);visibilityDocument=undefined;}
+export function performanceGeneration(){return generation;}
+export function clearPerformanceSends(){if(typeof window!=="undefined")window.dispatchEvent(new Event("missiongo:performance-clear"));generation++;disabledUntil=0;sends.clear();queue.length=0;if(timer)clearTimeout(timer);timer=undefined;if(expiryTimer)clearInterval(expiryTimer);expiryTimer=undefined;visibilityDocument?.removeEventListener("visibilitychange",visibilityChanged);visibilityDocument=undefined;}
 export async function measurePerformance<T>(context:Context,root:string,stage:PerformanceStage,operation:()=>Promise<T>):Promise<T>{
  const at=performanceNow(),id=crypto.randomUUID(),epoch=generation;
  try{const value=await operation();if(epoch!==generation)return value;emitPerformance(context,`${root}:${id}:http`,"http_attempt");emitPerformance(context,`${root}:${id}`,stage,"success",performanceNow()-at);return value;}

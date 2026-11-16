@@ -4,6 +4,7 @@ import { backDepthFromState, DIALOG_HISTORY_MARKER, OVERLAY_HISTORY_MARKER, QUIC
 
 type Layer = { id: string; close: () => boolean | void; leaving: boolean };
 const layers = new Map<string, Layer>();
+const pointerLayers = new WeakMap<PointerEvent, string | undefined>();
 let unwinding: { url: string } | undefined;
 let suspended = 0;
 const afterClose: Array<() => void> = [];
@@ -95,6 +96,12 @@ function dismiss(layer: Layer): boolean {
 // Registered on module load, before route listeners: dismissing a layer must
 // not reset the route, scroll position or the draft of the page underneath it.
 if (typeof window !== "undefined") {
+  // MutationObserver/React cleanup can retire a child between native event
+  // listeners. All outside handlers must use the layer at gesture start,
+  // rather than dismissing the newly exposed parent with that same pointer.
+  window.addEventListener("pointerdown", event => {
+    pointerLayers.set(event, active().at(-1)?.id);
+  }, true);
   // React instances do not survive reload. Retire their actual history entries,
   // not just the IDs: clearing IDs alone leaves an extra, invisible Back step.
   normalizeLegacyLayers();
@@ -166,7 +173,7 @@ export function useOverlay(open: boolean, onClose: () => boolean | void,
       if (event.target instanceof Element && event.target.closest(".back-button")) return;
       // A child Select is portaled outside its parent. Only the top layer may
       // handle an outside click; never unmount its parent before a choice lands.
-      if (active().at(-1)?.id !== id || outsideClose.current?.ref.current?.contains(event.target as Node)) return;
+      if (pointerLayers.get(event) !== id || outsideClose.current?.ref.current?.contains(event.target as Node)) return;
       outsideClose.current?.close();
     };
     document.addEventListener("pointerdown", pointer, true);
@@ -228,7 +235,7 @@ export function OverlayDialog({ onClose, children, ...props }: Omit<ComponentPro
 }
 
 /** Native details menus keep their existing markup and positioning, but get
- * the same one-layer Back/Escape contract as Select. Disclosure sections are
+ * the same top-layer outside-click/Back/Escape contract as Select. Disclosure sections are
  * not menus and should keep using ordinary details. */
 export function OverlayMenu({ ref: externalRef, onClick, ...props }: ComponentProps<"details">) {
   const ref = useRef<HTMLDetailsElement>(null);
@@ -246,8 +253,17 @@ export function OverlayMenu({ ref: externalRef, onClick, ...props }: ComponentPr
     observer.observe(menu, { attributes: true, attributeFilter: ["open"] });
     const parent = menu.parentElement?.closest("details");
     if (parent) observer.observe(parent, { attributes: true, attributeFilter: ["open"] });
+    const outside = (event: PointerEvent) => {
+      // Back owns its history traversal. A portaled child or nested menu owns
+      // its own outside click; never close its parent in the same gesture.
+      if (event.target instanceof Element && event.target.closest(".back-button")) return;
+      if (pointerLayers.get(event) !== id || menu.contains(event.target as Node)) return;
+      // Preserve the pointer's normal action and focus on the outside target.
+      menu.open = false;
+    };
+    document.addEventListener("pointerdown", outside, true);
     sync();
-    return () => { observer.disconnect(); unregister?.(); };
+    return () => { document.removeEventListener("pointerdown", outside, true); observer.disconnect(); unregister?.(); };
   }, [id]);
   return <details {...props} onClick={event => {
     onClick?.(event);

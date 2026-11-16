@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { ConsolePerformance } from "./console-performance.js";
 import { PerformanceSends } from "./console-performance-sends.js";
-import { validPerformanceEvent } from "@missiongo/domain";
+import { validPerformanceEvent, validListObservation, type ListObservation } from "@missiongo/domain";
 import { DocumentPlanApprovals } from "./document-plan-approval.js";
 import { CommonCommandStore } from "./common-commands.js";
 import { SessionSendRequests } from "./session-send-requests.js";
@@ -2802,13 +2802,26 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const body=objectBody(request.body);const account=requireAccountId(request);
     const scope=typeof body.sessionId==="string"?performanceScope(request,body.sessionId):{account,products:typeof body.productId==="string"?[body.productId]:[],agent:typeof body.agentKind==="string"?body.agentKind:"unknown",kind:body.sendKind==="new_send"?"new_send":"refresh"};
     if(typeof body.sessionId!=="string") {
-      if(typeof body.productId!=="string")throw invalidInput("A session or product is required.");
-      requireProductPermission(request,body.productId,"view");
+      if(body.list===true){
+        if(body.sessionId!==undefined||body.productId!==undefined||!Array.isArray(body.events)||!body.events.every((e:any)=>e.list?.dataset==="account_feed"))throw invalidInput("Invalid account list observation.");
+      }else{
+        if(typeof body.productId!=="string")throw invalidInput("A session or product is required.");
+        requireProductPermission(request,body.productId,"view");
+      }
     }
     const events=checkPerformanceBatch(body,`web:${account}`);
     // Version comes from this deployed Web/Server pair, not free text supplied by the browser.
-    let queued=0;for(const e of events)if(["send_started","http_attempt","prepare","upload","submit","start","reply_visible","background_wait","cache_visible","fresh_visible","detail_cache_visible","detail_fresh_visible","missing"].includes(e.stage))
+    let queued=0;for(const e of events){
+      if(e.stage.startsWith("list_")){
+        if(!e.list||typeof body.sessionId==="string"||e.stage==="list_server"||
+          (e.list.dataset==="account_feed"?body.list!==true:typeof body.productId!=="string")||
+          (e.stage==="list_visit"||e.stage==="list_visit_end")&&(!e.list.visitId||e.list.dataset!=="account_feed"))continue;
+        queued+=Number(performanceMetrics.record({...e,scope:{...scope,kind:"refresh"},source:"web",version:typeof body.version==="string"&&/^[a-f0-9]{40}$/.test(body.version)?body.version:"unknown"}));continue;
+      }
+      if(body.list===true||e.list)continue;
+      if(["send_started","http_attempt","prepare","upload","submit","start","reply_visible","background_wait","cache_visible","fresh_visible","detail_cache_visible","detail_fresh_visible","missing"].includes(e.stage))
       queued+=Number(performanceMetrics.record({...e,scope:{...scope,kind:e.stage.includes("cache_visible")||e.stage.includes("fresh_visible")?"refresh":scope.kind},source:"web",version:typeof body.version==="string"&&/^[a-f0-9]{40}$/.test(body.version)?body.version:"unknown"}));
+     }
     return reply.code(202).send({protocol:1,queued,rejected:events.length-queued});
   });
   app.get("/api/v1/console/performance",async(request,reply)=>{
@@ -2843,6 +2856,26 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return reply.code(202).send({protocol:1,queued,rejected:events.length-queued});
   });
   const performanceRequests=new WeakMap<object,number>();
+  const listRequestRows=new WeakMap<object,number>();
+  app.addHook("onSend",async(request,reply,payload)=>{
+    if(request.method!=="GET"||request.routeOptions.url!=="/api/v1/agent-sessions"||!performanceMetrics.status().enabled)return payload;
+    const at=performanceRequests.get(request);if(at===undefined)return payload;
+    try{
+      const productId=(request.query as {productId?:string}).productId?.trim();
+      if(productId)requireProductPermission(request,productId,"view");
+      const raw=request.headers["x-missiongo-list-observation"];
+      let list:ListObservation={protocol:1,device:"unknown",scenario:"unknown",dataset:productId?"project_view":"account_feed"};
+      if(typeof raw==="string"&&raw.length<=1024){
+        try{const value=JSON.parse(raw);if(validListObservation(value))list={protocol:1,device:value.device,scenario:value.scenario,dataset:list.dataset,...(value.visitId?{visitId:value.visitId}:{})};}catch{/* Unknown client observation, never fail the list. */}
+      }
+      const rows=listRequestRows.get(request);
+      const bytes=typeof payload==="string"?Buffer.byteLength(payload):undefined;
+      if(rows!==undefined&&rows<=1000000)list.rows=rows;
+      if(bytes!==undefined&&bytes<=67108864)list.responseBytes=bytes;
+      performanceMetrics.record({id:`list-${randomUUID()}`,stage:"list_server",result:reply.statusCode<400?"success":"rejected",durationMs:performance.now()-at,list,source:"server",version:options.release??"unknown",scope:{account:requireAccountId(request),products:productId?[productId]:[],kind:"refresh"}});
+    }catch{/* Observability does not affect authorization or a business response. */}
+    return payload;
+  });
   app.addHook("onRequest",async request=>{
     if(["/api/v1/agent-sessions/:sessionId/commands","/api/v1/project-conversations","/api/v1/project-conversations/:dispatchId/start","/api/v1/agent-sessions/:sessionId","/api/v1/agent-sessions"].includes(request.routeOptions.url??""))performanceRequests.set(request,performance.now());
   });
@@ -3184,6 +3217,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         scheduleAttentionClassification(session.agentSessionId);
       }
     });
+    listRequestRows.set(request,sessions.length);
     return { sessions };
   });
 
@@ -3858,6 +3892,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         }
         return {
           sourceId: stringField(message, "sourceId")!,
+          ...(message.clientMessageId !== undefined ? { clientMessageId: stringField(message, "clientMessageId")! } : {}),
           ...(stringField(message, "turnId", false) ? { turnId: message.turnId as string } : {}),
           role,
           ...(stringField(message, "phase", false) ? { phase: message.phase as string } : {}),

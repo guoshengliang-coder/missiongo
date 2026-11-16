@@ -63,7 +63,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         turn = { id: "turn-recovered", status: "completed", items: [] };
         emit({ method: "turn/completed", params: { threadId: ref, turn } });
       }
-      turn.items.push({ id: `user-${turn.items.length}`, type: "userMessage", content: message.params.input });
+      turn.items.push({ id: `user-${turn.items.length}`, type: "userMessage", clientId: message.params.clientUserMessageId, content: message.params.input });
       if (process.env.TEST_FAIL_CONTROL_OBSERVATION && message.params.clientUserMessageId === "command-once") failControlObservation = true;
       emit({ id: message.id, result: { turn } });
       if (message.params.input[0].text.includes("auto-denied")) emit({ method: "item/autoApprovalReview/completed", params: {

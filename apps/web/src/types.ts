@@ -522,6 +522,7 @@ export interface AgentSessionMessage {
   readonly historical?: boolean;
   readonly id: string;
   readonly sourceId: string;
+  readonly clientMessageId?: string;
   readonly turnId?: string;
   readonly role: "user" | "agent" | "plan";
   readonly phase?: string;

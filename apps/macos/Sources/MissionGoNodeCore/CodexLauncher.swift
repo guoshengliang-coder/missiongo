@@ -975,7 +975,7 @@ public struct CodexLauncher: AgentAdapter {
         if snapshot.archived {
             let alreadySent = session.command.map { command in
                 command.kind != "interrupt"
-                    && snapshot.messages.contains(where: { $0.role == "user" && $0.sourceId == command.id })
+                    && snapshot.messages.contains(where: { $0.role == "user" && ($0.sourceId == command.id || $0.clientMessageId == command.id) })
             } ?? false
             return AgentSessionReport(
                 status: "unavailable",
@@ -1008,7 +1008,7 @@ public struct CodexLauncher: AgentAdapter {
         // lost. The stable client message id lets a restarted node recognize
         // that reply in the source transcript instead of starting it twice.
         if command.kind != "interrupt",
-           snapshot.messages.contains(where: { $0.role == "user" && $0.sourceId == command.id }) {
+           snapshot.messages.contains(where: { $0.role == "user" && ($0.sourceId == command.id || $0.clientMessageId == command.id) }) {
             failureReplyReservations.withLock { $0[session.id] = nil }
             return AgentSessionReport(
                 status: snapshot.status, messages: snapshot.messages,

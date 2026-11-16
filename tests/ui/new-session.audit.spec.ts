@@ -58,6 +58,15 @@ for (const width of [375, 768, 1440]) {
     const draft = page.locator(".agent-console-reply textarea");
     await expect(draft).toBeVisible();
     await draft.fill("先讨论这个方案");
+    const addMenu = page.locator(".common-command-add");
+    await addMenu.locator("summary").click();
+    await draft.click({ position: { x: 8, y: 8 } });
+    await expect(addMenu).not.toHaveAttribute("open");
+    await expect(draft).toBeFocused();
+    await expect(draft).toHaveValue("先讨论这个方案");
+    // The outside click deliberately moves the caret; the next scenario
+    // exercises insertion at the end of the existing draft.
+    await draft.evaluate((node: HTMLTextAreaElement) => node.setSelectionRange(node.value.length, node.value.length));
     await page.route("**/api/v1/common-commands", route => route.fulfill({ json: { revision: 1, commands: [{ id: "draft-instruction", content: "补充调查", name: "", favorite: false }] } }));
     await page.locator(".common-command-add summary").click();
     await page.getByRole("button", { name: "常用指令", exact: true }).click();

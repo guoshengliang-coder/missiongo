@@ -107,14 +107,6 @@ export function CollaborationPanel({
     [expanded, setExpanded] = useState(false);
   const bodyId = useId();
   const addMenu = useRef<HTMLDetailsElement>(null);
-  useEffect(() => {
-    const outside = (event: PointerEvent) => {
-      if (!addMenu.current?.contains(event.target as Node))
-        addMenu.current?.removeAttribute("open");
-    };
-    document.addEventListener("pointerdown", outside);
-    return () => document.removeEventListener("pointerdown", outside);
-  }, []);
   const q = useQuery({
     queryKey: ["collaboration", item.key],
     queryFn: () => collab.context(item.key),

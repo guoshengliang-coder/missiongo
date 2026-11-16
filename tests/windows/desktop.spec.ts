@@ -93,3 +93,19 @@ for (const colorScheme of ["light", "dark"] as const) test(`${colorScheme}: upda
   await page.evaluate(()=> (window as unknown as {setUpdate:(value:unknown)=>void}).setUpdate({state:"failed",version:"0.1.1",error:"更新包签名身份校验失败，未安装"}));
   await expect(page.getByText(/签名身份校验失败/)).toBeVisible();await expect(page.getByRole("button",{name:"下载更新",exact:true})).toBeEnabled();
 });
+
+for(const colorScheme of ["light","dark"] as const)test(`${colorScheme}: selector outside click retires only the child and keeps settings draft`,async({page})=>{
+  await page.setViewportSize({width:320,height:600});await page.emulateMedia({colorScheme});await page.goto("/");
+  await page.getByRole("button",{name:"本机设置",exact:true}).click();
+  const dialog=page.getByRole("dialog"),selector=page.getByRole("combobox",{name:"执行环境",exact:true});
+  await selector.click();await page.getByRole("option",{name:"WSL",exact:true}).click();
+  await page.getByLabel("WSL 发行版",{exact:true}).fill("Ubuntu-24.04");
+  await page.getByLabel("WSL Node.js 绝对路径").fill("/home/fixture/custom-node");
+  await selector.click();await expect(page.getByRole("listbox")).toBeVisible();
+  // Outside the child menu but within the parent; the same pointer must not dismiss both.
+  await dialog.getByRole("heading").click();await expect(page.getByRole("listbox")).toHaveCount(0);
+  await expect(dialog).toBeVisible();await expect(page.getByLabel("WSL Node.js 绝对路径")).toHaveValue("/home/fixture/custom-node");
+  await selector.click();await page.keyboard.press("Escape");await expect(selector).toBeFocused();await expect(dialog).toBeVisible();
+  await dialog.getByRole("button",{name:"保存",exact:true}).click();await expect(dialog).toHaveCount(0);
+  await page.getByRole("button",{name:"本机设置",exact:true}).click();await expect(page.getByLabel("WSL Node.js 绝对路径")).toHaveValue("/home/fixture/custom-node");
+});

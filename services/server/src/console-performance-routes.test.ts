@@ -1,3 +1,5 @@
+import { DispatchStore } from "./dispatch-store.js";
+import { AgentSessionStore } from "./agent-session-store.js";
 import { ConsolePerformance } from "./console-performance.js";
 import { afterEach, expect, it, vi } from "vitest";
 import { hashPassword } from "./admin-auth.js";
@@ -40,4 +42,37 @@ it("rechecks account authorization after the asynchronous report even when no ro
   return {status:{enabled:true,ready:true,degraded:false},rows:[],coverage:[],complete:false};
  });
  const result=await f.app.inject({url:"/api/v1/console/performance",headers:f.headers});expect(result.statusCode).toBe(401);
+});
+
+it("authenticates account-feed observations and prevents browser forgery of server measurements",async()=>{
+ const f=await fixture();
+ const list={protocol:1,device:"phone",scenario:"first_entry",dataset:"account_feed",visitId:"visit-528"};
+ const post=(events:unknown,extra:Record<string,unknown>={})=>f.app.inject({method:"POST",url:"/api/v1/console/performance",headers:f.headers,payload:{list:true,events,...extra}});
+ expect((await post([{id:"start",stage:"list_visit",result:"success",list}])).statusCode).toBe(202);
+ expect((await post([{id:"forged",stage:"list_server",result:"success",durationMs:0,list}])).json().queued).toBe(0);
+ expect((await post([{id:"wrong-scope",stage:"list_visit",result:"success",list}],{productId:f.product.id})).statusCode).toBe(400);
+ expect((await post([{id:"sensitive",stage:"list_visit",result:"success",list:{...list,message:"private"}}])).statusCode).toBe(400);
+ const r=await f.app.inject({url:`/api/v1/console/performance?to=${Date.now()+1}`,headers:f.headers});expect(r.json().rows.find((r:any)=>r.stage==="list_visit").n).toBe(1);
+ expect((await f.app.inject({url:"/api/v1/console/performance",headers:f.owner})).json().rows).toEqual([]);
+ const actual=await f.app.inject({url:"/api/v1/agent-sessions",headers:{...f.headers,"x-missiongo-list-observation":JSON.stringify({...list,rows:999,responseBytes:999,dataset:"project_view"})}});expect(actual.statusCode).toBe(200);
+ const serverReport=await f.app.inject({url:`/api/v1/console/performance?to=${Date.now()+1}`,headers:f.headers});
+ const row=serverReport.json().rows.find((r:any)=>r.stage==="list_server");expect(row.dimensions.dataset).toBe("account_feed");expect(row.measures.rows.total).toBe(0);expect(row.measures.responseBytes.total).toBe(Buffer.byteLength(actual.body));
+ expect(JSON.stringify(serverReport.json())).not.toContain("visit-528");
+});
+
+it("keeps Windows native delivery separate from account-list observations",async()=>{
+  const f=await fixture(),database=f.app.missionGoStore.database;
+  const node=new DispatchStore(database).registerNode({accountId:f.member.id,name:"Windows fixture",installationId:"windows-performance"});
+  const item=f.app.missionGoStore.createWorkItem({productId:f.product.id,title:"Metrics fixture",description:"",type:"task",priority:"normal"});
+  database.connection.prepare(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at)
+    VALUES ('windows-performance-dispatch',?,?,'codex','default','launched','synthetic',?)`).run(f.member.id,node.nodeId,new Date().toISOString());
+  database.connection.prepare("INSERT INTO dispatch_items(dispatch_id,item_id,position) VALUES ('windows-performance-dispatch',?,0)").run(item.id);
+  const sessions=new AgentSessionStore(database),sessionId=sessions.createForDispatch({dispatchId:"windows-performance-dispatch",nodeId:node.nodeId,sessionRef:"windows-thread"});
+  const command=sessions.enqueue(f.member.id,sessionId,"synthetic"),headers={authorization:`Bearer ${node.token}`};
+  const result=await f.app.inject({method:"POST",url:`/api/v1/node/agent-sessions/${sessionId}/performance`,headers,payload:{commandId:command.id,platform:"windows",version:"fixture",events:[{id:"windows-delivery",stage:"native_delivery",result:"success",durationMs:7}]}});
+  expect(result.statusCode,result.body).toBe(202);expect(result.json().queued).toBe(1);
+  await f.app.inject({url:"/api/v1/agent-sessions",headers:f.headers});
+  const report=await f.app.inject({url:`/api/v1/console/performance?to=${Date.now()+1}`,headers:f.headers});
+  expect(report.json().rows).toEqual(expect.arrayContaining([expect.objectContaining({source:"windows",stage:"native_delivery",n:1}),expect.objectContaining({source:"server",stage:"list_server"})]));
+  expect(report.json().rows.some((row:any)=>row.source === "linux" && row.stage === "native_delivery")).toBe(false);
 });
