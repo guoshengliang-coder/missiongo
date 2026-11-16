@@ -5,6 +5,7 @@ import { postItemCommand } from "./item-command";
 const fixture = JSON.parse(readFileSync(new URL("./.auth/fixture.json", import.meta.url), "utf8")) as { productId: string };
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAACAAAAAYCAIAAAAUMWhjAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAMElEQVRIiWOQS1lAU8QwakHKaBAtGE1FcqMZbcFoUSE3WpqmjFY4cqNVZsrgblUAADLVZi7SZ5y7AAAAAElFTkSuQmCC", "base64");
 const note = "已发包状态未变更，需要核对附件。Long state reason with wrapping. ".repeat(8);
+const textFilename = `evidence-${"long-filename-".repeat(10)}.txt`;
 
 async function seed(page: Page) {
   const created = await page.request.post("/api/v1/items", { data: { productId: fixture.productId, title: "状态与评论时间线排版", description: "仅本地回归", type: "bug", priority: "normal", status: "ready", environment: { platform: "web" } } });
@@ -12,8 +13,9 @@ async function seed(page: Page) {
   const item = await created.json();
   const files: { id: string; filename: string }[] = [];
   for (let index = 0; index < 8; index++) {
-    const filename = index === 7 ? "evidence.txt" : `image-${index}.png`;
-    const uploaded = await page.request.post(`/api/v1/items/${item.key}/attachments`, { headers: { "content-type": "application/octet-stream", "x-missiongo-content-type": index === 7 ? "text/plain" : "image/png", "x-missiongo-filename": filename }, data: index === 7 ? Buffer.from("State reason evidence") : png });
+    // Keep the long file beside the first image rather than hidden in “more”.
+    const filename = index === 2 ? textFilename : `image-${index}.png`;
+    const uploaded = await page.request.post(`/api/v1/items/${item.key}/attachments`, { headers: { "content-type": "application/octet-stream", "x-missiongo-content-type": index === 2 ? "text/plain" : "image/png", "x-missiongo-filename": filename }, data: index === 2 ? Buffer.from("State reason evidence") : png });
     expect(uploaded.ok()).toBe(true);
     files.push(await uploaded.json());
   }
@@ -24,7 +26,7 @@ async function seed(page: Page) {
   const notices = (await (await page.request.get("/api/v1/notifications")).json()).notifications;
   const decision = notices.find((entry: { itemKey: string; kind: string }) => entry.itemKey === item.key && entry.kind === "decision");
   expect(decision.businessEventId).toBeTruthy();
-  return { item, comment, decision };
+  return { item, comment, decision, files };
 }
 
 async function verifyLayout(scope: Locator) {
@@ -39,6 +41,16 @@ async function verifyLayout(scope: Locator) {
   const thumbnailSize = await size(status.locator(".comment-attachment-tile.is-media").first());
   expect(thumbnailSize).toEqual(await size(comment.locator(".comment-attachment-tile.is-media")));
   expect(thumbnailSize.height).toBe(thumbnailSize.width);
+  const fileTile = status.getByRole("button", { name: `预览 ${textFilename}`, exact: true });
+  await expect(fileTile).toBeVisible();
+  const mixedRow = await fileTile.evaluate(file => {
+    const row = file.closest(".comment-attachment-strip")!;
+    const image = row.querySelector(".comment-attachment-tile.is-media")!;
+    return { fileTop: file.getBoundingClientRect().top, imageTop: image.getBoundingClientRect().top,
+      overflow: row.scrollWidth - row.clientWidth };
+  });
+  expect(Math.abs(mixedRow.fileTop - mixedRow.imageTop)).toBeLessThanOrEqual(1);
+  expect(mixedRow.overflow).toBeLessThanOrEqual(1);
   await expect(status.locator(".comment-attachments-more")).toBeVisible();
   expect(await status.evaluate(node => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
   return { status, comment };
@@ -95,12 +107,84 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     await expect(preview).toBeFocused();
     await target.locator(".comment-attachments-more").click();
     const gallery = page.getByRole("dialog", { name: "附件", exact: true });
-    await expect(gallery).toContainText("evidence.txt");
+    await expect(gallery).toContainText(textFilename);
     await page.keyboard.press("Escape");
     await expect(center).toBeVisible();
+    await expect(target.locator(".comment-attachments-more")).toBeFocused();
     await detail.locator(".detail-composer textarea").fill("保留通知详情草稿");
     await preview.click();
     await page.keyboard.press("Escape");
     await expect(detail.locator(".detail-composer textarea")).toHaveValue("保留通知详情草稿");
+  });
+});
+
+for (const width of [320, 1440]) for (const failure of ["http", "decode"] as const) test.describe(`AND-529 recovery ${width}px ${failure}`, () => {
+  test.use({ viewport: { width, height: 900 }, hasTouch: width === 320, colorScheme: width === 320 ? "dark" : "light" });
+  test.beforeEach(async ({ page }) => { await page.clock.setFixedTime(new Date("2026-11-16T03:00:00Z")); });
+  test("shows loading and failure, retains original preview and retries a fresh thumbnail", async ({ page }) => {
+    const { item, files } = await seed(page);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let releaseRetry!: () => void;
+    const retryGate = new Promise<void>(resolve => { releaseRetry = resolve; });
+    let holdingRetry = false;
+    let recovered = false, requests = 0;
+    await page.route(`**/attachments/${files[1]!.id}/thumbnail*`, async route => {
+      requests++;
+      await gate;
+      if (holdingRetry) await retryGate;
+      if (recovered) { await route.continue(); return; }
+      await route.fulfill(failure === "http" ? { status: 503, json: { message: "Synthetic thumbnail outage" } }
+        : { status: 200, contentType: "image/png", body: Buffer.from("Invalid image bytes") });
+    });
+    try {
+      await page.goto(`/?product=${fixture.productId}&status=all&q=${item.key}${width === 1440 ? `&item=${item.key}` : ""}`);
+      if (width === 320) {
+        await page.getByRole("button", { name: "待处理", exact: true }).click();
+        await page.locator(".message-center-layer").getByRole("button", { name: /^通知/ }).click();
+        await page.locator(".message-list-row").filter({ hasText: item.key }).filter({ hasText: "业务决策" }).click();
+      }
+      const scope = width === 320 ? page.locator(".message-detail-pane .detail-pane") : page.locator(".detail-pane");
+      const status = scope.locator(".timeline-event").filter({ has: page.locator(".timeline-note", { hasText: "已发包状态未变更" }) });
+      const preview = status.getByRole("button", { name: "预览 image-1.png", exact: true });
+      const slot = status.locator(".comment-attachment-slot").filter({ has: page.getByRole("button", { name: "预览 image-1.png", exact: true }) });
+      await preview.scrollIntoViewIfNeeded();
+      await expect(slot.getByRole("status")).toContainText("正在加载附件");
+      release();
+      await expect(slot.getByRole("alert")).toContainText("附件加载失败");
+      const retry = slot.getByRole("button", { name: "重试预览 image-1.png", exact: true });
+      await expect(retry).toBeVisible();
+      expect(await slot.locator("button button").count()).toBe(0);
+      const box = (await retry.boundingBox())!;
+      expect(box.width).toBeGreaterThanOrEqual(44); expect(box.height).toBeGreaterThanOrEqual(width === 320 ? 44 : 36);
+      // Thumbnail failure must not make the original evidence inaccessible.
+      await preview.click();
+      const original = page.locator(".selected-media-lightbox .zoomable-image img");
+      await expect.poll(() => original.evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+      await page.keyboard.press("Escape");
+      await expect(preview).toBeFocused();
+      const firstFailure = requests;
+      // A retry may fail again; keep recovery and stable focus available rather
+      // than treating the first click as a successful refresh.
+      holdingRetry = true;
+      await retry.click();
+      await expect(slot.getByRole("status")).toContainText("正在加载附件");
+      await expect(preview).toHaveAttribute("aria-busy", "true");
+      await expect(retry).toHaveCount(0);
+      holdingRetry = false;releaseRetry();
+      await expect.poll(() => requests).toBeGreaterThan(firstFailure);
+      await expect(slot.getByRole("alert")).toContainText("附件加载失败");
+      await expect(retry).toBeVisible();
+      await expect(preview).toBeFocused();
+      const before = requests;
+      recovered = true;
+      await retry.click();
+      await expect.poll(() => preview.locator("img").evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+      await expect(slot.getByRole("alert")).toHaveCount(0);
+      await expect(slot.getByRole("status")).toHaveCount(0);
+      await expect(retry).toHaveCount(0);
+      expect(requests).toBeGreaterThan(before);
+      await expect(preview).toBeFocused();
+    } finally { release();releaseRetry(); }
   });
 });
