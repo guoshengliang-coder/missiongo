@@ -197,17 +197,40 @@ final class UpdateLifecycleTests: XCTestCase {
                         ((view as? NSScrollView).map { [$0] } ?? []) + view.subviews.flatMap(scrollViews)
                     }
                     let scroll = try XCTUnwrap(scrollViews(host).first)
-                    let document = try XCTUnwrap(scroll.documentView)
-                    XCTAssertLessThanOrEqual(document.frame.width, scroll.contentView.bounds.width + 1)
-                    scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, document.bounds.height - scroll.contentView.bounds.height)))
-                    scroll.reflectScrolledClipView(scroll.contentView)
-                    host.layoutSubtreeIfNeeded()
-                    XCTAssertLessThanOrEqual(host.fittingSize.width, size.width + 1)
-                    if let directory = ProcessInfo.processInfo.environment["MISSIONGO_UI_CAPTURE_DIRECTORY"] {
-                        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-                        host.cacheDisplay(in: host.bounds, to: bitmap)
-                        let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
-                        try png.write(to: URL(fileURLWithPath: directory).appendingPathComponent("update-\(stage)-\(appearance.rawValue)-\(Int(size.width)).png"))
+                    for style: NSScroller.Style in [.legacy, .overlay] {
+                        scroll.scrollerStyle = style
+                        let beforeWidth = scroll.documentView?.frame.width ?? 0
+                        let beforeViewport = scroll.contentView.bounds.width
+                        // AppKit tiling alone does not flush SwiftUI's deferred
+                        // first layout on macOS 15. Allow the native render cycle
+                        // to settle, bounded to one second; keep the fit assertion.
+                        for _ in 0..<50 {
+                            scroll.tile()
+                            host.layoutSubtreeIfNeeded()
+                            controller.window.displayIfNeeded()
+                            if let document = scroll.documentView,
+                               document.frame.width <= scroll.contentView.bounds.width + 1 {
+                                break
+                            }
+                            try await Task.sleep(nanoseconds: 20_000_000)
+                        }
+                        let document = try XCTUnwrap(scroll.documentView)
+                        XCTAssertEqual(scroll.scrollerStyle, style)
+                        if beforeWidth > beforeViewport + 1 || document.frame.width > scroll.contentView.bounds.width + 1 {
+                            print("Update layout \(stage), \(appearance), \(style), \(size): before=\(beforeWidth)/\(beforeViewport), after=\(document.frame.width)/\(scroll.contentView.bounds.width)")
+                        }
+                        XCTAssertLessThanOrEqual(document.frame.width, scroll.contentView.bounds.width + 1,
+                                                 "\(stage), \(appearance), \(style), \(size)")
+                        scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, document.bounds.height - scroll.contentView.bounds.height)))
+                        scroll.reflectScrolledClipView(scroll.contentView)
+                        host.layoutSubtreeIfNeeded()
+                        XCTAssertLessThanOrEqual(host.fittingSize.width, size.width + 1)
+                        if let directory = ProcessInfo.processInfo.environment["MISSIONGO_UI_CAPTURE_DIRECTORY"] {
+                            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                            host.cacheDisplay(in: host.bounds, to: bitmap)
+                            let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                            try png.write(to: URL(fileURLWithPath: directory).appendingPathComponent("update-\(stage)-\(appearance.rawValue)-\(Int(size.width))-\(style.rawValue).png"))
+                        }
                     }
                 }
             }
