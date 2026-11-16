@@ -55,7 +55,7 @@ export function recordDevelopmentReviews(db: MissionGoDatabase, nodeId: string, 
     if(policy && ledgerRevision!==undefined && (ledgerRevision as number)<policy.revision) return;
     if(policy && ledgerRevision===policy.revision && policy.active_task_id!==activeTaskId) throw conflict("review_evidence_conflict","Review ledger revision has another active task.");
     if (required === true) db.connection.prepare("INSERT OR IGNORE INTO development_review_policy(session_id,node_id,required) VALUES (?,?,1)").run(sessionId,nodeId);
-    if (required === true || parsed.data.length) {
+    if (policy || required === true || parsed.data.length) {
       db.connection.prepare("INSERT OR IGNORE INTO development_review_policy(session_id,node_id,required) VALUES (?,?,1)").run(sessionId,nodeId);
       db.connection.prepare("UPDATE development_review_policy SET unavailable=? WHERE session_id=? AND node_id=?")
         .run(input === undefined || ((policy?.revision??0)>0 || parsed.data.length>0) && ledgerRevision===undefined || parsed.data.some(value => value.taskId===activeTaskId && value.revision === 0) ? 1 : 0,sessionId,nodeId);
