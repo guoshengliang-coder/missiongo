@@ -40,6 +40,8 @@ jobs:
       - run: npm ci
       - run: npm run build:types
       - run: npm run typecheck --workspace @missiongo/windows-workspace
+      - name: Diagnose native platform with bounded synthetic fixtures
+        run: node scripts/windows-platform-diagnostics.mjs
       - name: Native DPAPI, private ACL, singleton, PowerShell and npm launchers
         run: npm run test --workspace @missiongo/windows-workspace
       - name: Package unsigned development installer (never published)
