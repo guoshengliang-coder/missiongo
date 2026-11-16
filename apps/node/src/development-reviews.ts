@@ -30,7 +30,7 @@ export async function localDevelopmentReviews(agentKind: string, sessionRef: str
         ...(s.candidateDigest ? { candidateDigest: s.candidateDigest } : {}),
         checksPassed: b.requiredChecks.every((name: string) => s.checks?.some((check: any) => check.name === name && check.result === "passed")),
         blockingFindings: (final?.result?.findings ?? []).filter((f: any) => f.severity === "blocking").length,
-        findings:final?.result?.findings ?? [], checks:s.checks ?? [], requiredChecks:b.requiredChecks,
+        findings:final?.result?.findings ?? [], checks:(s.checks ?? []).map((check: any) => ({...check,method:"local validation; argvSha256="+createHash("sha256").update(check.method).digest("hex")})), requiredChecks:b.requiredChecks,
         ...(final?.receipt ? {reviewer:{sessionRef:final.receipt.sessionRef,model:final.receipt.model,provider:final.receipt.provider,readOnly:final.receipt.readOnly}} : {}),
         limitations: [...limitations, ...(s.reason ? [s.reason] : [])], ...(s.proof ? { proof: s.proof } : {}) });
     } catch {

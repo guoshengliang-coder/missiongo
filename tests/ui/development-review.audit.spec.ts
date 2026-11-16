@@ -3,8 +3,9 @@ import { expect, test } from "@playwright/test";
 const fixture=JSON.parse(readFileSync(new URL("./.auth/fixture.json",import.meta.url),"utf8")) as {productId:string;detailKey:string};
 for(const surface of ["console","panel"])for(const width of [320,768,1440])for(const theme of ["light","dark"] as const){
   test(`review facts without execution controls ${surface} ${width} ${theme}`,async({page})=>{
+    const stamp="2026-11-16T00:00:00.000Z";await page.clock.setFixedTime(new Date(stamp));
     await page.setViewportSize({width,height:900});await page.emulateMedia({colorScheme:theme});
-    const id="review-fixture",stamp=new Date().toISOString();
+    const id="review-fixture";
     const session={id,agentSessionId:id,dispatchId:"review-dispatch",agentKind:"codex",status:"idle",updatedAt:stamp,createdAt:stamp,activityAt:stamp,nodeName:"Fixture",nodeId:"fixture",nodeConnectionState:"online",nodeRevoked:false,mode:"default",dispatchStatus:"launched",activities:[],settings:{},unread:false,canReply:true,canRetry:false,canStop:false,canArchive:true,items:[{key:fixture.detailKey,title:"Review",productId:fixture.productId}],attention:{state:"none",kind:"none",reason:""},needsAttention:false,messages:[],
       developmentReview:{required:true,records:[{version:1,taskId:"review",agentKind:"codex",sessionRef:"native",requestId:"human",scopeDigest:"a".repeat(64),revision:4,generation:2,status:"passed",round:1,base:"b".repeat(40),checksPassed:true,blockingFindings:0,checks:[{name:"behavior",method:"node test.mjs",result:"passed",evidence:"exit=0; outputSha256="+"a".repeat(64)}],limitations:["浏览器验证仍需保留明确范围，不将模型结论当作人工验收。"]}]}};
     await page.route("**/api/v1/agent-sessions**",route=>{

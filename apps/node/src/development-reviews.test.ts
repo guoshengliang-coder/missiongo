@@ -21,3 +21,16 @@ it("reads only the exact native index, reports known missing records, and never 
     expect(await localDevelopmentReviews("codex","unrelated",root)).toBeUndefined();
   } finally {await rm(root,{recursive:true,force:true});}
 });
+
+it("syncs a command fingerprint without uploading private validation arguments",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"review-private-"));
+  const key=createHash("sha256").update("codex:native").digest("hex"), secret="SYNTHETIC_PRIVATE_ARGUMENT";
+  const method=JSON.stringify(["node","test.mjs","--token",secret]);
+  try {
+    await writeFile(join(root,"session-"+key+".json"),JSON.stringify(["task"]),{mode:0o600});
+    await writeFile(join(root,"task.json"),JSON.stringify({version:1,taskId:"task",revision:1,generation:1,status:"validating",binding:{agentKind:"codex",sessionRef:"native",requestId:"human",scopeDigest:"a".repeat(64),base:"b".repeat(40),requiredChecks:["test"]},rounds:[],checks:[{name:"test",method,result:"passed",evidence:"exit=0"}]}),{mode:0o600});
+    const evidence=await localDevelopmentReviews("codex","native",root);
+    expect(JSON.stringify(evidence)).not.toContain(secret);
+    expect(evidence?.[0]?.checks?.[0]?.method).toBe("local validation; argvSha256="+createHash("sha256").update(method).digest("hex"));
+  } finally {await rm(root,{recursive:true,force:true});}
+});

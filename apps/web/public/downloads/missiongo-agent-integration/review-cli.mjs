@@ -42,12 +42,33 @@ async function checkCommand(repo, command, signal) {
   if (!command || typeof command.name !== "string" || !Array.isArray(command.argv) || command.argv.length < 1 || command.argv.length > 100
     || !command.argv.every(value => typeof value === "string" && value.length <= 4000) || !["node", "npm", "npx", "python3", "swift", "cargo", "go", "gradle", "./gradlew"].includes(command.argv[0])) throw new Error("Invalid project validation command");
   return new Promise(resolve => {
-    const child = spawn(command.argv[0], command.argv.slice(1), { cwd: repo, stdio: ["ignore", "pipe", "pipe"], signal, timeout: REVIEW_POLICY.validationTimeoutMs });
-    let bytes = 0; const hash = createHash("sha256"); let settled = false;
-    const observe = chunk => { bytes += chunk.length; hash.update(chunk); if (bytes > 8 * 1024 * 1024) child.kill(); };
-    child.stdout.on("data", observe); child.stderr.on("data", observe);
-    const finish = (code, error) => { if (settled) return; settled = true; resolve({ name: command.name, method: JSON.stringify(command.argv), result: code === 0 && !error && bytes <= 8 * 1024 * 1024 ? "passed" : "failed", evidence: `exit=${code ?? "unknown"}; outputBytes=${bytes}; outputSha256=${hash.digest("hex")}${error ? "; execution incomplete" : ""}` }); };
-    child.once("error", () => finish(null, true)); child.once("exit", code => finish(code, false));
+    const grouped = process.platform !== "win32";
+    const child = spawn(command.argv[0], command.argv.slice(1), { cwd: repo, stdio: ["ignore", "pipe", "pipe"], detached: grouped });
+    let bytes = 0, failed = false, settled = false, stopping = false; const hash = createHash("sha256");
+    let escalation;
+    const kill = signalName => {
+      try { if (grouped && child.pid) process.kill(-child.pid,signalName); else child.kill(signalName); } catch { /* Already exited. */ }
+    };
+    const stop = () => {
+      if (stopping || settled) return;
+      stopping = true; failed = true; kill("SIGTERM");
+      escalation = setTimeout(() => kill("SIGKILL"),1000);
+    };
+    const observe = chunk => {
+      if (settled) return;
+      bytes += chunk.length;
+      if (bytes <= 8 * 1024 * 1024) hash.update(chunk); else stop();
+    };
+    child.stdout.on("data",observe); child.stderr.on("data",observe);
+    signal.addEventListener("abort",stop,{once:true}); if (signal.aborted) stop();
+    child.once("error",() => { failed = true; stop(); });
+    // exit can precede stdout/stderr EOF (including inherited child pipes).
+    child.once("close",code => {
+      if (settled) return; settled = true;
+      clearTimeout(escalation); signal.removeEventListener("abort",stop);
+      resolve({name:command.name,method:JSON.stringify(command.argv),result:code===0 && !failed && bytes<=8*1024*1024 ? "passed" : "failed",
+        evidence:`exit=${code??"unknown"}; outputBytes=${bytes}; outputSha256=${hash.digest("hex")}${failed?"; execution incomplete":""}`});
+    });
   });
 }
 
@@ -130,7 +151,11 @@ export async function reviewAction(action, input, options = {}) {
     if (state.status !== "validating" || state.candidateDigest !== before.digest) throw new Error("Validation needs the current clean review");
     const controller = new AbortController(); const checks = [];
     const abort = () => controller.abort();
-    process.once("SIGINT", abort); process.once("SIGTERM", abort);
+    const signalStop = () => {
+      abort(); const latest = store.read(state.taskId);
+      if (latest.generation === state.generation && latest.status === "validating") store.cancel(state.taskId,latest.revision);
+    };
+    process.once("SIGINT", signalStop); process.once("SIGTERM", signalStop);
     const validationSignal = AbortSignal.any([controller.signal,AbortSignal.timeout(REVIEW_POLICY.validationTimeoutMs)]);
     const generation = state.generation;
     const monitor = setInterval(() => { try { const latest = store.read(state.taskId); if (latest.generation !== generation || latest.status !== "validating") abort(); } catch { abort(); } }, 100);
@@ -144,7 +169,7 @@ export async function reviewAction(action, input, options = {}) {
       const after = candidate();
       if (after.digest !== before.digest || validationSignal.aborted) return publicReview(store.fail(state.taskId, latest.revision, "Candidate changed or validation interrupted"));
       return publicReview(store.validate(state.taskId, latest.revision, after, checks));
-    } finally { clearInterval(monitor); process.removeListener("SIGINT", abort); process.removeListener("SIGTERM", abort); }
+    } finally { clearInterval(monitor); process.removeListener("SIGINT", signalStop); process.removeListener("SIGTERM", signalStop); }
   }
   if (action !== "review" && action !== "confirm") throw new Error("Unknown review action");
   const confirmation = action === "confirm"; const previous = state.rounds.at(-1);
@@ -156,7 +181,11 @@ export async function reviewAction(action, input, options = {}) {
   const generation = state.generation;
   const controller = new AbortController(); let stopped = false;
   const cancel = () => { stopped = true; controller.abort(); };
-  process.once("SIGINT", cancel); process.once("SIGTERM", cancel);
+  const signalStop = () => {
+    cancel(); const latest = store.read(state.taskId);
+    if (latest.generation === generation && latest.status === "reviewing") store.cancel(state.taskId,latest.revision);
+  };
+  process.once("SIGINT", signalStop); process.once("SIGTERM", signalStop);
   const monitor = setInterval(() => { try { const latest = store.read(state.taskId); if (latest.generation !== generation || latest.status !== "reviewing") cancel(); } catch { cancel(); } }, 200);
   try {
     const context = state.binding.requirements + (confirmation ? "\nEarlier findings (verify rather than blindly trust):\n" + JSON.stringify(previous.result) : "");
@@ -172,7 +201,7 @@ export async function reviewAction(action, input, options = {}) {
     const latest = store.read(state.taskId);
     if (stopped || latest.generation !== generation || latest.status !== "reviewing") return publicReview(latest);
     return publicReview(store.fail(state.taskId, latest.revision, error instanceof Error ? error.message : "Native reviewer failed"));
-  } finally { clearInterval(monitor); process.removeListener("SIGINT", cancel); process.removeListener("SIGTERM", cancel); }
+  } finally { clearInterval(monitor); process.removeListener("SIGINT", signalStop); process.removeListener("SIGTERM", signalStop); }
 }
 
 async function main() {

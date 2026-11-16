@@ -115,7 +115,13 @@ public enum LocalDevelopmentReviews {
                 if let receipt = (confirmation?["receipt"] ?? round["receipt"]) as? [String: Any] {
                     wire["reviewer"] = ["sessionRef": receipt["sessionRef"] ?? "", "model": receipt["model"] ?? "", "provider": receipt["provider"] ?? "", "readOnly": receipt["readOnly"] ?? false]
                 }
-                wire["findings"] = result["findings"] ?? []; wire["checks"] = checks; wire["requiredChecks"] = required
+                wire["findings"] = result["findings"] ?? []; wire["checks"] = checks.map { check -> [String: Any] in
+                    var safe = check
+                    if let method = check["method"] as? String {
+                        safe["method"] = "local validation; argvSha256=" + SHA256.hash(data: Data(method.utf8)).map { String(format: "%02x", $0) }.joined()
+                    }
+                    return safe
+                }; wire["requiredChecks"] = required
                 wire["repository"] = binding["repositoryUrl"] as? String; wire["candidateDigest"] = state["candidateDigest"]; wire["proof"] = state["proof"]
                 return try JSONDecoder().decode(DevelopmentReviewEvidence.self, from: JSONSerialization.data(withJSONObject: wire))
             } catch {
