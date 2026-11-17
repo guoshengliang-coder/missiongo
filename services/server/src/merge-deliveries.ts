@@ -451,7 +451,10 @@ export class MergeDeliveries {
     return rows;
   }
   publicationPreview(accountId:string,productId:string,selection:{id:string;revision:string}[]):PublicationScope {
-    const selected=this.selected(accountId,productId,selection),candidates:PublicationScopeRow[]=[],exclusions:NonNullable<PublicationScope["exclusions"]>=[];
+    return this.publicationCandidates(this.selected(accountId,productId,selection),productId,selection);
+  }
+  private publicationCandidates(selected:Delivery[],productId:string,selection:{id:string;revision:string}[]):PublicationScope {
+    const candidates:PublicationScopeRow[]=[],exclusions:NonNullable<PublicationScope["exclusions"]>=[];
     let cursor:number|undefined;
     do {
       const page=releaseCandidatePage(this.store,this,productId,100,cursor,true);
@@ -470,12 +473,47 @@ export class MergeDeliveries {
     for(const d of selected)if(!candidates.some(c=>c.deliveryId===d.id || c.selected && d.itemKeys.includes(c.itemKey??"")&&c.completion&&sameCompletion(normalizeCompletion({completion:c.completion}),{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`})))
       candidates.push({identity:`selection:${d.id}`,deliveryId:d.id,title:d.summary,completion:{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`},requiredArtifacts:d.requiredArtifacts,...(d.noReleaseReason?{noReleaseReason:d.noReleaseReason}:{}),expectedRevision:d.revision,selected:true});
     candidates.sort((a,b)=>a.identity.localeCompare(b.identity));
-    const blockers=candidates.flatMap(c=>!c.completion||c.requiredArtifacts===undefined||!c.requiredArtifacts.length&&!c.noReleaseReason?[`${c.title}：集成依据或发布范围待核实`]:[]);
+    const blockers=candidates.flatMap(c=>!c.completion||c.requiredArtifacts==null||!c.requiredArtifacts.length&&!c.noReleaseReason?[`${c.title}：集成依据或发布范围待核实`]:[]);
     for(const c of candidates)if(c.completion) {
       try {const ref=normalizeCompletion({completion:c.completion});if(ref.kind!=="github"||!ref.url.startsWith(selected[0]!.repository+"/pull/"))blockers.push(`${c.title}：不属于本次目标仓库`);}catch{blockers.push(`${c.title}：集成依据待核实`);}
     }
     const requiredArtifacts=[...new Set(candidates.flatMap(c=>c.requiredArtifacts??[]))].sort();
     return {digest:digest([selection,candidates,requiredArtifacts,blockers,exclusions]),candidates,requiredArtifacts,blockers,exclusions};
+  }
+  private publicationRefresh(b:Batch):PublicationScope|undefined {
+    if(!b.publish || b.deliveries.some(id=>b.results[id]?.status!=="merged" || b.integration?.entries[id]?.repair))return;
+    return this.publicationCandidates(b.deliveries.map(id=>this.read<Delivery>("merge_deliveries",id)),b.productId,b.selection);
+  }
+  private refreshedPublicationScope(b:Batch,action:Extract<ReconciliationAction,{kind:"allow_partial_publication"}>):PublicationScope|undefined {
+    const refresh=action.publicationRefresh;if(!refresh)return;
+    const current=this.publicationRefresh(b);
+    if(!current || current.digest!==refresh.scopeDigest)throw changed();
+    const gaps=new Map(refresh.historicalGaps.map(row=>[row.identity,row.reason]));
+    if(gaps.size!==refresh.historicalGaps.length)throw changed();
+    const candidates=current.candidates.map(row=>{
+      const missing=!row.completion || row.requiredArtifacts==null;
+      if(missing) {
+        const reason=gaps.get(row.identity);
+        if(!reason || !row.itemKey || !row.developmentEventId)throw conflict("publication_evidence_missing","历史缺证必须逐份说明并人工审阅，不能自动排除。");
+        return {...row,historicalGapReason:reason};
+      }
+      if(gaps.has(row.identity))throw conflict("publication_scope_changed","已有集成及范围的交付不能作为历史缺证排除。");
+      const completion=normalizeCompletion({completion:row.completion});
+      const repository=this.read<Delivery>("merge_deliveries",b.deliveries[0]!).repository;
+      if(completion.kind!=="github" || !completion.url.startsWith(repository+"/pull/") || !row.requiredArtifacts?.length&&!row.noReleaseReason)throw changed();
+      return row;
+    });
+    if([...gaps.keys()].some(id=>!candidates.some(row=>row.identity===id&&row.historicalGapReason)))throw changed();
+    // Include every current row. A historical gap remains visible; only its
+    // delivery promise is excluded, never code, item state or original results.
+    const requiredArtifacts=[...new Set(candidates.filter(row=>!row.historicalGapReason).flatMap(row=>row.requiredArtifacts??[]))].sort();
+    const scope={...current,candidates,requiredArtifacts,blockers:[]};
+    return {...scope,digest:digest([current.digest,candidates])};
+  }
+  private historicalPublicationFingerprint(row:PublicationScopeRow) {
+    // A different delivery of the same item can advance its global revision
+    // through verified publication. Its content/Builder/round scope stays bound.
+    return digest([row.identity,row.itemKey,row.developmentEventId,row.roundKey,row.completion??null,row.requiredArtifacts??null,row.itemScope]);
   }
   private assertReferences(b:Batch,fresh=false) {
     for(const [id,ref]of Object.entries(b.references??{})) {
@@ -487,8 +525,13 @@ export class MergeDeliveries {
   private assertPublicationScope(b:Batch) {
     if(!b.publicationScope)return;
     // Recompute all product candidates without requiring old offer eligibility after our own merge.
-    const expected=b.publicationScope.candidates;
+    const expected=b.publicationScope.candidates,seenHistorical=new Set<string>();
+    if(expected.some(row=>row.historicalGapReason)) {
+      const approved=b.reconciliation?.requests.find(row=>row.action.kind==="allow_partial_publication" && row.action.publicationRefresh && row.decision==="approved" && row.decidedAt && row.decidedBy && row.appliedAt && row.publicationScope?.digest===b.publicationScope!.digest);
+      if(!approved?.publicationScope || digest(approved.publicationScope)!==digest(b.publicationScope))throw changed();
+    }
     for(const row of expected) {
+      if(row.historicalGapReason)continue;
       if(row.itemKey) {
         const item=this.store.getWorkItem(row.itemKey),record=this.store.getDeliveryRecords(row.itemKey).find(r=>r.id===row.developmentEventId);
         const scopeBlocker=record&&!record.published?this.itemCandidateBlocker(b,row):undefined;
@@ -507,6 +550,11 @@ export class MergeDeliveries {
         const completion=c.completion??(c.pullRequestUrl?{kind:"github",url:c.pullRequestUrl}:undefined);
         const identity=c.deliveryId?`delivery:${c.deliveryId}`:`${c.itemKey}:${c.developmentEventId??"legacy"}`;
         const exact=expected.find(e=>e.identity===identity);
+        if(exact?.historicalGapReason) {
+          const observed={...c,identity,title:exact.title,selected:false,completion,...(c.itemKey?{itemScope:this.scope([c.itemKey])}:{})};
+          if(completion&&c.requiredArtifacts!=null || this.historicalPublicationFingerprint(exact)!==this.historicalPublicationFingerprint(observed))throw changed();
+          seenHistorical.add(identity);continue;
+        }
         const own=b.deliveries.some(id=>{const d=this.read<Delivery>("merge_deliveries",id);return (c.deliveryId===id||d.itemKeys.includes(c.itemKey??""))&&completion&&sameCompletion(normalizeCompletion({completion}),{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`})});
         const scope=exact??(own?expected.find(e=>e.selected&&e.completion&&completion&&sameCompletion(normalizeCompletion({completion}),normalizeCompletion({completion:e.completion}))):undefined);
         if(!scope||digest([...(scope.requiredArtifacts??[])].sort())!==digest([...(c.requiredArtifacts??[])].sort())
@@ -516,6 +564,7 @@ export class MergeDeliveries {
       }
       cursor=page.nextBeforeSequence;
     }while(cursor);
+    if(expected.some(row=>row.historicalGapReason&&!seenHistorical.has(row.identity)))throw changed();
   }
   private displaySettings(sessionId: string): string {
     return this.displayRead("settings:"+sessionId,()=>{
@@ -1191,8 +1240,9 @@ export class MergeDeliveries {
   }
   preview(accountId:string,id:string):MergeReconciliationPreview {
     const b=this.read<Batch>("merge_batches",id);this.permit(accountId,b,false);
+    const publicationRefresh=this.publicationRefresh(b);
     return {batchId:id,state:b.state,publish:b.publish,snapshot:this.snapshot(b),sessionId:b.sessionId,
-      reconciliation:b.reconciliation,entries:b.deliveries.map(deliveryId=>{
+      reconciliation:b.reconciliation,...(publicationRefresh?{publicationRefresh}:{}),entries:b.deliveries.map(deliveryId=>{
         const d=this.read<Delivery>("merge_deliveries",deliveryId);
         return {deliveryId,itemKeys:d.itemKeys,originalHead:d.head,executionHead:b.integration?.entries[deliveryId]?.head??d.head,
           repository:d.repository,pullRequest:d.pullRequest,targetBranch:d.targetBranch,result:b.results[deliveryId],
@@ -1226,7 +1276,8 @@ export class MergeDeliveries {
         if(existing?.status==="merged"&&(existing.head!==action.evidence.head||existing.commit!==action.evidence.commit))throw conflict("merge_fact_conflict","已记录的成功合并事实不允许替换。");
       }
       if((action.kind==="defer_publication"||action.kind==="allow_partial_publication")&&!b.publish)throw changed();
-      r.requests.push({id:key,digest:hash,snapshot,action,at:new Date().toISOString()});this.saveBatch(b);
+      const publicationScope=action.kind==="allow_partial_publication"?this.refreshedPublicationScope(b,action):undefined;
+      r.requests.push({id:key,digest:hash,snapshot,action,at:new Date().toISOString(),...(publicationScope?{publicationScope}:{})});this.saveBatch(b);
       return this.preview(accountId,id);
     });
   }
@@ -1238,6 +1289,7 @@ export class MergeDeliveries {
       if(!request||request.snapshot!==snapshot)throw changed();
       if(request.decision){if(request.decision!==decision)throw changed();return this.preview(accountId,id);}
       if(this.snapshot(b)!==snapshot||!noExecutionRemaining)throw changed();
+      if(request.action.kind==="allow_partial_publication"&&request.action.publicationRefresh&&this.refreshedPublicationScope(b,request.action)?.digest!==request.publicationScope?.digest)throw changed();
       if(b.state==="finished"&&decision==="approved") {
         if(this.db.connection.prepare("SELECT 1 FROM merge_batches WHERE product_id=? AND state='active' AND id!=?").get(b.productId,id))throw conflict("merge_batch_active","同项目已有其他活动批次，不能恢复旧批次。");
         const session=new AgentSessionStore(this.db).getForAccount(accountId,b.sessionId);
@@ -1288,6 +1340,12 @@ export class MergeDeliveries {
         b.state="active";
       }
       const action=request.action,at=new Date().toISOString();
+      if(action.kind==="allow_partial_publication"&&action.publicationRefresh) {
+        const scope=this.refreshedPublicationScope(b,action);
+        if(!scope || scope.digest!==request.publicationScope?.digest)throw changed();
+        r.history.push({at,action:"refresh_publication_scope",requestId,previous:b.publicationScope,detail:action.reason});
+        b.publicationScope=scope;
+      }
       if(action.kind==="accept_merge"||action.kind==="retry_handover"||action.kind==="retry_blocked") {
         const d=this.read<Delivery>("merge_deliveries",action.deliveryId),previous=b.results[d.id];
         if(action.kind!=="accept_merge"&&b.integration?.entries[d.id]?.repair)throw conflict("repair_unresolved","修复预留尚未核实，请先按原预留恢复；不能删除或冒认他人修复。");
@@ -1331,8 +1389,10 @@ export class MergeDeliveries {
     if(batchPublicationDeferred(b))return;
     const decision=b.reconciliation?.publication;
     if(decision?.batchScopeDigest===undefined&&decision?.resultsDigest===digest(b.results)&&decision.decision==="defer_publication")return;
+    this.assertPublicationScope(b);
     if(Object.values(b.results).some(r=>r.status==="blocked")&&!(decision?.resultsDigest===digest(b.results)&&decision.decision==="allow_partial_publication"))throw conflict("partial_publication_decision_required","部分交付受阻，请人工决定本次暂不发布或授权部分发布。");
     if(b.publicationScope)for(const row of b.publicationScope.candidates) {
+      if(row.historicalGapReason)continue;
       let complete=false;
       if(row.itemKey)complete=Boolean(this.store.getDeliveryRecords(row.itemKey).find(r=>r.id===row.developmentEventId)?.published);
       else if(row.deliveryId) {

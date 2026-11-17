@@ -1002,7 +1002,7 @@ export function createMissionGoMcpServer(
       const request=preview.reconciliation?.requests.find(r=>r.id===input.requestId);
       if(!request || request.snapshot!==input.snapshot || (!request.appliedAt && request.decision!=="rejected" && preview.snapshot!==input.snapshot)) throw new Error("The exact recovery request or snapshot changed.");
       const content={batchId:preview.batchId,state:preview.state,publish:preview.publish,snapshot:preview.snapshot,
-        requestId:request.id,action:request.action,entries:preview.entries};
+        requestId:request.id,action:request.action,publicationScope:request.publicationScope,entries:preview.entries};
       return {content,...(request.decision?{completed:{approved:request.decision==="approved",result:preview}}:{})};
     };
     return nativeConfirmations.request({ctx,codec:approvalStateCodec,modern:options.protocolEra==="modern",accountId:access.accountId,clientId:access.clientId??"",
@@ -1034,7 +1034,7 @@ export function createMissionGoMcpServer(
   server.registerTool(
     "request_merge_reconciliation", {
     annotations:{readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
-    description:"Stage an exact original-batch recovery action for a signed-in person's console approval. Use the preview snapshot and original merge dispatch; this does not grant authority or execute recovery. accept_merge needs independently verified GitHub merged head, merge commit, actual target ancestry, original-head inclusion and passing validation; never impersonate external repairs. retry_handover only supplements missing compatible evidence. retry_blocked preserves history. Publication choices require a human decision. No generic field writes or developer credentials.",
+    description:"Stage an exact original-batch recovery action for a signed-in person's console approval. Use the preview snapshot and original merge dispatch; this does not grant authority or execute recovery. accept_merge needs independently verified GitHub merged head, merge commit, actual target ancestry, original-head inclusion and passing validation; never impersonate external repairs. retry_handover only supplements missing compatible evidence. retry_blocked preserves history. Publication choices require a human decision. Once every original result is merged, an optional publicationRefresh binds the complete preview scopeDigest and explicit historicalGaps identities/reasons; the server freezes all candidates for human review and rejects changed candidates or exclusion of known complete deliveries. No generic field writes or developer credentials.",
     inputSchema:z.object({batchId:z.string().min(1),dispatchId:z.string().min(1),idempotencyKey:z.string().min(1).max(200),snapshot:z.string().length(64),action:reconciliationActionSchema}),
   },async(input,ctx)=>{
     requireWriteScope(ctx);requireAccessibleProduct(ctx,merges.batchProduct(input.batchId));

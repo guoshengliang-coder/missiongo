@@ -36,6 +36,8 @@ export interface PublicationScopeRow {
   deliveryId?:string; noReleaseReason?:string; selected:boolean;
   /** Frozen item content, Builder and round; optional for legacy batches. */
   itemScope?:string;
+  /** Human-reviewed historical evidence gap, not a published delivery. */
+  historicalGapReason?:string;
 }
 export interface PublicationScope {
   digest:string; candidates:PublicationScopeRow[]; requiredArtifacts:string[]; blockers:string[];
