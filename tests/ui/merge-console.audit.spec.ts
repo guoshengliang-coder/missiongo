@@ -377,3 +377,33 @@ test("AND-447 SSE invalidates a removed selection and permits deliberate reselec
   await dialog.getByRole("button",{name:"重新选择",exact:true}).click();
   await expect(dialog).toContainText("暂无已确认的待集成改动");await expect(dialog.getByRole("button",{name:"下一步：配置 Agent"})).toBeDisabled();
 });
+
+for(const theme of ["light","dark"] as const)test(`publication recovery preserves the complete frozen candidate scope at 320px ${theme}`,async({page,request})=>{
+  await page.setViewportSize({width:320,height:900});await page.emulateMedia({colorScheme:theme});
+  const product=await(await request.post("/api/v1/products",{data:{name:"Scope recovery",keyPrefix:`RS${theme[0]!.toUpperCase()}`}})).json();
+  const id="scope-recovery-session",at="2026-11-08T08:00:00Z",snapshot="a".repeat(64),scopeDigest="b".repeat(64),reviewedDigest="d".repeat(64);
+  let approved=false;
+  const session={id,agentSessionId:id,dispatchId:"scope-dispatch",productId:product.id,agentKind:"codex",status:"idle",updatedAt:at,createdAt:at,nodeName:"Fixture",nodeId:"fixture",nodeConnectionState:"online",mode:"auto",dispatchStatus:"launched",activities:[],settings:{},unread:false,canReply:true,canRetry:false,canStop:false,canArchive:true,attention:{state:"none"},needsAttention:false,items:[]};
+  const candidates=[{identity:"RC-1:current-event",title:"Current merged delivery",itemKey:"RC-1",developmentEventId:"current-event",roundKey:"current-round",expectedRevision:4,selected:true,completion:{kind:"github",url:"https://github.com/example/project/pull/12"},requiredArtifacts:["web","windowsApp"]},{identity:"RC-1:old-event",title:"Historical manual completion",itemKey:"RC-1",developmentEventId:"old-event",roundKey:"old-round",expectedRevision:4,selected:false,historicalGapReason:"历史手动开发完成记录缺少集成和范围；当前交付仍完整纳入"}];
+  const scope={digest:reviewedDigest,candidates,requiredArtifacts:["web","windowsApp"],blockers:[]};
+  const batch={id:"scope-batch",sessionId:id,state:"finished",deliveries:["delivery"],publish:true,results:{}};
+  await page.route("**/api/v1/agent-sessions**",route=>queueRoute(route).fulfill({json:new URL(route.request().url()).pathname==="/api/v1/agent-sessions"?{sessions:[session]}:{...session,messages:[]}}));
+  await page.route(/\/(?:merge-deliveries|integration-queue)(?:\?.*)?$/,route=>queueRoute(route).fulfill({json:{deliveries:[],batches:[batch]}}));
+  await page.route("**/merge-batches/scope-batch/reconciliation",route=>queueRoute(route).fulfill({json:{batchId:batch.id,state:"finished",publish:true,snapshot,sessionId:id,publicationRefresh:{...scope,digest:scopeDigest},entries:[],reconciliation:{requests:[{id:"scope-request",snapshot,digest:"c".repeat(64),at,action:{kind:"allow_partial_publication",reason:"Resume original batch",publicationRefresh:{scopeDigest,historicalGaps:[{identity:"RC-1:old-event",reason:candidates[1]!.historicalGapReason}]}},publicationScope:scope,...(approved?{decision:"approved"}:{})}],history:[],handoffs:{}}}}));
+  await page.route("**/merge-batches/scope-batch/reconciliation/scope-request/decision",route=>{
+    expect(route.request().postDataJSON()).toEqual({snapshot,decision:"approved",noExecutionRemaining:true,publicationScopeDigest:reviewedDigest});
+    approved=true;return queueRoute(route).fulfill({json:{approved:true}});
+  });
+  await page.goto(`/?product=${product.id}&console=agent&session=${id}`);
+  await page.getByRole("button",{name:"集成详情",exact:true}).click();await page.getByText("查看对账与恢复",{exact:true}).click();
+  const region=page.getByRole("region",{name:"批次对账"});
+  await expect(region).toContainText("Current merged delivery");await expect(region).toContainText("web / windowsApp");
+  await expect(region).toContainText("Historical manual completion");await expect(region).toContainText("历史缺证，不纳入本次交付承诺");
+  await expect(region.getByRole("button",{name:"批准本次恢复"})).toBeDisabled();
+  await region.getByText("查看改动与验证详情",{exact:true}).first().click();
+  await expect(region).toContainText("current-round");
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await region.getByRole("checkbox").check();
+  await region.getByRole("button",{name:"\u6279\u51c6\u672c\u6b21\u6062\u590d"}).click();
+  await expect.poll(()=>approved).toBe(true);
+});

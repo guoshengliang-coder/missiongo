@@ -2627,7 +2627,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const decision=stringField(body,"decision")!;
     if(decision!=="approved"&&decision!=="rejected")throw invalidInput("Invalid recovery decision.");
     if(body.noExecutionRemaining!==true)throw invalidInput("请先核实没有未结束的外部合并或发布操作。");
-    return merges.decideReconciliation(requireAccountId(request),id,requestId,stringField(body,"snapshot")!,decision,true);
+    return merges.decideReconciliation(requireAccountId(request),id,requestId,stringField(body,"snapshot")!,decision,true,stringField(body,"publicationScopeDigest",false));
   });
   app.get("/api/v1/integration-defaults", async request => {
     return dispatchStore.getDispatchDefaults(requireAccountId(request), "integration");

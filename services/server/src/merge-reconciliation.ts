@@ -14,7 +14,10 @@ export const reconciliationActionSchema = z.discriminatedUnion("kind", [
   z.object({kind:z.literal("retry_handover"),deliveryId:z.string().min(1)}).strict(),
   z.object({kind:z.literal("retry_blocked"),deliveryId:z.string().min(1),reason:text}).strict(),
   z.object({kind:z.literal("defer_publication"),reason:text}).strict(),
-  z.object({kind:z.literal("allow_partial_publication"),reason:text}).strict(),
+  z.object({kind:z.literal("allow_partial_publication"),reason:text,publicationRefresh:z.object({
+    scopeDigest:z.string().regex(/^[a-f0-9]{64}$/),
+    historicalGaps:z.array(z.object({identity:z.string().trim().min(1).max(300),reason:text}).strict()).max(200),
+  }).strict().optional()}).strict(),
 ]);
 export type ReconciliationAction = z.infer<typeof reconciliationActionSchema>;
 export type { MergeReconciliationState as ReconciliationState } from "@missiongo/contracts";

@@ -8,9 +8,10 @@ export function MergeReconciliation({batchId,initiallyOpen=false}:{batchId:strin
   const {t,formatTime,statusLabel}=useI18n(),[open,setOpen]=useState(initiallyOpen),[confirmed,setConfirmed]=useState(false);
   const query=useQuery({queryKey:["merge-reconciliation",batchId],enabled:open,
     queryFn:()=>request<MergeReconciliationPreview>(`/api/v1/merge-batches/${encodeURIComponent(batchId)}/reconciliation`)});
-  const decide=useMutation({mutationFn:({id,snapshot,decision}:{id:string;snapshot:string;decision:"approved"|"rejected"})=>
-    request(`/api/v1/merge-batches/${encodeURIComponent(batchId)}/reconciliation/${encodeURIComponent(id)}/decision`,{
-      method:"POST",body:JSON.stringify({snapshot,decision,noExecutionRemaining:confirmed})}),
+  const decide=useMutation({mutationFn:({id,snapshot,decision}:{id:string;snapshot:string;decision:"approved"|"rejected"})=>{
+    const publicationScope=query.data?.reconciliation?.requests.find(row=>row.id===id)?.publicationScope;
+    return request(`/api/v1/merge-batches/${encodeURIComponent(batchId)}/reconciliation/${encodeURIComponent(id)}/decision`,{
+      method:"POST",body:JSON.stringify({snapshot,decision,noExecutionRemaining:confirmed,...(publicationScope?{publicationScopeDigest:publicationScope.digest}:{})})});},
     onSettled:()=>{setConfirmed(false);void query.refetch();}});
   const label=(entry:MergeReconciliationPreview["entries"][number]|undefined)=>entry ? entry.itemKeys.join(" · ") || `PR #${entry.pullRequest}` : "";
   const labels={accept_merge:"recoveryAcceptMerge",retry_handover:"recoveryRetryHandover",retry_blocked:"recoveryRetryBlocked",
@@ -39,10 +40,21 @@ export function MergeReconciliation({batchId,initiallyOpen=false}:{batchId:strin
         <strong>{t(labels[row.action.kind])}</strong><small>{formatTime(row.at)}</small>
         {"deliveryId" in row.action&&<p>{label(query.data.entries.find(e=>e.deliveryId===("deliveryId" in row.action?row.action.deliveryId:undefined)))}</p>}
         {"reason" in row.action&&<p>{row.action.reason}</p>}
+        {row.publicationScope&&<div>
+          <p>{t("recoveryRefreshScope")}</p><code>{row.publicationScope.digest}</code>
+          <p>{t("recoveryScope")}: {row.publicationScope.requiredArtifacts.join(" / ")}</p>
+          <ul>{row.publicationScope.candidates.map(candidate=><li key={candidate.identity}>
+            <strong>{candidate.title}</strong><p><code>{candidate.identity}</code></p>
+            <p>{candidate.requiredArtifacts?.join(" / ")||t("recoveryMissing")}</p>
+            {candidate.historicalGapReason&&<p>{t("recoveryHistoricalGap")}: {candidate.historicalGapReason}</p>}
+            <details><summary>{t("mergeDetails")}</summary><p><code>{JSON.stringify(candidate)}</code></p></details>
+          </li>)}</ul>
+          {row.publicationScope.exclusions?.map(candidate=><p key={candidate.identity}>{candidate.title} · {candidate.identity} · {candidate.reason}</p>)}
+        </div>}
         {row.action.kind==="accept_merge"&&<><p>{row.action.evidence.validation}</p>
           <p>{t("recoveryActual")}: <code>{row.action.evidence.head}</code></p><p><code>{row.action.evidence.commit}</code> → <code>{row.action.evidence.targetHead}</code></p>
           <small>{formatTime(row.action.evidence.checkedAt)} · {row.action.evidence.source}</small></>}
-        {row.appliedAt?<p role="status">{t("recoveryApplied")}</p>:row.decision?<p role="status">{t(row.decision==="approved"?"recoveryApproved":"recoveryRejected")}</p>:row.snapshot!==query.data.snapshot?<p>{t("recoveryStale")}</p>:<>
+        {row.appliedAt?<p role="status">{t("recoveryApplied")}</p>:row.decision?<p role="status">{t(row.decision==="approved"?"recoveryApproved":"recoveryRejected")}</p>:(row.snapshot!==query.data.snapshot || row.action.kind==="allow_partial_publication" && row.action.publicationRefresh && row.action.publicationRefresh.scopeDigest!==query.data.publicationRefresh?.digest)?<p>{t("recoveryStale")}</p>:<>
           <label className="merge-publish"><input type="checkbox" checked={confirmed} disabled={decide.isPending} onChange={e=>setConfirmed(e.target.checked)}/>{t("recoveryNoExecution")}</label>
           <div className="merge-actions"><button type="button" className="primary-button" disabled={!confirmed||decide.isPending} onClick={()=>decide.mutate({id:row.id,snapshot:row.snapshot,decision:"approved"})}>{t("recoveryApprove")}</button>
           <button type="button" className="secondary-button" disabled={!confirmed||decide.isPending} onClick={()=>decide.mutate({id:row.id,snapshot:row.snapshot,decision:"rejected"})}>{t("recoveryReject")}</button></div>

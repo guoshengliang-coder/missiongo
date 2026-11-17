@@ -1,3 +1,4 @@
+import type { PublicationScope } from "./merge-presentation.js";
 import type { WorkItemStatus } from "@missiongo/domain";
 /** Append-only reconciliation; observations are supplied by the authorized executor. */
 export interface MergedObservation {
@@ -8,10 +9,11 @@ export type MergeRecoveryAction =
   | {kind:"accept_merge";deliveryId:string;evidence:MergedObservation}
   | {kind:"retry_handover";deliveryId:string}
   | {kind:"retry_blocked";deliveryId:string;reason:string}
-  | {kind:"defer_publication"|"allow_partial_publication";reason:string};
+  | {kind:"defer_publication";reason:string}
+  | {kind:"allow_partial_publication";reason:string;publicationRefresh?:{scopeDigest:string;historicalGaps:{identity:string;reason:string}[]}|undefined};
 export interface MergeReconciliationState {
   transportReceipts?:Record<string,{digest:string}>;
-  requests:{id:string;digest:string;snapshot:string;action:MergeRecoveryAction;at:string;
+  requests:{id:string;digest:string;snapshot:string;action:MergeRecoveryAction;at:string;publicationScope?:PublicationScope;
     decision?:"approved"|"rejected";decidedAt?:string;decidedBy?:string;appliedAt?:string}[];
   history:{at:string;action:string;requestId?:string;deliveryId?:string;previous?:unknown;detail:string}[];
   handoffs:Record<string,{status:"completed"|"blocked";detail:string;at:string}>;
@@ -20,6 +22,7 @@ export interface MergeReconciliationState {
 }
 export interface MergeReconciliationPreview {
   batchId:string;state:"active"|"finished";publish:boolean;snapshot:string;sessionId:string;
+  publicationRefresh?:PublicationScope;
   reconciliation?:MergeReconciliationState | undefined;
   entries:{deliveryId:string;itemKeys:string[];originalHead:string;executionHead:string;
     repository:string;pullRequest:number;targetBranch:string;requiredArtifacts:string[];noReleaseReason?:string | undefined;
