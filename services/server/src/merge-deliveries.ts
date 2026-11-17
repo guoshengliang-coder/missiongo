@@ -1,3 +1,4 @@
+import { developmentReviewBlocker, developmentReviewExpiry } from "./development-reviews.js";
 import type { SQLInputValue, StatementSync } from "node:sqlite";
 import { releaseCandidatePage } from "./release-candidate-page.js";
 import type { IntegrationActionMode, IntegrationQueueFacts, PublicationScope, PublicationScopeRow } from "@missiongo/contracts";
@@ -217,6 +218,8 @@ export class MergeDeliveries {
   private eligible(d: Delivery): string | undefined {
     try { this.sourceValid(d); } catch { return "changed"; }
     if (d.state === "batched") return d.itemKeys.some(key => collaborationBlockers(this.db, this.store.getWorkItem(key).id)>0) ? "dependency" : undefined;
+    const reviewBlocker = developmentReviewBlocker(this.db,d.sessionId,d.head,d.evidence.base,d.repository);
+    if (reviewBlocker) return reviewBlocker;
     if (!this.fresh(d.evidence, d.head)) return "stale";
     if (d.evidence.checks !== "passed") return d.evidence.checks;
     if (d.evidence.mergeable !== "clean") return d.evidence.mergeable;
@@ -744,13 +747,13 @@ export class MergeDeliveries {
       if(d.state!=="merged" && d.activity===this.activity(d.sessionId))try{this.sourceValid(d);attention=true;}catch{/* Invalid sources never suppress attention. */}
       let freshBlocker: string|undefined;
       if(view.blocker!=="changed" && d.state!=="batched") {
-        freshBlocker=d.evidence.checks!=="passed" ? d.evidence.checks : d.evidence.mergeable!=="clean" ? d.evidence.mergeable
+        freshBlocker=view.blocker?.startsWith("review_") ? view.blocker : d.evidence.checks!=="passed" ? d.evidence.checks : d.evidence.mergeable!=="clean" ? d.evidence.mergeable
           : d.itemKeys.some(key=>collaborationBlockers(this.db,this.store.workItemId(key))>0) ? "dependency" : undefined;
       }
-      const time=Date.parse(d.evidence.checkedAt),queue=this.queueFacts(d,view.blocker),owner=this.processingBatch(d,queue);
+      const time=Date.parse(d.evidence.checkedAt),reviewExpiry=developmentReviewExpiry(this.db,d.sessionId),queue=this.queueFacts(d,view.blocker),owner=this.processingBatch(d,queue);
       this.db.connection.prepare(`INSERT OR REPLACE INTO merge_delivery_projection VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
         d.id,d.productId,d.accountId,d.sessionId,d.batchId??null,source.sequence,Number(visible),Number(attention),JSON.stringify({...view,queue}),
-        d.state==="batched"||d.evidence.head!==d.head?null:time-30_000,d.state==="batched"||d.evidence.head!==d.head?null:time+300_000,freshBlocker??null,d.activity,owner??null);
+        d.state==="batched"||d.evidence.head!==d.head?null:time-30_000,d.state==="batched"||d.evidence.head!==d.head?null:Math.min(time+300_000,reviewExpiry??Infinity),freshBlocker??null,d.activity,owner??null);
       const link=(kind:string,key:string)=>this.db.connection.prepare("INSERT OR IGNORE INTO merge_display_dependencies VALUES (?,?,?)").run(id,kind,key);
       link("session",d.sessionId);link("account",d.accountId);link("product",d.productId);
       if(d.batchId){if(!activityChange)batches.add(d.batchId);link("batch",d.batchId);}

@@ -1,3 +1,4 @@
+import { localDevelopmentReviewSnapshot, localDevelopmentReviewRequired } from "./development-reviews.js";
 import { NativePerformanceUploader } from "./console-performance.js";
 import { SessionWorkQueue, SessionUploadGate, SnapshotReports, SnapshotHealth, ControlReports, hasControlWork, observationSession } from "./session-work.js";
 import { sessionName } from "./session-name.js";
@@ -127,6 +128,12 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
       if (lane === "observation" && (controlling.has(session.id) || epoch !== (epochs.get(session.id) ?? 0))) return;
       if (control) reported.failed(session.id + ":observation");
       if (lane !== "control") snapshot = health.observe(session.id, snapshot);
+      if (await localDevelopmentReviewRequired(session.agentKind, session.sessionRef)) snapshot.developmentReviewRequired = true;
+      const developmentReview = await localDevelopmentReviewSnapshot(session.agentKind,session.sessionRef);
+      if (developmentReview?.records.length) {
+        snapshot.developmentReviews=developmentReview.records;
+        if(developmentReview.taskId && developmentReview.revision){snapshot.developmentReviewTaskId=developmentReview.taskId;snapshot.developmentReviewRevision=developmentReview.revision;}
+      }
       const key = session.id + ":" + lane;
       const hash = reported.fingerprint(snapshot);
       if (lane !== "control" && !reported.needed(key, hash)) return;

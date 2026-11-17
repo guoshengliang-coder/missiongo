@@ -41,6 +41,10 @@ export interface Session {
   appliedSettingsRevision?: number; archiveInSource?: boolean; restoreInSource?: boolean;
 }
 export interface Snapshot {
+  developmentReviewRevision?: number;
+  developmentReviewTaskId?: string;
+  developmentReviewRequired?: boolean;
+  developmentReviews?: import("@missiongo/domain").DevelopmentReviewEvidence[];
   performance?: import("./console-performance.js").NativePerformanceReport[];
   failure?: CodexSessionFailure | undefined;
   status: "active" | "idle" | "suspended" | "stalled" | "unavailable" | "failed";

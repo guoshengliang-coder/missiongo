@@ -1,3 +1,4 @@
+import { developmentReviewSummary } from "./development-reviews.js";
 import { commandSourceMessage, commandSourceMessages } from "./command-source-message.js";
 import { SessionSendRequests } from "./session-send-requests.js";
 import { observeMessageTimes, recordMessageTime } from "./session-message-clock.js";
@@ -145,6 +146,7 @@ export interface AgentSessionSnapshot {
     readonly status: AgentSessionCommandStatus;
     readonly attachments: readonly AgentSessionAttachment[];
   }[];
+  readonly developmentReview?: { required: boolean; unavailable?: boolean; activeTaskId?: string; records: import("@missiongo/domain").DevelopmentReviewEvidence[] } | undefined;
   readonly activities: readonly AgentSessionActivity[];
   readonly turnState: AgentSessionTurnState;
   readonly command?: AgentSessionCommand;
@@ -779,6 +781,7 @@ export class AgentSessionStore {
       ...(row.archived_at ? { archivedAt: row.archived_at } : {}),
       ...(row.archive_source ? { archivedSource: row.archive_source } : {}),
       activities: JSON.parse(row.activities_json) as AgentSessionActivity[],
+      ...(includeMessages ? {developmentReview: developmentReviewSummary(this.database,row.id)} : {}),
       turnState,
       messages: messages.map((message) => ({
         id: message.id,

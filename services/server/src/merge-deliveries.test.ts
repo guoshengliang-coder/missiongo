@@ -14,6 +14,7 @@ import { MergeDeliveries, type DeliveryInput } from "./merge-deliveries.js";
 import { ExternalNativeSessionStore } from "./external-native-session-store.js";
 import { FreeSessionStore } from "./free-session-store.js";
 import { DispatchStore } from "./dispatch-store.js";
+import { recordDevelopmentReviews } from "./development-reviews.js";
 
 const config = { id: "conversation-admin", username: "admin@example.test", passwordScrypt: hashPassword("synthetic password"),
   sessionSecret: "synthetic-conversation-handover-secret", cookieSecure: false };
@@ -101,6 +102,24 @@ async function prepared(databasePath=":memory:") {
   return {...f,...launched,merges,input,identity,d,config};
 }
 describe("AND-423 explicit merge deliveries",()=>{
+  it("refreshes persisted review blockers on node evidence and expires the earlier quality proof",async()=>{
+    const f=await prepared(), now=Date.now();
+    vi.useFakeTimers();vi.setSystemTime(now);
+    try {
+      recordDevelopmentReviews(f.store.database,f.node.nodeId,f.projectSessionId,[],true);
+      expect(f.merges.list(f.item.productId,f.owner.id)[0]?.blocker).toBe("review_missing");
+      const review={version:1,taskId:"review-task",agentKind:"opencode",sessionRef:f.session.sessionRef,requestId:"human",scopeDigest:"c".repeat(64),revision:1,generation:2,
+        status:"passed",round:1,base:f.input.evidence.base,repository:f.input.repository,candidateDigest:"d".repeat(64),checksPassed:true,blockingFindings:0,limitations:[],findings:[],requiredChecks:["behavior"],checks:[{name:"behavior",method:"node test",result:"passed",evidence:"exit=0"}],
+        reviewer:{sessionRef:"readonly-child",model:"model",provider:"provider",readOnly:true},
+        proof:{head:f.input.head,base:f.input.evidence.base,candidateDigest:"d".repeat(64),clean:true,valid:true,checkedAt:new Date(now-240000).toISOString()}};
+      recordDevelopmentReviews(f.store.database,f.node.nodeId,f.projectSessionId,[review],true,review.taskId,1);
+      expect(f.merges.list(f.item.productId,f.owner.id)[0]?.blocker).toBeUndefined();
+      vi.setSystemTime(now+61000);
+      expect(f.merges.list(f.item.productId,f.owner.id)[0]?.blocker).toBe("stale");
+      recordDevelopmentReviews(f.store.database,f.node.nodeId,f.projectSessionId,[{...review,revision:2,status:"incomplete"}],true,review.taskId,1);
+      expect(f.merges.recomputeList(f.item.productId,f.owner.id)[0]?.blocker).toBe("review_incomplete");
+    } finally {vi.useRealTimers();}
+  });
   it("keeps item status unchanged until verified merge and binds confirmation to its revision",async()=>{
     const f=await prepared();
     expect(f.store.getWorkItem(f.item.key).status).toBe("in_progress");

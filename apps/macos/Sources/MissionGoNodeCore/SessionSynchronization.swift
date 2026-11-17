@@ -47,6 +47,7 @@ actor SessionSynchronization {
                 turnActive: latest.report.turnActive, waitingForInput: latest.report.waitingForInput,
                 approvalRetryId: report.approvalRetryId, approvalRetryStatus: report.approvalRetryStatus,
                 approvalRetryError: report.approvalRetryError)
+                .reportingDevelopmentReviews(latest.report.developmentReviews, required: latest.report.developmentReviewRequired, activeTaskId: latest.report.developmentReviewTaskId, ledgerRevision: latest.report.developmentReviewRevision)
         }
         controlStates[id] = (observed, report)
         return report

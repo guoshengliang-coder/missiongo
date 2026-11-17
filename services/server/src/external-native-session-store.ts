@@ -1,3 +1,4 @@
+import { developmentReviewSummary } from "./development-reviews.js";
 import { commandSourceMessage } from "./command-source-message.js";
 import { SessionSendRequests } from "./session-send-requests.js";
 import { observeMessageTimes, recordMessageTime } from "./session-message-clock.js";
@@ -221,6 +222,7 @@ export class ExternalNativeSessionStore {
     return { ...(nativeConnection ? { nativeConnection } : {}), nativeMessages, attachmentMessages,
       settings: this.settings(row, snapshot, connected, context?.workOpen),
       ...(snapshot ? { status: !row.native_node_id || !online ? "unavailable" as const : health!.status, turnState: snapshot.turnState, activities: snapshot.activities ?? [],
+        ...(includeMessages ? {developmentReview: developmentReviewSummary(this.store.database,id)} : {}),
         ...(row.native_synced_at ? { updatedAt: row.native_synced_at } : {}),
         ...(health?.reason || snapshot.error ? { lastError: health?.reason ?? snapshot.error } : {}) } : {}),
       ...(command ? { command } : {}), replyable: connected && !row.archived_at && (context ? context.workOpen : this.workOpen(id)),

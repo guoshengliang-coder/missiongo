@@ -2372,6 +2372,8 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .agent-session-question.answered .agent-session-options button { cursor: default; opacity: .55; }
 .agent-session-question.answered .agent-session-options button.selected { opacity: 1; }
 .agent-session-background { width: 100%; padding: 9px 10px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--muted); font-size: var(--text-xs); }
+.development-review-summary { overflow-wrap: anywhere; }
+.development-review-summary summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
 .agent-session-options { display: flex; flex-wrap: wrap; gap: 6px; }
 .agent-session-options button { padding: 5px 8px; color: var(--ink); background: var(--surface); border: 1px solid var(--line-dark); border-radius: var(--radius-sm); cursor: pointer; }
 .agent-session-permission .agent-session-options button { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: start; font: inherit; }
