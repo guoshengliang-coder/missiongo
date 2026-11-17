@@ -221,6 +221,7 @@ import {
   readListPaneWidth,
 } from "./pane-layout";
 import { ProductBadge } from "./product-badge";
+import { useProductIconPreload } from "./product-icon-preload";
 import { AgentSessionPanel } from "./agent-session-panel";
 import { AgentSessionConsole, useAgentConsoleDrafts } from "./agent-session-console";
 import { currentDispatchForStatus, dispatchIssueLabelKey, itemProgressKeys } from "./dispatch-attention";
@@ -924,6 +925,7 @@ export function App() {
   useConsoleEvents(queryClient, bootstrapQuery.data?.user.id, bootstrapQuery.data?.consoleCursor);
   const consoleConnection = useConsoleConnection();
   const products = productsQuery.data ?? bootstrapQuery.data?.products ?? [];
+  useProductIconPreload(bootstrapQuery.data?.user.id, products, selectedProductId);
   const selectedProduct = products.find((product) => product.id === selectedProductId);
   const mergeProgress = useMergeProgress(selectedProduct?.id ?? "");
   const selectedProductCanUseAi = productAllowsAi(selectedProduct);
@@ -2212,7 +2214,7 @@ function ProductSwitcher({
     const unread = unreadCounts?.get(id) ?? 0;
     const attention = attentionCounts?.get(id) ?? 0;
     return <>
-      <ProductBadge product={product} />
+      <ProductBadge product={product} loading="eager" />
       {expanded
         ? <span className={`product-switcher-option${unreadCounts ? " with-counts" : ""}`}>
           <span className="product-switcher-identity"><strong>{product.name}</strong><small>{product.keyPrefix}</small></span>
