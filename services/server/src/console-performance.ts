@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { PERFORMANCE_BUCKETS, validPerformanceEvent, listLoadBucket, type ConsolePerformanceEvent } from "@missiongo/domain";
 
 export interface PerformanceScope { account: string; products: readonly string[]; agent?: string; kind?: string }
-export interface PerformanceRecord extends ConsolePerformanceEvent { scope: PerformanceScope; source: "web" | "server" | "macos" | "linux"; version: string; operation?: string }
+export interface PerformanceRecord extends ConsolePerformanceEvent { scope: PerformanceScope; source: "web" | "server" | "macos" | "linux" | "windows"; version: string; operation?: string }
 export const performanceKey = (...parts: string[]) => createHash("sha256").update(JSON.stringify(parts)).digest("hex");
 /** No filesystem or SQLite work runs on the request thread. All failure paths are fail-open. */
 export class ConsolePerformance {

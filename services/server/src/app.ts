@@ -2853,7 +2853,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const events=checkPerformanceBatch(body,`node:${node.nodeId}`);
     if(typeof body.turnId==="string"&&/^[a-zA-Z0-9._:-]{1,160}$/.test(body.turnId))performanceSends.bind(sessionId,commandId,body.turnId);
     if(events.some(e=>e.stage==="missing"))performanceSends.missing(sessionId,commandId);
-    let queued=0;for(const e of events)if(["node_received","native_delivery","agent_first_output","missing"].includes(e.stage))queued+=Number(performanceMetrics.record({...e,operation:commandId,scope:{account:node.accountId,products,agent:group[0]?.agentKind??"unknown",kind:performanceSends.kind(sessionId,commandId)??"existing_send"},source:body.platform==="macos"?"macos":"linux",version:typeof body.version==="string"?body.version:"unknown"}));
+    let queued=0;for(const e of events)if(["node_received","native_delivery","agent_first_output","missing"].includes(e.stage))queued+=Number(performanceMetrics.record({...e,operation:commandId,scope:{account:node.accountId,products,agent:group[0]?.agentKind??"unknown",kind:performanceSends.kind(sessionId,commandId)??"existing_send"},source:body.platform==="macos"?"macos":body.platform==="windows"?"windows":"linux",version:typeof body.version==="string"?body.version:"unknown"}));
     return reply.code(202).send({protocol:1,queued,rejected:events.length-queued});
   });
   const performanceRequests=new WeakMap<object,number>();

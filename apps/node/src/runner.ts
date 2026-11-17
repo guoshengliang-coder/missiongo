@@ -4,32 +4,59 @@ import { SessionWorkQueue, SessionUploadGate, SnapshotReports, SnapshotHealth, C
 import { sessionName } from "./session-name.js";
 import { probeClaudeCapabilities } from "./claude-capabilities.js";
 import { spawn } from "node:child_process";
+import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { completeImageArtifacts } from "./artifacts.js";
 import { API, APIError } from "./api.js";
 import { directories, loadConfig, privateDir, readPrivate, safeError, savePrivate } from "./storage.js";
-import { hostCall, hostHistoryCall, hostDirectory, socketPath } from "./host.js";
+import { hostCall, hostDirectory, socketPath } from "./host.js";
 import { launchPrompt } from "./prompt.js";
 import { probe } from "./process.js";
 import { syncSkill } from "./skills.js";
 import { OpenCodeAPI } from "./opencode.js";
-import { ClaudeEnvironmentCache, resolveClaudeLaunch } from "./environment.js";
+import { ClaudeEnvironmentCache, resolveClaudeLaunch, resolveAgentLaunch } from "./environment.js";
+import { prepareAttachments } from "./attachments.js";
+import { availableModels, agentProbeKey } from "./models.js";
+import { synchronizeExternal } from "./external.js";
+import { readSessionHistory } from "./session-history.js";
+import { nativeKey } from "./bindings.js";
+import { InputRejected } from "./types.js";
+import { ManagedCoordinator } from "./managed.js";
+import { ReleaseObservations } from "./release-observations.js";
 import type { Config, Dispatch, HostState, Kind, RepoMapping, Session, Snapshot, AgentConfig } from "./types.js";
 
 declare const NODE_VERSION: string;
 interface WireHistoryJob { id: string; sessionId: string; sessionRef: string; agentKind: string; cursor: string }
 export const version = typeof NODE_VERSION === "string" ? NODE_VERSION : "development";
+const nativeCapabilities = new Map<string, { at:number; value:ReturnType<typeof probeClaudeCapabilities> }>();
 export async function detectAgents(config: Config, expected?: string, resolveClaude = resolveClaudeLaunch) {
   const agents = [];
   for (const [kind, settings] of Object.entries(config.agents) as [Kind, AgentConfig][]) {
     try {
-      const launch = kind === "claude_code" ? await resolveClaude(settings) : { executable: settings.executable ?? kind, env: process.env };
-      const text = kind === "opencode" ? (await new OpenCodeAPI().call("GET", "/api/info")).version : await probe(launch.executable, ["--version"], undefined, launch.env);
+      const launch = kind === "claude_code" ? await resolveClaude(settings) : await resolveAgentLaunch(kind, settings);
+      const text = kind === "opencode" ? (await new OpenCodeAPI(settings.serviceRegistration, launch.env).call("GET", "/api/info")).version : await probe(launch.executable, ["--version"], undefined, launch.env);
+      const semver = "([0-9]+\\.[0-9]+\\.[0-9]+(?:[a-z0-9._+-]*)?)";
+      const parsedVersion = kind === "opencode" ? new RegExp(`^${semver}$`, "i").exec(String(text))?.[1]
+        : kind === "codex" ? new RegExp(`\\bcodex(?:-cli)?\\s+v?${semver}`, "i").exec(String(text))?.[1]
+        : new RegExp(`${semver}\\s+\\(Claude Code\\)`, "i").exec(String(text))?.[1];
+      if (!parsedVersion) throw new Error("Agent version output was not recognized; check the selected launcher");
+      if (kind === "opencode" && Number(parsedVersion.split(".")[0]) < 2) throw new Error("OpenCode 2 is required");
+      const models = await availableModels(kind, settings, launch);
       const skill = await syncSkill(kind, config.server!, expected, launch.env);
-      const native=kind==="claude_code" ? await probeClaudeCapabilities(launch.executable,process.cwd(),launch.env).catch(()=>undefined) : undefined;
-      agents.push({ ...native, planApprovalProtocol:1, kind, version: String(text).replace(/[^0-9a-zA-Z. _-]/g, "").slice(0, 100), ready: true, skill });
+      let native: Awaited<ReturnType<typeof probeClaudeCapabilities>> | undefined;
+      if (kind === "claude_code") {
+        const key=JSON.stringify([config.server,agentProbeKey(kind,settings,launch)]);
+        let cached=nativeCapabilities.get(key);
+        if (!cached || Date.now()-cached.at > 10*60_000) {
+          if (nativeCapabilities.size >= 100) nativeCapabilities.delete(nativeCapabilities.keys().next().value!);
+          cached={at:Date.now(),value:probeClaudeCapabilities(launch.executable,(process.platform === "win32" ? launch.env.USERPROFILE : launch.env.HOME) ?? process.cwd(),launch.env)};
+          nativeCapabilities.set(key,cached);
+        }
+        native=await cached.value.catch(()=>undefined);
+      }
+      agents.push({ models, ...native, planApprovalProtocol:1, kind, version: parsedVersion, ready: true, skill });
     } catch (error) { agents.push({ kind, ready: false, unavailableReason: safeError(error) }); }
   }
   return agents;
@@ -38,17 +65,24 @@ export async function verifyRepo(path: string): Promise<string> {
   if (!isAbsolute(path)) throw new Error("Repository path must be absolute");
   const canonical = realpathSync(path);
   const top = await probe("git", ["rev-parse", "--show-toplevel"], canonical);
-  if (realpathSync(top) !== canonical) throw new Error("Map the repository root, not a subdirectory");
+  if (realpathSync(top) !== canonical) {
+    // Git may expand an 8.3 alias or change drive/path casing on Windows.
+    // A nonempty prefix still rejects a subdirectory; string inequality alone
+    // is not proof that two Windows spellings designate different roots.
+    if (process.platform !== "win32" || await probe("git", ["-C", canonical, "rev-parse", "--show-prefix"]) !== "") {
+      throw new Error("Map the repository root, not a subdirectory");
+    }
+  }
   return canonical;
 }
-export async function launch(root: string, job: Dispatch, entry: string): Promise<HostState> {
+export async function launch(root: string, job: Dispatch, entry: string, options: { externalPrompt?: string; signal?: AbortSignal } = {}): Promise<HostState> {
   launchPrompt(job);
   socketPath(root, job.dispatchId);
   job.repoPath = await verifyRepo(job.repoPath);
   const directory = hostDirectory(root, job.dispatchId); privateDir(directory);
   const path = join(directory, "state.json");
   if (!existsSync(path)) {
-    const initial: HostState = { dispatch: job, pid: 0, phase: "starting", sessionName: sessionName(job), commands: {}, snapshot: { status: "active", messages: [] } };
+    const initial: HostState = { dispatch: job, pid: 0, phase: "starting", ...(options.externalPrompt !== undefined ? { external: true, initialPrompt: options.externalPrompt } : {}), ...(process.platform === "win32" ? { ipcToken: randomBytes(32).toString("hex") } : {}), sessionName: sessionName(job), commands: {}, snapshot: { status: "active", messages: [] } };
     savePrivate(path, initial);
     // Detached host survives parent/systemd restarts. There is never an automatic second launch.
     const child = spawn(process.execPath, [entry, "_host", job.dispatchId], { detached: true, stdio: "ignore", env: { ...process.env, MISSIONGO_NODE_HOME: root } });
@@ -57,16 +91,19 @@ export async function launch(root: string, job: Dispatch, entry: string): Promis
   for (let attempt = 0; attempt < 120; attempt++) {
     const state = readPrivate<HostState>(path)!;
     if (state.phase !== "starting") return state;
-    await delay(1000);
+    await delay(1000, undefined, options.signal ? { signal: options.signal } : {});
   }
   throw new Error("Host launch is unconfirmed; inspect the original session before retrying");
 }
-export async function runNode(root: string, entry: string, signal: AbortSignal, log: (text: string) => void = console.log): Promise<void> {
+export async function runNode(root: string, entry: string, signal: AbortSignal, log: (text: string) => void = console.log, observe?: (session: Session, snapshot: Snapshot) => void, options: { managedAllowed?: boolean } = {}): Promise<void> {
   const shutdown = new AbortController();
   signal = AbortSignal.any([signal, shutdown.signal]);
   const config = loadConfig(root);
   if (!config.server || !config.token) throw new Error("Run login first");
-  const api = new API(config.server, config.token, signal);
+  const api = new API(config.server, config.token, signal, { "X-MissionGo-Chat-Attachments": "1", "X-MissionGo-External-Sessions": "1", "X-MissionGo-External-Worker": randomUUID(),
+    "X-MissionGo-External-Auto-Connect": "1", "X-MissionGo-External-Attachments": "1", "X-MissionGo-External-Settings": "1" });
+  const managed = options.managedAllowed ? new ManagedCoordinator(root, entry, api) : undefined;
+  const observations = options.managedAllowed ? new ReleaseObservations(root, api) : undefined;
   const healthPath = join(root, "status.json");
   let repos: RepoMapping[] = [];
   let agents: Awaited<ReturnType<typeof detectAgents>> = [];
@@ -88,7 +125,7 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
     for (const key of directories(join(root, "sessions"))) {
       const directory = hostDirectory(root, key);
       const state = readPrivate<HostState>(join(directory, "state.json"));
-      if (!state || state.phase === "starting" || readPrivate(join(directory, "reported.json"))) continue;
+      if (!state || state.external || state.managedJob || state.phase === "starting" || readPrivate(join(directory, "reported.json"))) continue;
       await api.call("POST", `/api/v1/node/dispatches/${encodeURIComponent(key)}/result`, state.phase === "launched"
         ? { status: "launched", sessionRef: state.sessionRef, sessionName: state.sessionName, initialTurnId: state.initialTurnId }
         : { status: "failed", error: state.launchError ?? "Host failed", failureCode: "unknown", failureStage: "host_start" });
@@ -110,7 +147,7 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
   const stops = new SessionWorkQueue(failedTask);
   const uploads = new SessionUploadGate();
   const reported = new SnapshotReports();
-  const performanceUploader=new NativePerformanceUploader((session,report)=>api.call("POST",`/api/v1/node/agent-sessions/${encodeURIComponent(session)}/performance`,{...report,platform:"linux",version},undefined,3000));
+  const performanceUploader=new NativePerformanceUploader((session,report)=>api.call("POST",`/api/v1/node/agent-sessions/${encodeURIComponent(session)}/performance`,{...report,platform:process.platform === "win32" ? "windows" : "linux",version},undefined,3000));
   const health = new SnapshotHealth();
   const epochs = new Map<string, number>();
   const controlling = new Map<string, number>();
@@ -118,7 +155,10 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
   const submitControl = (session: Session) => (session.command?.kind === "interrupt" ? stops : controls)
     .submit(session.id, () => synchronize(session, "control"));
   async function synchronize(session: Session, lane: "combined" | "observation" | "control"): Promise<void> {
-    if (!session.dispatchId || signal.aborted) return;
+    if ((!session.dispatchId && !session.externalBindingGeneration && !session.managedExecution) || signal.aborted) return;
+    const sessionAPI = session.externalBindingGeneration === undefined ? api : api.withHeaders({
+      "X-MissionGo-External-Generation": String(session.externalBindingGeneration), "X-MissionGo-External-Auto-Connect": session.externalAutoConnect ? "1" : "0",
+      ...(session.externalAutoConnect ? { "X-MissionGo-External-Ref": session.sessionRef } : {}) });
     const epoch = epochs.get(session.id) ?? 0;
     const control = lane === "control";
     if (lane === "observation" && controlling.has(session.id)) return;
@@ -137,7 +177,7 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
       const key = session.id + ":" + lane;
       const hash = reported.fingerprint(snapshot);
       if (lane !== "control" && !reported.needed(key, hash)) return;
-      try { await api.call("POST", `/api/v1/node/agent-sessions/${encodeURIComponent(session.id)}/snapshot`, snapshot); reported.confirm(key, hash); }
+      try { await sessionAPI.call("POST", `/api/v1/node/agent-sessions/${encodeURIComponent(session.id)}/snapshot`, snapshot); reported.confirm(key, hash); }
       catch (error) { reported.failed(key); throw error; }
     });
     try {
@@ -146,16 +186,23 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
         // Complete the server reservation before handing an input to the
         // detached host. A lost reservation response never starts input.
         if (session.approvalRetry?.status === "queued") {
-          await api.call("POST", `/api/v1/node/agent-sessions/${encodeURIComponent(session.id)}/snapshot`, {
+          await sessionAPI.call("POST", `/api/v1/node/agent-sessions/${encodeURIComponent(session.id)}/snapshot`, {
             status: "active", messages: [], approvalRetryId: session.approvalRetry.id, approvalRetryStatus: "delivering",
           });
         }
         if (session.command?.status === "queued") {
-          await api.call("POST", `/api/v1/node/agent-sessions/${encodeURIComponent(session.id)}/snapshot`, {
+          await sessionAPI.call("POST", `/api/v1/node/agent-sessions/${encodeURIComponent(session.id)}/snapshot`, {
             status: "active", messages: [], commandId: session.command.id, commandStatus: "delivering",
           });
         }
-        snapshot = await hostCall(root, session.dispatchId, session, lane === "control" && !modernControl ? "combined" : lane);
+        const prepared = session.command?.attachments?.length ? { ...session, command: await prepareAttachments(root, session.id, session.command, sessionAPI) } : session;
+        if (session.managedExecution) {
+          if (!managed) throw new InputRejected("Managed execution is not available in this entrypoint");
+          snapshot = await managed.synchronize(prepared, signal, lane === "observation");
+        } else if (session.externalBindingGeneration !== undefined) {
+          snapshot = await synchronizeExternal(root, prepared, sessionAPI, signal, lane === "control" && !modernControl ? "combined" : lane);
+          if (!session.externalAutoConnect && lane !== "control") savePrivate(join(root, "external-artifacts", `${nativeKey(session.agentKind, session.sessionRef)}.json`), { sessionRef: session.sessionRef, agentKind: session.agentKind, snapshot });
+        } else snapshot = await hostCall(root, session.dispatchId!, prepared, lane === "control" && !modernControl ? "combined" : lane);
       } catch (error) {
         if (error instanceof APIError) throw error;
         snapshot = {status: "unavailable", messages: [], error: safeError(error),
@@ -164,10 +211,10 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
       }
       // Metrics are an independent best-effort request, never awaited by the control/observation lane.
       for(const measurement of snapshot.performance ?? []) {
-        performanceUploader.enqueue(session.id,measurement);
+        performanceUploader.enqueue(session.id,{...measurement,...(session.externalBindingGeneration === undefined ? {} : {generation:session.externalBindingGeneration})});
       }
       delete snapshot.performance;
-      await post(snapshot);
+      await post(snapshot); observe?.(session, snapshot);
     } finally {
       if (control) { const remaining = (controlling.get(session.id) ?? 1) - 1;
         if (remaining) controlling.set(session.id, remaining); else controlling.delete(session.id); }
@@ -176,7 +223,7 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
   async function sessions(): Promise<void> {
     const result = await api.call("GET", "/api/v1/node/agent-sessions");
     for (const session of result.sessions as Session[]) {
-      if (!session.dispatchId) continue;
+      if (!session.dispatchId && session.externalBindingGeneration === undefined && !session.managedExecution) continue;
       const observed = separated ? observationSession(session) : session;
       mirrors.submit(session.id, () => synchronize(observed, separated ? "observation" : "combined"));
     }
@@ -202,8 +249,8 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
       try {
         const source = available.find(session => session.id === job.sessionId && session.sessionRef === job.sessionRef
           && ["codex","opencode","claude_code"].includes(session.agentKind) && session.agentKind === job.agentKind);
-        if (!source?.dispatchId) throw new Error("History source unavailable");
-        page = await hostHistoryCall(root, source.dispatchId, source.sessionRef, job.cursor);
+        if (!source) throw new Error("History source unavailable");
+        page = await readSessionHistory(root, source, job.cursor, managed);
       } catch { page = { messages: [], error: "node_unavailable" }; }
       await api.call("POST", `/api/v1/node/agent-history/${encodeURIComponent(job.id)}`, page);
     }
@@ -211,10 +258,10 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
   try {
     // Establish permitted mappings and expected Skill before advertising readiness.
     const heartbeat = async () => {
-      const reply = await api.call("POST", "/api/v1/node/heartbeat", { agents, clientVersion: version, supportsChatAttachments: false, supportsFreeSessions: true, repoCandidates: [] });
+      const reply = await api.call("POST", "/api/v1/node/heartbeat", { agents, clientVersion: version, supportsChatAttachments: true, supportsFreeSessions: true, repoCandidates: [] });
       repos = reply.repos ?? [];
       agents = await detectAgents(loadConfig(root), reply.expectedSkillVersion, claudeEnvironment.resolve);
-      await api.call("POST", "/api/v1/node/heartbeat", { agents, clientVersion: version, supportsChatAttachments: false, supportsFreeSessions: true, repoCandidates: [] });
+      await api.call("POST", "/api/v1/node/heartbeat", { agents, clientVersion: version, supportsChatAttachments: true, supportsFreeSessions: true, repoCandidates: [] });
       savePrivate(healthPath, { state: "online", checkedAt: new Date().toISOString(), pid: process.pid, agents });
     };
     await heartbeat();
@@ -225,6 +272,8 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
       for (const session of initialSessions) if (hasControlWork(session)) submitControl(session);
     }
     const loops = [
+      ...(managed ? [retry(() => managed.poll(signal), 2000)] : []),
+      ...(observations ? [retry(() => observations.uploadObservations(repos), 30_000)] : []),
       retry(heartbeat, 30_000), retry(recoverResults, 1000), retry(sessions, 2000),
       ...(separated ? [retry(controlChanges, 0)] : []), retry(history, 2000), retry(() => completeImageArtifacts(root, api), 2000),
       retry(async () => {
@@ -238,7 +287,7 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
           if (!repos.some((r) => r.repoPath === job.repoPath) || !loadConfig(root).agents[job.agentKind]) throw new Error("Dispatch repository or Agent is not enabled on this node");
           const permit = await api.call("POST", `/api/v1/node/dispatches/${encodeURIComponent(job.dispatchId)}/permit-start`, {});
           if (!permit.allowed) return;
-          await launch(root, job, entry); await recoverResults();
+          await launch(root, job, entry, { signal }); await recoverResults();
         } catch (error) {
           await api.call("POST", `/api/v1/node/dispatches/${encodeURIComponent(job.dispatchId)}/result`, {
             status: "failed", error: safeError(error), failureCode: "unknown", failureStage: "host_start",

@@ -1,3 +1,5 @@
+import { DispatchStore } from "./dispatch-store.js";
+import { AgentSessionStore } from "./agent-session-store.js";
 import { ConsolePerformance } from "./console-performance.js";
 import { afterEach, expect, it, vi } from "vitest";
 import { hashPassword } from "./admin-auth.js";
@@ -56,4 +58,21 @@ it("authenticates account-feed observations and prevents browser forgery of serv
  const serverReport=await f.app.inject({url:`/api/v1/console/performance?to=${Date.now()+1}`,headers:f.headers});
  const row=serverReport.json().rows.find((r:any)=>r.stage==="list_server");expect(row.dimensions.dataset).toBe("account_feed");expect(row.measures.rows.total).toBe(0);expect(row.measures.responseBytes.total).toBe(Buffer.byteLength(actual.body));
  expect(JSON.stringify(serverReport.json())).not.toContain("visit-528");
+});
+
+it("keeps Windows native delivery separate from account-list observations",async()=>{
+  const f=await fixture(),database=f.app.missionGoStore.database;
+  const node=new DispatchStore(database).registerNode({accountId:f.member.id,name:"Windows fixture",installationId:"windows-performance"});
+  const item=f.app.missionGoStore.createWorkItem({productId:f.product.id,title:"Metrics fixture",description:"",type:"task",priority:"normal"});
+  database.connection.prepare(`INSERT INTO dispatches(id,account_id,node_id,agent_kind,mode,status,repo_path,created_at)
+    VALUES ('windows-performance-dispatch',?,?,'codex','default','launched','synthetic',?)`).run(f.member.id,node.nodeId,new Date().toISOString());
+  database.connection.prepare("INSERT INTO dispatch_items(dispatch_id,item_id,position) VALUES ('windows-performance-dispatch',?,0)").run(item.id);
+  const sessions=new AgentSessionStore(database),sessionId=sessions.createForDispatch({dispatchId:"windows-performance-dispatch",nodeId:node.nodeId,sessionRef:"windows-thread"});
+  const command=sessions.enqueue(f.member.id,sessionId,"synthetic"),headers={authorization:`Bearer ${node.token}`};
+  const result=await f.app.inject({method:"POST",url:`/api/v1/node/agent-sessions/${sessionId}/performance`,headers,payload:{commandId:command.id,platform:"windows",version:"fixture",events:[{id:"windows-delivery",stage:"native_delivery",result:"success",durationMs:7}]}});
+  expect(result.statusCode,result.body).toBe(202);expect(result.json().queued).toBe(1);
+  await f.app.inject({url:"/api/v1/agent-sessions",headers:f.headers});
+  const report=await f.app.inject({url:`/api/v1/console/performance?to=${Date.now()+1}`,headers:f.headers});
+  expect(report.json().rows).toEqual(expect.arrayContaining([expect.objectContaining({source:"windows",stage:"native_delivery",n:1}),expect.objectContaining({source:"server",stage:"list_server"})]));
+  expect(report.json().rows.some((row:any)=>row.source === "linux" && row.stage === "native_delivery")).toBe(false);
 });

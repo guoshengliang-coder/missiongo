@@ -5,13 +5,13 @@ import { assertPlatformResult, selectPlatforms } from "./ci-platform-plan.mjs";
 const head = "a".repeat(40);
 const choose = (paths, overrides = {}) => selectPlatforms({ head, eventName: "pull_request",
   changes: paths?.map(path => typeof path === "string" ? { path, status: "M" } : path), ...overrides });
-const all = { android: true, macos: true, linuxNode: true }, none = { android: false, macos: false, linuxNode: false };
+const all = { android: true, macos: true, linuxNode: true, windows: true }, none = { android: false, macos: false, linuxNode: false, windows: false };
 
 test("PR native sources select their own platform and mixed changes select the union", () => {
   assert.deepEqual(choose(["apps/macos/Sources/App.swift"]).required, { ...none, macos: true });
   for (const path of ["apps/android/build.gradle.kts", "sdks/android-feedback/gradle.properties"]) assert.deepEqual(choose([path]).required, { ...none, android: true });
-  assert.deepEqual(choose(["apps/node/src/cli.ts"]).required, { ...none, linuxNode: true });
-  assert.deepEqual(choose(["apps/macos/Package.swift", "apps/android/src/Main.kt"]).required, { ...all, linuxNode: false });
+  assert.deepEqual(choose(["apps/node/src/cli.ts"]).required, { ...none, linuxNode: true, windows: true });
+  assert.deepEqual(choose(["apps/macos/Package.swift", "apps/android/src/Main.kt"]).required, { ...all, linuxNode: false, windows: false });
 });
 
 test("web, UI tests, documentation and validated publication facts skip unrelated PR builds", () => {
@@ -62,8 +62,9 @@ test('review evidence and audited server internals do not trigger native builds'
 
 test('platform scripts, Android bridge consumers and shared icons retain their actual consumers', () => {
   for (const path of ['scripts/build-macos-app.sh', 'scripts/macos-ci-watchdog.py']) assert.deepEqual(choose([path]).required, {...none,macos:true});
-  for (const path of ['apps/web/src/android-bridge.ts', 'apps/web/src/overlay.tsx', 'apps/web/src/App.tsx', 'scripts/publish-android-sdk.sh']) assert.deepEqual(choose([path]).required, {...none,android:true});
-  assert.deepEqual(choose(['scripts/build-node.mjs']).required, {...none,linuxNode:true});
+  for (const path of ['apps/web/src/App.tsx', 'scripts/publish-android-sdk.sh']) assert.deepEqual(choose([path]).required, {...none,android:true});
+  for (const path of ['apps/web/src/android-bridge.ts','apps/web/src/overlay.tsx']) assert.deepEqual(choose([path]).required,{...none,android:true,windows:true});
+  assert.deepEqual(choose(['scripts/build-node.mjs']).required, {...none,linuxNode:true,windows:true});
   assert.deepEqual(choose(['apps/web/public/icon-1024.png']).required, {...all,linuxNode:false});
-  assert.deepEqual(choose([{path:'apps/macos/old.swift',status:'D'}, {path:'apps/android/new.kt',status:'A'}]).required, {...all,linuxNode:false});
+  assert.deepEqual(choose([{path:'apps/macos/old.swift',status:'D'}, {path:'apps/android/new.kt',status:'A'}]).required, {...all,linuxNode:false,windows:false});
 });

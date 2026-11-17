@@ -262,7 +262,7 @@ async function main() {
   }
   const platforms = selectPlatforms({ head, eventName, changes: platformChanges, releaseMetadataValidated: platformMetadataValidated, baseline, productImpact });
   console.log(json);
-  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `plan=${json}\naudit=${["full", "targeted"].includes(value.mode)}\nvisual=${value.visual}\nshards=${JSON.stringify(value.shards)}\nplatform_plan=${JSON.stringify(platforms)}\nandroid_required=${platforms.required.android}\nmacos_required=${platforms.required.macos}\nlinux_required=${platforms.required.linuxNode}\n`);
+  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `plan=${json}\naudit=${["full", "targeted"].includes(value.mode)}\nvisual=${value.visual}\nshards=${JSON.stringify(value.shards)}\nplatform_plan=${JSON.stringify(platforms)}\nandroid_required=${platforms.required.android}\nmacos_required=${platforms.required.macos}\nlinux_required=${platforms.required.linuxNode}\nwindows_required=${platforms.required.windows}\n`);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## UI test selection\n\nMode: **${value.mode}**\n\n\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\`\n\n## Platform selection\n\n\`\`\`json\n${JSON.stringify(platforms, null, 2)}\n\`\`\`\n`);
 }
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) await main();

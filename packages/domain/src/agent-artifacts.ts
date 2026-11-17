@@ -2,6 +2,12 @@
 export function localArtifactPath(href: string): string | undefined {
   let path = href.replace(/^(?:sandbox:|file:\/\/(?:localhost)?)/i, "").split(/[?#]/, 1)[0]!;
   try { path = decodeURIComponent(path); } catch { return undefined; }
+  if (/^\/[a-z]:\//i.test(path)) path = path.slice(1);
+  if (/^[a-z]:[\\/]/i.test(path)) {
+    const normalized = path.replaceAll("\\", "/");
+    if ([...normalized].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) || normalized.slice(2).includes(":") || normalized.split("/").some((part) => part === ".." || part === ".")) return undefined;
+    return normalized;
+  }
   if (!/^\/(?:Users|private|tmp|var\/folders|Volumes|home|mnt)\//.test(path)
     || [...path].some((char) => char.charCodeAt(0) < 32) || path.includes("\\") || path.split("/").includes("..")) return undefined;
   return path;

@@ -46,6 +46,22 @@
       "paths": [
         "apps/macos"
       ]
+    },
+    "windowsApp": {
+      "version": null,
+      "commit": null,
+      "versionFile": "product.json",
+      "versionJsonPath": "windows.app.version",
+      "paths": [
+        "apps/windows",
+        "apps/node",
+        "apps/web/src",
+        "packages/contracts",
+        "packages/domain",
+        "package-lock.json",
+        "product.json",
+        "scripts/build-windows.mjs"
+      ]
     }
   }
 }

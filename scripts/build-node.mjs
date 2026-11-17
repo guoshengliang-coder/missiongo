@@ -10,6 +10,7 @@ const output = join(root, "apps/node/dist/package");
 mkdirSync(output, { recursive: true });
 await build({ entryPoints: [join(root, "apps/node/src/cli.ts")], outfile: join(output, "cli.mjs"), bundle: true,
   platform: "node", format: "esm", target: "node22.13", sourcemap: false,
+  banner: { js: 'import { createRequire as __createRequire } from "node:module"; const require = __createRequire(import.meta.url);' },
   alias: { "@missiongo/domain": join(root, "packages/domain/src/index.ts") },
   define: { NODE_VERSION: JSON.stringify(product.linuxNode.version), PRODUCT_NAME: JSON.stringify(product.name) },
 });

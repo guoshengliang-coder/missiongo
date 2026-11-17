@@ -185,6 +185,11 @@ if (macosApp) {
 }
 
 // --- Report --------------------------------------------------------------
+const windowsApp = product.windows?.app;
+check(windowsApp && /^[a-z0-9.]+$/.test(windowsApp.id) && /^[0-9]+\.[0-9]+\.[0-9]+$/.test(windowsApp.version), "product.json must declare Windows application identity and version");
+check(windowsApp?.path === "apps/windows", "Windows workspace must match product.json");
+check(!read("scripts/build-windows.mjs").includes(windowsApp?.id), "Windows build must read the identity from product.json");
+check(read("apps/windows/index.html").includes("__PRODUCT_NAME__"), "Windows title must use the generated product name");
 if (product.linuxNode) {
   check(/^[0-9]+\.[0-9]+\.[0-9]+$/.test(product.linuxNode.version), "linuxNode.version must be declared in product.json");
   check(/^@[a-z0-9-]+\/[a-z0-9-]+$/.test(product.linuxNode.npmPackage), "linuxNode.npmPackage must be a valid scoped npm name");

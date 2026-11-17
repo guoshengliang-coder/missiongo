@@ -4,6 +4,8 @@ import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { readSessionHistory } from "./session-history.js";
+import { synchronizeExternal } from "./external.js";
 import { API } from "./api.js";
 import { hostDirectory, hostCall } from "./host.js";
 import { runNode, launch } from "./runner.js";
@@ -79,7 +81,8 @@ it.each([false,true])("reconnects the original detached host and never replays a
   const logs: string[] = [];
   const until = async (predicate: () => boolean) => {
     for (let n = 0; n < 120; n++) { if (predicate()) return; await delay(100); }
-    throw new Error(`Timed out waiting for node behavior: ${logs.join("; ")}`);
+    const state = existsSync(statePath) ? readPrivate<HostState>(statePath) : undefined;
+    throw new Error(`Timed out waiting for node behavior: ${logs.join("; ")}; host ${state?.phase}: ${state?.launchError}`);
   };
   const statePath = join(hostDirectory(stateRoot, "cycle"), "state.json");
   const firstController = new AbortController();
@@ -123,7 +126,10 @@ it("delivers input through the real detached host while its full native history 
   const input={...session,command:{id:"command-once",text:"single input",status:"delivering"}};
   const result=await hostCall(stateRoot,"host-lanes",input,"control");
   expect(result.commandStatus).toBe("delivered");expect(result.status).toBe("unavailable");expect(mirrorDone).toBe(false);
-  await hostCall(stateRoot,"host-lanes",input,"control");await mirror;
+  await hostCall(stateRoot,"host-lanes",input,"control");
+  const bridged=await synchronizeExternal(stateRoot,{...session,externalBindingGeneration:1,command:{id:"external-once",status:"delivering",text:"external input"}},new API("https://missiongo.example.com"),new AbortController().signal,"control");
+  expect(bridged.commandStatus).toBe("delivered");expect(mirrorDone).toBe(false);
+  await mirror;
   const turns=readFileSync(events,"utf8").trim().split("\n").map(line=>JSON.parse(line));
   expect(turns.filter(event=>event.method==="turn/start"&&event.params.clientUserMessageId==="command-once")).toHaveLength(1);
 },15_000);
@@ -135,3 +141,33 @@ it.each([401,403])("preserves revoked credentials in node health after HTTP %s s
   await expect(runNode(directory, "unused", new AbortController().signal, () => {})).rejects.toMatchObject({status});
   expect(readPrivate<{state:string}>(join(directory,"status.json"))?.state).toBe("credential_revoked");
 });
+
+it("keeps exact client identity for repeated text across native, external and history lanes without replay",async()=>{
+  const directory=realpathSync(mkdtempSync("/tmp/mg-client-id-"));scratch.push(directory);
+  const stateRoot=join(directory,"node"),fixture=fileURLToPath(new URL("./fixtures/agent.cjs",import.meta.url)),events=join(directory,"events");
+  vi.stubEnv("TEST_AGENT_EVENTS",events);vi.stubEnv("CODEX_HOME",join(directory,".codex"));chmodSync(fixture,0o755);
+  const skills=join(directory,".codex/skills/missiongo");mkdirSync(skills,{recursive:true});writeFileSync(join(skills,"SKILL.md"),"---\nversion: 1.0.0\n---\nFixture only");
+  execFileSync("git",["init",directory],{stdio:"ignore"});
+  saveConfig(stateRoot,{...loadConfig(stateRoot),server:"https://missiongo.example.com",token:"synthetic",agents:{codex:{executable:fixture}}});
+  execFileSync(process.execPath,["scripts/build-node.mjs"],{cwd:root,stdio:"ignore"});
+  const state=await launch(stateRoot,{dispatchId:"identity-host",itemKeys:["EX-1"],repoPath:directory,agentKind:"codex",mode:"default"},join(root,"apps/node/dist/package/cli.mjs"));
+  if(state.pid)hosts.push(state.pid);expect(state.phase,state.launchError).toBe("launched");
+  const session={id:"identity-session",dispatchId:"identity-host",sessionRef:state.sessionRef!,agentKind:"codex" as const};
+  const first={...session,command:{id:"identical-first",text:"same user words",status:"delivering"}};
+  const second={...session,externalBindingGeneration:1,command:{id:"identical-second",text:"same user words",status:"delivering"}};
+  const api=new API("https://missiongo.example.com"),signal=new AbortController().signal;
+  for(let i=0;i<2;i++){
+    expect((await hostCall(stateRoot,"identity-host",first,"control")).commandStatus).toBe("delivered");
+    expect((await synchronizeExternal(stateRoot,second,api,signal,"control")).commandStatus).toBe("delivered");
+  }
+  const observed=await hostCall(stateRoot,"identity-host",session,"observation");
+  const page=await readSessionHistory(stateRoot,second,"items-v1:older");
+  for(const messages of [observed.messages,page.messages]){
+    const matching=messages.filter(message=>message.role === "user" && message.text === "same user words");
+    expect(matching.map(message=>message.clientMessageId)).toEqual(["identical-first","identical-second"]);
+    expect(new Set(matching.map(message=>message.sourceId)).size).toBe(2);
+    expect(matching.every(message=>message.sourceId !== message.clientMessageId)).toBe(true);
+  }
+  const starts=readFileSync(events,"utf8").trim().split("\n").map(line=>JSON.parse(line)).filter(event=>event.method === "turn/start");
+  for(const clientUserMessageId of ["identical-first","identical-second"])expect(starts.filter(event=>event.params.clientUserMessageId === clientUserMessageId)).toHaveLength(1);
+},15_000);

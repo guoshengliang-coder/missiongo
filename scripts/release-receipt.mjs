@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readLinuxSnapshot, verifyLinuxPublic } from "./linux-release-tools.mjs";
+import { readWindowsSnapshot, verifyWindowsPublic } from "./windows-release-tools.mjs";
 
 const SHA = /^[0-9a-f]{40}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
@@ -114,7 +115,7 @@ export function readSnapshot({ host, currentLink, downloadsDir }) {
     ? { version: sdkVersion, pomSha256: pomSha, aarSha256: aarSha, sourceCommit: SHA.test(sdkRecord.commit ?? "") ? sdkRecord.commit : null }
     : null;
 
-  return { web, androidApp, androidSdk, macosApp, linuxCli: readLinuxSnapshot({ host, currentLink }) };
+  return { web, androidApp, androidSdk, macosApp, linuxCli: readLinuxSnapshot({ host, currentLink }), windowsApp: readWindowsSnapshot({ host, currentLink }) };
 }
 
 async function readPublic(origin, path, method = "GET") {
@@ -166,11 +167,12 @@ export async function verifyPublic(origin, after) {
       && await publicSha(origin, `/maven/io/missiongo/missiongo-feedback/${version}/missiongo-feedback-${version}.aar`) === after.androidSdk.aarSha256;
   });
   await check("linuxCli", () => verifyLinuxPublic(origin, after.linuxCli));
+  await check("windowsApp", () => verifyWindowsPublic(origin, after.windowsApp));
   return { checks, errors };
 }
 
 export function buildReceipt(before, after, publicEvidence) {
-  const artifacts = ["web", "androidApp", "androidSdk", "macosApp", "linuxCli"];
+  const artifacts = ["web", "androidApp", "androidSdk", "macosApp", "linuxCli", "windowsApp"];
   const changes = artifacts.flatMap((artifact) => {
     const old = before[artifact];
     const current = after[artifact];

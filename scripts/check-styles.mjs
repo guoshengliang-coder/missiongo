@@ -23,7 +23,7 @@
 // rather than leaving a licence behind for the next person. Regenerate with
 // `node scripts/check-styles.mjs --update` after a deliberate cleanup.
 
-import { readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join, relative } from "node:path";
@@ -250,10 +250,11 @@ function baselineAt(ref) {
 
 function main() {
   const baselinePath = join(root, "scripts/style-baseline.json");
-  const sheets = sourceFiles(join(root, "apps/web/src"), ".css").map(path => ({ file: relative(root, path), text: readFileSync(path, "utf8") }));
+  const sourceRoots = ["apps/web/src", "apps/windows/src"].map(path => join(root, path)).filter(existsSync);
+  const sheets = sourceRoots.flatMap(path => sourceFiles(path, ".css")).map(path => ({ file: relative(root, path), text: readFileSync(path, "utf8") }));
   const definedVariables = new Set();
   for (const { text } of sheets) for (const m of text.matchAll(/(--[\w-]+)\s*:/g)) definedVariables.add(m[1]);
-  for (const file of sourceFiles(join(root, "apps/web/src"), ".tsx")) {
+  for (const file of sourceRoots.flatMap(path => sourceFiles(path, ".tsx"))) {
     for (const m of readFileSync(file, "utf8").matchAll(/["'](--[\w-]+)["']\s*:/g)) definedVariables.add(m[1]);
   }
   const violations = findViolations(sheets, definedVariables);

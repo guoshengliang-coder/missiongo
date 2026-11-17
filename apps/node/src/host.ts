@@ -2,18 +2,19 @@ import { NativePerformance } from "./console-performance.js";
 import { chmodSync, existsSync, lstatSync, readFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { join } from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { CodexAdapter } from "./codex.js";
 import type { HistoryResult } from "./codex-history.js";
 import { ClaudeAdapter } from "./claude.js";
-import { OpenCodeAdapter } from "./opencode.js";
+import { OpenCodeAdapter, OpenCodeAPI } from "./opencode.js";
 import { launchPrompt } from "./prompt.js";
 import { skillPaths, skillVersion, syncSkill } from "./skills.js";
-import { resolveClaudeLaunch } from "./environment.js";
+import { resolveAgentLaunch } from "./environment.js";
 import { probe } from "./process.js";
 import { loadConfig, privateDir, readPrivate, safeError, savePrivate } from "./storage.js";
 import type { Adapter, Dispatch, HostState, Session, Snapshot } from "./types.js";
 import { id, InputRejected } from "./types.js";
+import { saveBinding } from "./bindings.js";
 
 export function hostDirectory(root: string, dispatchId: string): string { return join(root, "sessions", id(dispatchId)); }
 export function boundedSnapshot(snapshot: Snapshot): Snapshot {
@@ -30,6 +31,7 @@ export function boundedSnapshot(snapshot: Snapshot): Snapshot {
     ...(snapshot.history ? { history: { ...snapshot.history, complete: false, error: "too_large" } } : {}) } : {}) };
 }
 export function socketPath(root: string, dispatchId: string): string {
+  if (process.platform === "win32") return `\\\\.\\pipe\\missiongo-${createHash("sha256").update(root).update("\0").update(id(dispatchId)).digest("hex")}`;
   // Linux sockaddr_un is bounded. Keep names short even for long dispatch IDs.
   const path = join(root, `h-${createHash("sha256").update(id(dispatchId)).digest("hex").slice(0, 16)}.sock`);
   if (Buffer.byteLength(path) > 103) throw new Error("Node state path is too long for a Unix socket; set MISSIONGO_NODE_HOME to a shorter private directory");
@@ -37,13 +39,16 @@ export function socketPath(root: string, dispatchId: string): string {
 }
 class HostHTTPError extends Error { constructor(readonly status: number) { super("Local host rejected request"); } }
 const hostProtocols = new Map<string, boolean>();
-export async function hostCall(root: string, dispatchId: string, session?: Session, lane: "combined" | "observation" | "control" = "combined"): Promise<Snapshot> {
-  if (lane === "combined") return callHost<Snapshot>(root, dispatchId, "/sync", session ?? {});
+export async function hostCall(root: string, dispatchId: string, session?: Session, laneOrSignal: "combined" | "observation" | "control" | AbortSignal = "combined", operation?: "sync" | "managed-start" | "managed-stop"): Promise<Snapshot> {
+  const signal = typeof laneOrSignal === "string" ? undefined : laneOrSignal;
+  const lane = typeof laneOrSignal === "string" ? laneOrSignal : "combined";
+  if (operation && operation !== "sync") return callHost<Snapshot>(root, dispatchId, `/${operation}`, session ?? {}, signal);
+  if (lane === "combined") return callHost<Snapshot>(root, dispatchId, "/sync", session ?? {}, signal);
   const key = root + ":" + dispatchId;
   let modern = hostProtocols.get(key);
   if (modern === undefined) {
     try {
-      const capabilities = await callHost<{protocol: number}>(root, dispatchId, "/capabilities", {});
+      const capabilities = await callHost<{protocol: number}>(root, dispatchId, "/capabilities", {}, signal);
       if (capabilities.protocol !== 1) throw new Error("Unsupported host control protocol");
       modern = true;
     }
@@ -52,7 +57,13 @@ export async function hostCall(root: string, dispatchId: string, session?: Sessi
   }
   // Capability negotiation has no side effect. Never fallback after an input
   // request's unknown outcome, and never restart a surviving old host.
-  return callHost<Snapshot>(root, dispatchId, modern ? lane === "control" ? "/control" : "/observe" : "/sync", session ?? {});
+  return callHost<Snapshot>(root, dispatchId, modern ? lane === "control" ? "/control" : "/observe" : "/sync", session ?? {}, signal);
+}
+/** A read-only control view must not wait for the full transcript or mutate its journal. */
+export async function inspectHost(root: string, dispatchId: string, session: Session): Promise<Snapshot & {externalPermissionProtocol?:number}> {
+  try { return await callHost<Snapshot & {externalPermissionProtocol?:number}>(root,dispatchId,"/inspect",{sessionRef:session.sessionRef}); }
+  catch(error) { if (!(error instanceof HostHTTPError) || error.status !== 404) throw error; }
+  return hostCall(root,dispatchId,{id:session.id,sessionRef:session.sessionRef,agentKind:session.agentKind},"observation");
 }
 export async function hostHistoryCall(root: string, dispatchId: string, sessionRef: string, cursor: string): Promise<HistoryResult> {
   return callHost<HistoryResult>(root, dispatchId, "/history", { sessionRef, cursor });
@@ -65,12 +76,16 @@ export async function readHostHistory(adapter: Adapter | undefined, sessionRef: 
   const validMessages = page.messages.length <= 2000 && page.messages.every(message => message.text.length > 0 && message.text.length <= 4_000_000);
   return validMessages && Buffer.byteLength(JSON.stringify(page)) <= 30 * 1024 * 1024 ? page : { messages: [], error: "too_large" };
 }
-async function callHost<T>(root: string, dispatchId: string, path: string, body: unknown): Promise<T> {
+async function callHost<T>(root: string, dispatchId: string, path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const socket = socketPath(root, dispatchId);
-  const stat = lstatSync(socket);
-  if (!stat.isSocket() || stat.uid !== process.getuid?.() || stat.mode & 0o077) throw new Error("Invalid private host socket");
+  if (process.platform !== "win32") {
+    const stat = lstatSync(socket);
+    if (!stat.isSocket() || stat.uid !== process.getuid?.() || stat.mode & 0o077) throw new Error("Invalid private host socket");
+  }
+  const token = process.platform === "win32" ? readPrivate<HostState>(join(hostDirectory(root, dispatchId), "state.json"))?.ipcToken : undefined;
+  if (process.platform === "win32" && !token) throw new Error("Missing local host authorization");
   return new Promise((resolve, reject) => {
-    const client = request({ socketPath: socket, path, method: "POST", timeout: 120_000, headers: { "Content-Type": "application/json" } }, (response) => {
+    const client = request({ socketPath: socket, path, method: "POST", timeout: 120_000, ...(signal ? { signal } : {}), headers: { "Content-Type": "application/json", ...(token ? { "X-MissionGo-Host-Token": token } : {}) } }, (response) => {
       let text = ""; response.setEncoding("utf8"); response.on("data", (part: string) => {
         text += part; if (text.length > 32 * 1024 * 1024) client.destroy(new Error("Oversized host snapshot"));
       });
@@ -91,7 +106,6 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
   const config = loadConfig(root);
   const agent = config.agents[job.agentKind];
   if (!agent) throw new Error("Agent is not enabled locally");
-  const executable = agent.executable ?? (job.agentKind === "claude_code" ? "claude" : job.agentKind);
   let adapter: Adapter | undefined;
   let launchFinished = false;
   const measurement=new NativePerformance();
@@ -103,11 +117,26 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
   let controlEpoch = 0;
   const decisions = new Set<string>();
   const server = createServer((req, res) => {
+    if (process.platform === "win32") {
+      const supplied = req.headers["x-missiongo-host-token"];
+      if (typeof supplied !== "string" || !state.ipcToken || Buffer.byteLength(supplied) !== Buffer.byteLength(state.ipcToken)
+        || !timingSafeEqual(Buffer.from(supplied), Buffer.from(state.ipcToken))) { res.writeHead(403).end(); return; }
+    }
     let body = "";
     req.setEncoding("utf8"); req.on("data", (part: string) => { body += part; if (body.length > 1024 * 1024) req.destroy(); });
     req.on("end", () => {
       if (req.method === "POST" && req.url === "/capabilities") {
         res.writeHead(200, {"Content-Type":"application/json"}).end(JSON.stringify({protocol:1})); return;
+      }
+      if (req.method === "POST" && req.url === "/inspect") {
+        void (async()=>{
+          try {
+            const input=JSON.parse(body) as {sessionRef?:unknown};
+            if (!adapter || !launchFinished || state.phase !== "launched" || input.sessionRef !== state.sessionRef) throw new Error("Native session identity mismatch");
+            const snapshot=adapter.controlSnapshot ? await adapter.controlSnapshot() : { ...state.snapshot,messages:[] };
+            res.writeHead(200,{"Content-Type":"application/json"}).end(JSON.stringify({...boundedSnapshot(snapshot),externalPermissionProtocol:1}));
+          } catch { res.writeHead(409).end(); }
+        })(); return;
       }
       if (req.method === "POST" && req.url === "/observe") {
         const epoch = controlEpoch;
@@ -134,12 +163,27 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
         return;
       }
       queue = queue.then(async () => {
-        if (req.method !== "POST" || !["/sync", "/control"].includes(req.url ?? "")) { res.writeHead(404).end(); return; }
+        if (req.method !== "POST" || !["/sync", "/control", "/managed-start", "/managed-stop"].includes(req.url ?? "")) { res.writeHead(404).end(); return; }
         try {
           const session = JSON.parse(body) as Session;
           controlEpoch++;
           if (!adapter || !launchFinished || state.phase !== "launched") { res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(state.snapshot)); return; }
           if (session.sessionRef && session.sessionRef !== state.sessionRef) throw new Error("Native session identity mismatch");
+          if (state.managedJob) {
+            const intent = state.managedJob.intent; const binding = session.managedExecution;
+            if (!binding || binding.id !== intent.id || binding.generation !== intent.generation || binding.stageId !== intent.stageId || binding.runId !== intent.binding.runId || binding.role !== intent.binding.role) throw new Error("Managed host binding differed");
+            if (req.url === "/managed-start") {
+              if (state.managedStartAttempted && !state.managedStarted) throw new Error("Managed first-turn delivery is unconfirmed; no retry");
+              if (!state.managedStarted) {
+                state.managedStartAttempted = true; persist();
+                if (!adapter.startManagedTurn) throw new Error("Managed adapter unavailable");
+                await adapter.startManagedTurn(); state.managedStarted = true; persist();
+              }
+            } else if (req.url === "/managed-stop") {
+              if (!adapter.stopManagedTurn) throw new Error("Managed stop protocol unavailable");
+              await adapter.stopManagedTurn();
+            } else if (!state.managedStarted && session.command) throw new InputRejected("Managed first turn has not been permitted");
+          } else if (!["/sync", "/control"].includes(req.url ?? "")) throw new Error("Not a managed host");
           if (session.desiredSettings && session.desiredSettings.revision > (state.snapshot.settingsRevision ?? 0)) {
             try {
               if (!adapter.settings) throw new Error("Runtime settings unsupported");
@@ -147,6 +191,7 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
             } catch (error) { state.snapshot.settingsError = safeError(error); }
             state.snapshot.settingsRevision = session.desiredSettings.revision;
           }
+          if (session.terminalPermissionsOnly && (session.approvalDecision || session.approvalRetry)) throw new InputRejected("请在原桥接终端确认权限");
           if (session.approvalDecision && !decisions.has(session.approvalDecision.id)) {
             await adapter.decide(session.approvalDecision); decisions.add(session.approvalDecision.id);
           }
@@ -171,7 +216,8 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
               await adapter.settings({ revision: 0, mode: session.approvalReviewMode }); state.snapshot.approvalRetryStatus = "restored";
             }
           }
-          if (session.archiveInSource || session.restoreInSource) {
+          if (session.archiveInSource || session.restoreInSource || session.lifecycle === "close") {
+            delete state.snapshot.sourceArchived; delete state.snapshot.sourceRestored; delete state.snapshot.sourceArchiveError;
             try {
               if (!adapter.archive) throw new InputRejected("Source archiving is not supported by this Agent");
               await adapter.archive(session.restoreInSource === true);
@@ -190,9 +236,9 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
               state.commands[key] = { status: "delivering" }; persist();
               if(command.kind!=="interrupt")measurement.begin(key);
               try {
-                if (command.attachments?.length) throw new Error("Attachments are not enabled on this node");
+                if (command.attachments?.some((attachment) => !attachment.localPath)) throw new InputRejected("Attachment download was not completed");
                 if (command.kind === "interrupt") stopSnapshot = await adapter.stop(command);
-                else {await adapter.deliver(command, { controlOnly: state.snapshot.settingsError !== undefined });measurement.delivered(key,adapter.performanceTurn?.(key));}
+                else {await adapter.deliver(command, { controlOnly: state.snapshot.settingsError !== undefined, terminalPermissionsOnly: session.terminalPermissionsOnly === true });measurement.delivered(key,adapter.performanceTurn?.(key));}
                 if (command.kind === "interrupt" && stopSnapshot) stopSnapshot.stopConfirmed = true;
                 state.commands[key] = { status: "delivered", ...(stopSnapshot?.stopConfirmed ? { stopConfirmed: true } : {}) };
               } catch (error) { measurement.failed(key); state.commands[key] = { status: command.kind === "interrupt" || error instanceof InputRejected ? "failed" : "delivery_unknown", error: safeError(error) }; }
@@ -205,7 +251,7 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
             if (outcome.error) state.snapshot.commandError = outcome.error; else delete state.snapshot.commandError;
           }
           let snapshot: Snapshot;
-          try { snapshot = boundedSnapshot(stopSnapshot ?? (req.url === "/control"
+          try { snapshot = boundedSnapshot(stopSnapshot ?? (["/control", "/managed-stop"].includes(req.url ?? "")
             ? adapter.controlSnapshot ? await adapter.controlSnapshot() : { ...state.snapshot, messages: [] }
             : await adapter.snapshot())); }
           catch (error) {
@@ -224,20 +270,31 @@ export async function runHost(root: string, dispatchId: string): Promise<void> {
       }).catch(() => { if (!res.writableEnded) res.writeHead(500).end(); });
     });
   });
+  const shutdown = () => {
+    server.close();
+    if (adapter) void adapter.close().finally(() => process.exit(0));
+    else process.exit(0);
+  };
+  process.once("SIGTERM", shutdown); process.once("SIGINT", shutdown);
   try {
-    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(socket, () => { chmodSync(socket, 0o600); resolve(); }); });
-    const localSkill = job.agentKind === "codex" ? skillVersion(readFileSync(skillPaths("codex")[0]!, "utf8")) : undefined;
-    if (job.agentKind === "codex" && !localSkill) throw new Error("Install the current MissionGo Skill before dispatching Codex");
+    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(socket, () => { if (process.platform !== "win32") chmodSync(socket, 0o600); resolve(); }); });
+    const launch = await resolveAgentLaunch(job.agentKind, agent);
+    const localSkill = job.agentKind === "codex" && !state.managedJob ? skillVersion(readFileSync(skillPaths("codex", launch.env)[0]!, "utf8")) : undefined;
+    if (job.agentKind === "codex" && !state.managedJob && !localSkill) throw new Error("Install the current MissionGo Skill before dispatching Codex");
     if (job.agentKind === "claude_code") {
       // Resolve inside the detached host, never serialize secrets into state or mutate the node's environment.
-      const launch = await resolveClaudeLaunch(agent);
       await probe(launch.executable, ["--version"], job.repoPath, launch.env);
       const expected = readPrivate<{ agents?: { kind: string; skill?: { expectedVersion?: string } }[] }>(join(root, "status.json"))
         ?.agents?.find((value) => value.kind === "claude_code")?.skill?.expectedVersion;
       await syncSkill("claude_code", config.server!, expected, launch.env);
       adapter = new ClaudeAdapter(job, launch.executable, launch.env);
-    } else adapter = job.agentKind === "codex" ? new CodexAdapter(job, executable, localSkill) : new OpenCodeAdapter(job);
-    state.sessionRef = await adapter.start(launchPrompt(job));
+    } else adapter = job.agentKind === "codex" ? new CodexAdapter(job, launch.executable, localSkill, launch.env) : new OpenCodeAdapter(job, new OpenCodeAPI(agent.serviceRegistration, launch.env));
+    if (state.managedJob) {
+      if (!adapter.prepareManaged) throw new Error("Managed adapter unavailable");
+      state.managedReceipt = await adapter.prepareManaged(state.managedJob); state.sessionRef = state.managedReceipt.sessionRef;
+    } else state.sessionRef = await adapter.start(state.external ? state.initialPrompt ?? "" : launchPrompt(job));
+    saveBinding(root, { kind: job.agentKind, sessionRef: state.sessionRef, dispatchId, ...(config.nodeId ? { nodeId: config.nodeId } : {}), ...(state.external ? { external: true } : {}), ...(state.managedJob ? { managed: true } : {}) });
+    delete state.initialPrompt;
     if (adapter.initialTurnId) state.initialTurnId = adapter.initialTurnId;
     state.phase = "launched"; state.snapshot = boundedSnapshot(await adapter.snapshot()); launchFinished = true; persist();
   } catch (error) {

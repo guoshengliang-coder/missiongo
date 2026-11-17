@@ -1,4 +1,5 @@
 import type { AgentKind, CodexSessionFailure } from "@missiongo/domain";
+import type { ManagedJob, ManagedReceipt, ManagedSession } from "./managed-policy.js";
 
 export type Kind = Exclude<AgentKind, "hermes">;
 export interface Dispatch {
@@ -7,9 +8,10 @@ export interface Dispatch {
   dispatchId: string; itemKeys: string[]; repoPath: string; agentKind: Kind; mode: string;
   nodeName?: string; model?: string; effort?: string; reworkItemKeys?: string[];
 }
-export interface AgentConfig { executable?: string; environmentScript?: string; checkRevision?: string }
+export interface AgentConfig { executable?: string; environmentScript?: string; shellExecutable?: string; serviceRegistration?: string; checkRevision?: string }
 export interface RepoMapping { productId: string; repoPath: string; productKey?: string }
 export interface Config {
+  managedExecutionEnabled?: boolean;
   installationId: string; server?: string; nodeId?: string; name?: string; token?: string;
   agents: Partial<Record<Kind, AgentConfig>>;
 }
@@ -31,9 +33,13 @@ export interface Approval {
 export interface Command {
   id: string; kind?: string; text: string; planApprovalRevision?: string; turnId?: string; status: string;
   createdAt?: string;
-  attachments?: { id: string; filename: string; sizeBytes: number }[];
+  attachments?: { id: string; filename: string; sizeBytes: number; sha256: string; kind: string; contentType: string; localPath?: string }[];
 }
 export interface Session {
+  managedExecution?: ManagedSession;
+  externalBindingGeneration?: number;
+  externalAutoConnect?: boolean;
+  terminalPermissionsOnly?: boolean;
   id: string; dispatchId?: string; agentKind: Kind; sessionRef: string; lifecycle?: string;
   occupiesExecutionSlot?: boolean; command?: Command; approvalDecision?: { id: string; choice: string };
   approvalRetry?: { id: string; reviewId: string; status: string }; approvalReviewMode?: string;
@@ -47,8 +53,9 @@ export interface Snapshot {
   developmentReviews?: import("@missiongo/domain").DevelopmentReviewEvidence[];
   performance?: import("./console-performance.js").NativePerformanceReport[];
   failure?: CodexSessionFailure | undefined;
+  turnStartedAt?: string; lastOutputAt?: string;
   status: "active" | "idle" | "suspended" | "stalled" | "unavailable" | "failed";
-  messages: Message[]; activities?: { id: string; title: string; detail?: string }[];
+  messages: Message[]; activities?: { id: string; title: string; detail?: string; startedAt?: string }[];
   stopConfirmed?: boolean;
   observedAt?: string; lastProgressAt?: string;
   mode?: string; turnActive?: boolean; waitingForInput?: boolean; error?: string; model?: string; effort?: string;
@@ -59,11 +66,21 @@ export interface Snapshot {
   history?: { cursor?: string; complete: boolean; error?: string };
 }
 export interface HostState {
+  managedJob?: ManagedJob;
+  managedReceipt?: ManagedReceipt;
+  managedStartAttempted?: boolean;
+  managedStarted?: boolean;
+  external?: boolean;
+  initialPrompt?: string;
+  ipcToken?: string;
   dispatch: Dispatch; pid: number; sessionRef?: string; sessionName: string; initialTurnId?: string;
   phase: "starting" | "launched" | "failed"; snapshot: Snapshot; launchError?: string;
   commands: Record<string, { status: string; error?: string; stopConfirmed?: boolean }>;
 }
 export interface Adapter {
+  prepareManaged?(job: ManagedJob): Promise<ManagedReceipt>;
+  startManagedTurn?(): Promise<void>;
+  stopManagedTurn?(): Promise<Snapshot>;
   readonly initialTurnId?: string;
   performanceTurn?(commandId: string): string | undefined;
   start(prompt: string): Promise<string>;
@@ -72,7 +89,7 @@ export interface Adapter {
   controlSnapshot?(): Promise<Snapshot>;
   historyPage?(cursor: string): Promise<{ messages: Message[]; nextCursor?: string; error?: string }>;
   /** controlOnly permits answers to existing native requests, never a new prompt. */
-  deliver(command: Command, options?: { controlOnly: boolean }): Promise<void>;
+  deliver(command: Command, options?: { controlOnly: boolean; terminalPermissionsOnly?: boolean }): Promise<void>;
   decide(decision: { id: string; choice: string }): Promise<void>;
   settings?(settings: NonNullable<Session["desiredSettings"]>): Promise<void>;
   archive?(restore: boolean): Promise<void>;
@@ -87,7 +104,7 @@ export function object(value: unknown): Wire {
   return value as Wire;
 }
 export function id(value: unknown): string {
-  if (typeof value !== "string" || !/^[A-Za-z0-9_-]{1,150}$/.test(value)) throw new Error("Invalid identifier");
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]{1,150}$/.test(value) || ["__proto__", "constructor", "prototype"].includes(value)) throw new Error("Invalid identifier");
   return value;
 }
 /** A local precondition rejected input before any native side effect. */

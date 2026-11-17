@@ -21,6 +21,7 @@ export function publicReleaseEvidence(receipt, origin) {
     if (artifact === "androidApp" && DIGEST.test(current.sha256 ?? "")) proof = {kind:"sha256",url:new URL("/downloads/missiongo-android-latest.apk",base).href,sha256:current.sha256};
     if (artifact === "macosApp" && DIGEST.test(current.sha256 ?? "")) proof = {kind:"sha256",url:new URL("/downloads/missiongo-macos-latest.zip",base).href,sha256:current.sha256};
     if (artifact === "linuxCli" && DIGEST.test(current.sha256 ?? "")) proof = {kind:"sha256",url:new URL("/downloads/missiongo-linux-latest.tgz",base).href,sha256:current.sha256};
+    if (artifact === "windowsApp" && DIGEST.test(current.sha256 ?? "") && /^[a-z0-9-]+-[0-9]+\.[0-9]+\.[0-9]+-x64-setup\.exe$/.test(current.filename ?? "")) proof = {kind:"sha256",url:new URL(`/downloads/windows/${current.filename}`,base).href,sha256:current.sha256};
     if (artifact === "androidSdk" && DIGEST.test(current.pomSha256 ?? "") && /^[0-9A-Za-z][0-9A-Za-z.+_-]*$/.test(current.version)) {
       proof = {kind:"sha256",url:new URL(`/maven/io/missiongo/missiongo-feedback/${current.version}/missiongo-feedback-${current.version}.pom`,base).href,sha256:current.pomSha256};
     }

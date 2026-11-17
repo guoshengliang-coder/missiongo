@@ -2,18 +2,19 @@ import { messageTimestamp } from "./message-time.js";
 import { transcriptHistory } from "./transcript-history.js";
 import { sessionName } from "./session-name.js";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { CLAUDE_CODE_MODES } from "@missiongo/domain";
 import { JsonProcess } from "./process.js";
 import type { Adapter, Command, Dispatch, Message, Question, Session, Snapshot, Wire } from "./types.js";
 import { InputRejected } from "./types.js";
 
 export const CLAUDE_DENIALS = ["Bash(git reflog expire:*)", "Bash(git gc --prune=now:*)", "Bash(git push --force:*)", "Bash(git push -f:*)"];
-export function claudeArguments(job: Dispatch, ref: string): string[] {
+export function claudeArguments(job: Dispatch, ref: string, resume = false): string[] {
   if (!(CLAUDE_CODE_MODES as readonly string[]).includes(job.mode)) throw new Error("Unsupported Claude mode");
   return ["--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--replay-user-messages",
     "--permission-prompt-tool", "stdio", "--permission-prompts", "host", "--no-chrome",
     "--disallowedTools", CLAUDE_DENIALS.join(","), "--permission-mode", job.mode,
-    "--session-id", ref, "--name", sessionName(job),
+    ...(resume ? ["--resume", ref] : ["--session-id", ref]), "--name", sessionName(job),
     ...(job.model ? ["--model", job.model] : []), ...(job.effort ? ["--effort", job.effort] : [])];
 }
 export function labelledAnswers(text: string): Record<string, string> {
@@ -73,20 +74,24 @@ export class ClaudeAdapter implements Adapter {
   private ref = randomUUID();
   initialTurnId?: string;
   private activeTurnId?: string;
+  private suspended = false;
   private effectiveMode = "plan";
   private expectedModes=new Map<string,string>();
   private state: Snapshot = { status: "idle", messages: [], turnActive: false };
   private requests: Wire[] = [];
   private visibleUserMessageIds = new Set<string>();
   private waits = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
-  constructor(job: Dispatch, executable: string, env = process.env) {
-    this.effectiveMode = job.mode;
-    this.process = new JsonProcess(executable, claudeArguments(job, this.ref), job.repoPath, env);
-    this.process.onEvent = (event) => this.event(event);
-    this.process.onClose = () => {
-      this.state.status = "unavailable"; this.state.error = "Claude host stopped; no automatic restart";
+  constructor(private job: Dispatch, private executable: string, private env = process.env) {
+    this.effectiveMode = job.mode; this.process = this.connect(false);
+  }
+  private connect(resume: boolean): JsonProcess {
+    const channel = new JsonProcess(this.executable, claudeArguments(this.job, this.ref, resume), this.job.repoPath, { ...this.env, MISSIONGO_AGENT_SESSION_REF: this.ref });
+    channel.onEvent = (event) => this.event(event);
+    channel.onClose = () => {
+      this.state.status = this.suspended ? "suspended" : "unavailable"; this.state.error = this.suspended ? "会话已在来源端暂停" : "Claude host stopped; no automatic restart";
       for (const wait of this.waits.values()) { clearTimeout(wait.timer); wait.reject(new Error("Claude channel closed")); } this.waits.clear();
     };
+    return channel;
   }
   private wait(key: string, timeout = 30_000): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -99,6 +104,7 @@ export class ClaudeAdapter implements Adapter {
     clearTimeout(wait.timer); this.waits.delete(key); wait.resolve();
   }
   private event(event: Wire): void {
+    if (["system", "assistant", "user", "result", "control_request", "control_cancel_request"].includes(event.type)) this.state.lastProgressAt = new Date().toISOString();
     if (event.type === "control_response") {
       const response = event.response;
       const pending=response && this.waits.get(response.request_id);
@@ -150,6 +156,7 @@ export class ClaudeAdapter implements Adapter {
       }
       this.state.status = failed && !cancelled ? "failed" : "idle";
       this.state.turnActive = false; this.state.waitingForInput = false; this.requests = [];
+      this.state.activities = [];
     }
     if (["assistant", "user"].includes(event.type)) {
       if (event.parent_tool_use_id != null) return;
@@ -158,12 +165,17 @@ export class ClaudeAdapter implements Adapter {
         && !this.visibleUserMessageIds.has(event.uuid)) return;
       const message = event.message ?? {};
       const content: Wire[] = Array.isArray(message.content) ? message.content : [{ type: "text", text: message.content }];
+      for (const part of content) {
+        if (part.type === "tool_use" && typeof part.id === "string" && typeof part.name === "string") {
+          this.state.activities = [...(this.state.activities ?? []).filter((activity) => activity.id !== part.id), { id: part.id.slice(0, 200), title: part.name.slice(0, 500), startedAt: new Date().toISOString() }].slice(-50);
+        } else if (part.type === "tool_result") this.state.activities = (this.state.activities ?? []).filter((activity) => activity.id !== part.tool_use_id);
+      }
       const text = content.filter((c) => c.type === "text" && typeof c.text === "string").map((c) => c.text).join("\n");
       if (event.type === "user" && event.uuid) this.activeTurnId = event.uuid;
       if (text.trim()) this.add({ sourceId: event.uuid ?? randomUUID(), ...(this.activeTurnId ? { turnId: this.activeTurnId } : {}),
         role: event.type === "user" ? "user" : "agent", text, ...(messageTimestamp(event.timestamp) ? { occurredAt: messageTimestamp(event.timestamp)! } : {}) });
       if (event.type === "user" && event.uuid) this.received(event.uuid);
-      if (event.type === "assistant") { this.state.status = "active"; this.state.turnActive = true; }
+      if (event.type === "assistant") { this.state.status = "active"; this.state.turnActive = true; this.state.lastOutputAt = new Date().toISOString(); }
     }
   }
   private add(message: Message): void {
@@ -182,11 +194,12 @@ export class ClaudeAdapter implements Adapter {
     await native;
     return this.ref;
   }
-  private send(uuid: string, text: string): void {
+  private send(uuid: string, text: string, attachments: Command["attachments"] = []): void {
     this.activeTurnId = uuid;
     this.visibleUserMessageIds.add(uuid);
     this.process.write({ type: "user", uuid, session_id: "", parent_tool_use_id: null,
-      message: { role: "user", content: [{ type: "text", text }] } });
+      message: { role: "user", content: [{ type: "text", text }, ...attachments.filter((attachment) => attachment.kind === "image" && attachment.localPath && ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(attachment.contentType) && attachment.sizeBytes <= 5 * 1024 * 1024)
+        .map((attachment) => ({ type: "image", source: { type: "base64", media_type: attachment.contentType, data: readFileSync(attachment.localPath!).toString("base64") } }))] } });
     this.state.status = "active"; this.state.turnActive = true;
   }
   async historyPage(cursor: string) { return transcriptHistory(this.state.messages,cursor); }
@@ -241,12 +254,15 @@ export class ClaudeAdapter implements Adapter {
   }
   private performanceTurns=new Set<string>();
   performanceTurn(commandId:string){return this.performanceTurns.has(commandId)?commandId:undefined;}
-  async deliver(command: Command, options?: { controlOnly: boolean }): Promise<void> {
+  async deliver(command: Command, options?: { controlOnly: boolean; terminalPermissionsOnly?: boolean }): Promise<void> {
+    if (this.suspended) throw new InputRejected("先显式恢复原 Claude 会话，再发送消息");
     if (command.kind === "interrupt") { await this.stop(command); return; }
     const request = this.requests[0];
     if (request) {
+      if (options?.terminalPermissionsOnly && request.tool_name !== "AskUserQuestion") throw new InputRejected("请在原桥接终端确认权限，Web 文字不能代替工具授权");
       if(request.tool_name==="ExitPlanMode" && !command.planApprovalRevision) throw new Error("请使用方案批准按钮；文字同意不能退出 Plan。");
       const response = claudeAnswer(request, command.text);
+      const question = (await this.snapshot()).messages.find((message) => message.sourceId === `request-${request.requestId}`);
       // Answers always apply to the live native request, not a remembered tool grant.
       this.process.write({ type: "control_response", response: { subtype: "success", request_id: request.requestId, response } });
       if (request.tool_name === "ExitPlanMode") this.add({sourceId:`request-${request.requestId}`,role:"plan",
@@ -255,6 +271,7 @@ export class ClaudeAdapter implements Adapter {
       if (request.subtype === "elicitation") this.add(confirmationCard(request, this.activeTurnId,
         { answered: response.action === "accept" ? "批准" : response.action === "decline" ? "拒绝" : "取消" }));
       this.requests.shift();
+      if (question?.questions) this.add({ ...question, questions: question.questions.map((value) => ({ ...value, answered: labelledAnswers(command.text)[value.title] ?? labelledAnswers(command.text)[value.header ?? ""] ?? command.text })) });
       this.add({ sourceId: `answer-${command.id}`, role: "user", text: command.text });
       return;
     }
@@ -276,6 +293,27 @@ export class ClaudeAdapter implements Adapter {
       this.process.write({ type: "control_request", request_id: requestId, request }); await ack;
     }
     if(mode) this.effectiveMode=mode; if(settings.effort) this.state.effort=settings.effort;
+    this.job = { ...this.job, ...settings };
   }
-  async close(): Promise<void> { this.process.child.kill(); }
+  async archive(restore: boolean): Promise<void> {
+    if (restore) {
+      if (!this.suspended) return;
+      this.suspended = false; this.process = this.connect(true);
+      const requestId = randomUUID(); const ready = this.wait(requestId);
+      this.process.write({ type: "control_request", request_id: requestId, request: { subtype: "initialize" } });
+      try { await ready; this.state.status = "idle"; delete this.state.error; }
+      catch (error) { this.process.close(); this.suspended = true; throw error; }
+      return;
+    }
+    if (this.suspended) return;
+    this.suspended = true;
+    const child = this.process.child;
+    try { await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("来源进程尚未确认退出，归档未完成")), 10_000);
+      if (child.exitCode !== null || child.signalCode !== null) { clearTimeout(timer); resolve(); return; }
+      child.once("close", () => { clearTimeout(timer); resolve(); }); this.process.close();
+    }); } catch (error) { this.suspended = false; throw error; }
+    this.requests = []; this.state.activities = []; this.state.turnActive = false; this.state.waitingForInput = false; this.state.status = "suspended";
+  }
+  async close(): Promise<void> { this.process.close(); }
 }

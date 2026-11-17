@@ -47,7 +47,7 @@ def run_readonly(command, root, action, options):
 
 def main():
     action = sys.argv[1] if len(sys.argv) > 1 else "status"
-    allowed = {"status", "check", "deploy", "publish:macos", "publish:android-internal", "publish:android-sdk", "publish:linux", "plan", "readiness", "report"}
+    allowed = {"status", "check", "deploy", "publish:macos", "publish:android-internal", "publish:android-sdk", "publish:linux", "publish:windows", "plan", "readiness", "report"}
     if action not in allowed:
         raise ValueError("Usage: missiongo-release " + "|".join(sorted(allowed)))
     root = Path(git(Path.cwd(), "rev-parse", "--show-toplevel"))
@@ -68,7 +68,7 @@ def main():
         run_readonly(["node", str(TOOLS / helper), "--root", str(root), *sys.argv[2:]], root, action, sys.argv[2:])
         return
     if action.startswith("publish:"):
-        artifact = {"publish:macos": "macosApp", "publish:android-internal": "androidApp", "publish:android-sdk": "androidSdk", "publish:linux": "linuxCli"}[action]
+        artifact = {"publish:macos": "macosApp", "publish:android-internal": "androidApp", "publish:android-sdk": "androidSdk", "publish:linux": "linuxCli", "publish:windows": "windowsApp"}[action]
         run(["node", str(TOOLS / "release-preflight.mjs"), "--root", str(root), "--build", artifact], root)
         if artifact not in {"androidSdk", "linuxCli"}:
             run(["node", str(root / "scripts/release-notes.mjs"), "--artifact", artifact, "--to", git(root, "rev-parse", "HEAD")], root)

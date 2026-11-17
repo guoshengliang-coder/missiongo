@@ -34,5 +34,14 @@
   "taglines": {
     "zh-CN": "一站式AI交付平台",
     "en": "All-in-one AI delivery platform"
+  },
+  "windows": {
+    "app": {
+      "path": "apps/windows",
+      "id": "io.missiongo.windows",
+      "packageName": "missiongo-windows",
+      "artifactStem": "missiongo-windows",
+      "version": "0.1.0"
+    }
   }
 }

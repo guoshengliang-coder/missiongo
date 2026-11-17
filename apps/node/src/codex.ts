@@ -10,6 +10,7 @@ import { pathToFileURL } from "node:url";
 import { worktreePath } from "./prompt.js";
 import type { Adapter, Approval, Command, Dispatch, Message, Session, Snapshot, Wire } from "./types.js";
 import { id, object, InputRejected } from "./types.js";
+import { managedPolicy, managedPrompt, validateManagedScope, validateManagedMcp, validateManagedVersion, type ManagedJob, type ManagedReceipt } from "./managed-policy.js";
 
 export function codexPolicy(mode: string) {
   mode=normalizeAgentMode("codex",mode);
@@ -48,6 +49,7 @@ export function codexMessages(thread: Wire): Message[] {
   return messages;
 }
 export class CodexAdapter implements Adapter {
+  private managed?: { job: ManagedJob; receipt: ManagedReceipt };
   private rpc: JsonProcess;
   private ref = "";
   private model = "";
@@ -57,8 +59,8 @@ export class CodexAdapter implements Adapter {
   private lastApproval: Approval | undefined;
   private lastMessages: Message[] = [];
   private terminalFailure: Snapshot["failure"];
-  constructor(private job: Dispatch, executable: string, private localSkillVersion?: string) {
-    this.rpc = new JsonProcess(executable, ["app-server"], job.repoPath);
+  constructor(private job: Dispatch, executable: string, private localSkillVersion?: string, env = process.env) {
+    this.rpc = new JsonProcess(executable, ["app-server"], job.repoPath, env);
     this.rpc.onClose = () => {
       this.closed = true;
       const active = this.pending.values().next().value?.snapshot;
@@ -170,8 +172,37 @@ export class CodexAdapter implements Adapter {
     this.initialTurnId = first.turn?.id;
     return this.ref;
   }
-  private turn(text: string, commandId: string): Wire {
-    return { threadId: this.ref, input: [{ type: "text", text }], clientUserMessageId: commandId,
+  async prepareManaged(job: ManagedJob): Promise<ManagedReceipt> {
+    const initialized = await this.rpc.call("initialize", { clientInfo: { name: "missiongo_managed", version: "1" }, capabilities: { experimentalApi: true } });
+    validateManagedVersion(initialized); this.rpc.write({ method: "initialized" });
+    const policy = managedPolicy(job.intent.binding.role);
+    const result = await this.rpc.call("thread/start", { cwd: job.repoPath, ...policy, runtimeWorkspaceRoots: [job.repoPath],
+      config: { "mcp_servers.missiongo.enabled": false }, developerInstructions: managedPrompt(job) });
+    this.ref = id(result.thread?.id); validateManagedScope(result, job, job.repoPath);
+    if (typeof result.model !== "string" || !result.model) throw new Error("Managed native model was not confirmed");
+    await this.rpc.call("thread/name/set", { threadId: this.ref, name: `Managed ${job.intent.binding.role} ${job.intent.id}` });
+    validateManagedMcp(await this.rpc.call("mcpServer/list", { threadId: this.ref }));
+    const receipt = { sessionRef: this.ref, resolvedModel: result.model, cwd: realpathSync(job.repoPath) };
+    this.managed = { job, receipt }; return receipt;
+  }
+  async startManagedTurn(): Promise<void> {
+    const value = this.managed; if (!value) throw new Error("Managed identity has not been bound");
+    const policy = managedPolicy(value.job.intent.binding.role);
+    const result = await this.rpc.call("thread/resume", { threadId: this.ref, model: value.receipt.resolvedModel, ...policy,
+      config: { "mcp_servers.missiongo.enabled": false } });
+    if (result.thread?.id !== this.ref || result.model !== value.receipt.resolvedModel) throw new Error("Managed resumed identity or model differed");
+    validateManagedScope(result, value.job, value.receipt.cwd);
+    validateManagedMcp(await this.rpc.call("mcpServer/list", { threadId: this.ref }));
+    const started = await this.rpc.call("turn/start", this.turn(managedPrompt(value.job), `managed-${value.job.intent.id}`));
+    this.initialTurnId = id(started.turn?.id);
+  }
+  private turn(text: string, commandId: string, attachments?: Command["attachments"]): Wire {
+    if (this.managed) {
+      const policy = managedPolicy(this.managed.job.intent.binding.role);
+      return { threadId: this.ref, input: [{ type: "text", text }], clientUserMessageId: commandId,
+        model: this.managed.receipt.resolvedModel, approvalPolicy: policy.approvalPolicy, approvalsReviewer: policy.approvalsReviewer };
+    }
+    return { threadId: this.ref, input: this.input(text, attachments), clientUserMessageId: commandId,
       ...(this.job.model ? { model: this.job.model } : {}), ...(this.job.effort ? { effort: this.job.effort } : {}),
       approvalPolicy:"on-request",approvalsReviewer:codexPolicy(this.job.mode).approvalsReviewer,
       sandboxPolicy:this.job.mode==="read-only" ? {type:"readOnly"} : {
@@ -221,6 +252,13 @@ export class CodexAdapter implements Adapter {
     // A partial page is useful and its continuation can be retried separately.
     return { messages: page.messages, ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}) };
   }
+  async stopManagedTurn(): Promise<Snapshot> {
+    if (!this.managed) throw new InputRejected("Not a managed session");
+    const {thread,lastTurn}=await this.runtime();
+    if (thread.status?.type !== "active" && lastTurn?.status !== "inProgress") return this.controlSnapshot();
+    if (typeof lastTurn?.id !== "string" || !lastTurn.id) throw new InputRejected("Managed active turn identity unavailable");
+    return this.stop({id:`stop-${this.managed.job.intent.id}`,kind:"interrupt",status:"queued",text:"",turnId:lastTurn.id});
+  }
   async stop(command: Command): Promise<Snapshot> {
     const target = command.turnId === "startup" ? this.initialTurnId : command.turnId;
     if (!target) throw new InputRejected("停止未发送：原回合标识不可用");
@@ -240,6 +278,10 @@ export class CodexAdapter implements Adapter {
     if (await observe().catch(() => "unknown") === "idle") return { status: "idle", turnActive: false, messages: [] };
     throw new Error(`停止尚未确认：${failure instanceof Error ? failure.message : "来源未报告原回合结束"}`);
   }
+  private input(text: string, attachments?: Command["attachments"]): Wire[] {
+    return [{ type: "text", text }, ...(attachments ?? []).filter(attachment => attachment.kind === "image" && attachment.localPath)
+      .map(attachment => ({ type: "localImage", path: attachment.localPath }))];
+  }
   private performanceTurns = new Map<string,string>();
   performanceTurn(commandId:string){return this.performanceTurns.get(commandId);}
   async deliver(command: Command, options?: { controlOnly: boolean }): Promise<void> {
@@ -249,13 +291,14 @@ export class CodexAdapter implements Adapter {
     const { lastTurn } = await this.runtime();
     const turn = lastTurn?.status === "inProgress" ? lastTurn : undefined;
     if (turn) await this.rpc.call("turn/steer", { threadId: this.ref, expectedTurnId: turn.id,
-      input: [{ type: "text", text: command.text }], clientUserMessageId: command.id });
+      input: this.input(command.text, command.attachments), clientUserMessageId: command.id });
     else {
-      const result=await this.rpc.call("turn/start", this.turn(command.text, command.id));
+      const result=await this.rpc.call("turn/start", this.turn(command.text, command.id, command.attachments));
       if(typeof result.turn?.id==="string"){if(this.performanceTurns.size>=256)this.performanceTurns.delete(this.performanceTurns.keys().next().value!);this.performanceTurns.set(command.id,result.turn.id);}
     }
   }
   async decide(decision: { id: string; choice: string }): Promise<void> {
+    if (this.managed?.job.intent.binding.role === "review" && !["decline", "cancel"].includes(decision.choice)) throw new InputRejected("Review workers cannot receive write grants");
     const request = this.pending.get(decision.id);
     if (!request || request.snapshot.status !== "pending" || !request.results.has(decision.choice)) throw new Error("Stale or unsupported approval choice");
     this.rpc.write({ id: request.rpcId, result: request.results.get(decision.choice) });
@@ -265,6 +308,7 @@ export class CodexAdapter implements Adapter {
     this.lastApproval = request.snapshot; this.pending.delete(decision.id);
   }
   async settings(settings: NonNullable<Session["desiredSettings"]>): Promise<void> {
+    if (this.managed) throw new InputRejected("Managed runtime settings are frozen by the coordinator");
     if (settings.mode) codexPolicy(settings.mode);
     const updated = { ...this.job, ...settings };
     const policy = codexPolicy(updated.mode);
@@ -291,10 +335,11 @@ export class CodexAdapter implements Adapter {
   }
   async archive(restore: boolean): Promise<void> { await this.rpc.call(restore ? "thread/unarchive" : "thread/archive", { threadId: this.ref }); }
   async retryApproval(retry: NonNullable<Session["approvalRetry"]>): Promise<void> {
+    if (this.managed) throw new InputRejected("Managed approval policy is frozen by the coordinator");
     if (this.lastApproval?.kind !== "auto" || this.lastApproval.status !== "denied" || this.lastApproval.id !== retry.reviewId) throw new InputRejected("Auto-review retry no longer matches the denied source request");
     const { lastTurn } = await this.runtime();
     if (lastTurn?.status === "inProgress") throw new InputRejected("Wait for the current turn to finish before retrying");
     await this.rpc.call("turn/start", { ...this.turn("用户已在 MissionGo 控制台明确要求对刚被自动审查拒绝的操作发起一次人工审批重试。请重新评估，只尝试一次，并将实际授权请求交给人审查。不要重复其他操作。", retry.id), approvalsReviewer: "user" });
   }
-  async close(): Promise<void> { this.rpc.child.kill(); }
+  async close(): Promise<void> { this.rpc.close(); }
 }

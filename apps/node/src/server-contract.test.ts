@@ -54,5 +54,13 @@ it("configures repositories through the real server contract and preserves exist
     expect((await app.inject({ method: "GET", url: "/api/v1/node/me", headers })).json().repos).toEqual([
       expect.objectContaining({ productId: first, repoPath: firstPath }),
     ]);
+    for (const repoPath of ["C:\\开发\\checkout", "\\\\build-server\\repositories\\checkout"]) {
+      const mapped = await app.inject({ method: "PUT", url: "/api/v1/node/repos", headers, payload: { repos: [{ productId: second, repoPath }] } });
+      expect(mapped.statusCode, mapped.body).toBe(200);
+      expect(mapped.json().repos).toEqual([expect.objectContaining({ productId: second, repoPath })]);
+    }
+    for (const repoPath of ["C:relative", "\\\\?\\C:\\checkout", "C:\\checkout:stream"]) {
+      expect((await app.inject({ method: "PUT", url: "/api/v1/node/repos", headers, payload: { repos: [{ productId: second, repoPath }] } })).statusCode).toBe(400);
+    }
   } finally { vi.restoreAllMocks(); vi.unstubAllEnvs(); await app.close(); rmSync(directory, { recursive: true, force: true }); }
 });

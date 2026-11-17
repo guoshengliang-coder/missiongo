@@ -37,7 +37,7 @@ export class SessionUploadGate {
   }
 }
 export function hasControlWork(session: Session): boolean {
-  return !!(session.command || session.approvalDecision || session.approvalRetry || session.archiveInSource || session.restoreInSource
+  return !!(session.managedExecution?.stopRequested || session.command || session.approvalDecision || session.approvalRetry || session.archiveInSource || session.restoreInSource
     || session.lifecycle === "close" || session.desiredSettings && session.desiredSettings.revision > (session.appliedSettingsRevision ?? 0));
 }
 export function observationSession(session: Session): Session {

@@ -28,7 +28,7 @@ test("one artifact failure cannot mask historical gaps, old tools, version bumps
   assert.equal(report.noReleaseItems[0].itemKey, "AND-2");
   assert.equal(report.checks.find(c => c.name === "artifact:androidApp").status, "unverified");
   assert.equal(report.checks.find(c => c.name === "patch_bumps").value[0].to, "1.0.1");
-  assert.equal(report.checks.find(c => c.name === "coverage").value.observedArtifacts, 3);
+  assert.equal(report.checks.find(c => c.name === "coverage").value.observedArtifacts, 4);
   assert.equal(report.checks.find(c => c.name === "release_notes:macosApp").value.missing[0], "PR 1");
   assert.deepEqual(report.decisions, []);
   assert.equal(report.batchRevision, 7);

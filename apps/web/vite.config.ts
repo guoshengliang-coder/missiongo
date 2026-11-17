@@ -100,6 +100,21 @@ function linuxDownload(): Plugin {
   return { name: "missiongo-linux-download", configureServer(server) { server.middlewares.use(middleware); }, configurePreviewServer(server) { server.middlewares.use(middleware); } };
 }
 
+function windowsDownloadFiles(): Plugin {
+  const middleware = (request: IncomingMessage, response: ServerResponse, next: () => void) => {
+    const path = request.url?.split("?", 1)[0];
+    if (!path?.startsWith("/downloads/windows/")) return next();
+    const name = path.slice("/downloads/windows/".length);
+    if (!/^(?:latest\.(?:json|yml)|[a-z0-9-]+-[0-9]+\.[0-9]+\.[0-9]+-x64-setup\.exe)$/.test(name)) { response.statusCode = 404; response.end(); return; }
+    const file = resolve(repositoryRoot, "apps/web/public/downloads/windows", name);
+    response.setHeader("Cache-Control", "no-store");
+    if (!existsSync(file)) { response.statusCode = 404; response.end("Windows package has not been published."); return; }
+    response.setHeader("Content-Type", name.endsWith(".json") ? "application/json" : name.endsWith(".yml") ? "text/yaml" : "application/octet-stream");
+    response.end(readFileSync(file));
+  };
+  return { name: "missiongo-windows-download", configureServer(server) { server.middlewares.use(middleware); }, configurePreviewServer(server) { server.middlewares.use(middleware); } };
+}
+
 function androidDownloadHeaders(): Plugin {
   const middleware = (request: IncomingMessage, response: ServerResponse, next: () => void): void => {
     const path = request.url?.split("?", 1)[0];
@@ -333,6 +348,7 @@ export default defineConfig(({ mode }) => {
       androidDownloadHeaders(),
       macosDownload(),
       linuxDownload(),
+      windowsDownloadFiles(),
       markdownDownload("missiongo-skill-download", skillDownloadPath, skillSourcePath, publicOrigin),
       markdownDownload(
         "missiongo-sdk-integration-download",

@@ -17,13 +17,13 @@ export class APIError extends Error {
 }
 export class API {
   private strictReservations = false;
-  constructor(readonly server: string, readonly token?: string, readonly signal?: AbortSignal) { serverOrigin(server); }
+  constructor(readonly server: string, readonly token?: string, readonly signal?: AbortSignal, readonly extraHeaders: Record<string, string> = {}) { serverOrigin(server); }
   async call(method: string, path: string, body?: unknown, token = this.token, timeout = 40_000): Promise<any> {
     if (!path.startsWith("/") || path.startsWith("//")) throw new Error("Invalid API path");
     const signal = this.signal ? AbortSignal.any([this.signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout);
     const response = await fetch(this.server + path, {
       method, redirect: "error", signal,
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+      headers: { ...this.extraHeaders, ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     if (!response.ok) {
@@ -38,6 +38,11 @@ export class API {
     }
     return response.status === 204 ? undefined : response.json();
   }
+  withHeaders(headers: Record<string, string>): API {
+    const scoped = new API(this.server, this.token, this.signal, { ...this.extraHeaders, ...headers });
+    scoped.strictReservations = this.strictReservations;
+    return scoped;
+  }
   async controlChanges(cursor?: string, waitMs = 25_000): Promise<{cursor: string} | undefined> {
     try {
       const reply = await this.call("GET", `/api/v1/node/control-changes?waitMs=${waitMs}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
@@ -46,12 +51,25 @@ export class API {
       return this.strictReservations ? reply : undefined;
     } catch (error) { if (error instanceof APIError && error.status === 404) { this.strictReservations = false; return; } throw error; }
   }
-  async login(config: Config, name: string, display: (url: string, code: string) => void): Promise<Config> {
+  async bytes(path: string, limit: number): Promise<Buffer> {
+    if (!path.startsWith("/") || path.startsWith("//")) throw new Error("Invalid API path");
+    const response = await fetch(this.server + path, { redirect: "error", signal: this.signal ? AbortSignal.any([this.signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(300_000),
+      headers: { ...this.extraHeaders, Authorization: `Bearer ${this.token}` } });
+    if (!response.ok || !response.body) throw new Error("Attachment download failed");
+    const parts: Buffer[] = []; let size = 0;
+    const reader = response.body.getReader();
+    try { for (;;) {
+      const { value, done } = await reader.read(); if (done) break;
+      size += value.byteLength; if (size > limit) throw new Error("Attachment exceeds its declared size"); parts.push(Buffer.from(value));
+    } } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+    return Buffer.concat(parts);
+  }
+  async login(config: Config, name: string, display: (url: string, code: string) => void, clientLabel = "Linux CLI"): Promise<Config> {
     const client = object(await this.call("POST", "/oauth/register", {
-      client_name: `${typeof PRODUCT_NAME === "string" ? PRODUCT_NAME : "Headless"} Linux CLI`, grant_types: ["urn:ietf:params:oauth:grant-type:device_code"], token_endpoint_auth_method: "none",
+      client_name: `${typeof PRODUCT_NAME === "string" ? PRODUCT_NAME : "Headless"} ${clientLabel}`, grant_types: ["urn:ietf:params:oauth:grant-type:device_code"], token_endpoint_auth_method: "none",
     }));
     const form = async (path: string, body: Record<string, string>) => {
-      const response = await fetch(this.server + path, { method: "POST", redirect: "error", signal: AbortSignal.timeout(15_000),
+      const response = await fetch(this.server + path, { method: "POST", redirect: "error", signal: this.signal ? AbortSignal.any([this.signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
         headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(body) });
       return { ok: response.ok, body: object(await response.json()) };
     };

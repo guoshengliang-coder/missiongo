@@ -26,6 +26,53 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  windows-build:
+    needs: ui-plan
+    if: needs.ui-plan.outputs.windows_required == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - run: npm ci
+      - run: npm run build:types
+      - run: npm run typecheck --workspace @missiongo/windows-workspace
+      - name: Diagnose native platform with bounded synthetic fixtures
+        run: node scripts/windows-platform-diagnostics.mjs
+      - name: Native DPAPI, private ACL, singleton, PowerShell and npm launchers
+        run: npm run test --workspace @missiongo/windows-workspace
+      - name: Package unsigned development installer (never published)
+        run: npm run build:windows -- --package --unsigned
+      - run: npx playwright install --with-deps --only-shell chromium
+      - run: npx playwright test --config playwright.windows.config.ts
+      - uses: actions/upload-artifact@v5
+        if: ${{ always() }}
+        with:
+          name: windows-development-checks
+          path: |
+            apps/windows/dist/installer/*.exe
+            test-results/
+          retention-days: 7
+
+  windows:
+    if: ${{ always() }}
+    needs: [ui-plan, windows-build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.13.0
+      - name: Require planned Windows validation
+        env:
+          CI_PLATFORM_PLAN: ${{ needs.ui-plan.outputs.platform_plan }}
+          CI_PLAN_RESULT: ${{ needs.ui-plan.result }}
+          CI_BUILD_RESULT: ${{ needs.windows-build.result }}
+        run: node scripts/ci-platform-plan.mjs windows
+
   ui-plan:
     runs-on: ubuntu-latest
     permissions:
@@ -41,6 +88,7 @@ jobs:
       android_required: ${{ steps.plan.outputs.android_required }}
       macos_required: ${{ steps.plan.outputs.macos_required }}
       linux_required: ${{ steps.plan.outputs.linux_required }}
+      windows_required: ${{ steps.plan.outputs.windows_required }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -219,13 +267,17 @@ jobs:
   # cancelled or unexpectedly skipped shard must never produce a green `ui`.
   ui:
     if: ${{ always() }}
-    needs: [ui-plan, ui-audit, ui-visual]
+    needs: [ui-plan, ui-audit, ui-visual, windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 22.13.0
+      - name: Require Windows platform gate
+        env:
+          WINDOWS_RESULT: ${{ needs.windows.result }}
+        run: test "$WINDOWS_RESULT" = success
       - name: Require all UI checks
         env:
           UI_TEST_PLAN: ${{ needs.ui-plan.outputs.plan }}
@@ -372,7 +424,7 @@ jobs:
   # Diagnostic data only. Existing build/UI gate names and checks stay intact.
   ci-timing-report:
     if: ${{ always() }}
-    needs: [ui-plan, ui, android, macos, linux-node, web-and-server]
+    needs: [ui-plan, ui, android, macos, linux-node, windows, web-and-server]
     runs-on: ubuntu-latest
     permissions:
       contents: read

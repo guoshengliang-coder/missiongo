@@ -48,7 +48,7 @@ describe("explicit Claude environment", () => {
     const path = script(root, `export PATH=${quote(`${dirname(process.execPath)}:/usr/bin:/bin`)}\nexport ANTHROPIC_AUTH_TOKEN=fixture-secret\n`);
     writeFileSync(launcher, `#!/bin/bash\n[ "$ANTHROPIC_AUTH_TOKEN" = fixture-secret ] || exit 42\nexec ${quote(fixture)} "$@"\n`, { mode: 0o700 });
     const launch = await resolveClaudeLaunch({ executable: launcher, environmentScript: path }, base(root));
-    expect(await probe(launch.executable, ["--version"], root, launch.env)).toBe("fixture 1.0.0");
+    expect(await probe(launch.executable, ["--version"], root, launch.env)).toBe("codex-cli 1.0.0\n1.0.0 (Claude Code)");
     const adapter = new ClaudeAdapter({ dispatchId: "fixture", itemKeys: ["EX-1"], repoPath: root, agentKind: "claude_code", mode: "plan" }, launch.executable, launch.env);
     adapters.push(adapter);
     expect(await adapter.start("hello")).toMatch(/^[a-f0-9-]+$/);
@@ -130,4 +130,74 @@ describe("explicit Claude environment", () => {
     await expect(probe(launcher, ["--version"], root, process.env, 80)).rejects.toThrow("timed out");
     await expect(probe(join(root, "missing"), ["--version"])).rejects.toThrow("not found");
   });
+});
+
+it("rejects Node itself as Codex before syncing any Skill", async () => {
+  const root = temporary(); vi.stubEnv("HOME", root);
+  const fetch = vi.spyOn(globalThis, "fetch");
+  const [agent] = await detectAgents({ installationId: "fixture", server: "https://missiongo.example.com", agents: { codex: { executable: process.execPath } } });
+  expect(agent).toMatchObject({ kind: "codex", ready: false });
+  expect(agent?.unavailableReason).toContain("version output was not recognized");
+  expect(fetch).not.toHaveBeenCalled(); expect(existsSync(join(root, ".codex"))).toBe(false);
+});
+it.each(["codex", "claude_code"] as const)("requires a working %s control handshake even when its version banner matches", async (kind) => {
+  const root = temporary(); const launcher = script(root, '#!/bin/sh\nprintf "codex-cli 1.0.0\\n1.0.0 (Claude Code)\\n"\n', "wrong-agent"); chmodSync(launcher, 0o700);
+  const fetch = vi.spyOn(globalThis, "fetch");
+  const [agent] = await detectAgents({ installationId: "fixture", server: "https://missiongo.example.com", agents: { [kind]: { executable: launcher } } });
+  expect(agent).toMatchObject({ kind, ready: false }); expect(fetch).not.toHaveBeenCalled();
+});
+it("rejects an actual OpenCode 1 server even if its registration advertises version 2", async () => {
+  const root = temporary(); const registration = script(root, JSON.stringify({ version: "2.1.0", url: "https://opencode.example.com", password: "fixture-only" }), "service.json");
+  const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ version: "1.9.0" }));
+  const [agent] = await detectAgents({ installationId: "fixture", server: "https://missiongo.example.com", agents: { opencode: { serviceRegistration: registration } } });
+  expect(agent).toMatchObject({ ready: false, unavailableReason: "OpenCode 2 is required" }); expect(fetch).toHaveBeenCalledOnce();
+});
+it.each(["codex", "claude_code"] as const)("keeps validated %s ready when only the model catalog is unavailable", async (kind) => {
+  const root = temporary(); vi.stubEnv("HOME", root); chmodSync(fixture, 0o755);
+  const path = script(root, "export TEST_CATALOG_FAILURE=1\n");
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("---\nversion: 1.0.0\n---\n"));
+  const [agent] = await detectAgents({ installationId: "fixture", server: "https://missiongo.example.com", agents: { [kind]: { executable: fixture, environmentScript: path } } });
+  expect(agent).toMatchObject({ ready: true, models: [] });
+});
+
+it("reports current plan protocol and actual Claude mode evidence independently of launcher readiness", async () => {
+  const root=temporary(); vi.stubEnv("HOME",root); chmodSync(fixture,0o755);
+  const path=script(root,"export FAKE_CLAUDE_REJECT_MODE=auto\n");
+  vi.spyOn(globalThis,"fetch").mockImplementation(async()=>new Response("---\nversion: 1.0.0\n---\n"));
+  const [agent]=await detectAgents({installationId:"fixture",server:"https://missiongo.example.com",agents:{claude_code:{executable:fixture,environmentScript:path,checkRevision:"mode-evidence"}}});
+  expect(agent).toMatchObject({ready:true,planApprovalProtocol:1});
+  expect(agent?.modes).toContainEqual({mode:"auto",state:"unavailable",reason:"native_mode_rejected"});
+  expect(agent?.modes).toContainEqual({mode:"default",state:"available"});
+});
+
+it("bounds empty catalog pagination and keeps Claude's full sanitized catalog beyond mode probing",async()=>{
+  const root=temporary();chmodSync(fixture,0o755);
+  vi.spyOn(globalThis,"fetch").mockImplementation(async()=>new Response("---\nversion: 1.0.0\n---\n"));
+  const path=script(root,"export TEST_CATALOG_ENDLESS=1\n");
+  const [codex]=await detectAgents({installationId:"fixture",server:"https://missiongo.example.com",agents:{codex:{executable:fixture,environmentScript:path,checkRevision:"bounded-empty"}}},"1.0.0");
+  expect(codex).toMatchObject({ready:true,models:[]});
+  writeFileSync(path,"export TEST_CATALOG_MANY=1\n");
+  const [claude]=await detectAgents({installationId:"fixture",server:"https://missiongo.example.com",agents:{claude_code:{executable:fixture,environmentScript:path,checkRevision:"full-catalog"}}},"1.0.0");
+  expect(claude?.models).toHaveLength(20);expect(claude?.models?.[0]?.efforts).toEqual([]);
+  expect(claude?.modes?.filter(mode=>mode.model)).toHaveLength(14);
+});
+
+it("does not reuse a successful control handshake after the resolved Agent environment changes",async()=>{
+  const root=temporary();chmodSync(fixture,0o755);
+  const path=script(root,"export TEST_CONTROL_REJECT=''\n");
+  vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response("---\nversion: 1.0.0\n---\n"));
+  const config={installationId:"fixture",server:"https://missiongo.example.com",agents:{codex:{executable:fixture,environmentScript:path}}};
+  expect((await detectAgents(config,"1.0.0"))[0]).toMatchObject({ready:true});
+  writeFileSync(path,"export TEST_CONTROL_REJECT=1\n");
+  expect((await detectAgents(config,"1.0.0"))[0]).toMatchObject({ready:false,unavailableReason:"Agent rejected protocol request"});
+});
+
+it("refreshes native mode evidence when the resolved Claude environment changes",async()=>{
+  const root=temporary();chmodSync(fixture,0o755);
+  const path=script(root,"export FAKE_CLAUDE_REJECT_MODE=''\n");
+  vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response("---\nversion: 1.0.0\n---\n"));
+  const config={installationId:"fixture",server:"https://missiongo.example.com",agents:{claude_code:{executable:fixture,environmentScript:path}}};
+  expect((await detectAgents(config,"1.0.0"))[0]?.modes).toContainEqual({mode:"auto",state:"available"});
+  writeFileSync(path,"export FAKE_CLAUDE_REJECT_MODE=auto\n");
+  expect((await detectAgents(config,"1.0.0"))[0]?.modes).toContainEqual({mode:"auto",state:"unavailable",reason:"native_mode_rejected"});
 });

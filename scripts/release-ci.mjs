@@ -3,9 +3,8 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 export function assertReleaseCI(runs) {
-  // The five aggregated checks behind branch protection; linux-node is a separate
-  // job on main, so a release commit must carry it too.
-  for (const name of ["web-and-server", "ui", "android", "macos", "linux-node"]) {
+  // Require each platform aggregate, including the native Windows validation.
+  for (const name of ["web-and-server", "ui", "android", "macos", "linux-node", "windows"]) {
     const matches = runs.filter((run) => run.name === name);
     const latest = matches.sort((a, b) => (b.id ?? 0) - (a.id ?? 0))[0];
     if (!latest || latest.status !== "completed" || latest.conclusion !== "success") {

@@ -42,6 +42,7 @@ local.properties
 apps/web/public/downloads/*.apk
 apps/web/public/downloads/*.zip
 apps/web/public/downloads/*.tgz
+apps/web/public/downloads/windows/
 
 # Metadata recorded beside the APK by scripts/publish-android-internal.sh.
 apps/web/public/downloads/*.release

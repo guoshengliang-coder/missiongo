@@ -15,7 +15,7 @@ import { serviceUnit } from "./service.js";
 import { serverOrigin } from "./api.js";
 import { detectAgents } from "./runner.js";
 import { boundedSnapshot } from "./host.js";
-import type { Adapter, Dispatch, Wire } from "./types.js";
+import type { Adapter, Dispatch, Wire, Snapshot } from "./types.js";
 
 const roots: string[] = [];
 const adapters: Adapter[] = [];
@@ -279,8 +279,21 @@ describe("Claude native control", () => {
     expect(control.messages.every(message => message.sourceId.startsWith("request-") || message.sourceId.startsWith("permission-"))).toBe(true);
     await adapter.deliver({ id: "reply-deny", status: "queued", text: "授权请求 claude-native-1: 拒绝" }); await delay(30);
     snapshot = await adapter.snapshot(); expect(snapshot.messages.some((m) => m.text === "deny")).toBe(true); expect(snapshot.waitingForInput).toBe(false);
+    expect(snapshot.messages.find((message) => message.sourceId === "request-claude-native-1")?.questions?.[0]?.answered).toContain("拒绝");
     await adapter.deliver({ id: "reply-next", status: "queued", text: "continue" });
     expect((await adapter.snapshot()).messages.some((m) => m.text === "continue")).toBe(true);
+  });
+  it("archives the owned Claude tree and resumes only the same explicitly restored native session without replaying a user turn", async () => {
+    const root = temporary(); const log = join(root, "events"); vi.stubEnv("TEST_AGENT_EVENTS", log);
+    const adapter = new ClaudeAdapter(job(root, "claude_code"), fixture); adapters.push(adapter);
+    const ref = await adapter.start("one user turn"); await delay(30);
+    await adapter.archive(false); expect((await adapter.snapshot()).status).toBe("suspended");
+    await expect(adapter.deliver({ id: "not-restored", status: "queued", text: "never-send" })).rejects.toThrow("恢复");
+    await adapter.archive(true); expect((await adapter.snapshot()).status).toBe("idle");
+    const events = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    const starts = events.filter((event) => event.fixture === "startup");
+    expect(starts).toHaveLength(2); expect(starts[1].args).toContain("--resume"); expect(starts[1].args).toContain(ref);
+    expect(events.filter((event) => event.type === "user")).toHaveLength(1);
   });
 });
 describe("OpenCode shared-service control", () => {
@@ -545,4 +558,24 @@ it.each([{subtype:"error_max_turns"},{terminal_reason:"blocking_limit"}])("AND-5
  consume({type:"assistant",uuid:"unfinished",message:{content:[{type:"text",text:"Reviewed plan"}]}});
  consume({type:"result",result:"Reviewed plan",is_error:false,...failure});
  expect((await adapter.snapshot()).messages.find(m=>m.sourceId==="unfinished")?.phase).toBeUndefined();
+});
+
+it("can read and update a bounded host snapshot larger than the old private-file limit",()=>{
+  const root=temporary();const path=join(root,"large-state.json");
+  const snapshot=boundedSnapshot({status:"idle",messages:Array.from({length:22},(_,i)=>({sourceId:String(i),role:"agent",text:"x".repeat(800_000)}))});
+  savePrivate(path,{snapshot,commands:{}});expect(readPrivate<{snapshot:Snapshot}>(path)?.snapshot.messages).toHaveLength(22);
+  savePrivate(path,{snapshot,commands:{once:{status:"delivered"}}});
+  expect(readPrivate<{commands:unknown}>(path)?.commands).toEqual({once:{status:"delivered"}});
+});
+
+it("does not grant a late native permission from external text at the actual delivery boundary",async()=>{
+  const adapter=new ClaudeAdapter(job(temporary(),"claude_code"),fixture);adapters.push(adapter);await adapter.start("hello");
+  expect((await adapter.controlSnapshot()).waitingForInput).not.toBe(true);
+  await adapter.deliver({id:"source-input",status:"queued",text:"elicitation empty"});
+  await vi.waitFor(async()=>expect((await adapter.snapshot()).waitingForInput).toBe(true));
+  const answer={id:"external-answer",status:"queued",text:"授权请求 mcp-confirm-1: 批准"};
+  await expect(adapter.deliver(answer,{controlOnly:false,terminalPermissionsOnly:true})).rejects.toThrow("原桥接终端");
+  expect((await adapter.snapshot()).waitingForInput).toBe(true);
+  await adapter.deliver({...answer,id:"source-answer"});
+  await vi.waitFor(async()=>expect((await adapter.snapshot()).waitingForInput).toBe(false));
 });

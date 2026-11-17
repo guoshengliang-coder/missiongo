@@ -24,5 +24,5 @@ export * from "./agent-permission-question.js";
 
 export * from "./agent-transcript.js";
 export * from "./console-performance.js";
-
+export * from "./repository-path.js";
 export * from "./development-review.js";

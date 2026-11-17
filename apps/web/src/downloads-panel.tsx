@@ -1,7 +1,7 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Bot, Check, ClipboardCheck, Download, Laptop, Smartphone } from "lucide-react";
 
-import { ANDROID_APK_DOWNLOAD_PATH, MACOS_CLIENT_DOWNLOAD_PATH, LINUX_CLIENT_DOWNLOAD_PATH, LINUX_CLIENT_MANIFEST_PATH, SKILL_DOWNLOAD_PATH, skillDownloadUrl } from "./downloads";
+import { ANDROID_APK_DOWNLOAD_PATH, MACOS_CLIENT_DOWNLOAD_PATH, LINUX_CLIENT_DOWNLOAD_PATH, LINUX_CLIENT_MANIFEST_PATH, WINDOWS_CLIENT_MANIFEST_PATH, windowsDownload, SKILL_DOWNLOAD_PATH, skillDownloadUrl } from "./downloads";
 import { useI18n } from "./i18n";
 
 /**
@@ -14,6 +14,7 @@ export function DownloadsPanel() {
 
   return (
     <div className="download-cards">
+      <WindowsDownload />
       <DownloadCard icon={<Smartphone size={18} />} title={t("downloadAndroidTitle")} description={t("downloadAndroidDescription")}>
         <a className="primary-button download-link" href={ANDROID_APK_DOWNLOAD_PATH} download data-initial-focus>
           <Download size={15} /> {t("downloadAndroid")}
@@ -57,6 +58,21 @@ export function DownloadsPanel() {
       </DownloadCard>
     </div>
   );
+}
+
+function WindowsDownload() {
+  const { t } = useI18n(); const [download, setDownload] = useState<string>();
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch(WINDOWS_CLIENT_MANIFEST_PATH, { cache: "no-store", redirect: "error", signal: controller.signal }).then(async (response) => {
+      if (response.ok) { const path = windowsDownload(await response.json()); if (!controller.signal.aborted) setDownload(path); }
+    }).catch(() => {});
+    return () => controller.abort();
+  }, []);
+  return <DownloadCard icon={<Laptop size={18} />} title={t("downloadWindowsTitle")} description={t("downloadWindowsDescription")}>
+    {download ? <a className="primary-button download-link" href={download} download><Download size={15} /> {t("downloadWindows")}</a> : <p role="status">{t("downloadWindowsUnavailable")}</p>}
+    <p className="node-requirements">{t("downloadWindowsRequirements")}</p>
+  </DownloadCard>;
 }
 
 function DownloadCard({ icon, title, description, children }: { icon: ReactNode; title: string; description: string; children: ReactNode }) {

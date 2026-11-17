@@ -6,7 +6,7 @@ import { isDeepStrictEqual } from "node:util";
 import { CLIENTS, parseDeclaration } from "./release-notes.mjs";
 
 export function isReleaseMetadata(path) {
-  return path === "released.json" || /^release-notes\/(android|macos)\/[\w-]+\.json$/.test(path);
+  return path === "released.json" || /^release-notes\/(android|macos|windows)\/[\w-]+\.json$/.test(path);
 }
 
 const git = (root, ...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -23,7 +23,7 @@ export function validateReleaseMetadata({ root, base, changes }) {
   for (const { path, status } of changes.filter(change => isReleaseMetadata(change.path))) {
     if (!["A", "M"].includes(status)) { safe = false; continue; }
     if (path !== "released.json") {
-      const client = path.startsWith("release-notes/macos/") ? CLIENTS.macosApp : CLIENTS.androidApp;
+      const client = path.startsWith("release-notes/macos/") ? CLIENTS.macosApp : path.startsWith("release-notes/windows/") ? CLIENTS.windowsApp : CLIENTS.androidApp;
       const source = read(root, path);
       const note = JSON.parse(source);
       if (note.pullRequest !== undefined && (!Number.isSafeInteger(note.pullRequest) || note.pullRequest < 1)) {
