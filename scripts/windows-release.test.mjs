@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readWindowsSnapshot, windowsManifest, windowsUpdate, checkWindowsFiles, checkWindowsArtifacts } from "./windows-release-tools.mjs";
+import { assertWindowsReleasePolicy, readWindowsSnapshot, windowsManifest, windowsUpdate, checkWindowsFiles, checkWindowsArtifacts } from "./windows-release-tools.mjs";
 import { install } from "./install-release-tools.mjs";
 import { RELEASE_TOOL_FILES } from "./release-tool-files.mjs";
 import { publicReleaseEvidence } from "./handover-evidence.mjs";
@@ -24,6 +24,10 @@ test("Windows provenance, updater hashes and actual bytes must agree before rele
     writeFileSync(join(directory, manifest.filename), bytes); writeFileSync(join(directory, "latest.json"), JSON.stringify(manifest));
     writeFileSync(join(directory, "latest.yml"), windowsUpdate(manifest, bytes));
     assert.equal(checkWindowsFiles(root, record).sourceCommit, sourceCommit);
+    const unsigned = { ...manifest, signed: false, certificateSha256: null, releaseSigning: "temporary-unsigned" };
+    writeFileSync(join(directory, "latest.json"), JSON.stringify(unsigned));
+    assert.equal(checkWindowsFiles(root, record).sha256, record.sha256);
+    writeFileSync(join(directory, "latest.json"), JSON.stringify(manifest));
     assert.throws(() => windowsManifest({ ...manifest, signed: false }));
     assert.throws(() => windowsManifest({ ...manifest, filename: "../../other.exe" }));
     writeFileSync(join(directory, "latest.yml"), "path: https://foreign.example.com/setup.exe");
@@ -68,4 +72,22 @@ test("an invalid existing live package blocks rather than masquerading as an unp
   assert.throws(()=>windowsManifest({...manifest,filename:"fixture-0.1.1-x64-setup.exe"}),/version/);
   assert.throws(()=>readWindowsSnapshot(options,command=>command.startsWith("if ") ? JSON.stringify(manifest):"wrong digest"),/digest/);
   assert.equal(readWindowsSnapshot(options,command=>command.startsWith("if ") ? JSON.stringify(manifest):manifest.sha256+" installer").version,"0.1.0");
+});
+
+
+test("temporary unsigned releases require an explicit policy and retain byte and updater integrity", () => {
+  const manifest = { version: "0.1.0", sourceCommit: "a".repeat(40), platform: "win32", arch: "x64", signed: false, certificateSha256: null, releaseSigning: "temporary-unsigned", filename: "fixture-0.1.0-x64-setup.exe", size: 1, sha256: "b".repeat(64) };
+  assert.equal(windowsManifest(manifest).signed, false);
+  assert.doesNotThrow(() => assertWindowsReleasePolicy(manifest, {releaseSigning:"temporary-unsigned"}));
+  assert.throws(() => assertWindowsReleasePolicy(manifest, {}), /not authorized/);
+  const signed = {...manifest, signed:true, certificateSha256:"c".repeat(64)};
+  assert.throws(() => assertWindowsReleasePolicy(signed, {releaseSigning:"temporary-unsigned"}), /trusted/);
+  assert.throws(() => assertWindowsReleasePolicy(signed, {}, "d".repeat(64)), /trusted/);
+  assert.doesNotThrow(() => assertWindowsReleasePolicy(signed, {}, "c".repeat(64)));
+  assert.throws(() => windowsManifest({ ...manifest, releaseSigning: undefined }));
+  assert.throws(() => windowsManifest({ ...manifest, certificateSha256: "c".repeat(64) }));
+  assert.throws(() => windowsManifest({ ...manifest, signed: true }));
+  assert.throws(() => windowsManifest({ ...manifest, sourceCommit: "unknown" }));
+  assert.throws(() => windowsManifest({ ...manifest, size: 0 }));
+  assert.throws(() => windowsManifest({ ...manifest, filename: "../fixture.exe" }));
 });

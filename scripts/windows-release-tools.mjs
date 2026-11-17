@@ -7,11 +7,18 @@ const DIGEST = /^[a-f0-9]{64}$/;
 const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+$/;
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 export const WINDOWS_PATH = "apps/web/public/downloads/windows";
+export function assertWindowsReleasePolicy(manifest, product, pin) {
+  if (manifest.signed) {
+    if (!DIGEST.test(pin ?? "") || manifest.certificateSha256 !== pin) throw new Error("Select the trusted Windows certificate SHA-256");
+  } else if (product.releaseSigning !== "temporary-unsigned") throw new Error("Unsigned publication is not authorized by the current product policy");
+}
 export function windowsManifest(value) {
+  const signatureValid = value?.signed === true ? DIGEST.test(value.certificateSha256 ?? "")
+    : value?.signed === false && value.releaseSigning === "temporary-unsigned" && value.certificateSha256 === null;
   if (!value || !VERSION.test(value.version ?? "") || !SHA.test(value.sourceCommit ?? "") || !DIGEST.test(value.sha256 ?? "")
-    || !DIGEST.test(value.certificateSha256 ?? "") || value.platform !== "win32" || value.arch !== "x64" || value.signed !== true
+    || !signatureValid || value.platform !== "win32" || value.arch !== "x64"
     || !Number.isSafeInteger(value.size) || value.size <= 0 || value.size > 512 * 1024 * 1024
-    || !/^[a-z0-9-]+-[0-9]+\.[0-9]+\.[0-9]+-x64-setup\.exe$/.test(value.filename ?? "")) throw new Error("Windows package needs signed x64 provenance and an immutable installer filename");
+    || !/^[a-z0-9-]+-[0-9]+\.[0-9]+\.[0-9]+-x64-setup\.exe$/.test(value.filename ?? "")) throw new Error("Windows package needs explicit signing provenance and an immutable x64 installer filename");
   if (value.releaseNotes !== undefined && (!Array.isArray(value.releaseNotes) || value.releaseNotes.length > 100
     || value.releaseNotes.some(note => !note || !Array.isArray(note.items) || note.items.length > 100
       || note.items.some(item => !item || typeof item.title !== "string" || item.title.length > 1000)))) throw new Error("Invalid Windows release notes");

@@ -15,7 +15,7 @@ const directory = join(root, windows.path, "dist");
 const app = join(directory, "app"); const runtime = join(directory, "runtime");
 mkdirSync(app, { recursive: true }); mkdirSync(runtime, { recursive: true });
 const define = { PRODUCT_NAME: JSON.stringify(product.name), NODE_VERSION: JSON.stringify(windows.version),
-  WINDOWS_APP_ID: JSON.stringify(windows.id), WINDOWS_PUBLISHER: JSON.stringify(process.env.MISSIONGO_WINDOWS_PUBLISHER ?? "") };
+  WINDOWS_UNSIGNED_RELEASE: JSON.stringify(windows.releaseSigning === "temporary-unsigned"), WINDOWS_APP_ID: JSON.stringify(windows.id), WINDOWS_PUBLISHER: JSON.stringify(process.env.MISSIONGO_WINDOWS_PUBLISHER ?? "") };
 const alias = { "@missiongo/domain": join(root, "packages/domain/src/index.ts"), "@missiongo/contracts": join(root, "packages/contracts/src/index.ts") };
 await build({ entryPoints: [join(root, windows.path, "src/main.ts")], outfile: join(app, "main.cjs"), bundle: true,
   platform: "node", target: "node22.13", format: "cjs", external: ["electron"], define, alias });
@@ -47,7 +47,10 @@ const files = Object.fromEntries([nodeFile, "worker.mjs"].map((name) => [name, c
 writeFileSync(join(runtime, "runtime.json"), JSON.stringify({ nodeVersion: process.version, platform: process.platform, arch: process.arch, files }, null, 2));
 if (process.argv.includes("--package")) {
   if (process.platform !== "win32" || process.arch !== "x64") throw new Error("Windows x64 packages must be built and tested on Windows x64");
-  const unsigned = process.argv.includes("--unsigned");
+  const unsignedRelease = process.argv.includes("--unsigned-release");
+  if (unsignedRelease && windows.releaseSigning !== "temporary-unsigned") throw new Error("Temporary unsigned publication is not enabled in product.json");
+  const unsigned = process.argv.includes("--unsigned") || unsignedRelease;
+  if (unsigned) process.env.CSC_IDENTITY_AUTO_DISCOVERY = "false";
   if (!unsigned && !process.env.MISSIONGO_WINDOWS_PUBLISHER) throw new Error("Set the local signing certificate and MISSIONGO_WINDOWS_PUBLISHER for production packages");
   const config = { appId: windows.id, productName: product.name, asar: true, npmRebuild: false,
     directories: { app, output: join(directory, "installer") }, files: ["**/*"],
@@ -59,18 +62,18 @@ if (process.argv.includes("--package")) {
   };
   const path = join(directory, "builder.json"); writeFileSync(path, JSON.stringify(config, null, 2));
   execFileSync(process.execPath, [join(root, "node_modules/electron-builder/out/cli/cli.js"), "--config", path, "--win", "--publish", "never"], { cwd: root, stdio: "inherit" });
-  if (!unsigned) {
+  if (!unsigned || unsignedRelease) {
     const filename = `${windows.artifactStem}-${windows.version}-x64-setup.exe`;
     const installer = join(directory, "installer", filename);
     const program = "$ErrorActionPreference='Stop'; [Console]::InputEncoding=[Text.UTF8Encoding]::new($false); [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $r=[Console]::In.ReadLine() | ConvertFrom-Json; $s=Get-AuthenticodeSignature -LiteralPath $r.path; if ($s.Status -ne 'Valid' -or $s.SignerCertificate.GetNameInfo('SimpleName',$false) -ne $r.publisher) { exit 1 }; $h=[Security.Cryptography.SHA256]::Create(); [Console]::Out.WriteLine(([BitConverter]::ToString($h.ComputeHash($s.SignerCertificate.RawData))).Replace('-','').ToLowerInvariant())";
-    const certificateSha256 = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(program, "utf16le").toString("base64")], { input: JSON.stringify({ path: installer, publisher: process.env.MISSIONGO_WINDOWS_PUBLISHER }) + "\n", encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 30_000 }).trim();
+    const certificateSha256 = unsigned ? null : execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(program, "utf16le").toString("base64")], { input: JSON.stringify({ path: installer, publisher: process.env.MISSIONGO_WINDOWS_PUBLISHER }) + "\n", encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 30_000 }).trim();
     const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
-    if (execFileSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" }).trim()) throw new Error("Signed publication manifest requires a clean source checkout");
+    if (execFileSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" }).trim()) throw new Error("Publication manifest requires a clean source checkout");
     const bytes = readFileSync(installer);
     const ledger = JSON.parse(readFileSync(join(root,"released.json"),"utf8"));
     const releaseNotes = releaseNotesFor({artifact:"windowsApp",from:releaseNotesStart(root,"windowsApp",ledger),to:sourceCommit});
     writeFileSync(join(directory, "installer", "latest.json"), JSON.stringify({ version: windows.version, sourceCommit, filename,
-      platform: "win32", arch: "x64", signed: true, certificateSha256, releaseNotes, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }, null, 2) + "\n");
+      platform: "win32", arch: "x64", signed: !unsigned, ...(unsigned ? { releaseSigning: "temporary-unsigned" } : {}), certificateSha256, releaseNotes, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }, null, 2) + "\n");
   }
 }
 console.log(`Built ${product.name} Windows ${windows.version}; installer publication is a separate operation.`);

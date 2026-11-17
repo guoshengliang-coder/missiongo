@@ -10,6 +10,7 @@ export interface DesktopPreferences {
 }
 export interface DesktopUpdate { state: "idle" | "checking" | "current" | "available" | "downloading" | "cancelling" | "cancelled" | "verifying" | "ready" | "installing" | "failed"; version?: string | undefined; error?: string; notes?: string; percent?: number; transferred?: number; total?: number }
 export interface DesktopSnapshot {
+  manualUpdates?: boolean;
   runtimeError?: string;
   version: string;
   registered: boolean;

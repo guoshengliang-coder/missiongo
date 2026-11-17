@@ -3,12 +3,12 @@ import { expect, test } from "@playwright/test";
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     const snapshot = {
-      version: "fixture", registered: true, server: "https://missiongo.example.com", name: "测试设备", running: false, loginPending: false, managedEnabled: false,
+      manualUpdates: false, version: "fixture", registered: true, server: "https://missiongo.example.com", name: "测试设备", running: false, loginPending: false, managedEnabled: false,
       agents: {}, health: { state: "stopped", agents: [] },
       products: [{ id: "fixture", name: "测试项目", keyPrefix: "FX" }], repos: [], distributions: ["Ubuntu-24.04"],
       preferences: { runtime: "native", distribution: "", launchAtLogin: false, startHidden: false, notifications: true },
     };
-    Object.assign(window, { setUpdate: (update: unknown) => Object.assign(snapshot,{update}), desktop: {
+    Object.assign(window, { setManualUpdates: () => Object.assign(snapshot, { manualUpdates: true, update: {state: "available", version: "0.1.1"} }), setUpdate: (update: unknown) => Object.assign(snapshot,{update}), desktop: {
       subscribe: () => () => {},
       request: async (value: Record<string, unknown>) => {
         if (value.method === "checkUpdates") Object.assign(snapshot,{update:{state:"available",version:"0.1.1",notes:"更新 Agent 识别与原生权限能力"}});
@@ -108,4 +108,16 @@ for(const colorScheme of ["light","dark"] as const)test(`${colorScheme}: selecto
   await selector.click();await page.keyboard.press("Escape");await expect(selector).toBeFocused();await expect(dialog).toBeVisible();
   await dialog.getByRole("button",{name:"保存",exact:true}).click();await expect(dialog).toHaveCount(0);
   await page.getByRole("button",{name:"本机设置",exact:true}).click();await expect(page.getByLabel("WSL Node.js 绝对路径")).toHaveValue("/home/fixture/custom-node");
+});
+
+
+for (const colorScheme of ["light", "dark"] as const) test(`${colorScheme}: unsigned releases explain manual updates without exposing in-app installation`, async ({page}) => {
+  await page.setViewportSize({width:320,height:600}); await page.emulateMedia({colorScheme}); await page.goto("/");
+  await page.evaluate(() => (window as unknown as {setManualUpdates:()=>void}).setManualUpdates());
+  await expect(page.getByText(/当前为临时未签名版本/)).toBeVisible();
+  await expect(page.getByRole("button",{name:"检查更新",exact:true})).toBeDisabled();
+  await expect(page.getByRole("button",{name:"下载更新",exact:true})).toHaveCount(0);
+  await expect(page.getByRole("button",{name:"安装并重启",exact:true})).toHaveCount(0);
+  await expect(page.getByRole("button",{name:"打开控制台",exact:true})).toBeEnabled();
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
 });

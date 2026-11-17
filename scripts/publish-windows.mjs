@@ -1,9 +1,9 @@
-// Import a signed Windows build through the shared, locked release coordinator.
+// Import a provenance-verified Windows build through the shared, locked release coordinator.
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { windowsManifest, windowsUpdate, checkWindowsFiles, WINDOWS_PATH } from "./windows-release-tools.mjs";
+import { assertWindowsReleasePolicy, windowsManifest, windowsUpdate, checkWindowsFiles, WINDOWS_PATH } from "./windows-release-tools.mjs";
 import { repositoryIdentity } from "./handover-evidence.mjs";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -11,11 +11,12 @@ if (!process.env.MISSIONGO_COORDINATOR_ENTRY || !process.env.MISSIONGO_RELEASE_L
 if (git("status", "--porcelain")) throw new Error("Windows staging requires a clean worktree");
 const source = process.env.MISSIONGO_WINDOWS_BUILD_DIRECTORY;
 const pin = process.env.MISSIONGO_WINDOWS_CERT_SHA256;
-if (!source || !/^[a-f0-9]{64}$/.test(pin ?? "")) throw new Error("Select the signed build directory and trusted certificate SHA-256 in local release configuration");
+if (!source) throw new Error("Select the attested Windows build directory in local release configuration");
 const manifestPath = join(resolve(source), "latest.json");
 const manifest = windowsManifest(JSON.parse(readFileSync(manifestPath, "utf8")));
 const product = JSON.parse(readFileSync(join(root, "product.json"), "utf8")).windows.app;
-if (manifest.version !== product.version || manifest.filename !== `${product.artifactStem}-${product.version}-x64-setup.exe` || manifest.certificateSha256 !== pin) throw new Error("Windows build identity differs from the requested release");
+if (manifest.version !== product.version || manifest.filename !== `${product.artifactStem}-${product.version}-x64-setup.exe`) throw new Error("Windows build identity differs from the requested release");
+assertWindowsReleasePolicy(manifest, product, pin);
 git("merge-base", "--is-ancestor", "origin/main", "HEAD");
 git("merge-base", "--is-ancestor", manifest.sourceCommit, "HEAD");
 if (git("diff", "--name-only", manifest.sourceCommit, "HEAD", "--", "apps/windows", "apps/node", "apps/web/src", "packages", "product.json", "package-lock.json", "scripts/build-windows.mjs")) throw new Error("Windows build does not include current client sources");
@@ -25,7 +26,7 @@ const repo = repository.pathname.slice(1);
 const installer = join(resolve(source), manifest.filename);
 for (const file of [installer, manifestPath]) execFileSync("gh", ["attestation", "verify", file, "--repo", repo,
   "--signer-workflow", `${repo}/.github/workflows/windows-package.yml`, "--source-digest", manifest.sourceCommit, "--source-ref", "refs/heads/main", "--deny-self-hosted-runners"], { cwd: root, stdio: "pipe", timeout: 120_000 });
-execFileSync("osslsigncode", ["verify", "-in", installer, "-require-leaf-hash", `sha256:${pin}`], { stdio: "pipe", timeout: 120_000 });
+if (manifest.signed) execFileSync("osslsigncode", ["verify", "-in", installer, "-require-leaf-hash", `sha256:${pin}`], { stdio: "pipe", timeout: 120_000 });
 execFileSync(process.execPath, ["scripts/release-state.mjs", "--check", "windowsApp"], { cwd: root, stdio: "inherit" });
 const downloads = join(root, WINDOWS_PATH); mkdirSync(downloads, { recursive: true });
 copyFileSync(installer, join(downloads, manifest.filename));
@@ -35,4 +36,4 @@ const ledger = JSON.parse(readFileSync(join(root, "released.json"), "utf8"));
 ledger.artifacts.windowsApp = { ...ledger.artifacts.windowsApp, version: manifest.version, commit: manifest.sourceCommit, sha256: manifest.sha256 };
 checkWindowsFiles(root, ledger.artifacts.windowsApp);
 writeFileSync(join(root, "released.json"), JSON.stringify(ledger, null, 2) + "\n");
-console.log(`Staged signed Windows ${manifest.version}. Commit the ledger before a separately authorized deployment.`);
+console.log(`Staged ${manifest.signed ? "signed" : "UNSIGNED (unknown publisher)"} Windows ${manifest.version}. Commit the ledger before a separately authorized deployment.`);

@@ -1,6 +1,19 @@
 # Windows 包与发布门禁
 
-Windows 功能的代码入口在 `apps/windows`，首版目标 Windows 11 x64；应用身份及版本唯一声明位于 `product.json.windows.app`。`released.json.windowsApp` 初始为空，不代表已发布。不要用未签名开发包、构建成功或账本记录代替正式分发验收。
+## 当前临时策略：未签名正式分发
+
+用户已明确决定 Windows 暂时无需签名发布。唯一策略声明为 `product.json.windows.app.releaseSigning = "temporary-unsigned"`；这不是已取得可信证书，也不声称 Authenticode 签名通过。恢复签名时需改回策略、配置真实证书并核实更新兼容性。
+
+- Windows 主线手动工作流依据该声明使用 `--package --unsigned-release`。原生测试和安装包、清单两份 GitHub provenance attestation 继续执行，产物名为 `windows-release-package`。普通 `--unsigned` 仍仅生成开发包，不产生正式清单。
+- 正式清单必须明确 `signed: false`、`releaseSigning: "temporary-unsigned"`、`certificateSha256: null`，继续记录精确源提交、版本、文件名、大小、SHA-256、发布说明。不能把开发包伪装成正式包。
+- 统一 `missiongo-release publish:windows` 仍校验 GitHub 仓库、主线 ref、工作流和源提交对应的两份 attestation，当前代码包含关系、包字节摘要、大小与版本。仅明确未签名策略时免除证书要求；已签名包仍要求可信链和固定证书摘要。
+- 下载卡片及 Windows 客户端明确提示未签名、未知发布者或系统阻止安装。未签名阶段通过控制台的客户端下载页手动安装更新，应用内安装禁用；不静默取消既有更新验签。无需关闭系统安全功能，不保证所有 Windows 策略允许运行。
+- 本机仍用锁、干净 worktree、最新主线、实时 CI、全量候选及范围门禁；构建成功不等于正式上线，必须部署后公开下载并核对实际 SHA-256 和来源。
+- 来源 attestation 和摘要不是系统认可的发布者身份。Windows/WSL 实机安装、卸载、升级、Agent 接入与权限效果仍须实际验证，不从 CI 推断通过。
+
+## 恢复签名后的流程参考
+
+以下签名流程仅在恢复签名策略后适用。Windows 功能的代码入口在 `apps/windows`，首版目标 Windows 11 x64；应用身份及版本唯一声明位于 `product.json.windows.app`。`released.json.windowsApp` 初始为空，不代表已发布。不要用未签名开发包、构建成功或账本记录代替正式分发验收。
 
 ## 代码与包检查
 
@@ -12,7 +25,7 @@ Windows 功能的代码入口在 `apps/windows`，首版目标 Windows 11 x64；
 
 `.github/workflows/windows-package.yml` 只允许从 `main` 人工触发，使用 `windows-signing` 环境。管理员需事先在该环境设置批准策略、`WINDOWS_CSC_LINK` / `WINDOWS_CSC_KEY_PASSWORD` secrets 和 `WINDOWS_PUBLISHER` variable；证书、密码和本机路径不得加入 Git。工作流不会部署生产。
 
-流程先执行原生测试，再以 `npm run build:windows -- --package` 生成带 Authenticode 签名的 NSIS 包，核对有效签名和发布者，生成带版本、源提交、大小、摘要、证书摘要和更新说明的 `latest.json`。安装包和清单分别生成 GitHub provenance attestations，上传 `windows-signed-package` 构建产物。`latest.yml` 在正式暂存时从已核验安装包及说明重新生成，不接受外部地址。Windows 首次说明范围从该客户端进入主线的父提交开始，后续从已发布账本提交开始；客户端改动需提供 `release-notes/windows/*.json` 声明。
+流程先执行原生测试，再以 `npm run build:windows -- --package` 生成带 Authenticode 签名的 NSIS 包，核对有效签名和发布者，生成带版本、源提交、大小、摘要、证书摘要和更新说明的 `latest.json`。安装包和清单分别生成 GitHub provenance attestations，上传 `windows-release-package` 构建产物。`latest.yml` 在正式暂存时从已核验安装包及说明重新生成，不接受外部地址。Windows 首次说明范围从该客户端进入主线的父提交开始，后续从已发布账本提交开始；客户端改动需提供 `release-notes/windows/*.json` 声明。
 
 ## 统一暂存和部署
 
