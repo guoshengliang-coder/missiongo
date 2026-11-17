@@ -110,8 +110,9 @@ export function readSnapshot({ host, currentLink, downloadsDir }) {
   const sdkVersion = sdkRecord?.version;
   const pomPath = `${directory}/apps/web/public/maven/io/missiongo/missiongo-feedback/${sdkVersion}/missiongo-feedback-${sdkVersion}.pom`;
   const pomSha = VERSION.test(sdkVersion ?? "") ? remoteSha(host, pomPath) : "";
-  const androidSdk = DIGEST.test(pomSha)
-    ? { version: sdkVersion, pomSha256: pomSha, sourceCommit: SHA.test(sdkRecord.commit ?? "") ? sdkRecord.commit : null }
+  const aarSha = VERSION.test(sdkVersion ?? "") ? remoteSha(host, pomPath.replace(/\.pom$/, ".aar")) : "";
+  const androidSdk = DIGEST.test(pomSha) && DIGEST.test(aarSha)
+    ? { version: sdkVersion, pomSha256: pomSha, aarSha256: aarSha, sourceCommit: SHA.test(sdkRecord.commit ?? "") ? sdkRecord.commit : null }
     : null;
 
   return { web, androidApp, androidSdk, macosApp, linuxCli: readLinuxSnapshot({ host, currentLink }), windowsApp: readWindowsSnapshot({ host, currentLink }) };
@@ -162,7 +163,8 @@ export async function verifyPublic(origin, after) {
     const version = after.androidSdk.version;
     const pom = await readPublic(origin, `/maven/io/missiongo/missiongo-feedback/${version}/missiongo-feedback-${version}.pom`);
     return pom.includes(`<version>${version}</version>`)
-      && createHash("sha256").update(pom).digest("hex") === after.androidSdk.pomSha256;
+      && createHash("sha256").update(pom).digest("hex") === after.androidSdk.pomSha256
+      && await publicSha(origin, `/maven/io/missiongo/missiongo-feedback/${version}/missiongo-feedback-${version}.aar`) === after.androidSdk.aarSha256;
   });
   await check("linuxCli", () => verifyLinuxPublic(origin, after.linuxCli));
   await check("windowsApp", () => verifyWindowsPublic(origin, after.windowsApp));

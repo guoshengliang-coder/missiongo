@@ -15,6 +15,20 @@ export default {
       const text = sessionContext(event.sessionID);
       if (text) event.system.push({ type: "text", text });
     });
-    return async () => { await registration.dispose(); };
+    let review;
+    try {
+      const { nativeReviewContext } = await import("./missiongo-review/review-cli.mjs");
+      review = await ctx.session.hook("context", async event => {
+        try {
+        const response = await ctx.session.get({ sessionID: event.sessionID });
+        const session = response?.data ?? response;
+        if (session?.parentID) return;
+        const directory = session?.location?.directory;
+        const text = typeof directory === "string" ? nativeReviewContext(directory, undefined, { agentKind: "opencode", sessionRef: event.sessionID }) : "";
+        if (text) event.system.push({ type: "text", text });
+        } catch { /* Optional policy cannot prevent native context creation. */ }
+      });
+    } catch { /* Identity sync and native use survive missing review assets. */ }
+    return async () => { await registration.dispose(); await review?.dispose(); };
   },
 };

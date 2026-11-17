@@ -89,3 +89,36 @@ test("installer runs through symlinks, skips OpenCode V1 and recognizes the V2 C
     assert.equal(JSON.parse(await readFile(join(root, "claude", "settings.json"), "utf8")).hooks.SessionStart.length, 1);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("optional review setup preserves native settings and resolves each OpenCode session's own location", async () => {
+  const { mkdtemp, mkdir, writeFile, readFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { pathToFileURL } = await import("node:url");
+  const { install } = await import("../apps/web/public/downloads/missiongo-agent-integration/install.mjs");
+  const root = await mkdtemp(join(tmpdir(), "review-install-"));
+  try {
+    const codexDirectory=join(root,"codex"),claudeDirectory=join(root,"claude"),opencodeDirectory=join(root,"opencode");
+    await mkdir(codexDirectory);await mkdir(claudeDirectory);
+    const nativeConfig='model = "company-model"\nmodel_provider = "company"\napproval_policy = "on-request"\n';
+    await writeFile(join(codexDirectory,"config.toml"),nativeConfig);
+    const existing={hooks:{SessionStart:[{hooks:[{type:"command",command:"original"}]}],Stop:[{hooks:[{type:"command",command:"original-stop"}]}]}};
+    await writeFile(join(codexDirectory,"hooks.json"),JSON.stringify(existing));
+    await writeFile(join(claudeDirectory,"settings.json"),JSON.stringify({model:"custom-model",permissions:{defaultMode:"default"}}));
+    const assets={claude:await readFile(new URL("../apps/web/public/downloads/missiongo-agent-integration/claude-session.cjs",import.meta.url),"utf8"),opencode:await readFile(new URL("../apps/web/public/downloads/missiongo-agent-integration/opencode-session.mjs",import.meta.url),"utf8")};
+    const reviewAssets={"review-cli.mjs":"export function nativeReviewContext(directory,root,identity){return JSON.stringify({directory,identity});}","review-workflow.mjs":"export {};","review-native.mjs":"export {};","codex-review.cjs":"// context hook"};
+    const options={codexDirectory,claudeDirectory,opencodeDirectory,assets,reviewAssets};
+    await install(options);await install(options);
+    assert.equal(await readFile(join(codexDirectory,"config.toml"),"utf8"),nativeConfig);
+    const configured=JSON.parse(await readFile(join(codexDirectory,"hooks.json"),"utf8"));
+    assert.deepEqual(configured.hooks.Stop,existing.hooks.Stop);assert.equal(configured.hooks.SessionStart.length,2);assert.equal(configured.hooks.UserPromptSubmit.length,1);
+    const claude=JSON.parse(await readFile(join(claudeDirectory,"settings.json"),"utf8"));assert.equal(claude.model,"custom-model");assert.deepEqual(claude.permissions,{defaultMode:"default"});
+    const installed=(await import(pathToFileURL(join(opencodeDirectory,"plugins/missiongo-session/index.js")))).default;
+    const handlers=[];const stop=await installed.setup({location:{directory:"wrong-plugin-directory"},session:{
+      hook:async (_event,handler)=>{handlers.push(handler);return{dispose:async()=>{}};},
+      get:async ({sessionID})=>({location:{directory:"repo-"+sessionID}}),
+    }});
+    const event={sessionID:"ses_actual",system:[]};for(const handler of handlers)await handler(event);
+    assert.ok(event.system.some(value=>value.text.includes("repo-ses_actual")));assert.ok(!JSON.stringify(event).includes("wrong-plugin-directory"));await stop();
+  } finally {await rm(root,{recursive:true,force:true});}
+});

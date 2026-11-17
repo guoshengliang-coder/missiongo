@@ -1,3 +1,4 @@
+import { developmentReviewBlocker, developmentReviewExpiry } from "./development-reviews.js";
 import type { SQLInputValue, StatementSync } from "node:sqlite";
 import { releaseCandidatePage } from "./release-candidate-page.js";
 import type { IntegrationActionMode, IntegrationQueueFacts, PublicationScope, PublicationScopeRow } from "@missiongo/contracts";
@@ -6,7 +7,7 @@ import type { NonReleaseVerification } from "./non-release-evidence.js";
 import { AccountStore } from "./accounts-store.js";
 import { MissionGoError } from "./errors.js";
 import { normalizeCompletion, sameCompletion } from "./completion.js";
-import { reconciliationActionSchema, combinedValidationSchema, type ReconciliationAction, type ReconciliationState } from "./merge-reconciliation.js";
+import { reconciliationActionSchema, combinedValidationSchema, deferredPublicationScope, batchPublicationDeferred, type ReconciliationAction, type ReconciliationState } from "./merge-reconciliation.js";
 import { legacyIntegratorPrompt } from "./legacy-merge-authorization.js";
 import { readRecoveryTransport } from "./merge-recovery-transport.js";
 import type { MergeIntegration, MergeReconciliationPreview, MergeBatchPresentation, SessionDeliveryStage } from "@missiongo/contracts";
@@ -141,8 +142,8 @@ export class MergeDeliveries {
     this.db.connection.prepare("UPDATE merge_deliveries SET state=?,data_json=? WHERE id=?")
       .run(d.state, JSON.stringify(d), d.id);
   }
-  private saveBatch(b: Batch & {entries?:unknown;resultsDigest?:string;prerequisiteGate?:unknown}) {
-    const {entries:_entries,resultsDigest:_resultsDigest,prerequisiteGate:_gate,...stored}=b;
+  private saveBatch(b: Batch & {entries?:unknown;resultsDigest?:string;prerequisiteGate?:unknown;publicationDeferred?:boolean}) {
+    const {entries:_entries,resultsDigest:_resultsDigest,prerequisiteGate:_gate,publicationDeferred:_deferred,...stored}=b;
     this.db.connection.prepare("UPDATE merge_batches SET state=?,data_json=? WHERE id=?")
       .run(b.state, JSON.stringify(stored), b.id);
   }
@@ -217,6 +218,8 @@ export class MergeDeliveries {
   private eligible(d: Delivery): string | undefined {
     try { this.sourceValid(d); } catch { return "changed"; }
     if (d.state === "batched") return d.itemKeys.some(key => collaborationBlockers(this.db, this.store.getWorkItem(key).id)>0) ? "dependency" : undefined;
+    const reviewBlocker = developmentReviewBlocker(this.db,d.sessionId,d.head,d.evidence.base,d.repository);
+    if (reviewBlocker) return reviewBlocker;
     if (!this.fresh(d.evidence, d.head)) return "stale";
     if (d.evidence.checks !== "passed") return d.evidence.checks;
     if (d.evidence.mergeable !== "clean") return d.evidence.mergeable;
@@ -662,7 +665,7 @@ export class MergeDeliveries {
     const activity=new Map((sessionIds.length ? this.db.connection.prepare(`SELECT session_id,activity FROM merge_display_activity WHERE session_id IN (${sessionIds.map(()=>"?").join(",")})`).all(...sessionIds) as {session_id:string;activity:string}[] : []).map(row=>[row.session_id,row.activity]));
     return values.map((value,index)=>{
       for(const entry of boundaries[index]!)if(activity.get(entry.sessionId)!==entry.activity)value.presentation.entries[entry.id]!.publication="unknown";
-      return {...value,prerequisiteGate:prerequisiteGate(value,Object.values(value.presentation.entries).some(e=>e.requiredArtifacts.length>0))};
+      return {...value,publicationDeferred:batchPublicationDeferred(value),prerequisiteGate:prerequisiteGate(value,Object.values(value.presentation.entries).some(e=>e.requiredArtifacts.length>0))};
     });
   }
   attentionSessionIds(productId: string, accountId: string, sessionId?: string): string[] {
@@ -744,13 +747,13 @@ export class MergeDeliveries {
       if(d.state!=="merged" && d.activity===this.activity(d.sessionId))try{this.sourceValid(d);attention=true;}catch{/* Invalid sources never suppress attention. */}
       let freshBlocker: string|undefined;
       if(view.blocker!=="changed" && d.state!=="batched") {
-        freshBlocker=d.evidence.checks!=="passed" ? d.evidence.checks : d.evidence.mergeable!=="clean" ? d.evidence.mergeable
+        freshBlocker=view.blocker?.startsWith("review_") ? view.blocker : d.evidence.checks!=="passed" ? d.evidence.checks : d.evidence.mergeable!=="clean" ? d.evidence.mergeable
           : d.itemKeys.some(key=>collaborationBlockers(this.db,this.store.workItemId(key))>0) ? "dependency" : undefined;
       }
-      const time=Date.parse(d.evidence.checkedAt),queue=this.queueFacts(d,view.blocker),owner=this.processingBatch(d,queue);
+      const time=Date.parse(d.evidence.checkedAt),reviewExpiry=developmentReviewExpiry(this.db,d.sessionId),queue=this.queueFacts(d,view.blocker),owner=this.processingBatch(d,queue);
       this.db.connection.prepare(`INSERT OR REPLACE INTO merge_delivery_projection VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
         d.id,d.productId,d.accountId,d.sessionId,d.batchId??null,source.sequence,Number(visible),Number(attention),JSON.stringify({...view,queue}),
-        d.state==="batched"||d.evidence.head!==d.head?null:time-30_000,d.state==="batched"||d.evidence.head!==d.head?null:time+300_000,freshBlocker??null,d.activity,owner??null);
+        d.state==="batched"||d.evidence.head!==d.head?null:time-30_000,d.state==="batched"||d.evidence.head!==d.head?null:Math.min(time+300_000,reviewExpiry??Infinity),freshBlocker??null,d.activity,owner??null);
       const link=(kind:string,key:string)=>this.db.connection.prepare("INSERT OR IGNORE INTO merge_display_dependencies VALUES (?,?,?)").run(id,kind,key);
       link("session",d.sessionId);link("account",d.accountId);link("product",d.productId);
       if(d.batchId){if(!activityChange)batches.add(d.batchId);link("batch",d.batchId);}
@@ -813,7 +816,7 @@ export class MergeDeliveries {
       .all(productId,accountId) as {data_json:string}[]).map(row => {
         const batch=JSON.parse(row.data_json) as Batch;
         const presentation=this.presentation(batch);
-        return {...batch,presentation,prerequisiteGate:prerequisiteGate(batch,Object.values(presentation.entries).some(e=>e.requiredArtifacts.length>0))};
+        return {...batch,presentation,publicationDeferred:batchPublicationDeferred(batch),prerequisiteGate:prerequisiteGate(batch,Object.values(presentation.entries).some(e=>e.requiredArtifacts.length>0))};
       });
     });
   }
@@ -998,10 +1001,10 @@ export class MergeDeliveries {
     if(gate.required)try{this.assertPublicationScope(b);}catch{
       gate.ready=false;gate.blockers.push({id:"publication_scope",code:"stale",reason:"发布范围尚未核实或已经变化，不能沿用原范围证据",owner:"集成执行者与原授权用户",resumeWhen:"在原会话重新核对范围；有变化时重新审阅"});
     }
-    return {...b, dispatchId, prerequisiteGate:gate, resultsDigest:digest(b.results), entries:b.deliveries.map(id=>{
+    return {...b, dispatchId, publicationDeferred:batchPublicationDeferred(b), prerequisiteGate:gate, resultsDigest:digest(b.results), entries:b.deliveries.map(id=>{
       const d=this.view(this.read<Delivery>("merge_deliveries",id));
       let mergeReady=!b.references?.[id]&&!d.blocker&&!b.results[id]&&b.state==="active";
-      if(b.integration&&!b.integration.prerequisitesOnly){try{assertIntegrationMerge(b.integration,id,b.results);}catch{mergeReady=false;}}
+      if(b.integration&&!b.integration.prerequisitesOnly){try{assertIntegrationMerge(b.integration,id,b.results,{allowPendingCI:true});}catch{mergeReady=false;}}
       if(!gate.ready||!prerequisiteGate(b,hasRelease,b.integration?.entries[id]?.check?.base).ready)mergeReady=false;
       return {...d,...(b.references?.[id]?{reference:b.references[id],referenceVerified:b.verifiedReferences?.[id],blocker:d.itemKeys.map(key=>this.itemBlocker(this.read<Delivery>("merge_deliveries",id),key,true)).find(Boolean)}:{}),executionHead:b.integration?.entries[id]?.head??d.head,expectedBase:b.integration?.entries[id]?.check?.base,mergeReady};
     })};
@@ -1063,7 +1066,7 @@ export class MergeDeliveries {
       if (action.kind === "publication_progress") {
         const validation = b.reconciliation?.finalValidation;
         const partial = b.reconciliation?.publication;
-        if (!b.publish || b.deliveries.some(id=>!b.results[id]) || !validation || validation.resultsDigest !== digest(b.results)
+        if (!b.publish || batchPublicationDeferred(b) || b.deliveries.some(id=>!b.results[id]) || !validation || validation.resultsDigest !== digest(b.results)
           || !b.deliveries.some(id=>this.read<Delivery>("merge_deliveries",id).requiredArtifacts.length)
           || (Object.values(b.results).some(r=>r.status==="blocked") && !(partial?.decision==="allow_partial_publication" && partial.resultsDigest===digest(b.results)))
           || b.deliveries.some(id=>b.results[id]?.status==="merged" && this.read<Delivery>("merge_deliveries",id).itemKeys.some(key=>this.itemBlocker(this.read<Delivery>("merge_deliveries",id),key,Boolean(b.references?.[id]))))
@@ -1308,7 +1311,8 @@ export class MergeDeliveries {
         } else {if(previous?.status!=="merged")throw changed();this.handoff(b,d,requestId);}
         r.history.push({at,action:action.kind,deliveryId:d.id,requestId,previous,detail:action.kind==="accept_merge"?action.evidence.validation:action.kind==="retry_blocked"?action.reason:"按人工确认补充证据并重试逐条交接。"});
       } else {
-        r.publication={decision:action.kind,reason:action.reason,requestId,resultsDigest:digest(b.results)};
+        r.publication={decision:action.kind,reason:action.reason,requestId,resultsDigest:digest(b.results),
+          ...(action.kind==="defer_publication"?{batchScopeDigest:deferredPublicationScope(b)}:{})};
         r.history.push({at,action:action.kind,requestId,detail:action.reason});
       }
       request.appliedAt=at;this.saveBatch(b);return this.preview(accountId,id);
@@ -1324,8 +1328,9 @@ export class MergeDeliveries {
     });
   }
   private assertPublication(b:Batch) {
+    if(batchPublicationDeferred(b))return;
     const decision=b.reconciliation?.publication;
-    if(decision?.resultsDigest===digest(b.results)&&decision.decision==="defer_publication")return;
+    if(decision?.batchScopeDigest===undefined&&decision?.resultsDigest===digest(b.results)&&decision.decision==="defer_publication")return;
     if(Object.values(b.results).some(r=>r.status==="blocked")&&!(decision?.resultsDigest===digest(b.results)&&decision.decision==="allow_partial_publication"))throw conflict("partial_publication_decision_required","部分交付受阻，请人工决定本次暂不发布或授权部分发布。");
     if(b.publicationScope)for(const row of b.publicationScope.candidates) {
       let complete=false;

@@ -2,6 +2,10 @@ import type { DatabaseSync } from "node:sqlite";
 
 /** Restore the pre-AND-484 fixture shape, including dependencies on old columns. */
 export function beforeDisplayProjection(db: Pick<DatabaseSync,"prepare"|"exec">): void {
+  // These later immutable review tables have triggers referencing the display
+  // projection. Remove them before rebuilding the older schema, then let the
+  // real timestamp migration recreate them during the upgrade under test.
+  db.exec("DROP TABLE IF EXISTS development_reviews; DROP TABLE IF EXISTS development_review_policy; DELETE FROM schema_migrations WHERE version=202611160445;");
   db.exec("DROP TRIGGER IF EXISTS display_review_insert; DROP TRIGGER IF EXISTS display_review_update; DROP TABLE IF EXISTS delivery_reviews; DELETE FROM schema_migrations WHERE version=202611130731;");
   const triggers=db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'display_%'").all() as {name:string}[];
   for(const {name} of triggers)db.exec(`DROP TRIGGER "${name}"`);

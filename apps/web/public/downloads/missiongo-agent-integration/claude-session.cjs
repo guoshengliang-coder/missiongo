@@ -7,16 +7,21 @@ process.stdin.on("data", (chunk) => {
   bytes += chunk.length;
   if (bytes <= 65536) chunks.push(chunk);
 });
-process.stdin.on("end", () => {
+process.stdin.on("end", async () => {
   if (bytes > 65536) return;
   try {
     const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
     if (input.hook_event_name !== "SessionStart" || typeof input.session_id !== "string"
       || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.session_id)) return;
     const session = { agentKind: "claude_code", sessionRef: input.session_id.toLowerCase(), refKind: "native", autoConnect: true };
+    let reviewContext = "";
+    if (typeof input.cwd === "string") {
+      try { const { nativeReviewContext } = await import("./missiongo-review/review-cli.mjs"); reviewContext = nativeReviewContext(input.cwd, undefined, session); } catch { /* Optional review installation. */ }
+    }
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart",
       additionalContext: "MissionGo current native session identity (from SessionStart): " + JSON.stringify(session)
         + ". Use only for user-directed item handling under MissionGo Skill. Reuse a known tracking sessionId when upgrading. "
-        + "Web input requires an existing MissionGoClaudeBridge host; this hook does not attach stdin or authorize a handoff." } }));
+        + "Web input requires an existing MissionGoClaudeBridge host; this hook does not attach stdin or authorize a handoff."
+        + (reviewContext ? "\n" + reviewContext : "") } }));
   } catch { /* An optional identity hook must not prevent CLI startup. */ }
 });

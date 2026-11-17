@@ -1,3 +1,4 @@
+import { DevelopmentReviewSummary } from "./development-review-summary";
 import { useConsolePerformance } from "./use-console-performance";
 import { observePerformanceReply } from "./console-performance";
 import { useTranscriptAnchor } from "./transcript-anchor";
@@ -307,6 +308,7 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
                 session={session.data} evidence={mergePreparation} blocked={pending || sendBusy}
                 send={text => send.mutateAsync({ sessionId, text, preserveDraft: true })} />}
               <DeliveryCards productId={productId} sessionId={sessionId} blocked={pending || sendBusy} />
+              <DevelopmentReviewSummary value={session.data.developmentReview} />
               {canReply ? (
                 <>
                   <SessionSendFeedback attempt={sendAttempt} recover={recovery => {

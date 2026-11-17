@@ -64,7 +64,11 @@
 .message-detail-pane > .detail-pane { flex: 1; height: auto; min-height: 0; position: static; }
 .message-detail-pane > .message-reason { flex: 0 0 auto; margin: 8px 12px; padding: 8px 12px; }
 .message-center-panel > .discard-dialog { padding: 24px; }
-.timeline-event--focused { background: var(--accent-bg); outline: 2px solid var(--focus-ring); border-radius: var(--radius-sm); }
+/* Keep the existing record spacing outside the painted focus target. The
+   connector still spans that gap, while the inset outline cannot touch the
+   following comment or be clipped at the scroll surface edge. */
+.timeline-event--focused { padding-bottom: 0; margin-bottom: 12px; background: var(--accent-bg); outline: 2px solid var(--focus-ring); outline-offset: -2px; border-radius: var(--radius-sm); }
+.timeline-event--focused::before { bottom: -12px; }
 /* Each project carries its own count in the filter (AND-493); the tab labels no
    longer repeat the total, which the "all projects" choice already shows. */
 .message-project-choice { display: flex; align-items: center; min-width: 0; }

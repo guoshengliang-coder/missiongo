@@ -221,6 +221,7 @@ import {
   readListPaneWidth,
 } from "./pane-layout";
 import { ProductBadge } from "./product-badge";
+import { useProductIconPreload } from "./product-icon-preload";
 import { AgentSessionPanel } from "./agent-session-panel";
 import { AgentSessionConsole, useAgentConsoleDrafts } from "./agent-session-console";
 import { currentDispatchForStatus, dispatchIssueLabelKey, itemProgressKeys } from "./dispatch-attention";
@@ -924,6 +925,7 @@ export function App() {
   useConsoleEvents(queryClient, bootstrapQuery.data?.user.id, bootstrapQuery.data?.consoleCursor);
   const consoleConnection = useConsoleConnection();
   const products = productsQuery.data ?? bootstrapQuery.data?.products ?? [];
+  useProductIconPreload(bootstrapQuery.data?.user.id, products, selectedProductId);
   const selectedProduct = products.find((product) => product.id === selectedProductId);
   const mergeProgress = useMergeProgress(selectedProduct?.id ?? "");
   const selectedProductCanUseAi = productAllowsAi(selectedProduct);
@@ -2212,7 +2214,7 @@ function ProductSwitcher({
     const unread = unreadCounts?.get(id) ?? 0;
     const attention = attentionCounts?.get(id) ?? 0;
     return <>
-      <ProductBadge product={product} />
+      <ProductBadge product={product} loading="eager" />
       {expanded
         ? <span className={`product-switcher-option${unreadCounts ? " with-counts" : ""}`}>
           <span className="product-switcher-identity"><strong>{product.name}</strong><small>{product.keyPrefix}</small></span>
@@ -3318,7 +3320,7 @@ function StatusNoteLine({ payload, item }: { payload: Readonly<Record<string, un
   const note = statusChangeNote(payload);
   const ids = Array.isArray(payload.attachmentIds) ? payload.attachmentIds : [];
   const attachments = item.attachments.filter(file => ids.includes(file.id));
-  return <>{note && <p className="timeline-note">{note}</p>}{attachments.length > 0 && <AttachmentSection itemKey={item.key} attachments={attachments} compact />}</>;
+  return <>{note && <p className="timeline-note">{note}</p>}{attachments.length > 0 && <CommentAttachments itemKey={item.key} attachments={attachments} />}</>;
 }
 
 /** The `dispatched` timeline line, when the payload can say where it went. */
@@ -4103,7 +4105,7 @@ function CommentAttachments({itemKey,attachments}:{itemKey:string;attachments:re
     <div className="comment-attachment-strip" ref={row}>
       {attachments.slice(0,visibleCount).map(attachment=><CommentAttachmentThumbnail key={attachment.id} itemKey={itemKey} attachment={attachment}
         onOpen={()=>{const index=media.findIndex(file=>file.id===attachment.id);if(index>=0)setActiveIndex(index);else setShowAll(true);}} />)}
-      {visibleCount<attachments.length && <button type="button" className="comment-attachment-tile comment-attachments-more" onClick={()=>setShowAll(true)}
+      {visibleCount<attachments.length && <button type="button" className="comment-attachment-tile comment-attachments-more" onClick={event=>{event.currentTarget.focus({preventScroll:true});setShowAll(true);}}
         aria-label={t("commentMoreAttachments",{count:attachments.length-visibleCount})}><MoreHorizontal size={22} aria-hidden="true" /><span>{t("commentMoreAttachments",{count:attachments.length-visibleCount})}</span></button>}
     </div>
     {showAll && <Modal title={t("attachments")} subtitle={t("attachmentCount",{count:attachments.length})} onClose={()=>setShowAll(false)} wide scrolls>
@@ -4116,20 +4118,41 @@ function CommentAttachments({itemKey,attachments}:{itemKey:string;attachments:re
 function CommentAttachmentThumbnail({itemKey,attachment,onOpen}:{itemKey:string;attachment:WorkItemAttachment;onOpen:()=>void}) {
   const {t}=useI18n();
   const [ref,near]=useNearViewport<HTMLButtonElement>("180px");
+  const [decodedUrl,setDecodedUrl]=useState<string|null>(null);
+  const [failedUrl,setFailedUrl]=useState<string|null>(null);
   const thumbnail=useQuery({
     queryKey:["attachment-thumbnail",itemKey,attachment.id,attachment.revision,LIST_THUMBNAIL_EDGE],
     queryFn:()=>api.downloadAttachmentThumbnail(itemKey,attachment.id,LIST_THUMBNAIL_EDGE,attachment.revision),
     enabled:near && attachment.kind==="image",staleTime:Infinity,
   });
   const url=useObjectUrl(thumbnail.data);
+  const imageFailed=attachment.kind==="image" && !thumbnail.isFetching && (thumbnail.isError || Boolean(url && failedUrl===url));
+  const imageLoading=attachment.kind==="image" && near && !imageFailed && (thumbnail.isFetching || !url || decodedUrl!==url);
+  const retry=()=>{
+    // Keep focus on the stable preview when the transient retry disappears.
+    ref.current?.focus({preventScroll:true});
+    setDecodedUrl(null);setFailedUrl(null);
+    void thumbnail.refetch();
+  };
   const referenceLabel=attachment.kind==="image" || attachment.kind==="video" ? mediaNumberLabel(attachment.kind,attachment.displayNumber,t) : null;
   const Icon=attachment.kind==="image"?ImageIcon:attachment.kind==="video"?Video:attachment.kind==="archive"?Archive:FileText;
-  return <button type="button" className={`comment-attachment-tile${referenceLabel ? " is-media" : ""}`} ref={ref} onClick={onOpen} title={attachment.filename}
-    aria-label={t("previewAttachment",{filename:attachment.filename})}>
+  return <div className="comment-attachment-slot">
+    <button type="button" className={`comment-attachment-tile${referenceLabel ? " is-media" : ""}`} ref={ref}
+    onClick={event=>{event.currentTarget.focus({preventScroll:true});onOpen();}} title={attachment.filename}
+    aria-label={t("previewAttachment",{filename:attachment.filename})} aria-busy={imageLoading || undefined}>
     {referenceLabel && <small className="media-number-badge">{referenceLabel}</small>}
-    <span className="comment-attachment-thumb">{url?<img src={url} alt="" decoding="async" />:<Icon size={24} aria-hidden="true" />}</span>
+    <span className="comment-attachment-thumb">
+      {url && !imageFailed ? <img src={url} alt="" decoding="async" onLoad={()=>setDecodedUrl(url)} onError={()=>setFailedUrl(url)} /> : <Icon size={24} aria-hidden="true" />}
+      {(imageLoading || imageFailed) && <span className="comment-attachment-feedback" role={imageFailed?"alert":"status"}>
+        {imageLoading && <LoaderCircle className="spin" size={18} aria-hidden="true" />}
+        <span>{t(imageFailed?"attachmentFailed":"attachmentLoading")}</span>
+      </span>}
+    </span>
     {!referenceLabel && <span className="comment-attachment-filename">{attachment.filename}</span>}
-  </button>;
+    </button>
+    {imageFailed && <button type="button" className="text-button comment-attachment-retry" onClick={retry}
+      aria-label={`${t("retryAttachment")} ${attachment.filename}`}>{t("retryAttachment")}</button>}
+  </div>;
 }
 
 function AttachmentSection({

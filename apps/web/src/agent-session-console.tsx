@@ -1,3 +1,4 @@
+import { DevelopmentReviewSummary } from "./development-review-summary";
 import { useSessionListPerformance } from "./session-list-performance";
 import { useConsolePerformance } from "./use-console-performance";
 import { observePerformanceReply } from "./console-performance";
@@ -1659,6 +1660,7 @@ export function AgentSessionConsole({
                   session={sessionQuery.data} evidence={mergePreparation} blocked={pending || sendingSelected || cancellingSelected}
                   send={text => send.mutateAsync({ sessionId: sessionQuery.data!.id, text, files: [], occurredAt: new Date().toISOString(), preserveDraft: true })} />}
                 {conversationReady && selected && <DeliveryCards productId={selected.productId ?? selected.items[0]?.productId ?? productId} sessionId={selected.agentSessionId ?? selected.id} blocked={pending || sendingSelected} />}
+                <DevelopmentReviewSummary value={sessionQuery.data?.developmentReview} />
                 <div className="agent-run-status" aria-label={t("agentRunFeedback")}>
                   <AgentOperationFeedback failures={feedback.failures} sessionId={operationSessionId} onDismiss={feedback.finish} />
                   <AgentStopFeedback stop={stopCommand}

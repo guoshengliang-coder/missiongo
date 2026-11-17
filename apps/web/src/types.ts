@@ -565,6 +565,7 @@ export interface DocumentPlanApprovalState {
   readonly documentId?: string; readonly revision?: string;
 }
 export interface AgentSession {
+  readonly developmentReview?: {required: boolean; unavailable?: boolean; activeTaskId?: string; records: import("@missiongo/domain").DevelopmentReviewEvidence[]} | undefined;
   readonly performanceTurns?: readonly {commandId:string;turnId:string}[];
   readonly documentPlanApproval?: DocumentPlanApprovalState;
   readonly canRecoverPlanApproval?: boolean;

@@ -824,6 +824,13 @@ public struct AgentSessionMessage: Codable, Equatable, Sendable {
 }
 
 public struct AgentSessionReport: Codable, Equatable, Sendable {
+    public var developmentReviewRevision: Int?
+    public var developmentReviewTaskId: String?
+    public var developmentReviewRequired: Bool?
+    public var developmentReviews: [DevelopmentReviewEvidence]?
+    public func reportingDevelopmentReviews(_ reviews: [DevelopmentReviewEvidence]?, required: Bool? = nil, activeTaskId: String? = nil, ledgerRevision: Int? = nil) -> AgentSessionReport {
+        var copy = self; copy.developmentReviews = reviews; copy.developmentReviewTaskId = activeTaskId; copy.developmentReviewRevision = ledgerRevision; copy.developmentReviewRequired = required; return copy
+    }
     public private(set) var observedAt: String?
     public private(set) var lastProgressAt: String?
     /// Opaque digest of visible source execution metadata; never raw tool arguments or output.
@@ -1011,7 +1018,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
             lastOutputAt: lastOutputAt, thinkingStartedAt: thinkingStartedAt, thinkingTokens: thinkingTokens,
             thinkingDurationSeconds: thinkingDurationSeconds,
             approval: approval, approvalRetryId: approvalRetryId, approvalRetryStatus: approvalRetryStatus, approvalRetryError: approvalRetryError
-        ).reportingHistory(history)
+        ).reportingHistory(history).reportingDevelopmentReviews(developmentReviews, required: developmentReviewRequired, activeTaskId: developmentReviewTaskId, ledgerRevision: developmentReviewRevision)
     }
 
     public func reportingTurn(_ state: ClaudeHostState) -> AgentSessionReport {
