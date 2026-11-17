@@ -29,3 +29,21 @@ test("download link appears only after the server provides a signed versioned Wi
   await page.goto("/"); await page.getByRole("button", { name: /^(下载|Downloads)$/ }).click();
   await expect(page.getByRole("link", { name: "下载 Windows 安装包" })).toHaveAttribute("href", "/downloads/windows/missiongo-windows-0.1.0-x64-setup.exe");
 });
+
+for (const theme of ["light", "dark"] as const) test(`temporary unsigned download explains its identity and manual-update limits at 320px ${theme}`, async ({ page }) => {
+  await page.setViewportSize({width:320,height:700}); await page.emulateMedia({colorScheme:theme});
+  await page.route("**/downloads/windows/latest.json", route => route.fulfill({json:{
+    signed:false, releaseSigning:"temporary-unsigned", certificateSha256:null, platform:"win32", arch:"x64", version:"0.1.0", sha256:"a".repeat(64), filename:"missiongo-windows-0.1.0-x64-setup.exe",
+  }}));
+  await page.goto(`/?appearance=${theme}`);
+  await expect(page.locator(".sidebar")).toBeAttached();
+  const menu = page.getByRole("button", {name:/打开导航|Open navigation/i}); if (await menu.isVisible()) await menu.click();
+  await page.getByRole("button", {name:/^(下载|Downloads)$/}).click();
+  const card = page.locator(".download-card").filter({has:page.getByRole("heading",{name:/^Windows/})});
+  await expect(card.getByRole("link",{name:"下载 Windows 安装包"})).toHaveAttribute("href","/downloads/windows/missiongo-windows-0.1.0-x64-setup.exe");
+  await expect(card.getByRole("note")).toContainText("临时未签名版本");
+  await expect(card.getByRole("note")).toContainText("未知发布者");
+  await expect(card.getByRole("note")).toContainText("手动下载并安装");
+  const dialog = page.getByRole("dialog").filter({has:page.getByRole("heading",{name:/^Windows/})});
+  expect(await dialog.evaluate(element=>element.scrollWidth<=element.clientWidth+1)).toBe(true);
+});
