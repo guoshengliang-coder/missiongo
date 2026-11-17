@@ -61,17 +61,18 @@ export function DownloadsPanel() {
 }
 
 function WindowsDownload() {
-  const { t } = useI18n(); const [download, setDownload] = useState<string>();
+  const { t } = useI18n(); const [download, setDownload] = useState<string>(); const [unsigned, setUnsigned] = useState(false);
   useEffect(() => {
     const controller = new AbortController();
     void fetch(WINDOWS_CLIENT_MANIFEST_PATH, { cache: "no-store", redirect: "error", signal: controller.signal }).then(async (response) => {
-      if (response.ok) { const path = windowsDownload(await response.json()); if (!controller.signal.aborted) setDownload(path); }
+      if (response.ok) { const manifest = await response.json(); const path = windowsDownload(manifest); if (!controller.signal.aborted) { setDownload(path); setUnsigned(Boolean(path && manifest.signed === false)); } }
     }).catch(() => {});
     return () => controller.abort();
   }, []);
   return <DownloadCard icon={<Laptop size={18} />} title={t("downloadWindowsTitle")} description={t("downloadWindowsDescription")}>
     {download ? <a className="primary-button download-link" href={download} download><Download size={15} /> {t("downloadWindows")}</a> : <p role="status">{t("downloadWindowsUnavailable")}</p>}
     <p className="node-requirements">{t("downloadWindowsRequirements")}</p>
+    {unsigned && <p className="account-note" role="note">{t("downloadWindowsUnsigned")}</p>}
   </DownloadCard>;
 }
 

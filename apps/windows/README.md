@@ -13,7 +13,7 @@ npm run build:windows
 npx playwright test --config playwright.windows.config.ts
 ```
 
-在 Windows 上运行 `npx electron apps/windows/dist/app` 可启动开发版。`npm run build:windows -- --package --unsigned` 仅生成开发用 NSIS 安装包，不生成可正式发布的签名清单。其他操作系统可构建和检查代码，不能生成 Windows 安装包。
+在 Windows 上运行 `npx electron apps/windows/dist/app` 可启动开发版。`npm run build:windows -- --package --unsigned` 仅生成开发用 NSIS 安装包，不生成正式清单。用户已决定暂时未签名发布，主线正式工作流按 `product.json` 的明确策略使用 `--unsigned-release` 并保留来源证明；更新暂经控制台下载页手动安装。其他操作系统可构建和检查代码，不能生成 Windows 安装包。
 
 CI 的 `windows-build` 作业在 Windows runner 上执行原生 DPAPI、ACL、命名管道互斥、PowerShell 环境、npm `.cmd` 参数测试，以及真实 Electron 本地 IPC 冒烟和开发包构建。Linux、Web/Server 与 macOS 原有检查继续执行。未实际执行的 CI 不能当作已通过。实际结果见 [本次验证记录](../../docs/windows-validation.md)。
 

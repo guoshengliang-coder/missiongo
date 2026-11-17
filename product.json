@@ -41,6 +41,7 @@
       "id": "io.missiongo.windows",
       "packageName": "missiongo-windows",
       "artifactStem": "missiongo-windows",
+      "releaseSigning": "temporary-unsigned",
       "version": "0.1.0"
     }
   }

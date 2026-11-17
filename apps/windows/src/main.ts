@@ -17,6 +17,7 @@ import { windowsSystemExecutable } from "../../node/src/launch.js";
 declare const PRODUCT_NAME: string;
 declare const WINDOWS_APP_ID: string;
 declare const WINDOWS_PUBLISHER: string;
+declare const WINDOWS_UNSIGNED_RELEASE: boolean;
 declare const NODE_VERSION: string;
 
 app.setName(PRODUCT_NAME);
@@ -123,7 +124,7 @@ else void app.whenReady().then(async () => {
     switch (value.method) {
       case "snapshot": {
         const snapshot = await backend.request(value) as DesktopSnapshot;
-        return { ...snapshot, preferences, update: updates.snapshot, distributions: preferences.runtime === "wsl" ? await listWslDistributions().catch(() => []) : [] };
+        return { ...snapshot, preferences, manualUpdates: WINDOWS_UNSIGNED_RELEASE, update: updates.snapshot, distributions: preferences.runtime === "wsl" ? await listWslDistributions().catch(() => []) : [] };
       }
       case "chooseDirectory": case "chooseFile": {
         if (preferences.runtime !== "native") throw new Error("WSL 路径请在所选发行版中填写绝对路径");
@@ -150,6 +151,7 @@ else void app.whenReady().then(async () => {
         if (current.server) await shell.openExternal(serverOrigin(current.server)); return {};
       }
       case "checkUpdates": {
+        if (WINDOWS_UNSIGNED_RELEASE) throw new Error("当前为临时未签名版本，请打开控制台，从客户端下载页手动下载并安装更新");
         updates.checking();
         try {
           const current = await backend.request({ method: "snapshot" }) as DesktopSnapshot;
@@ -161,6 +163,7 @@ else void app.whenReady().then(async () => {
       }
       case "cancelUpdate": updates.cancel(); return updates.snapshot;
       case "installUpdate": {
+        if (WINDOWS_UNSIGNED_RELEASE) throw new Error("未签名版本不使用应用内安装，请从控制台下载页手动安装");
         if (!WINDOWS_PUBLISHER) throw new Error("此开发构建未配置正式更新签名身份，请从下载页手动安装可信版本");
         if (updates.snapshot.state === "ready") { updates.installing(); autoUpdater.quitAndInstall(false, true); return {}; }
         const cancellation = new CancellationToken(); updates.begin(() => cancellation.cancel());

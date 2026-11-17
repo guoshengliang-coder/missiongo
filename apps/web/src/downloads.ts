@@ -12,9 +12,10 @@ export const WINDOWS_CLIENT_MANIFEST_PATH = "/downloads/windows/latest.json";
 export function windowsDownload(value: unknown): string | undefined {
   if (!value || typeof value !== "object") return;
   const manifest = value as Record<string, unknown>;
-  if (manifest.signed !== true || manifest.platform !== "win32" || manifest.arch !== "x64" || typeof manifest.version !== "string"
+  if ((manifest.signed !== true && !(manifest.signed === false && manifest.releaseSigning === "temporary-unsigned" && manifest.certificateSha256 === null)) || manifest.platform !== "win32" || manifest.arch !== "x64" || typeof manifest.version !== "string"
     || !/^[0-9]+\.[0-9]+\.[0-9]+$/.test(manifest.version) || typeof manifest.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(manifest.sha256)
     || typeof manifest.filename !== "string" || !/^[a-z0-9-]+-[0-9]+\.[0-9]+\.[0-9]+-x64-setup\.exe$/.test(manifest.filename)) return;
+  if (!manifest.filename.includes(`-${manifest.version}-x64-setup.exe`)) return;
   return `/downloads/windows/${manifest.filename}`;
 }
 

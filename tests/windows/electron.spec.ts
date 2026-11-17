@@ -16,6 +16,14 @@ test("native shell starts its real worker with a sandboxed local bridge and no n
     });
     expect(snapshot.node).toBe("undefined"); expect(snapshot.state).toMatchObject({ registered: false, managedEnabled: false, preferences: { runtime: "native" } });
     expect(snapshot.state).not.toHaveProperty("token"); expect(snapshot.state).not.toHaveProperty("protectedToken");
+    if ((snapshot.state as { manualUpdates?: boolean }).manualUpdates) {
+      for (const method of ["checkUpdates", "installUpdate"]) {
+        await expect(window.evaluate(async (method) => {
+          const port = (window as unknown as { desktop: { request: (value: unknown) => Promise<unknown> } }).desktop;
+          return port.request({ method });
+        }, method)).rejects.toThrow(/未签名/);
+      }
+    }
     await expect(window.evaluate(async () => {
       const port = (window as unknown as { desktop: { request: (value: unknown) => Promise<unknown> } }).desktop;
       return port.request({ method: "readFile", path: "unavailable" });

@@ -439,7 +439,7 @@ fi
 # BEGIN WINDOWS CLIENT INHERITANCE
 local_windows="apps/web/public/downloads/windows"
 if [ ! -s "${local_windows}/latest.json" ]; then
-  echo "==> Preserving the current signed Windows package and updater metadata"
+  echo "==> Preserving the current verified Windows package and updater metadata"
   remote "if [ -s '${current_link}/${local_windows}/latest.json' ]; then \
     sudo mkdir -p '${target}/${local_windows}' && \
     sudo cp -a '${current_link}/${local_windows}/.' '${target}/${local_windows}/'; fi"
