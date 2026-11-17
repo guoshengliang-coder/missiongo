@@ -1000,7 +1000,8 @@ export function createMissionGoMcpServer(
       nativeAuthority(ctx,requireAccessibleProduct(ctx,merges.batchProduct(input.batchId)));
       const preview=merges.preview(access.accountId,input.batchId);
       const request=preview.reconciliation?.requests.find(r=>r.id===input.requestId);
-      if(!request || request.snapshot!==input.snapshot || (!request.appliedAt && request.decision!=="rejected" && preview.snapshot!==input.snapshot)) throw new Error("The exact recovery request or snapshot changed.");
+      const staleScope=request?.action.kind==="allow_partial_publication" && request.action.publicationRefresh && request.action.publicationRefresh.scopeDigest!==preview.publicationRefresh?.digest;
+      if(!request || request.snapshot!==input.snapshot || (!request.appliedAt && request.decision!=="rejected" && (preview.snapshot!==input.snapshot || staleScope))) throw new Error("The exact recovery request or snapshot changed.");
       const content={batchId:preview.batchId,state:preview.state,publish:preview.publish,snapshot:preview.snapshot,
         requestId:request.id,action:request.action,publicationScope:request.publicationScope,entries:preview.entries};
       return {content,...(request.decision?{completed:{approved:request.decision==="approved",result:preview}}:{})};
@@ -1008,7 +1009,7 @@ export function createMissionGoMcpServer(
     return nativeConfirmations.request({ctx,codec:approvalStateCodec,modern:options.protocolEra==="modern",accountId:access.accountId,clientId:access.clientId??"",
       tool:"request_merge_reconciliation_approval",targetId:input.batchId,requestKey:input.idempotencyKey,parameters:input,
       description:"批准同时声明：我已人工核实没有未结束或结果不明的外部合并、推送或发布操作。仅批准下列快照和恢复动作，不授权重新合并 Git 或开始发布；实际恢复仍由原会话按既有门禁执行。",
-      inspect,apply:()=>({...merges.decideReconciliation(access.accountId,input.batchId,input.requestId,input.snapshot,"approved",true)})});
+      inspect,apply:()=>({...merges.decideReconciliation(access.accountId,input.batchId,input.requestId,input.snapshot,"approved",true,inspect().content.publicationScope?.digest)})});
   });
   server.registerTool(
     "request_managed_decision_approval", {

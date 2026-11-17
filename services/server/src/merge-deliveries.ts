@@ -1282,13 +1282,14 @@ export class MergeDeliveries {
     });
   }
   /** Human Web or bound native decision; never an Agent-provided approval fact. */
-  decideReconciliation(accountId:string,id:string,requestId:string,snapshot:string,decision:"approved"|"rejected",noExecutionRemaining:boolean) {
+  decideReconciliation(accountId:string,id:string,requestId:string,snapshot:string,decision:"approved"|"rejected",noExecutionRemaining:boolean,publicationScopeDigest?:string) {
     return this.db.transaction(()=>{
       const b=this.read<Batch>("merge_batches",id);this.permit(accountId,b,true);
       const r=this.reconciliation(b),request=r.requests.find(p=>p.id===requestId);
       if(!request||request.snapshot!==snapshot)throw changed();
       if(request.decision){if(request.decision!==decision)throw changed();return this.preview(accountId,id);}
       if(this.snapshot(b)!==snapshot||!noExecutionRemaining)throw changed();
+      if(request.publicationScope && publicationScopeDigest!==request.publicationScope.digest)throw conflict("publication_scope_review_required","请刷新并完整审阅本次发布范围后再确认恢复。");
       if(request.action.kind==="allow_partial_publication"&&request.action.publicationRefresh&&this.refreshedPublicationScope(b,request.action)?.digest!==request.publicationScope?.digest)throw changed();
       if(b.state==="finished"&&decision==="approved") {
         if(this.db.connection.prepare("SELECT 1 FROM merge_batches WHERE product_id=? AND state='active' AND id!=?").get(b.productId,id))throw conflict("merge_batch_active","同项目已有其他活动批次，不能恢复旧批次。");

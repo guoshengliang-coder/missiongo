@@ -1025,7 +1025,7 @@ describe("AND-439 batch reconciliation",()=>{
     const request=(action:Parameters<MergeDeliveries["requestReconciliation"]>[5],key=randomUUID())=>{
       const snapshot=preview().snapshot;merges.requestReconciliation(f.owner.id,b.dispatchId,b.id,key,snapshot,action);return {key,snapshot};
     };
-    const approve=(r:{key:string;snapshot:string})=>merges.decideReconciliation(f.owner.id,b.id,r.key,r.snapshot,"approved",true);
+    const approve=(r:{key:string;snapshot:string})=>merges.decideReconciliation(f.owner.id,b.id,r.key,r.snapshot,"approved",true,preview().reconciliation?.requests.find(row=>row.id===r.key)?.publicationScope?.digest);
     const apply=(key:string)=>merges.applyReconciliation(f.owner.id,b.dispatchId,b.id,key);
     const merged=()=>{
       if(options.publish)merges.integrate(f.owner.id,b.dispatchId,b.id,0,"preflight",syntheticPrerequisites(merges.batch(f.owner.id,b.dispatchId,b.id)));
@@ -1182,6 +1182,8 @@ describe("AND-439 batch reconciliation",()=>{
     const r=f.request(f.action);expect(()=>f.apply(r.key)).toThrow(/人工/);
     const frozen=f.preview().reconciliation!.requests.find(row=>row.id===r.key)!.publicationScope!;
     expect(frozen.candidates.find(row=>row.identity===f.gap.identity)?.historicalGapReason).toBeTruthy();
+    expect(()=>f.merges.decideReconciliation(f.owner.id,f.b.id,r.key,r.snapshot,"approved",true)).toThrow(/完整审阅/);
+    expect(()=>f.merges.decideReconciliation(f.owner.id,f.b.id,r.key,r.snapshot,"approved",true,"0".repeat(64))).toThrow(/完整审阅/);
     f.approve(r);f.apply(r.key);f.apply(r.key);
     const after=f.merges.batch(f.owner.id,f.b.dispatchId,f.b.id);
     expect(after.results).toEqual(before.results);expect(after.selection).toEqual(before.selection);expect(after.deliveries).toEqual(before.deliveries);
@@ -1203,6 +1205,16 @@ describe("AND-439 batch reconciliation",()=>{
     f.final();expect(f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id).state).toBe("finished");
     expect(f.store.getDevelopmentEvidence(f.historical.key,f.gap.developmentEventId)).toEqual(oldEvidence);
     expect(f.store.getWorkItem(f.item.key).status).toBe("pending_verification");
+  });
+  it("requires the displayed frozen scope digest on the authenticated Web recovery route",async()=>{
+    const f=await publicationRefreshFixture(),r=f.request(f.action);
+    const scope=f.preview().reconciliation!.requests.find(row=>row.id===r.key)!.publicationScope!;
+    const login=await f.app.inject({method:"POST",url:"/api/v1/auth/login",payload:{username:f.owner.email,password:"synthetic password"}}),cookie=login.headers["set-cookie"]!.toString().split(";")[0]!;
+    const decide=(digest?:string)=>f.app.inject({method:"POST",url:`/api/v1/merge-batches/${f.b.id}/reconciliation/${r.key}/decision`,headers:{cookie},payload:{snapshot:r.snapshot,decision:"approved",noExecutionRemaining:true,...(digest?{publicationScopeDigest:digest}:{})}});
+    expect((await decide()).statusCode).toBe(409);expect((await decide("0".repeat(64))).statusCode).toBe(409);
+    expect(f.preview().reconciliation!.requests.find(row=>row.id===r.key)!.decision).toBeUndefined();
+    const approved=await decide(scope.digest);expect(approved.statusCode,approved.body).toBe(200);
+    f.apply(r.key);expect(f.merges.batch(f.owner.id,f.b.dispatchId,f.b.id).publicationScope).toEqual(scope);
   });
   it.each(["before-approval","after-approval"])("rejects a changed full candidate snapshot %s",async phase=>{
     const f=await publicationRefreshFixture(),r=f.request(f.action);
