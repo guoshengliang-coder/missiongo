@@ -52,6 +52,8 @@ jobs:
           $product = Get-Content product.json | ConvertFrom-Json
           $installer = "apps/windows/dist/installer/$($product.windows.app.artifactStem)-$($product.windows.app.version)-x64-setup.exe"
           if (!(Test-Path -LiteralPath $installer -PathType Leaf)) { throw "Development installer was not generated" }
+      - name: Verify signature inspection with an inherited module path
+        run: node --test scripts/windows-authenticode.test.mjs
       - run: npx playwright install --with-deps --only-shell chromium
       - run: npx playwright test --config playwright.windows.config.ts
       - uses: actions/upload-artifact@v5
