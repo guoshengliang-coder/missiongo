@@ -50,9 +50,9 @@ it("disk budget rejects further collection instead of blocking business; on-disk
  for(let i=0;i<2500&&!m.status().degraded;i++){
   expect(m.record({id:`capacity-${i}`,scope,source:"web",version:`version-${i}`,stage:"submit",result:"success",durationMs:1})).toBe(true);
   // A report shares the worker message queue and acknowledges all earlier writes.
-  if(i%16===15)await m.report("owner",()=>true,0,Date.now()+1);
+  if(i%16===15)await m.report("owner",()=>true,Date.now()-300000,Date.now()+1);
  }
- await m.report("owner",()=>true,0,Date.now()+1);
+ await m.report("owner",()=>true,Date.now()-300000,Date.now()+1);
  expect(m.status().degraded).toBe(true);
  expect(m.status().accepted).toBeGreaterThan(0);
  expect(m.record({id:"after-capacity",scope,source:"web",version:"v1",stage:"submit",result:"success"})).toBe(false);
