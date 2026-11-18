@@ -1,4 +1,5 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
+import { Worker } from "node:worker_threads";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -36,18 +37,29 @@ it("restarts classify unfinished observations as missing, rather than resuming a
  expect(r.pendingObservations).toBe(0);
 });
 it("disk budget rejects further collection instead of blocking business; on-disk files remain bounded",async()=>{
+ const on=Worker.prototype.on;
+ const delayedReady=vi.spyOn(Worker.prototype,"on").mockImplementation(function(this:Worker,event,listener){
+  return on.call(this,event,event==="message"?(message:any)=>{
+   if(message.kind==="ready")setTimeout(()=>listener(message),2000);else listener(message);
+  }:listener);
+ });
+ try {
  const dir=await mkdtemp(join(tmpdir(),"and518-cap-"));dirs.push(dir);const path=join(dir,"metrics.sqlite"),budget=256*1024;
  const m=new ConsolePerformance(path,"v1",true,budget);instances.push(m);
- for(let i=0;i<100&&!m.status().ready&&!m.status().degraded;i++)await new Promise(r=>setTimeout(r,10));
+ await expect.poll(()=>m.status().ready,{timeout:5000}).toBe(true);
  for(let i=0;i<2500&&!m.status().degraded;i++){
-  m.record({id:`capacity-${i}`,scope,source:"web",version:`version-${i}`,stage:"submit",result:"success",durationMs:1});
-  if(i%16===0)await new Promise(r=>setTimeout(r,5));
+  expect(m.record({id:`capacity-${i}`,scope,source:"web",version:`version-${i}`,stage:"submit",result:"success",durationMs:1})).toBe(true);
+  // A report shares the worker message queue and acknowledges all earlier writes.
+  if(i%16===15)await m.report("owner",()=>true,Date.now()-300000,Date.now()+1);
  }
- for(let i=0;i<100&&!m.status().degraded;i++)await new Promise(r=>setTimeout(r,10));
+ await m.report("owner",()=>true,Date.now()-300000,Date.now()+1);
  expect(m.status().degraded).toBe(true);
+ expect(m.status().accepted).toBeGreaterThan(0);
+ expect(m.record({id:"after-capacity",scope,source:"web",version:"v1",stage:"submit",result:"success"})).toBe(false);
  await m.close();
  const { readdir,stat }=await import("node:fs/promises");let bytes=0;for(const name of await readdir(dir))bytes+=(await stat(join(dir,name))).size;
  expect(bytes).toBeLessThanOrEqual(budget);
+ } finally { delayedReady.mockRestore(); }
 });
 it("removes expired seven-day aggregates and permits expired event IDs again",async()=>{
  const dir=await mkdtemp(join(tmpdir(),"and518-retention-"));dirs.push(dir);const path=join(dir,"metrics.sqlite"),m=await fixture(path);

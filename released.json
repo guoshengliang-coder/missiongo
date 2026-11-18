@@ -48,8 +48,8 @@
       ]
     },
     "windowsApp": {
-      "version": null,
-      "commit": null,
+      "version": "0.1.0",
+      "commit": "3de098146102ac9443ed83138d04b00eae0d1597",
       "versionFile": "product.json",
       "versionJsonPath": "windows.app.version",
       "paths": [
@@ -61,7 +61,8 @@
         "package-lock.json",
         "product.json",
         "scripts/build-windows.mjs"
-      ]
+      ],
+      "sha256": "079fc9e0f103b386fab3a0299a881ef863bcb586776d8a614ccd5cc4e54d66e1"
     }
   }
 }
