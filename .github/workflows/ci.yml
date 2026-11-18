@@ -45,7 +45,13 @@ jobs:
       - name: Native DPAPI, private ACL, singleton, PowerShell and npm launchers
         run: npm run test --workspace @missiongo/windows-workspace
       - name: Package unsigned development installer (never published)
-        run: npm run build:windows -- --package --unsigned
+        shell: pwsh
+        run: |
+          node scripts/build-windows.mjs --package --unsigned
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $product = Get-Content product.json | ConvertFrom-Json
+          $installer = "apps/windows/dist/installer/$($product.windows.app.artifactStem)-$($product.windows.app.version)-x64-setup.exe"
+          if (!(Test-Path -LiteralPath $installer -PathType Leaf)) { throw "Development installer was not generated" }
       - run: npx playwright install --with-deps --only-shell chromium
       - run: npx playwright test --config playwright.windows.config.ts
       - uses: actions/upload-artifact@v5

@@ -36,11 +36,15 @@ jobs:
           if ($mode -eq "temporary-unsigned") {
             Remove-Item Env:CSC_LINK -ErrorAction SilentlyContinue
             Remove-Item Env:CSC_KEY_PASSWORD -ErrorAction SilentlyContinue
-            npm run build:windows -- --package --unsigned-release
+            node scripts/build-windows.mjs --package --unsigned-release
           } else {
-            npm run build:windows -- --package
+            node scripts/build-windows.mjs --package
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $product = Get-Content product.json | ConvertFrom-Json
+          $installer = "apps/windows/dist/installer/$($product.windows.app.artifactStem)-$($product.windows.app.version)-x64-setup.exe"
+          if (!(Test-Path -LiteralPath $installer -PathType Leaf)) { throw "Release installer was not generated" }
+          if (!(Test-Path -LiteralPath "apps/windows/dist/installer/latest.json" -PathType Leaf)) { throw "Release manifest was not generated" }
       - uses: actions/attest-build-provenance@v3
         with:
           subject-path: |
