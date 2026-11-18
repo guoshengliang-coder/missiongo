@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import sharp from "sharp";
 import { releaseNotesFor, releaseNotesStart } from "./release-notes.mjs";
+import { verifyWindowsAuthenticode } from "./windows-authenticode.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const product = JSON.parse(readFileSync(join(root, "product.json"), "utf8"));
@@ -68,8 +69,7 @@ if (process.argv.includes("--package")) {
   if (!unsigned || unsignedRelease) {
     const filename = `${windows.artifactStem}-${windows.version}-x64-setup.exe`;
     const installer = join(directory, "installer", filename);
-    const program = "$ErrorActionPreference='Stop'; [Console]::InputEncoding=[Text.UTF8Encoding]::new($false); [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $r=[Console]::In.ReadLine() | ConvertFrom-Json; $s=Get-AuthenticodeSignature -LiteralPath $r.path; if ($r.unsigned) { if ($s.Status -ne 'NotSigned') { exit 1 }; exit 0 }; if ($s.Status -ne 'Valid' -or $s.SignerCertificate.GetNameInfo('SimpleName',$false) -ne $r.publisher) { exit 1 }; $h=[Security.Cryptography.SHA256]::Create(); [Console]::Out.WriteLine(([BitConverter]::ToString($h.ComputeHash($s.SignerCertificate.RawData))).Replace('-','').ToLowerInvariant())";
-    const certificateHash = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(program, "utf16le").toString("base64")], { input: JSON.stringify({ path: installer, unsigned, publisher: process.env.MISSIONGO_WINDOWS_PUBLISHER }) + "\n", encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 30_000 }).trim();
+    const certificateHash = verifyWindowsAuthenticode({ path: installer, unsigned, publisher: process.env.MISSIONGO_WINDOWS_PUBLISHER });
     const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
     if (execFileSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" }).trim()) throw new Error("Publication manifest requires a clean source checkout");
     const bytes = readFileSync(installer);

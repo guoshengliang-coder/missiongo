@@ -25,6 +25,7 @@ jobs:
       - run: npm run build:types
       - run: npm run typecheck --workspace @missiongo/windows-workspace
       - run: npm run test --workspace @missiongo/windows-workspace
+      - run: node --test scripts/windows-authenticode.test.mjs
       - name: Build the authorized release installer
         env:
           CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
