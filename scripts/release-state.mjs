@@ -136,8 +136,10 @@ function raiseVersion({ versionFile, versionProperty, versionJsonPath }, text, n
     return text.replace(line, `${versionProperty}=${next}`);
   }
   const product = JSON.parse(text);
-  const [group, key] = versionJsonPath.split(".");
-  if (key) product[group][key] = next; else product[group] = next;
+  const parts = versionJsonPath.split(".");
+  const key = parts.pop();
+  const target = parts.reduce((value, part) => value[part], product);
+  target[key] = next;
   return `${JSON.stringify(product, null, 2)}\n`;
 }
 
@@ -176,11 +178,13 @@ export function bumpPatchVersions(origin = "origin/main", worktree = root) {
   const manifest = JSON.parse(readFileSync(join(worktree, "released.json"), "utf8"));
   const bumps = planPatchVersions(origin, worktree);
   // Prepare every write before changing any declaration.
-  const writes = bumps.map(bump => {
+  const writes = new Map();
+  for (const bump of bumps) {
     const path = join(worktree, bump.file);
-    return { path, text: raiseVersion(manifest.artifacts[bump.artifact], readFileSync(path, "utf8"), bump.to) };
-  });
-  for (const { path, text } of writes) writeFileSync(path, text);
+    const text = writes.get(path) ?? readFileSync(path, "utf8");
+    writes.set(path, raiseVersion(manifest.artifacts[bump.artifact], text, bump.to));
+  }
+  for (const [path, text] of writes) writeFileSync(path, text);
   return bumps;
 }
 
