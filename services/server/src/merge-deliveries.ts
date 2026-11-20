@@ -1,3 +1,4 @@
+import {deliveryScope,historicalDeliveryFingerprint} from "./historical-delivery-review.js";
 import {conversationDecisionEvidence} from "./conversation-decision-evidence.js";
 import {mergeReviewSummary} from "./merge-review-summary.js";
 import { developmentReviewBlocker, developmentReviewExpiry } from "./development-reviews.js";
@@ -165,9 +166,9 @@ export class MergeDeliveries {
   }
   private scope(keys: string[]) {
     return this.displayRead("scope:"+JSON.stringify(keys),()=>{
-    return digest(keys.map(key => {
+    return deliveryScope(keys.map(key => {
       const id = this.store.workItemId(key);
-      return [id, this.store.workItemContentVersion(key), this.store.workItemBuilderAccountId(key), deliveryRound(this.db, id)];
+      return [id, this.store.workItemContentVersion(key), this.store.workItemBuilderAccountId(key), deliveryRound(this.db, id)] as const;
     }));
     });
   }
@@ -519,7 +520,7 @@ export class MergeDeliveries {
   private historicalPublicationFingerprint(row:PublicationScopeRow) {
     // A different delivery of the same item can advance its global revision
     // through verified publication. Its content/Builder/round scope stays bound.
-    return digest([row.identity,row.itemKey,row.developmentEventId,row.roundKey,row.completion??null,row.requiredArtifacts??null,row.itemScope]);
+    return historicalDeliveryFingerprint(row);
   }
   private assertReferences(b:Batch,fresh=false) {
     for(const [id,ref]of Object.entries(b.references??{})) {

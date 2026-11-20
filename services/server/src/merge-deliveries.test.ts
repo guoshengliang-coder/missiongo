@@ -1,3 +1,4 @@
+import {reviewedHistoricalDeliveries} from "./historical-delivery-review.js";
 import {AgentHistory} from "./agent-history.js";
 import {AgentArtifacts} from "./agent-artifacts.js";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -1264,6 +1265,15 @@ describe("AND-439 batch reconciliation",()=>{
     const action={kind:"allow_partial_publication" as const,reason:"Resume the original merged batch; retain historical evidence warnings",publicationRefresh:{scopeDigest:scope.digest,historicalGaps:[{identity:gap.identity,reason:"Earlier manual completion lacks integration and scope; current merged delivery remains included"}]}};
     return {...f,scope,gap,action,historical};
   }
+  it("uses applied recovery review for manual acceptance without fabricating historical publication",async()=>{
+    const f=await publicationRefreshFixture(),r=f.request(f.action);f.approve(r);f.apply(r.key);
+    const record=f.store.getDeliveryRecords(f.item.key).find(row=>row.id!==f.gap.developmentEventId)!;
+    expect(f.store.submitReleaseBatch({productId:f.item.productId,idempotencyKey:"recovery-published",deployedCommit:"e".repeat(40),receiptDigest:"f".repeat(64),attribution:{accountId:f.owner.id,clientId:"original-client"},
+      items:[{itemKey:f.item.key,expectedRevision:f.store.getWorkItem(f.item.key).revision,developmentEventId:record.id,roundKey:record.roundKey!,completion:record.completion!,releases:record.requiredArtifacts!.map(artifact=>({artifact,version:"1",sourceCommit:"e".repeat(40)}))}]}).results[0]?.outcome).toBe("submitted");
+    f.store.transitionWorkItem({itemKey:f.item.key,to:"done",actor:"human",reason:"verification_passed",expectedRevision:f.store.getWorkItem(f.item.key).revision,attribution:{accountId:f.owner.id}});
+    expect(f.store.getWorkItem(f.item.key).status).toBe("done");
+    expect(f.store.getDeliveryRecords(f.item.key).find(row=>row.id===f.gap.developmentEventId)?.published).toBe(false);
+  });
   it("refreshes complete publication scope only after exact human approval without rewriting historical evidence",async()=>{
     const f=await publicationRefreshFixture(),before=f.merges.batch(f.owner.id,f.b.dispatchId,f.b.id),oldEvidence=f.store.getDevelopmentEvidence(f.historical.key,f.gap.developmentEventId);
     expect(f.scope.candidates).toHaveLength(2);
@@ -1922,9 +1932,37 @@ describe("AND-511 two-step integration queue",()=>{
     expect(scope.candidates.some(c=>c.developmentEventId===record.id)).toBe(false);
     expect(scope.candidates.find(c=>c.developmentEventId===f.old)?.historicalGapReason).toBeTruthy();
     const before=f.store.getTimeline(f.item.key);
+    const accept=(expectedRevision?:number)=>f.store.transitionWorkItem({itemKey:f.item.key,to:"done",actor:"human",reason:"verification_passed",
+      ...(expectedRevision!==undefined?{expectedRevision}:{}),attribution:{accountId:f.owner.id}});
+    expect(()=>accept(f.store.getWorkItem(f.item.key).revision)).toThrow(/发布/);
     f.merges.start(f.owner.id,"after-published-replacement",f.selection,f.conf,true,1,false,"publish_only",scope.digest,true);
     expect(f.store.getTimeline(f.item.key)).toEqual(before);
     expect(f.store.getWorkItem(f.item.key).status).toBe("pending_verification");
+    expect(()=>accept()).toThrow(/修订/);
+    // Reviewing old history must never exempt a new real integration.
+    f.safe(await f.call("submit_development_complete",{itemKey:f.item.key,dispatchId:f.dispatch.id,
+      completion:{kind:"github",url:"https://github.com/example/project/pull/999"},requiredArtifacts:["web"],idempotencyKey:"another-real-delivery"}));
+    expect(()=>accept(f.store.getWorkItem(f.item.key).revision)).toThrow(/发布/);
+    const next=f.store.getDeliveryRecords(f.item.key).at(-1)!;
+    expect(f.store.submitReleaseBatch({productId:f.item.productId,idempotencyKey:"publish-next",deployedCommit:"e".repeat(40),receiptDigest:"f".repeat(64),attribution:{accountId:f.owner.id,clientId:"original-client"},
+      items:[{itemKey:f.item.key,expectedRevision:f.store.getWorkItem(f.item.key).revision,developmentEventId:next.id,roundKey:next.roundKey!,completion:next.completion!,releases:[{artifact:"web",version:"2",sourceCommit:"e".repeat(40)}]}]}).results[0]?.outcome).toBe("submitted");
+    const live=f.store.getWorkItem(f.item.key),records=f.store.getDeliveryRecords(f.item.key);
+    const context={id:live.id,key:live.key,productId:live.productId,contentVersion:live.contentVersion!,builderAccountId:live.builderAccountId??null,roundKey:record.roundKey};
+    expect(reviewedHistoricalDeliveries(f.store.database,context,records).has(f.old)).toBe(true);
+    for(const changed of [{...context,contentVersion:context.contentVersion+1},{...context,builderAccountId:f.other.id},{...context,roundKey:randomUUID()}]) {
+      expect(reviewedHistoricalDeliveries(f.store.database,changed,records).size).toBe(0);
+    }
+  });
+  it("allows only human version-bound acceptance after exact durable history review",async()=>{
+    const f=await historicalProject(),record=f.store.getDeliveryRecords(f.item.key).find(r=>r.id!==f.old)!;
+    f.store.submitReleaseBatch({productId:f.item.productId,idempotencyKey:"published-replacement",deployedCommit:"e".repeat(40),receiptDigest:"f".repeat(64),attribution:{accountId:f.owner.id,clientId:"original-client"},
+      items:[{itemKey:f.item.key,expectedRevision:f.store.getWorkItem(f.item.key).revision,developmentEventId:record.id,roundKey:record.roundKey!,completion:record.completion!,releases:[{artifact:"web",version:"1",sourceCommit:"e".repeat(40)}]}]});
+    const scope=f.merges.publicationPreview(f.owner.id,f.item.productId,f.selection);
+    f.merges.start(f.owner.id,"review-then-accept",f.selection,f.conf,true,1,false,"publish_only",scope.digest,true);
+    expect(f.store.getWorkItem(f.item.key).status).toBe("pending_verification");
+    f.store.transitionWorkItem({itemKey:f.item.key,to:"done",actor:"human",reason:"verification_passed",expectedRevision:f.store.getWorkItem(f.item.key).revision,attribution:{accountId:f.owner.id}});
+    expect(f.store.getWorkItem(f.item.key).status).toBe("done");
+    expect(f.store.getDeliveryRecords(f.item.key).find(r=>r.id===f.old)?.published).toBe(false);
   });
   it.each([[false,false],[true,false]])("keeps unresolved manual work blocked without a replacement (%s/%s)",async(returned,replacement)=>{
     const f=await historicalProject(returned,replacement),scope=f.merges.publicationPreview(f.owner.id,f.item.productId,f.selection);

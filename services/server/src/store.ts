@@ -1,3 +1,4 @@
+import {reviewedHistoricalDeliveries} from "./historical-delivery-review.js";
 import { collaborationBlockers } from "./collaboration-policy.js";
 import { assertItemExecutionIdentity, takeOverItemExecutions } from "./item-execution-blockers.js";
 import { AgentHandoffs } from "./agent-handoffs.js";
@@ -1486,7 +1487,8 @@ export class MissionGoStore {
       if(current.status==="pending_verification" && input.to==="done") {
         const deliveries=this.getDeliveryRecords(current.item_key);
         const continuous=deliveries.length>1 || this.getTimeline(current.item_key).some(e=>e.eventType==="delivery_recorded" && deliveries.some(d=>d.id===e.id));
-        if(continuous && deliveries.some(d=>!d.published)) throw conflict("verification_delivery_unpublished","存在新增交付尚未完整发布，请核对待验版本后再验收。");
+        const reviewedHistory=reviewedHistoricalDeliveries(this.database,{id:current.id,key:current.item_key,productId:current.product_id,contentVersion:current.content_version,builderAccountId:current.builder_account_id??null,roundKey:deliveryRound(this.database,current.id)},deliveries);
+        if(continuous && deliveries.some(d=>!d.published&&!reviewedHistory.has(d.id))) throw conflict("verification_delivery_unpublished","存在新增交付尚未完整发布，请核对待验版本后再验收。");
         if(continuous && input.expectedRevision===undefined) throw conflict("transition_version_required","验收必须绑定当前交付修订。");
       }
       const uploads = ids.length ? this.getTimeline(current.item_key) : [];
