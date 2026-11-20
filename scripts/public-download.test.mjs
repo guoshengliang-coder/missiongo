@@ -24,3 +24,14 @@ test("oversized and truncated responses never become successful proofs",async t=
   const short=await server(t,(_q,r)=>{r.writeHead(200,{"Content-Length":100});r.write("short");r.destroy();});
   await assert.rejects(publicDownloadHash(short),/Public download failed/);
 });
+
+for(const mode of ["oversized","http-error"])test(`early ${mode} rejection closes the body connection`,async t=>{
+ let close;const closed=new Promise(resolve=>{close=resolve;});
+ const url=await server(t,(_q,r)=>{
+   r.writeHead(mode==="http-error"?500:200,{"Content-Length":1000000});r.write("x");
+   const timer=setInterval(()=>r.write("x"),10);
+   r.on("close",()=>{clearInterval(timer);close();});
+ });
+ await assert.rejects(publicDownloadHash(url,{maxBytes:2}),mode==="http-error"?/http_response/:/size_limit/);
+ let timeout;try {await Promise.race([closed,new Promise((_resolve,reject)=>{timeout=setTimeout(()=>reject(new Error("Rejected download left its body connection open")),2000);})]);}finally{clearTimeout(timeout);}
+});

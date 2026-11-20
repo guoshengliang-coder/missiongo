@@ -1391,10 +1391,12 @@ export function createMissionGoMcpServer(
         try { await ctx.mcpReq.elicitInput({mode:"url",message:`MissionGo · 审阅并批准当前方案：${keys.join("、")}`,url:reviewUrl,elicitationId:revision}); }
         catch { /* Preserve this one registered proposal for the original client to resume. */ }
       }
+      if(boundProject)projectPlanBinding(ctx,originalDispatchId,boundProject);
       if (plans.approved(access.accountId,identity,revision)) return textResult({approved:true,revision,...context},"The human approval was saved during the handoff. Reuse this same plan and conversation; do not ask again.");
       return textResult({approved:false,approvalRequired:true,revision,requiresWeb:true,code:"native_approval_unavailable",...context},
         `Plan:\n${plan}\n\n${document ? "Full details and validation are in the fixed document; read via get_plan_document." : `Validation:\n${validation}\n\n${CURRENT_ENTRY_CONTENT_GUIDANCE}`}\nThe native confirmation could not be recorded by MissionGo. This is an approval handoff limitation, not evidence that the human declined. Preserve the original identity and proposal; do not ask them to review the plan again. Use the registered approval handoff at ${reviewUrl ?? "the original conversation"}. A registered external plan can be approved there without connecting a native reply channel.`);
     }
+    if(boundProject)projectPlanBinding(ctx,originalDispatchId,boundProject);
     if(plans.approved(access.accountId,identity,revision)) {
       plans.nativeContinued(access.accountId,identity,revision);
       return textResult({approved:true,revision,...context},"This plan was approved through the other entry point. Continue with that same decision; do not ask again.");

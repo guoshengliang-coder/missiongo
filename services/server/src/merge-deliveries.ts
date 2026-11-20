@@ -1281,7 +1281,7 @@ export class MergeDeliveries {
       const publicationScope=action.kind==="allow_partial_publication"?this.refreshedPublicationScope(b,action):undefined;
       r.requests.push({id:key,digest:hash,snapshot,action,at:new Date().toISOString(),...(publicationScope?{publicationScope}:{})});this.saveBatch(b);
       const preview=this.preview(accountId,id),summary=mergeReviewSummary(preview,key);
-      r.requests.at(-1)!.reviewText=summary+`\n\n[本次决定的版本](/?mergeReview=${encodeURIComponent(id+":"+key+":"+snapshot)})`;
+      r.requests.at(-1)!.reviewText=summary+`\n\n[本次决定的版本](/?console=agent&session=${encodeURIComponent(b.sessionId)}&mergeReview=${encodeURIComponent(id+":"+key+":"+snapshot)})`;
       this.saveBatch(b);
       return this.preview(accountId,id);
     });
@@ -1327,9 +1327,13 @@ export class MergeDeliveries {
       const choice=["同意","批准"].includes(text.trim())?"approved":["不同意","拒绝"].includes(text.trim())?"rejected":undefined;
       const valid=!attachments.length&&choice&&selected&&review?.accountId===accountId&&review.sessionId===sessionId
         && review.activity===this.activity(sessionId)&&Date.now()-Date.parse(review.at)>=0&&Date.now()-Date.parse(review.at)<=600000;
-      if(valid)this.decideReconciliation(accountId,selected.b.id,selected.q.id,selected.q.snapshot,choice,true,selected.q.publicationScope?.digest);
+      const prior=this.db.connection.prepare("SELECT COALESCE(MAX(rowid),0) AS position FROM agent_session_commands WHERE session_id=?").get(sessionId) as {position:number};
       const command=send();
-      if(valid){const b=this.read<Batch>("merge_batches",selected.b.id),q=b.reconciliation!.requests.find(q=>q.id===selected.q.id)!;
+      // An HTTP retry can return an older command after a different card was shown.
+      // Only a newly persisted human command may decide the selected version.
+      const fresh=Boolean(this.db.connection.prepare("SELECT 1 FROM agent_session_commands WHERE session_id=? AND id=? AND rowid>?").get(sessionId,command.id,prior.position));
+      if(valid&&fresh){
+        this.decideReconciliation(accountId,selected.b.id,selected.q.id,selected.q.snapshot,choice,true,selected.q.publicationScope?.digest);const b=this.read<Batch>("merge_batches",selected.b.id),q=b.reconciliation!.requests.find(q=>q.id===selected.q.id)!;
         q.decisionSource={kind:"conversation",commandId:command.id};delete q.review;this.saveBatch(b);}
       return command;
     });

@@ -14,7 +14,7 @@ export function conversationDecisionEvidence(database:MissionGoDatabase,accountI
   if(!binding)return {code:"identity_unavailable" as const};
   const history=new AgentHistory(database,new AgentArtifacts(database,""));
   if(!["complete","ready"].includes(history.available(accountId,sessionId).status)||history.incomplete(accountId,sessionId))return {code:"history_incomplete" as const};
-  const size=db.prepare("SELECT COUNT(*) AS n,COALESCE(SUM(length(CAST(text AS BLOB))),0) AS bytes FROM agent_session_messages WHERE session_id=?").get(sessionId) as {n:number;bytes:number};
+  const size=db.prepare("SELECT COUNT(*) AS n,COALESCE(SUM(length(CAST(text AS BLOB))+COALESCE(length(CAST(questions_json AS BLOB)),0)),0) AS bytes FROM agent_session_messages WHERE session_id=?").get(sessionId) as {n:number;bytes:number};
   const pages=db.prepare("SELECT COUNT(*) AS n,COALESCE(SUM(length(CAST(result_json AS BLOB))),0) AS bytes FROM agent_history_pages WHERE account_id=? AND session_id=? AND status='ready'").get(accountId,sessionId) as {n:number;bytes:number};
   if(size.n>10000||size.bytes>32*1024*1024||pages.n>512||pages.bytes>32*1024*1024)return {code:"history_incomplete" as const};
   const cached=history.cachedMessages(accountId,sessionId);

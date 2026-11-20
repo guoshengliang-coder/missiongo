@@ -19,5 +19,5 @@ export async function publicDownloadHash(url,{maxBytes=512*1024*1024,totalMs=600
     return {sha256:hash.digest("hex"),bytes,elapsedMs:Date.now()-started};
   }catch{
     throw new Error(`Public download failed: ${JSON.stringify({code:reason??"network",phase,bytes,elapsedMs:Date.now()-started})}`);
-  }finally{clearTimeout(total);clearTimeout(idle);}
+  }finally{controller.abort();clearTimeout(total);clearTimeout(idle);}
 }

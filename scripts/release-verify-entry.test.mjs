@@ -18,6 +18,6 @@ test("installed verify entry uses only its configured verifier, never deploy or 
   writeFileSync(join(config,"release-local.json"),JSON.stringify({host:"documented-fixture",currentLink:"/fixture/current",downloadsDir:"/fixture/downloads",origin:"https://fixture.invalid"}));
   const run=(...args)=>spawnSync("python3",[entry,"verify",...args],{cwd:root,encoding:"utf8",env:{PATH:`${bin}:${process.env.PATH}`,XDG_CONFIG_HOME:join(dir,"config"),HOME:dir}});
   for(const option of ["--host","--skip-ci-check","--allow-dirty"]){const r=run(option,"override");assert.notEqual(r.status,0);assert.equal(existsSync(marker),false);}
-  const result=run("--receipt","original.json","--candidates","full.json","--output","fresh.json");assert.equal(result.status,0,result.stderr);
-  const args=JSON.parse(readFileSync(marker));assert(args.includes("documented-fixture"));assert(args.includes("/fixture/current"));assert(args.includes("original.json"));assert(!args.includes("deploy"));
+  const result=run("--receipt","original.json","--candidates","full.json","--output","fresh.json","--only-artifacts","web","--scope-reason","User approved Web only");assert.equal(result.status,0,result.stderr);
+  const args=JSON.parse(readFileSync(marker));assert(args.includes("documented-fixture"));assert(args.includes("/fixture/current"));assert(args.includes("original.json"));assert(!args.includes("deploy"));assert.equal(args[args.indexOf("--only-artifacts")+1],"web");assert.equal(args[args.indexOf("--scope-reason")+1],"User approved Web only");
 });

@@ -1,3 +1,4 @@
+import * as planApprovalModule from "./implementation-plans.js";
 import {AgentHistory} from "./agent-history.js";
 import {AgentArtifacts} from "./agent-artifacts.js";
 import {DocumentPlanApprovals} from "./document-plan-approval.js";
@@ -177,4 +178,61 @@ it("supports fixed itemless project plans without creating or borrowing work ite
  expect(f.store.database.connection.prepare("SELECT count(*) AS n FROM work_items").get()).toEqual({n:1});
  expect((await f.call("prepare_plan_document",{...args,projectId:randomUUID(),idempotencyKey:"wrong-project"})).isError).toBe(true);
  const web=await f.app.inject({method:"GET",url:`/api/v1/plan-documents/${doc.documentId}`,headers:f.headers});expect(web.statusCode).toBe(200);expect(web.json().markdown).toBe(args.markdown);
+});
+
+it.each(["project-archive","dispatch-archive","scope-binding","account-disabled"])("rechecks itemless project authority after legacy native confirmation: %s",async change=>{
+ const f=await fixture(),ds=new DispatchStore(f.store.database),node=ds.registerNode({accountId:config.id,installationId:randomUUID(),name:"Synthetic project node"});
+ ds.recordHeartbeat(node.nodeId,[{kind:"codex",planApprovalProtocol:1,ready:true}],[],"*",{supportsFreeSessions:true});
+ ds.replaceOwnRepos(node.nodeId,[{productId:f.product.id,repoPath:"/synthetic/project"}]);
+ const free=new FreeSessionStore(f.store.database,ds,new AgentSessionStore(f.store.database)),d=free.prepare(config.id,randomUUID(),{productId:f.product.id,nodeId:node.nodeId,agentKind:"codex",mode:"default"},"Project work");
+ free.finish(config.id,d.id,[]);ds.claimNextDispatch(node.nodeId);ds.recordDispatchResult({nodeId:node.nodeId,dispatchId:d.id,status:"launched"});
+ new AgentSessionStore(f.store.database).createForDispatch({dispatchId:d.id,nodeId:node.nodeId,sessionRef:"native-project"});
+ const summary="修复当前项目的审批入口与恢复体验。",args={itemKeys:[],projectId:f.product.id,dispatchId:d.id,summary,markdown:summary+"\n\n范围和验证保持项目边界。",idempotencyKey:"project-plan-v1"};
+ vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(new Date(Date.now()-5000));
+ const prepared=await f.call("prepare_plan_document",args);expect(prepared.isError,JSON.stringify(prepared)).not.toBe(true);const doc=prepared.structuredContent;
+ expect((await f.call("get_plan_document",{documentId:doc.documentId})).isError).not.toBe(true);
+ vi.useRealTimers();
+ const other=f.store.createProduct({name:"Other project",keyPrefix:"OTHER",createdByAccountId:config.id});
+ let elicited=false;
+ vi.spyOn(planApprovalModule,"requestNativePlanApproval").mockImplementation(async()=>{
+   elicited=true;
+   if(change==="project-archive")f.store.database.connection.prepare("UPDATE products SET archived_at=? WHERE id=?").run(new Date().toISOString(),f.product.id);
+   else if(change==="dispatch-archive")f.store.database.connection.prepare("UPDATE dispatches SET archived_at=? WHERE id=?").run(new Date().toISOString(),d.id);
+   else if(change==="account-disabled")f.store.database.connection.prepare("UPDATE accounts SET disabled_at=? WHERE id=?").run(new Date().toISOString(),config.id);
+   else f.store.database.connection.prepare("UPDATE free_session_starts SET product_id=? WHERE dispatch_id=?").run(other.id,d.id);
+   return true;
+ });
+ const result=await f.call("request_plan_approval",{itemKeys:[],projectId:f.product.id,dispatchId:d.id,documentId:doc.documentId,plan:doc.plan,validation:"",approvalMethod:"native"});
+ vi.useRealTimers();
+ expect(elicited).toBe(true);expect(result.isError,JSON.stringify(result)).toBe(true);
+ expect(f.store.database.connection.prepare("SELECT count(*) AS n FROM implementation_plan_approvals").get()).toEqual({n:0});
+});
+
+it.each(["project-archive","dispatch-archive","scope-binding","account-disabled"])("blocks automatic project consent recovery after %s",async change=>{
+ const f=await fixture(),ds=new DispatchStore(f.store.database),node=ds.registerNode({accountId:config.id,installationId:randomUUID(),name:"Synthetic project node"});
+ ds.recordHeartbeat(node.nodeId,[{kind:"codex",planApprovalProtocol:1,ready:true}],[],"*",{supportsFreeSessions:true});
+ ds.replaceOwnRepos(node.nodeId,[{productId:f.product.id,repoPath:"/synthetic/project"}]);
+ const free=new FreeSessionStore(f.store.database,ds,new AgentSessionStore(f.store.database)),d=free.prepare(config.id,randomUUID(),{productId:f.product.id,nodeId:node.nodeId,agentKind:"codex",mode:"default"},"Project work");
+ free.finish(config.id,d.id,[]);ds.claimNextDispatch(node.nodeId);ds.recordDispatchResult({nodeId:node.nodeId,dispatchId:d.id,status:"launched"});
+ new AgentSessionStore(f.store.database).createForDispatch({dispatchId:d.id,nodeId:node.nodeId,sessionRef:"native-project"});
+ const summary="修复当前项目的审批入口与恢复体验。",args={itemKeys:[],projectId:f.product.id,dispatchId:d.id,summary,markdown:summary+"\n\n范围和验证保持项目边界。",idempotencyKey:"project-plan-v1"};
+ vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(new Date(Date.now()-5000));
+ const prepared=await f.call("prepare_plan_document",args);expect(prepared.isError,JSON.stringify(prepared)).not.toBe(true);const doc=prepared.structuredContent;
+ expect((await f.call("get_plan_document",{documentId:doc.documentId})).isError).not.toBe(true);
+ const request=await f.call("request_plan_approval",{itemKeys:[],projectId:f.product.id,dispatchId:d.id,documentId:doc.documentId,plan:doc.plan,validation:"",approvalMethod:"web"});
+ vi.useRealTimers();
+ const sid=request.structuredContent.sessionId,now=Date.now()-3000;
+ new AgentSessionStore(f.store.database).recordSnapshot({nodeId:node.nodeId,sessionId:sid,status:"idle",messages:[
+  {sourceId:"project-display",turnId:"one",role:"agent",phase:"final_answer",text:doc.plan,occurredAt:new Date(now+1).toISOString()},
+  {sourceId:"project-consent",turnId:"two",role:"user",text:"同意",occurredAt:new Date(now+2).toISOString()}]});
+ new AgentHistory(f.store.database,new AgentArtifacts(f.store.database,"")).observe(config.id,node.nodeId,sid,{complete:true});
+ const approvals=new DocumentPlanApprovals(f.store.database);
+ expect(approvals.inspect(config.id,sid).code).toBe("ready_to_restore");
+ if(change==="project-archive")f.store.database.connection.prepare("UPDATE products SET archived_at=? WHERE id=?").run(new Date().toISOString(),f.product.id);
+ else if(change==="dispatch-archive")f.store.database.connection.prepare("UPDATE dispatches SET archived_at=? WHERE id=?").run(new Date().toISOString(),d.id);
+ else if(change==="account-disabled")f.store.database.connection.prepare("UPDATE accounts SET disabled_at=? WHERE id=?").run(new Date().toISOString(),config.id);
+ else {const other=f.store.createProduct({name:"Other project",keyPrefix:"OTHER",createdByAccountId:config.id});f.store.database.connection.prepare("UPDATE free_session_starts SET product_id=? WHERE dispatch_id=?").run(other.id,d.id);}
+ expect(approvals.inspect(config.id,sid).code).toBe("identity_unavailable");
+ approvals.synchronize(config.id,sid);
+ expect(f.store.database.connection.prepare("SELECT count(*) AS n FROM implementation_plan_approvals").get()).toEqual({n:0});
 });

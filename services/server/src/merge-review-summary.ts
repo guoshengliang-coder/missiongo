@@ -16,6 +16,10 @@ export function mergeReviewSummary(preview:MergeReconciliationPreview,requestId:
     for(const e of scope.exclusions??[])lines.push(`未纳入：${e.title}；${e.reason}`);
   }else for(const e of preview.entries.filter(e=>!("deliveryId"in row.action)||row.action.deliveryId===e.deliveryId))
     lines.push(`${e.itemKeys.join(" / ")||`PR #${e.pullRequest}`}：${e.requiredArtifacts.map(integrationArtifactName).join(" / ")||e.noReleaseReason||"范围待核实"}`);
-  if(row.action.kind==="accept_merge")lines.push(`合并核验：${row.action.evidence.validation}`,`依据：${row.action.evidence.source}`);
+  if(row.action.kind==="accept_merge"){
+    const action=row.action,entry=preview.entries.find(e=>e.deliveryId===action.deliveryId);
+    lines.push(`目标：${entry?.repository??"仓库待核实"} → ${entry?.targetBranch??"分支待核实"}`,`实际 head：${row.action.evidence.head}`,`合并提交：${row.action.evidence.commit}`,`目标分支提交：${row.action.evidence.targetHead}`);
+    lines.push(`合并核验：${row.action.evidence.validation}`,`依据：${row.action.evidence.source}`);
+  }
   return lines.filter(Boolean).join("\n\n");
 }

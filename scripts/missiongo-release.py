@@ -65,9 +65,9 @@ def main():
     if action == "verify":
         settings = json.loads((CONFIG / "release-local.json").read_text())
         options = sys.argv[2:]
-        allowed_options = {"--receipt", "--candidates", "--selection", "--selection-digest", "--output"}
+        allowed_options = {"--receipt", "--candidates", "--selection", "--selection-digest", "--only-artifacts", "--scope-reason", "--output"}
         if len(options) % 2 or any(options[i] not in allowed_options for i in range(0, len(options), 2)):
-            raise ValueError("verify accepts only receipt, candidates, selection, selection-digest and output")
+            raise ValueError("verify accepts only receipt, candidates, selection, selection-digest, only-artifacts, scope-reason and output")
         run(["node", str(TOOLS / "release-verify.mjs"), "--root", str(root),
              "--host", settings["host"], "--current-link", settings["currentLink"], "--downloads-dir", settings["downloadsDir"],
              "--origin", settings["origin"], "--coverage-config", str(CONFIG / "release-coverage.json"), *options], root)

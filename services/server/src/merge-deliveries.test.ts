@@ -1053,6 +1053,12 @@ describe("AND-439 batch reconciliation",()=>{
     expect(f.merges.start(f.owner.id,f.b.requestKey,f.b.selection,f.b.config,true).id).toBe(f.b.id);
     expect(f.store.getWorkItem(f.item.key).status).toBe("in_progress");
   });
+  it("keeps actual merge versions and target identity in the human review",async()=>{
+    const f=await recoveryFixture(),r=f.request({kind:"accept_merge",deliveryId:f.d.id,evidence:f.evidence});
+    const text=f.preview().reconciliation!.requests.find(q=>q.id===r.key)!.reviewText!;
+    expect(text).toContain(`/?console=agent&session=${encodeURIComponent(f.b.sessionId)}&mergeReview=`);
+    for(const value of [f.d.repository,f.d.targetBranch,f.evidence.head,f.evidence.commit,f.evidence.targetHead,f.evidence.validation,f.evidence.source])expect(text).toContain(value);
+  });
   it("records one bound native recovery decision without performing recovery or trusting an Agent attestation",async()=>{
     const f=await recoveryFixture();
     const r=f.request({kind:"accept_merge",deliveryId:f.d.id,evidence:f.evidence});
@@ -1109,9 +1115,11 @@ describe("AND-439 batch reconciliation",()=>{
     f.merged();f.final();expect(f.merges.finish(f.owner.id,f.b.dispatchId,f.b.id).state).toBe("finished");
   });
   it.each(["codex","claude_code","opencode"] as const)("restores %s consent only from authenticated exact source history",async agentKind=>{
-    const f=await recoveryFixture({publish:true,agentKind}),r=f.request({kind:"defer_publication",reason:"Publish later"});
+    const f=await recoveryFixture({publish:true,agentKind});
+    vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(new Date(Date.now()-5000));
+    const r=f.request({kind:"defer_publication",reason:"Publish later"});vi.useRealTimers();
     const sessions=new AgentSessionStore(f.store.database);sessions.createForDispatch({dispatchId:f.b.dispatchId,nodeId:f.node.nodeId,sessionRef:"native-integrator"});
-    const request=f.preview().reconciliation!.requests.find(q=>q.id===r.key)!,now=Date.now();
+    const request=f.preview().reconciliation!.requests.find(q=>q.id===r.key)!,now=Date.now()-3000;
     expect(f.merges.recoverConversationDecision(f.owner.id,f.b.dispatchId,f.b.id,r.key).code).toBe("history_incomplete");
     sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.b.sessionId,status:"active",turnState:{turnActive:true},messages:[
       {sourceId:"review",role:"agent",phase:"final_answer",turnId:"review-turn",text:request.reviewText!,occurredAt:new Date(now+1).toISOString()},
@@ -1121,16 +1129,19 @@ describe("AND-439 batch reconciliation",()=>{
     expect(f.merges.recoverConversationDecision(f.owner.id,f.b.dispatchId,f.b.id,r.key).code).toBe("already_decided");
     expect(f.preview().reconciliation!.requests[0]?.decisionSource).toEqual({kind:"native_history",sourceId:"consent"});
   });
-  it.each(["quoted","same-turn","wrong-review","commentary","missing-clock"])("keeps native %s evidence unapproved",async change=>{
-    const f=await recoveryFixture({publish:true,agentKind:"codex"}),r=f.request({kind:"defer_publication",reason:"Publish later"});
+  it.each(["quoted","same-turn","wrong-review","commentary","missing-clock","oversized-questions"])("keeps native %s evidence unapproved",async change=>{
+    const f=await recoveryFixture({publish:true,agentKind:"codex"});
+    vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(new Date(Date.now()-5000));
+    const r=f.request({kind:"defer_publication",reason:"Publish later"});vi.useRealTimers();
     const sessions=new AgentSessionStore(f.store.database);sessions.createForDispatch({dispatchId:f.b.dispatchId,nodeId:f.node.nodeId,sessionRef:"native-integrator"});
-    const row=f.preview().reconciliation!.requests.find(q=>q.id===r.key)!,now=Date.now();
+    const row=f.preview().reconciliation!.requests.find(q=>q.id===r.key)!,now=Date.now()-3000;
     const display={sourceId:"review",role:"agent" as const,phase:change==="commentary"?"commentary":"final_answer",turnId:"one",text:row.reviewText!+(change==="wrong-review"?" additional scope":""),occurredAt:new Date(now+1).toISOString()};
     const user={sourceId:"consent",role:"user" as const,turnId:change==="same-turn"?"one":"two",text:change==="quoted"?"他说同意":"同意",occurredAt:new Date(now+2).toISOString()};
     sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.b.sessionId,status:"idle",messages:[display,user]});
     new AgentHistory(f.store.database,new AgentArtifacts(f.store.database,"")).observe(f.owner.id,f.node.nodeId,f.b.sessionId,{complete:true});
+    if(change==="oversized-questions")f.db.prepare("UPDATE agent_session_messages SET questions_json=CAST(zeroblob(?) AS TEXT) WHERE session_id=? AND source_id='review'").run(32*1024*1024+1,f.b.sessionId);
     if(change==="missing-clock")f.db.prepare("DELETE FROM session_message_times WHERE session_key=?").run(`dispatch:${f.b.dispatchId}`);
-    expect(f.merges.recoverConversationDecision(f.owner.id,f.b.dispatchId,f.b.id,r.key).code).not.toBe("restored");
+    expect(f.merges.recoverConversationDecision(f.owner.id,f.b.dispatchId,f.b.id,r.key).code).toBe(["missing-clock","oversized-questions"].includes(change)?"history_incomplete":"evidence_missing");
     expect(f.preview().reconciliation!.requests[0]?.decision).toBeUndefined();
   });
   it("records a visible Web card decision and its original queued reply atomically through HTTP",async()=>{
@@ -1142,6 +1153,10 @@ describe("AND-439 batch reconciliation",()=>{
     const send=()=>f.app.inject({method:"POST",url:`/api/v1/agent-sessions/${f.b.sessionId}/commands`,headers,payload});
     const a=await send();expect(a.statusCode,a.body).toBe(201);const b=await send();expect(b.json().id).toBe(a.json().id);
     expect(f.preview().reconciliation!.requests[0]).toMatchObject({decision:"approved",decisionSource:{kind:"conversation",commandId:a.json().id}});
+    const later=f.request({kind:"defer_publication",reason:"A later distinct decision"});
+    f.merges.reviewReconciliation(f.owner.id,f.b.id,later.key,later.snapshot);
+    const replay=await send();expect(replay.json().id).toBe(a.json().id);
+    expect(f.preview().reconciliation!.requests.find(row=>row.id===later.key)?.decision).toBeUndefined();
   });
   it("binds conversation approval to a displayed card and commits it with the human send",async()=>{
     const f=await recoveryFixture({publish:true}),r=f.request({kind:"defer_publication",reason:"Exact scope"});
@@ -1155,7 +1170,7 @@ describe("AND-439 batch reconciliation",()=>{
   it("records an explicit refusal without granting approval or applying recovery",async()=>{
     const f=await recoveryFixture({publish:true}),r=f.request({kind:"defer_publication",reason:"Exact scope"});
     f.merges.reviewReconciliation(f.owner.id,f.b.id,r.key,r.snapshot);
-    f.merges.conversationReply(f.owner.id,f.b.sessionId,"不同意",[],()=>({id:"refusal"}));
+    f.merges.conversationReply(f.owner.id,f.b.sessionId,"不同意",[],()=>new AgentSessionStore(f.store.database).enqueue(f.owner.id,f.b.sessionId,"不同意",[]));
     expect(f.preview().reconciliation!.requests[0]?.decision).toBe("rejected");
     expect(()=>f.apply(r.key)).toThrow(/人工/);
   });
