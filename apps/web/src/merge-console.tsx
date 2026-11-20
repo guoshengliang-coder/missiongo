@@ -189,10 +189,11 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
   const [selected,setSelected]=useState<Record<string,string>>({});
   const [config,setConfig]=useState<FreeSessionConfig>();
   const [publish,setPublish]=useState(false);
+  const [historyReviewDigest,setHistoryReviewDigest]=useState<string>();
   const [step,setStep]=useState<1|2>(1);
   const [detail,setDetail]=useState<Delivery>();
   const initialConfig=useRef<string | undefined>(undefined);
-  const frozen=useRef<{requestKey:string;selection:{id:string;revision:string}[];config:FreeSessionConfig;publish:boolean;saveAsDefault:boolean;operation:IntegrationActionMode;scopeDigest?:string} | undefined>(undefined);
+  const frozen=useRef<{requestKey:string;selection:{id:string;revision:string}[];config:FreeSessionConfig;publish:boolean;saveAsDefault:boolean;operation:IntegrationActionMode;scopeDigest?:string;historicalGapsAcknowledged?:boolean} | undefined>(undefined);
   const initialized=useRef(false);
   useEffect(()=>{
     if(initialized.current || !nodes.data || !saved || !integrationDefaults.isSuccess) return;
@@ -236,9 +237,9 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
     enabled:step===2&&effectivePublish&&selection.length>0,staleTime:0});
   const start=useMutation({mutationFn:async()=>{
     if(!config)throw new Error("Missing configuration");
-    frozen.current??={requestKey:crypto.randomUUID(),selection,config,publish:effectivePublish,saveAsDefault,operation,...(effectivePublish&&scope.data?{scopeDigest:scope.data.digest}:{})};
+    frozen.current??={requestKey:crypto.randomUUID(),selection,config,publish:effectivePublish,saveAsDefault,operation,...(effectivePublish&&scope.data?{scopeDigest:scope.data.digest,...(scope.data.candidates.some(c=>c.historicalGapReason)?{historicalGapsAcknowledged:historyReviewDigest===scope.data.digest}:{})}:{})};
     const f=frozen.current;
-    return post<Batch>(`/api/v1/products/${productId}/merge-batches`,{...f.config,requestKey:f.requestKey,selection:f.selection,publish:f.publish,saveAsDefault:f.saveAsDefault,operation:f.operation,...(f.scopeDigest?{scopeDigest:f.scopeDigest}:{}),integrationProtocol:1});
+    return post<Batch>(`/api/v1/products/${productId}/merge-batches`,{...f.config,requestKey:f.requestKey,selection:f.selection,publish:f.publish,saveAsDefault:f.saveAsDefault,operation:f.operation,...(f.scopeDigest?{scopeDigest:f.scopeDigest}:{}),...(f.historicalGapsAcknowledged?{historicalGapsAcknowledged:true}:{}),integrationProtocol:1});
   },onSuccess:b=>{
     void client.invalidateQueries({queryKey:["integration-defaults"]});
     setCreatedBatch(b);
@@ -257,7 +258,9 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
   const selectedCount=Object.keys(selected).length;
   const mergeCount=chosen.filter(d=>d.queue.stage==="merge").length;
   const releaseCount=chosen.length-mergeCount;
-  const extraScope=scope.data?.candidates.filter(c=>!c.selected)??[];
+  const historicalGaps=scope.data?.candidates.filter(c=>c.historicalGapReason)??[];
+  const historyReviewNeeded=historicalGaps.length>0&&historyReviewDigest!==scope.data?.digest;
+  const extraScope=scope.data?.candidates.filter(c=>!c.selected&&!c.historicalGapReason)??[];
   const extraGroups=new Set(extraScope.map(c=>JSON.stringify(c.completion??c.identity))).size;
   const selectedValid=selection.every(({id,revision})=>chosen.some(d=>d.id===id&&d.revision===revision&&d.blocker!=="changed"&&!d.queue.blocker&&d.queue.stage!=="review"));
   const detailCurrent=detail?catalog.current.get(detail.id):undefined;
@@ -323,6 +326,12 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
         {scope.isPending?<p role="status">{t("queueScopeLoading")}</p>:scope.isError?<p role="alert" className="inline-error">{t("queueScopeError")} <button type="button" className="secondary-button" onClick={()=>void scope.refetch()}>{t("retry")}</button></p>:scope.data&&<>
           <p>{scope.data.requiredArtifacts.map(artifactName).join(" / ")}</p>
           {extraScope.length>0&&<details className="integration-attention merge-extra-scope"><summary><TriangleAlert size={16} aria-hidden="true"/><span>{t("queueExtraScopeCompact",{count:extraGroups})}</span><span>{t("queueView")}</span></summary><p>{t("queueExtraScopeHelp")}</p>{extraScope.map(c=><p key={c.identity}>{c.title} · {c.requiredArtifacts?.map(artifactName).join(" / ")}</p>)}</details>}
+          {historicalGaps.length>0&&<section className="integration-attention">
+            <h4>{t("queueHistoricalGaps")}</h4>
+            {historicalGaps.map(c=><p key={c.identity}><strong>{c.itemKey} · {c.title}</strong>{c.createdAt&&<><br/><time dateTime={c.createdAt}>{new Date(c.createdAt).toLocaleString()}</time></>}<br/>{c.historicalGapReason}</p>)}
+            <div className="help-option"><label><input type="checkbox" disabled={locked} checked={historyReviewDigest===scope.data.digest} onChange={e=>setHistoryReviewDigest(e.target.checked?scope.data!.digest:undefined)}/>{t("queueHistoricalGapsConfirm")}</label></div>
+            <p>{t("queueHistoricalGapsHelp")}</p>
+          </section>}
           {scope.data.exclusions?.map(e=><p className="integration-note" key={e.identity}>{e.title} · {e.reason}</p>)}
           {scope.data.blockers.map(b=><p className="inline-error" role="alert" key={b}>{b}</p>)}
           <details><summary>{t("queueScopeDetails")}</summary>{scope.data.candidates.map(c=><p key={c.identity}>{c.title} · {c.requiredArtifacts?.map(artifactName).join(" / ")}</p>)}</details>
@@ -335,7 +344,7 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
       <div className="form-footer merge-footer">
         {step===2&&<button type="button" className="secondary-button" disabled={locked} onClick={()=>setStep(1)}>{t("mergePrevious")}</button>}
         {step===1?<button type="button" className="primary-button" disabled={locked||Boolean(active)||!selectedCount||!selectedValid||!queue.isSuccess||(legacy&&!query.isSuccess)} onClick={()=>setStep(2)}>{t("mergeNext")}</button>:
-        <button type="button" className="primary-button" disabled={start.isPending||openSession.isPending||(Boolean(active)&&!retryOriginal)||(!frozen.current&&(!configValid||!defaultsReady||!selectedCount||!selectedValid||!queue.isSuccess||(legacy&&!query.isSuccess)||(effectivePublish&&(!scope.isSuccess||scope.isFetching||scope.data.blockers.length>0))))}
+        <button type="button" className="primary-button" disabled={start.isPending||openSession.isPending||(Boolean(active)&&!retryOriginal)||(!frozen.current&&(!configValid||!defaultsReady||!selectedCount||!selectedValid||!queue.isSuccess||(legacy&&!query.isSuccess)||(effectivePublish&&(!scope.isSuccess||scope.isFetching||scope.data.blockers.length>0||historyReviewNeeded))))}
           onClick={()=>start.mutate()}>{t(start.isError&&frozen.current?"mergeRetry":"mergeStart",{count:selectedCount})}</button>}
 
       </div>

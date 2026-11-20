@@ -1,3 +1,4 @@
+import {reviewedHistoricalDeliveries} from "./historical-delivery-review.js";
 import {AgentHistory} from "./agent-history.js";
 import {AgentArtifacts} from "./agent-artifacts.js";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -1264,6 +1265,15 @@ describe("AND-439 batch reconciliation",()=>{
     const action={kind:"allow_partial_publication" as const,reason:"Resume the original merged batch; retain historical evidence warnings",publicationRefresh:{scopeDigest:scope.digest,historicalGaps:[{identity:gap.identity,reason:"Earlier manual completion lacks integration and scope; current merged delivery remains included"}]}};
     return {...f,scope,gap,action,historical};
   }
+  it("uses applied recovery review for manual acceptance without fabricating historical publication",async()=>{
+    const f=await publicationRefreshFixture(),r=f.request(f.action);f.approve(r);f.apply(r.key);
+    const record=f.store.getDeliveryRecords(f.item.key).find(row=>row.id!==f.gap.developmentEventId)!;
+    expect(f.store.submitReleaseBatch({productId:f.item.productId,idempotencyKey:"recovery-published",deployedCommit:"e".repeat(40),receiptDigest:"f".repeat(64),attribution:{accountId:f.owner.id,clientId:"original-client"},
+      items:[{itemKey:f.item.key,expectedRevision:f.store.getWorkItem(f.item.key).revision,developmentEventId:record.id,roundKey:record.roundKey!,completion:record.completion!,releases:record.requiredArtifacts!.map(artifact=>({artifact,version:"1",sourceCommit:"e".repeat(40)}))}]}).results[0]?.outcome).toBe("submitted");
+    f.store.transitionWorkItem({itemKey:f.item.key,to:"done",actor:"human",reason:"verification_passed",expectedRevision:f.store.getWorkItem(f.item.key).revision,attribution:{accountId:f.owner.id}});
+    expect(f.store.getWorkItem(f.item.key).status).toBe("done");
+    expect(f.store.getDeliveryRecords(f.item.key).find(row=>row.id===f.gap.developmentEventId)?.published).toBe(false);
+  });
   it("refreshes complete publication scope only after exact human approval without rewriting historical evidence",async()=>{
     const f=await publicationRefreshFixture(),before=f.merges.batch(f.owner.id,f.b.dispatchId,f.b.id),oldEvidence=f.store.getDevelopmentEvidence(f.historical.key,f.gap.developmentEventId);
     expect(f.scope.candidates).toHaveLength(2);
@@ -1857,6 +1867,113 @@ describe("AND-511 two-step integration queue",()=>{
     if(finishBatch)merges.finish(f.owner.id,original.dispatchId,original.id);
     return {...f,...launched,merges,input,d,conf,original,launchBatch,selection:[{id:d.id,revision:d.revision}]};
   }
+  async function historicalProject(withReturn=true,withReplacement=true,withEvidence=false) {
+    const f=await mergedProject(["web"]);
+    const admins=f.accounts.projectAdministratorIds(f.item.productId);
+    f.accounts.replaceProjectAdministrators(f.item.productId,[...admins,f.owner.id],admins,config.id);
+    const transition=(to:"in_progress"|"development_complete")=>f.store.transitionWorkItem({itemKey:f.item.key,actor:"human",to,reason:"manual_override",note:"Synthetic historical state correction",attribution:{accountId:f.owner.id}});
+    transition("in_progress");transition("development_complete");
+    const old=f.store.getDevelopmentEvidence(f.item.key).handover!.id;
+    if(withEvidence) {
+      const evidence=f.store.getDevelopmentEvidence(f.item.key);
+      f.store.supplementReleaseEvidence({productId:f.item.productId,itemKey:f.item.key,expectedRevision:f.store.getWorkItem(f.item.key).revision,
+        developmentEventId:old,roundKey:evidence.roundKey!,completion:{kind:"github",url:"https://github.com/example/project/pull/987"},requiredArtifacts:["windowsApp"],idempotencyKey:"original-proof",attribution:{accountId:f.owner.id,clientId:"original-client"}});
+    }
+    if(withReturn)transition("in_progress");
+    if(withReturn&&withReplacement) {
+      f.safe(await f.call("claim_item",{...f.claimInput,session:undefined,dispatchId:f.dispatch.id}));
+      f.safe(await f.call("submit_development_complete",{itemKey:f.item.key,dispatchId:f.dispatch.id,
+        completion:{kind:"github",url:f.d.pullRequestUrl},requiredArtifacts:["web"],idempotencyKey:"replacement"}));
+    }
+    return {...f,old};
+  }
+  it("reviews returned status-only history at startup without inventing evidence or dropping real deliveries",async()=>{
+    const f=await historicalProject(),before=f.store.getTimeline(f.item.key),scope=f.merges.publicationPreview(f.owner.id,f.item.productId,f.selection);
+    expect(scope.blockers).toEqual([]);
+    expect(scope.candidates.find(c=>c.developmentEventId===f.old)).toMatchObject({historicalGapReason:expect.any(String)});
+    expect(scope.candidates.filter(c=>!c.historicalGapReason).length).toBeGreaterThan(0);
+    expect(()=>f.merges.start(f.owner.id,"reviewed-history",f.selection,f.conf,true,1,false,"publish_only",scope.digest)).toThrow(/历史/);
+    expect(()=>f.merges.start(f.owner.id,"reviewed-history",f.selection,f.conf,true,1,false,"publish_only","0".repeat(64),true)).toThrow(/范围/);
+    const b=f.merges.start(f.owner.id,"reviewed-history",f.selection,f.conf,true,1,false,"publish_only",scope.digest,true);
+    expect(b.publicationReview).toMatchObject({accountId:f.owner.id,scopeDigest:scope.digest});
+    expect(f.merges.start(f.owner.id,"reviewed-history",f.selection,f.conf,true,1,false,"publish_only",scope.digest,true).id).toBe(b.id);
+    expect(()=>f.merges.start(f.owner.id,"reviewed-history",f.selection,f.conf,true,1,false,"publish_only",scope.digest,false)).toThrow();
+    expect(f.store.getTimeline(f.item.key)).toEqual(before);
+    expect(f.store.getDevelopmentEvidence(f.item.key,f.old).completion).toBeUndefined();
+    // The same reviewed history must pass the execution-time frozen scope check.
+    f.launchBatch(b);
+    let current=f.merges.batch(f.owner.id,b.dispatchId,b.id);
+    const display=f.merges.batches(f.item.productId,f.owner.id).find(row=>row.id===b.id)!.presentation;
+    expect(display.historicalGaps).toHaveLength(1);
+    expect(display.ownedExtras?.some(row=>row.id.includes(f.old))).not.toBe(true);
+    const act=(action:Parameters<MergeDeliveries["integrate"]>[5])=>{current=f.merges.integrate(f.owner.id,b.dispatchId,b.id,current.integration!.revision,randomUUID(),action);};
+    act({kind:"plan",base:"b".repeat(40),summary:"Reviewed scope",validation:"Combination",entries:[{deliveryId:f.d.id,head:f.d.head,dependsOn:[],group:"one",reason:"Reference",validation:"Regression"}]});
+    act({kind:"verify_reference",deliveryId:f.d.id,expectedHead:f.d.head,commit:"c".repeat(40),checkedAt:new Date().toISOString(),source:"Synthetic"});
+    act({kind:"final_validation",head:"c".repeat(40),checkedAt:new Date().toISOString(),validation:"Passed",source:"Synthetic"});
+    act({kind:"publication_progress",state:"publishing",checkedAt:new Date().toISOString(),resultsDigest:current.resultsDigest,detail:"Reviewed original scope"});
+    f.store.updateWorkItem(f.item.key,{description:"Changed scope",attribution:{accountId:config.id}});
+    expect(()=>act({kind:"publication_progress",state:"publishing",checkedAt:new Date().toISOString(),resultsDigest:current.resultsDigest,detail:"Changed scope must stop"})).toThrow();
+  });
+  it("never excludes a returned delivery that has real integration and artifact evidence",async()=>{
+    const f=await historicalProject(true,true,true),scope=f.merges.publicationPreview(f.owner.id,f.item.productId,f.selection);
+    const old=scope.candidates.find(c=>c.developmentEventId===f.old)!;
+    expect(old.historicalGapReason).toBeUndefined();expect(old.requiredArtifacts).toEqual(["windowsApp"]);
+    expect(scope.requiredArtifacts).toContain("windowsApp");
+    expect(scope.candidates.filter(c=>c.itemKey===f.item.key)).toHaveLength(2);
+    expect(()=>f.merges.start(f.owner.id,"cannot-hide-known",f.selection,f.conf,true,1,false,"publish_only",scope.digest,true)).toThrow();
+  });
+  it("retains only the historical warning after the replacement delivery is fully published",async()=>{
+    const f=await historicalProject(),record=f.store.getDeliveryRecords(f.item.key).find(r=>r.id!==f.old)!;
+    const result=f.store.submitReleaseBatch({productId:f.item.productId,idempotencyKey:"published-replacement",deployedCommit:"e".repeat(40),receiptDigest:"f".repeat(64),attribution:{accountId:f.owner.id,clientId:"original-client"},
+      items:[{itemKey:f.item.key,expectedRevision:f.store.getWorkItem(f.item.key).revision,developmentEventId:record.id,roundKey:record.roundKey!,completion:record.completion!,releases:[{artifact:"web",version:"1",sourceCommit:"e".repeat(40)}]}]});
+    expect(result.results[0]?.outcome).toBe("submitted");
+    const scope=f.merges.publicationPreview(f.owner.id,f.item.productId,f.selection);
+    expect(scope.blockers).toEqual([]);
+    expect(scope.candidates.some(c=>c.developmentEventId===record.id)).toBe(false);
+    expect(scope.candidates.find(c=>c.developmentEventId===f.old)?.historicalGapReason).toBeTruthy();
+    const before=f.store.getTimeline(f.item.key);
+    const accept=(expectedRevision?:number)=>f.store.transitionWorkItem({itemKey:f.item.key,to:"done",actor:"human",reason:"verification_passed",
+      ...(expectedRevision!==undefined?{expectedRevision}:{}),attribution:{accountId:f.owner.id}});
+    expect(()=>accept(f.store.getWorkItem(f.item.key).revision)).toThrow(/发布/);
+    f.merges.start(f.owner.id,"after-published-replacement",f.selection,f.conf,true,1,false,"publish_only",scope.digest,true);
+    expect(f.store.getTimeline(f.item.key)).toEqual(before);
+    expect(f.store.getWorkItem(f.item.key).status).toBe("pending_verification");
+    expect(()=>accept()).toThrow(/修订/);
+    // Reviewing old history must never exempt a new real integration.
+    f.safe(await f.call("submit_development_complete",{itemKey:f.item.key,dispatchId:f.dispatch.id,
+      completion:{kind:"github",url:"https://github.com/example/project/pull/999"},requiredArtifacts:["web"],idempotencyKey:"another-real-delivery"}));
+    expect(()=>accept(f.store.getWorkItem(f.item.key).revision)).toThrow(/发布/);
+    const next=f.store.getDeliveryRecords(f.item.key).at(-1)!;
+    expect(f.store.submitReleaseBatch({productId:f.item.productId,idempotencyKey:"publish-next",deployedCommit:"e".repeat(40),receiptDigest:"f".repeat(64),attribution:{accountId:f.owner.id,clientId:"original-client"},
+      items:[{itemKey:f.item.key,expectedRevision:f.store.getWorkItem(f.item.key).revision,developmentEventId:next.id,roundKey:next.roundKey!,completion:next.completion!,releases:[{artifact:"web",version:"2",sourceCommit:"e".repeat(40)}]}]}).results[0]?.outcome).toBe("submitted");
+    const live=f.store.getWorkItem(f.item.key),records=f.store.getDeliveryRecords(f.item.key);
+    const context={id:live.id,key:live.key,productId:live.productId,contentVersion:live.contentVersion!,builderAccountId:live.builderAccountId??null,roundKey:record.roundKey};
+    expect(reviewedHistoricalDeliveries(f.store.database,context,records).has(f.old)).toBe(true);
+    for(const changed of [{...context,contentVersion:context.contentVersion+1},{...context,builderAccountId:f.other.id},{...context,roundKey:randomUUID()}]) {
+      expect(reviewedHistoricalDeliveries(f.store.database,changed,records).size).toBe(0);
+    }
+  });
+  it("allows only human version-bound acceptance after exact durable history review",async()=>{
+    const f=await historicalProject(),record=f.store.getDeliveryRecords(f.item.key).find(r=>r.id!==f.old)!;
+    f.store.submitReleaseBatch({productId:f.item.productId,idempotencyKey:"published-replacement",deployedCommit:"e".repeat(40),receiptDigest:"f".repeat(64),attribution:{accountId:f.owner.id,clientId:"original-client"},
+      items:[{itemKey:f.item.key,expectedRevision:f.store.getWorkItem(f.item.key).revision,developmentEventId:record.id,roundKey:record.roundKey!,completion:record.completion!,releases:[{artifact:"web",version:"1",sourceCommit:"e".repeat(40)}]}]});
+    const scope=f.merges.publicationPreview(f.owner.id,f.item.productId,f.selection);
+    f.merges.start(f.owner.id,"review-then-accept",f.selection,f.conf,true,1,false,"publish_only",scope.digest,true);
+    expect(f.store.getWorkItem(f.item.key).status).toBe("pending_verification");
+    f.store.transitionWorkItem({itemKey:f.item.key,to:"done",actor:"human",reason:"verification_passed",expectedRevision:f.store.getWorkItem(f.item.key).revision,attribution:{accountId:f.owner.id}});
+    expect(f.store.getWorkItem(f.item.key).status).toBe("done");
+    expect(f.store.getDeliveryRecords(f.item.key).find(r=>r.id===f.old)?.published).toBe(false);
+  });
+  it.each([[false,false],[true,false]])("keeps unresolved manual work blocked without a replacement (%s/%s)",async(returned,replacement)=>{
+    const f=await historicalProject(returned,replacement),scope=f.merges.publicationPreview(f.owner.id,f.item.productId,f.selection);
+    // In-progress items are not release candidates, but their old record is never classified as reviewed history.
+    expect(f.store.getDeliveryRecords(f.item.key).find(r=>r.id===f.old)?.historicalGapReason).toBeUndefined();
+    if(!returned) {
+      expect(scope.blockers.length).toBeGreaterThan(0);
+      expect(scope.blockers.join(" ")).not.toContain("取消“合并后发布”");
+      expect(()=>f.merges.start(f.owner.id,"unsafe-history",f.selection,f.conf,true,1,false,"publish_only",scope.digest,true)).toThrow();
+    }
+  });
   it("AND-520 active original merged delivery stays owned until finish while the project lock protects execution",async()=>{
     const f=await mergedProject(["web","macosApp"],":memory:",false);
     const queue=f.merges.queue(f.item.productId,f.owner.id);

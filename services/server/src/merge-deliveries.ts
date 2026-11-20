@@ -1,3 +1,4 @@
+import {deliveryScope,historicalDeliveryFingerprint} from "./historical-delivery-review.js";
 import {conversationDecisionEvidence} from "./conversation-decision-evidence.js";
 import {mergeReviewSummary} from "./merge-review-summary.js";
 import { developmentReviewBlocker, developmentReviewExpiry } from "./development-reviews.js";
@@ -64,6 +65,7 @@ interface Delivery extends DeliveryInput {
 interface Batch {
   operation?:IntegrationActionMode;
   publicationScope?:PublicationScope|undefined;
+  publicationReview?:{accountId:string;at:string;scopeDigest:string};
   references?:Record<string,{batchId:string;head:string;commit:string}>;
   verifiedReferences?:Record<string,{checkedAt:string;source:string}>;
   saveAsDefault?: boolean;
@@ -164,9 +166,9 @@ export class MergeDeliveries {
   }
   private scope(keys: string[]) {
     return this.displayRead("scope:"+JSON.stringify(keys),()=>{
-    return digest(keys.map(key => {
+    return deliveryScope(keys.map(key => {
       const id = this.store.workItemId(key);
-      return [id, this.store.workItemContentVersion(key), this.store.workItemBuilderAccountId(key), deliveryRound(this.db, id)];
+      return [id, this.store.workItemContentVersion(key), this.store.workItemBuilderAccountId(key), deliveryRound(this.db, id)] as const;
     }));
     });
   }
@@ -475,11 +477,14 @@ export class MergeDeliveries {
     for(const d of selected)if(!candidates.some(c=>c.deliveryId===d.id || c.selected && d.itemKeys.includes(c.itemKey??"")&&c.completion&&sameCompletion(normalizeCompletion({completion:c.completion}),{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`})))
       candidates.push({identity:`selection:${d.id}`,deliveryId:d.id,title:d.summary,completion:{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`},requiredArtifacts:d.requiredArtifacts,...(d.noReleaseReason?{noReleaseReason:d.noReleaseReason}:{}),expectedRevision:d.revision,selected:true});
     candidates.sort((a,b)=>a.identity.localeCompare(b.identity));
-    const blockers=candidates.flatMap(c=>!c.completion||c.requiredArtifacts==null||!c.requiredArtifacts.length&&!c.noReleaseReason?[`${c.title}：集成依据或发布范围待核实`]:[]);
+    const blockers=candidates.filter(c=>!c.historicalGapReason).flatMap(c=>{
+      const missing=[...(!c.completion?["集成依据"]:[]),...(c.requiredArtifacts==null||!c.requiredArtifacts.length&&!c.noReleaseReason?["发布产物范围"]:[])];
+      return missing.length?[`${c.itemKey?c.itemKey+" · ":""}${c.title}：缺少${missing.join("、")}。请由交付执行者核实并补齐。${selected.some(d=>d.state!=="merged")?"也可取消“合并后发布”，先仅合并。":""}`]:[];
+    });
     for(const c of candidates)if(c.completion) {
       try {const ref=normalizeCompletion({completion:c.completion});if(ref.kind!=="github"||!ref.url.startsWith(selected[0]!.repository+"/pull/"))blockers.push(`${c.title}：不属于本次目标仓库`);}catch{blockers.push(`${c.title}：集成依据待核实`);}
     }
-    const requiredArtifacts=[...new Set(candidates.flatMap(c=>c.requiredArtifacts??[]))].sort();
+    const requiredArtifacts=[...new Set(candidates.filter(c=>!c.historicalGapReason).flatMap(c=>c.requiredArtifacts??[]))].sort();
     return {digest:digest([selection,candidates,requiredArtifacts,blockers,exclusions]),candidates,requiredArtifacts,blockers,exclusions};
   }
   private publicationRefresh(b:Batch):PublicationScope|undefined {
@@ -515,7 +520,7 @@ export class MergeDeliveries {
   private historicalPublicationFingerprint(row:PublicationScopeRow) {
     // A different delivery of the same item can advance its global revision
     // through verified publication. Its content/Builder/round scope stays bound.
-    return digest([row.identity,row.itemKey,row.developmentEventId,row.roundKey,row.completion??null,row.requiredArtifacts??null,row.itemScope]);
+    return historicalDeliveryFingerprint(row);
   }
   private assertReferences(b:Batch,fresh=false) {
     for(const [id,ref]of Object.entries(b.references??{})) {
@@ -530,7 +535,8 @@ export class MergeDeliveries {
     const expected=b.publicationScope.candidates,seenHistorical=new Set<string>();
     if(expected.some(row=>row.historicalGapReason)) {
       const approved=b.reconciliation?.requests.find(row=>row.action.kind==="allow_partial_publication" && row.action.publicationRefresh && row.decision==="approved" && row.decidedAt && row.decidedBy && row.appliedAt && row.publicationScope?.digest===b.publicationScope!.digest);
-      if(!approved?.publicationScope || digest(approved.publicationScope)!==digest(b.publicationScope))throw changed();
+      if((!approved?.publicationScope || digest(approved.publicationScope)!==digest(b.publicationScope))
+        && !(b.publicationReview?.accountId===b.accountId && b.publicationReview.scopeDigest===b.publicationScope.digest))throw changed();
     }
     for(const row of expected) {
       if(row.historicalGapReason)continue;
@@ -913,7 +919,8 @@ export class MergeDeliveries {
    * item status, free-form progress, or the fact that a batch was finished. */
   private presentation(b:Batch,ignoreActivity=false):MergeBatchPresentation {
     return this.displayRead("presentation:"+b.id+":"+ignoreActivity,()=>{
-    const ownedExtras=(b.publicationScope?.candidates??[]).filter(c=>!c.selected).map(c=>{
+    const historicalGaps=(b.publicationScope?.candidates??[]).flatMap(c=>c.historicalGapReason?[{identity:c.identity,title:c.title,reason:c.historicalGapReason}]:[]);
+    const ownedExtras=(b.publicationScope?.candidates??[]).filter(c=>!c.selected&&!c.historicalGapReason).map(c=>{
       const required=c.requiredArtifacts??[],published=new Set<string>();let blocker:string|undefined;
       if(c.itemKey) {
         const record=this.store.getDeliveryRecords(c.itemKey,true).find(r=>r.id===c.developmentEventId);
@@ -933,7 +940,7 @@ export class MergeDeliveries {
       const publication=blocker?"unknown" as const:!pendingArtifacts.length?"published" as const:published.size?"partial" as const:"pending" as const;
       return {id:c.deliveryId??c.identity,title:c.title,pendingArtifacts,publication,...(blocker?{blocker}:{})};
     });
-    return {...(ownedExtras.length?{ownedExtras}:{}),entries:Object.fromEntries(b.deliveries.map(id=>{
+    return {...(historicalGaps.length?{historicalGaps}:{}),...(ownedExtras.length?{ownedExtras}:{}),entries:Object.fromEntries(b.deliveries.map(id=>{
       const d=this.read<Delivery>("merge_deliveries",id),url=`${d.repository}/pull/${d.pullRequest}`;
       const releases:MergeBatchPresentation["entries"][string]["releases"]=[];
       let publishedItems=0,knownItems=0;
@@ -971,14 +978,14 @@ export class MergeDeliveries {
     }))};
     });
   }
-  start(accountId: string, requestKey: string, selection: {id:string;revision:string}[], config: FreeSessionConfig, publish: boolean, integrationProtocol?: 1, saveAsDefault = false, operation?:IntegrationActionMode, scopeDigest?:string) {
+  start(accountId: string, requestKey: string, selection: {id:string;revision:string}[], config: FreeSessionConfig, publish: boolean, integrationProtocol?: 1, saveAsDefault = false, operation?:IntegrationActionMode, scopeDigest?:string, historicalGapsAcknowledged=false) {
     return this.db.transaction(() => {
       const prev = this.db.connection.prepare("SELECT id FROM merge_batches WHERE account_id=? AND request_key=?").get(accountId,requestKey) as {id:string}|undefined;
       if (prev) {
         const b = this.read<Batch>("merge_batches",prev.id);
         if ((b.integration?.recoveredAuthorization||b.integration?.prerequisitesOnly?undefined:b.integration?.protocol)!==integrationProtocol) throw changed();
         if (Boolean(b.saveAsDefault)!==saveAsDefault) throw changed();
-        if(b.operation!==operation || b.publicationScope?.digest!==scopeDigest)throw changed();
+        if(b.operation!==operation || b.publicationScope?.digest!==scopeDigest || Boolean(b.publicationReview)!==historicalGapsAcknowledged)throw changed();
         if (digest(b.config)!==digest(config) || b.publish!==publish || digest(b.selection)!==digest(selection)) throw changed();
         return b;
       }
@@ -1001,6 +1008,8 @@ export class MergeDeliveries {
       }
       const publicationScope=operation&&publish?this.publicationPreview(accountId,config.productId,selection):undefined;
       if(publicationScope && (publicationScope.digest!==scopeDigest || publicationScope.blockers.length))throw conflict("publication_scope_changed","发布范围已变化或缺少依据，请重新审阅。");
+      const hasHistoricalGaps=Boolean(publicationScope?.candidates.some(c=>c.historicalGapReason));
+      if(hasHistoricalGaps!==historicalGapsAcknowledged)throw conflict("publication_history_review_required","请逐项审阅历史缺证记录并确认：保留告警，不计为本次交付；不会删除历史或排除已合并代码。");
       const id=randomUUID();
       const text = `执行用户已授权的合并批次 ${id}。派单启动后先调用 get_merge_batch，使用本会话原 dispatchId。仅处理批次冻结的 PR；每次执行前重新调用 get_merge_batch，entries 中 blocker 非空必须停止。推送并登记后，达到可合并状态即用 gh pr merge --auto --merge --match-head-commit 绑定实际合并的 head 挂自动合并，由 required checks 全绿自动完成合并，不要逐项等待 CI 通知或手动合并，直接并行推进下一项；合并后回读实际 merge commit 核实再 report；检查失败先 gh pr merge --disable-auto 再修复，禁止 --admin 或绕过保护；不要领取开发条目，不要重新创建批次。每项挂自动合并前重新核实目标仓库、主线、依赖、CI 及预期 head；他人推送的新提交必须停止，不得合并未经本会话核验的 head。清单中的旧检查证据仅供参考，由本合并会话统一读取实时结果；CI 排队或运行中时保留原批次，先查状态且状态未变时降低轮询频率，不将等待标记为失败或另建会话。${integrationProtocol===1 ? "你是集成者，以保障批次全部条目成功集成为目标：负责必要的冲突、兼容与回归修复，按下述协议登记后推送原 PR 分支，不扩大功能范围。" : "本批仅允许合并原确认版本，不授权修改代码。"}疑似 flaky 或超时的检查可有依据地重跑一次核实。修复后的最终 head 必须本地仓库检查通过且无冲突才允许挂 auto-merge，实际合并仍由 required checks 全绿保证；穷尽合理修复仍无法集成的项记 blocked，写明已尝试的修复与剩余障碍，不编造修复结果。使用 report_merge_batch 逐项记录实际结果；未知结果保留原批次。已核实合并且明确无需发布的条目，完整读取 get_item_context.developmentEvidence 并写结果评论后，用 submit_non_release_for_verification 携带原合并 dispatchId、精确 batch/delivery 和当前 integration revision 提交人工验证，不伪造发布凭据或领取源条目；需发布条目仍按正式发布交接。发布授权：${publish ? "批次全部条目合并成功后按项目既有全量候选覆盖门禁发布，批次选择不缩小发布范围；存在 blocked 项时不得自动发布，先逐项报告，等用户明确决定是否先发已合并部分。" : "仅合并，不发布。"} 完成所有操作且核实无后台执行后，才结束批次。遵守仓库权限和发布规则。`;
       const dispatches=new DispatchStore(this.db);
@@ -1013,9 +1022,9 @@ export class MergeDeliveries {
       const readinessInstructions = `集成调查开始先做发布就绪预检，再保存集成计划：核对最新主线、全量 list_release_candidates(includeUnscoped:true) 全部分页（含无需发布记录）、历史集成/范围缺证、正式工具实际文件与安装清单及主线差异、现有产物来源、本批预计影响、升版和发布说明。把 get_merge_batch 返回的完整 batch 与完整候选保存到仓库外，运行统一入口 missiongo-release readiness --candidates <完整分页JSON> --batch <批次JSON>；旧工具不支持时用当前checkout的 node scripts/release-readiness.mjs 只读调查，不用旧plan冒充完整预检，不自动安装。独立检查失败保留并继续其余可查事实；事实缺口与需用户决定的范围/暂缓/风险分别列出。未选择发布也做只读调查，但不构建、安装或发布。冻结head仅供预计影响，按operation核实实际合并或既有references后刷新主线和release:state，仅在原授权范围内一次准备当时已知必要patch与发布说明的版本PR，已升版本不重复升；新增候选或外部主线变化重新对账。启动快照不是部署凭据，部署前仍刷新候选、CI、精确head及selection摘要，执行全部既有门禁。
 
 等待CI仅汇报阶段变化、失败、待决事项和下一步责任；无变化降低轮询频率，必要时简短保活，不重复全量计数/列表/日志。不得隐藏或改写原生源消息。最终按“对象/结果/证据与验证缺口/下一步责任”逐项交付，包含无需发布、本机工具和未包含项，多份交付独立；可用 missiongo-release report --input <完整限定范围证据JSON> --format markdown 生成只读报告。代码合并、产品完整/部分上线、本机效果、人工状态与通知送达独立；本机已生效、无需产品发布须执行端核实限定目标文件摘要和实际入口成功检查，缺证、失败或未运行只报待核实，不从noReleaseReason或通用测试通过推断安装。部分产物不能报完整交付；每项保留未覆盖范围、验证缺口、责任与下一步，未核实送达不报通知成功，人工验收由人决定。`;
-      const dispatch=free.prepare(accountId,id,{...config,saveAsDefault:false},`${text}\n\n${integrationInstructions}\n\n${readinessInstructions}\n\n${prerequisiteInstructions}${operation ? `\n\n动作协议2：${operation}。references 是已合并事实引用，禁止再次合并、修复或 report；先独立核实原 head/merge commit 在目标分支，用 record_merge_integration 的 verify_reference 动作逐项登记 deliveryId、expectedHead、commit、checkedAt、source。仅对 mergeReady 的非引用项执行 Git 合并。仅发布不得执行任何新的 Git 合并。计划包含全部选择，引用项无需修复。发布前核对 publicationScope 的完整元数据与范围状态，沿用第二步授权；额外范围变化必须暂停重新审阅，不得自动扩大授权。` : ""}`,0,integrationTitle);
+      const dispatch=free.prepare(accountId,id,{...config,saveAsDefault:false},`${text}\n\n${integrationInstructions}\n\n${readinessInstructions}\n\n${prerequisiteInstructions}${operation ? `\n\n动作协议2：${operation}。references 是已合并事实引用，禁止再次合并、修复或 report；先独立核实原 head/merge commit 在目标分支，用 record_merge_integration 的 verify_reference 动作逐项登记 deliveryId、expectedHead、commit、checkedAt、source。仅对 mergeReady 的非引用项执行 Git 合并。仅发布不得执行任何新的 Git 合并。计划包含全部选择，引用项无需修复。publicationScope 中 historicalGapReason 是用户已审阅的历史缺证处置：完整候选原文保留，逐交付 selection 使用 historical_gap 并沿用该理由，不补造集成证据、不重复发布或推进旧事件状态。发布前核对 publicationScope 的完整元数据与范围状态，沿用第二步授权；额外范围变化必须暂停重新审阅，不得自动扩大授权。` : ""}`,0,integrationTitle);
       const b: Batch={id,productId:config.productId,accountId,requestKey,dispatchId:dispatch.id,sessionId:dispatch.agentSessionId!,
-        config,publish,saveAsDefault,selection,...(operation?{operation,references,publicationScope}:{}),deliveries:deliveries.map(d=>d.id),state:"active",createdAt:new Date().toISOString(),results:Object.fromEntries(Object.entries(references).map(([id,r])=>[id,{status:"merged" as const,head:r.head,commit:r.commit,detail:"既有合并事实引用；执行前须独立核实。"}])),
+        config,publish,saveAsDefault,selection,...(hasHistoricalGaps?{publicationReview:{accountId,at:new Date().toISOString(),scopeDigest:publicationScope!.digest}}:{}),...(operation?{operation,references,publicationScope}:{}),deliveries:deliveries.map(d=>d.id),state:"active",createdAt:new Date().toISOString(),results:Object.fromEntries(Object.entries(references).map(([id,r])=>[id,{status:"merged" as const,head:r.head,commit:r.commit,detail:"既有合并事实引用；执行前须独立核实。"}])),
         ...(integrationProtocol===1?{integration:{protocol:1 as const,revision:0,plans:[],events:[],entries:Object.fromEntries(deliveries.map(d=>[d.id,{itemKeys:d.itemKeys,originalHead:d.head,head:references[d.id]?.head??d.head,progress:"queued" as const,detail:"",repairs:[]}]))}}:{})};
       this.db.connection.prepare("INSERT INTO merge_batches(id,product_id,account_id,request_key,state,data_json) VALUES (?,?,?,?,?,?)")
         .run(id,b.productId,accountId,requestKey,b.state,JSON.stringify(b));

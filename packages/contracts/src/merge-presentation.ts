@@ -1,6 +1,7 @@
 /** Read-only presentation facts. Never grants merge, recovery or release authority. */
 export type IntegrationPublication = "not_required" | "pending" | "partial" | "published" | "unknown";
 export interface MergeBatchPresentation {
+  historicalGaps?: {identity:string;title:string;reason:string}[];
   ownedExtras?: {id:string;title:string;pendingArtifacts:string[];publication:IntegrationPublication;blocker?:string}[];
   entries: Record<string, {
     title: string;
@@ -31,12 +32,12 @@ export interface IntegrationQueueFacts {
   records: {itemKey:string;developmentEventId:string;roundKey:string|null;expectedRevision:number}[];
 }
 export interface PublicationScopeRow {
-  identity:string; title:string; completion?:unknown; requiredArtifacts?:string[];
+  identity:string; title:string; createdAt?:string; completion?:unknown; requiredArtifacts?:string[];
   expectedRevision?:number|string; itemKey?:string; developmentEventId?:string; roundKey?:string|null;
   deliveryId?:string; noReleaseReason?:string; selected:boolean;
   /** Frozen item content, Builder and round; optional for legacy batches. */
   itemScope?:string;
-  /** Human-reviewed historical evidence gap, not a published delivery. */
+  /** Historical evidence gap requiring explicit scoped review; never a publication receipt. */
   historicalGapReason?:string;
 }
 export interface PublicationScope {

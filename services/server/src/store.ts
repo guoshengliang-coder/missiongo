@@ -1,3 +1,4 @@
+import {reviewedHistoricalDeliveries} from "./historical-delivery-review.js";
 import { collaborationBlockers } from "./collaboration-policy.js";
 import { assertItemExecutionIdentity, takeOverItemExecutions } from "./item-execution-blockers.js";
 import { AgentHandoffs } from "./agent-handoffs.js";
@@ -1486,7 +1487,8 @@ export class MissionGoStore {
       if(current.status==="pending_verification" && input.to==="done") {
         const deliveries=this.getDeliveryRecords(current.item_key);
         const continuous=deliveries.length>1 || this.getTimeline(current.item_key).some(e=>e.eventType==="delivery_recorded" && deliveries.some(d=>d.id===e.id));
-        if(continuous && deliveries.some(d=>!d.published)) throw conflict("verification_delivery_unpublished","存在新增交付尚未完整发布，请核对待验版本后再验收。");
+        const reviewedHistory=reviewedHistoricalDeliveries(this.database,{id:current.id,key:current.item_key,productId:current.product_id,contentVersion:current.content_version,builderAccountId:current.builder_account_id??null,roundKey:deliveryRound(this.database,current.id)},deliveries);
+        if(continuous && deliveries.some(d=>!d.published&&!reviewedHistory.has(d.id))) throw conflict("verification_delivery_unpublished","存在新增交付尚未完整发布，请核对待验版本后再验收。");
         if(continuous && input.expectedRevision===undefined) throw conflict("transition_version_required","验收必须绑定当前交付修订。");
       }
       const uploads = ids.length ? this.getTimeline(current.item_key) : [];
@@ -1848,7 +1850,22 @@ export class MissionGoStore {
       const releases=[...artifacts.values()];
       const noReleaseVerified=events.some(e=>bound(e) && ["non_release_submitted","non_release_supplemented"].includes(String(e.payload.reason)));
       const published=scope.requiredArtifacts!==null && (scope.requiredArtifacts.length===0 ? noReleaseVerified : scope.requiredArtifacts.every(a=>artifacts.has(a)));
+      // A status-only human completion that was explicitly returned to work is
+      // not a second integrated delivery. Keep it visible for a scoped human
+      // review; never infer this for records carrying integration or scope.
+      const following=events.slice(events.indexOf(event)+1);
+      const returned=following.findIndex(e=>e.eventType==="status_changed" && e.fromStatus==="development_complete" && e.toStatus==="in_progress" && e.actorKind==="human");
+      const replacement=returned<0?undefined:following.slice(returned+1).find(e=>
+        (e.eventType==="delivery_recorded" || e.eventType==="status_changed" && e.toStatus==="development_complete")
+        && e.payload.roundKey===eventRound && (e.payload.completion || e.payload.pullRequestUrl));
+      const historicalGapReason=event.eventType==="status_changed" && event.actorKind==="human" && Boolean(eventRound)
+        && !event.payload.completion && !event.payload.pullRequestUrl && event.payload.requiredArtifacts==null
+        && !completion && scope.requiredArtifacts===null
+        && !scope.noReleaseReason && scopedEvents.length===1 && !receipts.length && replacement
+        && typeof event.payload.contentVersion==="number" && event.payload.contentVersion===replacement.payload.contentVersion
+        ? "人工标记开发完成后已退回处理，后续已有独立集成交付；此旧记录缺少集成与范围，保留历史告警，不计为本次交付。" : undefined;
       return {id:event.id,createdAt:event.createdAt,roundKey:eventRound,completion,...scope,releases,published,
+        ...(historicalGapReason?{historicalGapReason}:{}),
         status:published ? "published" as const : releases.length ? "partial" as const : "awaiting_release" as const};
     });
   }
