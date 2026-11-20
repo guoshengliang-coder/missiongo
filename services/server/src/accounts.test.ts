@@ -345,6 +345,46 @@ describe("Signing in and changing a password", () => {
 });
 
 describe("Managing accounts", () => {
+  it.each(["member", "admin"] as const)("lets an administrator reset a %s password without changing their access", async role => {
+    const { app, adminCookie, member, memberCookie } = await twoAccountWorkspace();
+    if (role === "admin") await app.inject({ method: "PATCH", url: `/api/v1/accounts/${member.id}`, headers: { cookie: adminCookie }, payload: { role } });
+    const before = app.missionGoAccounts.getAccount(member.id);
+    const permissions = app.missionGoAccounts.listPermissions(member.id);
+    const token = aiToken(app, adminAccount(), member.id);
+    const changed = await app.inject({ method: "PATCH", url: `/api/v1/accounts/${member.id}`, headers: { cookie: adminCookie }, payload: { password: "a reset account password" } });
+    expect(changed.statusCode).toBe(200);
+    expect(changed.body).not.toContain("password_scrypt");
+    expect(changed.body).not.toContain("a reset account password");
+    expect(app.missionGoAccounts.getAccount(member.id)).toMatchObject({ email: before.email, role });
+    expect(app.missionGoAccounts.getAccount(member.id).disabledAt).toBe(before.disabledAt);
+    expect(app.missionGoAccounts.listPermissions(member.id)).toEqual(permissions);
+    expect((await app.inject({ method: "GET", url: "/api/v1/auth/session", headers: { cookie: memberCookie } })).statusCode).toBe(401);
+    expect((await app.inject({ method: "GET", url: "/api/v1/auth/session", headers: { cookie: adminCookie } })).statusCode).toBe(200);
+    expect((await app.inject({ method: "POST", url: "/mcp", headers: { authorization: `Bearer ${token}`, accept: "application/json, text/event-stream" }, payload: { jsonrpc: "2.0", id: 1, method: "tools/list" } })).statusCode).toBe(401);
+    expect((await app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { username: "member@example.com", password: MEMBER_PASSWORD } })).statusCode).toBe(401);
+    await expect(signIn(app, "member@example.com", "a reset account password")).resolves.toBeTruthy();
+  });
+
+  it("does not restore a suspended account when its password is reset", async () => {
+    const { app, adminCookie, member } = await twoAccountWorkspace();
+    await app.inject({ method: "PATCH", url: `/api/v1/accounts/${member.id}`, headers: { cookie: adminCookie }, payload: { disabled: true } });
+    const before = app.missionGoAccounts.getAccount(member.id);
+    const changed = await app.inject({ method: "PATCH", url: `/api/v1/accounts/${member.id}`, headers: { cookie: adminCookie }, payload: { password: "a reset suspended password" } });
+    expect(changed.statusCode).toBe(200);
+    expect(app.missionGoAccounts.getAccount(member.id).disabledAt).toBe(before.disabledAt);
+    expect((await app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { username: "member@example.com", password: "a reset suspended password" } })).statusCode).toBe(401);
+  });
+
+  it("rejects a member's password reset request even when they administer a product", async () => {
+    const { app, memberCookie } = await twoAccountWorkspace();
+    const product = await app.inject({ method: "POST", url: "/api/v1/products", headers: { cookie: memberCookie }, payload: { name: "Member-owned", keyPrefix: "MOW" } });
+    expect(product.statusCode).toBe(201);
+    const admin = app.missionGoAccounts.listAccounts().find(account => account.role === "admin")!;
+    const denied = await app.inject({ method: "PATCH", url: `/api/v1/accounts/${admin.id}`, headers: { cookie: memberCookie }, payload: { password: "an unauthorized password" } });
+    expect(denied.statusCode).toBe(404);
+    await expect(signIn(app, "owner@example.com", ADMIN_PASSWORD)).resolves.toBeTruthy();
+  });
+
   it("is invisible to a member, who is told there is nothing there rather than that they may not look", async () => {
     const { app, memberCookie, member } = await twoAccountWorkspace();
     for (const request of [
