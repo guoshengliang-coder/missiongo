@@ -8,7 +8,7 @@ import { isReleaseMetadata, validateReleaseMetadata } from "./check-release-meta
 import { auditDurations, balancedAuditShards } from "./ui-shards.mjs";
 import { selectPlatforms } from "./ci-platform-plan.mjs";
 import { productPlatforms } from "./ci-platform-impact.mjs";
-import { findFullMainBaseline } from "./ci-main-baseline.mjs";
+import { findFullMainBaseline, validBaseline } from "./ci-main-baseline.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -115,10 +115,11 @@ function plan(mode, head, reasons, auditFiles, catalog) {
     shardFiles: mode === "full" ? balancedAuditShards(catalog, auditDurations()) : [], visual: mode !== "skip", reasons };
 }
 
-export function selectUITests({ eventName, snapshotUpdate = false, head, changes, map, catalog, graph, releaseMetadataValidated = false }) {
-  const makePlan = (mode, reasons, files = []) => plan(mode, head, reasons, files, catalog);
+export function selectUITests({ eventName, snapshotUpdate = false, head, changes, map, catalog, graph, releaseMetadataValidated = false, baseline = null }) {
+  const reusableMain=eventName==="push"&&validBaseline(baseline,head)&&baseline.fullUI===true;
+  const makePlan = (mode, reasons, files = []) => ({...plan(mode, head, reasons, files, catalog),...(reusableMain?{baseline}: {})});
   if (eventName === "workflow_dispatch" && snapshotUpdate) return makePlan("snapshots", ["Explicit snapshot generation"]);
-  if (eventName !== "pull_request") return makePlan("full", ["Main pushes and ordinary manual runs always run full UI"]);
+  if (eventName !== "pull_request"&&!reusableMain) return makePlan("full", ["No verified full UI baseline; require full UI"]);
   if (!changes?.length) return makePlan("full", ["Missing or empty change evidence"]);
   const boundaries = new Map(Object.entries(map.features).filter(([, feature]) => {
     // New consumers expand a component's contract; require a map review rather
@@ -187,7 +188,8 @@ export function validatePlan(value, { head, catalog = auditCatalog() } = {}) {
 export function assertUIResults({ value, planResult, auditResult, visualResult, eventName, snapshotUpdate = false }) {
   if (planResult !== "success") throw new Error("UI planning must succeed");
   validatePlan(value);
-  const expectedMode = eventName === "workflow_dispatch" && snapshotUpdate ? "snapshots" : eventName !== "pull_request" ? "full" : null;
+  const reusableMain=eventName==="push"&&validBaseline(value?.baseline,value?.head)&&value.baseline.fullUI===true;
+  const expectedMode = eventName === "workflow_dispatch" && snapshotUpdate ? "snapshots" : eventName !== "pull_request"&&!reusableMain ? "full" : null;
   if ((expectedMode && value.mode !== expectedMode) || (!expectedMode && value.mode === "snapshots")) throw new Error("UI plan is not permitted for this event");
   const auditExpected = ["full", "targeted"].includes(value.mode) ? "success" : "skipped";
   const visualExpected = value.visual ? "success" : "skipped";
@@ -230,9 +232,6 @@ async function main() {
   // successful skip. Missing diff evidence above still falls back to full UI.
   const releaseMetadataValidated = changes?.some(change => isReleaseMetadata(change.path))
     ? validateReleaseMetadata({ root, base: process.env.UI_BASE_SHA, changes }) : false;
-  const value = validatePlan(selectUITests({ eventName, snapshotUpdate: process.env.UI_UPDATE_SNAPSHOTS === "true", head, changes,
-    map: impactMap(), catalog: auditCatalog(), graph, releaseMetadataValidated }));
-  const json = JSON.stringify(value);
   let platformChanges = changes, platformBase = process.env.UI_BASE_SHA, baseline = null;
   if (eventName === "push" && process.env.GITHUB_REF === "refs/heads/main") {
     try {
@@ -260,6 +259,12 @@ async function main() {
       productImpact = productPlatforms(before, JSON.parse(readFileSync(join(root, "product.json"), "utf8")));
     } catch { /* Incomplete declarations require every platform. */ }
   }
+  const reuseUI=eventName==="push"&&validBaseline(baseline,head)&&baseline.fullUI===true;
+  const uiChanges=reuseUI?platformChanges:changes;
+  if(reuseUI&&uiChanges?.some(change=>change.path.startsWith(web)))graph=importGraph();
+  const value=validatePlan(selectUITests({eventName,snapshotUpdate:process.env.UI_UPDATE_SNAPSHOTS==="true",head,changes:uiChanges,
+    map:impactMap(),catalog:auditCatalog(),graph,releaseMetadataValidated:reuseUI?platformMetadataValidated:releaseMetadataValidated,baseline}));
+  const json=JSON.stringify(value);
   const platforms = selectPlatforms({ head, eventName, changes: platformChanges, releaseMetadataValidated: platformMetadataValidated, baseline, productImpact });
   console.log(json);
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `plan=${json}\naudit=${["full", "targeted"].includes(value.mode)}\nvisual=${value.visual}\nshards=${JSON.stringify(value.shards)}\nplatform_plan=${JSON.stringify(platforms)}\nandroid_required=${platforms.required.android}\nmacos_required=${platforms.required.macos}\nlinux_required=${platforms.required.linuxNode}\nwindows_required=${platforms.required.windows}\n`);

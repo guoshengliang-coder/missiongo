@@ -1,6 +1,6 @@
 // Shared fixed inventory: installation and read-only readiness inspect the same files.
 const TOOLS = [
-  "release-readiness.mjs", "delivery-report.mjs", "release-tool-files.mjs", "release-lock.py", "release_coverage_options.py", "release-preflight.mjs", "release-receipt.mjs",
+  "public-download.mjs", "release-verify.mjs", "release-readiness.mjs", "delivery-report.mjs", "release-tool-files.mjs", "release-lock.py", "release_coverage_options.py", "release-preflight.mjs", "release-receipt.mjs",
   "windows-release-tools.mjs", "release-ci.mjs", "release-ci-wait.mjs", "linux-release-tools.mjs", "handover-evidence.mjs",
   "release-coverage.mjs", "release-candidates.mjs", "release-coverage-guard.sh", "release-status.sh", "release-timing.sh", "deploy.sh",
 ];

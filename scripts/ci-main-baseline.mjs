@@ -10,6 +10,12 @@ export function fullBuildEvidence(jobs, run) {
       && matches[0].head_sha === run.head_sha && matches[0].run_id === run.id;
   });
 }
+export function fullUIEvidence(jobs,run) {
+  return ['ui-visual',...Array.from({length:8},(_,i)=>`ui-audit (${i+1})`)].every(name=>{
+    const rows=jobs.filter(j=>j.name===name);return rows.length===1&&rows[0].status==='completed'&&rows[0].conclusion==='success'
+      &&rows[0].head_sha===run.head_sha&&rows[0].run_id===run.id;
+  });
+}
 export function validBaseline(value, head) {
   return value?.kind === 'full-main-build' && shaPattern.test(value.sha ?? '') && value.sha !== head
     && Number.isSafeInteger(value.runId) && value.runId > 0 && Number.isSafeInteger(value.attempt) && value.attempt > 0;
@@ -35,7 +41,7 @@ export async function findFullMainBaseline({ repository, head, token, isAncestor
     const payload = await get(`actions/runs/${run.id}/attempts/${run.run_attempt}/jobs?per_page=100`);
     // Partial reruns and incomplete/paginated evidence cannot be full anchors.
     if (!Array.isArray(payload.jobs) || payload.total_count !== payload.jobs.length || payload.total_count >= 100) continue;
-    if (fullBuildEvidence(payload.jobs, run)) return { kind: 'full-main-build', sha: run.head_sha, runId: run.id, attempt: run.run_attempt };
+    if (fullBuildEvidence(payload.jobs, run)) return { kind: 'full-main-build', sha: run.head_sha, runId: run.id, attempt: run.run_attempt, ...(fullUIEvidence(payload.jobs,run)?{fullUI:true}:{}) };
   }
   return null;
 }

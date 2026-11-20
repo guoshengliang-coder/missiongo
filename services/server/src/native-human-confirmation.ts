@@ -7,6 +7,7 @@ const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(va
 type Result = Record<string, unknown>;
 export interface NativeHumanReview {
   readonly content: unknown;
+  readonly summary?: string;
   /** A current, independently persisted domain decision. Reading never fabricates one. */
   readonly completed?: Result;
 }
@@ -33,14 +34,14 @@ export class NativeHumanConfirmations {
     const review=input.inspect(); // Current scope/role checks also run on result replays.
     const receipt=readReceipt();
     if(review.completed) return this.result({...review.completed,source:"existing"});
-    const revision=digest([intent,review.content]);
+    const revision=digest([intent,review.content,...(review.summary?[review.summary]:[])]);
     if(receipt) {
       if(receipt.revision!==revision) throw conflict("native_confirmation_changed","The reviewed content changed. Read it again and use a new request key.");
       return this.result(JSON.parse(receipt.result_json) as Result);
     }
     const state=ctx.mcpReq.requestState<{revision:string}>();
     if(state&&state.revision!==revision) throw conflict("native_confirmation_changed","The native answer belongs to different content, action or version.");
-    const message=`MissionGo · 原生人工确认\n${input.description}\n\n${JSON.stringify(review.content,null,2)}\n\n仅批准上述对象、版本和动作，不授予其他权限；确认不会启动新的 Agent 回合。`;
+    const message=`MissionGo · 原生人工确认\n${input.description}\n\n${review.summary??JSON.stringify(review.content,null,2)}\n\n仅批准上述对象、版本和动作，不授予其他权限；确认不会启动新的 Agent 回合。`;
     if(message.length>512_000) return this.unavailable(review.content,revision,"confirmation_too_large");
     let choice: "accept" | "decline" | "cancel";
     if(input.modern) {
@@ -69,7 +70,7 @@ export class NativeHumanConfirmations {
       const current=input.inspect(); // Live permissions + exact version, under the same write lock.
       readReceipt();
       if(current.completed) return this.result({...current.completed,source:"existing"});
-      if(digest([intent,current.content])!==revision) throw conflict("native_confirmation_changed","Content changed while awaiting the human decision.");
+      if(digest([intent,current.content,...(current.summary?[current.summary]:[])])!==revision) throw conflict("native_confirmation_changed","Content changed while awaiting the human decision.");
       const existing=readReceipt();
       if(existing) return this.result(JSON.parse(existing.result_json) as Result);
       const result: Result=choice==="accept" ? {approved:true,source:"native",revision,result:input.apply()}

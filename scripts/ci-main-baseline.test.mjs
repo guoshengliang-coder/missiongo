@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { findFullMainBaseline, validBaseline } from './ci-main-baseline.mjs';
 import { selectPlatforms, assertPlatformResult } from './ci-platform-plan.mjs';
-import { parseDiff } from './ui-test-plan.mjs';
+import { selectUITests,assertUIResults,auditCatalog,parseDiff } from './ui-test-plan.mjs';
 
 const head = 'a'.repeat(40), base = 'b'.repeat(40);
 const names = ['web-and-server', 'ui', 'android', 'macos', 'linux-node', 'windows', 'windows-build', 'android-build', 'macos-build', 'linux-node (ubuntu-22.04)', 'linux-node (ubuntu-24.04)'];
@@ -78,4 +78,17 @@ test('a failed native change followed by a web-only commit is still tested from 
   assert.equal(plan.required.macos,true);assert.equal(plan.required.android,false);
   const gate=()=>assertPlatformResult({plan,platform:'macos',head:tip,eventName:'push',planResult:'success',buildResult:'skipped'});
   assert.throws(gate,/must be success/);
+});
+
+test('main UI reuse requires every actual full UI job, never a planned-skip chain',async()=>{
+ const full=[...jobs(),...['ui-visual',...Array.from({length:8},(_,i)=>`ui-audit (${i+1})`)].map(name=>({name,status:'completed',conclusion:'success',head_sha:base,run_id:123}))];
+ const baseline=await findFullMainBaseline({...args,...api([run()],full)});assert.equal(baseline.fullUI,true);
+ const options={eventName:'push',head,changes:[{path:'README.md',status:'M'}],map:{features:{},smoke:[]},catalog:auditCatalog()};
+ const plan=selectUITests({...options,baseline});assert.equal(plan.mode,'skip');assert.equal(plan.baseline.sha,base);
+ assert.doesNotThrow(()=>assertUIResults({value:plan,eventName:'push',planResult:'success',auditResult:'skipped',visualResult:'skipped'}));
+ for(const proof of [null,{...baseline,fullUI:false},{...baseline,sha:head}])assert.equal(selectUITests({...options,baseline:proof}).mode,'full');
+ const bad=full.map(j=>j.name==='ui-audit (8)'?{...j,conclusion:'failure'}:j);
+ assert.equal((await findFullMainBaseline({...args,...api([run()],bad)})).fullUI,undefined);
+ assert.equal(selectUITests({...options,baseline,changes:[{path:'unknown-runtime.js',status:'M'}]}).mode,'full');
+ assert.equal(selectUITests({...options,baseline,eventName:'schedule'}).mode,'full');
 });

@@ -1,3 +1,5 @@
+import {conversationDecisionEvidence} from "./conversation-decision-evidence.js";
+import {mergeReviewSummary} from "./merge-review-summary.js";
 import { developmentReviewBlocker, developmentReviewExpiry } from "./development-reviews.js";
 import type { SQLInputValue, StatementSync } from "node:sqlite";
 import { releaseCandidatePage } from "./release-candidate-page.js";
@@ -1278,23 +1280,80 @@ export class MergeDeliveries {
       if((action.kind==="defer_publication"||action.kind==="allow_partial_publication")&&!b.publish)throw changed();
       const publicationScope=action.kind==="allow_partial_publication"?this.refreshedPublicationScope(b,action):undefined;
       r.requests.push({id:key,digest:hash,snapshot,action,at:new Date().toISOString(),...(publicationScope?{publicationScope}:{})});this.saveBatch(b);
+      const preview=this.preview(accountId,id),summary=mergeReviewSummary(preview,key);
+      r.requests.at(-1)!.reviewText=summary+`\n\n[本次决定的版本](/?mergeReview=${encodeURIComponent(id+":"+key+":"+snapshot)})`;
+      this.saveBatch(b);
       return this.preview(accountId,id);
     });
   }
+  recoverConversationDecision(accountId:string,dispatchId:string,id:string,requestId:string) {
+    return this.db.transaction(()=>{
+      const b=this.batch(accountId,dispatchId,id);this.permit(accountId,b,true);
+      const row=b.reconciliation?.requests.find(r=>r.id===requestId);
+      if(!row?.reviewText)throw changed();
+      if(row.decision)return {code:"already_decided",decision:row.decision};
+      if(this.snapshot(b)!==row.snapshot)throw changed();
+      const evidence=conversationDecisionEvidence(this.db,accountId,b.sessionId,row.reviewText,row.at);
+      if(evidence.code!=="ready_to_restore")return evidence;
+      this.decideReconciliation(accountId,id,requestId,row.snapshot,evidence.decision,true,row.publicationScope?.digest);
+      const current=this.read<Batch>("merge_batches",id),request=current.reconciliation!.requests.find(r=>r.id===requestId)!;
+      request.decisionSource={kind:"native_history",sourceId:evidence.sourceId};this.saveBatch(current);
+      return {code:"restored",decision:evidence.decision};
+    });
+  }
+  /** A signed-in Web client records the exact card currently visible in its conversation.
+   * This is read acknowledgement, never an approval supplied by an Agent. */
+  reviewReconciliation(accountId:string,id:string,requestId:string,snapshot:string) {
+    return this.db.transaction(()=>{
+      const b=this.read<Batch>("merge_batches",id);this.permit(accountId,b,true);
+      const row=b.reconciliation?.requests.find(r=>r.id===requestId);
+      if(!row || row.snapshot!==snapshot || this.snapshot(b)!==snapshot || row.decision || row.appliedAt)throw changed();
+      const activity=this.activity(b.sessionId);
+      if(row.review?.accountId===accountId&&row.review.sessionId===b.sessionId&&row.review.activity===activity&&Date.now()-Date.parse(row.review.at)<600000)return {reviewed:true};
+      row.review={accountId,sessionId:b.sessionId,activity,at:new Date().toISOString()};
+      this.saveBatch(b);return {reviewed:true};
+    });
+  }
+  /** Only an authenticated human send, after a unique exact card was displayed,
+   * can mean approval. Message queueing and the domain decision commit together. */
+  conversationReply<T extends {id:string}>(accountId:string,sessionId:string,text:string,attachments:readonly string[],send:()=>T):T {
+    return this.db.transaction(()=>{
+      const rows=this.db.connection.prepare("SELECT data_json FROM merge_batches WHERE account_id=? AND json_extract(data_json,'$.sessionId')=?")
+        .all(accountId,sessionId) as {data_json:string}[];
+      const pending=rows.flatMap(r=>{const b=JSON.parse(r.data_json) as Batch;return (b.reconciliation?.requests??[])
+        .filter(q=>!q.decision&&!q.appliedAt&&q.snapshot===this.snapshot(b)).map(q=>({b,q}));});
+      const selected=pending.length===1?pending[0]:undefined;
+      const review=selected?.q.review;
+      const choice=["同意","批准"].includes(text.trim())?"approved":["不同意","拒绝"].includes(text.trim())?"rejected":undefined;
+      const valid=!attachments.length&&choice&&selected&&review?.accountId===accountId&&review.sessionId===sessionId
+        && review.activity===this.activity(sessionId)&&Date.now()-Date.parse(review.at)>=0&&Date.now()-Date.parse(review.at)<=600000;
+      if(valid)this.decideReconciliation(accountId,selected.b.id,selected.q.id,selected.q.snapshot,choice,true,selected.q.publicationScope?.digest);
+      const command=send();
+      if(valid){const b=this.read<Batch>("merge_batches",selected.b.id),q=b.reconciliation!.requests.find(q=>q.id===selected.q.id)!;
+        q.decisionSource={kind:"conversation",commandId:command.id};delete q.review;this.saveBatch(b);}
+      return command;
+    });
+  }
+  private assertRecoveryExecutionIdle(b:Batch,action:ReconciliationAction) {
+    if(b.integration?.publication&&b.integration.publication.state!=="ended" || Object.entries(b.integration?.entries??{}).some(([id,e])=>e.repair&&!(action.kind==="accept_merge"&&action.deliveryId===id)))
+      throw conflict("merge_execution_unknown","仍有发布信号或修复预留，先在原会话核实实际操作结果。");
+    if(this.db.connection.prepare("SELECT 1 FROM agent_session_commands WHERE session_id=? AND status IN ('queued','delivering','delivery_unknown')").get(b.sessionId))
+      throw conflict("merge_execution_active","仍有未确认投递的命令，先核实原命令结果。");
+
+  }
   /** Human Web or bound native decision; never an Agent-provided approval fact. */
-  decideReconciliation(accountId:string,id:string,requestId:string,snapshot:string,decision:"approved"|"rejected",noExecutionRemaining:boolean,publicationScopeDigest?:string) {
+  decideReconciliation(accountId:string,id:string,requestId:string,snapshot:string,decision:"approved"|"rejected",reviewConfirmed:boolean,publicationScopeDigest?:string) {
     return this.db.transaction(()=>{
       const b=this.read<Batch>("merge_batches",id);this.permit(accountId,b,true);
       const r=this.reconciliation(b),request=r.requests.find(p=>p.id===requestId);
       if(!request||request.snapshot!==snapshot)throw changed();
       if(request.decision){if(request.decision!==decision)throw changed();return this.preview(accountId,id);}
-      if(this.snapshot(b)!==snapshot||!noExecutionRemaining)throw changed();
+      if(this.snapshot(b)!==snapshot||!reviewConfirmed)throw changed();
       if(request.publicationScope && publicationScopeDigest!==request.publicationScope.digest)throw conflict("publication_scope_review_required","请刷新并完整审阅本次发布范围后再确认恢复。");
       if(request.action.kind==="allow_partial_publication"&&request.action.publicationRefresh&&this.refreshedPublicationScope(b,request.action)?.digest!==request.publicationScope?.digest)throw changed();
       if(b.state==="finished"&&decision==="approved") {
         if(this.db.connection.prepare("SELECT 1 FROM merge_batches WHERE product_id=? AND state='active' AND id!=?").get(b.productId,id))throw conflict("merge_batch_active","同项目已有其他活动批次，不能恢复旧批次。");
-        const session=new AgentSessionStore(this.db).getForAccount(accountId,b.sessionId);
-        if(session.turnState?.turnActive||session.status==="active"||session.status==="stalled"||this.db.connection.prepare("SELECT 1 FROM agent_session_commands WHERE session_id=? AND status IN ('queued','delivering','delivery_unknown')").get(b.sessionId))throw conflict("merge_execution_active","原会话仍有活动或待执行命令，先核实结束再恢复。");
+        // A human may decide while chatting. Actual recovery independently checks execution evidence.
       }
       request.decision=decision;request.decidedAt=new Date().toISOString();request.decidedBy=accountId;
       r.history.push({at:request.decidedAt,action:decision,requestId,detail:decision==="approved"?"人工确认此快照中的恢复操作，未授权重做 Git 合并。":"人工拒绝此恢复操作。"});
@@ -1336,6 +1395,7 @@ export class MergeDeliveries {
       if(!request||request.decision!=="approved")throw conflict("recovery_approval_required","需要人工确认这次对账快照及恢复操作。");
       if(request.appliedAt)return this.preview(accountId,id);
       if(this.snapshot(b)!==request.snapshot)throw changed();
+      this.assertRecoveryExecutionIdle(b,request.action);
       if(b.state==="finished") {
         if(this.db.connection.prepare("SELECT 1 FROM merge_batches WHERE product_id=? AND state='active' AND id!=?").get(b.productId,id))throw conflict("merge_batch_active","同项目存在活动批次。");
         b.state="active";

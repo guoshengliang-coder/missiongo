@@ -1,9 +1,10 @@
+import { MergeReconciliation } from "./merge-reconciliation";
 import { CloudUpload, GitMerge, Plus, TriangleAlert, Files, History, ArrowRight } from "lucide-react";
 import { modeProblem } from "./agent-mode-options";
 import { HelpHint } from "./help-hint";
 import { IntegrationProgress } from "./integration-details";
 import { localizedErrorText } from "./error-text";
-import type { MergeIntegration, MergeBatchPresentation, IntegrationQueueFacts, IntegrationQueueOccupancy, IntegrationActionMode, PublicationScope, IntegrationPrerequisiteGate } from "@missiongo/contracts";
+import type { MergeIntegration, MergeReconciliationState, MergeBatchPresentation, IntegrationQueueFacts, IntegrationQueueOccupancy, IntegrationActionMode, PublicationScope, IntegrationPrerequisiteGate } from "@missiongo/contracts";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { defaultAgentMode, type AgentKind } from "@missiongo/domain";
@@ -50,7 +51,7 @@ function QueueHistory({productId,onClose,onSession}:{productId:string;onClose:()
     {q.isSuccess&&reviews.isSuccess&&![...q.data.pages,...reviews.data.pages].some(p=>p.deliveries.length)&&<p>{t("queueHistoryEmpty")}</p>}
   </Modal>;
 }
-export interface Batch {prerequisiteGate?:IntegrationPrerequisiteGate;operation?:IntegrationActionMode;references?:Record<string,{batchId:string;head:string;commit:string}>;verifiedReferences?:Record<string,{checkedAt:string;source:string}>;presentation?:MergeBatchPresentation;integration?:MergeIntegration;id:string;sessionId:string;state:string;deliveries:string[];publish:boolean;results:Record<string,{status:string;detail:string}>}
+export interface Batch {reconciliation?:MergeReconciliationState;prerequisiteGate?:IntegrationPrerequisiteGate;operation?:IntegrationActionMode;references?:Record<string,{batchId:string;head:string;commit:string}>;verifiedReferences?:Record<string,{checkedAt:string;source:string}>;presentation?:MergeBatchPresentation;integration?:MergeIntegration;id:string;sessionId:string;state:string;deliveries:string[];publish:boolean;results:Record<string,{status:string;detail:string}>}
 const post=<T,>(path:string,body:unknown)=>request<T>(path,{method:"POST",body:JSON.stringify(body)});
 export const useDeliveries=(productId:string,sessionId?:string,enabled=true)=>useQuery({
   queryKey:sessionId ? ["merge-deliveries",productId,sessionId] : ["merge-deliveries",productId],
@@ -118,8 +119,9 @@ export function DeliveryCards({productId,sessionId,blocked=false}:{productId:str
   const rows=query.data?.deliveries.filter(d=>d.sessionId===sessionId && d.blocker!=="changed"
     && d.state==="proposed")??[];
   const readError=query.isError ? <p role="alert" className="inline-error">{t("sessionDeliveryLoadError")} <button type="button" className="secondary-button" onClick={()=>void query.refetch()}>{t("retry")}</button></p> : null;
-  if(!rows.length) return <>{readError}<SessionDeliveryNotice productId={productId} sessionId={sessionId}/></>;
-  return <div className="merge-delivery-notices">{readError}{rows.map(d=><section role="status" className={`merge-delivery-notice ${d.state==="confirmed"?"confirmed":"proposed"}`} key={d.id}>
+  const recoveries=query.data?.batches.filter(b=>b.sessionId===sessionId&&b.reconciliation?.requests.some(r=>r.decision!=="rejected"&&!r.appliedAt)).map(b=><MergeReconciliation key={b.id} batchId={b.id} compact initiallyOpen/>);
+  if(!rows.length) return <>{readError}{recoveries}<SessionDeliveryNotice productId={productId} sessionId={sessionId}/></>;
+  return <div className="merge-delivery-notices">{readError}{recoveries}{rows.map(d=><section role="status" className={`merge-delivery-notice ${d.state==="confirmed"?"confirmed":"proposed"}`} key={d.id}>
     <span className="merge-delivery-icon" aria-hidden="true">{d.state==="confirmed"?<GitMerge size={21}/>:<Plus size={18}/>}</span>
     <div className="merge-delivery-copy"><strong>{t(d.state==="confirmed"?"mergeConfirmed":d.reconfirmation?"mergeReoffer":"mergeOffer")}</strong>
       {d.state==="confirmed"&&<p>{t("mergeAutoWithdraw")}</p>}

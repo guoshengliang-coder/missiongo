@@ -14,6 +14,9 @@ export type MergeRecoveryAction =
 export interface MergeReconciliationState {
   transportReceipts?:Record<string,{digest:string}>;
   requests:{id:string;digest:string;snapshot:string;action:MergeRecoveryAction;at:string;publicationScope?:PublicationScope;
+    review?:{accountId:string;sessionId:string;activity:string;at:string};
+    decisionSource?:{kind:"conversation";commandId:string}|{kind:"native_history";sourceId:string};
+    reviewText?:string;
     decision?:"approved"|"rejected";decidedAt?:string;decidedBy?:string;appliedAt?:string}[];
   history:{at:string;action:string;requestId?:string;deliveryId?:string;previous?:unknown;detail:string}[];
   handoffs:Record<string,{status:"completed"|"blocked";detail:string;at:string}>;

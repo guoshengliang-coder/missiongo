@@ -47,7 +47,7 @@ def run_readonly(command, root, action, options):
 
 def main():
     action = sys.argv[1] if len(sys.argv) > 1 else "status"
-    allowed = {"status", "check", "deploy", "publish:macos", "publish:android-internal", "publish:android-sdk", "publish:linux", "publish:windows", "plan", "readiness", "report"}
+    allowed = {"status", "check", "deploy", "publish:macos", "publish:android-internal", "publish:android-sdk", "publish:linux", "publish:windows", "plan", "readiness", "report", "verify"}
     if action not in allowed:
         raise ValueError("Usage: missiongo-release " + "|".join(sorted(allowed)))
     root = Path(git(Path.cwd(), "rev-parse", "--show-toplevel"))
@@ -62,6 +62,16 @@ def main():
     if os.environ.get("MISSIONGO_COORDINATOR_ENTRY") != entry:
         os.environ["MISSIONGO_COORDINATOR_ENTRY"] = entry
         os.execv(sys.executable, [sys.executable, str(TOOLS / "release-lock.py"), "--", sys.executable, entry, *sys.argv[1:]])
+    if action == "verify":
+        settings = json.loads((CONFIG / "release-local.json").read_text())
+        options = sys.argv[2:]
+        allowed_options = {"--receipt", "--candidates", "--selection", "--selection-digest", "--output"}
+        if len(options) % 2 or any(options[i] not in allowed_options for i in range(0, len(options), 2)):
+            raise ValueError("verify accepts only receipt, candidates, selection, selection-digest and output")
+        run(["node", str(TOOLS / "release-verify.mjs"), "--root", str(root),
+             "--host", settings["host"], "--current-link", settings["currentLink"], "--downloads-dir", settings["downloadsDir"],
+             "--origin", settings["origin"], "--coverage-config", str(CONFIG / "release-coverage.json"), *options], root)
+        return
     if action in {"readiness", "report"}:
         # Read-only helpers own strict input parsing. Never fall through to deploy.
         helper = "release-readiness.mjs" if action == "readiness" else "delivery-report.mjs"

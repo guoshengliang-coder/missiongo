@@ -46,3 +46,8 @@ export interface PublicationScope {
 
 /** Product-wide occupancy, without another account's conversation identity. */
 export interface IntegrationQueueOccupancy { active:boolean; sessionId?:string; requestKey?:string; }
+
+/** Product artifact names shared by human review surfaces; unknown values stay explicit. */
+export function integrationArtifactName(value:string):string {
+  return ({web:"Web/Server",macosApp:"macOS",linuxCli:"Linux CLI",windowsApp:"Windows",androidApp:"Android",androidSdk:"Android SDK"} as Record<string,string>)[value]??value;
+}

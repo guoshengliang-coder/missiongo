@@ -1,3 +1,10 @@
+import {AgentHistory} from "./agent-history.js";
+import {AgentArtifacts} from "./agent-artifacts.js";
+import {DocumentPlanApprovals} from "./document-plan-approval.js";
+import {DispatchStore} from "./dispatch-store.js";
+import {FreeSessionStore} from "./free-session-store.js";
+import {AgentSessionStore} from "./agent-session-store.js";
+import {randomUUID} from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
 import { buildApp } from "./app.js";
 import { createAiAccessToken, hashPassword } from "./admin-auth.js";
@@ -143,4 +150,31 @@ it("rejects pending documents from before a verification return without reviving
   expect((await f.call("request_plan_approval",{...f.proposal,documentId:doc.documentId,plan:doc.plan,validation:""})).isError).toBe(true);
   const next=(await f.call("prepare_plan_document",{...args,idempotencyKey:"next-round"})).structuredContent;
   expect(next).toMatchObject({version:1,rounds:[{number:2}]});
+});
+
+it("supports fixed itemless project plans without creating or borrowing work items",async()=>{
+ const f=await fixture(),ds=new DispatchStore(f.store.database),node=ds.registerNode({accountId:config.id,installationId:randomUUID(),name:"Synthetic project node"});
+ ds.recordHeartbeat(node.nodeId,[{kind:"codex",planApprovalProtocol:1,ready:true}],[],"*",{supportsFreeSessions:true});
+ ds.replaceOwnRepos(node.nodeId,[{productId:f.product.id,repoPath:"/synthetic/project"}]);
+ const free=new FreeSessionStore(f.store.database,ds,new AgentSessionStore(f.store.database)),d=free.prepare(config.id,randomUUID(),{productId:f.product.id,nodeId:node.nodeId,agentKind:"codex",mode:"default"},"Project work");
+ free.finish(config.id,d.id,[]);ds.claimNextDispatch(node.nodeId);ds.recordDispatchResult({nodeId:node.nodeId,dispatchId:d.id,status:"launched"});
+ new AgentSessionStore(f.store.database).createForDispatch({dispatchId:d.id,nodeId:node.nodeId,sessionRef:"native-project"});
+ const summary="修复当前项目的审批入口与恢复体验。",args={itemKeys:[],projectId:f.product.id,dispatchId:d.id,summary,markdown:summary+"\n\n范围和验证保持项目边界。",idempotencyKey:"project-plan-v1"};
+ vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(new Date(Date.now()-5000));
+ const prepared=await f.call("prepare_plan_document",args);expect(prepared.isError,JSON.stringify(prepared)).not.toBe(true);const doc=prepared.structuredContent;
+ expect((await f.call("get_plan_document",{documentId:doc.documentId})).isError).not.toBe(true);
+ const request=await f.call("request_plan_approval",{itemKeys:[],projectId:f.product.id,dispatchId:d.id,documentId:doc.documentId,plan:doc.plan,validation:"",approvalMethod:"web"});
+ expect(request.isError,JSON.stringify(request)).not.toBe(true);
+ vi.useRealTimers();
+ const sid=request.structuredContent.sessionId,now=Date.now()-3000;
+ new AgentSessionStore(f.store.database).recordSnapshot({nodeId:node.nodeId,sessionId:sid,status:"idle",messages:[
+  {sourceId:"project-display",turnId:"one",role:"agent",phase:"final_answer",text:doc.plan,occurredAt:new Date(now+1).toISOString()},
+  {sourceId:"project-consent",turnId:"two",role:"user",text:"同意",occurredAt:new Date(now+2).toISOString()}]});
+ new AgentHistory(f.store.database,new AgentArtifacts(f.store.database,"")).observe(config.id,node.nodeId,sid,{complete:true});
+ const recovered=await f.call("recover_plan_approval",{projectId:f.product.id,dispatchId:d.id,documentId:doc.documentId,revision:request.structuredContent.revision,idempotencyKey:"project-original-consent"});expect(recovered.structuredContent.code,JSON.stringify(recovered)).toBe("restored");
+ expect(new DocumentPlanApprovals(f.store.database).inspect(config.id,sid).code).toBe("already_approved");
+ const repeated=await f.call("request_plan_approval",{itemKeys:[],projectId:f.product.id,dispatchId:d.id,documentId:doc.documentId,plan:doc.plan,validation:"",approvalMethod:"native"});expect(repeated.structuredContent.approved).toBe(true);
+ expect(f.store.database.connection.prepare("SELECT count(*) AS n FROM work_items").get()).toEqual({n:1});
+ expect((await f.call("prepare_plan_document",{...args,projectId:randomUUID(),idempotencyKey:"wrong-project"})).isError).toBe(true);
+ const web=await f.app.inject({method:"GET",url:`/api/v1/plan-documents/${doc.documentId}`,headers:f.headers});expect(web.statusCode).toBe(200);expect(web.json().markdown).toBe(args.markdown);
 });

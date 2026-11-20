@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, lstatSync } from "node:fs";
 import { join } from "node:path";
+import { publicDownloadHash } from "./public-download.mjs";
 const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+$/;
@@ -70,9 +71,6 @@ export async function verifyWindowsPublic(origin, release) {
   if (!response.ok) return false;
   const manifest = windowsManifest(await response.json());
   if (manifest.version !== release.version || manifest.sourceCommit !== release.sourceCommit || manifest.sha256 !== release.sha256 || manifest.filename !== release.filename) return false;
-  const installer = await fetch(new URL(`/downloads/windows/${manifest.filename}`, origin), { redirect: "error", signal: AbortSignal.timeout(120_000) });
-  if (!installer.ok || !installer.body) return false;
-  const hash = createHash("sha256"); let size = 0;
-  for await (const bytes of installer.body) { size += bytes.length; if (size > manifest.size) return false; hash.update(bytes); }
-  return size === manifest.size && hash.digest("hex") === manifest.sha256;
+  const result=await publicDownloadHash(new URL(`/downloads/windows/${manifest.filename}`,origin),{maxBytes:manifest.size});
+  return result.bytes===manifest.size&&result.sha256===manifest.sha256;
 }
