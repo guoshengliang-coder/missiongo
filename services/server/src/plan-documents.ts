@@ -4,7 +4,7 @@ import { ImplementationPlans } from "./implementation-plans.js";
 import type { MissionGoStore } from "./store.js";
 
 export interface PlanDocument {
-  id: string; accountId: string; identity: string; keys: string[]; scope: string;
+  id: string; accountId: string; identity: string; keys: string[]; scope: string; projectId?:string;
   rounds: { key: string; eventId: string | null; number: number }[];
   version: number; summary: string; markdown: string; sha256: string; plan: string;
   createdAt: string; parentDocumentId?: string;
@@ -14,17 +14,20 @@ export interface PlanDocument {
 export class PlanDocuments {
   constructor(private readonly store: MissionGoStore) {}
 
-  get(id: string, authorize: (key: string) => unknown): PlanDocument {
+  get(id: string, authorize: (key: string) => unknown, authorizeProject?: (id:string)=>unknown): PlanDocument {
     const row = this.store.database.connection.prepare("SELECT document_json FROM plan_documents WHERE id=?")
       .get(id) as {document_json:string} | undefined;
     if (!row) throw notFound("Plan document");
     const document = JSON.parse(row.document_json) as PlanDocument;
+    if(document.projectId){if(!authorizeProject)throw notFound("Project plan document");authorizeProject(document.projectId);}
     for (const key of document.keys) authorize(key);
     return document;
   }
 
-  prepare(input: { accountId:string; identity:string; keys:string[]; summary:string; markdown:string; origin:string; requestKey:string; parentDocumentId?:string }): PlanDocument {
+  prepare(input: { accountId:string; identity:string; keys:string[]; summary:string; markdown:string; origin:string; requestKey:string; parentDocumentId?:string; projectId?:string }): PlanDocument {
     const keys = [...new Set(input.keys)].sort();
+    if(!keys.length&&!input.projectId)throw invalidInput("An itemless plan requires its original project binding.");
+    if(keys.length&&input.projectId)throw invalidInput("Use item scope or project scope, not both.");
     if (!input.markdown.startsWith(input.summary + "\n")) throw invalidInput("The Markdown must start with the exact summary followed by a newline.");
     if (Buffer.byteLength(input.markdown, "utf8") > 512_000) throw invalidInput("Plan document exceeds 512000 UTF-8 bytes.");
     const db = this.store.database.connection;
@@ -37,12 +40,13 @@ export class PlanDocuments {
         ORDER BY e.timeline_seq`).all(key) as {id:string}[];
       return {key,eventId:events.at(-1)?.id ?? null,number:events.length+1};
     });
-    const parent = input.parentDocumentId ? this.get(input.parentDocumentId,()=>undefined) : undefined;
+    const parent = input.parentDocumentId ? this.get(input.parentDocumentId,()=>undefined,()=>undefined) : undefined;
     if(parent) {
+      if(parent.projectId!==input.projectId)throw conflict("plan_document_scope_changed","Project scope changed");
       this.assertCurrent(parent,input.accountId,input.identity,keys,true);
       if(parent.parentDocumentId || !this.approved(parent)) throw conflict("plan_document_parent_unapproved","Rework notes require the current approved plan, not another note.");
     }
-    const fingerprint = JSON.stringify([keys,scope,rounds,input.summary,input.markdown,input.parentDocumentId]);
+    const fingerprint = JSON.stringify([keys,scope,rounds,input.summary,input.markdown,input.parentDocumentId,...(input.projectId?[input.projectId]:[])]);
     return this.store.database.transaction(() => {
       const prior = db.prepare("SELECT document_json,fingerprint FROM plan_documents WHERE account_id=? AND identity_key=? AND request_key=?")
         .get(input.accountId,input.identity,input.requestKey) as {document_json:string;fingerprint:string}|undefined;
@@ -50,13 +54,13 @@ export class PlanDocuments {
         if (prior.fingerprint!==fingerprint) throw conflict("plan_document_changed", "This request key belongs to different content or scope. Use a new key for a new version.");
         return JSON.parse(prior.document_json) as PlanDocument;
       }
-      const scopeKey = JSON.stringify([keys,rounds]);
+      const scopeKey = JSON.stringify([keys,rounds,...(input.projectId?[input.projectId]:[])]);
       const version = (db.prepare("SELECT COALESCE(MAX(version),0)+1 AS n FROM plan_documents WHERE account_id=? AND identity_key=? AND scope_key=?")
         .get(input.accountId,input.identity,scopeKey) as {n:number}).n;
       const id = randomUUID();
-      const label = rounds.map(r=>`${r.key} 第 ${r.number} 轮`).join("、");
+      const label = input.projectId ? "项目会话" : rounds.map(r=>`${r.key} 第 ${r.number} 轮`).join("、");
       const plan = `${input.summary}\n\n[查看完整诊断与方案 · ${label} · v${version}](${input.origin}/?planDocument=${id})\n\n${parent ? `本轮补修记录引用[原获批方案](${input.origin}/?planDocument=${parent.id})，不新增或扩大授权；实质方案变化须另行审阅。` : "本次批准覆盖上述摘要及链接所指的固定版本完整方案；不授予 push、merge 或发布权限。"}`;
-      const document: PlanDocument = {id, accountId:input.accountId,identity:input.identity,keys,scope,rounds,version,
+      const document: PlanDocument = {id, accountId:input.accountId,identity:input.identity,keys,scope,rounds,version,...(input.projectId?{projectId:input.projectId}:{}),
         summary:input.summary,markdown:input.markdown,sha256:createHash("sha256").update(input.markdown,"utf8").digest("hex"),plan,createdAt:new Date().toISOString(),...(parent ? {parentDocumentId:parent.id} : {})};
       db.prepare("INSERT INTO plan_documents(id,account_id,identity_key,request_key,scope_key,version,fingerprint,document_json) VALUES (?,?,?,?,?,?,?,?)")
         .run(id,input.accountId,input.identity,input.requestKey,scopeKey,version,fingerprint,JSON.stringify(document));
@@ -80,7 +84,7 @@ export class PlanDocuments {
   approved(document: PlanDocument): boolean {
     const plans = new ImplementationPlans(this.store.database);
     if(document.parentDocumentId) {
-      const parent=this.get(document.parentDocumentId,()=>undefined);
+      const parent=this.get(document.parentDocumentId,()=>undefined,()=>undefined);
       return !parent.parentDocumentId && document.scope===plans.scope(document.keys) && this.approved(parent);
     }
     const proposal = plans.proposal(document.accountId,document.identity);

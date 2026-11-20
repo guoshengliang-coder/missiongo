@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { publicDownloadHash } from "./public-download.mjs";
 import { publicReleaseEvidence, saveReleaseEvidence } from "./handover-evidence.mjs";
 // Read the live deployment before and after deploy.sh, then describe only what
 // actually changed. This command never writes to MissionGo or stores a token.
@@ -125,11 +126,7 @@ async function readPublic(origin, path, method = "GET") {
 }
 
 async function publicSha(origin, path) {
-  const response = await fetch(new URL(path, origin), { signal: AbortSignal.timeout(120_000) });
-  if (!response.ok || !response.body) throw new Error(`${path} returned HTTP ${response.status}`);
-  const hash = createHash("sha256");
-  for await (const chunk of response.body) hash.update(chunk);
-  return hash.digest("hex");
+  return (await publicDownloadHash(new URL(path,origin))).sha256;
 }
 
 export async function verifyPublic(origin, after) {

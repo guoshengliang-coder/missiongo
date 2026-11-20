@@ -38,7 +38,7 @@ export function documentDecision(plan: string, requestedAt: string, messages: re
   if(messages.slice(0,index).some(m=>m.role==="user" && m.occurredAt
     && Date.parse(m.occurredAt)>=Date.parse(requestedAt))) return undefined;
   const acceptance = messages.slice(index + 1).find(m => m.role === "user");
-  if (!acceptance || acceptance.text !== "批准" || !acceptance.sourceId || !display.sourceId
+  if (!acceptance || !["批准","同意"].includes(acceptance.text) || !acceptance.sourceId || !display.sourceId
     || !acceptance.occurredAt || !display.occurredAt
     || !Number.isFinite(Date.parse(acceptance.occurredAt))
     || Date.parse(acceptance.occurredAt) <= Date.parse(display.occurredAt)
@@ -94,10 +94,21 @@ export class DocumentPlanApprovals {
       }
     } catch { return denied("identity_unavailable"); }
     if(!proposal.valid) return denied("scope_changed");
-    if(proposal.approved) return denied("already_approved");
-    const document=new PlanDocuments({database:this.database} as ConstructorParameters<typeof PlanDocuments>[0]).get(documentId,()=>undefined);
+    let document:ReturnType<PlanDocuments["get"]>;
+    try { document=new PlanDocuments({database:this.database} as ConstructorParameters<typeof PlanDocuments>[0]).get(documentId,()=>undefined,id=>{
+      const accounts=new AccountStore(this.database),account=accounts.getAccount(accountId);
+      if(!["view","operate","ai"].every(p=>accounts.allows(account,id,p as "view"|"operate"|"ai")))throw new Error("Project permission changed");
+      const project=!binding.external&&this.db.prepare(`SELECT 1 FROM free_session_starts f
+        JOIN dispatches d ON d.id=f.dispatch_id JOIN products p ON p.id=f.product_id
+        WHERE d.id=? AND d.account_id=? AND f.product_id=? AND d.status IN ('launched','delivered')
+        AND d.archived_at IS NULL AND p.archived_at IS NULL
+        AND NOT EXISTS(SELECT 1 FROM dispatch_items WHERE dispatch_id=d.id)`)
+        .get(binding.dispatch_id!,accountId,id);
+      if(!project)throw new Error("Original project conversation binding changed");
+    }); } catch {return denied("identity_unavailable");}
     if(document.accountId!==accountId || document.identity!==binding.identity || document.plan!==proposal.plan
       || document.parentDocumentId || !proposal.requestedAt) return denied("scope_changed");
+    if(proposal.approved) return denied("already_approved");
     const history=new AgentHistory(this.database,new AgentArtifacts(this.database,""));
     const available=history.available(accountId,sessionId);
     if(!["complete","ready"].includes(available.status)) return denied("history_incomplete");

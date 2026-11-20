@@ -15,7 +15,7 @@ export function PlanDocumentPage({documentId}:{documentId:string}) {
     </header>
     {query.isPending && <p role="status">{t("loadingItems")}</p>}
     {query.isError && <div role="alert"><p>{localizedErrorText(query.error,t)}</p><button type="button" className="secondary-button" onClick={()=>void query.refetch()}>{t("retry")}</button></div>}
-    {query.data && <><p>{query.data.rounds.map(r=>t("planDocumentRound",{key:r.key,round:r.number})).join(" / ")} · v{query.data.version}</p>
+    {query.data && <><p>{query.data.rounds.length?query.data.rounds.map(r=>t("planDocumentRound",{key:r.key,round:r.number})).join(" / "):t("projectPlanScopeLabel")} · v{query.data.version}</p>
       <MarkdownText>{query.data.markdown}</MarkdownText></>}
   </main>;
 }

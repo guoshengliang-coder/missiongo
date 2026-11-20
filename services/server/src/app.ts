@@ -2426,7 +2426,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.get("/api/v1/plan-documents/:documentId", async (request,reply) => {
     requireAccountId(request);
     const {documentId}=request.params as {documentId:string};
-    const document=new PlanDocuments(store).get(documentId,key=>requireItemPermission(request,key));
+    const document=new PlanDocuments(store).get(documentId,key=>requireItemPermission(request,key),id=>requireProductPermission(request,id,"view"));
     reply.header("Cache-Control","private, no-store");
     const {download} = request.query as {download?:string};
     if(download==="1") return reply.type("text/markdown; charset=utf-8")
@@ -2621,13 +2621,26 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     requireProductPermission(request,merges.batchProduct(id),"view");
     return merges.preview(requireAccountId(request),id);
   });
+  app.post("/api/v1/merge-batches/:id/reconciliation/:requestId/review",async request=>{
+    const {id,requestId}=request.params as {id:string;requestId:string},body=objectBody(request.body);
+    requireProductPermission(request,merges.batchProduct(id),"operate");requireProductPermission(request,merges.batchProduct(id),"ai");
+    return merges.reviewReconciliation(requireAccountId(request),id,requestId,stringField(body,"snapshot")!);
+  });
   app.post("/api/v1/merge-batches/:id/reconciliation/:requestId/decision",async request=>{
     const {id,requestId}=request.params as {id:string;requestId:string},body=objectBody(request.body);
     requireProductPermission(request,merges.batchProduct(id),"operate");requireProductPermission(request,merges.batchProduct(id),"ai");
     const decision=stringField(body,"decision")!;
     if(decision!=="approved"&&decision!=="rejected")throw invalidInput("Invalid recovery decision.");
-    if(body.noExecutionRemaining!==true)throw invalidInput("请先核实没有未结束的外部合并或发布操作。");
-    return merges.decideReconciliation(requireAccountId(request),id,requestId,stringField(body,"snapshot")!,decision,true,stringField(body,"publicationScopeDigest",false));
+    if(body.noExecutionRemaining!==true&&body.reviewConfirmed!==true)throw invalidInput("请先审阅并确认这份决定。");
+    const accountId=requireAccountId(request);
+    const preview=merges.decideReconciliation(accountId,id,requestId,stringField(body,"snapshot")!,decision,true,stringField(body,"publicationScopeDigest",false));
+    if(body.continueInSession===true&&decision==="approved"){
+      try {
+        const command=agentSessionStore.enqueue(accountId,preview.sessionId,"本次集成决定已批准，请核实执行状态并沿用现有授权继续处理。",[],false,`recovery-continue:${id}:${requestId}`);
+        return {...preview,continuation:{queued:true,commandId:command.id}};
+      }catch{return {...preview,continuation:{queued:false}};}
+    }
+    return preview;
   });
   app.get("/api/v1/integration-defaults", async request => {
     return dispatchStore.getDispatchDefaults(requireAccountId(request), "integration");
@@ -3359,7 +3372,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       loadExternalSession(request, sessionId, true, true);
       const body = objectBody(request.body);
       const attachmentIds = stringArrayField(body, "attachmentIds") ?? [];
-      const command=externalNativeStore.enqueue(requireAccountId(request), sessionId, stringField(body, "text", false) ?? "", attachmentIds, stringField(body, "requestKey", false));
+      const text=stringField(body,"text",false)??"";
+      const command=merges.conversationReply(requireAccountId(request),sessionId,text,attachmentIds,()=>externalNativeStore.enqueue(requireAccountId(request),sessionId,text,attachmentIds,stringField(body,"requestKey",false)));
       notePerformanceSend(request,sessionId,command);
     return reply.status(201).send(command);
     }
@@ -3373,14 +3387,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (attachmentIds.length && !agentSessionStore.supportsAttachments(sessionId)) {
       throw conflict("agent_node_attachments_unsupported", "Update the MissionGo Mac app before sending attachments to this session.");
     }
-    const command = agentSessionStore.enqueue(
-      requireAccountId(request),
-      sessionId,
-      stringField(body, "text", false) ?? "",
-      attachmentIds,
-      false,
-      stringField(body, "requestKey", false),
-    );
+    const text=stringField(body,"text",false)??"";
+    const command=merges.conversationReply(requireAccountId(request),sessionId,text,attachmentIds,()=>agentSessionStore.enqueue(
+      requireAccountId(request),sessionId,text,attachmentIds,false,stringField(body,"requestKey",false)));
     notePerformanceSend(request,sessionId,command);
     return reply.status(201).send(command);
   });

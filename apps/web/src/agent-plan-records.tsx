@@ -69,11 +69,11 @@ function PlanRecordDetails({session,blocked}:{session:AgentSession;blocked:boole
   const visibleIds=new Set(records.map(item=>item.id));
   const history=[...new Map(pages.data?.pages.flatMap(page=>page.records).map(item=>[item.id,item])??[]).values()].filter(item=>!visibleIds.has(item.id)).sort(newestPlanRecord);
   const metadata=(item:AgentPlanRecord)=><>
-    {item.keys.length>0 && <p className="account-note">{item.rounds?.length?item.rounds.map(round=>t("planDocumentRound",{key:round.key,round:round.number})).join("、"):item.keys.join("、")}</p>}
+    {item.keys.length>0 && <p className="account-note">{item.rounds?.length?item.rounds.map(round=>t("planDocumentRound",{key:round.key,round:round.number})).join("、"):(item.keys.join("、")||t("projectPlanScopeLabel"))}</p>}
     <p className="account-note">{t("agentPlanSubmitted")}：{time(item.submittedAt)}</p>
   </>;
   const original=(item:AgentPlanRecord)=><button type="button" className="text-button" onClick={()=>enter(()=>setSelected(item.id))}>{t("agentPlanReadVersion")}</button>;
-  const card=(item:AgentPlanRecord)=><section key={item.id} className="agent-plan-version" aria-label={`${version(item)} · ${item.keys.join("、")}`}>
+  const card=(item:AgentPlanRecord)=><section key={item.id} className="agent-plan-version" aria-label={`${version(item)} · ${(item.keys.join("、")||t("projectPlanScopeLabel"))}`}>
     <div className="agent-plan-card-heading"><h3>{version(item)}</h3><span className={`agent-plan-state ${item.effective?"effective":item.pending?"pending":""}`}>{t(status(item))}</span></div>
     {metadata(item)}
     {item.summary!==undefined?<MarkdownText>{item.summary}</MarkdownText>:<p className="account-note">{t("agentPlanNoSummary")}</p>}
@@ -95,7 +95,7 @@ function PlanRecordDetails({session,blocked}:{session:AgentSession;blocked:boole
     {detail.isPending && <p role="status">{t("agentSessionLoading")}</p>}
     {detail.isError && failure(detail.error,()=>detail.refetch())}
     {record && <>
-      <h3>{version(record)} · {record.keys.join("、")}</h3>
+      <h3>{version(record)} · {(record.keys.join("、")||t("projectPlanScopeLabel"))}</h3>
       <p>{t(status(record))}</p>
       {record.approval && <p>{t("agentPlanApprovalTime")}：{time(record.approval.approvedAt)} · {source(record.approval.source)}</p>}
       {record.parentDocumentId && <button type="button" className="text-button" onClick={()=>enter(()=>setParent(record.parentDocumentId))}>{t("agentPlanParent")}</button>}
