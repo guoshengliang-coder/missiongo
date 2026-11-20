@@ -36,10 +36,11 @@ Linux 支持（未知工具版本会拒绝，原文件有备份）；然后使�
 - **Codex 配好了 missiongo MCP 并已登录**：
 
   ```bash
-  codex mcp add missiongo --url <MissionGo 地址>/mcp && codex mcp login missiongo
+  codex mcp add missiongo --url <MissionGo 地址>/mcp && codex mcp login missiongo --scopes missiongo:read,missiongo:write
   ```
 
-  客户端检测到缺失时，菜单里有「复制命令」，复制出来的就是指向当前登录服务器的这条命令。
+  客户端检测到缺失时，菜单里有「复制命令」，复制出来的就是指向当前登录服务器的这条命令。在执行节点的浏览器中明确授予读写权限，再重新检查。已登录但只有读取权限时，也要使用上面的完整登录命令重新授权；不会自动升级旧授权。
+  派单还要求 Codex 工具列表开放 `get_current_account`、`append_comment`、`claim_item` 及 Skill 所需的方案和交付工具；自定义 `enabled_tools`／`disabled_tools` 可能另行限制它们，详见 [接入配置](ai-client-setup.md#codex)。
 
 用 OpenCode 派单时：
 

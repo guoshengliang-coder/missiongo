@@ -83,7 +83,7 @@ final class DispatchPermissionsTests: XCTestCase {
             ["capabilities": ["canComment": true, "writeTools": ["append_comment"]]],
             ["capabilities": ["canComment": true, "writeTools": ["append_comment", "claim_item"]], "skill": ["expectedVersion": "5.7.0"]],
         ]
-        for account in invalidAccounts {
+        for (index, account) in invalidAccounts.enumerated() {
             let server = try FakeAppServer.happy(accountResult: ["structuredContent": account])
             do {
                 _ = try await CodexAppServerControl(timeout: 3).startThread(CodexThreadRequest(
@@ -93,6 +93,12 @@ final class DispatchPermissionsTests: XCTestCase {
                 XCTFail("Expected preflight rejection")
             } catch {
                 XCTAssertTrue(error.localizedDescription.contains("尚未启动任务"), error.localizedDescription)
+                if index < 2 {
+                    XCTAssertTrue(error.localizedDescription.contains("codex mcp login missiongo --scopes missiongo:read,missiongo:write"))
+                    XCTAssertTrue(error.localizedDescription.contains("该执行节点"))
+                    XCTAssertTrue(error.localizedDescription.contains("enabled_tools／disabled_tools"))
+                    XCTAssertTrue(error.localizedDescription.contains("claim_item"))
+                }
             }
             server.waitUntilDone()
             XCTAssertTrue(server.methods.contains("mcpServer/tool/call"))
