@@ -16,13 +16,14 @@ function repository({ android = "0.1.20", macos = "0.4.89", linux = "0.1.24" } =
     androidApp: { version: "0.1.20", commit: macosCommit, versionFile: "sdks/android-feedback/gradle.properties", versionProperty: "missiongoAndroidVersionName", paths: ["apps/android", "sdks/android-feedback/gradle.properties"] },
     macosApp: { version: macos, commit: macosCommit, versionFile: "apps/macos/version.properties", versionProperty: "missiongoMacosVersion", paths: ["apps/macos"] },
     linuxCli: { version: "0.1.24", commit: macosCommit, versionFile: "product.json", versionJsonPath: "linuxNode.version", paths: ["apps/node"] },
+    windowsApp: { version: "0.1.0", commit: macosCommit, versionFile: "product.json", versionJsonPath: "windows.app.version", paths: ["apps/windows"] },
   } }, null, 2);
   git(root, "init", "-q", "-b", "main");
   git(root, "config", "user.email", "test@example.com");
   git(root, "config", "user.name", "Test");
   write("sdks/android-feedback/gradle.properties", `missiongoAndroidVersionName=${android}\nmissiongoVersion=0.2.8\n`);
   write("apps/macos/version.properties", `missiongoMacosVersion=${macos}\n`);
-  write("product.json", JSON.stringify({ web: { version: "1.1.52" }, linuxNode: { version: linux } }, null, 2));
+  write("product.json", JSON.stringify({ web: { version: "1.1.52" }, linuxNode: { version: linux }, windows: { app: { id: "io.synthetic.windows", path: "apps/windows", releaseSigning: "temporary-unsigned", version: "0.1.0" } } }, null, 2));
   write("released.json", ledger("cccccccccccccccccccccccccccccccccccccccc"));
   git(root, "add", "-A");
   git(root, "commit", "-q", "-m", "published");
@@ -128,4 +129,18 @@ test("planning reports patch gaps without changing declarations or the repositor
     assert.equal(readFileSync(join(root, "apps/macos/version.properties"), "utf8"), text);
     assert.equal(git(root, "status", "--porcelain"), before);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+ test("preserves all shared product declarations while bumping nested Windows and Linux versions", () => {
+  const { root } = repository();
+  try {
+    merged(root, "apps/node");
+    merged(root, "apps/windows");
+    const bumps=bumpPatchVersions("origin/main", root);
+    assert.deepEqual(bumps.map(b=>[b.artifact,b.to]),[["linuxCli","0.1.25"],["windowsApp","0.1.1"]]);
+    const product=JSON.parse(readFileSync(join(root,"product.json"),"utf8"));
+    assert.equal(product.linuxNode.version,"0.1.25");
+    assert.deepEqual(product.windows.app,{id:"io.synthetic.windows",path:"apps/windows",releaseSigning:"temporary-unsigned",version:"0.1.1"});
+    assert.equal(product.web.version,"1.1.52");
+  } finally {rmSync(root,{recursive:true,force:true});}
 });
