@@ -1848,7 +1848,22 @@ export class MissionGoStore {
       const releases=[...artifacts.values()];
       const noReleaseVerified=events.some(e=>bound(e) && ["non_release_submitted","non_release_supplemented"].includes(String(e.payload.reason)));
       const published=scope.requiredArtifacts!==null && (scope.requiredArtifacts.length===0 ? noReleaseVerified : scope.requiredArtifacts.every(a=>artifacts.has(a)));
+      // A status-only human completion that was explicitly returned to work is
+      // not a second integrated delivery. Keep it visible for a scoped human
+      // review; never infer this for records carrying integration or scope.
+      const following=events.slice(events.indexOf(event)+1);
+      const returned=following.findIndex(e=>e.eventType==="status_changed" && e.fromStatus==="development_complete" && e.toStatus==="in_progress" && e.actorKind==="human");
+      const replacement=returned<0?undefined:following.slice(returned+1).find(e=>
+        (e.eventType==="delivery_recorded" || e.eventType==="status_changed" && e.toStatus==="development_complete")
+        && e.payload.roundKey===eventRound && (e.payload.completion || e.payload.pullRequestUrl));
+      const historicalGapReason=event.eventType==="status_changed" && event.actorKind==="human" && Boolean(eventRound)
+        && !event.payload.completion && !event.payload.pullRequestUrl && event.payload.requiredArtifacts==null
+        && !completion && scope.requiredArtifacts===null
+        && !scope.noReleaseReason && scopedEvents.length===1 && !receipts.length && replacement
+        && typeof event.payload.contentVersion==="number" && event.payload.contentVersion===replacement.payload.contentVersion
+        ? "人工标记开发完成后已退回处理，后续已有独立集成交付；此旧记录缺少集成与范围，保留历史告警，不计为本次交付。" : undefined;
       return {id:event.id,createdAt:event.createdAt,roundKey:eventRound,completion,...scope,releases,published,
+        ...(historicalGapReason?{historicalGapReason}:{}),
         status:published ? "published" as const : releases.length ? "partial" as const : "awaiting_release" as const};
     });
   }

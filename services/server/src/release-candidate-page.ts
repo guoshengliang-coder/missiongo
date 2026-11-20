@@ -27,6 +27,7 @@ export function releaseCandidatePage(store:MissionGoStore,merges:MergeDeliveries
           }
           if(!includeUnscoped && (!completion || !requiredArtifacts?.length)) return [];
           return [{itemKey:item.key,expectedRevision:item.revision,developmentEventId:record.id,roundKey:record.roundKey,
+            ...(record.historicalGapReason?{historicalGapReason:record.historicalGapReason,createdAt:record.createdAt}:{}),
             ...(completion?completionPayload(completion):{}),...(requiredArtifacts!==null?{requiredArtifacts}: {})}];
         });
       });
