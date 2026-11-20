@@ -613,6 +613,12 @@ public enum DispatchPresentation {
         return startup.map { "最近一次本机启动失败：\($0)" }
     }
 
+    /// A recovery action remains available even when CLI login status is ready
+    /// but the thread's actual MCP permissions cannot authorize dispatch.
+    public static func recoveryCommand(code: String?, agentKind: String?) -> String? {
+        code == "mcp_auth" && agentKind == "codex" ? CodexPreflight.mcpLoginCommand : nil
+    }
+
     /// What actually went wrong, kept separately from `error`: a dispatch that
     /// is later replaced has its `error` overwritten with "已被重新派单取代",
     /// but its failure code and diagnostic snapshot still say why it never ran.

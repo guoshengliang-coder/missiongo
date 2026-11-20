@@ -25,7 +25,13 @@ struct DispatchesSection: View {
                let problem = DispatchPresentation.localLaunchProblem(launch) {
                 // The console list can be stale or unreachable; this Mac still
                 // knows why its most recent launch did not start.
-                WrappingCaption(text: problem, color: .red)
+                if let command = DispatchPresentation.recoveryCommand(
+                    code: launch.report.failureCode, agentKind: launch.agentKind
+                ) {
+                    CodexMcpRecoveryNotice(text: problem, command: command, copy: model.copyToClipboard)
+                } else {
+                    WrappingCaption(text: problem, color: .red)
+                }
             }
             if model.recentDispatches.isEmpty {
                 if model.dispatchesError == nil {
@@ -42,72 +48,113 @@ struct DispatchesSection: View {
     }
 }
 
+/// Kept outside the row's navigation button so text selection and copying do
+/// not open a session. Reused for a local failure before its report is synced.
+struct CodexMcpRecoveryNotice: View {
+    let text: String
+    let command: String
+    let copy: (String) -> Void
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            WrappingCaption(text: text, color: .red)
+            Button {
+                copy(command)
+                copied = true
+                Task {
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    copied = false
+                }
+            } label: {
+                Label(copied ? "已复制" : "复制授权命令", systemImage: copied ? "checkmark" : "doc.on.doc")
+                    .font(.caption)
+            }
+            .buttonStyle(.borderless)
+            .help(command)
+        }
+    }
+}
+
 private struct DispatchRow: View {
     @EnvironmentObject private var model: AppModel
     @State private var hovering = false
     let record: DispatchRecord
 
+    private var recoveryCommand: String? {
+        DispatchPresentation.recoveryCommand(code: record.failureCode, agentKind: record.agentKind)
+    }
+
     var body: some View {
-        Button {
-            if let url = record.sessionUrl { model.open(url) }
-        } label: {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 4) {
-                        Text(DispatchPresentation.itemsLabel(record.itemKeys))
+        VStack(alignment: .leading, spacing: 2) {
+            Button {
+                if let url = record.sessionUrl { model.open(url) }
+            } label: {
+                HStack(alignment: .top, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 4) {
+                            Text(DispatchPresentation.itemsLabel(record.itemKeys))
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                            if record.sessionUrl != nil {
+                                Image(systemName: "arrow.up.right.square")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Text(DispatchPresentation.agentLine(agentKind: record.agentKind, mode: record.mode))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.tail)
-                        if record.sessionUrl != nil {
-                            Image(systemName: "arrow.up.right.square")
-                                .font(.caption)
+                        if record.status == "launched" && record.agentKind == "claude_code" && record.sessionUrl == nil {
+                            Text("在 MissionGo 控制台查看和回复")
+                                .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
+                        if recoveryCommand == nil, let problem = DispatchPresentation.failureHint(
+                            code: record.failureCode, stage: record.failureStage, agentKind: record.agentKind
+                        ) {
+                            Text(problem)
+                                .font(.caption)
+                                .foregroundColor(.red)
+                                .lineLimit(2)
+                        } else if recoveryCommand == nil, let error = DispatchPresentation.shortError(record.error) {
+                            Text(error)
+                                .font(.caption)
+                                .foregroundColor(.red)
+                                .lineLimit(2)
+                        }
                     }
-                    Text(DispatchPresentation.agentLine(agentKind: record.agentKind, mode: record.mode))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    if record.status == "launched" && record.agentKind == "claude_code" && record.sessionUrl == nil {
-                        Text("在 MissionGo 控制台查看和回复")
+                    Spacer(minLength: 4)
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(DispatchPresentation.statusLabel(record.status))
+                            .font(.caption.weight(.medium))
+                            .foregroundColor(statusColor)
+                        Text(DispatchPresentation.relativeTime(record.createdAt))
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
-                    if let problem = DispatchPresentation.failureHint(
-                        code: record.failureCode, stage: record.failureStage, agentKind: record.agentKind
-                    ) {
-                        Text(problem)
-                            .font(.caption)
-                            .foregroundColor(.red)
-                            .lineLimit(2)
-                    } else if let error = DispatchPresentation.shortError(record.error) {
-                        Text(error)
-                            .font(.caption)
-                            .foregroundColor(.red)
-                            .lineLimit(2)
-                    }
                 }
-                Spacer(minLength: 4)
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(DispatchPresentation.statusLabel(record.status))
-                        .font(.caption.weight(.medium))
-                        .foregroundColor(statusColor)
-                    Text(DispatchPresentation.relativeTime(record.createdAt))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
+                .padding(.vertical, 4)
+                .padding(.horizontal, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(hovering && record.sessionUrl != nil ? Color.primary.opacity(0.08) : Color.clear)
+                )
+                .contentShape(Rectangle())
             }
-            .padding(.vertical, 4)
-            .padding(.horizontal, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(hovering && record.sessionUrl != nil ? Color.primary.opacity(0.08) : Color.clear)
-            )
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .onHover { hovering = $0 }
+            .help(rowHelp)
+            if let command = recoveryCommand,
+               let hint = DispatchPresentation.failureHint(
+                    code: record.failureCode, stage: record.failureStage, agentKind: record.agentKind
+               ) {
+                CodexMcpRecoveryNotice(text: hint, command: command, copy: model.copyToClipboard)
+                    .padding(.horizontal, 6)
+            }
         }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .help(rowHelp)
     }
 
     private var rowHelp: String {

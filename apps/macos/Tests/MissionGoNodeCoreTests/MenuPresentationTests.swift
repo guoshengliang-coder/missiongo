@@ -327,6 +327,10 @@ final class DispatchPresentationTests: XCTestCase {
         XCTAssertTrue(status.fixHint?.contains("读写权限") == true)
         XCTAssertEqual(CodexStatus.mcpMissing(version: "test").fixCommand(serverUrl: "https://missiongo.test"),
             "codex mcp add missiongo --url https://missiongo.test/mcp && \(command)")
+        XCTAssertEqual(DispatchPresentation.recoveryCommand(code: "mcp_auth", agentKind: "codex"), command)
+        XCTAssertNil(DispatchPresentation.recoveryCommand(code: "mcp_auth", agentKind: "opencode"))
+        XCTAssertNil(DispatchPresentation.recoveryCommand(code: "mcp_timeout", agentKind: "codex"))
+        XCTAssertNil(DispatchPresentation.recoveryCommand(code: nil, agentKind: "codex"))
     }
 
     func testFailureCodesStayReadableAfterTheDispatchIsReplaced() {
