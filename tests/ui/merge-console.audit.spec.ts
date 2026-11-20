@@ -397,7 +397,7 @@ for(const theme of ["light","dark"] as const)test(`publication recovery preserve
   await page.goto(`/?product=${product.id}&console=agent&session=${id}`);
   await page.getByRole("button",{name:"集成详情",exact:true}).click();await page.getByText("查看对账与恢复",{exact:true}).click();
   const region=page.getByRole("region",{name:"批次对账"});
-  await expect(region).toContainText("Current merged delivery");await expect(region).toContainText("web / windowsApp");
+  await expect(region).toContainText("Current merged delivery");await expect(region).toContainText("Web/Server / Windows");
   await expect(region).toContainText("Historical manual completion");await expect(region).toContainText("历史缺证，不纳入本次交付承诺");
   await expect(region.getByRole("button",{name:"批准本次恢复"})).toBeDisabled();
   await region.getByText("查看改动与验证详情",{exact:true}).first().click();
