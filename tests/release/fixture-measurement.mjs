@@ -18,6 +18,8 @@ export function resampleFixtureOnce(run, { purpose, rejected }) {
   const stages = ["settings", "discovery", "transfer", "validation", "compile", "measurement", "cleanup"];
   const complete = report && first.status === 1 && !first.signal && !first.error
     && report.version === 2 && [report.calibration?.valid, report.httpCalibration?.valid].every(v => typeof v === "boolean")
+    && Number.isFinite(report.totalMs) && report.totalMs >= 0 && Number.isFinite(report.limits?.maxDurationMs)
+    && report.totalMs < report.limits.maxDurationMs && report.stages?.length === stages.length
     && report.cleaned === true && report.cleanupSucceeded === true
     && ["regression", "measurement"].includes(report.failureKind)
     && report.cpuTargets?.length === 3 && report.httpTargets?.length === 4

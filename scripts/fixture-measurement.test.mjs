@@ -5,7 +5,7 @@ import { fixtureMeasurementReport, resampleFixtureOnce } from "../tests/release/
 const evidence = () => ({ version: 2, head: "a".repeat(40), calibration: { valid: true }, httpCalibration: { valid: true }, status: "failed", failureKind: "regression",
   cpuTargets: Array.from({ length: 3 }, () => ({ status: "passed" })), httpTargets: Array.from({ length: 4 }, () => ({ status: "exceeded" })),
   cleaned: true, cleanupSucceeded: true, stages: ["settings", "discovery", "transfer", "validation", "compile", "measurement", "cleanup"]
-    .map(name => ({ name, status: name === "measurement" ? "failed" : "passed" })) });
+    .map(name => ({ name, status: name === "measurement" ? "failed" : "passed" })), totalMs: 100, limits: { maxDurationMs: 245000 } });
 const result = report => ({ status: 1, stdout: JSON.stringify(report, null, 2), signal: null });
 
 test("fixture report parsing accepts the final complete measurement, never truncated output", () => {
@@ -33,7 +33,8 @@ test("only invalid calibration can resample a diagnostic; a genuine miss remains
 test("setup, cleanup, incomplete stages, process errors and successful runs never resample", () => {
   for (const change of [r => { r.cleaned = false; }, r => { r.cleanupSucceeded = false; }, r => { r.failureKind = "preparation"; },
     r => { r.stages.pop(); }, r => { r.stages[0].status = "failed"; }, r => { r.cpuTargets.pop(); },
-    r => { delete r.calibration.valid; }, r => { r.version = 99; }]) {
+    r => { delete r.calibration.valid; }, r => { r.version = 99; }, r => { r.totalMs = r.limits.maxDurationMs; },
+    r => { delete r.limits; }, r => { r.stages.push({ name: "unknown", status: "passed" }); }]) {
     const report = evidence(); change(report); let calls = 0;
     resampleFixtureOnce(() => { calls++; return result(report); }, { purpose: "version-guard", rejected: () => assert.fail("Incomplete measurement cannot retry") });
     assert.equal(calls, 1);
