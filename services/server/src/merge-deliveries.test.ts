@@ -216,6 +216,96 @@ describe("integration directly in the original conversation",()=>{
     human(f,"停止执行");
     const stop=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"stop",{...scope(f),deliveries:[],resumeBatchId:b.id});
     expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,stop.id)).toThrow();
+    human(f,"进度如何");
+    const afterStop=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"after-stop",{...scope(f),deliveries:[],resumeBatchId:b.id});
+    expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,afterStop.id)).toThrow();
+    human(f,"执行合并");
+    const explicit=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"explicit",{...scope(f),deliveries:[],resumeBatchId:b.id});
+    expect(f.merges.startConversation(f.owner.id,"original-client",f.identity,explicit.id).id).toBe(b.id);
+  });
+  it.each([false,true])("records Web recovery approval separately from delivery and later stop (%s)",async stop=>{
+    const f=await prepared();human(f,"执行合并");
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"prepare",scope(f));
+    const b=f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id),id=b.deliveries[0]!;
+    f.merges.report(f.owner.id,f.dispatch.id,b.id,id,{status:"blocked",head:f.input.head,detail:"Resolved obstacle"});
+    const snapshot=f.merges.preview(f.owner.id,b.id).snapshot,key="retry";
+    f.merges.requestReconciliation(f.owner.id,f.dispatch.id,b.id,key,snapshot,{kind:"retry_blocked",deliveryId:id,reason:"Obstacle resolved"});
+    f.merges.reviewReconciliation(f.owner.id,b.id,key,snapshot);
+    const sessions=new AgentSessionStore(f.store.database);
+    const c=f.merges.conversationReply(f.owner.id,b.sessionId," 批准 ",[],()=>sessions.enqueue(f.owner.id,b.sessionId," 批准 ",[]));
+    expect(f.merges.preview(f.owner.id,b.id).reconciliation!.requests[0]!.decision).toBe("approved");
+    expect(()=>f.merges.applyReconciliation(f.owner.id,f.dispatch.id,b.id,key)).toThrow();
+    f.db.prepare("UPDATE agent_session_commands SET status='delivered' WHERE id=?").run(c.id);
+    if(stop){human(f,"停止执行");expect(()=>f.merges.applyReconciliation(f.owner.id,f.dispatch.id,b.id,key)).toThrow();}
+    else expect(f.merges.applyReconciliation(f.owner.id,f.dispatch.id,b.id,key).entries[0]!.result).toBeUndefined();
+  });
+  it.each(["interrupt","missing-prior"])("never shortcuts status recovery across %s",async gap=>{
+    const f=await prepared();vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(new Date(Date.now()-5000));const initial=human(f,"执行合并");
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"prepare",scope(f));
+    const b=f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id);
+    if(gap==="interrupt"){
+      new AgentSessionStore(f.store.database).enqueueInterrupt(f.owner.id,b.sessionId);
+      f.db.prepare("UPDATE agent_session_commands SET status='delivered' WHERE session_id=? AND kind='interrupt'").run(b.sessionId);
+    }
+    else f.db.prepare("DELETE FROM agent_session_commands WHERE id=?").run(initial.id);
+    vi.useRealTimers();
+    human(f,"进度如何");
+    const resume=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"status",{...scope(f),deliveries:[],resumeBatchId:b.id});
+    expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,resume.id)).toThrow();
+  });
+  it.each(["no-milliseconds","offset"])("preserves a native stop with %s timestamps",async format=>{
+    const f=await prepared(),at=Math.floor(Date.now()/1000)*1000-1000;
+    vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(new Date(at-2000));human(f,"执行合并");
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"prepare",scope(f));
+    const b=f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id);vi.useRealTimers();
+    const occurredAt=format==="no-milliseconds"?new Date(at).toISOString().replace(".000Z","Z")
+      :new Date(at+8*3600000).toISOString().replace("Z","+08:00");
+    new AgentSessionStore(f.store.database).recordSnapshot({nodeId:f.node.nodeId,sessionId:b.sessionId,status:"idle",messages:[{sourceId:"native-stop",role:"user",text:"停止执行",occurredAt}]});
+    vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(new Date(at+1));human(f,"进度如何");
+    const resume=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"status",{...scope(f),deliveries:[],resumeBatchId:b.id});vi.useRealTimers();
+    expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,resume.id)).toThrow();
+  });
+  it("selects only chronologically prior native review context across ISO formats",async()=>{
+    const f=await prepared(),at=Math.floor(Date.now()/1000)*1000-2000;
+    const prior=`Completed PR #12 at ${f.input.head}`;
+    new AgentSessionStore(f.store.database).recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",settingsRevision:1,messages:[
+      {sourceId:"prior-review",role:"agent",phase:"final_answer",text:prior,occurredAt:new Date(at-1000).toISOString()},
+      {sourceId:"native-command",role:"user",text:"执行合并",occurredAt:new Date(at).toISOString().replace(".000Z","Z")},
+      {sourceId:"future-review",role:"agent",phase:"final_answer",text:"Later unrelated PR #99",occurredAt:new Date(at+1).toISOString()}]});
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"context",scope(f));
+    expect(p.source.context).toBe(prior);
+  });
+  it("rebinds project delivery configuration only after exact new configuration approval",async()=>{
+    const f=await fixture(),launched=f.launch("opencode"),merges=new MergeDeliveries(f.store);
+    const identity={dispatchId:launched.dispatch.id},input={...proposal(f.item.key),itemKeys:[],productId:f.item.productId};
+    const ff={...f,...launched,input};human(ff as never,"执行合并");
+    const s={productId:f.item.productId,repository:input.repository,operation:"merge_only" as const,deliveries:[input]};
+    const p=merges.prepareConversation(f.owner.id,"original-client",identity,"initial",s),b=merges.startConversation(f.owner.id,"original-client",identity,p.id);
+    f.db.prepare("UPDATE agent_sessions SET settings_revision=settings_revision+1,applied_settings_revision=settings_revision+1,mode='auto' WHERE id=?").run(b.sessionId);
+    const r=merges.prepareConversation(f.owner.id,"original-client",identity,"new-config",{...s,deliveries:[],resumeBatchId:b.id});
+    const at=Date.now()-1000;
+    new AgentSessionStore(f.store.database).recordSnapshot({nodeId:launched.node.nodeId,sessionId:b.sessionId,status:"idle",messages:[{sourceId:"new-review",role:"agent",phase:"final_answer",text:r.reviewText,occurredAt:new Date(at).toISOString()}]});
+    human(ff as never,"批准");
+    const resumed=merges.startConversation(f.owner.id,"original-client",identity,r.id);
+    expect(resumed.conversation!.configurationChanges).toHaveLength(1);
+    expect(resumed.entries[0]!.blocker).toBeUndefined();
+  });
+  it.each([false,true])("restores exact native recovery consent including command mirrors (%s)",async mirror=>{
+    const f=await prepared();vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(new Date(Date.now()-5000));human(f,"执行合并");
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"prepare",scope(f));
+    const b=f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id),id=b.deliveries[0]!;
+    f.merges.report(f.owner.id,f.dispatch.id,b.id,id,{status:"blocked",head:f.input.head,detail:"Resolved obstacle"});
+    const snapshot=f.merges.preview(f.owner.id,b.id).snapshot,key="native-retry";
+    f.merges.requestReconciliation(f.owner.id,f.dispatch.id,b.id,key,snapshot,{kind:"retry_blocked",deliveryId:id,reason:"Obstacle resolved"});
+    const text=f.merges.preview(f.owner.id,b.id).reconciliation!.requests[0]!.reviewText!;vi.useRealTimers();const at=Date.now()-1000;
+    let commandId:string|undefined;
+    if(mirror){vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(new Date(at+1));commandId=human(f,"批准").id;vi.useRealTimers();}
+    new AgentSessionStore(f.store.database).recordSnapshot({nodeId:f.node.nodeId,sessionId:b.sessionId,status:"idle",messages:[
+      {sourceId:"recovery-review",role:"agent",phase:"final_answer",text,occurredAt:new Date(at).toISOString()},
+      {sourceId:"recovery-consent",role:"user",text:"批准",...(commandId?{clientMessageId:commandId}:{}),occurredAt:new Date(at+1).toISOString()}]});
+    new AgentHistory(f.store.database,new AgentArtifacts(f.store.database,"")).observe(f.owner.id,f.node.nodeId,b.sessionId,{complete:true});
+    expect(f.merges.recoverConversationDecision(f.owner.id,f.dispatch.id,b.id,key)).toMatchObject({code:"restored",decision:"approved"});
+    expect(f.merges.applyReconciliation(f.owner.id,f.dispatch.id,b.id,key).entries[0]!.result).toBeUndefined();
   });
   it("completes the same merge validation and handoff gates in the original conversation",async()=>{
     const f=await prepared();human(f,"执行合并");const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"complete-original",scope(f));

@@ -16,4 +16,12 @@ describe("conversation integration instruction rejection", () => {
     expect(() => assertIntegrationInstruction("执行合并", "merge_and_publish")).toThrow(/不一致/);
     expect(() => assertIntegrationInstruction("执行发布", "merge_only")).toThrow(/不一致/);
   });
+  it.each([
+    ["合并吗", "merge_only"], ["发布么", "publish_only"],
+    ["合并好不好", "merge_only"], ["发布可以吗", "publish_only"],
+    ["merge when CI passes", "merge_only"], ["publish tomorrow", "publish_only"],
+    ["明天合并", "merge_only"],
+  ] as const)("rejects questions and deferred instructions with matching operation: %s", (text, mode) => {
+    expect(() => assertIntegrationInstruction(text, mode)).toThrow();
+  });
 });

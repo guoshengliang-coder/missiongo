@@ -79,12 +79,12 @@ export function integrationInstruction(database: MissionGoDatabase, executor: In
     if (!message || !clock || !message.occurred_at || Date.parse(clock.occurred_at) !== Date.parse(message.occurred_at)) throw unavailable();
     current = { sourceId: `native:${message.source_id}`, text: message.text, occurredAt: message.occurred_at };
   }
-  if(!external && db.prepare("SELECT 1 FROM agent_session_commands WHERE session_id=? AND kind='interrupt' AND status NOT IN ('failed','cancelled') AND created_at>=?").get(sessionId,current.occurredAt))throw unavailable();
+  if(!external && db.prepare("SELECT 1 FROM agent_session_commands WHERE session_id=? AND kind='interrupt' AND status NOT IN ('failed','cancelled') AND julianday(created_at)>=julianday(?)").get(sessionId,current.occurredAt))throw unavailable();
   if (sourceId && sourceId !== current.sourceId) throw conflict("conversation_integration_input_changed", "当前用户输入已变化，请核对原会话指令，不重建或重复执行未知操作。");
   const contextRow = db.prepare(external
     ? `SELECT payload_json FROM external_native_messages WHERE session_id=? AND json_extract(payload_json,'$.role')='agent'
-       AND json_extract(payload_json,'$.phase')='final_answer' AND json_extract(payload_json,'$.occurredAt')<? ORDER BY position DESC,rowid DESC LIMIT 1`
-    : "SELECT text FROM agent_session_messages WHERE session_id=? AND role='agent' AND phase='final_answer' AND occurred_at<? ORDER BY position DESC,rowid DESC LIMIT 1")
+       AND json_extract(payload_json,'$.phase')='final_answer' AND julianday(json_extract(payload_json,'$.occurredAt'))<julianday(?) ORDER BY position DESC,rowid DESC LIMIT 1`
+    : "SELECT text FROM agent_session_messages WHERE session_id=? AND role='agent' AND phase='final_answer' AND julianday(occurred_at)<julianday(?) ORDER BY position DESC,rowid DESC LIMIT 1")
     .get(sessionId, current.occurredAt) as { text?: string; payload_json?: string } | undefined;
   const context: string = contextRow?.text ?? (contextRow?.payload_json ? JSON.parse(contextRow.payload_json).text : "");
   return { ...current, context, fingerprint: integrationFingerprint([current, context]) };
@@ -97,7 +97,7 @@ export function assertIntegrationInstruction(text: string, operation: "merge_onl
   if(operation==="merge_only")text=text.replace(/(?:暂不|先不|不要|不用|无需|不)(?:进行)?(?:发布|部署)/g,"").replace(/\b(?:do not|don't|not) (?:publish|release|deploy)\b/ig,"");
   if(operation==="publish_only")text=text.replace(/(?:暂不|先不|不要|不用|无需|不)(?:进行)?合并/g,"").replace(/\b(?:do not|don't|not) merge\b/ig,"");
   text=text.replace(/^[\s,，;；]+/,"");
-  if (!text.trim() || raw.length > 4000 || /[?？“”「」『』"`]|(?:不|别|勿|禁止|停止|暂停|暂缓|取消|以后|如果|假如|等我|是否|能否|为什么|怎么|添加|加入|提交到|方案|建议|准备|计划|引用|文档里|文档中|例如)|\b(?:not|don't|do not|can't|cannot|if|later|why|whether|queue|plan|prepare)\b/i.test(text))
+  if (!text.trim() || raw.length > 4000 || /[?？“”「」『』"`]|(?:不|别|勿|禁止|停止|暂停|暂缓|取消|以后|明天|后天|如果|假如|等我|是否|能否|为什么|怎么|吗|么|添加|加入|提交到|方案|建议|准备|计划|引用|文档里|文档中|例如)|\b(?:not|don't|do not|can't|cannot|if|when|once|after|later|tomorrow|why|whether|queue|plan|prepare)\b/i.test(text))
     throw conflict("conversation_integration_instruction_ambiguous", "这条消息不是范围明确的当前执行指令，请先澄清；不能把讨论或加入清单当作合并发布授权。");
   if(!/^(?:请|现在|直接|立即|执行|开始|帮我|麻烦|把|将|仅|只|合并|发布|部署|only\b|merge\b|publish\b|deploy\b|release\b|please\b|go ahead\b)/i.test(text.trim()) || /(?:已经|已)(?:合并|发布)|(?:合并|发布)(?:成功|完成)/.test(text))
     throw conflict("conversation_integration_instruction_ambiguous", "不能把完成汇报或引用当作当前执行指令。");

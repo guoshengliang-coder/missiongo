@@ -1052,7 +1052,7 @@ export function createMissionGoMcpServer(
   server.registerTool(
     "recover_merge_approval",{
     title:"Restore an exact original-conversation integration decision",
-    description:"After displaying the request's exact reviewText in final_answer and receiving a standalone human 同意 or 批准, verify authenticated original-node history and restore the same decision. No transcript or approved parameter is accepted. Missing history/source clocks remain a specific gap; never ask again for an already valid decision. Does not apply recovery, execute Git or publish.",
+    description:"After displaying the request's exact reviewText in final_answer and receiving a standalone human 同意 or 批准, verify authenticated original-node history and restore the same decision. No transcript or approved parameter is accepted. External native sessions currently lack complete-history proof and return history_incomplete; use trusted native confirmation when no valid decision already exists. Missing history/source clocks remain a specific gap; never ask again for an already valid decision. Does not apply recovery, execute Git or publish.",
     inputSchema:z.object({batchId:z.string().min(1),dispatchId:z.string().min(1).optional(),sessionId:z.string().min(1).optional(),requestId:z.string().min(1)}).strict(),
     annotations:{readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
   },async(input,ctx)=>{

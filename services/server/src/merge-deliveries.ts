@@ -1127,17 +1127,46 @@ export class MergeDeliveries {
         if(!b.conversation||b.state!=="active")throw changed();
         const configurationChanged=executor.settings!==b.conversation.executor.settings;
         const continuing=/^(?:请)?(?:继续(?:执行|处理)?|进度(?:如何)?|查看进度|当前状态|状态如何|continue|status)[。.!！]?$/i.test(source.text.trim());
+        if(continuing){
+          // A later status question cannot erase an intervening stop or scope change.
+          const prior=b.conversation.input,commandId=prior.sourceId.startsWith("command:")?prior.sourceId.slice(8):undefined;
+          if(Date.parse(source.occurredAt)<Date.parse(prior.occurredAt))throw changed();
+          const priorRecord=this.db.connection.prepare(commandId
+            ? executor.kind==="external"?"SELECT text,created_at AS at FROM external_native_commands WHERE session_id=? AND id=?":"SELECT text,created_at AS at FROM agent_session_commands WHERE session_id=? AND id=? AND kind='message'"
+            : executor.kind==="external"?"SELECT json_extract(payload_json,'$.text') AS text,json_extract(payload_json,'$.occurredAt') AS at FROM external_native_messages WHERE session_id=? AND source_id=? AND json_extract(payload_json,'$.role')='user'":"SELECT text,occurred_at AS at FROM agent_session_messages WHERE session_id=? AND source_id=? AND role='user'")
+            .get(b.sessionId,commandId??prior.sourceId.slice(7)) as {text:string;at:string}|undefined;
+          if(!priorRecord||priorRecord.text!==prior.text||Date.parse(priorRecord.at)!==Date.parse(prior.occurredAt))
+            throw conflict("conversation_integration_history_incomplete","原输入历史缺失或已变化，不能通过状态查询恢复执行。");
+          if(executor.kind==="dispatch"&&this.db.connection.prepare("SELECT 1 FROM agent_session_commands WHERE session_id=? AND kind='interrupt' AND status NOT IN ('failed','cancelled') AND julianday(created_at)>=julianday(?) AND julianday(created_at)<=julianday(?)").get(b.sessionId,prior.occurredAt,source.occurredAt))throw changed();
+          const missingClock=this.db.connection.prepare(executor.kind==="external"
+            ? "SELECT 1 FROM external_native_messages WHERE session_id=? AND json_extract(payload_json,'$.role')='user' AND julianday(json_extract(payload_json,'$.occurredAt')) IS NULL LIMIT 1"
+            : "SELECT 1 FROM agent_session_messages WHERE session_id=? AND role='user' AND julianday(occurred_at) IS NULL LIMIT 1").get(b.sessionId);
+          if(missingClock)throw conflict("conversation_integration_history_incomplete","用户来源历史缺少有效时钟，不能通过状态查询恢复执行。");
+          const commands=this.db.connection.prepare(executor.kind==="external"
+            ? "SELECT id,text FROM external_native_commands WHERE session_id=? AND julianday(created_at)>=julianday(?) AND julianday(created_at)<=julianday(?)"
+            : "SELECT id,text FROM agent_session_commands WHERE session_id=? AND kind='message' AND julianday(created_at)>=julianday(?) AND julianday(created_at)<=julianday(?)")
+            .all(b.sessionId,prior.occurredAt,source.occurredAt) as {id:string;text:string}[];
+          const messages=this.db.connection.prepare(executor.kind==="external"
+            ? "SELECT source_id,json_extract(payload_json,'$.text') AS text,json_extract(payload_json,'$.clientMessageId') AS client_message_id FROM external_native_messages WHERE session_id=? AND json_extract(payload_json,'$.role')='user' AND julianday(json_extract(payload_json,'$.occurredAt'))>=julianday(?) AND julianday(json_extract(payload_json,'$.occurredAt'))<=julianday(?)"
+            : "SELECT source_id,text,client_message_id FROM agent_session_messages WHERE session_id=? AND role='user' AND julianday(occurred_at)>=julianday(?) AND julianday(occurred_at)<=julianday(?)")
+            .all(b.sessionId,prior.occurredAt,source.occurredAt) as {source_id:string;text:string;client_message_id:string|null}[];
+          const intervening=[...commands.filter(c=>c.id!==commandId),...messages.filter(m=>prior.sourceId!==`native:${m.source_id}`&&!(commandId&&(m.source_id===commandId||m.source_id===`answer-${commandId}`||m.client_message_id===commandId)&&m.text===prior.text))];
+          if(intervening.some(m=>!/^(?:请)?(?:继续(?:执行|处理)?|进度(?:如何)?|查看进度|当前状态|状态如何|continue|status)[。.!！]?$/i.test(m.text.trim())))throw changed();
+        }
         if((!continuing || configurationChanged) && !reviewedDecision)assertIntegrationInstruction(source.text,p.operation);
         if(configurationChanged && !source.context.includes(p.reviewText))throw changed();
         if(configurationChanged){(b.conversation.configurationChanges??=[]).push({executor,source});b.conversation.executor=executor;b.config=p.config;}
         if(b.publish)this.assertPublicationScope(b);
         // Only an unchanged, explicitly continuing input is rebound; stop/rework/scope changes are never ignored.
         b.conversation.input=source;
-        for(const id of b.deliveries){const d=this.read<Delivery>("merge_deliveries",id);if(d.sessionId===b.sessionId){d.activity=this.activity(b.sessionId);this.save(d);}}
+        for(const id of b.deliveries){const d=this.read<Delivery>("merge_deliveries",id);if(d.sessionId===b.sessionId){
+          if(configurationChanged&&!d.itemKeys.length)d.scope=this.deliveryScope(d);
+          d.activity=this.activity(b.sessionId);this.save(d);
+        }}
         // A status query may arrive after Git succeeds but before its bookkeeping.
         // Retry only the already recorded handoff, never the merge or a new claim.
         for(const id of b.deliveries)if(b.results[id]?.status==="merged"&&!b.references?.[id])this.handoff(b,this.read<Delivery>("merge_deliveries",id));
-        if(b.integration){b.integration.revision++;if(configurationChanged){for(const entry of Object.values(b.integration.entries))delete entry.check;delete b.integration.finalValidation;if(b.reconciliation)delete b.reconciliation.finalValidation;}}
+        if(b.integration&&configurationChanged){b.integration.revision++;for(const entry of Object.values(b.integration.entries))delete entry.check;delete b.integration.finalValidation;if(b.reconciliation)delete b.reconciliation.finalValidation;}
         this.saveBatch(b);
         this.db.connection.prepare("UPDATE conversation_integration_preparations SET batch_id=? WHERE id=?").run(b.id,p.id);
         return this.batch(accountId,actor,b.id);
@@ -1442,8 +1471,8 @@ export class MergeDeliveries {
   private snapshot(b:Batch) {
     return digest([b.state,b.results,b.integration?.recoveredAuthorization&&b.integration.revision===0&&!b.integration.plans.length?undefined:b.integration,b.reconciliation?.publication,b.deliveries.map(id=>{
       const d=this.read<Delivery>("merge_deliveries",id);
-      return [d.revision,this.activity(d.sessionId),d.itemKeys.map(key=>{
-        const i=this.store.getWorkItem(key);return [key,i.revision,i.status,this.scope([key]),this.itemBlocker(d,key)];
+      return [d.revision,b.conversation?undefined:this.activity(d.sessionId),d.itemKeys.map(key=>{
+        const i=this.store.getWorkItem(key);return [key,i.revision,i.status,this.scope([key]),this.itemBlocker(d,key,Boolean(b.conversation))];
       })];
     })]);
   }
@@ -1495,11 +1524,12 @@ export class MergeDeliveries {
   }
   recoverConversationDecision(accountId:string,dispatchId:string,id:string,requestId:string) {
     return this.db.transaction(()=>{
-      const b=this.batch(accountId,dispatchId,id);this.permit(accountId,b,true);
+      const b=this.batch(accountId,dispatchId,id);this.permit(accountId,b,true,false);
       const row=b.reconciliation?.requests.find(r=>r.id===requestId);
       if(!row?.reviewText)throw changed();
       if(row.decision)return {code:"already_decided",decision:row.decision};
       if(this.snapshot(b)!==row.snapshot)throw changed();
+      if(b.conversation?.executor.kind==="external")return {code:"history_incomplete" as const,message:"外部原生历史尚无完整性证明；不能从聊天恢复决定。可信原生确认仍可使用，已有决定不重复申请。"};
       const evidence=conversationDecisionEvidence(this.db,accountId,b.sessionId,row.reviewText,row.at);
       if(evidence.code!=="ready_to_restore")return evidence;
       this.decideReconciliation(accountId,id,requestId,row.snapshot,evidence.decision,true,row.publicationScope?.digest);
@@ -1512,7 +1542,7 @@ export class MergeDeliveries {
    * This is read acknowledgement, never an approval supplied by an Agent. */
   reviewReconciliation(accountId:string,id:string,requestId:string,snapshot:string) {
     return this.db.transaction(()=>{
-      const b=this.read<Batch>("merge_batches",id);this.permit(accountId,b,true);
+      const b=this.read<Batch>("merge_batches",id);this.permit(accountId,b,true,false);
       const row=b.reconciliation?.requests.find(r=>r.id===requestId);
       if(!row || row.snapshot!==snapshot || this.snapshot(b)!==snapshot || row.decision || row.appliedAt)throw changed();
       const activity=this.activity(b.sessionId);
@@ -1557,7 +1587,7 @@ export class MergeDeliveries {
   /** Human Web or bound native decision; never an Agent-provided approval fact. */
   decideReconciliation(accountId:string,id:string,requestId:string,snapshot:string,decision:"approved"|"rejected",reviewConfirmed:boolean,publicationScopeDigest?:string) {
     return this.db.transaction(()=>{
-      const b=this.read<Batch>("merge_batches",id);this.permit(accountId,b,true);
+      const b=this.read<Batch>("merge_batches",id);this.permit(accountId,b,true,false);
       const r=this.reconciliation(b),request=r.requests.find(p=>p.id===requestId);
       if(!request||request.snapshot!==snapshot)throw changed();
       if(request.decision){if(request.decision!==decision)throw changed();return this.preview(accountId,id);}
@@ -1603,9 +1633,26 @@ export class MergeDeliveries {
   }
   applyReconciliation(accountId:string,dispatchId:string,id:string,requestId:string) {
     return this.db.transaction(()=>{
-      const b=this.batch(accountId,dispatchId,id);this.permit(accountId,b,true);
+      const b=this.batch(accountId,dispatchId,id);this.permit(accountId,b,true,false);
       const r=this.reconciliation(b),request=r.requests.find(p=>p.id===requestId);
       if(!request||request.decision!=="approved")throw conflict("recovery_approval_required","需要人工确认这次对账快照及恢复操作。");
+      if(b.conversation&&!this.conversationInputCurrent(b)){
+        // Recording a human decision never authorizes unrelated later input.
+        // Only its exact, delivered original input can resume this snapshot.
+        const e=b.conversation.executor,current=integrationExecutor(this.db,accountId,b.conversation.clientId,e.kind==="dispatch"?{dispatchId:e.dispatchId}:{sessionId:e.sessionId},b.productId);
+        const source=integrationInstruction(this.db,current.executor),decision=request.decisionSource;
+        const nativeMirror=decision?.kind==="native_history"&&source.sourceId.startsWith("command:")&&e.kind==="dispatch"
+          ? this.db.connection.prepare("SELECT source_id,client_message_id,text FROM agent_session_messages WHERE session_id=? AND source_id=? AND role='user'").get(b.sessionId,decision.sourceId) as {source_id:string;client_message_id:string|null;text:string}|undefined : undefined;
+        const commandId=source.sourceId.slice("command:".length);
+        const sameNativeDecision=decision?.kind==="native_history"&&(source.sourceId===`native:${decision.sourceId}`
+          ||nativeMirror?.text===source.text&&(nativeMirror.source_id===commandId||nativeMirror.source_id===`answer-${commandId}`||nativeMirror.client_message_id===commandId));
+        if(!this.sameConversationExecutor(e,current.executor)||e.settings!==current.executor.settings||!["同意","批准"].includes(source.text.trim())
+          ||!(decision?.kind==="conversation"&&source.sourceId===`command:${decision.commandId}`
+            ||sameNativeDecision))throw changed();
+        b.conversation.input=source;
+        for(const deliveryId of b.deliveries){const d=this.read<Delivery>("merge_deliveries",deliveryId);if(d.sessionId===b.sessionId){d.activity=this.activity(b.sessionId);this.save(d);}}
+      }
+      this.permit(accountId,b,true);
       if(request.appliedAt)return this.preview(accountId,id);
       if(this.snapshot(b)!==request.snapshot)throw changed();
       this.assertRecoveryExecutionIdle(b,request.action);
