@@ -342,6 +342,16 @@ describe("planned integration batches",()=>{
     const finish=()=>{act({kind:"final_validation",head:"c".repeat(40),checkedAt:new Date().toISOString(),validation:"Finished original synthetic batch",source:"Synthetic"});return f.merges.finish(f.owner.id,b.dispatchId,b.id);};
     return {...f,b,deliveries,current,act,plan,check,merged,finish};
   }
+  it("blocks publishing on registered legacy prerequisites without workflow",async()=>{
+    const f=await batchFixture(1,false,true),d=f.deliveries[0]!;
+    f.act(f.plan);f.check(d.id);
+    const action=syntheticPrerequisites(f.current());
+    action.conditions.push({id:"legacy-signing",kind:"investigation",category:"blocker",stage:"pre_publish",required:true,state:"unknown",reason:"Signing unavailable",owner:"Original executor",resumeWhen:"Verify signing",dependencies:["scope"]});
+    f.act(action);f.merged(d.id);
+    f.act({kind:"final_validation",head:"c".repeat(40),checkedAt:new Date().toISOString(),source:"Actual target",validation:"Combined smoke passed"});
+    expect(f.current().publicationPrerequisiteGate).toMatchObject({required:true,ready:false,blockers:expect.arrayContaining([expect.objectContaining({id:"legacy-signing",code:"pending"})])});
+    expect(()=>f.act({kind:"publication_progress",state:"publishing",checkedAt:new Date().toISOString(),resultsDigest:f.current().resultsDigest,detail:"Starting existing publisher"})).toThrow(/发布前置/);
+  });
   it("native release tools block publication rather than merge and stay bound to the original repository",async()=>{
     const f=await batchFixture(1,false,true),d=f.deliveries[0]!;
     f.act(f.plan);f.check(d.id);

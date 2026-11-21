@@ -170,6 +170,18 @@ describe("native project stage adaptation",()=>{
 });
 
 describe("audit publication target and sustainable refresh",()=>{
+  it.each(["pending","unknown","satisfied"] as const)("gates legacy publication evidence without workflow: %s",state=>{
+    const b=fixture(),a=prerequisiteEvidence(b);
+    a.conditions.push({id:"legacy-signing",kind:"investigation",category:"blocker",stage:"pre_publish",required:true,state,reason:"Actual signing prerequisite",owner:"Original executor",resumeWhen:"Verify signing",dependencies:["scope"]});
+    recordPrerequisites(b,a);
+    b.results={one:{status:"merged",head:"a".repeat(40)},two:{status:"merged",head:"a".repeat(40)}};
+    b.integration!.finalValidation={head:a.context.base!,checkedAt:new Date().toISOString(),source:"Final target",validation:"Combined",selectionDigest:createHash("sha256").update(JSON.stringify(b.results)).digest("hex")};
+    const gate=prerequisiteGate(b,true,undefined,Date.now(),"pre_publish");
+    expect(gate.required).toBe(true);
+    expect(gate.blockers.some(c=>c.id==="legacy-signing")).toBe(state!=="satisfied");
+    expect(prerequisiteGate(b,true,undefined,Date.now()+300_001,"pre_publish").blockers).toContainEqual(expect.objectContaining({id:"legacy-signing",code:"stale"}));
+  });
+
   it("binds publication to actual complete combined target, requiring only affected evidence to refresh",()=>{
     const b=fixture(),a=prerequisiteEvidence(b);
     const workflow={tools:"project_native" as const,repositories:["https://github.com/example/project"],source:"Existing native rules",digest:"f".repeat(64)};

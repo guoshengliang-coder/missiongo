@@ -133,7 +133,7 @@ export function recordPrerequisites(batch:PrerequisiteBatch, action:Prerequisite
 }
 export function prerequisiteGate(batch:PrerequisiteBatch, hasRelease:boolean, base?:string, now=Date.now(), stage:"pre_merge"|"pre_publish"="pre_merge"):IntegrationPrerequisiteGate {
   const required=batch.state!=="finished" && batch.publish && hasRelease && !batchPublicationDeferred(batch)
-    && (stage==="pre_publish" ? Boolean(batch.integration?.prerequisites?.workflow) : batch.deliveries.some(id=>!batch.references?.[id]&&!batch.results[id]) && batch.operation!=="merge_only" && batch.operation!=="publish_only");
+    && (stage==="pre_publish" ? (Boolean(batch.integration?.prerequisites?.workflow) || Boolean(batch.integration?.prerequisites?.conditions.some(c=>c.required&&c.stage==="pre_publish"))) : batch.deliveries.some(id=>!batch.references?.[id]&&!batch.results[id]) && batch.operation!=="merge_only" && batch.operation!=="publish_only");
   const gate:IntegrationPrerequisiteGate={required,ready:true,blockers:[]};
   if(!required)return gate;
   const record=batch.integration?.prerequisites, conditions=record?.conditions??[];
