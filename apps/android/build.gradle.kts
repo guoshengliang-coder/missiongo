@@ -141,7 +141,7 @@ dependencies {
     // AND-150: FCM data-only push signals. Always compiled in so the source
     // builds everywhere; at runtime the Firebase check in push/ turns it off on
     // builds that shipped without google-services.json.
-    implementation("com.google.firebase:firebase-messaging:24.1.0")
+    implementation("com.google.firebase:firebase-messaging:25.1.3")
 
     // AND-185: unit tests for the badge's serial publisher. The version must
     // equal the Kotlin the build compiles with -- see the matching comment in
