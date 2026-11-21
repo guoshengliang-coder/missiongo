@@ -354,7 +354,9 @@ describe("planned integration batches",()=>{
   });
   it.each([false,true])("refreshes publication gates in ordinary and cached list responses (large=%s)",async large=>{
     const f=await batchFixture(1,false,true),d=f.deliveries[0]!;
-    f.act({...f.plan,summary:large?"Original evidence history. ".repeat(2000):f.plan.summary});f.check(d.id);
+    f.act(f.plan);
+    if(large)for(let i=0;i<6;i++)f.act({...f.plan,summary:`Historical plan ${i}: `+"Original evidence history. ".repeat(100)});
+    f.check(d.id);
     const action=syntheticPrerequisites(f.current());
     const signing={id:"signing",kind:"investigation" as const,category:"blocker" as const,stage:"pre_publish" as const,required:true,state:"unknown" as const,reason:"Signing unavailable",owner:"Executor",resumeWhen:"Verify signing",dependencies:["scope" as const]};
     action.conditions.push(signing);f.act(action);f.merged(d.id);
@@ -367,6 +369,7 @@ describe("planned integration batches",()=>{
     for(const gate of gates())expect(gate.ready).toBe(true);
     const raw=JSON.parse((f.db.prepare("SELECT data_json FROM merge_batches WHERE id=?").get(f.b.id) as {data_json:string}).data_json);
     expect(raw.publicationPrerequisiteGate).toBeUndefined();
+    if(large)expect(Buffer.byteLength(JSON.stringify(raw))).toBeGreaterThan(16*1024);
     const clock=vi.spyOn(Date,"now").mockReturnValue(Date.now()+301_000);
     try {for(const gate of gates()){expect(gate.ready).toBe(false);expect(gate.blockers).toContainEqual(expect.objectContaining({id:"signing",code:"stale"}));}}
     finally {clock.mockRestore();}
