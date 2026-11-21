@@ -10,6 +10,7 @@ import { backupCommand, discoverBackupProgram, transferProgram } from "../../scr
 import { createReleaseSelection, releaseCandidatesFromPages } from "../../scripts/release-candidates.mjs";
 import { serverFixture } from "../performance/server-fixture.mjs";
 import { fixtureGit as git } from "./fixture-git.mjs";
+import { resampleFixtureOnce } from "./fixture-measurement.mjs";
 
 // Serialized after the script suite: execute the real compiler and performance
 // worker, without racing the other tests that import generated dist files.
@@ -238,7 +239,11 @@ test("installed real entry plans read-only, retains gates, detects historical mu
     save(join(f.checkout, "product.json"), noBump);
     writeFileSync(join(f.checkout, "apps/web/fixture-runtime.txt"), "changed runtime");
     const versionHead = commit(f.checkout); git(f.checkout, "update-ref", "refs/remotes/origin/main", versionHead);
-    const versionFailure = f.run("deploy"); assert.notEqual(versionFailure.status, 0); assert.match(versionFailure.stderr, /Web changed since/, versionFailure.stdout + versionFailure.stderr);
+    const versionFailure = resampleFixtureOnce(() => f.run("deploy"), { purpose: "version-guard", rejected: report => {
+      assert.equal(existsSync(f.boundary), false);
+      t.diagnostic(JSON.stringify({ observation: "version-fixture-first-measurement-rejected", report }));
+    } });
+    assert.notEqual(versionFailure.status, 0); assert.match(versionFailure.stderr, /Web changed since/, versionFailure.stdout + versionFailure.stderr);
     assert.equal(existsSync(f.boundary), false);
     git(f.checkout, "switch", "--detach", f.head); git(f.checkout, "update-ref", "refs/remotes/origin/main", f.head);
     // Negative control 3: reproduce the installed-directory-as-root defect.
@@ -283,7 +288,11 @@ test("installed real entry plans read-only, retains gates, detects historical mu
       releaseGate: baselineRun.status === 0 ? "passed" : "rejected", cleaned: baseline.cleaned,
       targets: [...baseline.cpuTargets, ...baseline.httpTargets].map(({ name, status, medianMs, effectiveBudgetMs }) => ({ name, status, medianMs, effectiveBudgetMs })) }));
     for (const target of ["merge-deliveries", "item-list", "claim-next"]) {
-      const diagnostic = runLargeSmoke(target);
+      const diagnostic = resampleFixtureOnce(() => runLargeSmoke(target), { purpose: "diagnostic-calibration", rejected: report => {
+        assert.equal(existsSync(f.boundary), true); // only the earlier controlled rehearsal wrote this fixture marker
+        assert.equal(readFileSync(f.tracePath, "utf8").trim().split("\n").map(JSON.parse).filter(row => row.tool === "rsync").length, 1);
+        t.diagnostic(JSON.stringify({ observation: "diagnostic-fixture-first-calibration-rejected", target, report }));
+      } });
       assert.equal(diagnostic.status, 1, diagnostic.stderr);
       const report = JSON.parse(diagnostic.stdout);
       assert.equal(report.diagnosticOutcome, "detected", JSON.stringify({target,status:report.status,reason:report.reason,calibration:report.calibration,httpCalibration:report.httpCalibration,cpuTargets:report.cpuTargets,httpTargets:report.httpTargets}));
