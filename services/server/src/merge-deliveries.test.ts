@@ -90,6 +90,291 @@ async function fixture(databasePath=":memory:") {
 const proposal = (key: string): DeliveryInput => ({itemKeys:[key],repository:"https://github.com/example/project",pullRequest:12,
   head:"a".repeat(40),targetBranch:"main",summary:"Verified change",validation:"Synthetic regression passed",requiredArtifacts:["web"],
   evidence:{head:"a".repeat(40),base:"b".repeat(40),checkedAt:new Date().toISOString(),checks:"passed",mergeable:"clean",source:"synthetic Git fixture"}});
+
+describe("integration directly in the original conversation",()=>{
+  const human=(f:Awaited<ReturnType<typeof prepared>>,text:string)=>{
+    f.db.prepare("UPDATE agent_sessions SET applied_settings_revision=settings_revision WHERE id=?").run(f.projectSessionId);
+    if(!f.db.prepare("SELECT 1 FROM agent_session_messages WHERE session_id=? AND role='agent'").get(f.projectSessionId))
+      new AgentSessionStore(f.store.database).recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[{sourceId:"completed-change",role:"agent",phase:"final_answer",text:`Completed PR #${f.input.pullRequest} at ${f.input.head}`,occurredAt:new Date(Date.now()-1).toISOString()}]});
+    const command=new AgentSessionStore(f.store.database).enqueue(f.owner.id,f.projectSessionId,text,[]);
+    f.db.prepare("UPDATE agent_session_commands SET status='delivered' WHERE id=?").run(command.id);
+    return command;
+  };
+  const scope=(f:Awaited<ReturnType<typeof prepared>>)=>({productId:f.item.productId,repository:f.input.repository,operation:"merge_only" as const,deliveries:[f.input]});
+  it.each(["codex","claude_code","opencode"] as const)("binds %s to its original dispatch with no new session or item",async kind=>{
+    const f=await fixture(),launched=f.launch(kind);
+    f.safe(await f.call("claim_item",{...f.claimInput,session:undefined,dispatchId:launched.dispatch.id}));
+    const merges=new MergeDeliveries(f.store),input=proposal(f.item.key),identity={dispatchId:launched.dispatch.id};
+    const ff={...f,...launched,merges,input,identity};human(ff as never,"执行合并");
+    const before=f.db.prepare("SELECT COUNT(*) AS n FROM agent_sessions").get();
+    const p=merges.prepareConversation(f.owner.id,"original-client",identity,"direct",{productId:f.item.productId,repository:input.repository,operation:"merge_only",deliveries:[input]});
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_deliveries").get()).toMatchObject({n:0});
+    const b=merges.startConversation(f.owner.id,"original-client",identity,p.id);
+    expect(b.sessionId).toBe(launched.projectSessionId);expect(b.dispatchId).toBe(launched.dispatch.id);expect(b.publish).toBe(false);
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM agent_sessions").get()).toEqual(before);
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM work_items").get()).toMatchObject({n:1});
+    expect(merges.startConversation(f.owner.id,"original-client",identity,p.id).id).toBe(b.id);
+    expect(new AgentSessionStore(f.store.database).getForAccount(f.owner.id,b.sessionId).sessionPurpose).toBeUndefined();
+    expect(merges.queue(f.item.productId,f.owner.id).occupancy).toMatchObject({active:true,sessionId:b.sessionId});
+    expect(()=>merges.finish(f.owner.id,launched.dispatch.id,b.id)).toThrow(/结果未核实/);
+  });
+  it("keeps preparation read-only with respect to offers, and rejects scope mutation and missing human sources",async()=>{
+    const f=await prepared();
+    expect(()=>f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"no-source",scope(f))).toThrow(/可信/);
+    human(f,"执行合并");const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"same",scope(f));
+    expect(f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"same",scope(f)).id).toBe(p.id);
+    expect(()=>f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"same",{...scope(f),operation:"merge_and_publish"})).toThrow();
+    expect(f.merges.readForAccount(f.owner.id,f.d.id).state).toBe("proposed");
+    expect(()=>f.merges.startConversation(f.other.id,"original-client",f.identity,p.id)).toThrow();
+    expect(()=>f.merges.startConversation(f.owner.id,"different-client",f.identity,p.id)).toThrow();
+  });
+  it("does not use a queue instruction, negation or mismatched operation as execution authority",async()=>{
+    for(const text of ["添加到待集成","先别合并","是否应该合并","执行发布"]){
+      const f=await prepared();human(f,text);const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"prepare",scope(f));
+      expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id)).toThrow();
+      expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({n:0});
+      expect(f.merges.readForAccount(f.owner.id,f.d.id).state).toBe("proposed");
+    }
+  });
+  it("requires complete publication scope display and handles only historical candidates without a selection",async()=>{
+    const f=await prepared();await f.complete(f.identity);human(f,"执行发布");
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"publish",{...scope(f),operation:"publish_only",deliveries:[]});
+    expect(p.selection).toEqual([]);
+    expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id)).toThrow(/完整发布范围/);
+    // This synthetic completion is a commit, not GitHub: a product publication may not silently discard it.
+    expect(p.publicationScope?.blockers.length).toBeGreaterThan(0);
+  });
+  it("does not steal an active batch and rolls back internal draft registration",async()=>{
+    const f=await prepared();f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
+    const b=f.merges.start(f.owner.id,randomUUID(),[{id:f.d.id,revision:f.d.revision}],f.config,false);
+    human(f,"执行合并");const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"other",scope(f));
+    const before=f.db.prepare("SELECT COUNT(*) AS n FROM merge_deliveries").get();
+    expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id)).toThrow(/批次/);
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_deliveries").get()).toEqual(before);
+    expect(f.merges.recomputeBatches(f.item.productId,f.owner.id)[0]?.id).toBe(b.id);
+  });
+  it("publishes existing item evidence without inventing a delivery selection or merging it again",async()=>{
+    const f=await prepared(),sessions=new AgentSessionStore(f.store.database);
+    f.safe(await f.call("submit_development_complete",{itemKey:f.item.key,...f.identity,completion:{kind:"github",url:`${f.input.repository}/pull/${f.input.pullRequest}`},requiredArtifacts:["web"],idempotencyKey:"already-integrated"}));
+    human(f,"准备发布");
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"publication",{...scope(f),operation:"publish_only",deliveries:[]});
+    expect(p.publicationScope?.blockers).toEqual([]);
+    sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[{sourceId:"publication-scope",role:"agent",phase:"final_answer",text:p.reviewText,occurredAt:new Date(Date.now()-1).toISOString()}]});
+    human(f,"批准");
+    let b=f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id);
+    expect(b.deliveries).toEqual([]);expect(b.operation).toBe("publish_only");
+    const act=(action:Parameters<MergeDeliveries["integrate"]>[5])=>{b=f.merges.integrate(f.owner.id,f.dispatch.id,b.id,b.integration!.revision,randomUUID(),action);};
+    expect(()=>f.merges.report(f.owner.id,f.dispatch.id,b.id,f.d.id,{status:"merged",head:f.input.head,commit:"c".repeat(40),detail:"not allowed"})).toThrow();
+    act({kind:"plan",base:"b".repeat(40),summary:"Verify existing integrated candidates",validation:"No new merges",entries:[]});
+    act({kind:"final_validation",head:"c".repeat(40),checkedAt:new Date().toISOString(),source:"Synthetic target ancestry",validation:"Verified integrated target"});
+    act({kind:"publication_progress",state:"publishing",checkedAt:new Date().toISOString(),resultsDigest:b.resultsDigest,detail:"Controlled publication adapter"});
+    expect(()=>f.merges.finish(f.owner.id,f.dispatch.id,b.id)).toThrow(/发布/);
+    act({kind:"publication_progress",state:"ended",checkedAt:new Date().toISOString(),resultsDigest:b.resultsDigest,detail:"Controlled adapter ended"});
+    expect(()=>f.merges.finish(f.owner.id,f.dispatch.id,b.id)).toThrow(/凭据/);
+    const candidate=f.store.getDeliveryRecords(f.item.key)[0]!;
+    const published=await f.call("submit_release_batch",{productId:f.item.productId,idempotencyKey:"synthetic-publication",deployedCommit:"c".repeat(40),receiptDigest:"d".repeat(64),items:[{itemKey:f.item.key,expectedRevision:f.store.getWorkItem(f.item.key).revision,developmentEventId:candidate.id,roundKey:candidate.roundKey,completion:candidate.completion,releases:[{artifact:"web",version:"test",sourceCommit:"c".repeat(40)}]}]});f.safe(published);expect(published.structuredContent?.results,JSON.stringify(published)).toMatchObject([{outcome:"submitted"}]);
+    expect(f.merges.finish(f.owner.id,f.dispatch.id,b.id).state).toBe("finished");
+    expect(f.store.getWorkItem(f.item.key).status).toBe("pending_verification");
+  });
+  it("uses current node-authenticated native-only messages and stops on interruption or settings changes",async()=>{
+    const f=await prepared(),sessions=new AgentSessionStore(f.store.database),at=new Date().toISOString();
+    sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"active",settingsRevision:1,messages:[{sourceId:"completed",role:"agent",phase:"final_answer",text:`Completed PR #12 at ${f.input.head}`,occurredAt:new Date(Date.parse(at)-1000).toISOString()},{sourceId:"native-order",role:"user",text:"执行合并",occurredAt:at}]});
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"native",scope(f));
+    expect(p.source.sourceId).toBe("native:native-order");
+    const b=f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id);
+    sessions.enqueueInterrupt(f.owner.id,f.projectSessionId);
+    expect(f.merges.batch(f.owner.id,f.dispatch.id,b.id).entries.every(d=>!d.mergeReady)).toBe(true);
+    expect(()=>f.merges.integrate(f.owner.id,f.dispatch.id,b.id,0,"after-stop",{kind:"plan",base:"b".repeat(40),summary:"not allowed",validation:"stopped",entries:[]})).toThrow();
+    f.db.prepare("UPDATE agent_sessions SET settings_revision=settings_revision+1 WHERE id=?").run(f.projectSessionId);
+    expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id)).toThrow(/可信|变化/);
+  });
+  it("supports a verified external project identity without fabricating a dispatch",async()=>{
+    const f=await fixture(),launched=f.launch("codex");
+    const nativeSession={agentKind:"codex",refKind:"native",sessionRef:randomUUID(),autoConnect:true};
+    const registered=await f.call("register_agent_session",{productId:f.item.productId,session:nativeSession});f.safe(registered);
+    const id=registered.structuredContent!.sessionId!,native=new ExternalNativeSessionStore(f.store);
+    const listed=native.listForNode(f.owner.id,launched.node.nodeId,"worker",()=>{},true);
+    const binding=listed.find(s=>s.id===id)!;
+    expect(binding).toBeDefined();
+    native.recordSnapshot({accountId:f.owner.id,nodeId:launched.node.nodeId,sessionId:id,workerId:"worker",generation:binding.externalBindingGeneration,autoConnect:true,nativeSessionRef:nativeSession.sessionRef,status:"active",turnState:{turnActive:true},mode:"full-access",messages:[{sourceId:"completed",role:"agent",phase:"final_answer",text:"Completed PR #12",occurredAt:new Date(Date.now()-1).toISOString()},{sourceId:"native-command",role:"user",text:"执行合并",occurredAt:new Date().toISOString()}]},()=>{});
+    const identity={sessionId:id},merges=new MergeDeliveries(f.store),input={...proposal(f.item.key),itemKeys:[],productId:f.item.productId};
+    const p=merges.prepareConversation(f.owner.id,"original-client",identity,"external-prepare",{productId:f.item.productId,repository:input.repository,operation:"merge_only",deliveries:[input]});
+    const b=merges.startConversation(f.owner.id,"original-client",identity,p.id);
+    expect(b.dispatchId).toBeUndefined();expect(b.sessionId).toBe(id);expect(b.config.mode).toBe("full-access");
+    f.safe(await f.call("get_merge_batch",{sessionId:id,batchId:b.id}));
+    expect((await f.call("get_merge_batch",{sessionId:id,batchId:b.id},{clientId:"wrong"})).isError).toBe(true);
+    expect((await f.call("get_merge_batch",{dispatchId:id,batchId:b.id})).isError).toBe(true);
+  });
+  it("freezes on a newer input, resumes an unchanged status query and never turns stop into continuation",async()=>{
+    const f=await prepared();human(f,"执行合并");const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"prepare",scope(f));
+    const b=f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id);
+    human(f,"进度如何");
+    expect(()=>f.merges.integrate(f.owner.id,f.dispatch.id,b.id,0,"new-work",{kind:"progress",deliveryId:b.deliveries[0]!,detail:"must freeze"})).toThrow();
+    const r=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"resume",{...scope(f),deliveries:[],resumeBatchId:b.id});
+    const resumed=f.merges.startConversation(f.owner.id,"original-client",f.identity,r.id);
+    expect(resumed.id).toBe(b.id);expect(resumed.conversation?.authorization.text).toBe("执行合并");expect(resumed.conversation?.input.text).toBe("进度如何");
+    human(f,"停止执行");
+    const stop=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"stop",{...scope(f),deliveries:[],resumeBatchId:b.id});
+    expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,stop.id)).toThrow();
+    human(f,"进度如何");
+    const afterStop=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"after-stop",{...scope(f),deliveries:[],resumeBatchId:b.id});
+    expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,afterStop.id)).toThrow();
+    human(f,"执行合并");
+    const explicit=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"explicit",{...scope(f),deliveries:[],resumeBatchId:b.id});
+    expect(f.merges.startConversation(f.owner.id,"original-client",f.identity,explicit.id).id).toBe(b.id);
+  });
+  it.each([false,true])("records Web recovery approval separately from delivery and later stop (%s)",async stop=>{
+    const f=await prepared();human(f,"执行合并");
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"prepare",scope(f));
+    const b=f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id),id=b.deliveries[0]!;
+    f.merges.report(f.owner.id,f.dispatch.id,b.id,id,{status:"blocked",head:f.input.head,detail:"Resolved obstacle"});
+    const snapshot=f.merges.preview(f.owner.id,b.id).snapshot,key="retry";
+    f.merges.requestReconciliation(f.owner.id,f.dispatch.id,b.id,key,snapshot,{kind:"retry_blocked",deliveryId:id,reason:"Obstacle resolved"});
+    f.merges.reviewReconciliation(f.owner.id,b.id,key,snapshot);
+    const sessions=new AgentSessionStore(f.store.database);
+    const c=f.merges.conversationReply(f.owner.id,b.sessionId," 批准 ",[],()=>sessions.enqueue(f.owner.id,b.sessionId," 批准 ",[]));
+    expect(f.merges.preview(f.owner.id,b.id).reconciliation!.requests[0]!.decision).toBe("approved");
+    expect(()=>f.merges.applyReconciliation(f.owner.id,f.dispatch.id,b.id,key)).toThrow();
+    f.db.prepare("UPDATE agent_session_commands SET status='delivered' WHERE id=?").run(c.id);
+    if(stop){human(f,"停止执行");expect(()=>f.merges.applyReconciliation(f.owner.id,f.dispatch.id,b.id,key)).toThrow();}
+    else expect(f.merges.applyReconciliation(f.owner.id,f.dispatch.id,b.id,key).entries[0]!.result).toBeUndefined();
+  });
+  it.each(["interrupt","missing-prior"])("never shortcuts status recovery across %s",async gap=>{
+    const f=await prepared();vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(new Date(Date.now()-5000));const initial=human(f,"执行合并");
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"prepare",scope(f));
+    const b=f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id);
+    if(gap==="interrupt"){
+      new AgentSessionStore(f.store.database).enqueueInterrupt(f.owner.id,b.sessionId);
+      f.db.prepare("UPDATE agent_session_commands SET status='delivered' WHERE session_id=? AND kind='interrupt'").run(b.sessionId);
+    }
+    else f.db.prepare("DELETE FROM agent_session_commands WHERE id=?").run(initial.id);
+    vi.useRealTimers();
+    human(f,"进度如何");
+    const resume=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"status",{...scope(f),deliveries:[],resumeBatchId:b.id});
+    expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,resume.id)).toThrow();
+  });
+  it.each(["no-milliseconds","offset"])("preserves a native stop with %s timestamps",async format=>{
+    const f=await prepared(),at=Math.floor(Date.now()/1000)*1000-1000;
+    vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(new Date(at-2000));human(f,"执行合并");
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"prepare",scope(f));
+    const b=f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id);vi.useRealTimers();
+    const occurredAt=format==="no-milliseconds"?new Date(at).toISOString().replace(".000Z","Z")
+      :new Date(at+8*3600000).toISOString().replace("Z","+08:00");
+    new AgentSessionStore(f.store.database).recordSnapshot({nodeId:f.node.nodeId,sessionId:b.sessionId,status:"idle",messages:[{sourceId:"native-stop",role:"user",text:"停止执行",occurredAt}]});
+    vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(new Date(at+1));human(f,"进度如何");
+    const resume=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"status",{...scope(f),deliveries:[],resumeBatchId:b.id});vi.useRealTimers();
+    expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,resume.id)).toThrow();
+  });
+  it("selects only chronologically prior native review context across ISO formats",async()=>{
+    const f=await prepared(),at=Math.floor(Date.now()/1000)*1000-2000;
+    const prior=`Completed PR #12 at ${f.input.head}`;
+    new AgentSessionStore(f.store.database).recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",settingsRevision:1,messages:[
+      {sourceId:"prior-review",role:"agent",phase:"final_answer",text:prior,occurredAt:new Date(at-1000).toISOString()},
+      {sourceId:"native-command",role:"user",text:"执行合并",occurredAt:new Date(at).toISOString().replace(".000Z","Z")},
+      {sourceId:"future-review",role:"agent",phase:"final_answer",text:"Later unrelated PR #99",occurredAt:new Date(at+1).toISOString()}]});
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"context",scope(f));
+    expect(p.source.context).toBe(prior);
+  });
+  it("rebinds project delivery configuration only after exact new configuration approval",async()=>{
+    const f=await fixture(),launched=f.launch("opencode"),merges=new MergeDeliveries(f.store);
+    const identity={dispatchId:launched.dispatch.id},input={...proposal(f.item.key),itemKeys:[],productId:f.item.productId};
+    const ff={...f,...launched,input};human(ff as never,"执行合并");
+    const s={productId:f.item.productId,repository:input.repository,operation:"merge_only" as const,deliveries:[input]};
+    const p=merges.prepareConversation(f.owner.id,"original-client",identity,"initial",s),b=merges.startConversation(f.owner.id,"original-client",identity,p.id);
+    f.db.prepare("UPDATE agent_sessions SET settings_revision=settings_revision+1,applied_settings_revision=settings_revision+1,mode='auto' WHERE id=?").run(b.sessionId);
+    const r=merges.prepareConversation(f.owner.id,"original-client",identity,"new-config",{...s,deliveries:[],resumeBatchId:b.id});
+    const at=Date.now()-1000;
+    new AgentSessionStore(f.store.database).recordSnapshot({nodeId:launched.node.nodeId,sessionId:b.sessionId,status:"idle",messages:[{sourceId:"new-review",role:"agent",phase:"final_answer",text:r.reviewText,occurredAt:new Date(at).toISOString()}]});
+    human(ff as never,"批准");
+    const resumed=merges.startConversation(f.owner.id,"original-client",identity,r.id);
+    expect(resumed.conversation!.configurationChanges).toHaveLength(1);
+    expect(resumed.entries[0]!.blocker).toBeUndefined();
+  });
+  it.each([false,true])("restores exact native recovery consent including command mirrors (%s)",async mirror=>{
+    const f=await prepared();vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(new Date(Date.now()-5000));human(f,"执行合并");
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"prepare",scope(f));
+    const b=f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id),id=b.deliveries[0]!;
+    f.merges.report(f.owner.id,f.dispatch.id,b.id,id,{status:"blocked",head:f.input.head,detail:"Resolved obstacle"});
+    const snapshot=f.merges.preview(f.owner.id,b.id).snapshot,key="native-retry";
+    f.merges.requestReconciliation(f.owner.id,f.dispatch.id,b.id,key,snapshot,{kind:"retry_blocked",deliveryId:id,reason:"Obstacle resolved"});
+    const text=f.merges.preview(f.owner.id,b.id).reconciliation!.requests[0]!.reviewText!;vi.useRealTimers();const at=Date.now()-1000;
+    let commandId:string|undefined;
+    if(mirror){vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(new Date(at+1));commandId=human(f,"批准").id;vi.useRealTimers();}
+    new AgentSessionStore(f.store.database).recordSnapshot({nodeId:f.node.nodeId,sessionId:b.sessionId,status:"idle",messages:[
+      {sourceId:"recovery-review",role:"agent",phase:"final_answer",text,occurredAt:new Date(at).toISOString()},
+      {sourceId:"recovery-consent",role:"user",text:"批准",...(commandId?{clientMessageId:commandId}:{}),occurredAt:new Date(at+1).toISOString()}]});
+    new AgentHistory(f.store.database,new AgentArtifacts(f.store.database,"")).observe(f.owner.id,f.node.nodeId,b.sessionId,{complete:true});
+    expect(f.merges.recoverConversationDecision(f.owner.id,f.dispatch.id,b.id,key)).toMatchObject({code:"restored",decision:"approved"});
+    expect(f.merges.applyReconciliation(f.owner.id,f.dispatch.id,b.id,key).entries[0]!.result).toBeUndefined();
+  });
+  it("completes the same merge validation and handoff gates in the original conversation",async()=>{
+    const f=await prepared();human(f,"执行合并");const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"complete-original",scope(f));
+    let b=f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id),id=b.deliveries[0]!;
+    const act=(action:Parameters<MergeDeliveries["integrate"]>[5])=>{b=f.merges.integrate(f.owner.id,f.dispatch.id,b.id,b.integration!.revision,randomUUID(),action);};
+    expect(b.entries[0]!.mergeReady).toBe(false);
+    act({kind:"plan",base:"b".repeat(40),summary:"Integrate the original task",validation:"Verify behavior",entries:[{deliveryId:id,head:f.input.head,dependsOn:[],group:"one",reason:"Original task",validation:"Regression"}]});
+    act({kind:"check",deliveryId:id,expectedHead:f.input.head,base:"b".repeat(40),checkedAt:new Date().toISOString(),source:"Synthetic exact-head Git/CI",checks:"passed",mergeable:"clean",local:"passed",validation:"Passed original gates"});
+    expect(b.entries[0]!.mergeReady).toBe(true);
+    human(f,"进度如何");
+    b=f.merges.report(f.owner.id,f.dispatch.id,b.id,id,{status:"merged",head:f.input.head,commit:"c".repeat(40),detail:"Verified exact target ancestry"}) as typeof b;
+    expect(b.results[id]?.status).toBe("merged");
+    const resumed=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"late-handoff",{...scope(f),deliveries:[],resumeBatchId:b.id});
+    b=f.merges.startConversation(f.owner.id,"original-client",f.identity,resumed.id);
+    expect(f.store.getWorkItem(f.item.key).status).toBe("development_complete");
+    expect(()=>f.merges.finish(f.owner.id,f.dispatch.id,b.id)).toThrow(/组合验证/);
+    act({kind:"final_validation",head:"c".repeat(40),checkedAt:new Date().toISOString(),source:"Synthetic target",validation:"Merged combination passed"});
+    expect(f.merges.finish(f.owner.id,f.dispatch.id,b.id).state).toBe("finished");
+    expect(f.merges.queue(f.item.productId,f.owner.id).counts.release).toBe(1);
+    expect(f.store.getWorkItem(f.item.key).status).not.toBe("done");
+  });
+  it("rejects unknown changed heads, stale preparations and publication scope changes atomically",async()=>{
+    const f=await prepared();human(f,"执行合并");
+    const unknown=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"unknown-head",{...scope(f),deliveries:[{...f.input,head:"e".repeat(40),pullRequest:99,evidence:{...f.input.evidence,head:"e".repeat(40)}}]});
+    expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,unknown.id)).toThrow(/审阅依据/);
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"expire",scope(f));
+    vi.useFakeTimers();vi.setSystemTime(Date.now()+601000);
+    try{expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id)).toThrow(/过期/);}finally{vi.useRealTimers();}
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({n:0});
+  });
+  it("refreshes identical reviewed scope without another approval and completes merge-and-publish gates",async()=>{
+    const f=await prepared(),sessions=new AgentSessionStore(f.store.database);human(f,"准备合并和发布");
+    const input={...scope(f),operation:"merge_and_publish" as const};
+    const first=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"first-review",input);
+    sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[{sourceId:"whole-scope",role:"agent",phase:"final_answer",text:first.reviewText,occurredAt:new Date(Date.now()-1).toISOString()}]});
+    human(f,"批准");
+    const refreshed=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"refreshed-checks",{...input,deliveries:[{...f.input,validation:"Reran same checks",evidence:{...f.input.evidence,checkedAt:new Date().toISOString()}}]});
+    expect(refreshed.reviewDigest).toBe(first.reviewDigest);expect(refreshed.reviewText).toBe(first.reviewText);
+    let b=f.merges.startConversation(f.owner.id,"original-client",f.identity,refreshed.id),id=b.deliveries[0]!;
+    const act=(action:Parameters<MergeDeliveries["integrate"]>[5])=>{b=f.merges.integrate(f.owner.id,f.dispatch.id,b.id,b.integration!.revision,randomUUID(),action);};
+    act({kind:"plan",base:"b".repeat(40),summary:"Integrated publication",validation:"Combined target",entries:[{deliveryId:id,head:f.input.head,dependsOn:[],group:"one",reason:"Approved scope",validation:"Regression"}]});
+    expect(b.entries[0]!.mergeReady).toBe(false);
+    act(syntheticPrerequisites(b));
+    act({kind:"check",deliveryId:id,expectedHead:f.input.head,base:"b".repeat(40),checkedAt:new Date().toISOString(),source:"Synthetic live Git",checks:"passed",mergeable:"clean",local:"passed",validation:"Passed"});
+    expect(b.entries[0]!.mergeReady).toBe(true);
+    b=f.merges.report(f.owner.id,f.dispatch.id,b.id,id,{status:"merged",head:f.input.head,commit:"c".repeat(40),detail:"Verified merge"}) as typeof b;
+    act({kind:"final_validation",head:"c".repeat(40),checkedAt:new Date().toISOString(),source:"Synthetic target",validation:"Combination passed"});
+    act({kind:"publication_progress",state:"publishing",checkedAt:new Date().toISOString(),resultsDigest:b.resultsDigest,detail:"Synthetic adapter"});
+    act({kind:"publication_progress",state:"ended",checkedAt:new Date().toISOString(),resultsDigest:b.resultsDigest,detail:"Synthetic adapter ended"});
+    const event=f.store.getDeliveryRecords(f.item.key)[0]!;
+    const result=await f.call("submit_release_batch",{productId:f.item.productId,idempotencyKey:"integrated-release",deployedCommit:"c".repeat(40),receiptDigest:"d".repeat(64),items:[{itemKey:f.item.key,expectedRevision:f.store.getWorkItem(f.item.key).revision,developmentEventId:event.id,roundKey:event.roundKey,completion:event.completion,releases:[{artifact:"web",version:"test",sourceCommit:"c".repeat(40)}]}]});
+    f.safe(result);expect(result.structuredContent?.results,JSON.stringify(result)).toMatchObject([{outcome:"submitted"}]);
+    expect(f.merges.finish(f.owner.id,f.dispatch.id,b.id).state).toBe("finished");
+  });
+  it("checks MCP read/write scope, product access, strict inputs and the original identity",async()=>{
+    const f=await prepared();human(f,"执行合并");
+    const input={identity:f.identity,idempotencyKey:"mcp-direct",scope:scope(f)};
+    f.safe(await f.call("prepare_conversation_integration",input));
+    for(const options of [{scopes:["missiongo:read"]},{accountId:f.other.id}]){
+      const result=await f.call("prepare_conversation_integration",input,options);expect(result.error??result.isError).toBeTruthy();
+    }
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"mcp-start",scope(f));
+    const result=await f.call("start_conversation_integration",{identity:f.identity,preparationId:p.id});f.safe(result);
+    const batch=result.structuredContent?.batch as {id:string};
+    f.safe(await f.call("get_merge_batch",{dispatchId:f.dispatch.id,batchId:batch.id}));
+    expect((await f.call("start_conversation_integration",{identity:f.identity,preparationId:p.id,approved:true})).error??(await f.call("start_conversation_integration",{identity:f.identity,preparationId:p.id,approved:true})).isError).toBeTruthy();
+    f.grant(false,true);expect((await f.call("start_conversation_integration",{identity:f.identity,preparationId:p.id})).isError).toBeTruthy();
+  });
+});
 const protectedVerification=(d:{repository:string;targetBranch:string})=>({repository:d.repository,targetBranch:d.targetBranch,rulesSource:"Observed project and platform requirements",rulesDigest:"f".repeat(64),ci:"required" as const,local:"required" as const,reason:"Live required checks cover the pending job",platformRead:"complete" as const,requiredChecks:["build"],observedChecks:["build"],autoMerge:true,protectedChecks:true,mergeMethod:"merge" as const});
 const syntheticPrerequisites=(batch:PrerequisiteBatch)=>prerequisitesActionSchema.parse({kind:"prerequisites",checkedAt:new Date().toISOString(),source:"Synthetic bounded publication preflight",
   observation:prerequisiteObservation(batch),context:{base:"b".repeat(40),candidates:"c".repeat(64),tools:"d".repeat(64),capabilities:"e".repeat(64)},

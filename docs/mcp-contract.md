@@ -343,3 +343,6 @@ get_item_context、逐份 deliveries、deliveryExplanations 及无需发布候�
 ### 原文档批准恢复
 
 recover_plan_approval 是 write 范围的受限领域工具，需 canComment、supportsDocumentPlanApprovalRecovery 和 writeTools 显式包含。参数为 itemKey、documentId、revision、idempotencyKey，以及且仅一种原 dispatchId/sessionId。绑定原账号、外部原 OAuth 客户端和全部文档条目权限；没有跨账号读取、任意 SQL、approved 参数或任务启动能力。restored/already_approved 与 history_incomplete/evidence_missing/scope_changed/source_conflict/identity_unavailable 分开返回。只读方案/历史接口不写审批。HTTP 原会话 POST plan-approval/recover 使用相同领域核验及原会话操作权限；完整来源审计存入 document_plan_decisions。
+## 原会话集成能力补充
+
+supportsConversationIntegration 及 writeTools 中的 prepare_conversation_integration / start_conversation_integration 声明可选原会话入口。准备保存精确快照，不创建交付或会话；start 认证当前人类来源和已审阅范围后原子绑定原身份，不执行 Git/部署。原批次工具兼容 dispatchId，外部原生会话使用 sessionId；每次校验原账号、客户端、会话与产品权限。Agent 参数不能提供批准事实，详细契约与兼容见 [原会话合并与发布](conversation-integration.md)。

@@ -45,7 +45,7 @@ export function IntegrationProgress({batch}:{batch:Batch}) {
   return <section ref={root} className="integration-progress" aria-label={t("integrationTitle")}>
     <div className="integration-screen" data-screen="overview" hidden={screen!=="overview"}>
       <div className="integration-outcomes" aria-live="polite">
-        <div data-outcome="merge" data-complete={order.length>0&&merged===order.length}><span className="integration-outcome-label"><GitMerge size={16} aria-hidden="true"/>{t("integrationMergeOutcome")}</span><strong>{t(order.length>0&&merged===order.length?"integrationAllMerged":blocked?"integrationMergeBlocked":merged?"integrationSomeMerged":"integrationMergePending")}</strong></div>
+        <div data-outcome="merge" data-complete={order.length>0&&merged===order.length}><span className="integration-outcome-label"><GitMerge size={16} aria-hidden="true"/>{t("integrationMergeOutcome")}</span><strong>{t(batch.operation==="publish_only"&&!order.length?"queuePublishOnly":order.length>0&&merged===order.length?"integrationAllMerged":blocked?"integrationMergeBlocked":merged?"integrationSomeMerged":"integrationMergePending")}</strong></div>
         <div data-outcome="publication" data-complete={publication==="published"}><span className="integration-outcome-label"><CloudUpload size={16} aria-hidden="true"/>{t("integrationPublicationOutcome")}</span><strong>{t(publication==="published"?"integrationPublicationDone":integrationPublicationLabels[publication])}</strong></div>
       </div>
       {publication==="published"&&merged===order.length&&batch.state==="finished"&&<p className="integration-note">{t("integrationCompleteHelp")}</p>}
@@ -60,7 +60,7 @@ export function IntegrationProgress({batch}:{batch:Batch}) {
           <p>{b.reason}</p><p>{t("integrationPrerequisiteOwner")}: {b.owner}</p><p>{t("integrationPrerequisiteResume")}: {b.resumeWhen}</p>
         </li>)}</ul>
       </section>}
-      <h3>{t("integrationGroups",{count:order.length})}</h3>
+      {order.length>0&&<h3>{t("integrationGroups",{count:order.length})}</h3>}
       <div className="integration-groups">{order.map(id=>{
         const e=state?.entries[id],p=batch.presentation?.entries[id],phase=integrationStage(batch,id),pub=integrationPublication(batch,id);
         return <button type="button" className="integration-group" key={id} onClick={()=>enter("detail",id)}>
@@ -70,7 +70,7 @@ export function IntegrationProgress({batch}:{batch:Batch}) {
       })}</div>
       {batch.presentation?.ownedExtras?.length?<section><h3>{t("integrationOwnedExtras")}</h3>{batch.presentation.ownedExtras.map(row=><div key={row.id}><strong>{row.title}</strong><p>{t(integrationPublicationLabels[row.publication])}</p>{row.pendingArtifacts.length>0&&<p>{t("queuePendingArtifacts")}: {row.pendingArtifacts.join(" / ")}</p>}{row.blocker&&<p role="status" className="integration-attention">{row.blocker}</p>}</div>)}</section>:null}
       {batch.presentation?.historicalGaps?.length?<section className="integration-attention"><h3>{t("queueHistoricalGaps")}</h3>{batch.presentation.historicalGaps.map(row=><p key={row.identity}><strong>{row.title}</strong><br/>{row.reason}</p>)}<p>{t("queueHistoricalGapsHelp")}</p></section>:null}
-      {!order.length&&<p>{t("integrationPlanning")}</p>}
+      {!order.length&&<p>{t(batch.operation==="publish_only"?"queuePublishOnlyHelp":"integrationPlanning")}</p>}
       <button type="button" className="integration-drill" onClick={()=>enter("recovery")}>{t("recoveryOpen")}<ChevronRight size={18} aria-hidden="true"/></button>
     </div>
     <div className="integration-screen" data-screen="detail" hidden={screen!=="detail"}>

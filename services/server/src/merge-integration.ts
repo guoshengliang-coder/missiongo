@@ -13,7 +13,7 @@ export const integrationActionSchema=z.discriminatedUnion("kind",[
   prerequisitesActionSchema,
   z.object({kind:z.literal("verify_reference"),...entry,commit:sha,checkedAt:z.string().datetime(),source:text}),
   z.object({kind:z.literal("plan"),base:sha,summary:text,validation:text,entries:z.array(z.object({deliveryId:id,head:sha,
-    dependsOn:z.array(id).max(20),group:z.string().trim().min(1).max(100),reason:text,validation:text})).min(1).max(20)}),
+    dependsOn:z.array(id).max(20),group:z.string().trim().min(1).max(100),reason:text,validation:text})).max(20)}),
   z.object({kind:z.literal("prepare_repair"),...entry,base:sha,reason:text}),
   z.object({kind:z.literal("cancel_repair"),...entry,repairId:id,observedHead:sha,noExecutionRemaining:z.literal(true),reason:text,source:text}),
   z.object({kind:z.literal("repair"),...entry,repairId:id,head:sha,commits:z.array(sha).min(1).max(100),validation:text,source:text}),

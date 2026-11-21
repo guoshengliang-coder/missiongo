@@ -14,6 +14,8 @@ export interface McpToolDefinition {
 }
 
 export const MCP_TOOL_DEFINITIONS = [
+  { name:"prepare_conversation_integration",access:"write",purpose:"Prepare a frozen integration scope for the original verified conversation without starting another session or granting authority." },
+  { name:"start_conversation_integration",access:"write",purpose:"Bind an authenticated human instruction to the original conversation and exact prepared batch, without running Git or publication." },
   { name:"request_collaboration_approval",access:"write",purpose:"Request a bound native-human approval to submit one exact collaboration draft." },
   { name:"request_merge_reconciliation_approval",access:"write",purpose:"Request a bound native-human decision for one exact prepared recovery, without executing it." },
   { name:"recover_merge_approval",access:"write",purpose:"Restore one exact integration decision from authenticated original-node human history; no recovery execution." },

@@ -2810,5 +2810,16 @@ export class MissionGoDatabase {
       });
     }
 
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611211222").get()) {
+      this.transaction(() => {
+        this.connection.exec(`CREATE TABLE conversation_integration_preparations (
+          id TEXT PRIMARY KEY, account_id TEXT NOT NULL, client_id TEXT NOT NULL,
+          request_key TEXT NOT NULL, request_digest TEXT NOT NULL, data_json TEXT NOT NULL,
+          batch_id TEXT REFERENCES merge_batches(id), UNIQUE(account_id,client_id,request_key)
+        ) STRICT;`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202611211222,new Date().toISOString());
+      });
+    }
+
   }
 }

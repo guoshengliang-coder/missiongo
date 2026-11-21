@@ -14,7 +14,7 @@ import { ManagedDecisionStore } from "./managed-decision-store.js";
 import { reconciliationActionSchema, combinedValidationSchema } from "./merge-reconciliation.js";
 import { integrationActionSchema } from "./merge-integration.js";
 import { recoveryTransportHelp } from "./merge-recovery-transport.js";
-import { MergeDeliveries, deliverySchema, mergeEvidenceSchema } from "./merge-deliveries.js";
+import { conversationIntegrationSchema, MergeDeliveries, deliverySchema, mergeEvidenceSchema } from "./merge-deliveries.js";
 import { AgentHandoffs } from "./agent-handoffs.js";
 import { ImplementationPlans, planDigest, requestNativePlanApproval } from "./implementation-plans.js";
 import { recoverLegacyPlanApproval } from "./legacy-plan-approval-recovery.js";
@@ -144,7 +144,7 @@ function accountAccess(ctx: ServerContext): McpAccountAccess {
  */
 export const WRITE_TOOLS_BY_TIER: Readonly<Record<McpWriteTier, readonly string[]>> = {
   none: [],
-  comments: ["request_collaboration_approval", "request_merge_reconciliation_approval", "recover_merge_approval", "request_managed_decision_approval", "request_merge_reconciliation", "apply_merge_reconciliation", "record_merge_combined_validation", "propose_merge_delivery", "refresh_merge_delivery", "report_merge_batch", "finish_merge_batch", "record_merge_integration", "prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "prepare_plan_document", "request_plan_approval", "recover_plan_approval", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_non_release_for_verification", "submit_for_verification", "submit_release_batch", "supplement_release_evidence", "supplement_non_release_evidence", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
+  comments: ["prepare_conversation_integration", "start_conversation_integration", "request_collaboration_approval", "request_merge_reconciliation_approval", "recover_merge_approval", "request_managed_decision_approval", "request_merge_reconciliation", "apply_merge_reconciliation", "record_merge_combined_validation", "propose_merge_delivery", "refresh_merge_delivery", "report_merge_batch", "finish_merge_batch", "record_merge_integration", "prepare_collaboration_request", "append_collaboration_discussion", "append_comment", "prepare_plan_document", "request_plan_approval", "recover_plan_approval", "claim_item", "recover_execution_authorization", "submit_development_complete", "submit_non_release_for_verification", "submit_for_verification", "submit_release_batch", "supplement_release_evidence", "supplement_non_release_evidence", "create_item", "upload_attachment_chunk", "prepare_attachment_upload", "add_item_attachment", "register_agent_session", "report_agent_session"],
 };
 
 /**
@@ -376,6 +376,7 @@ export function createMissionGoMcpServer(
           supportsPlanDocuments: true,
           supportsDocumentPlanApprovalRecovery: true,
           supportsMergeBatches: true,
+          supportsConversationIntegration: true,
           supportsIntegrationPrerequisites: true,
           supportsProjectIntegrationWorkflows: true,
           supportsMergeReconciliation: true,
@@ -950,12 +951,16 @@ export function createMissionGoMcpServer(
     if(write && options.canOperate && !options.canOperate(access.accountId,productId)) throw new Error("Product operation is not permitted.");
     return access;
   };
+  const batchActor = (ctx:ServerContext,input:{batchId:string;dispatchId?:string|undefined;sessionId?:string|undefined}) => {
+    const access=accountAccess(ctx);
+    return merges.actor(access.accountId,access.clientId??"",input.batchId,{...(input.dispatchId?{dispatchId:input.dispatchId}:{}),...(input.sessionId?{sessionId:input.sessionId}:{})});
+  };
   server.registerTool("get_merge_batch", {
     annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},
     description:"Read the user-authorized frozen batch from its original merge dispatch. Do not claim the source development items. Original revisions remain immutable. Protocol-1 integration repairs must be reserved and recorded with record_merge_integration; use executionHead, require mergeReady=true, and recheck live Git/CI before every merge. Legacy batches cannot repair. Action protocol 2 references are historical merge facts: never merge, repair or report them again; independently verify and record verify_reference first. publish_only forbids new Git merges. Respect publish=false and the frozen publicationScope; new scope needs human review. Unknown results keep the project lock until verified.",
-    inputSchema:z.object({batchId:z.string(),dispatchId:z.string()}),
+    inputSchema:z.object({batchId:z.string(),dispatchId:z.string().optional(),sessionId:z.string().min(1).optional()}),
   },async (input,ctx)=>{
-    const batch=merges.batch(accountAccess(ctx).accountId,input.dispatchId,input.batchId);
+    const batch=merges.batch(accountAccess(ctx).accountId,batchActor(ctx,input),input.batchId);
     mergeAccess(ctx,batch.productId);
     return textResult({batch,recovery:merges.preview(accountAccess(ctx).accountId,input.batchId),recoveryTransport:recoveryTransportHelp});
   });
@@ -980,6 +985,29 @@ export function createMissionGoMcpServer(
       || options.canOperate && !options.canOperate(access.accountId,productId)) throw new Error("Native human confirmation is not permitted for this account and product.");
     return account.id;
   };
+  server.registerTool(
+    "prepare_conversation_integration", {
+    title:"Prepare integration in this original conversation",
+    description:"Prepare an immutable scope snapshot for merge_only, publish_only or merge_and_publish in the original conversation, without creating/starting another session, running Git, deploying or approving. Use the actual product/repository, original dispatchId or verified external sessionId. Pass current verified deliveries for new merges, existing merged selection references, or no selection for a product publication. A resumeBatchId only prepares continuation of that original active conversation batch. Read and show reviewText; publication requires its exact complete scope already visible before the human instruction. This queue-independent path is optional alongside the existing pending-integration UI. Missing authenticated node/source evidence is a specific capability gap, never permission to bypass it.",
+    inputSchema:z.object({identity:mergeIdentity,idempotencyKey:z.string().min(1).max(200),scope:conversationIntegrationSchema}).strict(),
+    annotations:{readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
+  },async(input,ctx)=>{
+    requireWriteScope(ctx);requireAccessibleProduct(ctx,input.scope.productId);const access=mergeAccess(ctx,input.scope.productId,true);
+    for(const d of input.scope.deliveries)for(const key of d.itemKeys)requireItemAccess(ctx,store,key);
+    return textResult({preparation:merges.prepareConversation(access.accountId,access.clientId??"",{...(input.identity.dispatchId?{dispatchId:input.identity.dispatchId}:{}),...(input.identity.sessionId?{sessionId:input.identity.sessionId}:{})},input.idempotencyKey,input.scope)});
+  });
+  server.registerTool(
+    "start_conversation_integration", {
+    title:"Bind an authorized integration to this conversation",
+    description:"Bind or recover one exact preparation through its original identity; never create a session, execute Git, publish, accept items or take another batch. The server reads authenticated current human input and existing scope evidence, not Agent quote/approved parameters. An explicit merge-only instruction cannot publish; publish-only cannot merge. Already accepted preparations return their original batch even after response loss. New input, changed settings, scope or permissions block further work until rechecked. For an unchanged continuing/status input use a new preparation with resumeBatchId, retaining the original authorization. Use get_merge_batch and existing integration/report/finish tools with this same dispatchId or external sessionId, and all live Git/CI/publication gates. When complete scope was not previously reviewed show it in this conversation once; reuse an existing matching decision.",
+    inputSchema:z.object({identity:mergeIdentity,preparationId:z.string().uuid()}).strict(),
+    annotations:{readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
+  },async(input,ctx)=>{
+    requireWriteScope(ctx);const access=accountAccess(ctx);
+    const productId=merges.conversationProduct(access.accountId,access.clientId??"",input.preparationId);
+    requireAccessibleProduct(ctx,productId);mergeAccess(ctx,productId,true);
+    return textResult({batch:merges.startConversation(access.accountId,access.clientId??"",{...(input.identity.dispatchId?{dispatchId:input.identity.dispatchId}:{}),...(input.identity.sessionId?{sessionId:input.identity.sessionId}:{})},input.preparationId)});
+  });
   server.registerTool(
     "request_collaboration_approval", {
     title:"Ask the human to submit one exact collaboration draft",
@@ -1025,13 +1053,13 @@ export function createMissionGoMcpServer(
   server.registerTool(
     "recover_merge_approval",{
     title:"Restore an exact original-conversation integration decision",
-    description:"After displaying the request's exact reviewText in final_answer and receiving a standalone human 同意 or 批准, verify authenticated original-node history and restore the same decision. No transcript or approved parameter is accepted. Missing history/source clocks remain a specific gap; never ask again for an already valid decision. Does not apply recovery, execute Git or publish.",
-    inputSchema:z.object({batchId:z.string().min(1),dispatchId:z.string().min(1),requestId:z.string().min(1)}).strict(),
+    description:"After displaying the request's exact reviewText in final_answer and receiving a standalone human 同意 or 批准, verify authenticated original-node history and restore the same decision. No transcript or approved parameter is accepted. External native sessions currently lack complete-history proof and return history_incomplete; use trusted native confirmation when no valid decision already exists. Missing history/source clocks remain a specific gap; never ask again for an already valid decision. Does not apply recovery, execute Git or publish.",
+    inputSchema:z.object({batchId:z.string().min(1),dispatchId:z.string().min(1).optional(),sessionId:z.string().min(1).optional(),requestId:z.string().min(1)}).strict(),
     annotations:{readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
   },async(input,ctx)=>{
     requireWriteScope(ctx);requireAccessibleProduct(ctx,merges.batchProduct(input.batchId));
     const access=mergeAccess(ctx,merges.batchProduct(input.batchId),true);
-    return textResult(merges.recoverConversationDecision(access.accountId,input.dispatchId,input.batchId,input.requestId));
+    return textResult(merges.recoverConversationDecision(access.accountId,batchActor(ctx,input),input.batchId,input.requestId));
   });
   server.registerTool(
     "request_managed_decision_approval", {
@@ -1058,31 +1086,31 @@ export function createMissionGoMcpServer(
     "request_merge_reconciliation", {
     annotations:{readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
     description:"Stage an exact original-batch recovery action for a signed-in person's console approval. Use the preview snapshot and original merge dispatch; this does not grant authority or execute recovery. accept_merge needs independently verified GitHub merged head, merge commit, actual target ancestry, original-head inclusion and passing validation; never impersonate external repairs. retry_handover only supplements missing compatible evidence. retry_blocked preserves history. Publication choices require a human decision. Once every original result is merged, an optional publicationRefresh binds the complete preview scopeDigest and explicit historicalGaps identities/reasons; the server freezes all candidates for human review and rejects changed candidates or exclusion of known complete deliveries. No generic field writes or developer credentials.",
-    inputSchema:z.object({batchId:z.string().min(1),dispatchId:z.string().min(1),idempotencyKey:z.string().min(1).max(200),snapshot:z.string().length(64),action:reconciliationActionSchema}),
+    inputSchema:z.object({batchId:z.string().min(1),dispatchId:z.string().min(1).optional(),sessionId:z.string().min(1).optional(),idempotencyKey:z.string().min(1).max(200),snapshot:z.string().length(64),action:reconciliationActionSchema}),
   },async(input,ctx)=>{
     requireWriteScope(ctx);requireAccessibleProduct(ctx,merges.batchProduct(input.batchId));
     const access=mergeAccess(ctx,merges.batchProduct(input.batchId),true);
-    return textResult({...merges.requestReconciliation(access.accountId,input.dispatchId,input.batchId,input.idempotencyKey,input.snapshot,input.action)});
+    return textResult({...merges.requestReconciliation(access.accountId,batchActor(ctx,input),input.batchId,input.idempotencyKey,input.snapshot,input.action)});
   });
   server.registerTool(
     "apply_merge_reconciliation", {
     annotations:{readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
     description:"Apply one Web- or native-human-approved recovery request through the original merge dispatch. Rechecks the exact snapshot and current permissions; preserves history and reports per-item results. Retry the same request after a lost response. Never create another batch, re-merge Git, borrow developer credentials or override human rework. Changed snapshots need a new reviewed request, not an altered retry.",
-    inputSchema:z.object({batchId:z.string().min(1),dispatchId:z.string().min(1),requestId:z.string().min(1)}),
+    inputSchema:z.object({batchId:z.string().min(1),dispatchId:z.string().min(1).optional(),sessionId:z.string().min(1).optional(),requestId:z.string().min(1)}),
   },async(input,ctx)=>{
     requireWriteScope(ctx);requireAccessibleProduct(ctx,merges.batchProduct(input.batchId));
     const access=mergeAccess(ctx,merges.batchProduct(input.batchId),true);
-    return textResult({...merges.applyReconciliation(access.accountId,input.dispatchId,input.batchId,input.requestId)});
+    return textResult({...merges.applyReconciliation(access.accountId,batchActor(ctx,input),input.batchId,input.requestId)});
   });
   server.registerTool(
     "record_merge_combined_validation", {
     annotations:{readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
     description:"Record verified final combined validation on the actual target head for the original batch, including legacy recovery. All Git outcomes must be known. Evidence binds the complete current results; later recovery invalidates it. Does not authorize publication or item acceptance.",
-    inputSchema:z.object({batchId:z.string().min(1),dispatchId:z.string().min(1),validation:combinedValidationSchema}),
+    inputSchema:z.object({batchId:z.string().min(1),dispatchId:z.string().min(1).optional(),sessionId:z.string().min(1).optional(),validation:combinedValidationSchema}),
   },async(input,ctx)=>{
     requireWriteScope(ctx);requireAccessibleProduct(ctx,merges.batchProduct(input.batchId));
     const access=mergeAccess(ctx,merges.batchProduct(input.batchId),true);
-    return textResult({...merges.recordCombinedValidation(access.accountId,input.dispatchId,input.batchId,input.validation)});
+    return textResult({...merges.recordCombinedValidation(access.accountId,batchActor(ctx,input),input.batchId,input.validation)});
   });
   server.registerTool(
     "propose_merge_delivery", {
@@ -1112,38 +1140,38 @@ export function createMissionGoMcpServer(
     "report_merge_batch", {
     annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false},
     description:"Report one verified batch result using its original merge dispatch. For merged results first verify the PR's executionHead (original head for batches without an integration protocol), actual merge commit and required checks; write the completion comment. This limited handoff records development complete without taking over the development session. Never report timeout or an unknown external outcome as blocked/completed. Read the original item and required artifact scope before reporting.",
-    inputSchema:z.object({batchId:z.string(),dispatchId:z.string(),deliveryId:z.string(),result:z.object({status:z.enum(["merged","blocked"]),head:z.string().regex(/^[a-f0-9]{40}$/),commit:z.string().regex(/^[a-f0-9]{40}$/).optional(),detail:z.string().trim().min(1).max(2000)})}),
+    inputSchema:z.object({batchId:z.string(),dispatchId:z.string().optional(),sessionId:z.string().min(1).optional(),deliveryId:z.string(),result:z.object({status:z.enum(["merged","blocked"]),head:z.string().regex(/^[a-f0-9]{40}$/),commit:z.string().regex(/^[a-f0-9]{40}$/).optional(),detail:z.string().trim().min(1).max(2000)})}),
   },async (input,ctx)=>{
     requireWriteScope(ctx);
-    const batch=merges.batch(accountAccess(ctx).accountId,input.dispatchId,input.batchId);
+    const batch=merges.batch(accountAccess(ctx).accountId,batchActor(ctx,input),input.batchId);
     requireAccessibleProduct(ctx,batch.productId);
     const access=mergeAccess(ctx,batch.productId,true);
-    return textResult({batch:merges.report(access.accountId,input.dispatchId,input.batchId,input.deliveryId,{status:input.result.status,head:input.result.head,detail:input.result.detail,...(input.result.commit?{commit:input.result.commit}:{})})});
+    return textResult({batch:merges.report(access.accountId,batchActor(ctx,input),input.batchId,input.deliveryId,{status:input.result.status,head:input.result.head,detail:input.result.detail,...(input.result.commit?{commit:input.result.commit}:{})})});
   });
   server.registerTool(
     "finish_merge_batch", {
     annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false},
     description:"Release this project's batch only after every result is verified and no merge or publication remains running. A timeout, lost connection, or unknown result must not finish the batch. If publication was selected, finish only after its verified result is recorded in the session and normal release handoff is complete. Source item acceptance remains human-only.",
-    inputSchema:z.object({batchId:z.string(),dispatchId:z.string(),noExecutionRemaining:z.literal(true)}),
+    inputSchema:z.object({batchId:z.string(),dispatchId:z.string().optional(),sessionId:z.string().min(1).optional(),noExecutionRemaining:z.literal(true)}),
   },async (input,ctx)=>{
     requireWriteScope(ctx);
-    const batch=merges.batch(accountAccess(ctx).accountId,input.dispatchId,input.batchId);
+    const batch=merges.batch(accountAccess(ctx).accountId,batchActor(ctx,input),input.batchId);
     requireAccessibleProduct(ctx,batch.productId);
     const access=mergeAccess(ctx,batch.productId,true);
-    return textResult({batch:merges.finish(access.accountId,input.dispatchId,input.batchId)});
+    return textResult({batch:merges.finish(access.accountId,batchActor(ctx,input),input.batchId)});
   });
 
   server.registerTool(
     "record_merge_integration", {
     annotations: {readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
     description:"Project workflows follow existing repository rules with no mandatory configuration or MissionGo tools. get_merge_batch returns current projectWorkflowInstructions and prerequisiteObservation for original batches. checks/local may be not_applicable only with verification containing bound repository/targetBranch, rule source/digest, applicability reason and complete platform evidence. Failed/unknown never mean absent; pending auto-merge needs actual protected checks. prerequisites.workflow selects observed project_native or missiongo tools, not new permission. Native workflows require main/authorization/scope; tools/capabilities apply only when used and can bind publication-stage work. prerequisites requires the exact observation (batchId, ordered execution heads and frozen scope) returned by get_merge_batch or release-readiness; stale observations cannot be rebound to current revisions. Removing an unresolved circular dependency requires dependencyResolutions with a verified independent base/tools/capabilities change and source, never a waiver. prerequisites persists executor-observed conditions and partial evidence refresh, not a permission grant. Legacy batches may record prerequisites starting at expectedRevision=0; prerequisitesOnly never grants plan or repair authority. Main/authorization/scope evidence must be fresh; MissionGo-specific integrity/capability evidence remains required only for that workflow. Project-native unused tools can be explicitly not_required with scoped reasons, while retained requirements and unresolved dependencies still apply. Preserve reason, owner, resumeWhen and bindings; pending/unknown necessary facts keep the original batch. Reference valid original native authorization (or a verified not_required reason); never pass approval booleans or repeat uncertain operations. Ordinary tool differences and needsFollowUp are not blockers. In-batch unmerged dependencies form a cycle, never an exemption. verify_reference binds a historical reference deliveryId, expectedHead, commit, fresh checkedAt and source without merging or handing over again. Persist this authorized integration batch's complete ordered plan, repair reservation and commit chain, live validation, progress, or final combined validation. publication_progress records only an authorized batch publication signal (publishing/failed/ended), with a fresh checkedAt and exact resultsDigest returned by get_merge_batch. Renew publishing within five minutes; expiry is unknown, ended is not a receipt and never proves publication. No Git operations are performed here. Only protocol-1 batches explicitly authorize necessary integration repairs. Read get_merge_batch first; send expectedRevision and a stable idempotencyKey, retry exact inputs on uncertain response. Plans cover every selected delivery with dependencies before dependents. Before repairing, reserve the current remote head with prepare_repair. Push only your own necessary additive repair commits to that original PR, never force or include someone else's new head. Then repair records the exact reserved-to-new-head commit chain verified in the execution repository; preserve originalHead. check requires executor-verified local checks and live CI for executionHead and current target base. Recheck the base immediately before merging. A changed base invalidates reuse. Never weaken tests to turn CI green. final_validation follows all known item results and verifies the actual merged combination on the target branch; it does not authorize partial publication or acceptance. The service validates identity and consistency, not GitHub truth.",
-    inputSchema:z.object({batchId:z.string(),dispatchId:z.string(),expectedRevision:z.number().int().nonnegative(),idempotencyKey:z.string().min(1).max(200),action:integrationActionSchema}),
+    inputSchema:z.object({batchId:z.string(),dispatchId:z.string().optional(),sessionId:z.string().min(1).optional(),expectedRevision:z.number().int().nonnegative(),idempotencyKey:z.string().min(1).max(200),action:integrationActionSchema}),
   },async(input,ctx)=>{
     requireWriteScope(ctx);
-    const batch=merges.batch(accountAccess(ctx).accountId,input.dispatchId,input.batchId);
+    const batch=merges.batch(accountAccess(ctx).accountId,batchActor(ctx,input),input.batchId);
     requireAccessibleProduct(ctx,batch.productId);
     const access=mergeAccess(ctx,batch.productId,true);
-    const result=merges.integrate(access.accountId,input.dispatchId,input.batchId,input.expectedRevision,input.idempotencyKey,input.action);
+    const result=merges.integrate(access.accountId,batchActor(ctx,input),input.batchId,input.expectedRevision,input.idempotencyKey,input.action);
     return textResult({batch:result,recovery:merges.preview(access.accountId,input.batchId),recoveryTransport:recoveryTransportHelp});
   });
 
@@ -1655,7 +1683,7 @@ export function createMissionGoMcpServer(
         batch:z.object({batchId:z.string().uuid(),deliveryId:z.string().uuid(),expectedRevision:z.number().int().nonnegative()}).strict().optional(),
         idempotencyKey:z.string().min(1).max(200),
       }).strict().refine(singleHandoverIdentity,"Use exactly one original execution identity.")
-        .refine(value=>!value.batch||!!value.dispatchId,"Batch handover requires the original merge dispatchId."),
+        .refine(value=>!value.batch||!!value.dispatchId||!!value.sessionId,"Batch handover requires the original merge identity."),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async (input,ctx)=>{
@@ -1663,7 +1691,7 @@ export function createMissionGoMcpServer(
       const access=accountAccess(ctx),key=requireItemAccess(ctx,store,input.itemKey);
       const raw={...input,itemKey:key,attribution:{accountId:access.accountId,clientId:access.clientId??""}};
       const item=input.batch
-        ? merges.submitNonRelease(access.accountId,input.dispatchId!,input.batch,raw)
+        ? merges.submitNonRelease(access.accountId,merges.actor(access.accountId,access.clientId??"",input.batch.batchId,{...(input.dispatchId?{dispatchId:input.dispatchId}:{}),...(input.sessionId?{sessionId:input.sessionId}:{})}),input.batch,raw)
         : (()=>{authorizeHandover(ctx,input);return store.submitNonReleaseForVerification(raw);})();
       return textResult({item,statusChanged:item.status === "pending_verification"},`${key}: no-release evidence submitted; human verification is still required. No publication or acceptance was recorded.`);
     },
