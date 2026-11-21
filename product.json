@@ -28,7 +28,7 @@
     "version": "0.1.31"
   },
   "web": {
-    "version": "1.1.67"
+    "version": "1.1.68"
   },
   "iconSource": "assets/brand/icon.svg",
   "taglines": {
@@ -42,7 +42,7 @@
       "packageName": "missiongo-windows",
       "artifactStem": "missiongo-windows",
       "releaseSigning": "temporary-unsigned",
-      "version": "0.1.1"
+      "version": "0.1.2"
     }
   }
 }
