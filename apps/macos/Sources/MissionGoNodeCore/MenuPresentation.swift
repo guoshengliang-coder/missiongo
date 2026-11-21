@@ -411,7 +411,7 @@ public enum CodexStatus: Equatable, Sendable {
         case .unreadable: return "检查 config.toml、auth.json，并在终端运行 codex login status 和 codex mcp list 查看"
         case let .daemonNotRunning(_, path): return "Codex 派单要通过 app-server 的控制通道 \(path)，它由 codex app-server daemon 提供。MissionGo 自动运行 codex app-server daemon start 后仍然没有连上：在终端运行它查看原因。派单时 MissionGo 也会自动尝试启动；codex app-server daemon bootstrap 可以让它开机常驻。"
         case .mcpMissing: return "若终端已能使用 MissionGo，先检查 Codex 配置来源与仓库映射并重新检查；否则添加 missiongo MCP 并登录"
-        case .mcpNotLoggedIn: return "在终端运行 codex mcp login missiongo"
+        case .mcpNotLoggedIn: return "在本机终端运行 \(CodexPreflight.mcpLoginCommand)，在浏览器授予读写权限后重新检查。"
         }
     }
 
@@ -419,7 +419,7 @@ public enum CodexStatus: Equatable, Sendable {
         switch self {
         case .notLoggedIn: return "codex login"
         case .mcpMissing: return CodexPreflight.mcpSetupCommand(serverUrl: serverUrl)
-        case .mcpNotLoggedIn: return "codex mcp login missiongo"
+        case .mcpNotLoggedIn: return CodexPreflight.mcpLoginCommand
         case .daemonNotRunning: return CodexPreflight.daemonStartCommand
         case .checking, .notInstalled, .unreadable, .readyWithNotice, .ready: return nil
         }
@@ -613,6 +613,12 @@ public enum DispatchPresentation {
         return startup.map { "最近一次本机启动失败：\($0)" }
     }
 
+    /// A recovery action remains available even when CLI login status is ready
+    /// but the thread's actual MCP permissions cannot authorize dispatch.
+    public static func recoveryCommand(code: String?, agentKind: String?) -> String? {
+        code == "mcp_auth" && agentKind == "codex" ? CodexPreflight.mcpLoginCommand : nil
+    }
+
     /// What actually went wrong, kept separately from `error`: a dispatch that
     /// is later replaced has its `error` overwritten with "已被重新派单取代",
     /// but its failure code and diagnostic snapshot still say why it never ran.
@@ -623,7 +629,7 @@ public enum DispatchPresentation {
                 return "OpenCode 的 missiongo MCP 未授权：在 OpenCode 的 /mcps 中重新登录"
             }
             if agentKind == "codex" {
-                return "Codex 的 missiongo MCP 未登录或授权失效：在本机终端运行 codex mcp login missiongo"
+                return "Codex 的 missiongo MCP 未登录或授权失效：在本机终端运行 \(CodexPreflight.mcpLoginCommand)，在浏览器授予读写权限后重新检查。"
             }
             return "missiongo MCP 未登录或授权失效：在对应客户端重新登录"
         case "mcp_timeout":

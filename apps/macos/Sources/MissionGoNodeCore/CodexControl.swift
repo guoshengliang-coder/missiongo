@@ -339,7 +339,7 @@ public enum CodexControlError: Error, Equatable, LocalizedError {
         case let .invalidResponse(method):
             return "Codex 对 \(method) 的回应无法识别。"
         case .mcpAuthorization:
-            return "Codex 的 MissionGo MCP 未确认评论与领取权限；尚未启动任务。请在该节点重新完成 MCP 授权。"
+            return "Codex 的 MissionGo MCP 未确认评论与领取权限；尚未启动任务。在该执行节点的终端运行 \(CodexPreflight.mcpLoginCommand)，在浏览器授予读写权限后重新检查；若仍缺少工具，请检查 enabled_tools／disabled_tools 是否限制了 append_comment 或 claim_item。"
         case .skillStale:
             return "Codex 的 MissionGo Skill 版本与服务端不一致或无法核实；尚未启动任务。请等待 Skill 同步完成再派单。"
         case let .mcpStartup(diagnostic):

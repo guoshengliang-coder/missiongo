@@ -305,10 +305,13 @@ public enum CodexPreflight {
         return parseMcpList(result.stdout)
     }
 
+    /// Dispatch needs both OAuth scopes; a configured MCP entry alone is not authorization.
+    public static let mcpLoginCommand = "codex mcp login missiongo --scopes missiongo:read,missiongo:write"
+
     /// The commands that connect Codex to this MissionGo server's MCP endpoint.
     public static func mcpSetupCommand(serverUrl: String?) -> String {
         let url = serverUrl.map { "\($0)/mcp" } ?? "<MissionGo 地址>/mcp"
-        return "codex mcp add missiongo --url \(url) && codex mcp login missiongo"
+        return "codex mcp add missiongo --url \(url) && \(mcpLoginCommand)"
     }
 
     /// What starts the app-server whose control socket a dispatch needs.
@@ -421,7 +424,7 @@ public enum CodexPreflight {
             ))
         case .notLoggedIn:
             return .failed(LaunchError(
-                "Codex 的 missiongo MCP 还没有登录：在终端运行 codex mcp login missiongo",
+                "Codex 的 missiongo MCP 还没有登录：在本机终端运行 \(mcpLoginCommand)，在浏览器授予读写权限后重新检查。",
                 failureCode: "mcp_auth", failureStage: "mcp"
             ))
         case .unreadable:
@@ -1164,7 +1167,7 @@ enum CodexFailure {
         let detail = explain(error)
         return LaunchError(
             "Codex 的 missiongo MCP 未登录或授权已失效：在这台 Mac 的图形界面终端运行 "
-                + "codex mcp login missiongo，然后重启 Codex 后台服务（codex app-server daemon restart）。"
+                + "\(CodexPreflight.mcpLoginCommand)，在浏览器授予读写权限，然后重启 Codex 后台服务（codex app-server daemon restart）并重新检查。"
                 + "详情：\(detail)",
             failureCode: "mcp_auth", failureStage: "mcp",
             diagnosticSnapshot: DispatchDiagnosticSnapshot(mcp: diagnostic)

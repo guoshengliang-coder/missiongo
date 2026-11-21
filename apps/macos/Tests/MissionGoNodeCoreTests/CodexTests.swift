@@ -1518,7 +1518,7 @@ final class CodexPreflightTests: XCTestCase {
     func testTheMcpHintPointsAtTheLoggedInServer() {
         XCTAssertEqual(
             CodexPreflight.mcpSetupCommand(serverUrl: "https://missiongo.test"),
-            "codex mcp add missiongo --url https://missiongo.test/mcp && codex mcp login missiongo"
+            "codex mcp add missiongo --url https://missiongo.test/mcp && codex mcp login missiongo --scopes missiongo:read,missiongo:write"
         )
     }
 
@@ -2277,7 +2277,7 @@ final class CodexLauncherTests: XCTestCase {
             XCTAssertNil(error.retryAfterSeconds)
             XCTAssertEqual(error.failureCode, "mcp_auth")
             XCTAssertEqual(error.failureStage, "mcp")
-            XCTAssertTrue(error.message.contains("codex mcp login missiongo"))
+            XCTAssertTrue(error.message.contains("codex mcp login missiongo --scopes missiongo:read,missiongo:write"))
             XCTAssertEqual(error.diagnosticSnapshot?.mcp, diagnostic)
         }
         XCTAssertEqual(control.requests.current.count, 1)
@@ -2357,7 +2357,7 @@ final class CodexLauncherTests: XCTestCase {
             ("channel down", fakeCodex(), true, false, "codex app-server daemon start"),
             ("channel down, start says why", fakeCodex(), true, false, "daemon refused to start"),
             ("no mcp", fakeCodex(mcp: ok("[]")), true, true, "codex mcp add missiongo --url https://missiongo.test/mcp"),
-            ("mcp logged out", fakeCodex(mcp: ok(#"[{"name":"missiongo","enabled":true,"auth_status":"not_logged_in"}]"#)), true, true, "codex mcp login missiongo"),
+            ("mcp logged out", fakeCodex(mcp: ok(#"[{"name":"missiongo","enabled":true,"auth_status":"not_logged_in"}]"#)), true, true, "codex mcp login missiongo --scopes missiongo:read,missiongo:write"),
             ("no skill", fakeCodex(), false, true, "missiongo Skill"),
         ]
         for (label, run, skill, socket, expected) in cases {

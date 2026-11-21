@@ -319,10 +319,24 @@ final class DispatchPresentationTests: XCTestCase {
         XCTAssertEqual(DispatchPresentation.shortError(String(repeating: "长", count: 70), limit: 60), String(repeating: "长", count: 60) + "…")
     }
 
+    func testCodexMcpRecoveryCommandsRequestReadAndWrite() {
+        let command = "codex mcp login missiongo --scopes missiongo:read,missiongo:write"
+        let status = CodexStatus.mcpNotLoggedIn(version: "test")
+        XCTAssertEqual(status.fixCommand(serverUrl: nil), command)
+        XCTAssertTrue(status.fixHint?.contains(command) == true)
+        XCTAssertTrue(status.fixHint?.contains("读写权限") == true)
+        XCTAssertEqual(CodexStatus.mcpMissing(version: "test").fixCommand(serverUrl: "https://missiongo.test"),
+            "codex mcp add missiongo --url https://missiongo.test/mcp && \(command)")
+        XCTAssertEqual(DispatchPresentation.recoveryCommand(code: "mcp_auth", agentKind: "codex"), command)
+        XCTAssertNil(DispatchPresentation.recoveryCommand(code: "mcp_auth", agentKind: "opencode"))
+        XCTAssertNil(DispatchPresentation.recoveryCommand(code: "mcp_timeout", agentKind: "codex"))
+        XCTAssertNil(DispatchPresentation.recoveryCommand(code: nil, agentKind: "codex"))
+    }
+
     func testFailureCodesStayReadableAfterTheDispatchIsReplaced() {
         XCTAssertEqual(
             DispatchPresentation.failureHint(code: "mcp_auth", agentKind: "codex"),
-            "Codex 的 missiongo MCP 未登录或授权失效：在本机终端运行 codex mcp login missiongo"
+            "Codex 的 missiongo MCP 未登录或授权失效：在本机终端运行 codex mcp login missiongo --scopes missiongo:read,missiongo:write，在浏览器授予读写权限后重新检查。"
         )
         XCTAssertEqual(
             DispatchPresentation.failureHint(code: "mcp_auth", agentKind: "opencode"),

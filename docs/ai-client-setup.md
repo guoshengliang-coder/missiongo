@@ -105,35 +105,26 @@ ad-hoc 签名的升级仍可能要求重新授予钥匙串访问权限，本次�
 ```toml
 [mcp_servers.missiongo]
 url = "https://missiongo.example.com/mcp"
-enabled_tools = [
-  "get_current_account",
-  "list_products",
-  "list_components",
-  "list_items",
-  "get_item_context",
-  "get_item_timeline",
-  "get_attachment",
-  # 只在需要 AI 回写评论时加入；不加则连接保持只读。
-  "append_comment",
-]
 default_tools_approval_mode = "approve"
 ```
 
-然后执行首次连接：
+处理派单、领取任务或回写评论时，执行完整的读写授权命令：
+
+```bash
+codex mcp login missiongo --scopes missiongo:read,missiongo:write
+```
+
+`--scopes` 按 Codex CLI 契约使用逗号分隔。只需查询、不处理任务时可显式使用只读授权：
 
 ```bash
 codex mcp login missiongo --scopes missiongo:read
 ```
 
-需要 AI 回写评论时改为：
-
-```bash
-codex mcp login missiongo --scopes "missiongo:read missiongo:write"
-```
+OAuth scopes 与客户端工具列表分别生效。上面的完整接入示例不设置 `enabled_tools`，由服务端按实际授权提供工具，保留原生工具批准设置；取得写权限不代表用户批准了实施、合并或发布。自定义 `enabled_tools` 是允许列表，`disabled_tools` 在其后应用：派单至少需要 `get_current_account`、`append_comment`、`claim_item`，还须开放 Skill 对应的读取、方案文档、批准和交付工具。仅加入 `append_comment` 不能领取或完成派单流程。不要把工具过滤当成 OAuth 只读授权。
 
 登录页会列出本次申请的权限。写入权限允许发表评论、领取待处理条目、在 PR 合并后标记开发完成、在相关产物核实发布后推到待验证，以及在你确认内容后创建条目；不允许修改条目内容、删除条目、撤回评论，或做验收、退回、搁置。
 
-浏览器会打开 MissionGo 登录页。登录成功后重新开始一次 AI 会话，让客户端重新发现连接和 Skill。
+请在运行任务的执行节点完成命令和浏览器登录，明确同意页面列出的读写范围。已有只读授权不会自动升级，需使用完整读写命令重新授权。登录后重新检查连接；已有 Codex 后台服务仍使用旧授权时，在没有活动会话时重启该服务，再开始新 AI 会话重新发现连接和 Skill。调用 `get_current_account` 核对 `canComment=true` 且 `writeTools` 包含 `claim_item`；工具过滤、服务端写入档位和账号产品权限仍可能限制操作。
 
 ### OpenCode 2
 

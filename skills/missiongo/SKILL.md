@@ -1,7 +1,7 @@
 ---
 name: missiongo
 description: 通过 MissionGo MCP 查询项目概览、吞吐、交付周期和验收打回率，或完整读取及处理指定条目、评论、创建和上传附件；核实合并与发布后可靠交接。不修改条目正文与字段，不决定验收。
-version: 5.75.0
+version: 5.76.0
 ---
 
 # MissionGo 条目读取与评论
@@ -36,6 +36,15 @@ version: 5.75.0
 ```bash
 claude mcp add --transport http --scope user missiongo __MISSIONGO_PUBLIC_ORIGIN__/mcp
 ```
+
+Codex 处理任务、领取或回写评论时，在原执行节点使用完整的读写授权命令：
+
+```bash
+codex mcp add missiongo --url __MISSIONGO_PUBLIC_ORIGIN__/mcp
+codex mcp login missiongo --scopes missiongo:read,missiongo:write
+```
+
+只需查询时可显式使用 `codex mcp login missiongo --scopes missiongo:read`。`--scopes` 按 Codex CLI 契约使用逗号分隔；浏览器授权页由用户确认范围，不自动升级已有只读连接。已配置却缺评论或领取权限时，提示用户在原执行节点运行完整读写登录命令，完成授权后重新检查；不要代用户登录或修改实际配置。用 `get_current_account` 回查 `canComment` 和 `writeTools`，并核对 Codex 自定义 `enabled_tools`／`disabled_tools` 是否过滤了对应工具。只加入 `append_comment` 的工具允许列表不能支持领取及完整派单流程。服务端写入档位和账号产品权限仍分别生效，登录成功不等于获准实施。
 
 Hermes Agent 可以在用户配置的 `mcp_servers` 中添加：
 
