@@ -23,7 +23,7 @@ import { deriveMergeProgress, type MergeProgress } from "./merge-progress";
 interface Delivery {
   id:string;productId:string;sessionId:string;revision:string;state:string;summary:string;validation:string;
   itemKeys:string[];head:string;requiredArtifacts:string[];noReleaseReason?:string;pullRequestUrl:string;
-  reconfirmation?:boolean;blocker?:string;evidence:{checkedAt:string;source:string};
+  reconfirmation?:boolean;blocker?:string;evidence:{checkedAt:string;source:string;checks?:string};
 }
 interface QueueDelivery extends Delivery {queue:IntegrationQueueFacts;latestInputAt?:string;previousReviews?:{caseId:string;sessionId:string;createdAt:string;closedAt?:string;closeNote?:string}[]}
 const artifactName=(a:string)=>({web:"Web",macosApp:"macOS",androidApp:"Android",androidSdk:"Android SDK",linuxCli:"Linux CLI"}[a]??a);
@@ -51,7 +51,7 @@ function QueueHistory({productId,onClose,onSession}:{productId:string;onClose:()
     {q.isSuccess&&reviews.isSuccess&&![...q.data.pages,...reviews.data.pages].some(p=>p.deliveries.length)&&<p>{t("queueHistoryEmpty")}</p>}
   </Modal>;
 }
-export interface Batch {reconciliation?:MergeReconciliationState;prerequisiteGate?:IntegrationPrerequisiteGate;operation?:IntegrationActionMode;references?:Record<string,{batchId:string;head:string;commit:string}>;verifiedReferences?:Record<string,{checkedAt:string;source:string}>;presentation?:MergeBatchPresentation;integration?:MergeIntegration;id:string;sessionId:string;state:string;deliveries:string[];publish:boolean;results:Record<string,{status:string;detail:string}>}
+export interface Batch {reconciliation?:MergeReconciliationState;prerequisiteGate?:IntegrationPrerequisiteGate;publicationPrerequisiteGate?:IntegrationPrerequisiteGate;operation?:IntegrationActionMode;references?:Record<string,{batchId:string;head:string;commit:string}>;verifiedReferences?:Record<string,{checkedAt:string;source:string}>;presentation?:MergeBatchPresentation;integration?:MergeIntegration;id:string;sessionId:string;state:string;deliveries:string[];publish:boolean;results:Record<string,{status:string;detail:string}>}
 const post=<T,>(path:string,body:unknown)=>request<T>(path,{method:"POST",body:JSON.stringify(body)});
 export const useDeliveries=(productId:string,sessionId?:string,enabled=true)=>useQuery({
   queryKey:sessionId ? ["merge-deliveries",productId,sessionId] : ["merge-deliveries",productId],
@@ -79,7 +79,7 @@ export function MergeProgressBadge({state}:{state:MergeProgress | undefined}) {
   const {t}=useI18n();
   return state?<span className="item-handler-badge" data-merge-progress={state}>{state==="published"||state==="publishing"?<CloudUpload size={12} aria-hidden="true"/>:<GitMerge size={12} aria-hidden="true"/>}{t(stageLabels[state])}</span>:null;
 }
-const checkLabel=(blocker?:string)=>blocker==="changed"?"mergeChanged":blocker==="pending"?"mergeCheckPending":blocker==="failed"?"mergeCheckFailed":blocker==="conflicting"?"mergeCheckConflict":blocker==="dependency"?"mergeCheckDependency":blocker?"mergeNeedsCheck":"mergeChecksPassed";
+const checkLabel=(blocker?:string,checks?:string)=>blocker==="changed"?"mergeChanged":blocker==="pending"?"mergeCheckPending":blocker==="failed"?"mergeCheckFailed":blocker==="conflicting"?"mergeCheckConflict":blocker==="dependency"?"mergeCheckDependency":blocker?"mergeNeedsCheck":checks==="not_applicable"?"mergeChecksNotRequired":"mergeChecksPassed";
 const checkImpact=(blocker?:string)=>blocker==="changed"?"mergeChangedImpact":blocker==="pending"?"mergePendingImpact":blocker==="failed"?"mergeFailedImpact":blocker==="conflicting"?"mergeConflictImpact":blocker==="dependency"?"mergeDependencyImpact":blocker?"mergeUnknownImpact":"mergePassedImpact";
 
 
@@ -359,7 +359,7 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
         {openSession.isError&&<p role="alert" className="inline-error">{t("mergeSessionOpenError")} <button type="button" className="secondary-button" onClick={()=>openSession.mutate(openSession.variables!)}>{t("retry")}</button></p>}
         {(!detailCurrent||detailCurrent.revision!==detail.revision)&&<p role="alert" className="inline-error">{t("mergeSelectionChanged")}</p>}
         <p>{(detailCurrent??detail).validation}</p><QueueFacts d={detailCurrent??detail}/>
-        <div className="help-label"><strong>{t(checkLabel((detailCurrent??detail).blocker))}</strong><HelpHint title={t("mergeNeedsCheck")}><p>{t("mergeNeedsCheckHelp")}</p></HelpHint></div><p>{t(checkImpact((detailCurrent??detail).blocker))}</p>
+        <div className="help-label"><strong>{t(checkLabel((detailCurrent??detail).blocker,(detailCurrent??detail).evidence.checks))}</strong><HelpHint title={t("mergeNeedsCheck")}><p>{t("mergeNeedsCheckHelp")}</p></HelpHint></div><p>{t(checkImpact((detailCurrent??detail).blocker))}</p>
         <p>{t("mergeCommit")}: <code>{(detailCurrent??detail).head}</code></p>
         <p>{t("mergeChecked")}: {formatTime((detailCurrent??detail).evidence.checkedAt)} · {(detailCurrent??detail).evidence.source}</p>
         <a href={(detailCurrent??detail).pullRequestUrl} target="_blank" rel="noreferrer">{t("mergeViewPR")}</a>

@@ -39,7 +39,8 @@ export function IntegrationProgress({batch}:{batch:Batch}) {
   const step=plan?.entries.find(row=>row.deliveryId===selected),stage=selected?integrationStage(batch,selected):"queued";
   const title=presentation?.title||entry?.itemKeys.join(" · ")||t("integrationUnknownGroup");
   const check=entry?.check;
-  const checkKeys={passed:"integrationCheckPassed",failed:"integrationCheckFailed",pending:"integrationCheckPending",unknown:"integrationCheckUnknown"} as const;
+  const prerequisite=[batch.prerequisiteGate,batch.publicationPrerequisiteGate].find(gate=>gate?.required&&!gate.ready);
+  const checkKeys={passed:"integrationCheckPassed",failed:"integrationCheckFailed",pending:"integrationCheckPending",unknown:"integrationCheckUnknown",not_applicable:"integrationCheckNotApplicable"} as const;
   const events=state?.events.filter(e=>e.deliveryId===selected)??[];
   return <section ref={root} className="integration-progress" aria-label={t("integrationTitle")}>
     <div className="integration-screen" data-screen="overview" hidden={screen!=="overview"}>
@@ -51,10 +52,10 @@ export function IntegrationProgress({batch}:{batch:Batch}) {
       {!batch.publish&&publication!=="published"&&publication!=="not_required"&&<p className="integration-note">{t("integrationPublicationNotSelected")}</p>}
       {blocked&&<p className="integration-attention" role="status">{t(batch.publish?"integrationPublishHeld":"integrationBlockedHelp")}</p>}
       {!state&&<p className="integration-note">{t("integrationLegacy")}</p>}
-      {batch.state==="active"&&batch.prerequisiteGate?.required&&!batch.prerequisiteGate.ready&&<section className="integration-attention" aria-label={t("integrationPrerequisites")} role="status">
+      {batch.state==="active"&&prerequisite&&<section className="integration-attention" aria-label={t("integrationPrerequisites")} role="status">
         <h3>{t("integrationPrerequisites")}</h3>
         <p>{t("integrationPrerequisitesHelp")}</p>
-        <ul>{batch.prerequisiteGate.blockers.map(b=><li key={b.id}>
+        <ul>{prerequisite.blockers.map(b=><li key={b.id}>
           <strong>{t(b.code==="cycle"?"integrationPrerequisiteCycle":b.code==="stale"?"integrationPrerequisiteStale":b.code==="missing"?"integrationPrerequisiteMissing":"integrationPrerequisitePending")}</strong>
           <p>{b.reason}</p><p>{t("integrationPrerequisiteOwner")}: {b.owner}</p><p>{t("integrationPrerequisiteResume")}: {b.resumeWhen}</p>
         </li>)}</ul>
@@ -63,7 +64,7 @@ export function IntegrationProgress({batch}:{batch:Batch}) {
       <div className="integration-groups">{order.map(id=>{
         const e=state?.entries[id],p=batch.presentation?.entries[id],phase=integrationStage(batch,id),pub=integrationPublication(batch,id);
         return <button type="button" className="integration-group" key={id} onClick={()=>enter("detail",id)}>
-          <span className="integration-group-copy">{batch.references?.[id]&&<small>{t(batch.verifiedReferences?.[id]?"queueReferenceVerified":"queueReferencePending")}</small>}<strong>{p?.title||e?.itemKeys.join(" · ")||t("integrationUnknownGroup")}</strong>{p?.handover?.pending&&<small>{t("integrationHandoverPending")}{p.handover.blocker?` · ${p.handover.blocker}`:""}</small>}<small>{(e?.itemKeys??p?.itemKeys)?.join(" · ")}</small></span>
+          <span className="integration-group-copy">{batch.references?.[id]&&<small className="integration-note">{t(batch.verifiedReferences?.[id]?"queueReferenceVerified":"queueReferencePending")}</small>}<strong>{p?.title||e?.itemKeys.join(" · ")||t("integrationUnknownGroup")}</strong>{p?.handover?.pending&&<small className="integration-note">{t("integrationHandoverPending")}{p.handover.blocker?` · ${p.handover.blocker}`:""}</small>}<small className="integration-note">{(e?.itemKeys??p?.itemKeys)?.join(" · ")}</small></span>
           <span className="integration-group-state"><span data-outcome="merge" data-complete={phase==="merged"}>{t(integrationStageLabels[phase])}</span><span data-outcome="publication" data-complete={pub==="published"}>{t(integrationPublicationLabels[pub])}</span></span><ChevronRight size={18} aria-hidden="true"/>
         </button>;
       })}</div>
@@ -93,7 +94,7 @@ export function IntegrationProgress({batch}:{batch:Batch}) {
     <div className="integration-screen" data-screen="history" hidden={screen!=="history"}>
       <button type="button" className="secondary-button integration-back" onClick={back}><ArrowLeft size={16}/>{t("integrationBackGroup")}</button><h3>{t("integrationProcess")}</h3>
       <p className="integration-note">{t("integrationHistoricalHelp")}</p>
-      <ol className="integration-events">{events.filter(e=>e.action!=="progress"&&e.action!=="prepare_repair").map(e=><li key={e.id}><strong>{t(e.action==="repair"?"integrationHistoryRepair":e.action==="check"?"integrationHistoryCheck":e.action==="cancel_repair"?"integrationHistoryCancel":"integrationHistoryPrepare")}</strong><small>{formatTime(e.at)}</small>{e.action==="repair"&&<p className="integration-event-summary">{entry?.repairs.find(r=>r.at===e.at)?.reason??t("integrationRepairsRecorded")}</p>}</li>)}
+      <ol className="integration-events">{events.filter(e=>e.action!=="progress"&&e.action!=="prepare_repair").map(e=><li key={e.id}><strong>{t(e.action==="repair"?"integrationHistoryRepair":e.action==="check"?"integrationHistoryCheck":e.action==="cancel_repair"?"integrationHistoryCancel":"integrationHistoryPrepare")}</strong><small className="integration-note">{formatTime(e.at)}</small>{e.action==="repair"&&<p className="integration-event-summary">{entry?.repairs.find(r=>r.at===e.at)?.reason??t("integrationRepairsRecorded")}</p>}</li>)}
         {batch.results[selected??""]&&<li><strong>{t(stage==="merged"?"integrationHistoryMerged":"integrationBlocked")}</strong></li>}
         {integrationPublication(batch,selected)==="published"&&<li><strong>{t("integrationPublicationDone")}</strong></li>}
       </ol>
@@ -104,13 +105,13 @@ export function IntegrationProgress({batch}:{batch:Batch}) {
       <p className="integration-note">{t("integrationHistoricalHelp")}</p>
       {presentation&&<section><h4>{t("integrationOriginalDescription")}</h4><p>{presentation.summary}</p><a href={presentation.pullRequestUrl} target="_blank" rel="noreferrer">{t("mergeViewPR")}</a><p>{t("recoveryScope")}: {presentation.requiredArtifacts.join(" / ")||presentation.noReleaseReason}</p></section>}
       {entry&&<section><h4>{t("integrationCommitEvidence")}</h4><p>{t("integrationOriginal")}: <code>{entry.originalHead}</code></p><p>{t("integrationCurrent")}: <code>{entry.head}</code></p></section>}
-      {check&&<section><h4>{t("integrationChecksOutcome")}</h4><p>{check.validation}</p><small>{formatTime(check.checkedAt)} · {check.source}</small></section>}
+      {check&&<section><h4>{t("integrationChecksOutcome")}</h4><p>{check.validation}</p>{check.verification&&<><p>{check.verification.reason}</p><p className="integration-note">{check.verification.rulesSource}</p></>}<small className="integration-note">{formatTime(check.checkedAt)} · {check.source}</small></section>}
       {step&&<section><h4>{t("integrationValidation")}</h4><p>{step.validation}</p></section>}
       {entry?.repairs.map(r=><section key={r.id}><h4>{t("integrationHistoryRepair")} · {formatTime(r.at)}</h4><p>{r.reason}</p><p>{r.validation}</p><code>{r.fromHead} → {r.head}</code></section>)}
       {presentation?.releases.map(r=><section key={`${r.artifact}-${r.sourceCommit}`}><h4>{r.artifact} · {r.version}</h4><p>{formatTime(r.checkedAt)}</p><code>{r.sourceCommit}</code></section>)}
       <section><h4>{t("integrationOriginalRecords")}</h4>{events.map(e=><p key={e.id}>{formatTime(e.at)} · {e.detail}</p>)}{batch.results[selected??""]&&<p>{batch.results[selected??""]!.detail}</p>}</section>
       {(state?.finalValidation||plan)&&<section><h4>{t("integrationBatchEvidence")}</h4>{plan&&<><p>{plan.summary}</p><p>{t("integrationValidation")}: {plan.validation}</p></>}{state?.finalValidation&&<p>{t("integrationCombined")}: {state.finalValidation.validation}</p>}</section>}
-      {state?.prerequisites&&<section><h4>{t("integrationPrerequisites")}</h4>{state.prerequisites.conditions.map(c=><div key={c.id}><p>{c.reason}</p><small>{formatTime(c.checkedAt)} · {c.source}</small><p>{t("integrationPrerequisiteOwner")}: {c.owner}</p><p>{t("integrationPrerequisiteResume")}: {c.resumeWhen}</p></div>)}</section>}
+      {state?.prerequisites&&<section><h4>{t("integrationPrerequisites")}</h4>{state.prerequisites.conditions.map(c=><div key={c.id}><p>{c.reason}</p><small className="integration-note">{formatTime(c.checkedAt)} · {c.source}</small><p>{t("integrationPrerequisiteOwner")}: {c.owner}</p><p>{t("integrationPrerequisiteResume")}: {c.resumeWhen}</p></div>)}</section>}
     </div>
     <div className="integration-screen" data-screen="recovery" hidden={screen!=="recovery"}>
       <button type="button" className="secondary-button integration-back" onClick={back}><ArrowLeft size={16}/>{t("integrationBackOverview")}</button>
