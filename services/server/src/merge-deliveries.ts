@@ -131,7 +131,7 @@ export class MergeDeliveries {
     // Only source-backed fields are reusable. Live presentation, authorization
     // gates and publication deferral are serialized again for every request.
     const stable={...value} as Record<string,unknown>;
-    delete stable.presentation;delete stable.publicationDeferred;delete stable.prerequisiteGate;
+    delete stable.presentation;delete stable.publicationDeferred;delete stable.prerequisiteGate;delete stable.publicationPrerequisiteGate;
     const prefix=Buffer.from(JSON.stringify(stable).slice(0,-1));
     const retainedBytes=bytes.length+prefix.length;
     if(retainedBytes>4*1024*1024)return value;
@@ -156,8 +156,8 @@ export class MergeDeliveries {
     this.db.connection.prepare("UPDATE merge_deliveries SET state=?,data_json=? WHERE id=?")
       .run(d.state, JSON.stringify(d), d.id);
   }
-  private saveBatch(b: Batch & {entries?:unknown;resultsDigest?:string;prerequisiteGate?:unknown;publicationDeferred?:boolean}) {
-    const {entries:_entries,resultsDigest:_resultsDigest,prerequisiteGate:_gate,publicationDeferred:_deferred,...stored}=b;
+  private saveBatch(b: Batch & {entries?:unknown;resultsDigest?:string;prerequisiteGate?:unknown;publicationPrerequisiteGate?:unknown;publicationDeferred?:boolean}) {
+    const {entries:_entries,resultsDigest:_resultsDigest,prerequisiteGate:_gate,publicationPrerequisiteGate:_publicationGate,publicationDeferred:_deferred,...stored}=b;
     this.db.connection.prepare("UPDATE merge_batches SET state=?,data_json=? WHERE id=?")
       .run(b.state, JSON.stringify(stored), b.id);
   }
@@ -738,7 +738,7 @@ export class MergeDeliveries {
     return values.map((value,index)=>{
       for(const entry of boundaries[index]!)if(activity.get(entry.sessionId)!==entry.activity)value.presentation.entries[entry.id]!.publication="unknown";
       // Bind cached bytes to the actual scoped DB row, never an ID read from JSON.
-      return {value:{...value,publicationDeferred:batchPublicationDeferred(value),prerequisiteGate:prerequisiteGate(value,Object.values(value.presentation.entries).some(e=>e.requiredArtifacts.length>0))},
+      return {value:{...value,publicationDeferred:batchPublicationDeferred(value),prerequisiteGate:prerequisiteGate(value,Object.values(value.presentation.entries).some(e=>e.requiredArtifacts.length>0)),publicationPrerequisiteGate:prerequisiteGate(value,Object.values(value.presentation.entries).some(e=>e.requiredArtifacts.length>0),undefined,Date.now(),"pre_publish")},
         prefix:this.batchTemplates.get(rows[index]!.id)?.prefix};
     });
   }
@@ -763,7 +763,7 @@ export class MergeDeliveries {
       if(index)parts.push(Buffer.from(','));
       if(!prefix){parts.push(Buffer.from(JSON.stringify(batch)));continue;}
       parts.push(prefix,Buffer.from(',"presentation":'+JSON.stringify(batch.presentation)
-        +',"publicationDeferred":'+JSON.stringify(batch.publicationDeferred)+',"prerequisiteGate":'+JSON.stringify(batch.prerequisiteGate)+'}'));
+        +',"publicationDeferred":'+JSON.stringify(batch.publicationDeferred)+',"prerequisiteGate":'+JSON.stringify(batch.prerequisiteGate)+',"publicationPrerequisiteGate":'+JSON.stringify(batch.publicationPrerequisiteGate)+'}'));
     }
     parts.push(Buffer.from('],"attentionSessionIds":'+JSON.stringify(attention)+',"sessionProgress":'+JSON.stringify(progress)+'}'));
     // Buffer.concat copies every cached fragment; callers cannot mutate templates.
@@ -906,7 +906,7 @@ export class MergeDeliveries {
       .all(productId,accountId) as {data_json:string}[]).map(row => {
         const batch=JSON.parse(row.data_json) as Batch;
         const presentation=this.presentation(batch);
-        return {...batch,presentation,publicationDeferred:batchPublicationDeferred(batch),prerequisiteGate:prerequisiteGate(batch,Object.values(presentation.entries).some(e=>e.requiredArtifacts.length>0))};
+        return {...batch,presentation,publicationDeferred:batchPublicationDeferred(batch),prerequisiteGate:prerequisiteGate(batch,Object.values(presentation.entries).some(e=>e.requiredArtifacts.length>0)),publicationPrerequisiteGate:prerequisiteGate(batch,Object.values(presentation.entries).some(e=>e.requiredArtifacts.length>0),undefined,Date.now(),"pre_publish")};
       });
     });
   }

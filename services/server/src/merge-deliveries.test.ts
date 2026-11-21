@@ -352,6 +352,25 @@ describe("planned integration batches",()=>{
     expect(f.current().publicationPrerequisiteGate).toMatchObject({required:true,ready:false,blockers:expect.arrayContaining([expect.objectContaining({id:"legacy-signing",code:"pending"})])});
     expect(()=>f.act({kind:"publication_progress",state:"publishing",checkedAt:new Date().toISOString(),resultsDigest:f.current().resultsDigest,detail:"Starting existing publisher"})).toThrow(/发布前置/);
   });
+  it.each([false,true])("refreshes publication gates in ordinary and cached list responses (large=%s)",async large=>{
+    const f=await batchFixture(1,false,true),d=f.deliveries[0]!;
+    f.act({...f.plan,summary:large?"Original evidence history. ".repeat(2000):f.plan.summary});f.check(d.id);
+    const action=syntheticPrerequisites(f.current());
+    const signing={id:"signing",kind:"investigation" as const,category:"blocker" as const,stage:"pre_publish" as const,required:true,state:"unknown" as const,reason:"Signing unavailable",owner:"Executor",resumeWhen:"Verify signing",dependencies:["scope" as const]};
+    action.conditions.push(signing);f.act(action);f.merged(d.id);
+    f.act({kind:"final_validation",head:"c".repeat(40),checkedAt:new Date().toISOString(),source:"Actual target",validation:"Combined passed"});
+    const gates=()=>[f.current().publicationPrerequisiteGate,f.merges.batches(f.item.productId,f.owner.id)[0]!.publicationPrerequisiteGate,
+      f.merges.recomputeBatches(f.item.productId,f.owner.id)[0]!.publicationPrerequisiteGate,
+      JSON.parse(f.merges.serializeList(f.item.productId,f.owner.id).toString()).batches[0].publicationPrerequisiteGate];
+    for(const gate of gates())expect(gate.blockers).toContainEqual(expect.objectContaining({id:"signing",code:"pending"}));
+    f.act({...action,observation:f.current().prerequisiteObservation,context:{...action.context,base:"c".repeat(40)},conditions:action.conditions.map(c=>({...c,state:"satisfied"}))});
+    for(const gate of gates())expect(gate.ready).toBe(true);
+    const raw=JSON.parse((f.db.prepare("SELECT data_json FROM merge_batches WHERE id=?").get(f.b.id) as {data_json:string}).data_json);
+    expect(raw.publicationPrerequisiteGate).toBeUndefined();
+    const clock=vi.spyOn(Date,"now").mockReturnValue(Date.now()+301_000);
+    try {for(const gate of gates()){expect(gate.ready).toBe(false);expect(gate.blockers).toContainEqual(expect.objectContaining({id:"signing",code:"stale"}));}}
+    finally {clock.mockRestore();}
+  });
   it("native release tools block publication rather than merge and stay bound to the original repository",async()=>{
     const f=await batchFixture(1,false,true),d=f.deliveries[0]!;
     f.act(f.plan);f.check(d.id);
