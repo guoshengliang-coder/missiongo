@@ -18,3 +18,11 @@ export function projectCheckSatisfied(status: string | undefined, policy?: Proje
   return local ? policy.local === "not_required"
     : policy.ci === "not_required" && policy.requiredChecks.length === 0 && policy.observedChecks.length === 0;
 }
+
+/** Pending work may be delegated only when every observed/required check is protected. */
+export function projectAutoMergeReady(policy?: ProjectVerification): boolean {
+  return Boolean(policy && policy.platformRead === "complete" && policy.ci === "required"
+    && policy.autoMerge === true && policy.protectedChecks === true && policy.requiredChecks.length > 0
+    && policy.requiredChecks.every(name=>policy.observedChecks.includes(name))
+    && policy.observedChecks.every(name=>policy.requiredChecks.includes(name)));
+}

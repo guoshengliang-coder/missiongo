@@ -30,8 +30,13 @@ describe("project-specific verification",()=>{
     expect(()=>integrationActionSchema.parse({...check,verification:{...verification,local:"required"}})).toThrow();
   });
   it("does not arm pending auto-merge without both capability and reliable protection",()=>{
-    const check={head,base,checkedAt:new Date().toISOString(),checks:"pending" as const,local:"passed" as const,mergeable:"clean" as const,source:"Live results",validation:"Waiting",verification:{...verification,ci:"required" as const}};
+    const check={head,base,checkedAt:new Date().toISOString(),checks:"pending" as const,local:"passed" as const,mergeable:"clean" as const,source:"Live results",validation:"Waiting",verification:{...verification,ci:"required" as const,requiredChecks:["build"],observedChecks:["build"]}};
     const state={protocol:1 as const,revision:1,events:[],plans:[{base,summary:"Plan",validation:"CI",entries:[{deliveryId:"one",head,dependsOn:[],group:"one",reason:"Independent",validation:"CI"}],at:new Date().toISOString()}],entries:{one:{itemKeys:[],originalHead:head,head,progress:"waiting_ci" as const,detail:"",repairs:[],check}}};
+    expect(()=>integrationActionSchema.parse({kind:"check",deliveryId:"one",expectedHead:head,...check,verification:{...check.verification,autoMerge:true,protectedChecks:true,requiredChecks:[],observedChecks:[]}})).toThrow();
+    expect(()=>integrationActionSchema.parse({kind:"check",deliveryId:"one",expectedHead:head,...check,verification:{...check.verification,autoMerge:true,protectedChecks:true,observedChecks:["build","unprotected"]}})).toThrow();
+    const withoutVerification={...state,entries:{one:{...state.entries.one,check:{...check,verification:undefined}}}};
+    expect(()=>assertIntegrationMerge(withoutVerification,"one",{},{allowPendingCI:true})).toThrow();
+    expect(()=>assertIntegrationMerge({...withoutVerification,entries:{one:{...withoutVerification.entries.one,check:{...check,verification:undefined,checks:"passed" as const}}}},"one",{})).not.toThrow();
     for(const autoMerge of [false,true])for(const protectedChecks of [false,true]) {
       check.verification={...check.verification,autoMerge,protectedChecks};
       if(autoMerge&&protectedChecks)expect(()=>assertIntegrationMerge(state,"one",{},{allowPendingCI:true})).not.toThrow();

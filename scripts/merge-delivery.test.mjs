@@ -174,3 +174,45 @@ test("ruleset-only branches use Contents/Metadata reads without requiring the ad
   const missing=inspectDelivery({...delivery,projectRules},platformMock({...pr,statusCheckRollup:[]},{rulesetRequired:["build"]}));
   assert.equal(missing.evidence.checks,"unknown");assert.equal(missing.ready,false);
 });
+
+test("all rule pages are required; later-page checks and methods cannot disappear",()=>{
+  const input={...delivery,projectRules};
+  const first=Array.from({length:100},(_,i)=>({type:"commit_message_pattern",ruleset_id:i,parameters:{pattern:"fixture"}}));
+  const pages=(page2,fail=false)=>(command,args)=>{
+    if(command==="gh"&&args[0]==="api"&&args[1].includes("/rules/branches/")) {
+      const page=new URL(`https://fixture.invalid/${args[1]}`).searchParams.get("page");
+      if(page==="1")return JSON.stringify(first);
+      if(fail)throw new Error("Second rule page failed");
+      assert.equal(page,"2");return JSON.stringify(page2);
+    }
+    return platformMock({...pr,statusCheckRollup:[]})(command,args);
+  };
+  const page2=[{type:"required_status_checks",parameters:{required_status_checks:[{context:"late-check"}]}},{type:"pull_request",parameters:{allowed_merge_methods:["rebase"]}}];
+  const result=inspectDelivery({...input,projectRules:{...projectRules,mergeMethod:undefined}},pages(page2));
+  assert.equal(result.evidence.checks,"unknown");assert.equal(result.ready,false);
+  assert.deepEqual(result.evidence.verification.requiredChecks,["late-check"]);
+  assert.equal(result.evidence.verification.mergeMethod,"rebase");
+  assert.throws(()=>inspectDelivery(input,pages(page2,true)),/Second rule page/);
+});
+test("target-branch methods and linear history restrict repository-level choices",()=>{
+  const run=(rules)=>(command,args)=>{
+    if(command==="gh"&&args[0]==="api"&&args[1].includes("/rules/branches/"))return JSON.stringify(rules);
+    if(command==="gh"&&args[0]==="api"&&!args[1].includes("/branches/"))return JSON.stringify({allow_auto_merge:false,allow_merge_commit:true,allow_squash_merge:true,allow_rebase_merge:true});
+    return platformMock({...pr,statusCheckRollup:[]})(command,args);
+  };
+  const input={...delivery,projectRules:{...projectRules,mergeMethod:undefined}};
+  assert.equal(inspectDelivery(input,run([{type:"pull_request",parameters:{allowed_merge_methods:["squash"]}}])).evidence.verification.mergeMethod,"squash");
+  assert.equal(inspectDelivery(input,run([{type:"required_linear_history"}])).evidence.verification.mergeMethod,"squash");
+  assert.throws(()=>inspectDelivery({...input,projectRules:{...projectRules,mergeMethod:"merge"}},run([{type:"required_linear_history"}])),/method is unavailable/);
+  assert.throws(()=>inspectDelivery(input,run([{type:"pull_request",parameters:{allowed_merge_methods:["squash"]}},{type:"pull_request",parameters:{allowed_merge_methods:["rebase"]}}])),/method is unavailable/);
+});
+test("incomplete protected summaries stay unknown while explicit review-only protection allows no-CI",()=>{
+  const input={...delivery,projectRules};
+  const branch=(protection)=>(command,args)=>{
+    if(command==="gh"&&args[0]==="api"&&args[1].includes("/branches/")&&!args[1].includes("/rules/"))return JSON.stringify({name:"main",protected:true,protection});
+    return platformMock({...pr,statusCheckRollup:[]})(command,args);
+  };
+  for(const protection of [{},undefined,{enabled:true,required_status_checks:{}},{enabled:true,required_status_checks:{contexts:"missing"}}])
+    assert.throws(()=>inspectDelivery(input,branch(protection)),/Incomplete/);
+  assert.equal(inspectDelivery(input,branch({enabled:true,required_status_checks:{contexts:[],checks:[]}})).evidence.checks,"not_applicable");
+});

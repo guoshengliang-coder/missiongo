@@ -52,7 +52,7 @@ export interface IntegrationPrerequisites {
   observation: { batchId:string; heads:{deliveryId:string;head:string}[]; scope:string };
   context: { base: string; candidates: string; tools?: string | undefined; capabilities?: string | undefined };
   workflow?: { tools: "project_native" | "missiongo"; repositories: string[]; source: string; digest: string } | undefined;
-  history?: { checkedAt: string; source: string; conditions: IntegrationPrerequisite[] }[] | undefined;
+  history?: { checkedAt: string; source: string; conditions: IntegrationPrerequisite[]; workflow?: IntegrationPrerequisites["workflow"] }[] | undefined;
   conditions: (IntegrationPrerequisite & { binding: Record<string,string>; checkedAt: string; source: string })[];
   resolutions: {conditionId:string;deliveryId:string;head:string;via:"base"|"tools"|"capabilities";before:string;after:string;source:string}[];
 }

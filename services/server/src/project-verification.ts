@@ -1,6 +1,6 @@
 import { conflict } from "./errors.js";
 import { z } from "zod";
-import { projectCheckSatisfied } from "@missiongo/contracts";
+import { projectCheckSatisfied, projectAutoMergeReady } from "@missiongo/contracts";
 const text = z.string().trim().min(1).max(4000);
 export const projectVerificationSchema = z.object({
   repository: z.string().regex(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+$/),
@@ -15,6 +15,8 @@ export const projectCheckStateSchema = z.enum(["passed", "pending", "failed", "u
 export function validateProjectChecks(value: {checks: string; local?: string | undefined; verification?: z.infer<typeof projectVerificationSchema> | undefined}, ctx: z.RefinementCtx) {
   if (value.verification && value.checks === "passed" && value.verification.requiredChecks.some(name=>!value.verification!.observedChecks.includes(name)))
     ctx.addIssue({code:"custom",message:"Required checks are missing from observed results",path:["checks"]});
+  if (value.checks === "pending" && value.verification?.autoMerge && value.verification.protectedChecks && !projectAutoMergeReady(value.verification))
+    ctx.addIssue({code:"custom",message:"Pending auto-merge requires complete protected-check coverage",path:["verification"]});
   for (const local of [false, true]) {
     const status = local ? value.local : value.checks;
     if (status === "not_applicable" && !projectCheckSatisfied(status, value.verification, local))

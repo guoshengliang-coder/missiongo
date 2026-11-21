@@ -11,10 +11,22 @@ export function collectProjectVerification(delivery, pr, run) {
   // Failed reads still never prove absence of CI.
   const metadata = read("");
   const target = read(`branches/${branch}`);
-  const activeRules = read(`rules/branches/${branch}`);
+  const activeRules = [];
+  for (let page=1; ; page++) {
+    const values=read(`rules/branches/${branch}?per_page=100&page=${page}`);
+    if (!Array.isArray(values) || values.length>100) throw new Error("Incomplete ruleset page");
+    activeRules.push(...values);
+    if(values.length<100) break;
+    if(page>=100) throw new Error("Ruleset pagination exceeds bounded read; evidence is incomplete");
+  }
   if (target.name !== delivery.targetBranch || typeof target.protected !== "boolean" || !Array.isArray(activeRules)) throw new Error("Incomplete platform policy evidence");
-  const protection = target.protection ?? (target.protected ? undefined : {});
-  if (!protection) throw new Error("Incomplete branch protection summary");
+  const protection = target.protection ?? (target.protected ? undefined : {enabled:false});
+  if (!protection || Array.isArray(protection) || typeof protection.enabled!=="boolean") throw new Error("Incomplete branch protection summary");
+  const status=protection.required_status_checks;
+  if(status!=null && (typeof status!=="object" || Array.isArray(status)
+    || status.contexts===undefined&&status.checks===undefined
+    || status.contexts!==undefined&&!Array.isArray(status.contexts) || status.checks!==undefined&&!Array.isArray(status.checks)))
+    throw new Error("Incomplete status check summary");
   if (!Array.isArray(pr.statusCheckRollup) || activeRules.some(r=>r.type === "required_status_checks" && !Array.isArray(r.parameters?.required_status_checks)))
     throw new Error("Incomplete check or ruleset evidence");
   const protectedNames = [...new Set([
@@ -32,7 +44,16 @@ export function collectProjectVerification(delivery, pr, run) {
   if (!observedChecks.every(v => typeof v === "string" && v.trim()) || observedChecks.length > 200)
     throw new Error("Incomplete named check evidence");
   const queue = activeRules.some(r => r.type === "merge_queue");
-  const allowed = {merge: metadata.allow_merge_commit, squash: metadata.allow_squash_merge, rebase: metadata.allow_rebase_merge};
+  const allowed = {merge: metadata.allow_merge_commit === true, squash: metadata.allow_squash_merge === true, rebase: metadata.allow_rebase_merge === true};
+  for (const rule of activeRules) {
+    const methods=rule.type === "pull_request" ? rule.parameters?.allowed_merge_methods : undefined;
+    if(methods!==undefined) {
+      if(!Array.isArray(methods)||!methods.every(method=>["merge","squash","rebase"].includes(method))) throw new Error("Incomplete branch merge method rule");
+      for(const method of Object.keys(allowed)) allowed[method] &&= methods.includes(method);
+    }
+    if(rule.type === "required_linear_history") allowed.merge=false;
+  }
+  if(protection.required_linear_history?.enabled === true) allowed.merge=false;
   const mergeMethod = queue ? "queue" : rules.mergeMethod ?? ["merge", "squash", "rebase"].find(m => allowed[m]);
   if (!["merge","squash","rebase","queue"].includes(mergeMethod) || (mergeMethod === "queue" ? !queue : !allowed[mergeMethod])) throw new Error("Project merge method is unavailable");
   return {repository: delivery.repository, targetBranch: delivery.targetBranch, rulesSource: rules.source, rulesDigest: rules.digest,

@@ -90,6 +90,7 @@ async function fixture(databasePath=":memory:") {
 const proposal = (key: string): DeliveryInput => ({itemKeys:[key],repository:"https://github.com/example/project",pullRequest:12,
   head:"a".repeat(40),targetBranch:"main",summary:"Verified change",validation:"Synthetic regression passed",requiredArtifacts:["web"],
   evidence:{head:"a".repeat(40),base:"b".repeat(40),checkedAt:new Date().toISOString(),checks:"passed",mergeable:"clean",source:"synthetic Git fixture"}});
+const protectedVerification=(d:{repository:string;targetBranch:string})=>({repository:d.repository,targetBranch:d.targetBranch,rulesSource:"Observed project and platform requirements",rulesDigest:"f".repeat(64),ci:"required" as const,local:"required" as const,reason:"Live required checks cover the pending job",platformRead:"complete" as const,requiredChecks:["build"],observedChecks:["build"],autoMerge:true,protectedChecks:true,mergeMethod:"merge" as const});
 const syntheticPrerequisites=(batch:PrerequisiteBatch)=>prerequisitesActionSchema.parse({kind:"prerequisites",checkedAt:new Date().toISOString(),source:"Synthetic bounded publication preflight",
   observation:prerequisiteObservation(batch),context:{base:"b".repeat(40),candidates:"c".repeat(64),tools:"d".repeat(64),capabilities:"e".repeat(64)},
   conditions:["main","installation_integrity","required_capability","authorization","scope"].map(kind=>({id:kind,kind,category:"fact",stage:"pre_merge",required:true,state:"satisfied",
@@ -356,7 +357,9 @@ describe("planned integration batches",()=>{
     const publishing=()=>({kind:"publication_progress" as const,state:"publishing" as const,checkedAt:new Date().toISOString(),resultsDigest:f.current().resultsDigest,detail:"Starting native publisher"});
     expect(()=>f.act(publishing())).toThrow(/发布前置/);
     expect(f.current().results[d.id]?.status).toBe("merged");
-    f.act({...action,observation:f.current().prerequisiteObservation,conditions:[{...action.conditions.at(-1)!,state:"satisfied"}]});
+    f.act({...action,observation:f.current().prerequisiteObservation,context:{...action.context,base:"c".repeat(40)},conditions:[{...action.conditions.at(-1)!,state:"satisfied"}]});
+    expect(()=>f.act(publishing())).toThrow(/发布前置/);
+    f.act({...action,observation:f.current().prerequisiteObservation,context:{...action.context,base:"c".repeat(40)},conditions:[action.conditions.find(c=>c.kind==="main")!]});
     f.act(publishing());expect(f.current().integration!.publication?.state).toBe("publishing");
   });
   it("keeps AND-520 ownership while AND-521 waits and resumes the same batch",async()=>{
@@ -947,7 +950,7 @@ describe("planned integration batches",()=>{
     const rev=f.current().integration!.revision;f.act(repair,"repair-result",rev);f.act(repair,"repair-result",rev);
     expect(f.current().integration!.entries[b!.id]!.repairs).toHaveLength(1);
     expect(f.current().entries.find(d=>d.id===b!.id)).toMatchObject({head:b!.head,executionHead:repair.head});
-    f.act({kind:"check",deliveryId:b!.id,expectedHead:repair.head,base:"c".repeat(40),checkedAt:new Date().toISOString(),checks:"pending",mergeable:"clean",local:"passed",source:"CI still running",validation:"Wait for CI"});
+    f.act({kind:"check",deliveryId:b!.id,expectedHead:repair.head,base:"c".repeat(40),checkedAt:new Date().toISOString(),checks:"pending",verification:protectedVerification(b!),mergeable:"clean",local:"passed",source:"CI still running",validation:"Wait for CI"});
     expect(f.current().entries.find(d=>d.id===b!.id)?.mergeReady).toBe(true);
     expect(()=>f.merged(b!.id,repair.head)).toThrow();
     // Independent work can proceed while a dependent repair is waiting.
@@ -962,12 +965,14 @@ describe("planned integration batches",()=>{
   it("admits auto-merge with pending CI only when local checks and conflict checks pass, without admitting a merged report",async()=>{
     const f=await batchFixture(1),d=f.deliveries[0]!;
     f.act(f.plan);
-    const check={kind:"check" as const,deliveryId:d.id,expectedHead:d.head,base:"c".repeat(40),checkedAt:new Date().toISOString(),checks:"pending" as const,mergeable:"clean" as const,local:"passed" as const,source:"Live CI and local checks",validation:"GitHub required checks own the actual merge"};
+    const check={kind:"check" as const,deliveryId:d.id,expectedHead:d.head,base:"c".repeat(40),checkedAt:new Date().toISOString(),checks:"pending" as const,verification:protectedVerification(d),mergeable:"clean" as const,local:"passed" as const,source:"Live CI and local checks",validation:"GitHub required checks own the actual merge"};
     for(const change of [{checks:"failed" as const},{checks:"unknown" as const},{local:"failed" as const},{local:"pending" as const},{mergeable:"conflicting" as const},{mergeable:"unknown" as const}]) {
       f.act({...check,...change});
       expect(f.current().entries.find(e=>e.id===d.id)?.mergeReady).toBe(false);
       expect(()=>f.merged(d.id)).toThrow();
     }
+    f.act({...check,verification:undefined});
+    expect(f.current().entries.find(e=>e.id===d.id)?.mergeReady).toBe(false);
     f.act(check);
     expect(f.current().entries.find(e=>e.id===d.id)?.mergeReady).toBe(true);
     expect(()=>f.merged(d.id)).toThrow();

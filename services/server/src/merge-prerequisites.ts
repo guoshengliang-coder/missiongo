@@ -122,8 +122,13 @@ export function recordPrerequisites(batch:PrerequisiteBatch, action:Prerequisite
   if(resolved.length!==action.dependencyResolutions.length)denied("解除证据必须逐项匹配原循环依赖，不能重复或用于无关条件。");
   const resolutions=[...(state.prerequisites?.resolutions??[]),...resolved];
   if(resolutions.length>100)denied("前置依赖解除记录过多，请保留原批次核对。");
-  const history=[...(state.prerequisites?.history??[]),...(previous.length?[{checkedAt:action.checkedAt,source:action.source,conditions:previous}]:[])];
-  if(history.length>50)denied("前置适配历史已达上限，保留原批次核对，不覆盖历史。");
+  // Ordinary freshness renewals do not duplicate the whole snapshot. Substantive
+  // replacements remain append-only, bounded by the existing integration event budget.
+  const withoutTime=({checkedAt:_time,...value}:typeof previous[number])=>value;
+  const replaced=previous.filter(old=>hash(withoutTime(old))!==hash(withoutTime(conditions.get(old.id)!)));
+  const workflowChanged=hash(state.prerequisites?.workflow??null)!==hash(workflow??null);
+  const history=[...(state.prerequisites?.history??[]),...(replaced.length||previous.length&&workflowChanged
+    ?[{checkedAt:action.checkedAt,source:action.source,conditions:replaced,workflow:state.prerequisites?.workflow}]:[])];
   state.prerequisites={observation:action.observation,context:action.context,workflow,conditions:[...conditions.values()],resolutions,history};
 }
 export function prerequisiteGate(batch:PrerequisiteBatch, hasRelease:boolean, base?:string, now=Date.now(), stage:"pre_merge"|"pre_publish"="pre_merge"):IntegrationPrerequisiteGate {
@@ -132,6 +137,15 @@ export function prerequisiteGate(batch:PrerequisiteBatch, hasRelease:boolean, ba
   const gate:IntegrationPrerequisiteGate={required,ready:true,blockers:[]};
   if(!required)return gate;
   const record=batch.integration?.prerequisites, conditions=record?.conditions??[];
+  if(stage==="pre_publish") {
+    const recovery=batch.reconciliation?.finalValidation, integration=batch.integration?.finalValidation;
+    const resultDigest=hash(batch.results);
+    const target=recovery?.resultsDigest===resultDigest ? recovery : integration?.selectionDigest===resultDigest ? integration : undefined;
+    const age=target ? now-Date.parse(target.checkedAt) : NaN;
+    if(!target || !Number.isFinite(age) || age < -30_000 || age>300_000)
+      gate.blockers.push({id:"combined_target",code:target?"stale":"missing",reason:"发布前需要核实当前完整结果对应的实际目标分支组合验证",owner:"集成执行者",resumeWhen:"在原批次刷新最终目标 head 与组合验证"});
+    base=target?.head;
+  }
   if(record&&!record.observation)gate.blockers.push({id:"observation",code:"missing",reason:"旧前置记录缺少实际观察的版本",owner:"集成执行者",resumeWhen:"重新读取并核实原批次版本，不复用旧快照"});
   const names={main:"当前主线",installation_integrity:"工具安装完整性",required_capability:"必需能力",authorization:"原生授权依据",scope:"发布范围"};
   const necessary=record?.workflow?.tools==="project_native"?core.filter(kind=>!["installation_integrity","required_capability"].includes(kind)):core;

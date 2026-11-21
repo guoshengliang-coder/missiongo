@@ -1,3 +1,4 @@
+import {createHash} from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { prerequisiteGate, prerequisiteObservation, prerequisitesActionSchema, recordPrerequisites, type PrerequisiteBatch } from "./merge-prerequisites.js";
 import type { IntegrationPrerequisite } from "@missiongo/contracts";
@@ -131,6 +132,10 @@ describe("publication prerequisites",()=>{
 });
 
 describe("native project stage adaptation",()=>{
+  const finalTarget=(b:PrerequisiteBatch,head="b".repeat(40))=>{
+    b.integration!.finalValidation={head,checkedAt:new Date().toISOString(),source:"Actual combined target",validation:"Combined validation",selectionDigest:createHash("sha256").update(JSON.stringify(b.results)).digest("hex")};
+  };
+
   const native=(b=fixture())=>{
     const a=prerequisiteEvidence(b);
     return prerequisitesActionSchema.parse({...a,workflow:{tools:"project_native",repositories:["https://github.com/example/project"],source:"Existing project release guide",digest:"f".repeat(64)},context:{base:a.context.base,candidates:a.context.candidates},
@@ -142,6 +147,7 @@ describe("native project stage adaptation",()=>{
     recordPrerequisites(b,a);
     expect(prerequisiteGate(b,true).ready).toBe(true);
     expect(prerequisiteGate(b,true,undefined,Date.now(),"pre_publish").ready).toBe(false);
+    finalTarget(b);
     recordPrerequisites(b,{...a,conditions:[{...a.conditions.at(-1)!,state:"satisfied"}]});
     expect(prerequisiteGate(b,true,undefined,Date.now(),"pre_publish").ready).toBe(true);
   });
@@ -151,7 +157,7 @@ describe("native project stage adaptation",()=>{
     const tools=old.conditions.filter(c=>["installation_integrity","required_capability"].includes(c.kind)).map(c=>({...c,state:"not_required" as const,required:false,dependencies:["scope" as const],reason:"This project does not use the MissionGo release tools"}));
     recordPrerequisites(b,{...a,conditions:[...a.conditions,...tools]});
     expect(prerequisiteGate(b,true).ready).toBe(true);
-    expect(b.integration!.prerequisites!.history?.[0]?.conditions[1]).toMatchObject({state:"unknown"});
+    expect(b.integration!.prerequisites!.history?.[0]?.conditions.find(c=>c.kind==="installation_integrity")).toMatchObject({state:"unknown"});
     const cycle=fixture(),prior=prerequisiteEvidence(cycle);prior.conditions[1]!.dependsOnDeliveries=[{deliveryId:"two",head:"a".repeat(40)}];recordPrerequisites(cycle,prior);
     expect(()=>recordPrerequisites(cycle,{...native(cycle),conditions:[...a.conditions,...tools]})).toThrow(/循环/);
   });
@@ -160,5 +166,33 @@ describe("native project stage adaptation",()=>{
     recordPrerequisites(b,{...a,workflow:{...a.workflow!,source:"Changed project rule source"},conditions:[a.conditions[0]!]});
     expect(prerequisiteGate(b,true).ready).toBe(false);
     expect(()=>prerequisitesActionSchema.parse({...a,conditions:[{...a.conditions.find(c=>c.kind==="authorization")!,authorizationRef:undefined}]})).toThrow();
+  });
+});
+
+describe("audit publication target and sustainable refresh",()=>{
+  it("binds publication to actual complete combined target, requiring only affected evidence to refresh",()=>{
+    const b=fixture(),a=prerequisiteEvidence(b);
+    const workflow={tools:"project_native" as const,repositories:["https://github.com/example/project"],source:"Existing native rules",digest:"f".repeat(64)};
+    const native=prerequisitesActionSchema.parse({...a,workflow,context:{base:a.context.base,candidates:a.context.candidates},conditions:a.conditions.filter(c=>["main","authorization","scope"].includes(c.kind)).map(c=>({...c,dependencies:c.kind==="authorization"?["scope"]:c.dependencies}))});
+    recordPrerequisites(b,native);
+    expect(prerequisiteGate(b,true,undefined,Date.now(),"pre_publish").blockers.some(c=>c.id==="combined_target")).toBe(true);
+    b.results={one:{status:"merged",head:"a".repeat(40)},two:{status:"merged",head:"a".repeat(40)}};
+    b.integration!.finalValidation={head:"d".repeat(40),checkedAt:new Date().toISOString(),source:"Final target",validation:"Combined",selectionDigest:createHash("sha256").update(JSON.stringify(b.results)).digest("hex")};
+    expect(prerequisiteGate(b,true,undefined,Date.now(),"pre_publish").blockers).toEqual([expect.objectContaining({id:"main",code:"stale"})]);
+    const authorization=b.integration!.prerequisites!.conditions.find(c=>c.kind==="authorization");
+    recordPrerequisites(b,{...native,context:{...native.context,base:"d".repeat(40)},conditions:[native.conditions.find(c=>c.kind==="main")!]});
+    expect(prerequisiteGate(b,true,undefined,Date.now(),"pre_publish").ready).toBe(true);
+    expect(b.integration!.prerequisites!.conditions.find(c=>c.kind==="authorization")).toEqual(authorization);
+    b.integration!.finalValidation.selectionDigest="0".repeat(64);
+    expect(prerequisiteGate(b,true,undefined,Date.now(),"pre_publish").ready).toBe(false);
+  });
+  it("continues ordinary renewals and substantive history beyond fifty updates without losing the original records",()=>{
+    const b=fixture(),a=prerequisiteEvidence(b);recordPrerequisites(b,a);
+    for(let i=0;i<60;i++)recordPrerequisites(b,{...a,checkedAt:new Date().toISOString()});
+    expect(b.integration!.prerequisites!.history).toEqual([]);
+    for(let i=0;i<60;i++)recordPrerequisites(b,{...a,conditions:[{...a.conditions[0]!,reason:`Actual source correction ${i}`} ]});
+    expect(b.integration!.prerequisites!.history).toHaveLength(60);
+    expect(b.integration!.prerequisites!.history![0]!.conditions[0]!.reason).toBe(a.conditions[0]!.reason);
+    expect(prerequisiteGate(b,true).ready).toBe(true);
   });
 });
