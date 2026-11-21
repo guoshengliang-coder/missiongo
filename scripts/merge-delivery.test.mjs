@@ -89,3 +89,88 @@ test("external reconciliation proves original-head and target ancestry using rea
     assert.throws(() => inspectMergedReconciliation({...input,validation:""},run));
   } finally {rmSync(dir,{recursive:true,force:true});}
 });
+
+const projectRules = {source:"AGENTS.md at frozen head",digest:"c".repeat(64),reason:"Existing project workflow",ci:"not_required",local:"not_required",mergeMethod:"squash"};
+const platformMock = (p, {auto=false, required=[], rulesetRequired=[], queue=false, deny=false}={}) => (command,args) => {
+  if(command==="gh"&&args[0]==="api") {
+    if(deny)throw new Error("Forbidden policy read");
+    if(args[1].endsWith("/protection"))throw new Error("Administration API must not be required");
+    if(args[1].includes("/rules/branches/"))return JSON.stringify([...(queue?[{type:"merge_queue"}]:[]),...(rulesetRequired.length?[{type:"required_status_checks",parameters:{required_status_checks:rulesetRequired.map(context=>({context}))}}]:[])]);
+    if(args[1].includes("/branches/"))return JSON.stringify({name:"main",protected:required.length+rulesetRequired.length>0,protection:{enabled:required.length>0,required_status_checks:{contexts:required,checks:[]}}});
+    return JSON.stringify({allow_auto_merge:auto,allow_merge_commit:false,allow_squash_merge:true,allow_rebase_merge:true});
+  }
+  return mock(p)(command,args);
+};
+test("native projects merge without auto-merge or CI, but policy read failures and missing expected checks stay blocked",()=>{
+  const input={...delivery,projectRules},empty={...pr,statusCheckRollup:[]};
+  const result=inspectDelivery(input,platformMock(empty));
+  assert.equal(result.ready,true);assert.equal(result.evidence.checks,"not_applicable");assert.equal(result.canAutoMerge,false);
+  assert.ok(result.mergeArguments.includes("--squash"));assert.ok(!result.mergeArguments.includes("--auto"));
+  assert.throws(()=>inspectDelivery(input,platformMock(empty,{deny:true})),/Forbidden/);
+  const missing=inspectDelivery(input,platformMock({...pr,statusCheckRollup:[{name:"other",status:"COMPLETED",conclusion:"SUCCESS"}]},{required:["build"]}));
+  assert.equal(missing.ready,false);assert.equal(missing.evidence.checks,"unknown");
+  assert.equal(inspectDelivery({...input,projectRules:{...projectRules,ci:"required"}},platformMock(empty)).evidence.checks,"unknown");
+});
+test("pending CI can use auto-merge only with configured protection and actual capability; failure never becomes absence",()=>{
+  const input={...delivery,projectRules},pending={...pr,statusCheckRollup:[{name:"build",status:"IN_PROGRESS",conclusion:null}]};
+  for(const auto of [false,true])for(const required of [[],["build"]]){
+    const result=inspectDelivery(input,platformMock(pending,{auto,required}));
+    assert.equal(result.canAutoMerge,auto&&required.length>0);assert.equal(result.ready,false);
+    assert.equal(result.mergeArguments.includes("--auto"),result.canAutoMerge);
+  }
+  const failed=inspectDelivery(input,platformMock({...pr,statusCheckRollup:[{name:"build",status:"COMPLETED",conclusion:"FAILURE"}]}));
+  assert.equal(failed.evidence.checks,"failed");assert.equal(failed.ready,false);
+  const queue=inspectDelivery(input,platformMock({...pr,statusCheckRollup:[{name:"build",status:"COMPLETED",conclusion:"SUCCESS"}]},{queue:true}));
+  assert.equal(queue.evidence.verification.mergeMethod,"queue");assert.ok(!queue.mergeArguments.includes("--squash"));
+});
+test("project-only requirements and partial branch protection never masquerade as protected auto-merge",()=>{
+  const input={...delivery,projectRules:{...projectRules,requiredChecks:["project-smoke"]}},
+    pending={...pr,statusCheckRollup:[{name:"project-smoke",status:"IN_PROGRESS",conclusion:null}]};
+  assert.equal(inspectDelivery(input,platformMock(pending,{auto:true})).canAutoMerge,false);
+  const partial={...pr,statusCheckRollup:[{name:"build",status:"COMPLETED",conclusion:"SUCCESS"},{name:"project-smoke",status:"IN_PROGRESS",conclusion:null}]};
+  assert.equal(inspectDelivery(input,platformMock(partial,{auto:true,required:["build"]})).canAutoMerge,false);
+  assert.throws(()=>inspectDelivery(input,platformMock({...pr,statusCheckRollup:undefined})),/Incomplete/);
+});
+test("squash and rebase integrations on develop preserve exact PR evidence without requiring original head ancestry on target",async()=>{
+  const {inspectMergedReconciliation}=await import("./merge-delivery.mjs");
+  for(const method of ["squash","rebase"]){
+    const dir=mkdtempSync(join(tmpdir(),"missiongo-native-merge-"));
+    const git=(...args)=>execFileSync("git",args,{cwd:dir,encoding:"utf8",stdio:["ignore","pipe","pipe"]}).trim();
+    try{
+      git("init","-b","develop");git("config","user.name","Fixture");git("config","user.email","fixture@example.test");
+      writeFileSync(join(dir,"base"),"base");git("add",".");git("commit","-m","base");const base=git("rev-parse","HEAD");
+      git("checkout","-b","feature");writeFileSync(join(dir,"feature"),"change");git("add",".");git("commit","-m","feature");const original=git("rev-parse","HEAD");
+      git("checkout","develop");writeFileSync(join(dir,"other"),"independent");git("add",".");git("commit","-m","advance target");
+      if(method==="squash"){git("merge","--squash","feature");git("commit","-m","squashed integration");}
+      else {git("checkout","feature");git("rebase","develop");git("checkout","develop");git("merge","--ff-only","feature");}
+      const target=git("rev-parse","HEAD");
+      assert.throws(()=>git("merge-base","--is-ancestor",original,target));
+      const input={...delivery,head:original,targetBranch:"develop",validation:"Actual target smoke passed",projectRules:{...projectRules,mergeMethod:method}};
+      const run=(command,args)=>{
+        if(command==="gh"){
+          if(args[0]==="api"){
+            if(args[1].includes("rules/branches/"))return "[]";
+            if(args[1].includes("branches/"))return JSON.stringify({name:"develop",protected:false});
+            return JSON.stringify({allow_auto_merge:false,allow_merge_commit:true,allow_squash_merge:true,allow_rebase_merge:true});
+          }
+          return JSON.stringify(args[0]==="repo"?{nameWithOwner:"example/project"}:{...pr,state:"MERGED",headRefOid:original,baseRefName:"develop",baseRefOid:base,statusCheckRollup:[],mergedAt:new Date().toISOString(),mergeCommit:{oid:target}});
+        }
+        if(args[0]==="ls-remote")return `${target}\trefs/heads/develop`;
+        if(args[0]==="fetch")return git("fetch",dir,args[2].startsWith("refs/pull/")?original:"develop");
+        return git(...args);
+      };
+      assert.equal(inspectDelivery(input,run).result.commit,target);
+      const recovered=inspectMergedReconciliation(input,run);assert.equal(recovered.commit,target);assert.equal(recovered.checks,"not_applicable");assert.equal(recovered.local,"not_applicable");
+      assert.throws(()=>inspectMergedReconciliation({...input,local:"failed"},run),/local validation/);
+    }finally{rmSync(dir,{recursive:true,force:true});}
+  }
+});
+
+test("ruleset-only branches use Contents/Metadata reads without requiring the administrator protection endpoint",()=>{
+  const pending={...pr,statusCheckRollup:[{name:"build",status:"IN_PROGRESS",conclusion:null}]};
+  const result=inspectDelivery({...delivery,projectRules},platformMock(pending,{auto:true,rulesetRequired:["build"]}));
+  assert.deepEqual(result.evidence.verification.requiredChecks,["build"]);
+  assert.equal(result.canAutoMerge,true);
+  const missing=inspectDelivery({...delivery,projectRules},platformMock({...pr,statusCheckRollup:[]},{rulesetRequired:["build"]}));
+  assert.equal(missing.evidence.checks,"unknown");assert.equal(missing.ready,false);
+});

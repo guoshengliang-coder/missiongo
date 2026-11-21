@@ -1,3 +1,6 @@
+import { projectIntegrationInstructions } from "./integration-instructions.js";
+import { projectCheckSatisfied } from "@missiongo/contracts";
+import { projectCheckStateSchema, projectVerificationSchema, validateProjectChecks, assertProjectBinding } from "./project-verification.js";
 import {deliveryScope,historicalDeliveryFingerprint} from "./historical-delivery-review.js";
 import {conversationDecisionEvidence} from "./conversation-decision-evidence.js";
 import {mergeReviewSummary} from "./merge-review-summary.js";
@@ -16,7 +19,7 @@ import { readRecoveryTransport } from "./merge-recovery-transport.js";
 import type { MergeIntegration, MergeReconciliationPreview, MergeBatchPresentation, SessionDeliveryStage } from "@missiongo/contracts";
 import { compactItemKeys } from "@missiongo/domain";
 import { integrationActionSchema, integrationDigest, applyIntegrationAction, assertIntegrationMerge, freshIntegrationCheck, integrationDenied, type IntegrationAction } from "./merge-integration.js";
-import { prerequisiteGate, recordPrerequisites } from "./merge-prerequisites.js";
+import { prerequisiteGate, prerequisiteObservation, recordPrerequisites } from "./merge-prerequisites.js";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { MissionGoStore } from "./store.js";
@@ -32,10 +35,10 @@ const sha = z.string().regex(/^[a-f0-9]{40}$/);
 const instructionQuote = z.string().trim().min(1).max(500);
 export const mergeEvidenceSchema = z.object({
   head: sha, base: sha, checkedAt: z.string().datetime(),
-  checks: z.enum(["passed", "pending", "failed", "unknown"]),
+  checks: projectCheckStateSchema, verification: projectVerificationSchema.optional(),
   mergeable: z.enum(["clean", "conflicting", "unknown"]),
   source: z.string().trim().min(1).max(500),
-});
+}).superRefine(validateProjectChecks);
 export const deliverySchema = z.object({
   itemKeys: z.array(z.string().regex(/^[A-Z][A-Z0-9]*-[0-9]+$/)).max(20).default([]),
   productId: z.string().min(1).optional(),
@@ -216,6 +219,7 @@ export class MergeDeliveries {
     return d.itemKeys.length ? this.scope(d.itemKeys) : this.projectSource(d.accountId,d.clientId,d.identity,d.productId).scope;
   }
   private sourceValid(d: Delivery) {
+    assertProjectBinding(d.evidence.verification,d.repository,d.targetBranch);
     for (const itemKey of d.itemKeys) {
       recoverExecutionAuthorization(this.store, d.accountId, d.clientId, {itemKey, ...d.identity});
       if (!["in_progress","development_complete","pending_verification"].includes(this.store.getWorkItem(itemKey).status)) throw changed();
@@ -232,7 +236,7 @@ export class MergeDeliveries {
     const reviewBlocker = developmentReviewBlocker(this.db,d.sessionId,d.head,d.evidence.base,d.repository);
     if (reviewBlocker) return reviewBlocker;
     if (!this.fresh(d.evidence, d.head)) return "stale";
-    if (d.evidence.checks !== "passed") return d.evidence.checks;
+    if (!projectCheckSatisfied(d.evidence.checks,d.evidence.verification)) return d.evidence.checks;
     if (d.evidence.mergeable !== "clean") return d.evidence.mergeable;
     if (d.itemKeys.some(key => collaborationBlockers(this.db, this.store.getWorkItem(key).id)>0)) return "dependency";
     return undefined;
@@ -247,6 +251,7 @@ export class MergeDeliveries {
   }
   propose(accountId: string, clientId: string, identity: Identity, requestKey: string, input: DeliveryInput, confirmation?: {quote: string}) {
     input = deliverySchema.parse(input);
+    assertProjectBinding(input.evidence.verification,input.repository,input.targetBranch);
     const quote = confirmation ? instructionQuote.parse(confirmation.quote) : undefined;
     const keys = [...new Set(input.itemKeys)].sort();
     return this.db.transaction(() => {
@@ -831,7 +836,7 @@ export class MergeDeliveries {
       if(d.state!=="merged" && d.activity===this.activity(d.sessionId))try{this.sourceValid(d);attention=true;}catch{/* Invalid sources never suppress attention. */}
       let freshBlocker: string|undefined;
       if(view.blocker!=="changed" && d.state!=="batched") {
-        freshBlocker=view.blocker?.startsWith("review_") ? view.blocker : d.evidence.checks!=="passed" ? d.evidence.checks : d.evidence.mergeable!=="clean" ? d.evidence.mergeable
+        freshBlocker=view.blocker?.startsWith("review_") ? view.blocker : !projectCheckSatisfied(d.evidence.checks,d.evidence.verification) ? d.evidence.checks : d.evidence.mergeable!=="clean" ? d.evidence.mergeable
           : d.itemKeys.some(key=>collaborationBlockers(this.db,this.store.workItemId(key))>0) ? "dependency" : undefined;
       }
       const time=Date.parse(d.evidence.checkedAt),reviewExpiry=developmentReviewExpiry(this.db,d.sessionId),queue=this.queueFacts(d,view.blocker),owner=this.processingBatch(d,queue);
@@ -891,6 +896,7 @@ export class MergeDeliveries {
     if (d.accountId !== accountId || d.clientId !== clientId || digest(identity) !== digest(d.identity) || !["proposed","confirmed"].includes(d.state)) throw changed();
     this.sourceValid(d);
     d.evidence = mergeEvidenceSchema.parse(evidence);
+    assertProjectBinding(d.evidence.verification,d.repository,d.targetBranch);
     if (evidence.head !== d.head) d.state = "withdrawn";
     this.save(d); return this.view(d);
   }
@@ -1038,18 +1044,11 @@ export class MergeDeliveries {
       const hasHistoricalGaps=Boolean(publicationScope?.candidates.some(c=>c.historicalGapReason));
       if(hasHistoricalGaps!==historicalGapsAcknowledged)throw conflict("publication_history_review_required","请逐项审阅历史缺证记录并确认：保留告警，不计为本次交付；不会删除历史或排除已合并代码。");
       const id=randomUUID();
-      const text = `执行用户已授权的合并批次 ${id}。派单启动后先调用 get_merge_batch，使用本会话原 dispatchId。仅处理批次冻结的 PR；每次执行前重新调用 get_merge_batch，entries 中 blocker 非空必须停止。推送并登记后，达到可合并状态即用 gh pr merge --auto --merge --match-head-commit 绑定实际合并的 head 挂自动合并，由 required checks 全绿自动完成合并，不要逐项等待 CI 通知或手动合并，直接并行推进下一项；合并后回读实际 merge commit 核实再 report；检查失败先 gh pr merge --disable-auto 再修复，禁止 --admin 或绕过保护；不要领取开发条目，不要重新创建批次。每项挂自动合并前重新核实目标仓库、主线、依赖、CI 及预期 head；他人推送的新提交必须停止，不得合并未经本会话核验的 head。清单中的旧检查证据仅供参考，由本合并会话统一读取实时结果；CI 排队或运行中时保留原批次，先查状态且状态未变时降低轮询频率，不将等待标记为失败或另建会话。${integrationProtocol===1 ? "你是集成者，以保障批次全部条目成功集成为目标：负责必要的冲突、兼容与回归修复，按下述协议登记后推送原 PR 分支，不扩大功能范围。" : "本批仅允许合并原确认版本，不授权修改代码。"}疑似 flaky 或超时的检查可有依据地重跑一次核实。修复后的最终 head 必须本地仓库检查通过且无冲突才允许挂 auto-merge，实际合并仍由 required checks 全绿保证；穷尽合理修复仍无法集成的项记 blocked，写明已尝试的修复与剩余障碍，不编造修复结果。使用 report_merge_batch 逐项记录实际结果；未知结果保留原批次。已核实合并且明确无需发布的条目，完整读取 get_item_context.developmentEvidence 并写结果评论后，用 submit_non_release_for_verification 携带原合并 dispatchId、精确 batch/delivery 和当前 integration revision 提交人工验证，不伪造发布凭据或领取源条目；需发布条目仍按正式发布交接。发布授权：${publish ? "批次全部条目合并成功后按项目既有全量候选覆盖门禁发布，批次选择不缩小发布范围；存在 blocked 项时不得自动发布，先逐项报告，等用户明确决定是否先发已合并部分。" : "仅合并，不发布。"} 完成所有操作且核实无后台执行后，才结束批次。遵守仓库权限和发布规则。`;
+      const text = `执行用户已授权的合并批次 ${id}。先调用 get_merge_batch，使用本会话原 dispatchId，只处理冻结 PR，不领取源条目、不重新创建批次。${integrationProtocol===1?"本批已授权必要集成修复与验证，不扩大功能范围。":"本批仅允许原确认版本，不授权修复代码。"}发布授权：${publish?"已授权按冻结范围和项目既有全量候选覆盖门禁发布；存在 blocked 项不得自动发布，先逐项报告并取得是否先发已合并部分的决定。":"仅合并，不发布。"}穷尽合理修复仍无法集成才记 blocked；未知结果保留原批次。核实无后台执行且交接明确后才结束批次。`;
       const dispatches=new DispatchStore(this.db);
       const free=new FreeSessionStore(this.db,dispatches,new AgentSessionStore(this.db));
-      const integrationInstructions=integrationProtocol===1 ? `本批已授权集成所必需的修复与验证，但不扩大需求或绕过原生权限。先读取全批 PR、条目与主线，梳理依赖、文件/接口/迁移重叠、分组、顺序及组合验证目标，通过 record_merge_integration 的 plan 动作持久化计划；这是执行说明，不重复索取方案批准。可并行只读调查，重叠代码修改和合并按计划协调。修复前用 prepare_repair 绑定当前远端 head 和主线；原 worktree 内先确认远端仍为该 head，仅追加本会话所做提交，不 force、不混入外部提交。推送前后核对远端 head，使用 scripts/merge-integration-evidence.mjs 验证提交链；repair 动作登记真实修复提交，原确认保持不变。修复或基线变化后重新核验，不复用旧提交检查。使用 check 动作保存最终 head、当前目标分支 base、本地检查与实时 CI 证据；get_merge_batch 的 executionHead 才是实际允许合并的 head，mergeReady 为 true 且实时 Git 核验通过后立即对 executionHead 执行 gh pr merge --auto --merge --match-head-commit 挂自动合并，不等待 CI 通知即转入下一依赖项；合并后回读实际 merge commit 核实并 report，检查失败先 gh pr merge --disable-auto 再修复。使用 progress 动作保存阶段和下一步，恢复时先读计划、修复预留、历史与结果，不重推、不重复合并。每次调用携带当前 expectedRevision 和稳定 idempotencyKey；响应未知原样重试。确认没有推送、远端仍为预留 head 且无后台执行时，可用 cancel_repair 结束未发生的修复；未知结果不能撤销预留。他人提交必须停下核对，不能登记为自己的修复。合并必须满足计划依赖，report_merge_batch 后继续独立项。批次结果全部明确后在实际目标分支验证已合并组合，final_validation 记录真实目标 head 和证据，再执行已授权发布与交接。发布开始/续期、失败或结束时用 publication_progress 动作，state 为 publishing/failed/ended，checkedAt 为实时 UTC，resultsDigest 原样取 get_merge_batch 返回值；沿用原 batchId/dispatchId、expectedRevision 与新幂等键。publishing 每五分钟内续期；没有可信心跳显示发布待核实，ended 不证明已发布，仍须完整正式凭据及交接。不得删除测试或降低断言来冒充修复。` : `本批来自旧版入口，未授权集成修复；只合并冻结 head，需改代码则停止并说明，不能套用新版修复授权。`;
-      // The first message is instructions, so the conversation is named after
-      // the work it integrates instead of an excerpt of that prompt (AND-449).
       const integrationTitle=`集成 · ${deliveries.every(d=>d.itemKeys.length) ? compactItemKeys([...new Set(deliveries.flatMap(d=>d.itemKeys))]) : deliveries.map(d=>`PR #${d.pullRequest}`).join(" / ")}`;
-      const prerequisiteInstructions = `合并并发布且有实际发布需求时，首项新合并前核实并登记前置条件。有原集成规划权限时先登记 plan；旧批次仅补充前置证据，不获得修复权限。再用 prerequisites 动作提交 readiness.observation、readiness.evidenceContext 和 conditions；旧报告缺这些字段时从当前 checkout 运行 node scripts/release-readiness.mjs 只读重查，不猜造字段或自动安装，必须含 main、installation_integrity、required_capability、authorization、scope 五类；保留原检查中的其他事实。scope 核实 publicationScope 与完整候选；authorization 引用原有效权限，或用 not_required 和 authorizationRef 记录经核实无需安装，不自行批准。needsFollowUp、退出码或普通工具差异不是阻塞；损坏和必需能力缺失不能降级。等待保存 reason、owner、resumeWhen 和 dependencies，不用 report blocked 表示等待，不重建批次。观察版本与批次必须精确匹配，不能把旧快照重绑到新 head。循环依赖只能在依赖实际合并或 dependencyResolutions 明确记录独立修复的 before/after、via 与来源后解除，不可直接清空。分项刷新受影响证据，遗漏项保留原指纹；内容未变复用授权。dependsOnDeliveries 指向本批未合并代码时保持循环阻塞，说明依赖和独立前置修复路径，不自行先合并。每次挂合并前回读 prerequisiteGate.ready 与 mergeReady，都通过才继续。响应未知先读原批次、请求键与实际 Git/安装结果，同内容重试原 key，不重发未知操作。仅合并、仅发布、引用和纯无需发布不新增合并门禁；最终发布仍执行原全部门禁，外部合并走原对账。`;
-      const readinessInstructions = `集成调查开始先做发布就绪预检，再保存集成计划：核对最新主线、全量 list_release_candidates(includeUnscoped:true) 全部分页（含无需发布记录）、历史集成/范围缺证、正式工具实际文件与安装清单及主线差异、现有产物来源、本批预计影响、升版和发布说明。把 get_merge_batch 返回的完整 batch 与完整候选保存到仓库外，运行统一入口 missiongo-release readiness --candidates <完整分页JSON> --batch <批次JSON>；旧工具不支持时用当前checkout的 node scripts/release-readiness.mjs 只读调查，不用旧plan冒充完整预检，不自动安装。独立检查失败保留并继续其余可查事实；事实缺口与需用户决定的范围/暂缓/风险分别列出。未选择发布也做只读调查，但不构建、安装或发布。冻结head仅供预计影响，按operation核实实际合并或既有references后刷新主线和release:state，仅在原授权范围内一次准备当时已知必要patch与发布说明的版本PR，已升版本不重复升；新增候选或外部主线变化重新对账。启动快照不是部署凭据，部署前仍刷新候选、CI、精确head及selection摘要，执行全部既有门禁。
-
-等待CI仅汇报阶段变化、失败、待决事项和下一步责任；无变化降低轮询频率，必要时简短保活，不重复全量计数/列表/日志。不得隐藏或改写原生源消息。最终按“对象/结果/证据与验证缺口/下一步责任”逐项交付，包含无需发布、本机工具和未包含项，多份交付独立；可用 missiongo-release report --input <完整限定范围证据JSON> --format markdown 生成只读报告。代码合并、产品完整/部分上线、本机效果、人工状态与通知送达独立；本机已生效、无需产品发布须执行端核实限定目标文件摘要和实际入口成功检查，缺证、失败或未运行只报待核实，不从noReleaseReason或通用测试通过推断安装。部分产物不能报完整交付；每项保留未覆盖范围、验证缺口、责任与下一步，未核实送达不报通知成功，人工验收由人决定。`;
-      const dispatch=free.prepare(accountId,id,{...config,saveAsDefault:false},`${text}\n\n${integrationInstructions}\n\n${readinessInstructions}\n\n${prerequisiteInstructions}${operation ? `\n\n动作协议2：${operation}。references 是已合并事实引用，禁止再次合并、修复或 report；先独立核实原 head/merge commit 在目标分支，用 record_merge_integration 的 verify_reference 动作逐项登记 deliveryId、expectedHead、commit、checkedAt、source。仅对 mergeReady 的非引用项执行 Git 合并。仅发布不得执行任何新的 Git 合并。计划包含全部选择，引用项无需修复。publicationScope 中 historicalGapReason 是用户已审阅的历史缺证处置：完整候选原文保留，逐交付 selection 使用 historical_gap 并沿用该理由，不补造集成证据、不重复发布或推进旧事件状态。发布前核对 publicationScope 的完整元数据与范围状态，沿用第二步授权；额外范围变化必须暂停重新审阅，不得自动扩大授权。` : ""}`,0,integrationTitle);
+      const dispatch=free.prepare(accountId,id,{...config,saveAsDefault:false},`${text}\n\n${projectIntegrationInstructions}${operation ? `\n\n动作协议2：${operation}。references 是已合并事实引用，禁止再次合并、修复或 report；先独立核实原 head/merge commit 在目标分支，用 record_merge_integration 的 verify_reference 动作逐项登记 deliveryId、expectedHead、commit、checkedAt、source。仅对 mergeReady 的非引用项执行 Git 合并。仅发布不得执行任何新的 Git 合并。计划包含全部选择，引用项无需修复。publicationScope 中 historicalGapReason 是用户已审阅的历史缺证处置：完整候选原文保留，逐交付 selection 使用 historical_gap 并沿用该理由，不补造集成证据、不重复发布或推进旧事件状态。发布前核对 publicationScope 的完整元数据与范围状态，沿用第二步授权；额外范围变化必须暂停重新审阅，不得自动扩大授权。` : ""}`,0,integrationTitle);
       const b: Batch={id,productId:config.productId,accountId,requestKey,dispatchId:dispatch.id,sessionId:dispatch.agentSessionId!,
         config,publish,saveAsDefault,selection,...(hasHistoricalGaps?{publicationReview:{accountId,at:new Date().toISOString(),scopeDigest:publicationScope!.digest}}:{}),...(operation?{operation,references,publicationScope}:{}),deliveries:deliveries.map(d=>d.id),state:"active",createdAt:new Date().toISOString(),results:Object.fromEntries(Object.entries(references).map(([id,r])=>[id,{status:"merged" as const,head:r.head,commit:r.commit,detail:"既有合并事实引用；执行前须独立核实。"}])),
         ...(integrationProtocol===1?{integration:{protocol:1 as const,revision:0,plans:[],events:[],entries:Object.fromEntries(deliveries.map(d=>[d.id,{itemKeys:d.itemKeys,originalHead:d.head,head:references[d.id]?.head??d.head,progress:"queued" as const,detail:"",repairs:[]}]))}}:{})};
@@ -1088,7 +1087,7 @@ export class MergeDeliveries {
     if(gate.required)try{this.assertPublicationScope(b);}catch{
       gate.ready=false;gate.blockers.push({id:"publication_scope",code:"stale",reason:"发布范围尚未核实或已经变化，不能沿用原范围证据",owner:"集成执行者与原授权用户",resumeWhen:"在原会话重新核对范围；有变化时重新审阅"});
     }
-    return {...b, dispatchId, publicationDeferred:batchPublicationDeferred(b), prerequisiteGate:gate, resultsDigest:digest(b.results), entries:b.deliveries.map(id=>{
+    return {...b, dispatchId, projectWorkflowInstructions:projectIntegrationInstructions, prerequisiteObservation:prerequisiteObservation({...b,entries:b.deliveries.map(id=>{const d=this.read<Delivery>("merge_deliveries",id);return {id,head:d.head};})}), publicationDeferred:batchPublicationDeferred(b), prerequisiteGate:gate, publicationPrerequisiteGate:prerequisiteGate(b,hasRelease,undefined,Date.now(),"pre_publish"), resultsDigest:digest(b.results), entries:b.deliveries.map(id=>{
       const d=this.view(this.read<Delivery>("merge_deliveries",id));
       let mergeReady=!b.references?.[id]&&!d.blocker&&!b.results[id]&&b.state==="active";
       if(b.integration&&!b.integration.prerequisitesOnly){try{assertIntegrationMerge(b.integration,id,b.results,{allowPendingCI:true});}catch{mergeReady=false;}}
@@ -1149,7 +1148,10 @@ export class MergeDeliveries {
         this.saveBatch(b);return this.batch(accountId,dispatchId,id);
       }
       if(action.kind==="final_validation" && Object.keys(b.references??{}).some(id=>!b.verifiedReferences?.[id]||!freshIntegrationCheck(b.verifiedReferences[id]!.checkedAt)))throw changed();
-      if(action.kind==="publication_progress" && action.state==="publishing"){this.assertReferences(b,true);this.assertPublicationScope(b);}
+      if(action.kind==="publication_progress" && action.state==="publishing"){this.assertReferences(b,true);this.assertPublicationScope(b);
+        const hasRelease=Boolean(b.publicationScope?.requiredArtifacts.length)||b.deliveries.some(id=>this.read<Delivery>("merge_deliveries",id).requiredArtifacts.length>0);
+        if(!prerequisiteGate(b,hasRelease,undefined,Date.now(),"pre_publish").ready)integrationDenied("项目实际发布前置条件未满足；代码合并事实保持，继续在原批次核实发布条件。");
+      }
       if (action.kind === "publication_progress") {
         const validation = b.reconciliation?.finalValidation;
         const partial = b.reconciliation?.publication;
@@ -1161,7 +1163,12 @@ export class MergeDeliveries {
       }
       const affected="deliveryId" in action?[action.deliveryId]:b.deliveries.filter(id=>!b.results[id]);
       for(const id of affected){if(!b.deliveries.includes(id))throw changed();this.sourceValid(this.read<Delivery>("merge_deliveries",id));}
-      if(action.kind==="prerequisites")recordPrerequisites(b,action);
+      if(action.kind==="check") {const d=this.read<Delivery>("merge_deliveries",action.deliveryId);assertProjectBinding(action.verification,d.repository,d.targetBranch);}
+      if(action.kind==="prerequisites") {
+        if(action.workflow) {const repositories=[...new Set(b.deliveries.map(id=>this.read<Delivery>("merge_deliveries",id).repository))].sort();
+          if(JSON.stringify([...action.workflow.repositories].sort())!==JSON.stringify(repositories))throw changed();}
+        recordPrerequisites(b,action);
+      }
       applyIntegrationAction(state,action,key,b.results);
       // The legacy final_validation transport also fulfils the recovery close
       // gate; both records bind the same complete current results and target.
@@ -1309,6 +1316,7 @@ export class MergeDeliveries {
       if("deliveryId" in action&&!b.deliveries.includes(action.deliveryId))throw changed();
       if(action.kind==="accept_merge") {
         const d=this.read<Delivery>("merge_deliveries",action.deliveryId);
+        assertProjectBinding(action.evidence.verification,d.repository,d.targetBranch);
         if(action.evidence.source!==`${d.repository}/pull/${d.pullRequest}` || !freshIntegrationCheck(action.evidence.checkedAt))throw changed();
         const existing=b.results[d.id];
         if(existing?.status==="merged"&&(existing.head!==action.evidence.head||existing.commit!==action.evidence.commit))throw conflict("merge_fact_conflict","已记录的成功合并事实不允许替换。");
@@ -1451,6 +1459,7 @@ export class MergeDeliveries {
         const d=this.read<Delivery>("merge_deliveries",action.deliveryId),previous=b.results[d.id];
         if(action.kind!=="accept_merge"&&b.integration?.entries[d.id]?.repair)throw conflict("repair_unresolved","修复预留尚未核实，请先按原预留恢复；不能删除或冒认他人修复。");
         if(action.kind==="accept_merge") {
+          assertProjectBinding(action.evidence.verification,d.repository,d.targetBranch);
           if(!freshIntegrationCheck(action.evidence.checkedAt))throw conflict("merge_evidence_stale","Git 证据已过期，请刷新预览后确认。");
           b.results[d.id]={status:"merged",head:action.evidence.head,commit:action.evidence.commit,detail:action.evidence.validation};
           // External acceptance is not a repair: originalHead and repair history stay intact.

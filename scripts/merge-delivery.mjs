@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Read live GitHub evidence for an explicitly selected delivery. Does not merge.
+import { collectProjectVerification, checkSatisfied } from "./project-verification.mjs";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -28,9 +29,12 @@ export function inspectDelivery(delivery, run = (command, args) => execFileSync(
   const passed = checks.length > 0 && checks.every(c => "conclusion" in c
     ? c.status === "COMPLETED" && ["SUCCESS", "SKIPPED", "NEUTRAL"].includes(c.conclusion)
     : c.state === "SUCCESS");
+  const verification = collectProjectVerification(delivery, pr, run);
+  const missing = verification?.requiredChecks.some(name => !verification.observedChecks.includes(name));
   const failed = checks.some(c => ["FAILURE", "ERROR"].includes(c.state) || ["FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"].includes(c.conclusion));
   const evidence = { head: delivery.head, base: targetHead, checkedAt: new Date().toISOString(),
-    checks: passed ? "passed" : failed ? "failed" : checks.length ? "pending" : "unknown",
+    ...(verification ? {verification} : {}),
+    checks: failed ? "failed" : missing ? "unknown" : passed ? "passed" : !checks.length && verification?.ci === "not_required" ? "not_applicable" : checks.length ? "pending" : "unknown",
     mergeable: pr.state === "OPEN" && !pr.isDraft && pr.mergeable === "MERGEABLE" ? "clean" : pr.mergeable === "CONFLICTING" ? "conflicting" : "unknown",
     source: pr.url };
   if (pr.state === "MERGED") {
@@ -43,8 +47,12 @@ export function inspectDelivery(delivery, run = (command, args) => execFileSync(
     return { evidence, result: { status: "merged", head: delivery.head, commit: pr.mergeCommit.oid,
       detail: `Verified ${pr.url} merged at ${pr.mergedAt}; merge commit is included in ${delivery.targetBranch}.` } };
   }
-  return { evidence, ready: delivery.mergeReady !== false && evidence.checks === "passed" && evidence.mergeable === "clean",
-    mergeArguments: ["pr", "merge", String(delivery.pullRequest), "--repo", repository, "--merge", "--match-head-commit", delivery.head] };
+  const ready = delivery.mergeReady !== false && checkSatisfied(evidence.checks, verification) && evidence.mergeable === "clean";
+  const canAutoMerge = delivery.mergeReady !== false && evidence.checks === "pending" && evidence.mergeable === "clean" && Boolean(verification?.autoMerge && verification.protectedChecks);
+  const method = verification?.mergeMethod ?? "merge";
+  return { evidence, ready, canAutoMerge,
+    mergeArguments: ["pr", "merge", String(delivery.pullRequest), "--repo", repository, ...(method === "queue" ? [] : [`--${method}`]),
+      ...(canAutoMerge ? ["--auto"] : []), "--match-head-commit", delivery.head] };
 }
 
 /** Collect an external merge observation; does not authorize or apply recovery. */
@@ -55,13 +63,17 @@ export function inspectMergedReconciliation(delivery, run = (command, args) => e
   const repository = delivery.repository.slice("https://github.com/".length);
   const pr = JSON.parse(run("gh", ["pr", "view", String(delivery.pullRequest), "--repo", repository, "--json", "state,headRefOid"]));
   if (pr.state !== "MERGED" || !/^[a-f0-9]{40}$/.test(pr.headRefOid)) throw new Error("External outcome is not a verified merge");
+  if (delivery.local !== undefined && !["passed", "not_applicable"].includes(delivery.local)) throw new Error("Actual local validation did not pass");
   const inspected = inspectDelivery({ ...delivery, executionHead: pr.headRefOid }, run);
-  if (!inspected.result || inspected.evidence.checks !== "passed") throw new Error("Merged result and passing checks are required");
+  if (!inspected.result || !checkSatisfied(inspected.evidence.checks, inspected.evidence.verification)) throw new Error("Merged result and passing checks are required");
+  const local = delivery.local ?? (inspected.evidence.verification?.local === "not_required" ? "not_applicable" : inspected.evidence.verification ? "unknown" : "passed");
+  if (!checkSatisfied(local, inspected.evidence.verification, true)) throw new Error("Supply the actual project local validation result");
   run("git", ["fetch", delivery.repository, `refs/pull/${delivery.pullRequest}/head`]);
   if (run("git", ["rev-parse", "FETCH_HEAD"]) !== pr.headRefOid) throw new Error("PR changed during reconciliation");
   run("git", ["merge-base", "--is-ancestor", delivery.head, pr.headRefOid]);
   return {head:pr.headRefOid,commit:inspected.result.commit,targetHead:inspected.evidence.base,
-    checkedAt:inspected.evidence.checkedAt,source:inspected.evidence.source,checks:"passed",local:"passed",
+    checkedAt:inspected.evidence.checkedAt,source:inspected.evidence.source,checks:inspected.evidence.checks,local,
+    ...(inspected.evidence.verification ? {verification:inspected.evidence.verification} : {}),
     originalIncluded:true,targetIncludesMerge:true,validation:delivery.validation.trim()};
 }
 

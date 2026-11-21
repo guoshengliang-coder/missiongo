@@ -1,3 +1,4 @@
+import { projectVerificationSchema, validateProjectChecks } from "./project-verification.js";
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import type { MergeReconciliationState } from "@missiongo/contracts";
@@ -6,9 +7,9 @@ const text = z.string().trim().min(1).max(4000);
 /** Observations are executor evidence, never a server assertion of GitHub truth. */
 export const mergedObservationSchema = z.object({
   head: sha, commit: sha, targetHead: sha, checkedAt: z.string().datetime(),
-  source: z.string().url().max(500), checks: z.literal("passed"), local: z.literal("passed"),
+  source: z.string().url().max(500), checks: z.enum(["passed","not_applicable"]), local: z.enum(["passed","not_applicable"]), verification: projectVerificationSchema.optional(),
   originalIncluded: z.literal(true), targetIncludesMerge: z.literal(true), validation: text,
-}).strict();
+}).strict().superRefine(validateProjectChecks);
 export const reconciliationActionSchema = z.discriminatedUnion("kind", [
   z.object({kind:z.literal("accept_merge"),deliveryId:z.string().min(1),evidence:mergedObservationSchema}).strict(),
   z.object({kind:z.literal("retry_handover"),deliveryId:z.string().min(1)}).strict(),

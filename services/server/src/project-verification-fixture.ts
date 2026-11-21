@@ -1,0 +1,2 @@
+import type { ProjectVerification } from "@missiongo/contracts";
+export const verification:ProjectVerification={repository:"https://github.com/example/native",targetBranch:"develop",rulesSource:"AGENTS.md at approved head",rulesDigest:"c".repeat(64),ci:"not_required",local:"not_required",reason:"Project uses existing manual smoke validation, no automated pipeline",platformRead:"complete",requiredChecks:[],observedChecks:[],autoMerge:false,protectedChecks:false,mergeMethod:"squash"};

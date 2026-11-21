@@ -105,6 +105,24 @@ async function prepared(databasePath=":memory:") {
   return {...f,...launched,merges,input,identity,d,config};
 }
 describe("AND-423 explicit merge deliveries",()=>{
+  it("uses verified no-CI evidence through offer, refresh, batch check and merged handoff",async()=>{
+    const {verification:template}=await import("./project-verification-fixture.js");
+    const f=await prepared();
+    const verification={...template,repository:f.input.repository,targetBranch:f.input.targetBranch};
+    f.merges.refresh(f.owner.id,"original-client",f.identity,f.d.id,{...f.input.evidence,checks:"not_applicable",verification});
+    expect(f.merges.list(f.item.productId,f.owner.id)[0]?.blocker).toBeUndefined();
+    expect(()=>f.merges.refresh(f.owner.id,"original-client",f.identity,f.d.id,{...f.input.evidence,checks:"not_applicable",verification:{...verification,targetBranch:"other"}})).toThrow();
+    const current=f.merges.list(f.item.productId,f.owner.id)[0]!;f.merges.decide(f.owner.id,current.id,current.revision,"confirm");
+    const b=f.merges.start(f.owner.id,randomUUID(),[{id:current.id,revision:current.revision}],f.config,false,1);
+    const dispatches=new DispatchStore(f.store.database);dispatches.claimNextDispatch(f.node.nodeId);dispatches.recordDispatchResult({nodeId:f.node.nodeId,dispatchId:b.dispatchId,status:"launched"});
+    const plan={kind:"plan" as const,base:f.input.evidence.base,summary:"Native workflow",validation:"Smoke",entries:[{deliveryId:current.id,head:current.head,dependsOn:[],group:"one",reason:"Independent",validation:"Smoke"}]};
+    f.merges.integrate(f.owner.id,b.dispatchId,b.id,0,"plan",plan);
+    f.merges.integrate(f.owner.id,b.dispatchId,b.id,1,"check",{kind:"check",deliveryId:current.id,expectedHead:current.head,base:f.input.evidence.base,checkedAt:new Date().toISOString(),checks:"not_applicable",local:"not_applicable",mergeable:"clean",verification,validation:"Existing manual smoke verified",source:"Live Git fixture"});
+    expect(f.merges.batch(f.owner.id,b.dispatchId,b.id).entries[0]?.mergeReady).toBe(true);
+    f.merges.report(f.owner.id,b.dispatchId,b.id,current.id,{status:"merged",head:current.head,commit:"d".repeat(40),detail:"Verified squash merge"});
+    expect(f.store.getWorkItem(f.item.key).status).toBe("development_complete");
+  });
+
   it("refreshes persisted review blockers on node evidence and expires the earlier quality proof",async()=>{
     const f=await prepared(), now=Date.now();
     vi.useFakeTimers();vi.setSystemTime(now);
@@ -186,38 +204,19 @@ describe("AND-423 explicit merge deliveries",()=>{
     expect(new AgentSessionStore(f.store.database).getForAccount(f.owner.id,b.sessionId).sessionPurpose).toBe("integration");
     expect(f.db.prepare("SELECT COUNT(*) AS n FROM dispatch_items WHERE dispatch_id=?").get(b.dispatchId)).toMatchObject({n:0});
   });
-  it("AND-455 dispatches auto-merge as the batch default and keeps the merge gate intact",async()=>{
-    const f=await prepared();f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
-    const b=f.merges.start(f.owner.id,randomUUID(),[{id:f.d.id,revision:f.d.revision}],f.config,false,1);
-    const prompt=(f.db.prepare("SELECT initial_text FROM free_session_starts WHERE dispatch_id=?").get(b.dispatchId) as {initial_text:string}).initial_text;
-    // Arming auto-merge replaces per-item waiting for a merge notification.
-    expect(prompt).toContain("gh pr merge --auto --merge --match-head-commit");
-    expect(prompt).toContain("--disable-auto");
-    // The gate is not relaxed: exact head binding, protected checks and no --admin.
-    expect(prompt).toContain("--match-head-commit");
-    expect(prompt).toContain("禁止 --admin");
-    expect(prompt).toContain("required checks 全绿");
-  });
-  it.each([false,true])("AND-507/508 front-loads read-only readiness and itemized evidence even when publish=%s",async publish=>{
+  it.each([false,true])("dispatches project-specific workflows and preserves publication boundaries (%s)",async publish=>{
     const f=await prepared();f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
     const b=f.merges.start(f.owner.id,randomUUID(),[{id:f.d.id,revision:f.d.revision}],f.config,publish,1);
     const prompt=(f.db.prepare("SELECT initial_text FROM free_session_starts WHERE dispatch_id=?").get(b.dispatchId) as {initial_text:string}).initial_text;
-    expect(prompt).toContain("先做发布就绪预检，再保存集成计划");
-    expect(prompt).toContain("missiongo-release readiness --candidates");
-    expect(prompt).toContain("全量 list_release_candidates(includeUnscoped:true)");
-    expect(prompt).toContain("不自动安装");
-    expect(prompt).toContain("未选择发布也做只读调查，但不构建、安装或发布");
-    expect(prompt).toContain("按operation核实实际合并或既有references后刷新主线和release:state");
-    expect(prompt).toContain("仅在原授权范围内一次准备");
-    expect(prompt).toContain("启动快照不是部署凭据");
-    expect(prompt).toContain("对象/结果/证据与验证缺口/下一步责任");
-    expect(prompt).toContain("限定目标文件摘要和实际入口成功检查");
-    expect(prompt).toContain("部分产物不能报完整交付");
-    expect(prompt).toContain("不得隐藏或改写原生源消息");
-    expect(prompt).toContain("不重复全量计数/列表/日志");
-    expect(prompt).toContain("未核实送达不报通知成功，人工验收由人决定");
-    expect(f.store.getWorkItem(f.item.key).status).toBe("in_progress");
-    expect(b.publish).toBe(publish);
+    for(const text of ["不要求新增配置文件","未开启 auto-merge","项目自有流程","失败","not_applicable","unknown","不得 --admin","精确 executionHead","原有效 authorizationRef","不重复合并","对象/结果/证据与验证缺口/下一步责任","人工验收由人决定"])
+      expect(prompt).toContain(text);
+    expect(prompt).not.toContain("missiongo-release readiness --candidates");
+    expect(prompt).not.toContain("不要逐项等待 CI 通知或手动合并");
+    expect(b.publish).toBe(publish);expect(f.store.getWorkItem(f.item.key).status).toBe("in_progress");
+    const dispatches=new DispatchStore(f.store.database);dispatches.claimNextDispatch(f.node.nodeId);dispatches.recordDispatchResult({nodeId:f.node.nodeId,dispatchId:b.dispatchId,status:"launched"});
+    const read=f.merges.batch(f.owner.id,b.dispatchId,b.id);
+    expect(read.projectWorkflowInstructions).toContain("不要求新增配置文件");
+    expect(read.prerequisiteObservation.batchId).toBe(b.id);
   });
   it("preserves confirmation when only same-head evidence refreshes",async()=>{
     const f=await prepared();f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
@@ -342,6 +341,24 @@ describe("planned integration batches",()=>{
     const finish=()=>{act({kind:"final_validation",head:"c".repeat(40),checkedAt:new Date().toISOString(),validation:"Finished original synthetic batch",source:"Synthetic"});return f.merges.finish(f.owner.id,b.dispatchId,b.id);};
     return {...f,b,deliveries,current,act,plan,check,merged,finish};
   }
+  it("native release tools block publication rather than merge and stay bound to the original repository",async()=>{
+    const f=await batchFixture(1,false,true),d=f.deliveries[0]!;
+    f.act(f.plan);f.check(d.id);
+    const old=syntheticPrerequisites(f.current());
+    const action=prerequisitesActionSchema.parse({...old,workflow:{tools:"project_native",repositories:[d.repository],source:"Existing project release guide",digest:"f".repeat(64)},context:{base:old.context.base,candidates:old.context.candidates},
+      conditions:[...old.conditions.filter(c=>["main","authorization","scope"].includes(c.kind)).map(c=>({...c,dependencies:c.kind==="main"?["base","heads"]:c.kind==="scope"?["scope","candidates"]:["scope"]})),
+        {id:"native-tool",kind:"investigation",category:"blocker",stage:"pre_publish",required:true,state:"pending",reason:"Existing publisher unavailable",owner:"Executor",resumeWhen:"Recover existing tool",dependencies:["scope"]}]});
+    expect(()=>f.act({...action,workflow:{...action.workflow!,repositories:["https://github.com/other/project"]}})).toThrow();
+    f.act(action);expect(f.current().entries[0]!.mergeReady).toBe(true);
+    f.merged(d.id);expect(f.current().results[d.id]?.status).toBe("merged");
+    expect(f.current().publicationPrerequisiteGate).toMatchObject({required:true,ready:false});
+    f.act({kind:"final_validation",head:"c".repeat(40),checkedAt:new Date().toISOString(),source:"Actual target",validation:"Combined smoke passed"});
+    const publishing=()=>({kind:"publication_progress" as const,state:"publishing" as const,checkedAt:new Date().toISOString(),resultsDigest:f.current().resultsDigest,detail:"Starting native publisher"});
+    expect(()=>f.act(publishing())).toThrow(/发布前置/);
+    expect(f.current().results[d.id]?.status).toBe("merged");
+    f.act({...action,observation:f.current().prerequisiteObservation,conditions:[{...action.conditions.at(-1)!,state:"satisfied"}]});
+    f.act(publishing());expect(f.current().integration!.publication?.state).toBe("publishing");
+  });
   it("keeps AND-520 ownership while AND-521 waits and resumes the same batch",async()=>{
     const f=await batchFixture(1,false,true),d=f.deliveries[0]!;
     f.act(f.plan);f.check(d.id);

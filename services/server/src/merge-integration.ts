@@ -1,3 +1,5 @@
+import { projectCheckSatisfied } from "@missiongo/contracts";
+import { projectCheckStateSchema, projectVerificationSchema, validateProjectChecks } from "./project-verification.js";
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import type { MergeIntegration } from "@missiongo/contracts";
@@ -16,7 +18,7 @@ export const integrationActionSchema=z.discriminatedUnion("kind",[
   z.object({kind:z.literal("cancel_repair"),...entry,repairId:id,observedHead:sha,noExecutionRemaining:z.literal(true),reason:text,source:text}),
   z.object({kind:z.literal("repair"),...entry,repairId:id,head:sha,commits:z.array(sha).min(1).max(100),validation:text,source:text}),
   z.object({kind:z.literal("check"),...entry,base:sha,checkedAt:z.string().datetime(),source:text,
-    checks:z.enum(["passed","pending","failed","unknown"]),mergeable:z.enum(["clean","conflicting","unknown"]),local:z.enum(["passed","failed","pending"]),validation:text}),
+    checks:projectCheckStateSchema,verification:projectVerificationSchema.optional(),mergeable:z.enum(["clean","conflicting","unknown"]),local:z.enum(["passed","failed","pending","not_applicable"]),validation:text}).superRefine(validateProjectChecks),
   z.object({kind:z.literal("progress"),...entry,phase:z.enum(["queued","investigating","waiting_ci"]),detail:text}),
   z.object({kind:z.literal("publication_progress"),state:z.enum(["publishing","failed","ended"]),checkedAt:z.string().datetime(),resultsDigest:z.string().regex(/^[a-f0-9]{64}$/),detail:text}),
   z.object({kind:z.literal("final_validation"),head:sha,checkedAt:z.string().datetime(),validation:text,source:text}),
@@ -69,8 +71,8 @@ export function applyIntegrationAction(state:MergeIntegration, action:Integratio
     } else if(action.kind==="check") {
       if(e.repair)integrationDenied("先核实进行中的修复。");
       if(!freshIntegrationCheck(action.checkedAt))integrationDenied("请读取实时检查结果。");
-      e.check={head:e.head,base:action.base,checkedAt:action.checkedAt,source:action.source,checks:action.checks,mergeable:action.mergeable,local:action.local,validation:action.validation};
-      e.progress=action.checks==="passed"&&action.local==="passed"&&action.mergeable==="clean"?"ready":action.checks==="pending"?"waiting_ci":"investigating";e.detail=action.validation;
+      e.check={head:e.head,base:action.base,checkedAt:action.checkedAt,source:action.source,verification:action.verification,checks:action.checks,mergeable:action.mergeable,local:action.local,validation:action.validation};
+      e.progress=projectCheckSatisfied(action.checks,action.verification)&&projectCheckSatisfied(action.local,action.verification,true)&&action.mergeable==="clean"?"ready":action.checks==="pending"?"waiting_ci":"investigating";e.detail=action.validation;
     } else {e.progress=action.phase;e.detail=action.detail;delete e.check;}
     delete state.finalValidation;
   }
@@ -80,7 +82,7 @@ export function applyIntegrationAction(state:MergeIntegration, action:Integratio
 }
 export function assertIntegrationMerge(state:MergeIntegration,id:string,results:Record<string,{status:string}>,{allowPendingCI=false}:{allowPendingCI?:boolean}={}) {
   const plan=state.plans.at(-1),e=state.entries[id],check=e?.check;
-  const ciReady=check?.checks==="passed"||(allowPendingCI&&check?.checks==="pending");
-  if(!plan||!e||e.repair||!check||check.head!==e.head||!freshIntegrationCheck(check.checkedAt)||!ciReady||check.mergeable!=="clean"||check.local!=="passed")integrationDenied("必须完成整批规划，并核验最终提交的本地检查、CI 与冲突结果。");
+  const ciReady=projectCheckSatisfied(check?.checks,check?.verification)||(allowPendingCI&&check?.checks==="pending"&&(!check.verification || check.verification.autoMerge&&check.verification.protectedChecks));
+  if(!plan||!e||e.repair||!check||check.head!==e.head||!freshIntegrationCheck(check.checkedAt)||!ciReady||check.mergeable!=="clean"||!projectCheckSatisfied(check.local,check.verification,true))integrationDenied("必须完成整批规划，并核验最终提交的本地检查、CI 与冲突结果。");
   if(plan.entries.find(entry=>entry.deliveryId===id)!.dependsOn.some(dep=>results[dep]?.status!=="merged"))integrationDenied("计划依赖尚未合并。");
 }

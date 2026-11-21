@@ -129,3 +129,36 @@ describe("publication prerequisites",()=>{
     expect(prerequisiteGate(b,true).blockers.map(c=>c.id)).toEqual(["authorization","scope"]);
   });
 });
+
+describe("native project stage adaptation",()=>{
+  const native=(b=fixture())=>{
+    const a=prerequisiteEvidence(b);
+    return prerequisitesActionSchema.parse({...a,workflow:{tools:"project_native",repositories:["https://github.com/example/project"],source:"Existing project release guide",digest:"f".repeat(64)},context:{base:a.context.base,candidates:a.context.candidates},
+      conditions:a.conditions.filter(c=>["main","authorization","scope"].includes(c.kind)).map(c=>({...c,dependencies:c.kind==="authorization"?["scope"]:c.dependencies}))});
+  };
+  it("needs no shared tool installation and gates the actual publication stage separately",()=>{
+    const b=fixture(),a=native(b);
+    a.conditions.push({id:"native-publish",kind:"investigation",category:"blocker",stage:"pre_publish",required:true,state:"unknown",reason:"Project signing credential unavailable",owner:"Project release operator",resumeWhen:"Verify existing credential",dependencies:["scope"]});
+    recordPrerequisites(b,a);
+    expect(prerequisiteGate(b,true).ready).toBe(true);
+    expect(prerequisiteGate(b,true,undefined,Date.now(),"pre_publish").ready).toBe(false);
+    recordPrerequisites(b,{...a,conditions:[{...a.conditions.at(-1)!,state:"satisfied"}]});
+    expect(prerequisiteGate(b,true,undefined,Date.now(),"pre_publish").ready).toBe(true);
+  });
+  it("migrates old blockers explicitly, preserves history and rejects circular dependency waivers",()=>{
+    const b=fixture(),old=prerequisiteEvidence(b);old.conditions[1]!.state="unknown";recordPrerequisites(b,old);
+    const a=native(b);
+    const tools=old.conditions.filter(c=>["installation_integrity","required_capability"].includes(c.kind)).map(c=>({...c,state:"not_required" as const,required:false,dependencies:["scope" as const],reason:"This project does not use the MissionGo release tools"}));
+    recordPrerequisites(b,{...a,conditions:[...a.conditions,...tools]});
+    expect(prerequisiteGate(b,true).ready).toBe(true);
+    expect(b.integration!.prerequisites!.history?.[0]?.conditions[1]).toMatchObject({state:"unknown"});
+    const cycle=fixture(),prior=prerequisiteEvidence(cycle);prior.conditions[1]!.dependsOnDeliveries=[{deliveryId:"two",head:"a".repeat(40)}];recordPrerequisites(cycle,prior);
+    expect(()=>recordPrerequisites(cycle,{...native(cycle),conditions:[...a.conditions,...tools]})).toThrow(/循环/);
+  });
+  it("refreshes project rule bindings without changing scope authorization or granting permission",()=>{
+    const b=fixture(),a=native(b);recordPrerequisites(b,a);
+    recordPrerequisites(b,{...a,workflow:{...a.workflow!,source:"Changed project rule source"},conditions:[a.conditions[0]!]});
+    expect(prerequisiteGate(b,true).ready).toBe(false);
+    expect(()=>prerequisitesActionSchema.parse({...a,conditions:[{...a.conditions.find(c=>c.kind==="authorization")!,authorizationRef:undefined}]})).toThrow();
+  });
+});

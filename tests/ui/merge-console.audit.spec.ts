@@ -162,10 +162,10 @@ for(const width of [320,1440]) for(const theme of ["light","dark"] as const) tes
     nodeName:"Fixture",nodeId:"fixture",nodeConnectionState:"online",mode:"auto",dispatchStatus:"launched",activities:[],settings:{},unread:false,
     canReply:true,canRetry:false,canStop:false,canArchive:true,attention:{state:"none"},needsAttention:false,items:[]};
   const entry=(key:string,progress:string)=>({itemKeys:[key],originalHead:"a".repeat(40),head:"b".repeat(40),progress,detail:"根据已确认需求核实接口兼容与回归，不扩大功能范围",repairs:[]});
-  const batch={prerequisiteGate:{required:true,ready:false,blockers:[{id:"permission",code:width===320?"cycle":"stale",reason:"等待原安装请求的实际结果\n"+"f".repeat(160),owner:"本机维护者",resumeWhen:"核实原请求与工具摘要，复用有效授权"}]},presentation:{historicalGaps:[{identity:"IP-4:old",title:"历史阶段记录",reason:"已审阅的历史缺证记录，保留告警，不计为本次交付。"}],entries:Object.fromEntries(["a","b","c"].map((key,i)=>[key,{title:["基础接口","会话控制台修复","外部合并核验"][i],summary:"原始交付说明，含旧的未发布记录",pullRequestUrl:"https://github.com/example/project/pull/1",requiredArtifacts:["web"],publication:i===0?"published":"pending",releases:[]}]))},id:"integration",sessionId:id,state:"active",deliveries:["a","b","c"],publish:true,results:{a:{status:"merged",detail:"基础改动已合并"},c:{status:"blocked",detail:"外部提交需要核对"}},
+  const batch={publicationPrerequisiteGate:{required:width===1440,ready:false,blockers:[{id:"native-publish",code:"stale",reason:"等待原安装请求的实际结果",owner:"本机维护者",resumeWhen:"核实原请求与工具摘要，复用有效授权"}]},prerequisiteGate:{required:width===320,ready:false,blockers:[{id:"permission",code:width===320?"cycle":"stale",reason:"等待原安装请求的实际结果\n"+"f".repeat(160),owner:"本机维护者",resumeWhen:"核实原请求与工具摘要，复用有效授权"}]},presentation:{historicalGaps:[{identity:"IP-4:old",title:"历史阶段记录",reason:"已审阅的历史缺证记录，保留告警，不计为本次交付。"}],entries:Object.fromEntries(["a","b","c"].map((key,i)=>[key,{title:["基础接口","会话控制台修复","外部合并核验"][i],summary:"原始交付说明，含旧的未发布记录",pullRequestUrl:"https://github.com/example/project/pull/1",requiredArtifacts:["web"],publication:i===0?"published":"pending",releases:[]}]))},id:"integration",sessionId:id,state:"active",deliveries:["a","b","c"],publish:true,results:{a:{status:"merged",detail:"基础改动已合并"},c:{status:"blocked",detail:"外部提交需要核对"}},
     integration:{protocol:1,revision:7,plans:[{base:"c".repeat(40),summary:"先合基础接口，再核实依赖功能；独立改动单独处理",validation:"最终主线组合行为与仓库检查",at,
       entries:["a","b","c"].map((deliveryId,i)=>({deliveryId,head:"b".repeat(40),dependsOn:i===1?["a"]:[],group:i<2?"接口兼容":"独立变更",reason:"读取相互影响后确定顺序",validation:"保留已有行为并验证新增功能"}))}],
-      entries:{a:entry("IP-1","ready"),b:{...entry("IP-2","waiting_ci"),repairs:[{id:"repair",fromHead:"a".repeat(40),head:"b".repeat(40),base:"c".repeat(40),reason:"修复重复渲染",commits:["b".repeat(40)],validation:"回归测试已通过，远程 CI 排队中",source:"Fixture",at}]},c:entry("IP-3","investigating")},events:[{id:"event",digest:"digest",action:"plan",at,detail:"整批计划已保存，断线恢复沿用原批次"}]}};
+      entries:{a:entry("IP-1","ready"),b:{...entry("IP-2","waiting_ci"),check:{head:"b".repeat(40),base:"c".repeat(40),checkedAt:at,checks:"not_applicable",local:"not_applicable",mergeable:"clean",source:"Existing project rules",validation:"既有人工验证已核实，自动检查不适用",verification:{repository:"https://github.com/example/project",targetBranch:"develop",rulesSource:"Existing release guide",rulesDigest:"e".repeat(64),reason:"项目沿用人工冒烟流程，不要求 CI 或本地自动测试",ci:"not_required",local:"not_required",platformRead:"complete",requiredChecks:[],observedChecks:[],autoMerge:false,protectedChecks:false,mergeMethod:"squash"}},repairs:[{id:"repair",fromHead:"a".repeat(40),head:"b".repeat(40),base:"c".repeat(40),reason:"修复重复渲染",commits:["b".repeat(40)],validation:"回归测试已通过，远程 CI 排队中",source:"Fixture",at}]},c:entry("IP-3","investigating")},events:[{id:"event",digest:"digest",action:"plan",at,detail:"整批计划已保存，断线恢复沿用原批次"}]}};
   await page.route("**/api/v1/agent-sessions**",route=>queueRoute(route).fulfill({json:new URL(route.request().url()).pathname==="/api/v1/agent-sessions"?{sessions:[session]}:{...session,messages:[{id:"native-latest",sourceId:"native-latest",role:"agent",text:"原生会话的最新回复",occurredAt:at}]}}));
   await page.route(/\/(?:merge-deliveries|integration-queue)(?:\?.*)?$/,route=>queueRoute(route).fulfill({json:{deliveries:[],batches:[batch]}}));
   await page.goto(`/?product=${product.id}&console=agent&session=${id}`);
@@ -191,12 +191,15 @@ for(const width of [320,1440]) for(const theme of ["light","dark"] as const) tes
   await expect(chrome.locator(":scope > header")).toBeInViewport();
   expect(await chrome.evaluate(el=>el.scrollTop)).toBe(0);
   await expect(progress.getByRole("button",{name:/基础接口/})).toBeHidden();
+  await expect(progress.getByText("本项目无需此项（已核实）",{exact:false})).toHaveCount(2);
+  await expect(progress).not.toContainText("尚无可核对的结果");
   await progress.getByRole("button",{name:"处理经过",exact:true}).click();
   await expect(progress.getByRole("heading",{name:"处理经过",exact:true})).toBeVisible();
   await page.goBack();
   await expect(progress.getByRole("button",{name:"处理经过",exact:true})).toBeFocused();
   await progress.getByRole("button",{name:"技术依据",exact:true}).click();
   await expect(progress).toContainText("修复重复渲染");
+  await expect(progress).toContainText("项目沿用人工冒烟流程，不要求 CI 或本地自动测试");
   for(const scale of ["small","medium","large"]) {
     await page.evaluate(value=>{document.documentElement.dataset.fontScale=value;},scale);
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);

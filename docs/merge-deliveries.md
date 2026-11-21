@@ -94,7 +94,7 @@ PR、head、目标分支、产物与执行配置。执行设备须支持项目�
 
 新批次交接要求完整计划、依赖已合并、最终执行 head 的新鲜本地与远端检查通过。每项成功合并会清空其他未完成项的检查，外部主线变化由执行脚本 expectedBase 核验，须重新验证。最终目标分支组合验证绑定整批实际结果；没有这份记录不能关闭含已合并项的批次。blocked 不代表未知结果；部分失败不自动发布。
 
-`mergeReady` 表示可对精确执行 head 挂自动合并：本地检查通过、无冲突且其他门禁满足时，实时 CI 为 `pending` 或 `passed` 均可；失败、未知检查不能放行。CI 未完成不允许登记已合并结果，`report_merge_batch` 仍要求新鲜的通过证据。实际合并继续由 GitHub required checks 保护，不提供手动绕过保护的权限。
+`mergeReady` 按当前项目流程核验精确执行 head、base、本地/远端检查及冲突。新版 verification 只有明确不要求且证据完整的检查可为 not_applicable；失败、未知不能放行。pending 仅在 auto-merge 已启用且可靠保护必需检查时允许挂起，不代表已合并。未开启 auto-merge 时可等检查通过后直接合并，不要求改变仓库设置；不提供绕过保护的权限。旧证据不自动解释为新适用性。
 
 控制台会话与待合并弹窗共用 IntegrationProgress，显示计划、顺序、分组、依赖、每项阶段和修复/验证详情；保留原确认与修复记录，刷新或重连不丢进度。不新增条目业务状态或计划批准步骤。旧批次明确显示原授权边界。
 
@@ -188,3 +188,16 @@ integration-queue 在一个只读 SQLite 快照内返回行、计数和 occupanc
 Web 决定须携带所展示请求的 `publicationScopeDigest`，缺少或错误摘要均拒绝，因此旧缓存界面不能只显示旧说明就批准新范围。原有无范围刷新请求保留原格式。原生确认使用已完整展示并签名绑定的范围内容，不接收 Agent 代填批准事实。
 
 发布开始继续对账冻结范围与实时完整候选；历史缺证的例外必须能回溯到已批准并应用的原请求。记录补齐或范围变化后不能沿用例外。全量必需产物、实时 Git/CI、备份、健康、公开凭据和逐项交接保持原门禁；`ended` 及缺证说明不证明已发布。
+
+
+## 跨项目适配
+
+默认沿用仓库现有规则，不新增必填配置、统一 CI 或专用工具要求。服务端新启动提示与 get_merge_batch.projectWorkflowInstructions 使用同一规则；原活动批次可读取新说明和 prerequisiteObservation，不重建批次或扩大原修复/发布权限。
+
+领域 verification 绑定实际仓库/分支、外层 head/base/时间、规则来源与摘要、检查适用性及平台能力。not_applicable 与 passed/unknown/failed 独立保存；提议、刷新、批次检查、报告与恢复共用判定。无 CI 须核实完整规则与平台事实，不能把空检查或取证失败当作无 CI。不存在自动测试命令不要求新增系统，验证缺口仍可见。
+
+支持项目允许的直接合并、受保护的 auto-merge、squash/rebase/队列；不修改保护设置。真实落地提交须在目标分支，squash/rebase 不要求原 head 是目标祖先；外部恢复仍须证明原批准 head 包含在实际 PR 最终 head，避免借适配纳入外部未审范围。
+
+prerequisites.workflow 的 project_native 仅标识实际已核实的自有工具流程，repositories 必须精确覆盖批次仓库，source/digest 保留已有规则证据；base/candidates 仍绑定实际主线和完整发布范围，main/authorization/scope 仍在合并前核实。工具、签名与分发能力可按实际项目要求放在 pre_publish，发布启动前验证。旧工具条件须显式分类与更新原因，原检查历史保留；未解除循环不能豁免。采用 MissionGo 入口仍保留原工具摘要与五类要求。
+
+发布工具不必实现 coverageVersion:2；执行端负责读全 MissionGo 候选分页并把项目原生分发证据映射至领域交接。只有发布被完整核实时才记录完整上线，交接失败保留已合并事实和具体缺口。平台和项目真实限制仍生效；本轮保留 GitHub PR 入口，不新增其他托管平台支持。
