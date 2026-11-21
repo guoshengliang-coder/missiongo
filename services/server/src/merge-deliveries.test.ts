@@ -1801,6 +1801,7 @@ for(const [itemCount,batchCount] of [[500,100],[1000,200]])it(`AND-484 scale ${i
       queries=0;
       const at=performance.now(),response=await f.app.inject({method:"GET",url:`/api/v1/products/${f.item.productId}/merge-deliveries`,headers:{cookie}});
       times.push(performance.now()-at);queryCounts.push(queries);expect(response.statusCode).toBe(200);
+      expect(response.headers["content-type"]).toBe("application/json; charset=utf-8");
       if(i===0)expect(response.json()).toEqual(expected);
     }
   }finally{heavy.mockRestore();counter.mockRestore();}
