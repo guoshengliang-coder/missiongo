@@ -2568,7 +2568,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return reply.status(201).send(dispatch);
   });
 
-  app.get("/api/v1/products/:productId/merge-deliveries",async request=>{
+  app.get("/api/v1/products/:productId/merge-deliveries",async (request,reply)=>{
     const {productId}=request.params as {productId:string};
     requireProductPermission(request,productId,"view");
     const accountId=requireAccountId(request);
@@ -2576,7 +2576,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if(sessionId!==undefined && (typeof sessionId!=="string" || !sessionId || sessionId.length>200))throw invalidInput("Invalid session ID.");
     // Projections are already restricted to the account and project. The filter
     // narrows that scope, including standalone deliveries without work items.
-    return {deliveries:merges.list(productId,accountId,sessionId),batches:merges.batches(productId,accountId,sessionId),attentionSessionIds:merges.attentionSessionIds(productId,accountId,sessionId),sessionProgress:merges.sessionProgress(productId,accountId,sessionId)};
+    return reply.type("application/json").send(merges.serializeList(productId,accountId,sessionId));
   });
   app.get("/api/v1/products/:productId/integration-queue",async request=>{
     const {productId}=request.params as {productId:string};requireProductPermission(request,productId,"view");

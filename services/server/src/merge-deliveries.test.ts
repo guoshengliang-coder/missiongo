@@ -700,6 +700,9 @@ describe("planned integration batches",()=>{
     raw.integration.events[0].detail=JSON.parse('{"__proto__":{"polluted":true},"constructor":"own","nested":[null,false,4,{"text":"original"}]}');
     const save=()=>f.db.prepare("UPDATE merge_batches SET data_json=? WHERE id=?").run(JSON.stringify(raw),f.b.id);
     save();
+    const response=(productId=f.item.productId,accountId=f.owner.id,sessionId?:string)=>JSON.parse(f.merges.serializeList(productId,accountId,sessionId).toString("utf8"));
+    const expected=()=>JSON.parse(JSON.stringify({deliveries:f.merges.list(f.item.productId,f.owner.id),batches:f.merges.batches(f.item.productId,f.owner.id),
+      attentionSessionIds:f.merges.attentionSessionIds(f.item.productId,f.owner.id),sessionProgress:f.merges.sessionProgress(f.item.productId,f.owner.id)}));
     const text=(f.db.prepare("SELECT data_json FROM merge_batch_projection WHERE id=?").get(f.b.id) as {data_json:string}).data_json;
     let parses=0;const parse=JSON.parse,spy=vi.spyOn(JSON,"parse").mockImplementation((input,...args)=>{if(input===text)parses++;return parse(input,...args);});
     try {
@@ -712,6 +715,12 @@ describe("planned integration batches",()=>{
       first[0]!.integration!.plans[0]!.summary="Caller mutation";
       (detail.nested as unknown[])[3]="Caller nested mutation";
       expect(f.merges.batches(f.item.productId,f.owner.id)).toEqual(second);
+      expect(response()).toEqual(expected());
+      const body=f.merges.serializeList(f.item.productId,f.owner.id);body.fill(0);
+      expect(response()).toEqual(expected());
+      expect(response(f.item.productId,f.other.id).batches).toEqual([]);
+      expect(response("other-product").batches).toEqual([]);
+      expect(response(f.item.productId,f.owner.id,f.b.sessionId).batches).toEqual(response().batches);
       expect(f.merges.batches(f.item.productId,f.other.id)).toEqual([]);
       expect(f.merges.batches("other-product",f.owner.id)).toEqual([]);
       expect(f.merges.batches(f.item.productId,f.owner.id,f.b.sessionId)).toEqual(second);
@@ -721,9 +730,11 @@ describe("planned integration batches",()=>{
         // an in-transaction projection update before rolling the fixture back.
         f.db.prepare("UPDATE merge_batch_projection SET data_json=json_set(data_json,'$.integration.plans[0].summary',?) WHERE id=?").run(raw.integration.plans[0].summary,f.b.id);
         expect(f.merges.batches(f.item.productId,f.owner.id)[0]!.integration!.plans[0]!.summary).toBe(raw.integration.plans[0].summary);
+        expect(response()).toEqual(expected());
         throw Error("rollback template input");
       })).toThrow("rollback template input");
       expect(f.merges.batches(f.item.productId,f.owner.id)).toEqual(second);
+      expect(response()).toEqual(expected());
       save();expect(f.merges.batches(f.item.productId,f.owner.id)[0]!.integration!.plans[0]!.summary).toBe(raw.integration.plans[0].summary);
       // A same-byte-length change must invalidate the template too; neither
       // UTF-8 length nor a row identity is sufficient as a freshness key.
@@ -734,7 +745,26 @@ describe("planned integration batches",()=>{
       expect(Buffer.byteLength(JSON.stringify(before))).toBe(Buffer.byteLength(JSON.stringify(after)));
       expect(after[0]!.integration!.plans[0]!.summary).toBe(raw.integration.plans[0].summary);
       expect(after).not.toEqual(before);
+      expect(response()).toEqual(expected());
     } finally {spy.mockRestore();}
+  });
+  it("serializes current prerequisite expiry independently of cached large history",async()=>{
+    const f=await batchFixture(1,false,true),d=f.deliveries[0]!;
+    f.act({...f.plan,summary:"Large history. ".repeat(250),validation:"Verification. ".repeat(250),
+      entries:f.plan.entries.map(entry=>({...entry,reason:"Reason. ".repeat(450),validation:"Validation. ".repeat(300)}))});
+    f.check(d.id);f.act(syntheticPrerequisites(f.current()));
+    const read=()=>JSON.parse(f.merges.serializeList(f.item.productId,f.owner.id).toString("utf8")).batches[0];
+    expect(read().prerequisiteGate.ready).toBe(true);
+    const now=Date.now(),clock=vi.spyOn(Date,"now").mockReturnValue(now+301_000);
+    try{expect(read().prerequisiteGate.ready).toBe(false);expect(read().prerequisiteGate.blockers.some((b:{code:string})=>b.code==="stale")).toBe(true);}
+    finally{clock.mockRestore();}
+    expect(read().prerequisiteGate.ready).toBe(true);
+    f.grant(false);
+    expect(read()).toEqual(JSON.parse(JSON.stringify(f.merges.batches(f.item.productId,f.owner.id)[0])));
+    expect(()=>f.merged(d.id)).toThrow();
+    f.grant();expect(read().presentation.entries[d.id].publication).toBe("pending");
+    new AgentSessionStore(f.store.database).enqueue(f.owner.id,f.projectSessionId,"New input invalidates pending source activity",[]);
+    expect(read().presentation.entries[d.id].publication).toBe("unknown");
   });
   it("aggregates session stages with exact expiry, scope and JSON key preservation",async()=>{
     const f=await prepared(),now=Date.now(),session='quoted-"-\\-会话';
