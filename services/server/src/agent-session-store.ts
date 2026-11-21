@@ -732,7 +732,7 @@ export class AgentSessionStore {
   /** Stable batch identity survives completion, archival and startup retries. */
   private integrationSessionIds(accountId: string): Set<string> {
     const rows = this.database.connection.prepare(
-      "SELECT json_extract(data_json, '$.sessionId') AS session_id FROM merge_batches WHERE account_id = ?",
+      "SELECT json_extract(data_json, '$.sessionId') AS session_id FROM merge_batches WHERE account_id = ? AND json_type(data_json,'$.conversation') IS NULL",
     ).all(accountId) as unknown as Array<{ session_id: string }>;
     return new Set(rows.map(row => row.session_id));
   }
