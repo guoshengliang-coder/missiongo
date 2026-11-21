@@ -2,7 +2,7 @@ import { OverlayMenu } from "./overlay";
 import { Select } from "./select";
 import { useConfirm } from "./confirm-dialog";
 import { useEffect, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronRight, ClipboardCheck, LoaderCircle, Pencil, Plus, Trash2, Unplug, UserRound, X } from "lucide-react";
 
 import { MIN_PASSWORD_LENGTH } from "@missiongo/domain";
@@ -135,6 +135,47 @@ function PasswordForm({ onCancel, onSaved }: { onCancel: () => void; onSaved: ()
 
 function InlineNote({ message, danger = false }: { message: string; danger?: boolean }) {
   return <p className={danger ? "account-note danger" : "account-note"}>{message}</p>;
+}
+
+function ResetPasswordForm({ account, onCancel, onSaved }: { account: Account; onCancel: () => void; onSaved: () => void }) {
+  const { t } = useI18n();
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const submitting = useRef(false);
+  const mutation = useMutation({
+    mutationKey: ["account-password-reset"],
+    mutationFn: () => api.updateAccount(account.id, { password }),
+    onSuccess: () => {
+      setPassword("");
+      setConfirmation("");
+      onSaved();
+    },
+    onSettled: () => { submitting.current = false; },
+  });
+  useSettingsDraft(Boolean(password || confirmation), mutation.isPending);
+  const ready = password.length >= MIN_PASSWORD_LENGTH && password === confirmation;
+  return <form className="dialog-form" onSubmit={event => {
+    event.preventDefault();
+    if (!ready || submitting.current) return;
+    submitting.current = true;
+    mutation.mutate();
+  }}>
+    <p className="account-note">{t("resetAccountPasswordHelp", { email: account.email })}</p>
+    {account.disabledAt && <p className="account-note">{t("resetSuspendedPasswordHelp")}</p>}
+    <label>{t("newPassword")}<input type="password" required autoComplete="new-password" minLength={MIN_PASSWORD_LENGTH}
+      value={password} onChange={event => setPassword(event.target.value)} disabled={mutation.isPending} /></label>
+    <label>{t("confirmNewPassword")}<input type="password" required autoComplete="new-password"
+      value={confirmation} onChange={event => setConfirmation(event.target.value)} disabled={mutation.isPending} /></label>
+    {password.length > 0 && password.length < MIN_PASSWORD_LENGTH && <p className="account-note">{t("passwordTooShort", { count: MIN_PASSWORD_LENGTH })}</p>}
+    {confirmation.length > 0 && password !== confirmation && <p className="account-note">{t("passwordsDoNotMatch")}</p>}
+    {mutation.isError && <p role="alert" className="account-note danger">{t("resetAccountPasswordFailed")}</p>}
+    <div className="form-footer">
+      <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={onCancel}>{t("cancel")}</button>
+      <button type="submit" className="primary-button" disabled={!ready || mutation.isPending}>
+        {mutation.isPending && <LoaderCircle className="spin" size={15} />}{t("resetAccountPassword")}
+      </button>
+    </div>
+  </form>;
 }
 
 /**
@@ -638,6 +679,7 @@ function AccountRow({
   const [email, setEmail] = useState(account.email);
   const [nickname, setNickname] = useState(account.nickname ?? "");
   const [permissionsOnly, setPermissionsOnly] = useState(Boolean(filterProductId));
+  const [resettingPassword, setResettingPassword] = useState(false);
   const permission = account.permissions.find(row => row.productId === filterProductId) ?? { canView: false, canOperate: false, canUseAi: false };
   const projectAdministrator = Boolean(filterProductId && account.projectAdministratorProductIds?.includes(filterProductId));
   const administrator = account.role === "admin" ? { aiUnrestricted: account.aiScope === "all" } : undefined;
@@ -680,14 +722,20 @@ function AccountRow({
           <span className="account-access-status">{account.disabledAt ? t("suspendedAccount") : "正常"}</span>
         </div>
         <div className="account-access-actions">
-          <button type="button" className="secondary-button" disabled={editor !== null} onClick={() => { setPermissionsOnly(Boolean(filterProductId)); setEditor(openAccountEditor(editor, editIntent)); }}>
+          <button type="button" className="secondary-button" disabled={editor !== null} onClick={() => { setResettingPassword(false); setPermissionsOnly(Boolean(filterProductId)); setEditor(openAccountEditor(editor, editIntent)); }}>
             <Pencil size={15} /> {filterProductId ? "修改权限" : t("editAccount")}
           </button>
-          {!filterProductId && <button type="button" className="secondary-button" disabled={editor !== null} onClick={() => { setPermissionsOnly(true); setEditor(openAccountEditor(editor, editIntent)); }}>修改权限</button>}
+          {!filterProductId && <button type="button" className="secondary-button" disabled={editor !== null} onClick={() => { setResettingPassword(false); setPermissionsOnly(true); setEditor(openAccountEditor(editor, editIntent)); }}>修改权限</button>}
           <OverlayMenu className="account-more"><summary className="secondary-button">更多</summary><div className="account-more-actions">
-            {filterProductId && <button type="button" className="secondary-button" disabled={editor !== null} onClick={() => { setPermissionsOnly(false); setEditor(openAccountEditor(editor, editIntent)); }}>{t("editAccount")}</button>}
+            {filterProductId && <button type="button" className="secondary-button" disabled={editor !== null} onClick={() => { setResettingPassword(false); setPermissionsOnly(false); setEditor(openAccountEditor(editor, editIntent)); }}>{t("editAccount")}</button>}
             <small>以下账号操作影响整个工作空间</small>
             {!isSelf && <>
+              <button type="button" className="secondary-button" disabled={editor !== null || suspend.isPending || remove.isPending} onClick={event => {
+                const menu = event.currentTarget.closest("details");
+                if (menu) menu.open = false;
+                setResettingPassword(true);
+                setEditor(openAccountEditor(editor, editIntent));
+              }}>{t("resetAccountPassword")}</button>
               <button type="button" className="secondary-button" disabled={suspend.isPending} onClick={async () => {
                 if (await confirm(`${account.disabledAt ? "恢复" : "停用"}账号 ${account.email}？此操作影响整个工作空间。`)) suspend.mutate(!account.disabledAt);
               }}>{t(account.disabledAt ? "restoreAccount" : "suspendAccount")}</button>
@@ -700,9 +748,16 @@ function AccountRow({
         </div>
       </header>
       {error && <InlineNote danger message={messageFor(error, t, t("somethingWentWrong"))} />}
-      {open && <Modal title={permissionsOnly ? "修改权限" : t("editAccount")} subtitle={accountDisplayName(account)} onClose={() => setEditor(null)}
-        dirty={!permissionsOnly && (email !== account.email || nickname !== (account.nickname ?? ""))} pending={rename.isPending} wide={permissionsOnly} scrolls>
-        {permissionsOnly ? <PermissionGrid account={account} products={products} productId={filterProductId} onCancel={() => setEditor(null)} onSaved={() => setEditor(null)} />
+      {open && <Modal title={resettingPassword ? t("resetAccountPassword") : permissionsOnly ? "修改权限" : t("editAccount")} subtitle={accountDisplayName(account)} onClose={() => setEditor(null)}
+        headerActions={!resettingPassword && !permissionsOnly && !isSelf ? <button type="button" className="secondary-button" disabled={rename.isPending} onClick={async () => {
+          if ((email !== account.email || nickname !== (account.nickname ?? "")) && !await confirm(t("discardDialogHelp"))) return;
+          setEmail(account.email);
+          setNickname(account.nickname ?? "");
+          setResettingPassword(true);
+        }}>{t("resetAccountPassword")}</button> : undefined}
+        dirty={!resettingPassword && !permissionsOnly && (email !== account.email || nickname !== (account.nickname ?? ""))} pending={rename.isPending} wide={!resettingPassword && permissionsOnly} scrolls>
+        {resettingPassword ? <ResetPasswordForm account={account} onCancel={() => setEditor(null)} onSaved={() => { setEditor(null); void invalidate(); }} />
+          : permissionsOnly ? <PermissionGrid account={account} products={products} productId={filterProductId} onCancel={() => setEditor(null)} onSaved={() => setEditor(null)} />
           : <form className="dialog-form" onSubmit={event => { event.preventDefault(); if (nicknameDraft.ok && !rename.isPending) rename.mutate(); }}>
             <label>{t("newAccountEmail")}<input type="email" required value={email} onChange={event => setEmail(event.target.value)} autoComplete="off" /></label>
             <label>{t("nickname")}<input value={nickname} onChange={event => setNickname(event.target.value)} maxLength={MAX_ACCOUNT_NICKNAME_LENGTH} autoComplete="off" /></label>
@@ -812,12 +867,20 @@ export function AccountManagement({ user, products, accountId, filterProductId, 
     } else setLocalEditor(next);
   };
   const accountsQuery = useQuery({ queryKey: ["accounts"], queryFn: api.listAccounts });
+  // Keep the result across the details -> list route remount. Mutation data
+  // contains the public account response, never the submitted password.
+  const resetResults = useMutationState({
+    filters: { mutationKey: ["account-password-reset"] },
+    select: mutation => mutation.state.status === "success" ? (mutation.state.data as Account | undefined)?.email : undefined,
+  });
+  const resetEmail = resetResults.at(-1);
   if (accountsQuery.isPending) return <p className="account-note"><LoaderCircle className="spin" size={15} /></p>;
   if (accountsQuery.isError) return <InlineNote danger message={messageFor(accountsQuery.error, t, t("somethingWentWrong"))} />;
   const accounts = accountsQuery.data.accounts.filter(account => accountId ? account.id === accountId
     : (account.email.toLowerCase().includes(search.trim().toLowerCase()) || (account.nickname ?? "").toLowerCase().includes(search.trim().toLowerCase()))
       && (!filter || account.role === "admin" || account.projectAdministratorProductIds?.includes(filter) || account.permissions.some(permission => permission.productId === filter && (permission.canView || permission.canOperate || permission.canUseAi))));
   return <div className="account-management">
+    {resetEmail && <p role="status" className="account-note">{t("accountPasswordReset", { email: resetEmail })}</p>}
     {!accountId && <>
       <div className="settings-list-toolbar">
         <label className="settings-toolbar-search"><span className="sr-only">{t("settingsSearchAccounts")}</span><input type="search" placeholder={t("settingsSearchAccounts")} value={search} disabled={editor !== null} onChange={event => setSearch(event.target.value)} /></label>
