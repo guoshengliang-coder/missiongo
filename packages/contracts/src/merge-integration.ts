@@ -1,3 +1,5 @@
+import type { ProjectVerification, ProjectCheckState } from "./project-verification.js";
+
 /** Executor-reported integration evidence; the server does not hold Git credentials. */
 export interface IntegrationPlan {
   base: string;
@@ -7,9 +9,10 @@ export interface IntegrationPlan {
 }
 export interface IntegrationCheck {
   head: string; base: string; checkedAt: string; source: string;
-  checks: "passed" | "pending" | "failed" | "unknown";
+  checks: ProjectCheckState;
+  verification?: ProjectVerification | undefined;
   mergeable: "clean" | "conflicting" | "unknown";
-  local: "passed" | "failed" | "pending"; validation: string;
+  local: "passed" | "failed" | "pending" | "not_applicable"; validation: string;
 }
 export interface IntegrationEntry {
   itemKeys: string[]; originalHead: string; head: string;
@@ -47,7 +50,9 @@ export interface IntegrationPrerequisite {
 }
 export interface IntegrationPrerequisites {
   observation: { batchId:string; heads:{deliveryId:string;head:string}[]; scope:string };
-  context: { base: string; candidates: string; tools: string; capabilities: string };
+  context: { base: string; candidates: string; tools?: string | undefined; capabilities?: string | undefined };
+  workflow?: { tools: "project_native" | "missiongo"; repositories: string[]; source: string; digest: string } | undefined;
+  history?: { checkedAt: string; source: string; conditions: IntegrationPrerequisite[]; workflow?: IntegrationPrerequisites["workflow"] }[] | undefined;
   conditions: (IntegrationPrerequisite & { binding: Record<string,string>; checkedAt: string; source: string })[];
   resolutions: {conditionId:string;deliveryId:string;head:string;via:"base"|"tools"|"capabilities";before:string;after:string;source:string}[];
 }

@@ -3,7 +3,7 @@ import type { WorkItemStatus } from "@missiongo/domain";
 /** Append-only reconciliation; observations are supplied by the authorized executor. */
 export interface MergedObservation {
   head:string;commit:string;targetHead:string;checkedAt:string;source:string;
-  checks:"passed";local:"passed";originalIncluded:true;targetIncludesMerge:true;validation:string;
+  checks:"passed"|"not_applicable";local:"passed"|"not_applicable";verification?:import("./project-verification.js").ProjectVerification|undefined;originalIncluded:true;targetIncludesMerge:true;validation:string;
 }
 export type MergeRecoveryAction =
   | {kind:"accept_merge";deliveryId:string;evidence:MergedObservation}

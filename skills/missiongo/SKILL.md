@@ -1,7 +1,7 @@
 ---
 name: missiongo
 description: 通过 MissionGo MCP 查询项目概览、吞吐、交付周期和验收打回率，或完整读取及处理指定条目、评论、创建和上传附件；核实合并与发布后可靠交接。不修改条目正文与字段，不决定验收。
-version: 5.76.0
+version: 5.78.0
 ---
 
 # MissionGo 条目读取与评论
@@ -623,13 +623,13 @@ AI 每小时能建的条目有上限：衍生条目按来源条目计，独立�
 所有 `record_merge_integration` 操作携带最新 `expectedRevision` 和稳定 `idempotencyKey`；响应未知原样重试。恢复先读持久计划、进度、修复预留及实际 Git 结果，不重建批次或重复合并。工具有明确动作：
 - `progress`：保存当前调查、等待和下一步，不凭文字声明检查通过。
 - `action.kind="prepare_repair"`：修复前绑定当前 executionHead、实际远端 head 和最新目标 base，记录修复原因；返回的 `repairId` 只填进后续 `repair`/`cancel_repair` 的 `action.repairId`，各动作的 `idempotencyKey` 相互独立——`repair` 必须使用新 key，沿用预留动作的 key 会命中旧事件并以 digest 不符被判为内容冲突。原始确认永不覆盖。
-- `repair`：在独立 worktree 追加本会话必要修复，保留原确认提交的祖先关系；推送前核对远端仍是预留 head，正常 push 原 PR 分支，不 force。推送后再次核对远端，通过 `scripts/merge-integration-evidence.mjs` 验证原提交、目标基线及完整修复提交链，随后登记 repairId、expectedHead、新 head、commits 与验证说明。不得把他人的新提交冒充自己的修复。该脚本只读，不自动 push。服务端校验身份、一致性和并发版本，不代替执行端核验 Git 真实性。
+- `repair`：在独立 worktree 追加本会话必要修复，保留原确认提交的祖先关系；推送前核对远端仍是预留 head，正常 push 原 PR 分支，不 force。推送后再次核对远端，以当前仓库可用的只读 Git 取证验证原提交、目标基线及完整修复提交链（MissionGo 仓库可用 `scripts/merge-integration-evidence.mjs`），随后登记 repairId、expectedHead、新 head、commits 与验证说明。不得把他人的新提交冒充自己的修复。该脚本只读，不自动 push。服务端校验身份、一致性和并发版本，不代替执行端核验 Git 真实性。
 - `cancel_repair`：只在确认未推送、远端仍为预留 head 且无后台执行时，提供 observedHead、repairId、noExecutionRemaining=true、原因和来源，撤销未发生的修复。超时或未知结果不能撤销；已推送则恢复登记真实修复结果。
-- `check`：记录 executionHead、当前目标 base、本地检查、实时 GitHub CI 和冲突证据。证据 5 分钟内有效，`report_merge_batch` 会重新校验时效：`check` 通过后应立即挂合并，合并后立刻 `report_merge_batch`，完成评论、发布与交接放到 report 之后，否则需重取证据；合并后 GitHub 不再返回 mergeable，重取时以成功合并的事实说明冲突判定。CI 运行时保留原批次，状态不变降低轮询；挂上 auto-merge 后不必阻塞等待合并通知，可直接转入下一依赖项；失败先定位，不删除测试、降低断言或绕过保护。疑似 flaky/基础设施超时可有依据地重跑一次。无需因局部缺陷来自原分支就退回原会话，原需求明确的必要修复由集成者承担。
+- `check`：记录 executionHead、当前目标 base、本地检查、实时 GitHub CI 和冲突证据。证据 5 分钟内有效，`report_merge_batch` 会重新校验时效：`check` 满足项目要求后按该项目方式合并，合并后立刻 `report_merge_batch`，完成评论、发布与交接放到 report 之后，否则需重取证据；合并后 GitHub 不再返回 mergeable，重取时以成功合并的事实说明冲突判定。CI 运行时保留原批次，状态不变降低轮询；具备可靠保护并挂上 auto-merge 后不必阻塞等待合并通知，可继续不依赖该结果的独立工作；真正依赖此项的工作仍等实际合并；失败先定位，不删除测试、降低断言或绕过保护。疑似 flaky/基础设施超时可有依据地重跑一次。无需因局部缺陷来自原分支就退回原会话，原需求明确的必要修复由集成者承担。
 - `publication_progress`：仅已授权发布的原批次、全部结果明确且组合验证有效时上报发布阶段。state 为 `publishing|failed|ended`，checkedAt 用实时 UTC，resultsDigest 原样取 `get_merge_batch`，每次带原 dispatchId/batchId、最新 expectedRevision 和新幂等键。publishing 五分钟内续期；过期显示待核实，不能猜仍在执行。核实发布停止后上报 failed 或 ended，再按完整正式凭据交接并结束批次。阶段上报不授权发布、不能代替凭据或人工决定。旧服务不接受此动作时如实说明无发布中信号，不用进度文字模拟。
 - `final_validation`：全部项结果明确后，在实际目标分支验证已合并组合，记录目标 head、时间、证据与验证说明。未完成组合验证不能结束含成功项的新批次。
 
-每次挂自动合并前重新读批次、核实 source blocker、计划依赖和实时 PR/主线/CI；确认 `mergeReady=true` 后立即用 `executionHead` 执行 `gh pr merge <n> --auto --merge --match-head-commit <head>` 挂 GitHub auto-merge，required checks 全绿由分支保护自动完成合并，不逐项等待 CI 通知或手动合并，会话直接并行推进下一依赖项；合并后回读实际 merge commit 核实并 `report_merge_batch`，检查失败先 `gh pr merge <n> --disable-auto` 再修复。不得 `--admin` 或绕过保护。`scripts/merge-delivery.mjs` 接受批次返回的 executionHead、expectedBase，目标基线变化时要求重新验证。批次内一项合并后其他未完成项的检查失效；主线外部变化也必须在执行端检测并重验。穷尽合理修复仍无法集成才记 blocked，并写清尝试与剩余障碍，不能用它掩盖未知结果。
+每次合并前重新读批次及 projectWorkflowInstructions，核实项目规则来源、当前目标分支、executionHead、依赖、实时 Git 与项目要求的验证。默认沿用该仓库现有方式，不要求开启 auto-merge、统一 CI、修改分支保护或新增配置。项目支持并可靠保护必需检查时可挂精确 head 的 auto-merge；未开启或不能保护所需检查时，等待项目检查完成后直接合并精确 head，沿用允许的 merge/squash/rebase/合并队列。不得 --admin、强推或绕过保护；挂起的自动合并检查失败时先取消再修复。合并后核实实际 PR head、MERGED 状态与落地提交在目标分支，再 report；squash/rebase 不要求原 head 成为目标分支祖先。主线或规则变化重验，未知结果保留原批次。穷尽合理修复仍无法集成才记 blocked。
 
 合并后核对 PR MERGED、实际 head、merge commit 及目标分支祖先关系，完整读源条目和发布范围，再用 `report_merge_batch` 报告真实 executionHead 与 merge commit，受限交接为开发完成。完成评论需要写在 report 之前时，必须留出 `check` 证据 5 分钟时效的余量；余量不足就先 report、后写评论。不要为了兼容旧记录把原 head 冒充实际 head；旧批次需要修复时说明授权限制。相同结果原样重试，已成功项不重复操作。
 
@@ -671,7 +671,7 @@ AI 每小时能建的条目有上限：衍生条目按来源条目计，独立�
 
 用户对当前产品说「发布」而未限定产物时，默认覆盖该产品所有**已开发完成且已核实合并/集成**的待发布条目，不只覆盖触发本次会话的条目。此授权不扩展到其他产品，不包含未合并的功能，也不改变仓库既有的 push、merge、签名和部署权限。
 
-完整覆盖协议升级为 `coverageVersion: 2`，同一候选清单同时包含条目与已合并的无条目交付。无条目候选 `kind: "delivery"`，使用 `deliveryId + expectedRevision` 标识，保留其真实 PR、摘要与 requiredArtifacts；明确无需发布的交付在 `noReleaseDeliveries` 中列原因。按返回游标读取全页，不按条目编号自行计算游标或过滤未知候选；空页带游标仍继续。无条目候选即使原合并批次已经结束也参与必需产物并集、来源提交与局部范围核验，部分发布不能排除。旧共享解析器会拒绝版本 2，需从新主线运行安装器升级；不得删记录或改写版本绕过。
+完整覆盖协议升级为 `coverageVersion: 2`，同一候选清单同时包含条目与已合并的无条目交付。无条目候选 `kind: "delivery"`，使用 `deliveryId + expectedRevision` 标识，保留其真实 PR、摘要与 requiredArtifacts；明确无需发布的交付在 `noReleaseDeliveries` 中列原因。按返回游标读取全页，不按条目编号自行计算游标或过滤未知候选；空页带游标仍继续。无条目候选即使原合并批次已经结束也参与必需产物并集、来源提交与局部范围核验，部分发布不能排除。旧共享解析器会拒绝版本 2；由支持当前协议的执行端读取并整理候选，不要求其他项目的发布工具实现该协议。只有当前项目实际采用该共享工具时才按其规则升级；不得删记录或改写版本绕过。
 
 发布后 `release-notices.mjs` 为无条目候选输出 `deliveries` 发布凭据请求，调用原 `submit_release_batch` 的 `deliveries` 数组，每项带原 deliveryId、expectedRevision 与真实已核验 releases，共用 productId、deployedCommit、receiptDigest 和稳定幂等键。逐条核实 PR 集成、公开产物及来源覆盖；不写虚构条目评论、不触发条目状态交接。部分产物凭据可追加，全部必需产物有凭据后才记完整发布；无条目交付也阻止带发布授权的合并批次提前收尾。新消息不能抹掉已经发生的历史合并和发布事实。
 
@@ -758,20 +758,20 @@ OpenCode 的空表单显示“确认请求 <id>”的批准/取消选项；只�
 
 ## 集成启动预检与逐项交付报告（5.72）
 
-集成启动时先完成只读发布就绪核查，再保存原批次集成计划，不把检查拖到所有PR合并之后。
+集成启动时提前只读调查后续流程并保存原批次集成计划，不把风险调查拖到所有 PR 合并之后；按项目实际流程和阶段判定，专用发布工具缺失不自动成为所有项目首合并门禁。
 沿原批次、产品与会话取得最新主线、完整候选分页（含无需发布项）、历史集成/范围缺口、
-正式工具磁盘摘要与安装清单/主线差异、已有产物来源及本批冻结head的预计影响，集中核对升版和发布说明。
+当前实际使用工具的必要完整性依据、已有产物来源及本批冻结head的预计影响，集中核对升版和发布说明。
 候选只读元数据不扩展条目正文权限；没有发布授权也可调查，但不构建、安装或部署。
 
-MissionGo仓库将完整get_merge_batch返回的batch与完整候选保存到仓库外，运行
+仅在已核实当前执行仓库采用 MissionGo 正式发布入口时，将完整get_merge_batch返回的batch与完整候选保存到仓库外，运行
 `missiongo-release readiness --candidates <完整分页JSON> --batch <批次JSON>`。
 旧安装未包含该动作时，可从最新checkout运行 `node scripts/release-readiness.mjs` 的同名参数做只读调查；
 不得用旧plan结果冒充完整预检，不能因此自动安装或绕过正式check/deploy。
 独立失败保留并继续其他可核实项目；产品/仓库错绑或分页不全拒绝，不猜范围。
 区分技术事实缺口与需人决定的范围、暂缓和风险接受，不自动排除历史项或补写证据。
 
-前瞻清单不是正式产物来源或预先升版授权。按operation核实实际合并或既有references后刷新主线、全量候选、release:state，
-仅在原授权范围内，用既有release:bump-patch提升仍需升版的patch，首份版本PR集中包含当时已知必要版本与发布说明；
+前瞻清单不是正式产物来源或预先升版授权。按operation核实实际合并或既有references后刷新主线、全量候选与当前项目既有版本状态，
+仅在原授权范围内按本项目惯例升版和维护发布说明；MissionGo 仓库继续使用 release:state 与 release:bump-patch，首份版本PR集中包含当时已知必要版本与发布说明；
 已经升过的不重复升。外部主线变化或新增候选可能需要补充，不能保证后续永远无需版本PR。
 部署前仍刷新实时主线、精确head、候选、CI及selection摘要；启动快照不能跨提交或过期复用。
 
@@ -828,3 +828,25 @@ restored/already_approved 只表示当前决定已登记；仍回读精确方案
 - 记录决定允许聊天仍在进行；正在发布、未知发布信号、未结修复预留或未确认命令仍阻止实际恢复。已由精确外部合并证据核实的本项预留仅能沿 accept_merge 结清，不冒认成自己的修复。
 - 无条目项目会话可在 prepare_plan_document/request_plan_approval 使用 itemKeys=[]、projectId 和原 dispatchId；必须已有且仍有效的原无条目项目派单，不新建会话、不借历史条目。文档读取按项目权限校验，固定正文与批准来源保持。当前独立外部注册会话尚不支持这条无条目登记路径，不能猜造派单或宣称旧端已支持。
 - 公开下载失败后，支持新版正式入口的执行端可使用 missiongo-release verify，提供原完整 receipt、完整当前候选、原 selection/digest 和新的输出文件。只核验实际同一部署及完整公开文件，不重部署；部署或产物变化需重新对账。失败记录保留，成功仍经正式覆盖门禁与交接；工具更新和安装授权保持独立。
+
+
+## 跨项目流程适配（5.77）
+
+默认读取当前仓库已有可信规则与实际平台能力，不新增必填配置文件或统一项目设置。get_current_account.capabilities.supportsProjectIntegrationWorkflows 为 true 时，可使用以下新字段；旧端保留原状态，不把 unknown 伪装为 passed。运行中的旧会话须显式重读新版 Skill 与 get_merge_batch.projectWorkflowInstructions，沿用原身份、原批次和有效批准，不新开任务、不重复执行。
+
+### 项目验证证据
+
+交付 evidence、集成 check、对账 accept_merge.evidence 支持 verification：repository、targetBranch、rulesSource、rulesDigest（真实规则 SHA-256）、ci/local（required 或 not_required）、reason、platformRead（完整读取为 complete）、requiredChecks、observedChecks、autoMerge、protectedChecks、mergeMethod。此对象是执行端已有规则与平台事实的快照，不是要求用户新增一套配置；绑定外层 head/base/checkedAt 与真实仓库/目标分支，规则变化重新取证。服务端校验一致性，不代替执行端访问 GitHub。
+
+checks 和 local 可为 not_applicable，仅限经核实项目不要求该检查，有明确来源与原因；无 CI 还须完整读取目标分支保护、ruleset 与 PR 检查，并确认无必需或已出现的 CI。空列表、权限不足、读取失败、预期检查未启动仍是 unknown；实际失败不能降级。无自动测试命令时记录验证覆盖缺口，不要求补建测试系统，不报告假通过。真实必需检查失败或未知仍阻止相应动作。MissionGo 仓库可用自己的取证脚本；脚本 projectRules 输入为对现有规则的 source/digest/reason、ci/local 及可选 requiredChecks/mergeMethod 读取结果，不是新项目文件，脚本再读取真实平台设置。
+
+### 分阶段前置与原批次恢复
+
+合并并发布且有实际发布需求的项目，用 prerequisites 绑定 get_merge_batch.prerequisiteObservation 和实际 context。自有发布流程可附 workflow:{tools:project_native,repositories:精确仓库列表,source:规则来源,digest:规则摘要}；context 包含 base/candidates，main 绑定 base/heads，authorization 绑定 scope 并引用原有效 authorizationRef，scope 绑定 scope/candidates。不要求未使用工具的安装摘要。仍采用 MissionGo 入口时 tools=missiongo，保留原五类检查及真实 tools/capabilities。规则来源与工具模式变更使相关旧事实失效，需要刷新，不扩大权限。
+
+实际发布工具、签名与凭据可以按项目规则列为 pre_publish，只阻止发布，不一律阻止代码集成；发布启动时仍检验本项目必需发布条件。不可逆顺序依赖或项目明确要求发布前禁止合并时遵守原规则。旧条件须显式更新不适用原因，不能隐去历史；未解除的依赖和未知副作用不能借流程适配清除。恢复使用原 batchId/dispatchId、expectedRevision、新动作幂等键与既有授权；不要求重复批准同一范围。
+
+完整候选与 coverageVersion:2 是 MissionGo 的记录协议，由执行端适配，不要求其他项目安装同名工具、统一目录或发布命令。项目使用自身构建、版本、发布说明和正式分发证据；不自动改仓库设置或安装工具。发布与自动交接分别报告：缺少交接能力不改写已合并事实，也不冒充已发布/完整交付。MissionGo 本仓库的 AGENTS.md、正式发布入口、工具完整性和覆盖门禁继续有效。仅合并、仅发布、引用与无需发布的授权边界保持。
+
+
+5.78 审计补修：读取分支 active rules 时必须完整分页；合并方式取仓库能力与全部目标分支规则的交集，线性历史不选 merge。保护摘要不完整保持未知，不能据此推断无 CI。pending 的自动合并就绪必须显式提供当前 verification，旧记录仍保留，但缺字段不能推断存在可靠保护；不具备该证据时等待实际检查完成即可，不要求补项目配置。发布前先核实当前完整结果的 final_validation/组合验证，再将 main 前置的 context.base 刷新到该实际最终目标 head；复用未受影响的原授权与范围证据。普通时效续期不重复保存整份适配历史，实质替换保留历史，不因累计五十次补证锁死原批次。
