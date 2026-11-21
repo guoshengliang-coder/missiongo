@@ -114,22 +114,29 @@ export class MergeDeliveries {
     return query(...parameters);
   }
 
-  private readonly batchTemplates=new Map<string,{bytes:Uint8Array;value:ReturnType<MergeDeliveries["recomputeBatches"]>[number]}>();
+  private readonly batchTemplates=new Map<string,{bytes:Uint8Array;prefix:Buffer;retainedBytes:number;value:ReturnType<MergeDeliveries["recomputeBatches"]>[number]}>();
   private batchTemplateBytes=0;
   private readBatchProjection(id:string,bytes:Uint8Array):ReturnType<MergeDeliveries["recomputeBatches"]>[number] {
     const previous=this.batchTemplates.get(id);
     // Always read the current scoped DB row first. Exact serialized equality is
     // the invalidation key, including writes within a transaction and rollbacks.
     if(previous && Buffer.compare(previous.bytes,bytes)===0)return cloneProjection(previous.value);
-    if(previous){this.batchTemplates.delete(id);this.batchTemplateBytes-=previous.bytes.length;}
+    if(previous){this.batchTemplates.delete(id);this.batchTemplateBytes-=previous.retainedBytes;}
     const text=Buffer.from(bytes.buffer,bytes.byteOffset,bytes.byteLength).toString("utf8");
     const value=JSON.parse(text) as ReturnType<MergeDeliveries["recomputeBatches"]>[number];
     if(bytes.length<16*1024 || bytes.length>512*1024)return value;
-    while(this.batchTemplates.size>=20 || this.batchTemplateBytes+bytes.length>4*1024*1024){
+    // Only source-backed fields are reusable. Live presentation, authorization
+    // gates and publication deferral are serialized again for every request.
+    const stable={...value} as Record<string,unknown>;
+    delete stable.presentation;delete stable.publicationDeferred;delete stable.prerequisiteGate;
+    const prefix=Buffer.from(JSON.stringify(stable).slice(0,-1));
+    const retainedBytes=bytes.length+prefix.length;
+    if(retainedBytes>4*1024*1024)return value;
+    while(this.batchTemplates.size>=20 || this.batchTemplateBytes+retainedBytes>4*1024*1024){
       const oldest=this.batchTemplates.keys().next().value!;
-      this.batchTemplateBytes-=this.batchTemplates.get(oldest)!.bytes.length;this.batchTemplates.delete(oldest);
+      this.batchTemplateBytes-=this.batchTemplates.get(oldest)!.retainedBytes;this.batchTemplates.delete(oldest);
     }
-    this.batchTemplates.set(id,{bytes,value});this.batchTemplateBytes+=bytes.length;
+    this.batchTemplates.set(id,{bytes,prefix,retainedBytes,value});this.batchTemplateBytes+=retainedBytes;
     return cloneProjection(value);
   }
   private read<T>(table: "merge_deliveries" | "merge_batches", id: string): T {
@@ -705,6 +712,9 @@ export class MergeDeliveries {
     });
   }
   batches(productId: string, accountId: string, sessionId?: string): ReturnType<MergeDeliveries["recomputeBatches"]> {
+    return this.batchResponseRows(productId,accountId,sessionId).map(row=>row.value);
+  }
+  private batchResponseRows(productId:string,accountId:string,sessionId?:string) {
     // SQLite can return the UTF-8 bytes without decoding the whole history on
     // every poll. Compare the current scoped bytes before reusing a template.
     const rows=this.displayRows(`SELECT id,CAST(data_json AS BLOB) AS data_json,activity_json FROM merge_batch_projection WHERE product_id=? AND account_id=? ${sessionId ? "AND session_id=?" : ""} ORDER BY sequence DESC LIMIT 20`,productId,accountId,...(sessionId ? [sessionId] : [])) as {id:string;data_json:Uint8Array;activity_json:string}[];
@@ -722,7 +732,9 @@ export class MergeDeliveries {
     const activity=new Map((sessionIds.length ? this.db.connection.prepare(`SELECT session_id,activity FROM merge_display_activity WHERE session_id IN (${sessionIds.map(()=>"?").join(",")})`).all(...sessionIds) as {session_id:string;activity:string}[] : []).map(row=>[row.session_id,row.activity]));
     return values.map((value,index)=>{
       for(const entry of boundaries[index]!)if(activity.get(entry.sessionId)!==entry.activity)value.presentation.entries[entry.id]!.publication="unknown";
-      return {...value,publicationDeferred:batchPublicationDeferred(value),prerequisiteGate:prerequisiteGate(value,Object.values(value.presentation.entries).some(e=>e.requiredArtifacts.length>0))};
+      // Bind cached bytes to the actual scoped DB row, never an ID read from JSON.
+      return {value:{...value,publicationDeferred:batchPublicationDeferred(value),prerequisiteGate:prerequisiteGate(value,Object.values(value.presentation.entries).some(e=>e.requiredArtifacts.length>0))},
+        prefix:this.batchTemplates.get(rows[index]!.id)?.prefix};
     });
   }
   attentionSessionIds(productId: string, accountId: string, sessionId?: string): string[] {
@@ -736,6 +748,21 @@ export class MergeDeliveries {
       CASE WHEN expires_at IS NOT NULL AND ?>=expires_at THEN expired_stage ELSE stage END) AS data_json
       FROM merge_session_projection WHERE product_id=? AND account_id=? ${sessionId ? "AND session_id=?" : ""}`,Date.now(),productId,accountId,...(sessionId ? [sessionId] : [])) as {data_json:string}[];
     return JSON.parse(rows[0]!.data_json) as Record<string,SessionDeliveryStage>;
+  }
+  /** Exact JSON response, with no field omission or cross-request live-state cache. */
+  serializeList(productId:string,accountId:string,sessionId?:string):Buffer {
+    const deliveries=this.list(productId,accountId,sessionId),rows=this.batchResponseRows(productId,accountId,sessionId);
+    const attention=this.attentionSessionIds(productId,accountId,sessionId),progress=this.sessionProgress(productId,accountId,sessionId);
+    const parts:Buffer[]=[Buffer.from('{"deliveries":'+JSON.stringify(deliveries)+',"batches":[')];
+    for(const [index,{value:batch,prefix}] of rows.entries()) {
+      if(index)parts.push(Buffer.from(','));
+      if(!prefix){parts.push(Buffer.from(JSON.stringify(batch)));continue;}
+      parts.push(prefix,Buffer.from(',"presentation":'+JSON.stringify(batch.presentation)
+        +',"publicationDeferred":'+JSON.stringify(batch.publicationDeferred)+',"prerequisiteGate":'+JSON.stringify(batch.prerequisiteGate)+'}'));
+    }
+    parts.push(Buffer.from('],"attentionSessionIds":'+JSON.stringify(attention)+',"sessionProgress":'+JSON.stringify(progress)+'}'));
+    // Buffer.concat copies every cached fragment; callers cannot mutate templates.
+    return Buffer.concat(parts);
   }
   private refreshDisplay() {
     this.withDisplayReads(()=>this.writeDisplay());
