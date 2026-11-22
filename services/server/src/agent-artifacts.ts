@@ -73,8 +73,8 @@ export class AgentArtifacts {
     const path = localArtifactPath(href);
     if (!path) return undefined;
     return (this.db.prepare(`SELECT * FROM agent_artifacts WHERE account_id=? AND source_id=?
-      AND session_id IN (SELECT value FROM json_each(?)) ORDER BY CASE status WHEN 'ready' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,rowid`)
-      .all(accountId, sourceId, JSON.stringify(sessions)) as unknown as Row[]).find(row => localArtifactPath(row.href) === path);
+      AND session_id IN (SELECT value FROM json_each(?)) ORDER BY CASE status WHEN 'ready' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,href=? DESC,rowid`)
+      .all(accountId, sourceId, JSON.stringify(sessions),href) as unknown as Row[]).find(row => localArtifactPath(row.href) === path);
   }
 
   ownerSession(accountId: string, sessions: readonly string[], id: string): string {
@@ -95,7 +95,10 @@ export class AgentArtifacts {
     for (const message of messages.slice(-50).reverse()) {
       if (!["agent","plan"].includes(message.role) || message.phase === "execution") continue;
       for (const href of localArtifactImageLinks(message.text).slice(-8).reverse()) {
-        if (this.find(accountId,mirrors,message.sourceId,href)) continue;
+        const existing=this.find(accountId,mirrors,message.sourceId,href);
+        // The node validates the exact current href as well as the normalized path.
+        // A rewritten reference may retry its own failed record, never borrow another revoked binding.
+        if (existing && !(existing.session_id===sessionId && existing.status==="failed" && existing.error==="reference_missing" && existing.href!==href)) continue;
         const output=this.request(accountId,sessionId,message.sourceId,href,binding);
         this.db.prepare("UPDATE agent_artifacts SET automatic=1,attempts=1 WHERE id=?").run(output.id);
         if (--capacity <= 0) return;
@@ -125,15 +128,17 @@ export class AgentArtifacts {
 
   request(accountId: string, sessionId: string, sourceId: string, href: string, binding?: Binding): AgentArtifactState {
     if (!localArtifactPath(href)) throw invalidInput("Not a local artifact link.");
-    const previous = this.db.prepare("SELECT * FROM agent_artifacts WHERE session_id=? AND account_id=? AND source_id=? AND href=?")
+    const exact = this.db.prepare("SELECT * FROM agent_artifacts WHERE session_id=? AND account_id=? AND source_id=? AND href=?")
       .get(sessionId, accountId, sourceId, href) as Row | undefined;
+    const equivalent=exact ? undefined : this.find(accountId,[sessionId],sourceId,href);
+    const previous=exact ?? (equivalent?.status==="failed" ? equivalent : undefined);
     if (previous?.status === "ready" || previous?.status === "pending" && binding
       && previous.node_id===binding.node_id && previous.session_ref===binding.session_ref) return this.state(previous);
     if (binding) this.assertBindingExecution(binding);
     const now = new Date().toISOString();
     const id = previous?.id ?? randomUUID();
     this.db.prepare(`INSERT INTO agent_artifacts(id,session_id,account_id,node_id,binding_session_id,session_ref,agent_kind,source_id,href,status,error,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,error=excluded.error,error_resource=NULL,
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET href=excluded.href,status=excluded.status,error=excluded.error,error_resource=NULL,
       automatic=0,retry_at=NULL,node_id=excluded.node_id,binding_session_id=excluded.binding_session_id,session_ref=excluded.session_ref,agent_kind=excluded.agent_kind,updated_at=excluded.updated_at`)
       .run(id, sessionId, accountId, binding?.node_id ?? null, binding?.binding_session_id ?? null, binding?.session_ref ?? null, binding?.agent_kind ?? null,
         sourceId, href, binding ? "pending" : "failed", binding ? null : "node_unavailable", now, now);

@@ -2980,7 +2980,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     artifactSession(request, sessionId, true);
     const binding = consoleSessions.members(accountId, sessionId)
       .map((member) => agentArtifacts.binding(accountId, member.id)).find(Boolean);
-    return existing ? agentArtifacts.request(accountId,existing.session_id,existing.source_id,existing.href,
+    return existing ? agentArtifacts.request(accountId,existing.session_id,existing.source_id,href,
       agentArtifacts.binding(accountId,existing.binding_session_id ?? existing.session_id))
       : agentArtifacts.request(accountId, sessionId, message.sourceId, href, binding);
   });

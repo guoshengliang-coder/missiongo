@@ -1,3 +1,4 @@
+import { registerArtifactPreloader } from "./artifact-cache";
 import { useEffect } from "react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { api } from "./api";
@@ -37,11 +38,14 @@ export function preloadArtifacts(client:QueryClient, images:readonly PreloadImag
   };
   // Leave the foreground detail/first paint ahead of this low-priority queue.
   const timer=setTimeout(pump,300);
-  return ()=>{
-    stopped=true;clearTimeout(timer);
+  const stop=()=>{
+    if(stopped)return;
+    stopped=true;clearTimeout(timer);unregister();
     for(const key of keys) if(client.getQueryCache().find({queryKey:key,exact:true})?.getObserversCount()===0)
       void client.cancelQueries({queryKey:key,exact:true});
   };
+  const unregister=registerArtifactPreloader(client,stop);
+  return stop;
 }
 
 export function useArtifactPreload(sessions:readonly {id:string;agentSessionId?:string;activityAt?:string;updatedAt:string;archivedAt?:string}[],visible:boolean) {

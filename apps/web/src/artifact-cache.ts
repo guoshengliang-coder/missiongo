@@ -1,6 +1,21 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type { AgentArtifactBundle } from "@missiongo/domain";
 
+const queues=new WeakMap<QueryClient,Set<()=>void>>();
+export function registerArtifactPreloader(client:QueryClient,stop:()=>void) {
+  const active=queues.get(client) ?? new Set<()=>void>();
+  active.add(stop);queues.set(client,active);
+  return ()=>active.delete(stop);
+}
+
+/** Stop queue continuations synchronously, before cancelled promises can pump old-account work. */
+export function clearArtifactAccountCache(client:QueryClient) {
+  const active=queues.get(client);queues.delete(client);
+  for(const stop of active ?? [])stop();
+  const predicate=(query:{queryKey:readonly unknown[]})=>["artifact-preloads","artifact-request","artifact-state","artifact-bundle"].includes(String(query.queryKey[0]));
+  void client.cancelQueries({predicate});client.removeQueries({predicate});
+}
+
 /** Base64 strings occupy about twice their JSON size in JS. Keep only bounded idle copies. */
 export function retainArtifactCache(client:QueryClient,maxEntries=12,maxBytes=16*1024*1024) {
   client.setQueryDefaults(["artifact-bundle"],{gcTime:5*60_000});

@@ -137,3 +137,19 @@ it("checks the original binding's revocation even when a pending copy belongs to
   expect(f.artifacts.jobs("owner",f.node.nodeId)).toEqual([]);
   expect(f.artifacts.get("owner",mirror,output.id).status).toBe("failed");
 });
+
+
+it("repairs a failed exact reference after an equivalent link rewrite without creating duplicate jobs",async()=>{
+  const f=await fixture();
+  const first="/tmp/output/image%20a.png",second="file:///tmp/output/image%20a.png";
+  const prepare=(href:string)=>f.artifacts.prepare("owner",f.session,[{sourceId:"source",role:"agent",text:`[Image](<${href}>)`}],[f.session]);
+  prepare(first);const job=f.artifacts.jobs("owner",f.node.nodeId)[0]!;
+  await f.artifacts.complete("owner",f.node.nodeId,job.id,{error:"reference_missing"});
+  prepare(second);prepare(second);
+  expect(f.artifacts.jobs("owner",f.node.nodeId)).toEqual([{...job,href:second}]);
+  expect((f.store.database.connection.prepare("SELECT COUNT(*) AS n FROM agent_artifacts").get() as {n:number}).n).toBe(1);
+  await f.artifacts.complete("owner",f.node.nodeId,job.id,{error:"file_missing"});
+  const manual=f.artifacts.request("owner",f.session,"source",first,f.artifacts.binding("owner",f.session));
+  expect(manual).toMatchObject({id:job.id,status:"pending"});
+  expect(f.artifacts.jobs("owner",f.node.nodeId)[0]).toMatchObject({id:job.id,href:first});
+});

@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { selectPreloadImages,preloadArtifacts,ARTIFACT_PRELOAD_MAX_BYTES,ARTIFACT_PRELOAD_MAX_IMAGE } from "./artifact-preload";
-import { retainArtifactCache } from "./artifact-cache";
+import { clearArtifactAccountCache,retainArtifactCache } from "./artifact-cache";
 import { api } from "./api";
 const clients:QueryClient[]=[];
 afterEach(()=>{vi.useRealTimers();vi.restoreAllMocks();clients.splice(0).forEach(c=>c.clear());});
@@ -46,4 +46,22 @@ it("evicts idle bundles by count and byte size while retaining an opened image",
   expect(c.getQueryData(["artifact-bundle","s","old"])).toBeUndefined();
   expect(c.getQueryData(["artifact-bundle","s","new"])).toEqual(bundle);
   expect(c.getQueryData(["artifact-bundle","s","open"])).toBeDefined();unsubscribe();stop();
+});
+
+
+it("clears account-scoped metadata and bytes, cancels in-flight work and prevents late refill or queued reads",async()=>{
+  vi.useFakeTimers();const c=client();
+  for(const root of ["artifact-preloads","artifact-request","artifact-state","artifact-bundle"]) c.setQueryData([root,"old-account"],{private:"old data"});
+  const signals:AbortSignal[]=[];const resolve:Array<(value:typeof bundle)=>void>=[];
+  const read=vi.spyOn(api,"agentArtifactBundle").mockImplementation((_session,_id,signal)=>{
+    signals.push(signal!);return new Promise(done=>resolve.push(done));
+  });
+  const stop=preloadArtifacts(c,[image("old-one"),image("old-two"),image("old-three")]);
+  await vi.advanceTimersByTimeAsync(300);expect(read).toHaveBeenCalledTimes(2);
+  clearArtifactAccountCache(c);
+  expect(signals.every(signal=>signal.aborted)).toBe(true);
+  resolve.forEach(done=>done(bundle));await vi.advanceTimersByTimeAsync(1000);
+  expect(read).toHaveBeenCalledTimes(2);
+  expect(c.getQueryCache().getAll()).toHaveLength(0);
+  stop();
 });

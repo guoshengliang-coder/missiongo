@@ -1,3 +1,4 @@
+import { clearArtifactAccountCache } from "./artifact-cache";
 import type { ConsoleChangeResource } from "@missiongo/contracts";
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
@@ -112,7 +113,7 @@ export function startConsoleEvents(client:QueryClient, fetcher:typeof fetch=(inp
     credentials:"same-origin",cache:"no-store",signal:controller.signal,headers:{accept:"text/event-stream"}});
    if(attempt!==generation||stopped){await response.body?.cancel();return;}
    if(activeController.signal.aborted){await response.body?.cancel();throw new Error("Console handshake cancelled");}
-   if(response.status===401||response.status===403){stopped=true;refresh.stop();void client.cancelQueries().then(()=>{if(attempt!==generation)return;client.removeQueries({predicate:q=>q.queryKey[0]!=="bootstrap"});return client.resetQueries({queryKey:["bootstrap"]});});setConnection("disconnected");return;}
+   if(response.status===401||response.status===403){stopped=true;refresh.stop();clearArtifactAccountCache(client);void client.cancelQueries().then(()=>{if(attempt!==generation)return;client.removeQueries({predicate:q=>q.queryKey[0]!=="bootstrap"});return client.resetQueries({queryKey:["bootstrap"]});});setConnection("disconnected");return;}
    if(!response.ok||!response.body||!response.headers.get("content-type")?.includes("text/event-stream"))throw new Error("Console stream unavailable");
    if(attempt!==generation||stopped){await response.body.cancel();return;}
    connecting=false;connected=true;heartbeat();setConnection("connected");retry=0;window.dispatchEvent(new Event("missiongo:console-connected"));
@@ -123,7 +124,7 @@ export function startConsoleEvents(client:QueryClient, fetcher:typeof fetch=(inp
      if(attempt!==generation||stopped)break;
      for(const frame of frames.push(decoder.decode(chunk.value,{stream:true}))) {
       const data=JSON.parse(frame.data) as {epoch?:string;version?:number;resources?:ChangeResource[]};
-      if(frame.event==="unauthorized"){stopped=true;refresh.stop();void client.cancelQueries().then(()=>{if(attempt!==generation)return;client.removeQueries({predicate:q=>q.queryKey[0]!=="bootstrap"});return client.resetQueries({queryKey:["bootstrap"]});});setConnection("disconnected");controller.abort();break;}
+      if(frame.event==="unauthorized"){stopped=true;refresh.stop();clearArtifactAccountCache(client);void client.cancelQueries().then(()=>{if(attempt!==generation)return;client.removeQueries({predicate:q=>q.queryKey[0]!=="bootstrap"});return client.resetQueries({queryKey:["bootstrap"]});});setConnection("disconnected");controller.abort();break;}
       if(frame.event==="hello") {
        if(!cursor)enqueue([],`${data.epoch}:${data.version}`,true);
       } else if(frame.event==="reset") enqueue([],frame.id,true);
@@ -163,6 +164,7 @@ export function useConsoleEvents(client:QueryClient,accountId:string|undefined,i
  const previousAccount=useRef(accountId);
  useEffect(()=>{
   if(previousAccount.current && previousAccount.current!==accountId){
+   clearArtifactAccountCache(client);
    const predicate=(q:{queryKey:QueryKey})=>["agent-session","agent-sessions","agent-history-result","merge-deliveries"].includes(String(q.queryKey[0]));
    void client.cancelQueries({predicate});client.removeQueries({predicate});
   }
