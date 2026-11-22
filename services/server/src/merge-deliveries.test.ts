@@ -336,6 +336,38 @@ describe("integration directly in the original conversation",()=>{
     try{expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id)).toThrow(/过期/);}finally{vi.useRealTimers();}
     expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({n:0});
   });
+  it("AND-540 accepts a current continuation after reviewing and refreshing the exact publication scope",async()=>{
+    const f=await prepared(),sessions=new AgentSessionStore(f.store.database);
+    human(f,"合并和发布");
+    const input={...scope(f),operation:"merge_and_publish" as const};
+    const first=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"and540-first",input);
+    expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,first.id)).toThrow(/完整发布范围/);
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({n:0});
+    sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[{
+      sourceId:"and540-reviewed",role:"agent",phase:"final_answer",text:first.reviewText,
+      occurredAt:new Date(Date.now()-1).toISOString(),
+    }]});
+    human(f,"继续合并和发布");
+    const refreshed=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"and540-refresh",{
+      ...input,deliveries:[{...f.input,evidence:{...f.input.evidence,checkedAt:new Date().toISOString()}}],
+    });
+    expect(refreshed.source.text).toBe("继续合并和发布");
+    expect(refreshed.reviewText).toBe(first.reviewText);
+    const changed=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"and540-changed",{
+      ...input,deliveries:[{...f.input,requiredArtifacts:["web","androidApp"]}],
+    });
+    expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,changed.id)).toThrow(/完整发布范围/);
+    const before=f.db.prepare("SELECT COUNT(*) AS n FROM agent_sessions").get();
+    const b=f.merges.startConversation(f.owner.id,"original-client",f.identity,refreshed.id);
+    expect(b.sessionId).toBe(f.projectSessionId);
+    expect(b.conversation!.authorization.text).toBe("继续合并和发布");
+    expect(f.merges.startConversation(f.owner.id,"original-client",f.identity,refreshed.id).id).toBe(b.id);
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM agent_sessions").get()).toEqual(before);
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({n:1});
+    expect(b.entries).toHaveLength(1);
+    expect(b.entries[0]!.mergeReady).toBe(false);
+    expect(f.store.getWorkItem(f.item.key).status).toBe("in_progress");
+  });
   it("refreshes identical reviewed scope without another approval and completes merge-and-publish gates",async()=>{
     const f=await prepared(),sessions=new AgentSessionStore(f.store.database);human(f,"准备合并和发布");
     const input={...scope(f),operation:"merge_and_publish" as const};

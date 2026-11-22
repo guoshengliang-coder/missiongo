@@ -99,7 +99,7 @@ export function assertIntegrationInstruction(text: string, operation: "merge_onl
   text=text.replace(/^[\s,，;；]+/,"");
   if (!text.trim() || raw.length > 4000 || /[?？“”「」『』"`]|(?:不|别|勿|禁止|停止|暂停|暂缓|取消|以后|明天|后天|如果|假如|等我|是否|能否|为什么|怎么|吗|么|添加|加入|提交到|方案|建议|准备|计划|引用|文档里|文档中|例如)|\b(?:not|don't|do not|can't|cannot|if|when|once|after|later|tomorrow|why|whether|queue|plan|prepare)\b/i.test(text))
     throw conflict("conversation_integration_instruction_ambiguous", "这条消息不是范围明确的当前执行指令，请先澄清；不能把讨论或加入清单当作合并发布授权。");
-  if(!/^(?:请|现在|直接|立即|执行|开始|帮我|麻烦|把|将|仅|只|合并|发布|部署|only\b|merge\b|publish\b|deploy\b|release\b|please\b|go ahead\b)/i.test(text.trim()) || /(?:已经|已)(?:合并|发布)|(?:合并|发布)(?:成功|完成)/.test(text))
+  if(!/^(?:请|现在|直接|立即|继续(?:执行)?(?=合并|发布|部署)|执行|开始|帮我|麻烦|把|将|仅|只|合并|发布|部署|only\b|merge\b|publish\b|deploy\b|release\b|please\b|go ahead\b)/i.test(text.trim()) || /(?:已经|已)(?:合并|发布)|(?:合并|发布)(?:成功|完成)/.test(text))
     throw conflict("conversation_integration_instruction_ambiguous", "不能把完成汇报或引用当作当前执行指令。");
   const merge = /合并|\bmerge\b/i.test(text), publish = /发布|部署|\b(?:publish|release|deploy)\b/i.test(text);
   if (merge !== (operation !== "publish_only") || publish !== (operation !== "merge_only"))
