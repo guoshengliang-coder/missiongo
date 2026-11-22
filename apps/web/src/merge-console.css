@@ -77,6 +77,7 @@
 /* AND-446: one compact decision/status surface, shared by both chat entries. */
 .merge-delivery-notices { display: grid; gap: 10px; }
 .merge-delivery-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 16px; border: 1px solid var(--warn-line); border-left: 3px solid var(--warn-text); border-radius: var(--radius-md); background: var(--warn-bg); color: var(--warn-text); font-size: var(--text-base); overflow-wrap: anywhere; }
+.merge-delivery-notice[data-continuation] { display: grid; grid-template-columns: minmax(0, 1fr); }
 .merge-delivery-notice.confirmed { background: var(--accent-bg); border-color: var(--accent-line); border-left-color: var(--accent-text); color: var(--accent-text); }
 .merge-delivery-icon { display: flex; align-items: center; justify-content: center; flex: 0 0 32px; min-height: 32px; border-radius: var(--radius-sm); background: var(--warn-line); }
 .merge-delivery-notice.confirmed .merge-delivery-icon { background: var(--accent-line); }

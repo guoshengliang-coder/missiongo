@@ -19,7 +19,7 @@ for(const width of [320,1440])for(const theme of ["light","dark"] as const){
     await page.route("**/reconciliation/decision-one/review",route=>{reviewed++;return queueRoute(route).fulfill({json:{reviewed:true}});});
     await page.route("**/reconciliation/decision-one/decision",route=>{
       expect(route.request().postDataJSON()).toMatchObject({snapshot,decision:"approved",reviewConfirmed:true});approved=true;
-      return queueRoute(route).fulfill({json:{saved:true,continuation:{queued:true}}});
+      return queueRoute(route).fulfill({json:{batchId:batch.id,saved:true,continuation:{queued:true,state:"queued"}}});
     });
     await page.route("**/merge-batches/decision-batch/reconciliation",route=>queueRoute(route).fulfill({json:{batchId:batch.id,sessionId:id,state:"active",publish:true,snapshot,entries:[{deliveryId:"delivery-one",itemKeys:["UX-1"],requiredArtifacts:["web"],items:[],repository:"https://github.com/example/project",pullRequest:12,originalHead:"a".repeat(40),executionHead:"a".repeat(40),targetBranch:"main"}],
       reconciliation:{...batch.reconciliation,requests:[{...row,...(approved?{decision:"approved"}:{})}]}}}));

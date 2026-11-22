@@ -87,6 +87,8 @@ describe("headless configuration and scope", () => {
           expect(prompt).toContain("文件需要源节点在线");
           expect(prompt).toContain("不能按条目数量决定是否结构化");
           expect(prompt).toContain("输出可见性规范 v3");
+          expect(prompt).toContain("用户可见消息先讲结论，再讲变化与影响");
+          expect(prompt).toContain("不为精简改写或隐藏源消息");
           expect(prompt).toContain("最终答复（final_answer）");
           expect(prompt).toContain("最终答复必须自足");
           expect(prompt).not.toContain("若已在进度中展示，最终答复只");

@@ -12,6 +12,7 @@ import { ConsoleChanges } from "./console-changes.js";
 import { registerConsoleEvents } from "./console-events.js";
 import { PlanRecords } from "./plan-records.js";
 import { PlanDocuments } from "./plan-documents.js";
+import { MergeContinuations } from "./merge-continuation.js";
 import { MergeDeliveries } from "./merge-deliveries.js";
 import { FreeSessionStore } from "./free-session-store.js";
 import { registerCollaborationRoutes } from "./collaboration-routes.js";
@@ -626,6 +627,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const planApprovals = new PlanApprovalService(store.database);
   const documentApprovals = new DocumentPlanApprovals(store.database);
   const merges = new MergeDeliveries(store);
+  const mergeContinuations = new MergeContinuations(store.database, agentSessionStore);
   const listConsoleSessions = (accountId: string) => {
     const summaries=consoleSessions.list(accountId);
     const approvals=agentApprovalStore.forSessions(summaries.filter(session=>session.agentKind==="codex").map(session=>session.id));
@@ -2619,7 +2621,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.get("/api/v1/merge-batches/:id/reconciliation",async request=>{
     const {id}=request.params as {id:string};
     requireProductPermission(request,merges.batchProduct(id),"view");
-    return merges.preview(requireAccountId(request),id);
+    const accountId = requireAccountId(request);
+    return mergeContinuations.decorate(accountId, merges.preview(accountId,id));
   });
   app.post("/api/v1/merge-batches/:id/reconciliation/:requestId/review",async request=>{
     const {id,requestId}=request.params as {id:string;requestId:string},body=objectBody(request.body);
@@ -2635,10 +2638,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const accountId=requireAccountId(request);
     const preview=merges.decideReconciliation(accountId,id,requestId,stringField(body,"snapshot")!,decision,true,stringField(body,"publicationScopeDigest",false));
     if(body.continueInSession===true&&decision==="approved"){
-      try {
-        const command=agentSessionStore.enqueue(accountId,preview.sessionId,"本次集成决定已批准，请核实执行状态并沿用现有授权继续处理。",[],false,`recovery-continue:${id}:${requestId}`);
-        return {...preview,continuation:{queued:true,commandId:command.id}};
-      }catch{return {...preview,continuation:{queued:false}};}
+      const continuation = mergeContinuations.send(accountId, preview, requestId,
+        error => request.log.warn({ err: error, batchId: id, requestId }, "Unable to continue merge conversation"));
+      return { ...mergeContinuations.decorate(accountId, preview), continuation: {
+        ...continuation, queued: ["queued", "delivering", "delivery_unknown", "delivered"].includes(continuation.state),
+      } };
     }
     return preview;
   });
