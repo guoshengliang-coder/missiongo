@@ -1,3 +1,4 @@
+import { sessionRouteIds } from "./session-identities";
 import { DevelopmentReviewSummary } from "./development-review-summary";
 import { useSessionListPerformance } from "./session-list-performance";
 import { useConsolePerformance } from "./use-console-performance";
@@ -409,8 +410,8 @@ export function AgentSessionConsole({
 
   const selectedVisible = visibleSessions.some(session => session.id === selectedId);
   const sessionListRef = useSelectedSessionScroll(selectedId, selectedVisible, conversationOpen);
-  const denialIds = useMemo(() => [...new Set([selectedId, linked?.agentSessionId, ...(linked?.relatedSessionIds ?? [])]
-    .filter((id): id is string => Boolean(id)))], [selectedId, linked?.agentSessionId, linked?.relatedSessionIds]);
+  const denialIds = useMemo(() => [...new Set([selectedId, linked?.agentSessionId, ...(linked ? sessionRouteIds(linked) : [])]
+    .filter((id): id is string => Boolean(id)))], [selectedId, linked]);
   const latchedError = denialIds.map(id => deniedDetails[id]).find(Boolean);
   const sessionQuery = useQuery({
     queryKey: ["agent-session", linked?.agentSessionId],

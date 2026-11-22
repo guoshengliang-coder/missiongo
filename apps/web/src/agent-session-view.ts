@@ -2,6 +2,7 @@ import { isConversationMessage } from "@missiongo/domain";
 import type { AgentKind } from "@missiongo/domain";
 
 import type { MessageKey } from "./i18n";
+import { sessionRouteIds } from "./session-identities";
 
 import type {
   AgentApproval,
@@ -605,10 +606,9 @@ export function shouldResetMessageView(
  * requested target intact so the console can verify access and recover it. */
 export function canonicalAgentSessionId(
   selectedId: string | null,
-  sessions: readonly Pick<AgentSessionSummary, "id" | "relatedSessionIds">[],
+  sessions: readonly Pick<AgentSessionSummary, "id" | "relatedSessionIds" | "dispatchId">[],
 ): string | null {
-  return sessions.find((session) => session.id === selectedId
-    || (selectedId !== null && session.relatedSessionIds?.includes(selectedId)))?.id ?? selectedId;
+  return sessions.find((session) => selectedId !== null && sessionRouteIds(session).includes(selectedId))?.id ?? selectedId;
 }
 
 /** Small rounding differences must not make a conversation stop following. */
