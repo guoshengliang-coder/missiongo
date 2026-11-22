@@ -3588,3 +3588,18 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 }
 
 .agent-chat-draft-image-note { position: absolute; left: var(--safe-left); right: var(--safe-right); bottom: calc(64px + var(--safe-bottom)); margin: 12px; padding: 12px; color: var(--code-fg); background: var(--code-bg); border-radius: var(--radius-md); font-size: var(--text-base); }
+
+/* AND-537: message delivery and live reply readiness are independent. */
+.agent-writer-recovery { display: grid; gap: 10px; min-width: 0; padding: 14px; border: 1px solid var(--danger-line); border-radius: var(--radius-lg); background: var(--danger-bg); color: var(--ink); font-size: var(--text-base); }
+.agent-writer-recovery.recovered { border-color: var(--accent-line); background: var(--accent-bg); }
+.agent-writer-recovery > strong { display: flex; align-items: flex-start; gap: 8px; color: var(--danger); }
+.agent-writer-recovery.recovered > strong { color: var(--accent-text); }
+.agent-writer-recovery > strong svg { flex-shrink: 0; margin-top: 2px; }
+.agent-writer-recovery p { margin: 0; line-height: 1.7; color: var(--ink-2); }
+.agent-writer-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.agent-writer-actions button { min-height: 44px; }
+.agent-writer-recovery details { min-width: 0; border-top: 1px solid var(--danger-line); }
+.agent-writer-recovery.recovered details { border-color: var(--accent-line); }
+.agent-writer-recovery summary { min-height: 44px; align-content: center; cursor: pointer; font-size: var(--text-sm); }
+.agent-writer-recovery pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--text-sm); }
+.agent-writer-steps { display: grid; gap: 12px; padding-inline-start: 22px; line-height: 1.7; }
