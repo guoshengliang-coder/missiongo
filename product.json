@@ -25,10 +25,10 @@
     "path": "apps/node",
     "npmPackage": "@missiongo/node",
     "command": "missiongo-node",
-    "version": "0.1.32"
+    "version": "0.1.33"
   },
   "web": {
-    "version": "1.1.69"
+    "version": "1.1.70"
   },
   "iconSource": "assets/brand/icon.svg",
   "taglines": {
@@ -42,7 +42,7 @@
       "packageName": "missiongo-windows",
       "artifactStem": "missiongo-windows",
       "releaseSigning": "temporary-unsigned",
-      "version": "0.1.3"
+      "version": "0.1.4"
     }
   }
 }
