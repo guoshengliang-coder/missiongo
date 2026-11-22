@@ -1,3 +1,4 @@
+import { useArtifactPreload } from "./artifact-preload";
 import { sessionRouteIds } from "./session-identities";
 import { DevelopmentReviewSummary } from "./development-review-summary";
 import { useSessionListPerformance } from "./session-list-performance";
@@ -350,6 +351,7 @@ export function AgentSessionConsole({
     [agentFilter, association, filter, search, productSessions],
   );
   useSessionListPerformance(queryClient,productId,allSessions,visibleSessions.length,sessionsLoaded,!conversationOpen||!listSinglePane);
+  useArtifactPreload(productSessions,documentVisible);
   const archivableIds = useMemo(() => archivableVisibleSessionIds(visibleSessions), [visibleSessions]);
   const allArchivableSelected = archivableIds.length > 0
     && archivableIds.every((sessionId) => selectedForArchive.has(sessionId));

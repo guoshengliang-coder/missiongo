@@ -8,7 +8,7 @@ import { checkReleaseStatus } from "./release-status";
 
 export type ChangeResource = ConsoleChangeResource;
 const itemRoots = new Set(["item","timeline","delivery","collaboration","dingtalk-notifications","comment-dingtalk-notifications","dispatches"]);
-const sessionRoots = new Set(["agent-sessions","agent-session","dispatches","merge-deliveries","delivery","personal-todos","personal-attention","personal-notifications"]);
+const sessionRoots = new Set(["artifact-preloads","agent-sessions","agent-session","dispatches","merge-deliveries","delivery","personal-todos","personal-attention","personal-notifications"]);
 const allConfig = new Set(["common-commands","products","components","builders","accounts","account-permissions","dingtalk-bindings","dingtalk-settings","dingtalk-project","dispatch-defaults","integration-defaults","insight-batches","insight-batch","insight-batch-candidates","ai-authorizations","ai-title-settings","product-accounts","sdk-tokens"]);
 export function changeAffects(key: QueryKey, change: ChangeResource, relatedIds?: readonly string[]): boolean {
  const root=String(key[0]);
@@ -30,7 +30,7 @@ export function changeAffects(key: QueryKey, change: ChangeResource, relatedIds?
   case "products": return ["products","components","builders","items","item","item-filter-options","collaboration-targets","collaboration-grants","collaboration-directory"].includes(root);
   case "personal": return ["personal-todos","personal-attention","personal-notifications"].includes(root);
   case "plan": return ["agent-plan-records","agent-plan-record","plan-records","plan-record","plan-overview","agent-sessions","agent-session"].includes(root);
-  case "artifact": return ["artifact-state","artifact-bundle"].includes(root) && key[1]===change.resourceId;
+  case "artifact": return root==="artifact-preloads" || ["artifact-state","artifact-bundle"].includes(root) && key[1]===change.resourceId;
   case "history": return ["agent-session","agent-history-result"].includes(root) && key[1]===change.resourceId;
   case "admin": return allConfig.has(root);
   case "config": return allConfig.has(root);

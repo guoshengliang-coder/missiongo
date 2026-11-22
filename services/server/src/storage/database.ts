@@ -2821,5 +2821,17 @@ export class MissionGoDatabase {
       });
     }
 
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611221407").get()) {
+      this.transaction(() => {
+        this.connection.exec(`ALTER TABLE agent_artifacts ADD COLUMN automatic INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE agent_artifacts ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE agent_artifacts ADD COLUMN retry_at TEXT;
+          ALTER TABLE agent_artifacts ADD COLUMN bundle_bytes INTEGER;
+          CREATE INDEX agent_artifacts_source ON agent_artifacts(account_id,source_id,session_id);
+          CREATE INDEX agent_artifacts_recent ON agent_artifacts(account_id,session_id,status,updated_at DESC);`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202611221407,new Date().toISOString());
+      });
+    }
+
   }
 }

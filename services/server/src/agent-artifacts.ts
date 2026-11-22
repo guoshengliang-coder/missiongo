@@ -1,18 +1,24 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { localArtifactPath, ARTIFACT_CONTENT_TYPES, artifactResourceName, type AgentArtifactBundle, type AgentArtifactState } from "@missiongo/domain";
+import { localArtifactImageLinks, localArtifactPath, ARTIFACT_CONTENT_TYPES, artifactResourceName, type AgentArtifactBundle, type AgentArtifactState } from "@missiongo/domain";
 import { z } from "zod";
 
+import { assertDispatchExecution, assertExternalExecution } from "./builder-authority.js";
 import type { MissionGoDatabase } from "./storage/database.js";
 import { invalidInput, notFound } from "./errors.js";
 
 const TYPES = ARTIFACT_CONTENT_TYPES;
+const AUTOMATIC_SESSION_LIMIT = 8;
+const AUTOMATIC_NODE_LIMIT = 32;
+const AUTOMATIC_ATTEMPT_LIMIT = 3;
+const AUTOMATIC_RETRY_DELAY_MS = 15_000;
 const resourceSchema = z.string().min(1).max(1024).refine(artifactResourceName);
 const fileSchema = z.object({ name: z.string().min(1).max(1024), contentType: z.string().max(100), base64: z.string().max(28 * 1024 * 1024) }).strict();
 const bundleSchema = z.object({ entry: z.string().min(1).max(1024), files: z.array(fileSchema).min(1).max(64), skippedResources: z.array(resourceSchema).max(64).optional() }).strict();
 interface Row {
   id: string; session_id: string; account_id: string; node_id: string | null; binding_session_id: string | null; session_ref: string | null; agent_kind: string | null;
+  automatic: number; attempts: number; retry_at: string | null; bundle_bytes: number | null;
   source_id: string; href: string; status: AgentArtifactState["status"]; error: string | null; error_resource: string | null;
 }
 interface Binding { binding_session_id: string; node_id: string; session_ref: string; agent_kind: string }
@@ -56,6 +62,61 @@ export class AgentArtifacts {
       .get(sessionId, accountId, accountId, sessionId, accountId, accountId) as Binding | undefined;
   }
 
+  private assertBindingExecution(binding: Binding) {
+    const dispatch=this.db.prepare("SELECT dispatch_id FROM agent_sessions WHERE id=?").get(binding.binding_session_id) as {dispatch_id:string}|undefined;
+    if (dispatch) assertDispatchExecution(this.database,dispatch.dispatch_id);
+    else assertExternalExecution(this.database,binding.binding_session_id);
+  }
+
+  /** Only proven mirrors may share a copy; source identity alone is insufficient. */
+  find(accountId: string, sessions: readonly string[], sourceId: string, href: string): Row | undefined {
+    const path = localArtifactPath(href);
+    if (!path) return undefined;
+    return (this.db.prepare(`SELECT * FROM agent_artifacts WHERE account_id=? AND source_id=?
+      AND session_id IN (SELECT value FROM json_each(?)) ORDER BY CASE status WHEN 'ready' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,rowid`)
+      .all(accountId, sourceId, JSON.stringify(sessions)) as unknown as Row[]).find(row => localArtifactPath(row.href) === path);
+  }
+
+  ownerSession(accountId: string, sessions: readonly string[], id: string): string {
+    const row = this.db.prepare(`SELECT session_id FROM agent_artifacts WHERE id=? AND account_id=?
+      AND session_id IN (SELECT value FROM json_each(?))`).get(id, accountId, JSON.stringify(sessions)) as {session_id:string} | undefined;
+    if (!row) throw notFound("Agent artifact");
+    return row.session_id;
+  }
+
+  /** Bounded incremental collection. Never resubmit a failed/pending/saved link on a heartbeat. */
+  prepare(accountId: string, sessionId: string, messages: readonly {sourceId:string;role:string;text:string;phase?:string | null}[], mirrors: readonly string[]) {
+    const binding = this.binding(accountId, sessionId);
+    if (!binding) return;
+    let capacity = Math.min(AUTOMATIC_SESSION_LIMIT - (this.db.prepare("SELECT COUNT(*) AS n FROM agent_artifacts WHERE account_id=? AND session_id=? AND status='pending'")
+      .get(accountId, sessionId) as {n:number}).n, AUTOMATIC_NODE_LIMIT - (this.db.prepare("SELECT COUNT(*) AS n FROM agent_artifacts WHERE account_id=? AND node_id=? AND status='pending'")
+      .get(accountId,binding.node_id) as {n:number}).n);
+    if (capacity <= 0) return;
+    for (const message of messages.slice(-50).reverse()) {
+      if (!["agent","plan"].includes(message.role) || message.phase === "execution") continue;
+      for (const href of localArtifactImageLinks(message.text).slice(-8).reverse()) {
+        if (this.find(accountId,mirrors,message.sourceId,href)) continue;
+        const output=this.request(accountId,sessionId,message.sourceId,href,binding);
+        this.db.prepare("UPDATE agent_artifacts SET automatic=1,attempts=1 WHERE id=?").run(output.id);
+        if (--capacity <= 0) return;
+      }
+    }
+  }
+
+  async readyImages(accountId: string, sessions: readonly string[]) {
+    const rows=(this.db.prepare(`SELECT * FROM agent_artifacts WHERE account_id=? AND status='ready'
+      AND session_id IN (SELECT value FROM json_each(?)) ORDER BY updated_at DESC,rowid DESC LIMIT 32`)
+      .all(accountId,JSON.stringify(sessions)) as unknown as Row[])
+      .filter(row=>localArtifactImageLinks('[image](<'+row.href+'>)').length > 0).slice(0,12);
+    const images=[];
+    for (const row of rows) {
+      // Legacy copies have no size column. Stat only the bounded, saved bundle; never open native files.
+      const bytes=row.bundle_bytes ?? await stat(join(this.root,`${row.id}.json`)).then(file=>file.size).catch(()=>0);
+      if (bytes>0) images.push({id:row.id,href:row.href,sourceId:row.source_id,sizeBytes:bytes});
+    }
+    return images;
+  }
+
   saved(accountId: string, sessionId: string, sourceId: string, href: string): AgentArtifactState | undefined {
     const row = this.db.prepare("SELECT * FROM agent_artifacts WHERE account_id=? AND session_id=? AND source_id=? AND href=? AND status='ready'")
       .get(accountId, sessionId, sourceId, href) as Row | undefined;
@@ -66,12 +127,14 @@ export class AgentArtifacts {
     if (!localArtifactPath(href)) throw invalidInput("Not a local artifact link.");
     const previous = this.db.prepare("SELECT * FROM agent_artifacts WHERE session_id=? AND account_id=? AND source_id=? AND href=?")
       .get(sessionId, accountId, sourceId, href) as Row | undefined;
-    if (previous?.status === "ready") return this.state(previous);
+    if (previous?.status === "ready" || previous?.status === "pending" && binding
+      && previous.node_id===binding.node_id && previous.session_ref===binding.session_ref) return this.state(previous);
+    if (binding) this.assertBindingExecution(binding);
     const now = new Date().toISOString();
     const id = previous?.id ?? randomUUID();
     this.db.prepare(`INSERT INTO agent_artifacts(id,session_id,account_id,node_id,binding_session_id,session_ref,agent_kind,source_id,href,status,error,created_at,updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,error=excluded.error,error_resource=NULL,
-      node_id=excluded.node_id,binding_session_id=excluded.binding_session_id,session_ref=excluded.session_ref,agent_kind=excluded.agent_kind,updated_at=excluded.updated_at`)
+      automatic=0,retry_at=NULL,node_id=excluded.node_id,binding_session_id=excluded.binding_session_id,session_ref=excluded.session_ref,agent_kind=excluded.agent_kind,updated_at=excluded.updated_at`)
       .run(id, sessionId, accountId, binding?.node_id ?? null, binding?.binding_session_id ?? null, binding?.session_ref ?? null, binding?.agent_kind ?? null,
         sourceId, href, binding ? "pending" : "failed", binding ? null : "node_unavailable", now, now);
     return this.get(accountId, sessionId, id);
@@ -88,7 +151,21 @@ export class AgentArtifacts {
   }
 
   jobs(accountId: string, nodeId: string) {
-    const rows = this.db.prepare("SELECT * FROM agent_artifacts WHERE account_id=? AND node_id=? AND status='pending' ORDER BY created_at LIMIT 4")
+    // Only missing files can be transiently unfinished. Two delayed retries, durable across restart.
+    const retries=this.db.prepare(`SELECT * FROM agent_artifacts WHERE account_id=? AND node_id=? AND automatic=1
+      AND status='failed' AND error='file_missing' AND attempts<? AND retry_at IS NOT NULL AND retry_at<=?
+      ORDER BY retry_at LIMIT 32`).all(accountId,nodeId,AUTOMATIC_ATTEMPT_LIMIT,new Date().toISOString()) as unknown as Row[];
+    let capacity=AUTOMATIC_NODE_LIMIT-(this.db.prepare("SELECT COUNT(*) AS n FROM agent_artifacts WHERE account_id=? AND node_id=? AND status='pending'")
+      .get(accountId,nodeId) as {n:number}).n;
+    for(const row of retries) {
+      if(capacity<=0)break;
+      const pending=(this.db.prepare("SELECT COUNT(*) AS n FROM agent_artifacts WHERE account_id=? AND session_id=? AND status='pending'")
+        .get(accountId,row.session_id) as {n:number}).n;
+      if(pending>=AUTOMATIC_SESSION_LIMIT)continue;
+      this.db.prepare("UPDATE agent_artifacts SET status='pending',error=NULL,retry_at=NULL,attempts=attempts+1 WHERE id=?").run(row.id);
+      capacity--;
+    }
+    const rows = this.db.prepare("SELECT * FROM agent_artifacts WHERE account_id=? AND node_id=? AND status='pending' ORDER BY automatic,created_at LIMIT 4")
       .all(accountId, nodeId) as unknown as Row[];
     return rows.flatMap((row) => {
       const binding = this.binding(accountId, row.binding_session_id ?? row.session_id);
@@ -96,6 +173,8 @@ export class AgentArtifacts {
         this.db.prepare("UPDATE agent_artifacts SET status='failed',error='node_unavailable' WHERE id=?").run(row.id);
         return [];
       }
+      try { this.assertBindingExecution(binding); }
+      catch { this.rejectJob(row.id); return []; }
       return [{ id: row.id, sessionId: row.session_id, sessionRef: row.session_ref!, agentKind: row.agent_kind!, sourceId: row.source_id, href: row.href, diagnosticsProtocol: 1 }];
     });
   }
@@ -108,6 +187,7 @@ export class AgentArtifacts {
     const row = this.db.prepare("SELECT * FROM agent_artifacts WHERE id=? AND account_id=? AND node_id=? AND status='pending'").get(id, accountId, nodeId) as Row | undefined;
     const binding = row && this.binding(accountId, row.binding_session_id ?? row.session_id);
     if (!row || !binding || binding.node_id !== nodeId || binding.session_ref !== row.session_ref) throw notFound("Agent artifact job");
+    this.assertBindingExecution(binding);
     return row;
   }
 
@@ -115,19 +195,24 @@ export class AgentArtifacts {
     this.authorizeJob(accountId, nodeId, id);
     const body = z.object({ error: z.enum(["file_missing", "unsupported", "reference_missing", "file_denied", "too_large", "resource_missing", "node_unavailable"]).optional(), bundle: bundleSchema.optional(), errorResource: resourceSchema.optional() }).strict().safeParse(value);
     if (!body.success || Boolean(body.data.error) === Boolean(body.data.bundle) || Boolean(body.data.errorResource && !body.data.error)) throw invalidInput("Report one artifact result.");
+    let bundleBytes: number | null = null;
     if (body.data.bundle) {
       const bundle = validateArtifactBundle(body.data.bundle);
       await mkdir(this.root, { recursive: true, mode: 0o700 });
+      const payload = JSON.stringify(bundle);
+      bundleBytes = Buffer.byteLength(payload);
       const temp = join(this.root, `${id}-${randomUUID()}.tmp`);
       try {
-        await writeFile(temp, JSON.stringify(bundle), { mode: 0o600, flag: "wx" });
+        await writeFile(temp, payload, { mode: 0o600, flag: "wx" });
         // Binding may have been revoked while writing. Check again before publishing.
         this.authorizeJob(accountId, nodeId, id);
         await rename(temp, join(this.root, `${id}.json`));
       } finally { await unlink(temp).catch(() => undefined); }
     }
-    this.db.prepare("UPDATE agent_artifacts SET status=?,error=?,error_resource=?,updated_at=? WHERE id=?")
-      .run(body.data.bundle ? "ready" : "failed", body.data.error ?? null, body.data.errorResource ?? null, new Date().toISOString(), id);
+    const row=this.authorizeJob(accountId,nodeId,id);
+    const retryAt=row.automatic && row.attempts<AUTOMATIC_ATTEMPT_LIMIT && body.data.error==="file_missing" ? new Date(Date.now()+AUTOMATIC_RETRY_DELAY_MS).toISOString() : null;
+    this.db.prepare("UPDATE agent_artifacts SET status=?,error=?,error_resource=?,updated_at=?,bundle_bytes=?,retry_at=? WHERE id=?")
+      .run(body.data.bundle ? "ready" : "failed", body.data.error ?? null, body.data.errorResource ?? null, new Date().toISOString(), bundleBytes,retryAt,id);
   }
 
   async bundle(accountId: string, sessionId: string, id: string): Promise<AgentArtifactBundle> {
