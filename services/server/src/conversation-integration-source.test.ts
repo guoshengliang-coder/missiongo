@@ -5,7 +5,10 @@ describe("conversation integration instruction rejection", () => {
   it.each([
     ["继续合并", "merge_only"], ["继续发布", "publish_only"], ["继续部署", "publish_only"],
     ["继续合并和发布", "merge_and_publish"], ["继续执行合并和发布", "merge_and_publish"],
-    ["请继续合并和发布", "merge_and_publish"],
+    ["请继续合并和发布", "merge_and_publish"], ["继续合并并发布。", "merge_and_publish"],
+    ["继续合并 PR #12", "merge_only"], ["继续发布 #12！", "publish_only"],
+    ["继续合并，不发布", "merge_only"], ["继续发布，不合并", "publish_only"],
+    ["继续合并，不发布。", "merge_only"], ["继续发布，不合并！", "publish_only"],
     ["执行合并", "merge_only"], ["直接发布", "publish_only"], ["执行合并和发布", "merge_and_publish"],
     ["merge this PR", "merge_only"], ["deploy now", "publish_only"], ["merge and release", "merge_and_publish"],
     ["仅合并，不发布", "merge_only"], ["只发布，不合并", "publish_only"], ["only merge, do not publish", "merge_only"],
@@ -23,6 +26,17 @@ describe("conversation integration instruction rejection", () => {
     ["文档里写着继续发布", "publish_only"], ["“继续合并和发布”", "merge_and_publish"],
     ["继续合并和发布完成", "merge_and_publish"], ["已经合并和发布", "merge_and_publish"],
     ["继续添加到待集成", "merge_and_publish"],
+    ["继续合并已完成", "merge_only"], ["继续发布已完成", "publish_only"],
+    ["继续合并和发布已完成", "merge_and_publish"],
+    ["继续合并和发布：已完成", "merge_and_publish"],
+    ["继续合并和发布任务已完成", "merge_and_publish"],
+    ["继续合并和发布的操作已经完成", "merge_and_publish"],
+    ["请继续合并和发布：已完成", "merge_and_publish"],
+    ["继续部署完成", "publish_only"], ["继续部署已成功", "publish_only"],
+    ["继续合并和发布，等测试通过后执行", "merge_and_publish"],
+    ["继续合并和发布，待测试通过再执行", "merge_and_publish"],
+    ["继续合并和发布，测试通过后执行", "merge_and_publish"],
+    ["继续合并和发布，确认之后执行", "merge_and_publish"],
   ] as const)("rejects non-executing continuation %s", (text, mode) => {
     expect(() => assertIntegrationInstruction(text, mode)).toThrow();
   });

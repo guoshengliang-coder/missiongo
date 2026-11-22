@@ -96,10 +96,16 @@ export function assertIntegrationInstruction(text: string, operation: "merge_onl
   const raw=text;
   if(operation==="merge_only")text=text.replace(/(?:暂不|先不|不要|不用|无需|不)(?:进行)?(?:发布|部署)/g,"").replace(/\b(?:do not|don't|not) (?:publish|release|deploy)\b/ig,"");
   if(operation==="publish_only")text=text.replace(/(?:暂不|先不|不要|不用|无需|不)(?:进行)?合并/g,"").replace(/\b(?:do not|don't|not) merge\b/ig,"");
+  // Only a removed exclusion can leave a trailing separator; do not strip narrative clauses.
+  if (text !== raw) text=text.replace(/[\s,，;；]+([。.!！]?)$/, "$1");
   text=text.replace(/^[\s,，;；]+/,"");
-  if (!text.trim() || raw.length > 4000 || /[?？“”「」『』"`]|(?:不|别|勿|禁止|停止|暂停|暂缓|取消|以后|明天|后天|如果|假如|等我|是否|能否|为什么|怎么|吗|么|添加|加入|提交到|方案|建议|准备|计划|引用|文档里|文档中|例如)|\b(?:not|don't|do not|can't|cannot|if|when|once|after|later|tomorrow|why|whether|queue|plan|prepare)\b/i.test(text))
+  if (!text.trim() || raw.length > 4000 || /[?？“”「」『』"`]|(?:不|别|勿|禁止|停止|暂停|暂缓|取消|以后|明天|后天|如果|假如|等我|(?:等|待).*(?:后|再|通过|完成|结束|确认|批准)|(?:通过|完成|结束|确认|批准)(?:之|以)?(?:后|再)|是否|能否|为什么|怎么|吗|么|添加|加入|提交到|方案|建议|准备|计划|引用|文档里|文档中|例如)|\b(?:not|don't|do not|can't|cannot|if|when|once|after|later|tomorrow|why|whether|queue|plan|prepare)\b/i.test(text))
     throw conflict("conversation_integration_instruction_ambiguous", "这条消息不是范围明确的当前执行指令，请先澄清；不能把讨论或加入清单当作合并发布授权。");
-  if(!/^(?:请|现在|直接|立即|继续(?:执行)?(?=合并|发布|部署)|执行|开始|帮我|麻烦|把|将|仅|只|合并|发布|部署|only\b|merge\b|publish\b|deploy\b|release\b|please\b|go ahead\b)/i.test(text.trim()) || /(?:已经|已)(?:合并|发布)|(?:合并|发布)(?:成功|完成)/.test(text))
+  // Continue is a new execution entry: accept a complete imperative, not arbitrary trailing narration.
+  const continuing = /^(?:请)?继续/.test(text.trim());
+  if (continuing && !/^(?:请)?继续(?:执行)?(?:合并(?:(?:和|并|及|、)(?:发布|部署))?|发布|部署)(?:\s*(?:PR\s*#?\d+|#\d+))?[。.!！]?$/i.test(text.trim()))
+    throw conflict("conversation_integration_instruction_ambiguous", "继续执行须给出明确动作，不能把附带汇报或条件当作当前执行指令。");
+  if(!/^(?:请|现在|直接|立即|继续(?:执行)?(?=合并|发布|部署)|执行|开始|帮我|麻烦|把|将|仅|只|合并|发布|部署|only\b|merge\b|publish\b|deploy\b|release\b|please\b|go ahead\b)/i.test(text.trim()) || /(?:已经|已)(?:合并|发布|部署)|(?:合并|发布|部署)(?:已经?|已然)?(?:成功|完成|结束)/.test(text))
     throw conflict("conversation_integration_instruction_ambiguous", "不能把完成汇报或引用当作当前执行指令。");
   const merge = /合并|\bmerge\b/i.test(text), publish = /发布|部署|\b(?:publish|release|deploy)\b/i.test(text);
   if (merge !== (operation !== "publish_only") || publish !== (operation !== "merge_only"))
