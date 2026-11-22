@@ -96,6 +96,12 @@ describe("headless configuration and scope", () => {
           expect(prompt).toContain("特别是与推荐不同的选择");
           expect(prompt).toContain("普通进度、澄清和等待提示不是正式方案");
           expect(prompt).toContain("有边界的复现或实验计划");
+          expect(prompt).toContain("研发审查默认执行，不绑定仓库");
+          expect(prompt).toContain("直接调用当前原生端的独立 Agent 做只读审查");
+          expect(prompt).toContain("最多三轮");
+          expect(prompt).toContain("审查者不得再派生审查");
+          expect(prompt).toContain("明确报告审查未完成");
+          expect(prompt).not.toContain("仅在项目明确启用");
           if (freeSession) expect(prompt).toContain("不自行开始任务");
           else if (mode === "plan") {
             expect(prompt).toContain("领取记录任务归属，不要求方案批准");

@@ -35,6 +35,12 @@ final class LaunchPromptTests: XCTestCase {
                     XCTAssertTrue(prompt.contains("特别是与推荐不同的选择"))
                     XCTAssertTrue(prompt.contains("普通进度、澄清和等待提示不是正式方案"))
                     XCTAssertTrue(prompt.contains("有边界的复现或实验计划"))
+                    XCTAssertTrue(prompt.contains("研发审查默认执行，不绑定仓库"))
+                    XCTAssertTrue(prompt.contains("直接调用当前原生端的独立 Agent 做只读审查"))
+                    XCTAssertTrue(prompt.contains("最多三轮"))
+                    XCTAssertTrue(prompt.contains("审查者不得再派生审查"))
+                    XCTAssertTrue(prompt.contains("明确报告审查未完成"))
+                    XCTAssertFalse(prompt.contains("仅在项目明确启用"))
                     if freeSession { XCTAssertTrue(prompt.contains("不自行开始任务")) }
                     else if mode == "plan" {
                         XCTAssertTrue(prompt.contains("领取记录任务归属，不要求方案批准"))
