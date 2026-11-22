@@ -23,7 +23,14 @@ export interface MergeReconciliationState {
   publication?:{decision:"defer_publication"|"allow_partial_publication";reason:string;requestId:string;resultsDigest:string;batchScopeDigest?:string};
   finalValidation?:{head:string;checkedAt:string;source:string;validation:string;resultsDigest:string};
 }
+export interface MergeContinuation {
+  state: "not_sent" | "queued" | "delivering" | "delivery_unknown" | "delivered" | "failed" | "cancelled";
+  commandId?: string;
+  reason?: "pending" | "archived" | "revoked" | "finished" | "managed" | "not_ready" | "unavailable" | "send_failed" | "delivery_failed" | "scope_changed";
+}
 export interface MergeReconciliationPreview {
+  continuations?: Record<string, MergeContinuation>;
+
   batchId:string;state:"active"|"finished";publish:boolean;snapshot:string;sessionId:string;
   publicationRefresh?:PublicationScope;
   reconciliation?:MergeReconciliationState | undefined;

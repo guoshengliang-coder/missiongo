@@ -1,4 +1,6 @@
 import {reviewedHistoricalDeliveries} from "./historical-delivery-review.js";
+import { MissionGoError } from "./errors.js";
+import { mergeContinuationKey } from "./merge-continuation.js";
 import {AgentHistory} from "./agent-history.js";
 import {AgentArtifacts} from "./agent-artifacts.js";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -204,6 +206,33 @@ describe("integration directly in the original conversation",()=>{
     f.safe(await f.call("get_merge_batch",{sessionId:id,batchId:b.id}));
     expect((await f.call("get_merge_batch",{sessionId:id,batchId:b.id},{clientId:"wrong"})).isError).toBe(true);
     expect((await f.call("get_merge_batch",{dispatchId:id,batchId:b.id})).isError).toBe(true);
+    const snapshot=merges.preview(f.owner.id,b.id).snapshot,key=randomUUID();
+    merges.requestReconciliation(f.owner.id,id,b.id,key,snapshot,{kind:"retry_blocked",deliveryId:b.deliveries[0]!,reason:"Verified external retry scope"});
+    const login=await f.app.inject({method:"POST",url:"/api/v1/auth/login",payload:{username:"owner@example.test",password:"synthetic password"}});
+    const headers={cookie:login.headers['set-cookie']!.toString().split(';')[0]!},url=`/api/v1/merge-batches/${b.id}/reconciliation`;
+    const send=()=>f.app.inject({method:"POST",url:`${url}/${key}/decision`,headers,payload:{snapshot,decision:"approved",reviewConfirmed:true,continueInSession:true}});
+    const read=()=>f.app.inject({method:"GET",url,headers});
+    // A previous version mistook a real external conversation for a missing internal one.
+    f.db.prepare("INSERT INTO idempotency_keys(key,operation,result_json,created_at) VALUES (?,'merge_continuation',?,?)")
+      .run(`merge-continuation:${JSON.stringify([f.owner.id,id,mergeContinuationKey(b.id,key)])}`,JSON.stringify({state:"failed",reason:"unavailable"}),new Date().toISOString());
+    native.disconnect(f.owner.id,id);
+    expect((await send()).json().continuation).toMatchObject({state:"failed",reason:"not_ready"});
+    native.connect(f.owner.id,id,launched.node.nodeId);
+    const current=native.listForNode(f.owner.id,launched.node.nodeId,"worker",()=>{},true).find(s=>s.id===id)!;
+    const report=(commandId?:string,commandStatus:"delivering"|"delivery_unknown"|"delivered"="delivered")=>native.recordSnapshot({accountId:f.owner.id,nodeId:launched.node.nodeId,sessionId:id,workerId:"worker",generation:current.externalBindingGeneration,
+      nativeSessionRef:nativeSession.sessionRef,status:"idle",turnState:{turnActive:false},mode:"full-access",messages:[],...(commandId?{commandId,commandStatus}:{})},()=>{});
+    report();
+    const pending=native.enqueue(f.owner.id,id,"Existing external message",[],randomUUID());
+    expect((await send()).json().continuation).toMatchObject({state:"failed",reason:"pending"});native.cancel(f.owner.id,id,pending.id);
+    const accepted=await send();expect(accepted.statusCode,accepted.body).toBe(200);
+    expect(accepted.json().continuation).toMatchObject({state:"queued",queued:true});const commandId=accepted.json().continuation.commandId;
+    expect((await send()).json().continuation.commandId).toBe(commandId);
+    report(commandId,"delivering");report(commandId,"delivery_unknown");
+    expect((await read()).json().continuations[key]).toMatchObject({state:"delivery_unknown",commandId});
+    report(commandId);expect((await read()).json().continuations[key]).toMatchObject({state:"delivered",commandId});
+    expect((await send()).json().continuation.commandId).toBe(commandId);
+    expect(f.db.prepare("SELECT count(*) AS n FROM external_native_commands WHERE session_id=? AND text LIKE '本次集成决定已批准%'").get(id)).toEqual({n:1});
+    expect(f.db.prepare("SELECT count(*) AS n FROM agent_sessions WHERE id=?").get(id)).toEqual({n:0});
   });
   it("freezes on a newer input, resumes an unchanged status query and never turns stop into continuation",async()=>{
     const f=await prepared();human(f,"执行合并");const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"prepare",scope(f));
@@ -1413,6 +1442,80 @@ describe("AND-439 batch reconciliation",()=>{
     const final=()=>merges.recordCombinedValidation(f.owner.id,b.dispatchId,b.id,{head:"f".repeat(40),checkedAt:new Date().toISOString(),source:"Synthetic actual target",validation:"Combined regression passed"});
     return {...f,...launched,merges,d,b,keys,preview,request,approve,apply,merged,evidence,final};
   }
+  async function continuationFixture() {
+    const f=await recoveryFixture({publish:true}),r=f.request({kind:"defer_publication",reason:"Continue without publication"});
+    const login=await f.app.inject({method:"POST",url:"/api/v1/auth/login",payload:{username:"owner@example.test",password:"synthetic password"}});
+    const headers={cookie:login.headers['set-cookie']!.toString().split(';')[0]!};
+    const url=`/api/v1/merge-batches/${f.b.id}/reconciliation`;
+    const send=()=>f.app.inject({method:"POST",url:`${url}/${r.key}/decision`,headers,
+      payload:{snapshot:r.snapshot,decision:"approved",reviewConfirmed:true,continueInSession:true}});
+    const read=()=>f.app.inject({method:"GET",url,headers});
+    return {...f,r,send,read};
+  }
+  it("continues an approved card through a valid durable key exactly once, including after delivery",async()=>{
+    const f=await continuationFixture();
+    const first=await f.send();expect(first.statusCode,first.body).toBe(200);
+    expect(first.json().continuation).toMatchObject({queued:true,state:"queued"});
+    const id=first.json().continuation.commandId;
+    expect((await f.send()).json().continuation.commandId).toBe(id);
+    expect((await f.read()).json().continuations[f.r.key]).toMatchObject({state:"queued",commandId:id});
+    new AgentSessionStore(f.store.database).recordSnapshot({nodeId:f.node.nodeId,sessionId:f.b.sessionId,status:"idle",messages:[],
+      turnState:{turnActive:false},commandId:id,commandStatus:"delivered"});
+    expect((await f.read()).json().continuations[f.r.key]).toMatchObject({state:"delivered",commandId:id});
+    expect((await f.send()).json().continuation).toMatchObject({state:"delivered",commandId:id});
+    expect(f.db.prepare("SELECT count(*) AS n FROM agent_session_commands WHERE session_id=? AND text LIKE '本次集成决定已批准%'").get(f.b.sessionId)).toEqual({n:1});
+    expect(f.preview().reconciliation!.history.filter(row=>row.action==="approved")).toHaveLength(1);
+  });
+  it("persists a pending-message reason without losing approval, then retries once the blocker clears",async()=>{
+    const f=await continuationFixture(),sessions=new AgentSessionStore(f.store.database);
+    const prior=sessions.enqueue(f.owner.id,f.b.sessionId,"An existing reply",[],false,randomUUID());
+    expect((await f.send()).json().continuation).toMatchObject({queued:false,state:"failed",reason:"pending"});
+    expect(f.preview().reconciliation!.requests[0]?.decision).toBe("approved");
+    expect((await f.read()).json().continuations[f.r.key]).toEqual({state:"failed",reason:"pending"});
+    sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.b.sessionId,status:"idle",messages:[],turnState:{turnActive:false},commandId:prior.id,commandStatus:"delivered"});
+    expect((await f.send()).json().continuation).toMatchObject({queued:true,state:"queued"});
+  });
+  it.each(["archived","revoked","failed","cancelled","delivery_unknown"])("preserves a precise %s result across reads",async(kind)=>{
+    const f=await continuationFixture();
+    if(kind==="archived")f.db.prepare("UPDATE agent_sessions SET archived_at=? WHERE id=?").run(new Date().toISOString(),f.b.sessionId);
+    if(kind==="revoked") {
+      // Exercise the enqueue authorization guard without changing the human decision scope.
+      const guard=vi.spyOn(AgentSessionStore.prototype,"enqueue").mockImplementationOnce(()=>{throw new MissionGoError("builder_execution_revoked","private diagnostic",409);});
+      try {expect((await f.send()).json().continuation).toMatchObject({state:"failed",reason:"revoked"});}finally{guard.mockRestore();}
+    } else if(kind==="archived")expect((await f.send()).json().continuation).toMatchObject({state:"failed",reason:"archived"});
+    else {
+      const id=(await f.send()).json().continuation.commandId;
+      f.db.prepare("UPDATE agent_session_commands SET status=? WHERE id=?").run(kind,id);
+      expect((await f.send()).json().continuation).toMatchObject({state:kind,commandId:id,...(kind==="failed"?{reason:"delivery_failed"}:{})});
+    }
+    const read=await f.read();expect(read.json().continuations[f.r.key]).toMatchObject({state:["archived","revoked"].includes(kind)?"failed":kind});
+    expect(read.body).not.toContain("private diagnostic");
+  });
+  it("retains an accepted send when execution changes the snapshot, but never sends a new stale request",async()=>{
+    for(const accepted of [false,true]) {
+      const f=await continuationFixture();f.approve(f.r);
+      const id=accepted?(await f.send()).json().continuation.commandId:undefined;
+      f.merges.report(f.owner.id,f.b.dispatchId,f.b.id,f.d.id,{status:"blocked",head:f.d.head,detail:"Changed execution observation"});
+      const result=(await f.send()).json().continuation;
+      const read=(await f.read()).json().continuations[f.r.key];
+      if(accepted) {expect(result).toMatchObject({state:"queued",commandId:id});expect(read).toMatchObject({state:"queued",commandId:id});}
+      else {expect(result).toMatchObject({state:"failed",reason:"scope_changed"});expect(read).toMatchObject({state:"failed",reason:"scope_changed"});}
+    }
+  });
+  it("exposes a safe generic failure and never leaks internal errors into a continuation",async()=>{
+    const f=await continuationFixture(),guard=vi.spyOn(AgentSessionStore.prototype,"enqueue").mockImplementationOnce(()=>{throw new Error("private diagnostic secret");});
+    try {
+      const response=await f.send();expect(response.json().continuation).toMatchObject({queued:false,state:"failed",reason:"send_failed"});
+      expect(response.body).not.toContain("private diagnostic secret");
+      expect((await f.read()).json().continuations[f.r.key]).toEqual({state:"failed",reason:"send_failed"});
+    } finally {guard.mockRestore();}
+  });
+  it("does not notify an applied or changed decision and never enqueues from a plain approval",async()=>{
+    const f=await continuationFixture();f.approve(f.r);f.apply(f.r.key);
+    expect((await f.send()).json().continuation).toMatchObject({queued:false,state:"failed",reason:"scope_changed"});
+    expect((await f.read()).json().continuations[f.r.key]).toBeUndefined();
+    expect(f.db.prepare("SELECT count(*) AS n FROM agent_session_commands WHERE session_id=? AND text LIKE '本次集成决定已批准%'").get(f.b.sessionId)).toEqual({n:0});
+  });
   it("AND-521 lets an old batch record prerequisites without acquiring repair authority",async()=>{
     const f=await recoveryFixture({publish:true}),action=syntheticPrerequisites(f.merges.batch(f.owner.id,f.b.dispatchId,f.b.id));
     expect(f.merges.batch(f.owner.id,f.b.dispatchId,f.b.id).integration).toBeUndefined();

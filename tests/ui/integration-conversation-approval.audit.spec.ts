@@ -2,10 +2,10 @@ import {test,expect} from "@playwright/test";
 import {queueRoute} from "./integration-queue-fixture";
 
 test.use({hasTouch:true});
-for(const width of [320,1440])for(const theme of ["light","dark"] as const){
+for(const width of [320,375,1440])for(const theme of ["light","dark"] as const){
   test(`integration decision stays in conversation at ${width}px ${theme}`,async({page,request},testInfo)=>{
     const stamp="2026-11-20T08:00:00.000Z";await page.clock.setFixedTime(new Date(stamp));
-    await page.setViewportSize({width,height:900});await page.emulateMedia({colorScheme:theme});
+    await page.setViewportSize({width,height:width===375?812:900});await page.emulateMedia({colorScheme:theme});
     const product=await(await request.post("/api/v1/products",{data:{name:`Decision ${width} ${theme}`,keyPrefix:`DA${width}${theme[0]!.toUpperCase()}`}})).json();
     const id="integration-conversation",snapshot="a".repeat(64);
     const session={id,agentSessionId:id,dispatchId:"decision-dispatch",productId:product.id,agentKind:"codex",status:"idle",updatedAt:stamp,createdAt:stamp,
@@ -19,7 +19,7 @@ for(const width of [320,1440])for(const theme of ["light","dark"] as const){
     await page.route("**/reconciliation/decision-one/review",route=>{reviewed++;return queueRoute(route).fulfill({json:{reviewed:true}});});
     await page.route("**/reconciliation/decision-one/decision",route=>{
       expect(route.request().postDataJSON()).toMatchObject({snapshot,decision:"approved",reviewConfirmed:true});approved=true;
-      return queueRoute(route).fulfill({json:{saved:true,continuation:{queued:true}}});
+      return queueRoute(route).fulfill({json:{batchId:batch.id,saved:true,continuation:{queued:true,state:"queued"}}});
     });
     await page.route("**/merge-batches/decision-batch/reconciliation",route=>queueRoute(route).fulfill({json:{batchId:batch.id,sessionId:id,state:"active",publish:true,snapshot,entries:[{deliveryId:"delivery-one",itemKeys:["UX-1"],requiredArtifacts:["web"],items:[],repository:"https://github.com/example/project",pullRequest:12,originalHead:"a".repeat(40),executionHead:"a".repeat(40),targetBranch:"main"}],
       reconciliation:{...batch.reconciliation,requests:[{...row,...(approved?{decision:"approved"}:{})}]}}}));

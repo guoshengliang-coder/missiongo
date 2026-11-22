@@ -23,6 +23,8 @@ final class LaunchPromptTests: XCTestCase {
                     XCTAssertTrue(prompt.contains("prepare_plan_document"))
                     XCTAssertTrue(prompt.contains("最终答复（final_answer）"))
                     XCTAssertTrue(prompt.contains("最终答复必须自足"))
+                    XCTAssertTrue(prompt.contains("用户可见消息先讲结论，再讲变化与影响"))
+                    XCTAssertTrue(prompt.contains("不为精简改写或隐藏源消息"))
                     XCTAssertFalse(prompt.contains("若已在进度中展示，最终答复只"))
                     XCTAssertTrue(prompt.contains("get_plan_document"))
                     XCTAssertTrue(prompt.contains("本机绝对路径的 Markdown 链接"))

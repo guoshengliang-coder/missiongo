@@ -789,6 +789,12 @@ AND-526：选择器优先显示短名称，使用 `--text-base` 和500字重；�
 
 复查入口：合并后发布、仅发布、取消发布后的仅合并，以及旧批次的恢复审阅。自动回归见 `release-history.audit.spec.ts` 和既有 `and-511-integration-queue.audit.spec.ts`，覆盖 320px/桌面、明暗、三档字号、范围刷新及错误状态；复用现有令牌和控件，无新增样式豁免。
 
+### 继续原会话的投递反馈
+
+`MergeReconciliation` 的会话紧凑卡片复用 `merge-delivery-copy`、`merge-actions`、公共按钮及主题令牌，说明批准保存与继续消息投递各自的结果；按钮为“通知原会话继续”。排队、接收中、送达未知与已送达不推导执行完成。安全失败原因与对应核对说明直接可见，读取失败保留旧结果和草稿；刷新、切换和重试复用原请求，不重复投递或索批。集成详情保留原有显式执行边界，不因批准自动发送消息。
+
+生成端先讲结论、变化与影响，仅有待决项时列选择；技术日志、命令、提交明细与完整验证进入固定 Markdown 或执行记录。重大风险、授权边界与验证缺口直接可见，历史源消息保持原样。实现与示例见 [继续原会话反馈与消息表达](continue-conversation-feedback.md)，行为回归见 `merge-continuation.audit.spec.ts`、`integration-conversation-approval.audit.spec.ts` 及服务端对账回归；真实 Android WebView 与原节点另行验证。
+
 ### 原会话写入占用恢复（AND-537）
 
 控制台与条目内会话共用 `AgentWriterRecovery`，只接管明确失败且报写入占用的 Codex 消息，不将投递结果不明视为未发送。中文原因、检查和恢复方法使用既有语义色卡、公共 `Modal`、按钮和原生 `details`；原始诊断可展开、复制，复制失败允许选取。未核实占用进程时只称其他 Codex 进程，不猜桌面端。

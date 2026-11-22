@@ -1,18 +1,42 @@
-import { integrationArtifactName, type MergeReconciliationPreview } from "@missiongo/contracts";
-import { useEffect, useState } from "react";
+import { integrationArtifactName, type MergeContinuation, type MergeReconciliationPreview } from "@missiongo/contracts";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { request } from "./api";
 import { useI18n } from "./i18n";
 
-export function MergeReconciliation({batchId,initiallyOpen=false,compact=false}:{batchId:string;initiallyOpen?:boolean;compact?:boolean}) {
+// Shared by observers of the same query and survives component remounts; never compare per-instance clocks.
+let continuationReadSequence=0;
+
+type ReconciliationProps={batchId:string;initiallyOpen?:boolean;compact?:boolean};
+export function MergeReconciliation(props:ReconciliationProps) {
+  return <MergeReconciliationContent key={props.batchId} {...props}/>;
+}
+function MergeReconciliationContent({batchId,initiallyOpen=false,compact=false}:ReconciliationProps) {
   const {t,formatTime,statusLabel}=useI18n(),[open,setOpen]=useState(initiallyOpen),[confirmed,setConfirmed]=useState(false);
-  const query=useQuery({queryKey:["merge-reconciliation",batchId],enabled:open,
-    queryFn:()=>request<MergeReconciliationPreview>(`/api/v1/merge-batches/${encodeURIComponent(batchId)}/reconciliation`)});
+  const ackReads=useRef(new Map<string,number>());
+  const [receipt,setReceipt]=useState<{id:string;continuation:MergeContinuation}|undefined>();
+  const query=useQuery({refetchInterval:q=>Object.values(q.state.data?.continuations??{}).some(c=>["queued","delivering"].includes(c.state))?5000:false,queryKey:["merge-reconciliation",batchId],enabled:open,
+    queryFn:async()=>{
+      const sequence=++continuationReadSequence;
+      const result=await request<MergeReconciliationPreview>(`/api/v1/merge-batches/${encodeURIComponent(batchId)}/reconciliation`);
+      return {...result,readSequence:sequence};
+    }});
+  const [sendUnknown,setSendUnknown]=useState(false);
   const decide=useMutation({mutationFn:({id,snapshot,decision}:{id:string;snapshot:string;decision:"approved"|"rejected"})=>{
     const publicationScope=query.data?.reconciliation?.requests.find(row=>row.id===id)?.publicationScope;
-    return request<{continuation?:{queued:boolean}}>(`/api/v1/merge-batches/${encodeURIComponent(batchId)}/reconciliation/${encodeURIComponent(id)}/decision`,{
+    return request<{batchId:string;continuation?:MergeContinuation & {queued:boolean}}>(`/api/v1/merge-batches/${encodeURIComponent(batchId)}/reconciliation/${encodeURIComponent(id)}/decision`,{
       method:"POST",body:JSON.stringify({snapshot,decision,...(compact?{reviewConfirmed:true,continueInSession:true}:{noExecutionRemaining:confirmed}),...(publicationScope?{publicationScopeDigest:publicationScope.digest}:{})})});},
-    onSettled:()=>{setConfirmed(false);void query.refetch();}});
+    onSuccess:(result,variables)=>{
+      if(result.continuation)ackReads.current.set(variables.id,continuationReadSequence);
+      if(result.continuation)setReceipt({id:variables.id,continuation:result.continuation});
+    },
+    onError:()=>setSendUnknown(true),
+    onSettled:()=>{setConfirmed(false);void query.refetch().then(result=>{if(result.isSuccess){setSendUnknown(false);setReceipt(current=>current&&result.data&&result.data.readSequence>(ackReads.current.get(current.id)??Infinity)&&result.data.continuations?.[current.id]?undefined:current);}});}});
+  // Only reads STARTED after acknowledgement may replace it; old successful reads are still stale.
+  useEffect(()=>{
+    if(!query.isSuccess)return;
+    setReceipt(current=>current&&query.data.readSequence>(ackReads.current.get(current.id)??Infinity)&&query.data.continuations?.[current.id]?undefined:current);
+  },[query.dataUpdatedAt,query.data,query.isSuccess]);
   const pending=query.data?.reconciliation?.requests.filter(r=>!r.decision&&!r.appliedAt&&r.snapshot===query.data?.snapshot)??[];
   const visible=compact?pending:query.data?.reconciliation?.requests;
   const [reviewFailed,setReviewFailed]=useState(false);
@@ -25,11 +49,26 @@ export function MergeReconciliation({batchId,initiallyOpen=false,compact=false}:
       method:"POST",body:JSON.stringify({snapshot})}).catch(()=>{if(current)setReviewFailed(true);});
     return ()=>{current=false;};
   },[batchId,compact,reviewId,snapshot,query.dataUpdatedAt]);
-  const approved=query.data?.reconciliation?.requests.find(r=>r.decision==="approved"&&!r.appliedAt);
-  if(compact&&query.isSuccess&&!pending.length)return approved?<section role="status" className="merge-delivery-notice confirmed">
-    <p>{t(decide.data?.continuation?.queued?"recoveryContinueQueued":"recoveryApprovedSaved")}</p>
-    {!decide.data?.continuation?.queued&&<button type="button" className="secondary-button" disabled={decide.isPending} onClick={()=>decide.mutate({id:approved.id,snapshot:approved.snapshot,decision:"approved"})}>{t("recoveryContinue")}</button>}
-    {decide.isError&&<p role="alert">{t("recoveryError")}</p>}
+  const approvedRequests=query.data?.reconciliation?.requests.filter(r=>r.decision==="approved"&&!r.appliedAt)??[];
+  const approved=approvedRequests.slice().reverse().find(row=>row.snapshot===query.data?.snapshot)??approvedRequests.at(-1);
+  const continuation=approved?(receipt?.id===approved.id?receipt.continuation:undefined)??query.data?.continuations?.[approved.id]??
+    (decide.data?.batchId===batchId?decide.data.continuation:undefined):undefined;
+  const state=continuation?.state??(decide.data?.batchId===batchId&&decide.data.continuation?.queued?"queued":"not_sent");
+  const statusKeys={not_sent:"recoveryApprovedSaved",queued:"recoveryContinueQueued",delivering:"recoveryContinueDelivering",
+    delivery_unknown:"recoveryContinueUnknown",delivered:"recoveryContinueDelivered",failed:"recoveryContinueFailed",cancelled:"recoveryContinueCancelled"} as const;
+  const reasonKeys={pending:"recoveryContinuePending",archived:"recoveryContinueArchived",revoked:"recoveryContinueRevoked",
+    finished:"recoveryContinueFinished",managed:"recoveryContinueManaged",unavailable:"recoveryContinueUnavailable",
+    send_failed:"recoveryContinueFailureHelp",delivery_failed:"recoveryContinueDeliveryFailed",not_ready:"recoveryContinueNotReady",scope_changed:"recoveryContinueStale"} as const;
+  if(compact&&query.data&&!pending.length)return approved?<section role="status" className="merge-delivery-notice confirmed" data-continuation>
+    <div className="merge-delivery-copy">
+      <strong>{t(decide.isPending?"recoveryContinueSending":sendUnknown?"recoveryContinueUnknown":statusKeys[state])}</strong>
+      {continuation?.reason&&<p role="alert">{t(reasonKeys[continuation.reason])}</p>}
+      {query.isRefetchError&&<p role="alert">{t("recoveryContinueReadFailed")}</p>}
+    </div>
+    <div className="merge-actions">
+    {!sendUnknown&&!continuation?.commandId&&["not_sent","failed"].includes(state)&&continuation?.reason!=="scope_changed"&&<button type="button" className="secondary-button" disabled={decide.isPending||query.isFetching||query.isRefetchError} onClick={()=>decide.mutate({id:approved.id,snapshot:approved.snapshot,decision:"approved"})}>{t("recoveryContinue")}</button>}
+    {!decide.isPending&&<button type="button" className="text-button" disabled={query.isFetching} onClick={()=>void query.refetch().then(result=>{if(result.isSuccess){setSendUnknown(false);setReceipt(current=>current&&result.data&&result.data.readSequence>(ackReads.current.get(current.id)??Infinity)&&result.data.continuations?.[current.id]?undefined:current);}})}>{t("recoveryContinueCheck")}</button>}
+    </div>
   </section>:null;
   const label=(entry:MergeReconciliationPreview["entries"][number]|undefined)=>entry ? entry.itemKeys.join(" · ") || `PR #${entry.pullRequest}` : "";
   const labels={accept_merge:"recoveryAcceptMerge",retry_handover:"recoveryRetryHandover",retry_blocked:"recoveryRetryBlocked",
