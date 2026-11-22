@@ -24,7 +24,7 @@ import { recordDevelopmentReviews } from "./development-reviews.js";
 const config = { id: "conversation-admin", username: "admin@example.test", passwordScrypt: hashPassword("synthetic password"),
   sessionSecret: "synthetic-conversation-handover-secret", cookieSecure: false };
 const apps: ReturnType<typeof buildApp>[] = [];
-afterEach(async () => { await Promise.all(apps.splice(0).map(app => app.close())); });
+afterEach(async () => { vi.useRealTimers(); await Promise.all(apps.splice(0).map(app => app.close())); });
 
 type Identity = { dispatchId?: string; sessionId?: string; session?: { agentKind: string; refKind: string; sessionRef: string } };
 type Result = { resultType?:string; requestState?:string; inputRequests?:unknown; isError?: boolean; error?: unknown; content?: { type: string; text?: string }[];
@@ -156,11 +156,13 @@ describe("integration directly in the original conversation",()=>{
     expect(f.merges.recomputeBatches(f.item.productId,f.owner.id)[0]?.id).toBe(b.id);
   });
   it("publishes existing item evidence without inventing a delivery selection or merging it again",async()=>{
+    vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(new Date("2026-11-22T08:00:00Z"));
     const f=await prepared(),sessions=new AgentSessionStore(f.store.database);
     f.safe(await f.call("submit_development_complete",{itemKey:f.item.key,...f.identity,completion:{kind:"github",url:`${f.input.repository}/pull/${f.input.pullRequest}`},requiredArtifacts:["web"],idempotencyKey:"already-integrated"}));
     human(f,"准备发布");
     const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"publication",{...scope(f),operation:"publish_only",deliveries:[]});
     expect(p.publicationScope?.blockers).toEqual([]);
+    vi.setSystemTime(Date.now()+10);
     sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[{sourceId:"publication-scope",role:"agent",phase:"final_answer",text:p.reviewText,occurredAt:new Date(Date.now()-1).toISOString()}]});
     human(f,"批准");
     let b=f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id);
@@ -365,6 +367,182 @@ describe("integration directly in the original conversation",()=>{
     try{expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id)).toThrow(/过期/);}finally{vi.useRealTimers();}
     expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({n:0});
   });
+  it("retains exact scope review across unrelated final answers and refreshed preparations",async()=>{
+    const f=await prepared(),sessions=new AgentSessionStore(f.store.database);
+    human(f,"合并和发布");
+    const input={...scope(f),operation:"merge_and_publish" as const};
+    const first=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"cross-turn-first",input);
+    sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[
+      {sourceId:"cross-turn-review",role:"agent",phase:"final_answer",text:first.reviewText,occurredAt:new Date(Date.now()-4).toISOString()},
+      {sourceId:"cross-turn-progress",role:"agent",phase:"final_answer",text:"CI 仍在运行，尚未执行。",occurredAt:new Date(Date.now()-2).toISOString()},
+    ]});
+    human(f,"合并和发布");
+    const next=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"cross-turn-next",input);
+    const b=f.merges.startConversation(f.owner.id,"original-client",f.identity,next.id);
+    expect(b.sessionId).toBe(f.projectSessionId);
+    expect(f.merges.startConversation(f.owner.id,"original-client",f.identity,next.id).id).toBe(b.id);
+    const stored=JSON.parse((f.db.prepare("SELECT data_json FROM conversation_integration_preparations WHERE id=?").get(next.id) as {data_json:string}).data_json);
+    expect(stored.reviewEvidence).toMatchObject({sourceId:"cross-turn-review",reviewDigest:next.reviewDigest});
+    expect(b.conversation?.authorization.text).toBe("合并和发布");
+    expect(b.entries[0]!.mergeReady).toBe(false);
+  });
+  const acrossTurns=async(kind:"codex"|"claude_code"|"opencode"="opencode",path=":memory:",repository?:string)=>{
+    const f=await prepared(path,kind),sessions=new AgentSessionStore(f.store.database);
+    human(f,"合并和发布");
+    const input={...scope(f),repository:repository??f.input.repository,operation:"merge_and_publish" as const,deliveries:[{...f.input,repository:repository??f.input.repository}]};
+    const first=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),input);
+    const at=Date.now()-20;
+    const record=(sourceId:string,text:string,offset=0)=>sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[{sourceId,role:"agent",phase:"final_answer",text,occurredAt:new Date(at+offset).toISOString()}]});
+    record("retained-review",first.reviewText);
+    record("retained-progress","CI 仍在运行，尚未执行。",5);
+    return {...f,sessions,input,first,record,at};
+  };
+  it.each(["codex","claude_code","opencode"] as const)("reuses clocked cross-turn review for %s including item-creation replies",async kind=>{
+    const f=await acrossTurns(kind);
+    human(f,"那你提交一个条目给missiongo");human(f,"提交");
+    f.sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[{sourceId:"created-item-report",role:"agent",phase:"final_answer",text:"问题已登记为独立条目。",occurredAt:new Date(Date.now()-1).toISOString()}]});
+    human(f,`合并和发布 ${f.input.deliveries[0]!.repository}/pull/12 ${f.input.deliveries[0]!.head.slice(0,12)}`);
+    const next=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),{...f.input,deliveries:[{...f.input.deliveries[0]!,evidence:{...f.input.deliveries[0]!.evidence,checkedAt:new Date().toISOString()}}]});
+    expect(next.reviewDigest).toBe(f.first.reviewDigest);
+    expect(f.merges.startConversation(f.owner.id,"original-client",f.identity,next.id).sessionId).toBe(f.projectSessionId);
+  });
+  it.each(["https://github.com/abcdef123/project","https://github.com/example/123abcde"])("accepts hex repository names and exact commit URLs: %s",async repository=>{
+    const f=await acrossTurns("codex",":memory:",repository),head=f.input.deliveries[0]!.head;
+    human(f,`合并和发布 ${repository}/pull/12 ${repository}/commit/${head.slice(0,12)}`);
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),f.input);
+    expect(f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id).sessionId).toBe(f.projectSessionId);
+  });
+  it.each(["https://github.com/example/project/commit/"+"e".repeat(40),"https://github.com/other/project/commit/"+"a".repeat(40)])("rejects mismatched commit URL: %s",async url=>{
+    const f=await acrossTurns();human(f,`合并和发布 ${url}`);
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),f.input);
+    expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id)).toThrow(/范围/);
+  });
+  it.each(["PR #12","https://github.com/example/project/pull/12","a".repeat(12),"PR #12，排除 PR #13","PR #12，忽略 PR #13","PR #12 except PR #13","PR #12，PR #13 只发布 Web","PR #12 PR #13 Android","PR #12 PR #13，去掉 Web"])("rejects explicit subset of a two-delivery scope: %s",async reference=>{
+    const f=await acrossTurns();
+    const other={...f.input.deliveries[0]!,itemKeys:[],productId:f.item.productId,pullRequest:13,head:"b".repeat(40),evidence:{...f.input.deliveries[0]!.evidence,head:"b".repeat(40)}};
+    const input={...f.input,deliveries:[...f.input.deliveries,other]};
+    const reviewed=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),input);
+    f.record("two-reviewed",reviewed.reviewText,6);f.record("two-progress","CI 仍在运行。",7);
+    human(f,`合并和发布 ${reference}`);
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),input);
+    expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id)).toThrow(/范围/);
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({n:0});
+  });
+  it.each(["PR #12 PR #13","a".repeat(12)+" "+"b".repeat(12),""])("accepts complete or generic two-delivery instruction: %s",async reference=>{
+    const f=await acrossTurns();
+    const other={...f.input.deliveries[0]!,itemKeys:[],productId:f.item.productId,pullRequest:13,head:"b".repeat(40),evidence:{...f.input.deliveries[0]!.evidence,head:"b".repeat(40)}};
+    const input={...f.input,deliveries:[...f.input.deliveries,other]};
+    const reviewed=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),input);
+    f.record("all-reviewed",reviewed.reviewText,6);f.record("all-progress","CI 仍在运行。",7);
+    human(f,`合并和发布 ${reference}`.trim());
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),input);
+    expect(p.reviewText).toBe(reviewed.reviewText);
+    expect(f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id).entries).toHaveLength(2);
+  });
+  it("includes additional product publication candidates in explicit scope matching",async()=>{
+    const f=await acrossTurns();
+    f.safe(await f.call("submit_development_complete",{itemKey:f.item.key,...f.identity,completion:{kind:"github",url:`${f.input.repository}/pull/13`},requiredArtifacts:["web"],idempotencyKey:"additional-candidate"}));
+    const input={...f.input,deliveries:[{...f.input.deliveries[0]!,itemKeys:[],productId:f.item.productId}]};
+    const reviewed=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),input);
+    expect(reviewed.publicationScope?.candidates).toHaveLength(2);
+    f.record("additional-candidate-reviewed",reviewed.reviewText,6);
+    human(f,"合并和发布 PR #12");
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),input);
+    expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id)).toThrow(/范围/);
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({n:0});
+  });
+  it.each(["merge and publish PR #12 except PR #13","merge and publish PR #12 ignore PR #13","merge and publish Android"])("rejects qualified intervening action inside a reviewed two-PR scope: %s",async instruction=>{
+    const f=await acrossTurns();
+    const other={...f.input.deliveries[0]!,itemKeys:[],productId:f.item.productId,pullRequest:13,head:"b".repeat(40),evidence:{...f.input.deliveries[0]!.evidence,head:"b".repeat(40)}};
+    const input={...f.input,deliveries:[...f.input.deliveries,other]};
+    const reviewed=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),input);
+    f.record("qualified-two-reviewed",reviewed.reviewText,6);f.record("qualified-two-progress","CI 仍在运行。",7);
+    human(f,instruction);human(f,"合并和发布");
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),input);
+    expect(p.reviewText).toBe(reviewed.reviewText);
+    expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id)).toThrow(/范围/);
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({n:0});
+  });
+  it("rejects ambiguous short SHA shared by different PRs",async()=>{
+    const f=await acrossTurns();
+    const head="a".repeat(7)+"b".repeat(33),other={...f.input.deliveries[0]!,itemKeys:[],productId:f.item.productId,pullRequest:13,head,evidence:{...f.input.deliveries[0]!.evidence,head}};
+    const input={...f.input,deliveries:[...f.input.deliveries,other]};
+    const reviewed=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),input);
+    f.record("ambiguous-sha-reviewed",reviewed.reviewText,6);
+    human(f,"合并和发布 aaaaaaa");
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),input);
+    expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id)).toThrow(/范围/);
+  });
+  it.each(["请继续合并和发布","把这个PR合并和发布","merge this PR and release","merge and publish #12"])("accepts complete bounded current instruction: %s",async instruction=>{
+    const f=await acrossTurns();human(f,instruction);
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),f.input);
+    expect(f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id).sessionId).toBe(f.projectSessionId);
+  });
+  it.each(["仅合并，不发布","only merge, do not publish"])("preserves operation-only exclusions: %s",async instruction=>{
+    const f=await prepared();human(f,instruction);
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),scope(f));
+    expect(f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id).publish).toBe(false);
+  });
+  it.each(["停止","改成只发布 Web","合并 PR #99","调整一下","不要发布","合并和发布 https://github.com/example/project/pull/99","合并和发布 https://github.com/other/project/pull/12","合并和发布 "+"e".repeat(40),"merge and publish PR #12 except PR #13","merge and publish PR #12 ignore PR #13","merge and publish Android"])("does not skip intervening stop, scope change or ambiguous input: %s",async text=>{
+    const f=await acrossTurns();human(f,text);human(f,"合并和发布");
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),f.input);
+    expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id)).toThrow(/停止、范围变化或歧义/);
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({n:0});
+  });
+  it.each(["newer-scope","multiple-scopes","missing-clock","changed-clock","missing-user-clock","new-head","new-artifact","current-other-pr","current-other-url","current-other-repo","current-other-sha","current-unparsed-url","bare-approval","interrupt"])("rejects invalid retained review: %s",async scenario=>{
+    const f=await acrossTurns();
+    if(scenario==="newer-scope")f.record("replacement",f.first.reviewText.replace(f.input.deliveries[0]!.head,"e".repeat(40)),10);
+    if(scenario==="multiple-scopes")f.record("ambiguous",f.first.reviewText+"\n"+f.first.reviewText,10);
+    if(scenario==="missing-clock")f.db.prepare("DELETE FROM session_message_times WHERE source_id=?").run("native:retained-review");
+    if(scenario==="changed-clock")f.db.prepare("UPDATE session_message_times SET occurred_at=? WHERE source_id=?").run(new Date(f.at-1000).toISOString(),"native:retained-review");
+    if(scenario==="missing-user-clock")f.sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[{sourceId:"missing-user",role:"user",text:"进度如何"}]});
+    if(scenario==="interrupt"){f.sessions.enqueueInterrupt(f.owner.id,f.projectSessionId);f.db.prepare("UPDATE agent_session_commands SET status='delivered' WHERE session_id=? AND kind='interrupt'").run(f.projectSessionId);}
+    const instruction=scenario==="current-unparsed-url"?"合并和发布 https://github.com/other/project/tree/main":scenario==="current-other-url"?"合并和发布 https://github.com/example/project/pull/99":scenario==="current-other-repo"?"合并和发布 https://github.com/other/project/pull/12":scenario==="current-other-sha"?"合并和发布 "+"e".repeat(40):undefined;
+    human(f,instruction??(scenario==="bare-approval"?"批准":scenario==="current-other-pr"?"合并和发布 PR #99":"合并和发布"));
+    const deliveries=scenario==="new-head"?[{...f.input.deliveries[0]!,head:"e".repeat(40),evidence:{...f.input.deliveries[0]!.evidence,head:"e".repeat(40)}}]:scenario==="new-artifact"?[{...f.input.deliveries[0]!,requiredArtifacts:["web","androidApp"]}]:f.input.deliveries;
+    expect(()=>{
+      const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),{...f.input,deliveries});
+      f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id);
+    }).toThrow();
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({n:0});
+  });
+  it("reconstructs retained review after database reopen without a new session",async()=>{
+    const dir=mkdtempSync(join(tmpdir(),"scope-review-")),path=join(dir,"state.sqlite");
+    try {
+      const f=await acrossTurns("codex",path);human(f,"合并和发布");
+      const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),f.input);
+      await f.app.close();apps.splice(apps.indexOf(f.app),1);
+      const reopened=buildApp({databasePath:path,adminAccount:config,writeTools:"comments",statusCheckTime:false});apps.push(reopened);
+      const merges=new MergeDeliveries(reopened.missionGoStore);
+      const b=merges.startConversation(f.owner.id,"original-client",f.identity,p.id);
+      expect(b.sessionId).toBe(f.projectSessionId);
+      expect(merges.startConversation(f.owner.id,"original-client",f.identity,p.id).id).toBe(b.id);
+      expect(reopened.missionGoStore.database.connection.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({n:1});
+      await reopened.close();apps.splice(apps.indexOf(reopened),1);
+    } finally {rmSync(dir,{recursive:true,force:true});}
+  });
+  it.each(["codex","claude_code","opencode"] as const)("verifies retained scope from %s external native clocks",async kind=>{
+    const f=await fixture(),launched=f.launch(kind);
+    const nativeSession={agentKind:kind,refKind:"native",sessionRef:randomUUID(),autoConnect:true};
+    const registered=await f.call("register_agent_session",{productId:f.item.productId,session:nativeSession});f.safe(registered);
+    const id=registered.structuredContent!.sessionId!,native=new ExternalNativeSessionStore(f.store);
+    const binding=native.listForNode(f.owner.id,launched.node.nodeId,"worker",()=>{},true).find(s=>s.id===id)!;
+    const at=Date.now();
+    const sync=(messages:Parameters<typeof native.recordSnapshot>[0]["messages"])=>native.recordSnapshot({accountId:f.owner.id,nodeId:launched.node.nodeId,sessionId:id,workerId:"worker",generation:binding.externalBindingGeneration,autoConnect:true,nativeSessionRef:nativeSession.sessionRef,status:"active",turnState:{turnActive:true},mode:"full-access",messages},()=>{});
+    sync([{sourceId:"external-start",role:"user",text:"合并和发布",occurredAt:new Date(at).toISOString()}]);
+    const identity={sessionId:id},merges=new MergeDeliveries(f.store),delivery={...proposal(f.item.key),itemKeys:[],productId:f.item.productId};
+    const input={productId:f.item.productId,repository:delivery.repository,operation:"merge_and_publish" as const,deliveries:[delivery]};
+    const first=merges.prepareConversation(f.owner.id,"original-client",identity,randomUUID(),input);
+    sync([
+      {sourceId:"external-review",role:"agent",phase:"final_answer",text:first.reviewText,occurredAt:new Date(at+1).toISOString()},
+      {sourceId:"external-progress",role:"agent",phase:"final_answer",text:"CI 仍在运行。",occurredAt:new Date(at+2).toISOString()},
+      {sourceId:"external-execute",role:"user",text:"合并和发布",occurredAt:new Date(at+3).toISOString()},
+    ]);
+    const p=merges.prepareConversation(f.owner.id,"original-client",identity,randomUUID(),input);
+    const b=merges.startConversation(f.owner.id,"original-client",identity,p.id);
+    expect(b.sessionId).toBe(id);expect(b.dispatchId).toBeUndefined();
+    expect((await f.call("get_merge_batch",{sessionId:id,batchId:b.id},{clientId:"wrong"})).isError).toBe(true);
+  });
   it("AND-540 accepts a current continuation after reviewing and refreshing the exact publication scope",async()=>{
     const f=await prepared(),sessions=new AgentSessionStore(f.store.database);
     human(f,"合并和发布");
@@ -398,9 +576,11 @@ describe("integration directly in the original conversation",()=>{
     expect(f.store.getWorkItem(f.item.key).status).toBe("in_progress");
   });
   it("refreshes identical reviewed scope without another approval and completes merge-and-publish gates",async()=>{
+    vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(new Date("2026-11-22T08:00:00Z"));
     const f=await prepared(),sessions=new AgentSessionStore(f.store.database);human(f,"准备合并和发布");
     const input={...scope(f),operation:"merge_and_publish" as const};
     const first=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"first-review",input);
+    vi.setSystemTime(Date.now()+10);
     sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[{sourceId:"whole-scope",role:"agent",phase:"final_answer",text:first.reviewText,occurredAt:new Date(Date.now()-1).toISOString()}]});
     human(f,"批准");
     const refreshed=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"refreshed-checks",{...input,deliveries:[{...f.input,validation:"Reran same checks",evidence:{...f.input.evidence,checkedAt:new Date().toISOString()}}]});
@@ -442,8 +622,8 @@ const syntheticPrerequisites=(batch:PrerequisiteBatch)=>prerequisitesActionSchem
   conditions:["main","installation_integrity","required_capability","authorization","scope"].map(kind=>({id:kind,kind,category:"fact",stage:"pre_merge",required:true,state:"satisfied",
     reason:"Synthetic required facts verified",owner:"Executor",resumeWhen:"Refresh evidence in original batch",dependencies:["base","heads","scope","candidates","tools","capabilities"],
     ...(kind==="authorization"?{authorizationRef:"Synthetic original permission receipt"}:{})}))});
-async function prepared(databasePath=":memory:") {
-  const f=await fixture(databasePath), launched=f.launch();
+async function prepared(databasePath=":memory:",kind:"codex"|"claude_code"|"opencode"="opencode") {
+  const f=await fixture(databasePath), launched=f.launch(kind);
   const claimed=await f.call("claim_item",{...f.claimInput,session:undefined,dispatchId:launched.dispatch.id});
   f.safe(claimed);
   const merges=new MergeDeliveries(f.store), input=proposal(f.item.key), identity={dispatchId:launched.dispatch.id};
