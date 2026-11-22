@@ -1,8 +1,11 @@
 import { integrationArtifactName, type MergeContinuation, type MergeReconciliationPreview } from "@missiongo/contracts";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { request } from "./api";
 import { useI18n } from "./i18n";
+
+// Shared by observers of the same query and survives component remounts; never compare per-instance clocks.
+let continuationReadSequence=0;
 
 type ReconciliationProps={batchId:string;initiallyOpen?:boolean;compact?:boolean};
 export function MergeReconciliation(props:ReconciliationProps) {
@@ -10,23 +13,29 @@ export function MergeReconciliation(props:ReconciliationProps) {
 }
 function MergeReconciliationContent({batchId,initiallyOpen=false,compact=false}:ReconciliationProps) {
   const {t,formatTime,statusLabel}=useI18n(),[open,setOpen]=useState(initiallyOpen),[confirmed,setConfirmed]=useState(false);
+  const ackReads=useRef(new Map<string,number>());
   const [receipt,setReceipt]=useState<{id:string;continuation:MergeContinuation}|undefined>();
   const query=useQuery({refetchInterval:q=>Object.values(q.state.data?.continuations??{}).some(c=>["queued","delivering"].includes(c.state))?5000:false,queryKey:["merge-reconciliation",batchId],enabled:open,
-    queryFn:()=>request<MergeReconciliationPreview>(`/api/v1/merge-batches/${encodeURIComponent(batchId)}/reconciliation`)});
+    queryFn:async()=>{
+      const sequence=++continuationReadSequence;
+      const result=await request<MergeReconciliationPreview>(`/api/v1/merge-batches/${encodeURIComponent(batchId)}/reconciliation`);
+      return {...result,readSequence:sequence};
+    }});
   const [sendUnknown,setSendUnknown]=useState(false);
   const decide=useMutation({mutationFn:({id,snapshot,decision}:{id:string;snapshot:string;decision:"approved"|"rejected"})=>{
     const publicationScope=query.data?.reconciliation?.requests.find(row=>row.id===id)?.publicationScope;
     return request<{batchId:string;continuation?:MergeContinuation & {queued:boolean}}>(`/api/v1/merge-batches/${encodeURIComponent(batchId)}/reconciliation/${encodeURIComponent(id)}/decision`,{
       method:"POST",body:JSON.stringify({snapshot,decision,...(compact?{reviewConfirmed:true,continueInSession:true}:{noExecutionRemaining:confirmed}),...(publicationScope?{publicationScopeDigest:publicationScope.digest}:{})})});},
     onSuccess:(result,variables)=>{
+      if(result.continuation)ackReads.current.set(variables.id,continuationReadSequence);
       if(result.continuation)setReceipt({id:variables.id,continuation:result.continuation});
     },
     onError:()=>setSendUnknown(true),
-    onSettled:()=>{setConfirmed(false);void query.refetch().then(result=>{if(result.isSuccess){setSendUnknown(false);setReceipt(current=>current&&result.data?.continuations?.[current.id]?undefined:current);}});}});
-  // A successful read replaces a local acknowledgement; failed reads retain it.
+    onSettled:()=>{setConfirmed(false);void query.refetch().then(result=>{if(result.isSuccess){setSendUnknown(false);setReceipt(current=>current&&result.data&&result.data.readSequence>(ackReads.current.get(current.id)??Infinity)&&result.data.continuations?.[current.id]?undefined:current);}});}});
+  // Only reads STARTED after acknowledgement may replace it; old successful reads are still stale.
   useEffect(()=>{
     if(!query.isSuccess)return;
-    setReceipt(current=>current&&query.data.continuations?.[current.id]?undefined:current);
+    setReceipt(current=>current&&query.data.readSequence>(ackReads.current.get(current.id)??Infinity)&&query.data.continuations?.[current.id]?undefined:current);
   },[query.dataUpdatedAt,query.data,query.isSuccess]);
   const pending=query.data?.reconciliation?.requests.filter(r=>!r.decision&&!r.appliedAt&&r.snapshot===query.data?.snapshot)??[];
   const visible=compact?pending:query.data?.reconciliation?.requests;
@@ -58,7 +67,7 @@ function MergeReconciliationContent({batchId,initiallyOpen=false,compact=false}:
     </div>
     <div className="merge-actions">
     {!sendUnknown&&!continuation?.commandId&&["not_sent","failed"].includes(state)&&continuation?.reason!=="scope_changed"&&<button type="button" className="secondary-button" disabled={decide.isPending||query.isFetching||query.isRefetchError} onClick={()=>decide.mutate({id:approved.id,snapshot:approved.snapshot,decision:"approved"})}>{t("recoveryContinue")}</button>}
-    {!decide.isPending&&<button type="button" className="text-button" disabled={query.isFetching} onClick={()=>void query.refetch().then(result=>{if(result.isSuccess){setSendUnknown(false);setReceipt(current=>current&&result.data?.continuations?.[current.id]?undefined:current);}})}>{t("recoveryContinueCheck")}</button>}
+    {!decide.isPending&&<button type="button" className="text-button" disabled={query.isFetching} onClick={()=>void query.refetch().then(result=>{if(result.isSuccess){setSendUnknown(false);setReceipt(current=>current&&result.data&&result.data.readSequence>(ackReads.current.get(current.id)??Infinity)&&result.data.continuations?.[current.id]?undefined:current);}})}>{t("recoveryContinueCheck")}</button>}
     </div>
   </section>:null;
   const label=(entry:MergeReconciliationPreview["entries"][number]|undefined)=>entry ? entry.itemKeys.join(" · ") || `PR #${entry.pullRequest}` : "";
