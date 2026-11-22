@@ -23,3 +23,9 @@ test("checks must be fresh, after the request, bound to an allowed idle session"
  expect(readinessIsCurrent({...session,archivedAt:request},command,request,now)).toBe(false);
  expect(readinessIsCurrent({...session,turnState:{...session.turnState,turnActive:true}},command,request,now)).toBe(false);
 });
+test("an idle runtime with a failed historical turn can recover unless its session is exhausted",()=>{
+ expect(readinessIsCurrent({...session,status:"failed"},command,request,now)).toBe(true);
+ for(const code of ["codex_context_window_exceeded","codex_session_budget_exceeded"] as const) {
+  expect(readinessIsCurrent({...session,status:"failed",failure:{code}},command,request,now)).toBe(false);
+ }
+});

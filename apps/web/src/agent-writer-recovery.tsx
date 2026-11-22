@@ -15,7 +15,9 @@ export function writerFailure(command: AgentSessionCommand | undefined) {
 export function readinessIsCurrent(session: AgentSession, command: AgentSessionCommand, requestedAt: string, now = Date.now()) {
   const check = session.turnState?.replyReadiness;
   const at = Date.parse(check?.checkedAt ?? "");
-  return check?.state === "ready" && session.canReply && !session.archivedAt && session.status === "idle"
+  const exhausted = ["codex_context_window_exceeded", "codex_session_budget_exceeded"].includes(session.failure?.code ?? "");
+  return check?.state === "ready" && session.canReply && !session.archivedAt && !exhausted
+    && ["idle", "failed"].includes(session.status)
     && session.turnState?.turnActive !== true && at >= Date.parse(requestedAt) && at >= Date.parse(command.createdAt)
     && at <= now + 1000 && now - at < 30_000;
 }
@@ -32,6 +34,8 @@ export function AgentWriterRecovery({session, command, nodeName, blocked, onRetr
   const [result, setResult] = useState<"occupied" | "unknown" | "unsupported" | "failed" | undefined>();
   const [message, setMessage] = useState<string>();
   const gate = useRef(false); const generation = useRef(0); const mounted = useRef(true);
+  const latest = useRef({session, command, requestedAt, blocked, onRetry});
+  latest.current = {session, command, requestedAt, blocked, onRetry};
   useEffect(() => {mounted.current = true; return () => {mounted.current = false; generation.current++;};}, []);
   const ready = Boolean(requestedAt && readinessIsCurrent(session, command, requestedAt));
   useEffect(() => {
@@ -76,7 +80,14 @@ export function AgentWriterRecovery({session, command, nodeName, blocked, onRetr
         return new File([await response.blob()], attachment.filename, {type: attachment.contentType});
       }));
       if (!mounted.current) return;
-      await onRetry(files);
+      const current = latest.current;
+      // Attachment reads can outlive the observation or a permission/status change.
+      // Never send from the pre-download closure after that gate has closed.
+      if (current.blocked || current.session.id !== session.id || current.command.id !== command.id
+        || current.requestedAt !== requestedAt || !readinessIsCurrent(current.session, current.command, current.requestedAt)) {
+        setRequestedAt(""); setResult("unknown"); return;
+      }
+      await current.onRetry(files);
     } catch { if (mounted.current) setMessage(t("agentWriterRetryFailed")); }
     finally { if (mounted.current) {gate.current = false; setBusy(false);} }
   };
