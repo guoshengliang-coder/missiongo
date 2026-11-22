@@ -9,7 +9,7 @@ import {mergeReviewSummary} from "./merge-review-summary.js";
 import { developmentReviewBlocker, developmentReviewExpiry } from "./development-reviews.js";
 import type { SQLInputValue, StatementSync } from "node:sqlite";
 import { releaseCandidatePage } from "./release-candidate-page.js";
-import type { IntegrationActionMode, IntegrationQueueFacts, PublicationScope, PublicationScopeRow } from "@missiongo/contracts";
+import type { IntegrationActionMode, IntegrationQueueFacts, PublicationScope, PublicationScopeRow, PublicationIdentityTransition } from "@missiongo/contracts";
 import { assertDispatchExecution, assertExternalExecution } from "./builder-authority.js";
 import type { NonReleaseVerification } from "./non-release-evidence.js";
 import { AccountStore } from "./accounts-store.js";
@@ -71,6 +71,7 @@ interface Batch {
   conversation?: { clientId:string; executor: IntegrationExecutor; preparationId: string; authorization: IntegrationInstruction; input: IntegrationInstruction; repository: string; configurationChanges?:{executor:IntegrationExecutor;source:IntegrationInstruction}[] };
   operation?:IntegrationActionMode;
   publicationScope?:PublicationScope|undefined;
+  publicationTransitions?: (PublicationIdentityTransition & {at:string})[];
   publicationReview?:{accountId:string;at:string;scopeDigest:string};
   references?:Record<string,{batchId:string;head:string;commit:string}>;
   verifiedReferences?:Record<string,{checkedAt:string;source:string}>;
@@ -502,8 +503,12 @@ export class MergeDeliveries {
       cursor=page.nextBeforeSequence;
     }while(cursor);
     // Pending PRs are part of the user's choice even before their future integration event exists.
-    for(const d of selected)if(!candidates.some(c=>c.deliveryId===d.id || c.selected && d.itemKeys.includes(c.itemKey??"")&&c.completion&&sameCompletion(normalizeCompletion({completion:c.completion}),{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`})))
-      candidates.push({identity:`selection:${d.id}`,deliveryId:d.id,title:d.summary,completion:{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`},requiredArtifacts:d.requiredArtifacts,...(d.noReleaseReason?{noReleaseReason:d.noReleaseReason}:{}),expectedRevision:d.revision,selected:true});
+    for(const d of selected) {
+      const pendingItemKeys=d.itemKeys.filter(key=>!candidates.some(c=>c.selected&&c.itemKey===key&&c.completion
+        &&sameCompletion(normalizeCompletion({completion:c.completion}),{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`})));
+      if(d.itemKeys.length ? pendingItemKeys.length===0 : candidates.some(c=>c.deliveryId===d.id))continue;
+      candidates.push({identity:`selection:${d.id}`,deliveryId:d.id,title:d.summary,completion:{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`},requiredArtifacts:d.requiredArtifacts,...(d.itemKeys.length?{pendingItemKeys}:{}),...(d.noReleaseReason?{noReleaseReason:d.noReleaseReason}:{}),expectedRevision:d.revision,selected:true});
+    }
     candidates.sort((a,b)=>a.identity.localeCompare(b.identity));
     const blockers=candidates.filter(c=>!c.historicalGapReason).flatMap(c=>{
       const missing=[...(!c.completion?["集成依据"]:[]),...(c.requiredArtifacts==null||!c.requiredArtifacts.length&&!c.noReleaseReason?["发布产物范围"]:[])];
@@ -557,10 +562,53 @@ export class MergeDeliveries {
         throw conflict("merge_reference_unverified","请先独立核实既有合并引用，再继续组合验证或发布。");
     }
   }
+  /** Re-derive from immutable offer scope and this batch's recorded merge, never from a PR match alone. */
+  private publicationSuccessors(b:Batch):PublicationIdentityTransition[] {
+    const transitions:PublicationIdentityTransition[]=[];
+    for(const row of b.publicationScope?.candidates??[]) {
+      if(!row.selected || row.itemKey || !row.deliveryId || row.identity!==`selection:${row.deliveryId}`)continue;
+      const d=this.read<Delivery>("merge_deliveries",row.deliveryId),result=b.results[d.id];
+      if(!b.selection.some(s=>s.id===d.id&&s.revision===row.expectedRevision) || d.revision!==row.expectedRevision
+        || !b.deliveries.includes(d.id) || !row.completion
+        || !sameCompletion(normalizeCompletion({completion:row.completion}),{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`})
+        || row.noReleaseReason!==d.noReleaseReason || digest([...(row.requiredArtifacts??[])].sort())!==digest([...d.requiredArtifacts].sort()))throw changed();
+      if(result?.status!=="merged")continue;
+      if(d.state!=="merged" || !result.commit || result.head!==(b.integration?.entries[d.id]?.head??d.head))throw changed();
+      const common={fromIdentity:row.identity,deliveryId:d.id,revision:d.revision,head:result.head,commit:result.commit};
+      if(!d.itemKeys.length) {transitions.push({...common,toIdentity:`delivery:${d.id}`});continue;}
+      const pending=row.pendingItemKeys??d.itemKeys;
+      if(!pending.length || new Set(pending).size!==pending.length || pending.some(key=>!d.itemKeys.includes(key)))throw changed();
+      for(const key of pending) {
+        if(this.itemBlocker(d,key,true))throw changed();
+        const records=this.store.getDeliveryRecords(key).filter(r=>r.completion&&sameCompletion(r.completion,{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`}));
+        // Two records sharing a PR are not proof of which event inherited this offer.
+        if(records.length!==1)throw conflict("publication_scope_changed","无法唯一核实冻结交付承接的开发事件，请在原会话核对范围。");
+        const record=records[0]!;
+        if(!record.roundKey || record.roundKey!==deliveryRound(this.db,this.store.workItemId(key))
+          || record.noReleaseReason!==d.noReleaseReason || record.requiredArtifacts===null || digest([...record.requiredArtifacts].sort())!==digest([...d.requiredArtifacts].sort()))throw changed();
+        transitions.push({...common,toIdentity:`${key}:${record.id}`,itemKey:key,developmentEventId:record.id,roundKey:record.roundKey,itemScope:this.scope([key])});
+      }
+    }
+    if(new Set(transitions.map(t=>t.toIdentity)).size!==transitions.length)throw changed();
+    for(const transition of transitions) {
+      const prior=b.publicationTransitions?.filter(t=>t.fromIdentity===transition.fromIdentity&&t.itemKey===transition.itemKey)??[];
+      if(prior.some(t=>digest({...t,at:undefined})!==digest({...transition,at:undefined})))throw conflict("publication_scope_changed","已承接的交付事件发生变化，不能将替换事件当作同一次记录转换。");
+    }
+    return transitions;
+  }
+  private recordPublicationSuccessors(b:Batch) {
+    // Failed handoffs keep their Git result; publication remains blocked until resolved.
+    let transitions:PublicationIdentityTransition[];
+    try {transitions=this.publicationSuccessors(b);} catch(error) {if(error instanceof MissionGoError)return;throw error;}
+    for(const transition of transitions) {
+      if(b.publicationTransitions?.some(t=>digest({...t,at:undefined})===digest({...transition,at:undefined})))continue;
+      (b.publicationTransitions??=[]).push({...transition,at:new Date().toISOString()});
+    }
+  }
   private assertPublicationScope(b:Batch) {
     if(!b.publicationScope)return;
     // Recompute all product candidates without requiring old offer eligibility after our own merge.
-    const expected=b.publicationScope.candidates,seenHistorical=new Set<string>();
+    const expected=b.publicationScope.candidates,seenHistorical=new Set<string>(),successors=this.publicationSuccessors(b);
     if(expected.some(row=>row.historicalGapReason)) {
       const approved=b.reconciliation?.requests.find(row=>row.action.kind==="allow_partial_publication" && row.action.publicationRefresh && row.decision==="approved" && row.decidedAt && row.decidedBy && row.appliedAt && row.publicationScope?.digest===b.publicationScope!.digest);
       if((!approved?.publicationScope || digest(approved.publicationScope)!==digest(b.publicationScope))
@@ -591,11 +639,13 @@ export class MergeDeliveries {
           if(completion&&c.requiredArtifacts!=null || this.historicalPublicationFingerprint(exact)!==this.historicalPublicationFingerprint(observed))throw changed();
           seenHistorical.add(identity);continue;
         }
-        const own=b.deliveries.some(id=>{const d=this.read<Delivery>("merge_deliveries",id);return (c.deliveryId===id||d.itemKeys.includes(c.itemKey??""))&&completion&&sameCompletion(normalizeCompletion({completion}),{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`})});
-        const scope=exact??(own?expected.find(e=>e.selected&&e.completion&&completion&&sameCompletion(normalizeCompletion({completion}),normalizeCompletion({completion:e.completion}))):undefined);
+        const inherited=successors.filter(t=>t.toIdentity===identity);
+        if(inherited.length>1)throw changed();
+        const successor=inherited[0];
+        const scope=exact??(successor?expected.find(e=>e.identity===successor.fromIdentity):undefined);
         if(!scope||digest([...(scope.requiredArtifacts??[])].sort())!==digest([...(c.requiredArtifacts??[])].sort())
           || !completion || !scope.completion || !sameCompletion(normalizeCompletion({completion}),normalizeCompletion({completion:scope.completion}))
-          || !own && (scope.expectedRevision!==c.expectedRevision||scope.roundKey!==c.roundKey))
+          || !successor && (scope.roundKey!==c.roundKey || !scope.selected&&scope.expectedRevision!==c.expectedRevision))
           throw conflict("publication_scope_changed","实际发布范围已变化，请在原会话重新审阅，不能沿用旧发布授权。");
       }
       cursor=page.nextBeforeSequence;
@@ -1359,7 +1409,7 @@ export class MergeDeliveries {
         this.saveBatch(b);return this.batch(accountId,dispatchId,id);
       }
       if(action.kind==="final_validation" && Object.keys(b.references??{}).some(id=>!b.verifiedReferences?.[id]||!freshIntegrationCheck(b.verifiedReferences[id]!.checkedAt)))throw changed();
-      if(action.kind==="publication_progress" && action.state==="publishing"){this.assertReferences(b,true);this.assertPublicationScope(b);
+      if(action.kind==="publication_progress" && action.state==="publishing"){this.assertReferences(b,true);this.assertPublicationScope(b);this.recordPublicationSuccessors(b);
         const hasRelease=Boolean(b.publicationScope?.requiredArtifacts.length)||b.deliveries.some(id=>this.read<Delivery>("merge_deliveries",id).requiredArtifacts.length>0);
         if(!prerequisiteGate(b,hasRelease,undefined,Date.now(),"pre_publish").ready)integrationDenied("项目实际发布前置条件未满足；代码合并事实保持，继续在原批次核实发布条件。");
       }
@@ -1413,7 +1463,7 @@ export class MergeDeliveries {
       }
       b.results[deliveryId]=result;
       if(result.status==="merged")this.rememberDisplay(b,d);
-      if(result.status==="merged")this.handoff(b,d);
+      if(result.status==="merged"){this.handoff(b,d);this.recordPublicationSuccessors(b);}
       if(b.integration){
         b.integration.revision++;delete b.integration.finalValidation;
         if(result.status==="merged")for(const [id,entry] of Object.entries(b.integration.entries))if(!b.results[id]){delete entry.check;if(entry.progress==="ready")entry.progress="queued";}
@@ -1503,8 +1553,11 @@ export class MergeDeliveries {
   }
   preview(accountId:string,id:string):MergeReconciliationPreview {
     const b=this.read<Batch>("merge_batches",id);this.permit(accountId,b,false);
-    const publicationRefresh=this.publicationRefresh(b);
-    return {batchId:id,state:b.state,publish:b.publish,snapshot:this.snapshot(b),sessionId:b.sessionId,
+    let publicationIdentity:MergeReconciliationPreview["publicationIdentity"];
+    if(b.publicationScope)try {this.assertPublicationScope(b);publicationIdentity={unchanged:true,transitions:this.publicationSuccessors(b)};}
+      catch(error) {if(!(error instanceof MissionGoError))throw error;publicationIdentity={unchanged:false,transitions:[],reason:error.message};}
+    const publicationRefresh=publicationIdentity?.unchanged?undefined:this.publicationRefresh(b);
+    return {...(publicationIdentity?{publicationIdentity}:{}),batchId:id,state:b.state,publish:b.publish,snapshot:this.snapshot(b),sessionId:b.sessionId,
       reconciliation:b.reconciliation,...(publicationRefresh?{publicationRefresh}:{}),entries:b.deliveries.map(deliveryId=>{
         const d=this.read<Delivery>("merge_deliveries",deliveryId);
         return {deliveryId,itemKeys:d.itemKeys,originalHead:d.head,executionHead:b.integration?.entries[deliveryId]?.head??d.head,

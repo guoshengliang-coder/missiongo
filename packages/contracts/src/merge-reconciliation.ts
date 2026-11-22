@@ -28,11 +28,18 @@ export interface MergeContinuation {
   commandId?: string;
   reason?: "pending" | "archived" | "revoked" | "finished" | "managed" | "not_ready" | "unavailable" | "send_failed" | "delivery_failed" | "scope_changed";
 }
+/** Proven record-identity succession; never an additional human approval or release receipt. */
+export interface PublicationIdentityTransition {
+  fromIdentity:string; toIdentity:string; deliveryId:string; revision:string;
+  itemKey?:string; developmentEventId?:string; roundKey?:string|null; itemScope?:string;
+  head:string; commit:string;
+}
 export interface MergeReconciliationPreview {
   continuations?: Record<string, MergeContinuation>;
 
   batchId:string;state:"active"|"finished";publish:boolean;snapshot:string;sessionId:string;
   publicationRefresh?:PublicationScope;
+  publicationIdentity?:{unchanged:boolean; transitions:PublicationIdentityTransition[]; reason?:string};
   reconciliation?:MergeReconciliationState | undefined;
   entries:{deliveryId:string;itemKeys:string[];originalHead:string;executionHead:string;
     repository:string;pullRequest:number;targetBranch:string;requiredArtifacts:string[];noReleaseReason?:string | undefined;

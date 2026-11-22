@@ -1,3 +1,4 @@
+import { AppNotice, type Notice, type NoticeHandler } from "./app-notice";
 import { clearPerformanceSends } from "./console-performance";
 import { shareSessionListData, useSessionListIntent, noteListIntent } from "./session-list-performance";
 import { useCommonCommands } from "./common-commands";
@@ -393,7 +394,8 @@ export function App() {
   const [messageCenterOpen,setMessageCenterOpen]=useState(false);
   const searchTriggerRef=useRef<HTMLButtonElement>(null);
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const showNotice: NoticeHandler = (text, tone) => setNotice({ text, tone: tone ?? "success" });
 
   /** One entry point for every panel the settings dialog holds. */
   const openSettings = (tab: "account" | "agents") => {
@@ -1041,7 +1043,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!notice) return undefined;
+    if (!notice || typeof notice !== "string" && notice.tone === "error") return undefined;
     const timeout = window.setTimeout(() => setNotice(null), 4_000);
     return () => window.clearTimeout(timeout);
   }, [notice]);
@@ -1701,7 +1703,7 @@ export function App() {
                   showAttachmentColumn={showAttachmentColumn}
                   onOpen={() => openItemPage(item.key)}
                   onEdit={() => openItemPage(item.key, true)}
-                  onNotice={setNotice}
+                  onNotice={showNotice}
                   onStartWork={setStartWorkItem}
                 />
               ))}
@@ -1726,7 +1728,7 @@ export function App() {
 
         {selectedItemKey && (
           <div className="detail-page-shell">
-            <DetailPane accountId={bootstrapQuery.data?.user.id ?? ""} itemKey={selectedItemKey} openInEdit={detailOpenInEdit} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={setNotice} onOpenItem={openItemPage} onStartWork={setStartWorkItem} onTakeOver={(item) => setDispatchBatch([item])} onOpenConsoleSession={openAgentSession} />
+            <DetailPane accountId={bootstrapQuery.data?.user.id ?? ""} itemKey={selectedItemKey} openInEdit={detailOpenInEdit} onClose={closeItemPage} onItemLoaded={selectItemProduct} onNotice={showNotice} onOpenItem={openItemPage} onStartWork={setStartWorkItem} onTakeOver={(item) => setDispatchBatch([item])} onOpenConsoleSession={openAgentSession} />
           </div>
         )}
       </main>
@@ -1789,7 +1791,7 @@ export function App() {
 
       {messageCenterOpen && <MessageCenter accountId={bootstrapQuery.data?.user.id ?? ""} products={products} onClose={()=>setMessageCenterOpen(false)}
         renderItem={(target,close,open)=><DetailPane key={target.instanceKey} accountId={bootstrapQuery.data?.user.id ?? ""} itemKey={target.key} initialCommentId={target.commentId} initialEventId={target.businessEventId} onAttentionReady={target.onReady} openInEdit={false}
-          onClose={close} onItemLoaded={()=>{}} onNotice={setNotice} onOpenItem={open} onStartWork={setStartWorkItem} onTakeOver={item=>setDispatchBatch([item])}
+          onClose={close} onItemLoaded={()=>{}} onNotice={showNotice} onOpenItem={open} onStartWork={setStartWorkItem} onTakeOver={item=>setDispatchBatch([item])}
           onOpenConsoleSession={id=>{target.navigate(()=>{setMessageCenterOpen(false);afterOverlaysClose(()=>openAgentSession(id));});}} />} />}
       {captureOpen && selectedProduct && (
         <Modal title={t("captureWork")} subtitle={t("addToProduct", { product: selectedProduct.name })} onClose={closeCapture}>
@@ -1880,13 +1882,13 @@ export function App() {
               const failed = results.filter((result) => !result.ok);
               // Keep what did not close ticked, so it can be looked at or retried.
               setSelectedItemKeys(new Set(failed.map((result) => result.itemKey)));
-              setNotice(failed.length === 0
+              showNotice(failed.length === 0
                 ? t("verifiedAll", { count: results.length })
                 : t("verifiedSome", {
                   ok: results.length - failed.length,
                   failed: failed.length,
                   keys: failed.map((result) => result.itemKey).join("、"),
-                }));
+                }) + " " + failed.map(result => `${result.itemKey}: ${localizedErrorText(new ApiError(409, result.code, result.message), t)}`).join("；"), failed.length ? "error" : undefined);
               void queryClient.invalidateQueries({ queryKey: ["items"] });
               for (const result of results) {
                 void queryClient.invalidateQueries({ queryKey: ["item", result.itemKey] });
@@ -1936,7 +1938,7 @@ export function App() {
           <DownloadsPanel />
         </Modal>
       )}
-      {notice && <div className="toast" role="status"><Check size={16} /> {notice}<button onClick={() => setNotice(null)} aria-label={t("dismiss")}><X size={14} /></button></div>}
+      {notice && <AppNotice notice={notice} onDismiss={() => setNotice(null)} />}
     </div>
     </SessionSenderContext.Provider>
   );
@@ -1996,10 +1998,16 @@ function ItemRow({
   onToggleChecked: () => void;
   onOpen: () => void;
   onEdit: () => void;
-  onNotice: (message: string) => void;
+  onNotice: NoticeHandler;
   onStartWork: (item: WorkItem) => void;
 }) {
   const { actorLabel, formatTime, locale, priorityLabel, statusLabel, t, typeLabel } = useI18n();
+  const [transitionFailure, setTransitionFailure] = useState<string | null>(null);
+  useEffect(() => { setTransitionFailure(null); }, [item.key, item.status, item.revision]);
+  const rowNotice: NoticeHandler = (message, tone) => {
+    setTransitionFailure(tone === "error" ? message : null);
+    onNotice(message, tone);
+  };
   const TypeIcon = TYPE_ICONS[item.type];
   const environment = item.environment;
   const summary = isItemListRow(item) ? item.listSummary : undefined;
@@ -2188,8 +2196,9 @@ function ItemRow({
         <span>{formatTime(item.updatedAt)}</span>
       </span>
       <span className="item-row-actions">
-        {(canOperate || item.access?.canVerify || item.transitionDecisions?.some(d=>d.allowed)) && <ListRowActions item={item} onEdit={onEdit} onNotice={onNotice} onStartWork={onStartWork} />}
+        {(canOperate || item.access?.canVerify || item.transitionDecisions?.some(d=>d.allowed)) && <ListRowActions item={item} onEdit={onEdit} onNotice={rowNotice} onStartWork={onStartWork} />}
       </span>
+      {transitionFailure && <p className="inline-error item-transition-error" role="alert">{transitionFailure}</p>}
     </article>
   );
 }
@@ -2501,7 +2510,7 @@ function TransferItemDialog({ item, onClose }: { item: WorkItem; onClose: () => 
   </Modal>;
 }
 
-function ListRowActions(props: {item:WorkItemRow;onEdit:()=>void;onNotice:(message:string)=>void;onStartWork:(item:WorkItem)=>void}) {
+function ListRowActions(props: {item:WorkItemRow;onEdit:()=>void;onNotice:NoticeHandler;onStartWork:(item:WorkItem)=>void}) {
   const [detail,setDetail]=useState<WorkItem|null>(null);
   const [loadedRevision,setLoadedRevision]=useState("");
   const sourceRevision=JSON.stringify([props.item.key,props.item.revision,props.item.access,props.item.transitionDecisions]);
@@ -2535,7 +2544,7 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork, openInitially = f
   openInitially?: boolean;
   item: WorkItem;
   onEdit: () => void;
-  onNotice: (message: string) => void;
+  onNotice: NoticeHandler;
   onStartWork: (item: WorkItem) => void;
 }) {
   const queryClient = useQueryClient();
@@ -2563,7 +2572,7 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork, openInitially = f
       ]);
       onNotice(t("itemMoved", { key: updated.key, status: statusLabel(updated.status) }));
     },
-    onError: (error) => onNotice(errorMessage(error, t("somethingWentWrong"))),
+    onError: (error) => onNotice(`${item.key}: ${localizedErrorText(error, t)}`, "error"),
   });
 
   // Whether this move needs a reason is the domain's call, not a second table
@@ -2698,7 +2707,7 @@ function DetailPane({
   openInEdit: boolean;
   onClose: () => void;
   onItemLoaded: (item: WorkItem) => void;
-  onNotice: (message: string) => void;
+  onNotice: NoticeHandler;
   onOpenItem: (itemKey: string) => void;
   onStartWork: (item: WorkItem) => void;
   onTakeOver: (item: WorkItem) => void;
@@ -2864,11 +2873,13 @@ function DetailPane({
 
   const [noteAction, setNoteAction] = useState<TransitionAction | null>(null);
   const [transitionKeys]=useState(()=>new TransitionCommandKeys());
+  const detailTransitionTarget = useRef(itemKey);
+  detailTransitionTarget.current = itemKey;
   const transitionMutation = useMutation({
-    mutationFn: ({ action, note, files, attempt }: { action: TransitionAction; note?: string; files?: readonly File[]; attempt?: TransitionAttachmentAttempt }) =>
-      attempt ? attempt.submit(itemKey!, item!.status, action, note!, files ?? [], item!.revision) : api.transitionItem(itemKey!, action, note, transitionKeys.options(item!,action)),
-    onSuccess: async (updated) => {
-      setNoteAction(null);
+    mutationFn: ({ target, action, note, files, attempt }: { target: WorkItem; action: TransitionAction; note?: string; files?: readonly File[]; attempt?: TransitionAttachmentAttempt }) =>
+      attempt ? attempt.submit(target.key, target.status, action, note!, files ?? [], target.revision) : api.transitionItem(target.key, action, note, transitionKeys.options(target,action)),
+    onSuccess: async (updated, variables) => {
+      if (detailTransitionTarget.current === variables.target.key) setNoteAction(null);
       await applyConfirmedItemTransition(queryClient, updated);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ACTIVE_DISPATCHES_QUERY_KEY }),
@@ -2877,7 +2888,7 @@ function DetailPane({
       ]);
       onNotice(t("itemMoved", { key: updated.key, status: statusLabel(updated.status) }));
     },
-    onError: (error) => onNotice(errorMessage(error, t("somethingWentWrong"))),
+    onError: (error, variables) => onNotice(`${variables.target.key}: ${localizedErrorText(error, t)}`, "error"),
   });
 
   const withdrawMutation = useMutation({
@@ -2889,6 +2900,7 @@ function DetailPane({
     onError: (error) => onNotice(errorMessage(error, t("somethingWentWrong"))),
   });
 
+  useEffect(() => { transitionMutation.reset(); }, [itemKey, transitionMutation.reset]);
   useDialogDraft(false,transitionMutation.isPending);
 
   if (!itemKey) {
@@ -2911,7 +2923,7 @@ function DetailPane({
   const startTransition = (action: TransitionAction) => {
     if (isStartWork(item.status, action)) onStartWork(item);
     else if (action.reason === "manual_override" || transitionRequiresNote(item.status, action.to)) setNoteAction(action);
-    else transitionMutation.mutate({ action });
+    else transitionMutation.mutate({ target: item, action });
   };
   const { primaryAction, secondaryActions, manualTargets } = itemTransitionActions(item);
   const sourceComponent = componentsQuery.data?.find((component) => component.id === item.sourceComponentId);
@@ -3018,6 +3030,7 @@ function DetailPane({
           </OverlayMenu>}
         </div>
       </div>
+      {transitionMutation.isError && transitionMutation.variables?.target.key === itemKey && !noteAction && <p className="inline-error" role="alert">{transitionErrorText(transitionMutation.error, t)}</p>}
       <div className="detail-scroll">
         <DetailStatusList items={statusItems} />
         {readOnlySource && linkedSource && (
@@ -3283,7 +3296,7 @@ function DetailPane({
             action={noteAction}
             pending={transitionMutation.isPending}
             error={transitionMutation.isError ? transitionErrorText(transitionMutation.error, t) : null}
-            onSubmit={(note, files, attempt) => transitionMutation.mutate({ action: noteAction, note, files, attempt })}
+            onSubmit={(note, files, attempt) => transitionMutation.mutate({ target: item, action: noteAction, note, files, attempt })}
             onCancel={() => { setNoteAction(null); transitionMutation.reset(); }}
           />
         </Modal>
@@ -3375,7 +3388,7 @@ function commentHeading(event: WorkItemEvent, analysisLabel: string, commentLabe
 
 function CommentGroup({idPrefix="",root,replies,visibleCommentIds,item,onReply,onWithdraw,onNotice,notificationsQuery,readOnly=false,focusedCommentId,onClearFocus}:{
   idPrefix?:string;root:WorkItemEvent;replies:readonly WorkItemEvent[];visibleCommentIds:readonly string[];item:WorkItem;onReply:(event:WorkItemEvent)=>void;onWithdraw:(id:string)=>void;
-  onNotice:(message:string)=>void;notificationsQuery:ReturnType<typeof useItemDingTalkNotifications>;readOnly?:boolean;
+  onNotice:NoticeHandler;notificationsQuery:ReturnType<typeof useItemDingTalkNotifications>;readOnly?:boolean;
   focusedCommentId:string|null;onClearFocus:()=>void;
 }) {
   const {t,actorLabel,formatTime}=useI18n();
@@ -3432,7 +3445,7 @@ function CommentGroup({idPrefix="",root,replies,visibleCommentIds,item,onReply,o
 function CommentComposer({ accountId, idPrefix="", item, onPosted, onNotice, replyTo, onCancelReply,onLocateReply,draft,onDraftChange,storageFailed,replyUnavailable }: {
   accountId:string;idPrefix?:string;replyTo: WorkItemEvent|null; onCancelReply:()=>void;onLocateReply:()=>void;
   draft:CommentDraft;onDraftChange:(change:CommentDraft|((previous:CommentDraft)=>CommentDraft))=>void;storageFailed:boolean;replyUnavailable:boolean;
-  item: WorkItem; onPosted: () => Promise<void>; onNotice: (message: string) => void;
+  item: WorkItem; onPosted: () => Promise<void>; onNotice: NoticeHandler;
 }) {
   const { t } = useI18n();
   const {text,mentions}=draft;

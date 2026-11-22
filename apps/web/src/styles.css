@@ -1048,6 +1048,7 @@ a:focus-visible, summary:focus-visible, [tabindex]:not([tabindex="-1"]):focus-vi
 .status-pending_verification { color: var(--status-verify-fg); background: var(--status-verify-bg); }
 .status-done { color: var(--status-done-fg); background: var(--status-done-bg); }
 .status-cancelled { color: var(--status-cancelled-fg); background: var(--status-cancelled-bg); }
+.item-transition-error { grid-column: 1 / -1; grid-row: auto; min-width: 0; margin: 8px 0 0; }
 .item-row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 5px; cursor: default; }
 .row-more-menu { --row-menu-height: 70vh; }
 .row-more-menu > summary { width: 30px; min-height: 30px; color: var(--muted); }
@@ -1776,7 +1777,12 @@ input::placeholder, textarea::placeholder { color: var(--muted-soft); }
 .account-role-note { color: var(--muted); font-size: var(--text-xs); font-style: normal; }
 .inline-error { display: flex; align-items: center; gap: 7px; padding: 10px 11px; overflow-wrap: anywhere; color: var(--danger); background: var(--danger-bg-strong); border: 1px solid var(--danger-line); border-radius: var(--radius-md); font-size: var(--text-xs); }
 .toast { position: fixed; right: 22px; bottom: 22px; z-index: 150; display: flex; align-items: center; gap: 8px; padding: 11px 12px; color: var(--primary-fg); background: var(--primary-bg); border-radius: var(--radius-md); box-shadow: var(--shadow); font-size: var(--text-xs); }
-.toast > svg { color: var(--on-primary-accent); }
+.toast > svg { color: var(--on-primary-accent); flex-shrink: 0; }
+.toast span { min-width: 0; overflow-wrap: anywhere; }
+.toast-error { color: var(--danger); background: var(--danger-bg); border: 1px solid var(--danger-line); max-width: min(480px, calc(100vw - 44px)); }
+.toast.toast-error { bottom: calc(12px + var(--safe-bottom)); max-height: calc(100dvh - 24px - var(--safe-top) - var(--safe-bottom)); align-items: flex-start; }
+.toast.toast-error span { max-height: calc(100dvh - 60px - var(--safe-top) - var(--safe-bottom)); overflow-y: auto; }
+.toast.toast-error > svg, .toast.toast-error button { color: var(--danger); flex-shrink: 0; }
 .toast button { display: grid; place-items: center; margin-left: 5px; padding: 3px; color: var(--primary-fg); background: transparent; border: 0; cursor: pointer; }
 /* Sits above an ordinary notice rather than on top of it: both can be showing at once. */
 .update-banner { bottom: 78px; z-index: 151; }
