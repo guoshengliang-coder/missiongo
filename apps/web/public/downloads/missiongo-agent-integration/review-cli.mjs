@@ -17,14 +17,10 @@ export function enabledReview(repo, root = defaultReviewRoot()) {
     return config.version === 1 && config.repositories?.some(entry => entry.identity === repositoryId(repo));
   } catch { return false; }
 }
-export function nativeReviewContext(repo, root = defaultReviewRoot(), identity) {
-  if (!enabledReview(repo, root)) return "";
-  if (identity && ["codex", "claude_code", "opencode"].includes(identity.agentKind) && typeof identity.sessionRef === "string" && identity.sessionRef.length > 0 && identity.sessionRef.length <= 200) {
-    const store = new ReviewStore(root);
-    store.transaction("policy-" + digest(identity.agentKind + ":" + identity.sessionRef), () => ({ version: 1, agentKind: identity.agentKind, sessionRef: identity.sessionRef, required: true }));
-  }
-  const command = "node '" + fileURLToPath(new URL("./review-cli.mjs", import.meta.url)).replaceAll("'", "'\\''") + "'";
-  return reviewGuidance(command) + "\n通过 stdin JSON 调用 begin/review/confirm/check/verify/status/cancel。begin 必须携带当前真实会话、用户研发请求锚点、实际模型/供应商、完整 base SHA、requirements、scope、untracked 及必要 checkCommands；查看该 helper 的 help 契约。缺少能力时报告具体缺口，不伪造结果。";
+// Compatibility entry point for installed context hooks. A cwd or native
+// identity must not opt a repository/session into the legacy helper gate.
+export function nativeReviewContext() {
+  return reviewGuidance();
 }
 
 export function publicReview(state) {
