@@ -133,7 +133,8 @@ export class AgentConsoleSessions {
     const rounds = group.flatMap((row) => row.round ? [row.round] : []);
     // Archive and reply state belong to the control channel, including old source-side archives.
     return { ...primary,
-      relatedSessionIds: group.map((row) => row.id),
+      // Preserve pre-launch routes for every proven member, including a former control channel.
+      relatedSessionIds: [...new Set(group.flatMap((row) => [row.id, ...(row.dispatchId ? [`dispatch:${row.dispatchId}`] : [])]))],
       ...(rounds.length ? { round: Math.max(...rounds) } : {}),
       items: [...new Map(group.flatMap((row) => row.items).map((item) => [item.key, item])).values()],
       activityAt: latest.activityAt, updatedAt: group.map((row) => row.updatedAt).sort().at(-1)!,

@@ -718,7 +718,7 @@ public struct CodexLauncher: AgentAdapter {
                     turnStartedAt: snapshot.execution.turnStartedAt, lastOutputAt: snapshot.execution.lastOutputAt)
                 .reportingApproval(approval).reportingHistory(snapshot.history)
                 .reportingFailure(snapshot.failure).reportingSettings(model: snapshot.model, effort: snapshot.reasoningEffort,
-                    settingsRevision: nil, settingsError: nil)
+                    settingsRevision: nil, settingsError: nil).reportingReplyReadiness(replyReadiness(session, snapshot))
         }
         failureReplyReservations.withLock { reservations in
             if reservations[session.id] != session.command?.id { reservations[session.id] = nil }
@@ -848,6 +848,13 @@ public struct CodexLauncher: AgentAdapter {
         if snapshot.history?.error != nil { report = report.reportingHistoryLimit() }
         return report.reportingApproval(approval, retryId: retryStatus == nil ? nil : session.approvalRetry?.id,
             retryStatus: retryStatus, retryError: retryError).reportingFailure(report.status == "failed" ? snapshot.failure : nil).reportingHistory(snapshot.history)
+            .reportingReplyReadiness(replyReadiness(session, snapshot))
+    }
+
+    private func replyReadiness(_ session: NodeAgentSession, _ snapshot: CodexThreadSnapshot) -> CodexReplyReadiness {
+        let state = session.externalBindingGeneration == nil && session.pendingSettings == nil
+            ? CodexWriterProbe.state(codexHome: location.codexHome, threadId: session.sessionRef, runtimeStatus: snapshot.runtimeStatus, archived: snapshot.archived) : "unknown"
+        return CodexReplyReadiness(state: state)
     }
 
     /// What a person chose for this thread, passed on every turn MissionGo

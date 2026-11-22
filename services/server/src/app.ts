@@ -3123,6 +3123,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       {before:integer(query.before),recordId:integer(query.recordId)});
   });
 
+  // Queue a bounded source observation, never a message or a thread/resume.
+  app.post("/api/v1/agent-sessions/:sessionId/connection-check", async request => {
+    const {sessionId} = request.params as {sessionId: string};
+    const {session} = planApprovalContext(request, sessionId, true);
+    if (!session.canReply || session.archivedAt || session.agentKind !== "codex" || session.source === "external") {
+      throw invalidInput("This conversation cannot check its reply connection.");
+    }
+    return {requestedAt: agentSessionStore.requestConnectionCheck(session.id),
+      supported: Boolean(session.turnState?.replyReadiness)};
+  });
+
   app.get("/api/v1/agent-sessions/:sessionId", async (request) => {
     const { sessionId } = request.params as { sessionId: string };
     const { session, unavailableReason, members } = planApprovalContext(request, sessionId);
@@ -3949,7 +3960,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           throw invalidInput(`${key} must be a valid timestamp, no more than a minute in the future.`);
         }
       }
+      let replyReadiness: import("./agent-session-store.js").AgentSessionTurnState["replyReadiness"];
+      if (body.replyReadiness !== undefined) {
+        const readiness = objectBody(body.replyReadiness);
+        const state = stringField(readiness, "state")!;
+        const checkedAt = stringField(readiness, "checkedAt")!;
+        if (!["ready", "occupied", "unknown"].includes(state) || !Number.isFinite(Date.parse(checkedAt))
+          || Date.parse(checkedAt) > Date.now() + 60_000 || Date.parse(checkedAt) < Date.now() - 120_000) {
+          throw invalidInput("Invalid reply readiness observation.");
+        }
+        replyReadiness = {state: state as "ready" | "occupied" | "unknown", checkedAt};
+      }
       const turnState = {
+        ...(replyReadiness ? {replyReadiness} : {}),
         ...(typeof body.observedAt === "string" ? { observedAt: body.observedAt } : {}),
         ...(typeof body.lastProgressAt === "string" ? { lastProgressAt: body.lastProgressAt } : {}),
         ...(typeof body.turnActive === "boolean" ? { turnActive: body.turnActive } : {}),

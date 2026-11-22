@@ -20,7 +20,7 @@ export function mergeSessionHealth(
   receipt?: HealthReceipt,
 ): { status: AgentSessionStatus; turnState: AgentSessionTurnState; ignoredExecution?: boolean } {
   // Internal metadata must never be supplied or cleared by a node.
-  const { healthStartedAt: _boundary, ...source } = incoming;
+  const { healthStartedAt: _boundary, connectionCheckRequestedAt: _requested, ...source } = incoming;
   const observed = Date.parse(source.observedAt ?? "");
   const boundary = Date.parse(previous.healthStartedAt ?? "");
   const settled = receipt?.kind === "message" && ["delivered", "cancelled"].includes(receipt.previousStatus);
@@ -85,6 +85,6 @@ export function sessionHealth(status: AgentSessionStatus, turn: AgentSessionTurn
 
 /** Observation clocks must not reorder conversations or create unread activity. */
 export function executionTurnState(turn: AgentSessionTurnState): Omit<AgentSessionTurnState, "observedAt" | "lastProgressAt" | "waitingForPermission" | "healthStartedAt"> {
-  const { observedAt: _observed, lastProgressAt: _progress, waitingForPermission: _permission, healthStartedAt: _boundary, ...execution } = turn;
+  const { observedAt: _observed, lastProgressAt: _progress, waitingForPermission: _permission, healthStartedAt: _boundary, replyReadiness: _readiness, connectionCheckRequestedAt: _request, ...execution } = turn;
   return execution;
 }

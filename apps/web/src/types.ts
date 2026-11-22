@@ -506,6 +506,8 @@ export interface AgentSessionActivity {
 }
 
 export interface AgentSessionTurnState {
+  readonly replyReadiness?: { readonly state: "ready" | "occupied" | "unknown"; readonly checkedAt: string };
+  readonly connectionCheckRequestedAt?: string;
   readonly observedAt?: string;
   readonly lastProgressAt?: string;
   readonly turnActive?: boolean;

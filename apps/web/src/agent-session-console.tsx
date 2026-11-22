@@ -1,3 +1,4 @@
+import { sessionRouteIds } from "./session-identities";
 import { DevelopmentReviewSummary } from "./development-review-summary";
 import { useSessionListPerformance } from "./session-list-performance";
 import { useConsolePerformance } from "./use-console-performance";
@@ -50,6 +51,7 @@ import {
 
 import { api, type ApiError } from "./api";
 import { clearDeniedSession, isSessionAccessError, recoverAgentSession } from "./agent-session-recovery";
+import { AgentWriterRecovery, isWriterOccupied, writerFailure } from "./agent-writer-recovery";
 import { AgentSessionFailureNotice } from "./agent-session-failure-notice";
 import { AgentHistoryNotice, AgentReplyFeedback, AgentReplySourceNotice, AgentRunDetails, SessionStatusIcon, isHistoryLimited, AgentSessionError } from "./agent-session-feedback";
 import { AgentIcon } from "./agent-icons";
@@ -408,8 +410,8 @@ export function AgentSessionConsole({
 
   const selectedVisible = visibleSessions.some(session => session.id === selectedId);
   const sessionListRef = useSelectedSessionScroll(selectedId, selectedVisible, conversationOpen);
-  const denialIds = useMemo(() => [...new Set([selectedId, linked?.agentSessionId, ...(linked?.relatedSessionIds ?? [])]
-    .filter((id): id is string => Boolean(id)))], [selectedId, linked?.agentSessionId, linked?.relatedSessionIds]);
+  const denialIds = useMemo(() => [...new Set([selectedId, linked?.agentSessionId, ...(linked ? sessionRouteIds(linked) : [])]
+    .filter((id): id is string => Boolean(id)))], [selectedId, linked]);
   const latchedError = denialIds.map(id => deniedDetails[id]).find(Boolean);
   const sessionQuery = useQuery({
     queryKey: ["agent-session", linked?.agentSessionId],
@@ -990,7 +992,11 @@ export function AgentSessionConsole({
       && agentSessionMatches(session, filter, next, search, association))) onSelectSession(null, false);
   };
 
-  const showRecovery = Boolean(selected && !selected.archivedAt && isAbnormalAgentSession({ status: sessionStatus, ...(command ? { command } : {}) }));
+  const writerOccupied = selected?.agentKind === "codex" && writerFailure(command);
+  const suppressWriterAttention = writerOccupied && sessionQuery.data?.turnState?.waitingForInput === false
+    && !(sessionQuery.data.currentRequests ?? sessionQuery.data.messages).some(m => !m.historical && m.questions?.some(q => !q.answered))
+    && selected?.attention.kind !== "approval";
+  const showRecovery = Boolean(!writerOccupied && selected && !selected.archivedAt && isAbnormalAgentSession({ status: sessionStatus, ...(command ? { command } : {}) }));
   const failureCode = (sessionQuery.data ? sessionQuery.data.failure : selected?.failure)?.code;
   const needsNewSession = failureCode === "codex_context_window_exceeded" || failureCode === "codex_session_budget_exceeded";
   const canContinue = Boolean(selected?.canReply && sessionQuery.data?.canReply !== false && !pending && !sendingSelected && !needsNewSession);
@@ -1458,9 +1464,9 @@ export function AgentSessionConsole({
                     {(outgoing.status === "failed" || outgoing.status === "delivery_unknown") && (
                     <footer className="agent-console-message-delivery" role="alert">
                       <CircleAlert size={14} />
-                      <span>{outgoing.status === "delivery_unknown"
+                      <span>{isWriterOccupied(outgoing.error) && outgoing.status === "failed" ? t("agentWriterNotSent") : outgoing.status === "delivery_unknown"
                         ? t("agentSessionReplyDeliveryUnknown", { agent: agentName })
-                        : t(outgoingReplyStatusKey(outgoing.status))}{outgoing.error ? `: ${outgoing.error}` : ""}</span>
+                        : t(outgoingReplyStatusKey(outgoing.status))}{outgoing.error && !isWriterOccupied(outgoing.error) ? `: ${outgoing.error}` : ""}</span>
                       {outgoing.status === "delivery_unknown" && outgoing.commandId
                         && sessionQuery.data?.canResolveDelivery && (
                         <>
@@ -1474,7 +1480,7 @@ export function AgentSessionConsole({
                           </button>
                         </>
                       )}
-                      {outgoing.status === "failed" && (
+                      {outgoing.status === "failed" && !isWriterOccupied(outgoing.error) && (
                         <button
                           type="button"
                           className="text-button"
@@ -1522,7 +1528,7 @@ export function AgentSessionConsole({
                   );
                 })}
                 {!planMessages.planMessageId && sessionQuery.data && <UnlinkedPlanRecord session={sessionQuery.data} blocked={showPermissionApproval || pending || sendingSelected || cancellingSelected} />}
-                {!mergePreparation && (!currentPlan(sessionQuery.data)?.plan || !showPlanApproval && selected.attention.kind !== "approval") && !showPermissionApproval && (!suppressDeliveryAttention || showPlanApproval) && (showPlanApproval || !stalePlanAttention && (selected.needsAttention || selected.attention.dismissed) && selected.attention.reason) && (
+                {!suppressWriterAttention && !mergePreparation && (!currentPlan(sessionQuery.data)?.plan || !showPlanApproval && selected.attention.kind !== "approval") && !showPermissionApproval && (!suppressDeliveryAttention || showPlanApproval) && (showPlanApproval || !stalePlanAttention && (selected.needsAttention || selected.attention.dismissed) && selected.attention.reason) && (
                   <div className={`agent-console-attention-banner ${selected.attention.dismissed ? "dismissed" : ""}${showPlanApproval ? " agent-console-attention-banner--approval" : ""}`} role="status">
                     <BellRing size={16} />
                     <details open={planContentMissing || undefined}>
@@ -1576,6 +1582,11 @@ export function AgentSessionConsole({
                   && !isHistoryLimited(inlineError) ? (
                   <AgentSessionError error={inlineError} onRetry={()=>void sessionQuery.refetch()} />
                 ) : null}
+                {writerOccupied && command && sessionQuery.data && selected.agentSessionId && <AgentWriterRecovery
+                  key={`${selected.agentSessionId}:${command.id}`} session={sessionQuery.data} command={command} nodeName={selected.nodeName}
+                  blocked={!selected.canReply || pending || sendingSelected || showPermissionApproval || selected.nodeConnectionState !== "online"}
+                  onRetry={files => send.mutateAsync({sessionId: selected.agentSessionId!, text: command.text, files,
+                    occurredAt: new Date().toISOString(), preserveDraft: true})} />}
                 {showRecovery && (
                   <section className="agent-console-recovery" aria-label={t("agentRecoveryTitle")}>
                     <strong>{t("agentRecoveryTitle")}</strong>
