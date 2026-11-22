@@ -674,6 +674,8 @@ export const api = {
     }),
   getAgentHistory: (sessionId: string, cursor: string) =>
     request<AgentHistoryPage>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/history?cursor=${encodeURIComponent(cursor)}`),
+  checkAgentConnection: (sessionId: string) =>
+    request<{requestedAt: string; supported: boolean}>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/connection-check`, {method: "POST", body: "{}"}),
   getAgentSession: (sessionId: string, signal?: AbortSignal) =>
     request<AgentSession>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}?history=recent`, signal ? {signal} : {}),
   decideAgentApproval: (sessionId: string, approvalId: string, decision: string) =>

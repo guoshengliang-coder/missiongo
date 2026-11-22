@@ -80,6 +80,8 @@ export interface AgentSessionActivity {
 }
 
 export interface AgentSessionTurnState {
+  readonly replyReadiness?: { readonly state: "ready" | "occupied" | "unknown"; readonly checkedAt: string };
+  readonly connectionCheckRequestedAt?: string;
   /** Server-owned start boundary; a delivery receipt is not source progress. */
   readonly healthStartedAt?: string;
   /** Derived by the server from the current snapshot, never a node-supplied grant. */
@@ -1359,6 +1361,13 @@ export class AgentSessionStore {
     return row ? this.mapCommand(row) : undefined;
   }
 
+  requestConnectionCheck(sessionId: string): string {
+    const requestedAt = new Date().toISOString();
+    this.database.connection.prepare("UPDATE agent_sessions SET turn_state_json=json_set(turn_state_json, '$.connectionCheckRequestedAt', ?) WHERE id=?")
+      .run(requestedAt, sessionId);
+    return requestedAt;
+  }
+
   belongsToNode(sessionId: string, nodeId: string): boolean {
     return Boolean(this.database.connection.prepare(
       "SELECT 1 FROM agent_sessions WHERE id = ? AND node_id = ?",
@@ -1598,6 +1607,8 @@ export class AgentSessionStore {
                OR a.retry_status IN ('queued', 'delivering', 'delivered'))
            ) OR s.settings_revision > MAX(s.applied_settings_revision, s.settings_error_revision)
            OR s.source_restore_pending = 1
+           OR (julianday(json_extract(s.turn_state_json, '$.connectionCheckRequestedAt')) > julianday(?)
+             AND COALESCE(julianday(json_extract(s.turn_state_json, '$.replyReadiness.checkedAt')), 0) < julianday(json_extract(s.turn_state_json, '$.connectionCheckRequestedAt')))
            -- A source archive still owed goes out now, not after the idle cool-down.
            OR (archived_at IS NOT NULL AND archive_source = 'missiongo' AND agent_kind = 'codex'
              AND source_archived_at IS NULL AND source_archive_error IS NULL)
@@ -1609,7 +1620,7 @@ export class AgentSessionStore {
            SELECT 1 FROM agent_session_commands c WHERE c.session_id=s.id AND c.kind='interrupt'
            AND c.status IN ('queued','delivering'))` : ""}
          AND s.id > ?`;
-    const args = (managed: number, after: string) => [nodeId, managed, sourceArchiveBefore, sourceArchiveBefore, after];
+    const args = (managed: number, after: string) => [nodeId, managed, sourceArchiveBefore, new Date(Date.now() - 30_000).toISOString(), sourceArchiveBefore, after];
     const managedPage = this.database.connection.prepare(selection + " ORDER BY s.id LIMIT 100");
     // Persist stable-ID progress across requests and restarts. BEGIN IMMEDIATE
     // serializes selection/advancement across connections. Stop/status updates
@@ -1735,6 +1746,7 @@ export class AgentSessionStore {
     }));
     const activitiesJson = JSON.stringify(activities);
     const incomingTurnState: AgentSessionTurnState = {
+      ...(input.turnState?.replyReadiness ? { replyReadiness: input.turnState.replyReadiness } : {}),
       ...(input.turnState?.observedAt ? { observedAt: normalizedSourceTimestamp(input.turnState.observedAt, now, "observedAt")! } : {}),
       ...(input.turnState?.lastProgressAt ? { lastProgressAt: normalizedSourceTimestamp(input.turnState.lastProgressAt, now, "lastProgressAt")! } : {}),
       ...(input.turnState?.turnActive !== undefined ? { turnActive: input.turnState.turnActive } : {}),

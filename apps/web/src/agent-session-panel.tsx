@@ -3,6 +3,7 @@ import { useConsolePerformance } from "./use-console-performance";
 import { observePerformanceReply } from "./console-performance";
 import { useTranscriptAnchor } from "./transcript-anchor";
 import { CommonCommandMenu, CommandMessageMenu, useCommandTarget, useCommonCommands } from "./common-commands";
+import { AgentWriterRecovery, writerFailure } from "./agent-writer-recovery";
 import { AgentSessionFailureNotice } from "./agent-session-failure-notice";
 import { DraftChatFile } from "./agent-chat-draft-file";
 import { SessionSender, SendUnconfirmed, SendSuperseded, commandNotDelivered, sendAttemptHasDraft } from "./session-send";
@@ -280,7 +281,11 @@ export function AgentSessionPanel({ sessionId, productId = "" }: { sessionId: st
               {codexFailed && <AgentSessionFailureNotice status={session.data.status} failure={session.data.failure} legacyError={session.data.lastError} />}
               <AgentHistoryNotice error={session.data.lastError} />
               {!codexFailed && inlineError && !isHistoryLimited(inlineError) && <AgentSessionError error={inlineError} onRetry={()=>void session.refetch()} />}
-              {command?.kind === "message" && ["failed", "cancelled", "delivery_unknown"].includes(command.status) && (
+              {session.data.agentKind === "codex" && writerFailure(command) && command && <AgentWriterRecovery
+                key={`${sessionId}:${command.id}`} session={session.data} command={command}
+                blocked={!canReply || pending || sendBusy || questionPermission}
+                onRetry={files => send.mutateAsync({sessionId, text: command.text, files, preserveDraft: true})} />}
+              {!writerFailure(command) && command?.kind === "message" && ["failed", "cancelled", "delivery_unknown"].includes(command.status) && (
                 <div className={`agent-session-command agent-session-command-${command.status}`}>
                   <span>
                     {command.status === "delivery_unknown" && t("agentSessionReplyDeliveryUnknown", { agent: agentName })}

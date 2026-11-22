@@ -824,6 +824,10 @@ public struct AgentSessionMessage: Codable, Equatable, Sendable {
 }
 
 public struct AgentSessionReport: Codable, Equatable, Sendable {
+    public var replyReadiness: CodexReplyReadiness?
+    public func reportingReplyReadiness(_ readiness: CodexReplyReadiness) -> AgentSessionReport {
+        var copy = self; copy.replyReadiness = readiness; return copy
+    }
     public var developmentReviewRevision: Int?
     public var developmentReviewTaskId: String?
     public var developmentReviewRequired: Bool?
@@ -884,10 +888,11 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     public let approvalRetryStatus: String?
     public let approvalRetryError: String?
 
-    public init(status: String, stopConfirmed: Bool? = nil, observedAt: String? = nil, lastProgressAt: String? = nil, progressRevision: String? = nil, messages: [AgentSessionMessage], activities: [AgentSessionActivity] = [], error: String? = nil, failure: CodexSessionFailure? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil, sourceArchiveError: String? = nil, sourceRestored: Bool? = nil, sessionUrl: String? = nil, clearSessionUrl: Bool? = nil, activityAt: String? = nil, mode: String? = nil, settingsSupport: [String]? = nil, model: String? = nil, effort: String? = nil, modelEndpoint: String? = nil, settingsRevision: Int? = nil, settingsError: String? = nil, turnActive: Bool? = nil, waitingForInput: Bool? = nil, turnStartedAt: String? = nil, lastOutputAt: String? = nil, thinkingStartedAt: String? = nil, thinkingTokens: Int? = nil, thinkingDurationSeconds: Int? = nil, approval: CodexApprovalSnapshot? = nil, approvalRetryId: String? = nil, approvalRetryStatus: String? = nil, approvalRetryError: String? = nil) {
+    public init(status: String, stopConfirmed: Bool? = nil, observedAt: String? = nil, lastProgressAt: String? = nil, progressRevision: String? = nil, replyReadiness: CodexReplyReadiness? = nil, messages: [AgentSessionMessage], activities: [AgentSessionActivity] = [], error: String? = nil, failure: CodexSessionFailure? = nil, commandId: String? = nil, commandStatus: String? = nil, commandError: String? = nil, sourceArchived: Bool? = nil, sourceArchiveError: String? = nil, sourceRestored: Bool? = nil, sessionUrl: String? = nil, clearSessionUrl: Bool? = nil, activityAt: String? = nil, mode: String? = nil, settingsSupport: [String]? = nil, model: String? = nil, effort: String? = nil, modelEndpoint: String? = nil, settingsRevision: Int? = nil, settingsError: String? = nil, turnActive: Bool? = nil, waitingForInput: Bool? = nil, turnStartedAt: String? = nil, lastOutputAt: String? = nil, thinkingStartedAt: String? = nil, thinkingTokens: Int? = nil, thinkingDurationSeconds: Int? = nil, approval: CodexApprovalSnapshot? = nil, approvalRetryId: String? = nil, approvalRetryStatus: String? = nil, approvalRetryError: String? = nil) {
         self.observedAt = observedAt
         self.lastProgressAt = lastProgressAt
         self.progressRevision = progressRevision
+        self.replyReadiness = replyReadiness
         self.stopConfirmed = stopConfirmed
         self.status = status
         self.messages = messages
@@ -924,7 +929,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     }
 
     public func reportingExternalSettings(supportedFields: [String], mode: String? = nil) -> AgentSessionReport {
-        AgentSessionReport(status: status, stopConfirmed: stopConfirmed, observedAt: observedAt, lastProgressAt: lastProgressAt, progressRevision: progressRevision,
+        AgentSessionReport(status: status, stopConfirmed: stopConfirmed, observedAt: observedAt, lastProgressAt: lastProgressAt, progressRevision: progressRevision, replyReadiness: replyReadiness,
             messages: messages, activities: activities, error: error, failure: failure,
             commandId: commandId, commandStatus: commandStatus, commandError: commandError,
             sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError, sourceRestored: sourceRestored,
@@ -976,7 +981,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     /// branch that decides status and commands need not repeat them.
     public func reportingSettings(mode: String? = nil, model: String?, effort: String?, modelEndpoint: String? = nil, settingsRevision: Int?, settingsError: String?, clearSessionUrl: Bool? = nil) -> AgentSessionReport {
         AgentSessionReport(
-            status: status, stopConfirmed: stopConfirmed, observedAt: observedAt, lastProgressAt: lastProgressAt, progressRevision: progressRevision, messages: messages, activities: activities, error: error, failure: failure,
+            status: status, stopConfirmed: stopConfirmed, observedAt: observedAt, lastProgressAt: lastProgressAt, progressRevision: progressRevision, replyReadiness: replyReadiness, messages: messages, activities: activities, error: error, failure: failure,
             commandId: commandId, commandStatus: commandStatus, commandError: commandError,
             sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError, sourceRestored: sourceRestored,
             sessionUrl: sessionUrl, clearSessionUrl: clearSessionUrl, activityAt: activityAt,
@@ -991,7 +996,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     public func reportingApproval(_ approval: CodexApprovalSnapshot?, retryId: String? = nil,
                                   retryStatus: String? = nil, retryError: String? = nil) -> AgentSessionReport {
         AgentSessionReport(
-            status: status, stopConfirmed: stopConfirmed, observedAt: observedAt, lastProgressAt: lastProgressAt, progressRevision: progressRevision, messages: messages, activities: activities, error: error, failure: failure,
+            status: status, stopConfirmed: stopConfirmed, observedAt: observedAt, lastProgressAt: lastProgressAt, progressRevision: progressRevision, replyReadiness: replyReadiness, messages: messages, activities: activities, error: error, failure: failure,
             commandId: commandId, commandStatus: commandStatus, commandError: commandError,
             sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError, sourceRestored: sourceRestored,
             sessionUrl: sessionUrl, clearSessionUrl: clearSessionUrl, activityAt: activityAt,
@@ -1009,7 +1014,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     /// forces the oldest history out (AND-181).
     public func replacingMessages(_ messages: [AgentSessionMessage]) -> AgentSessionReport {
         AgentSessionReport(
-            status: status, stopConfirmed: stopConfirmed, observedAt: observedAt, lastProgressAt: lastProgressAt, progressRevision: progressRevision, messages: messages, activities: activities, error: error, failure: failure,
+            status: status, stopConfirmed: stopConfirmed, observedAt: observedAt, lastProgressAt: lastProgressAt, progressRevision: progressRevision, replyReadiness: replyReadiness, messages: messages, activities: activities, error: error, failure: failure,
             commandId: commandId, commandStatus: commandStatus, commandError: commandError,
             sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError, sourceRestored: sourceRestored,
             sessionUrl: sessionUrl, clearSessionUrl: clearSessionUrl, activityAt: activityAt,
@@ -1024,7 +1029,7 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
     public func reportingTurn(_ state: ClaudeHostState) -> AgentSessionReport {
         let running = status == "active" || status == "stalled"
         return AgentSessionReport(
-            status: status, stopConfirmed: stopConfirmed, observedAt: observedAt, lastProgressAt: lastProgressAt, progressRevision: progressRevision, messages: messages, activities: activities, error: error, failure: failure,
+            status: status, stopConfirmed: stopConfirmed, observedAt: observedAt, lastProgressAt: lastProgressAt, progressRevision: progressRevision, replyReadiness: replyReadiness, messages: messages, activities: activities, error: error, failure: failure,
             commandId: commandId, commandStatus: commandStatus, commandError: commandError,
             sourceArchived: sourceArchived, sourceArchiveError: sourceArchiveError, sourceRestored: sourceRestored,
             sessionUrl: sessionUrl, clearSessionUrl: clearSessionUrl, activityAt: activityAt,
