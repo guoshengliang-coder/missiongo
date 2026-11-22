@@ -12,7 +12,8 @@ for(const width of [320,1440])for(const theme of ["light","dark"] as const){
       nodeName:"Fixture",nodeId:"fixture-node",nodeConnectionState:"online",mode:"auto",dispatchStatus:"launched",activities:[],settings:{},unread:false,
       canReply:true,canRetry:false,canStop:false,canArchive:true,attention:{state:"not_needed"},needsAttention:false,items:[],sessionPurpose:"integration"};
     const row={id:rowId,digest:"d",snapshot,action:{kind:"defer_publication",reason:"Publish later"},at:stamp,decision:"approved"};
-    const batch={id:batchId,sessionId:id,state:"active",publish:true,deliveries:[],results:{},reconciliation:{requests:[row],history:[],handoffs:{}}};
+    const older={...row,id:"older-approved",snapshot:"b".repeat(64)};
+    const batch={id:batchId,sessionId:id,state:"active",publish:true,deliveries:[],results:{},reconciliation:{requests:[older,row],history:[],handoffs:{}}};
     let state="failed",reason:string|undefined="pending",commandId:string|undefined,sends=0,unreadable=false;
     const continuation=()=>({state,...(reason?{reason}:{}),...(commandId?{commandId}:{})});
     await page.route("**/api/v1/agent-sessions**",route=>queueRoute(route).fulfill({json:new URL(route.request().url()).pathname==="/api/v1/agent-sessions"?{sessions:[session]}:{...session,messages:[]}}));
@@ -20,11 +21,12 @@ for(const width of [320,1440])for(const theme of ["light","dark"] as const){
     await page.route(`**/reconciliation/${rowId}/decision`,async route=>{
       expect(route.request().postDataJSON()).toMatchObject({snapshot,decision:"approved",continueInSession:true});
       sends++;state="queued";reason=undefined;commandId="one-command";
+      if(width===320)unreadable=true;
       // The server has committed the send even if the browser loses its response.
       if(width===1440)await route.abort("failed");
       else await queueRoute(route).fulfill({json:{batchId,continuation:{...continuation(),queued:true}}});
     });
-    await page.route(`**/merge-batches/${batchId}/reconciliation`,route=>unreadable?queueRoute(route).fulfill({status:503,json:{code:"unavailable"}}):queueRoute(route).fulfill({json:{batchId,sessionId:id,state:"active",publish:true,snapshot,entries:[],reconciliation:batch.reconciliation,continuations:{[rowId]:continuation()}}}));
+    await page.route(`**/merge-batches/${batchId}/reconciliation`,route=>unreadable?queueRoute(route).fulfill({status:503,json:{code:"unavailable"}}):queueRoute(route).fulfill({json:{batchId,sessionId:id,state:"active",publish:true,snapshot,entries:[],reconciliation:batch.reconciliation,continuations:{[older.id]:{state:"failed",reason:"scope_changed"},[rowId]:continuation()}}}));
     await page.goto(`/?product=${product.id}&console=agent&session=${id}`);
     const card=page.locator(".merge-delivery-notice.confirmed");
     await expect(card).toContainText("继续消息未能发送");await expect(card).toContainText("已有待发送或待确认的回复");
@@ -41,6 +43,11 @@ for(const width of [320,1440])for(const theme of ["light","dark"] as const){
     await page.screenshot({path:testInfo.outputPath("continuation-failure.png"),fullPage:true});
     await card.getByRole("button",{name:"通知原会话继续",exact:true}).click();
     await expect(card).toContainText("继续消息已在原会话排队");await expect(draft).toHaveValue("保留我的草稿");
+    if(width===320) {
+      await expect(card).toContainText("暂时无法核对发送结果",{timeout:15000});
+      await expect(card).toContainText("继续消息已在原会话排队");
+      unreadable=false;await card.getByRole("button",{name:"核对发送结果",exact:true}).click();
+    }
     expect(sends).toBe(1);await expect(card.getByRole("button",{name:"通知原会话继续",exact:true})).toHaveCount(0);
     await page.reload();await expect(card).toContainText("继续消息已在原会话排队");expect(sends).toBe(1);
     state="delivery_unknown";await card.getByRole("button",{name:"核对发送结果",exact:true}).click();

@@ -1,5 +1,6 @@
 import {reviewedHistoricalDeliveries} from "./historical-delivery-review.js";
 import { MissionGoError } from "./errors.js";
+import { mergeContinuationKey } from "./merge-continuation.js";
 import {AgentHistory} from "./agent-history.js";
 import {AgentArtifacts} from "./agent-artifacts.js";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -205,6 +206,33 @@ describe("integration directly in the original conversation",()=>{
     f.safe(await f.call("get_merge_batch",{sessionId:id,batchId:b.id}));
     expect((await f.call("get_merge_batch",{sessionId:id,batchId:b.id},{clientId:"wrong"})).isError).toBe(true);
     expect((await f.call("get_merge_batch",{dispatchId:id,batchId:b.id})).isError).toBe(true);
+    const snapshot=merges.preview(f.owner.id,b.id).snapshot,key=randomUUID();
+    merges.requestReconciliation(f.owner.id,id,b.id,key,snapshot,{kind:"retry_blocked",deliveryId:b.deliveries[0]!,reason:"Verified external retry scope"});
+    const login=await f.app.inject({method:"POST",url:"/api/v1/auth/login",payload:{username:"owner@example.test",password:"synthetic password"}});
+    const headers={cookie:login.headers['set-cookie']!.toString().split(';')[0]!},url=`/api/v1/merge-batches/${b.id}/reconciliation`;
+    const send=()=>f.app.inject({method:"POST",url:`${url}/${key}/decision`,headers,payload:{snapshot,decision:"approved",reviewConfirmed:true,continueInSession:true}});
+    const read=()=>f.app.inject({method:"GET",url,headers});
+    // A previous version mistook a real external conversation for a missing internal one.
+    f.db.prepare("INSERT INTO idempotency_keys(key,operation,result_json,created_at) VALUES (?,'merge_continuation',?,?)")
+      .run(`merge-continuation:${JSON.stringify([f.owner.id,id,mergeContinuationKey(b.id,key)])}`,JSON.stringify({state:"failed",reason:"unavailable"}),new Date().toISOString());
+    native.disconnect(f.owner.id,id);
+    expect((await send()).json().continuation).toMatchObject({state:"failed",reason:"not_ready"});
+    native.connect(f.owner.id,id,launched.node.nodeId);
+    const current=native.listForNode(f.owner.id,launched.node.nodeId,"worker",()=>{},true).find(s=>s.id===id)!;
+    const report=(commandId?:string,commandStatus:"delivering"|"delivery_unknown"|"delivered"="delivered")=>native.recordSnapshot({accountId:f.owner.id,nodeId:launched.node.nodeId,sessionId:id,workerId:"worker",generation:current.externalBindingGeneration,
+      nativeSessionRef:nativeSession.sessionRef,status:"idle",turnState:{turnActive:false},mode:"full-access",messages:[],...(commandId?{commandId,commandStatus}:{})},()=>{});
+    report();
+    const pending=native.enqueue(f.owner.id,id,"Existing external message",[],randomUUID());
+    expect((await send()).json().continuation).toMatchObject({state:"failed",reason:"pending"});native.cancel(f.owner.id,id,pending.id);
+    const accepted=await send();expect(accepted.statusCode,accepted.body).toBe(200);
+    expect(accepted.json().continuation).toMatchObject({state:"queued",queued:true});const commandId=accepted.json().continuation.commandId;
+    expect((await send()).json().continuation.commandId).toBe(commandId);
+    report(commandId,"delivering");report(commandId,"delivery_unknown");
+    expect((await read()).json().continuations[key]).toMatchObject({state:"delivery_unknown",commandId});
+    report(commandId);expect((await read()).json().continuations[key]).toMatchObject({state:"delivered",commandId});
+    expect((await send()).json().continuation.commandId).toBe(commandId);
+    expect(f.db.prepare("SELECT count(*) AS n FROM external_native_commands WHERE session_id=? AND text LIKE '本次集成决定已批准%'").get(id)).toEqual({n:1});
+    expect(f.db.prepare("SELECT count(*) AS n FROM agent_sessions WHERE id=?").get(id)).toEqual({n:0});
   });
   it("freezes on a newer input, resumes an unchanged status query and never turns stop into continuation",async()=>{
     const f=await prepared();human(f,"执行合并");const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"prepare",scope(f));

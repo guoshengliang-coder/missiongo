@@ -627,7 +627,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const planApprovals = new PlanApprovalService(store.database);
   const documentApprovals = new DocumentPlanApprovals(store.database);
   const merges = new MergeDeliveries(store);
-  const mergeContinuations = new MergeContinuations(store.database, agentSessionStore);
+  const mergeContinuations = new MergeContinuations(store.database, {
+    commandById: (sessionId, commandId) => externalSessionStore.has(sessionId)
+      ? externalNativeStore.commandById(sessionId, commandId) : agentSessionStore.commandById(sessionId, commandId),
+    enqueue: (accountId, sessionId, text, key) => externalSessionStore.has(sessionId)
+      ? externalNativeStore.enqueue(accountId, sessionId, text, [], key)
+      : agentSessionStore.enqueue(accountId, sessionId, text, [], false, key),
+  });
   const listConsoleSessions = (accountId: string) => {
     const summaries=consoleSessions.list(accountId);
     const approvals=agentApprovalStore.forSessions(summaries.filter(session=>session.agentKind==="codex").map(session=>session.id));
