@@ -1,0 +1,5 @@
+{
+  "pullRequest": 645,
+  "$comment": "无条目项目会话的默认独立 Agent 审查更新。当前 macOS 发布说明协议要求工作条目编号，本交付不伪造条目关联，因此以空声明保留该 PR 的显式处置；功能范围和验证见 PR 及 docs/native-agent-review-validation-2026-11.md。",
+  "items": []
+}
