@@ -881,3 +881,11 @@ it("AND-527 keeps an attachment receipt on its canonical bubble when the server 
   expect(visible).toHaveLength(1);
   expect(visible[0]).toMatchObject({ text: "See image", attachmentData: [attachment], outgoing: { status: "delivered" } });
 });
+
+it("resolves only the exact server dispatch association after startup",()=>{
+ const rows=[{id:"registered",dispatchId:"launch"}];
+ expect(canonicalAgentSessionId("dispatch:launch",rows)).toBe("registered");
+ expect(canonicalAgentSessionId("dispatch:other",rows)).toBe("dispatch:other");
+ expect(canonicalAgentSessionId("launch",rows)).toBe("launch");
+ expect(canonicalAgentSessionId(null,rows)).toBeNull();
+});

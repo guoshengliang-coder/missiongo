@@ -4,7 +4,7 @@ export const platforms = ['android', 'macos', 'linuxNode', 'windows'];
 // Reviewed implementation boundary: returns server-side execution health;
 // wire schemas, authorization and native dispatch protocols live elsewhere.
 // Shared desktop UI imports (including their transitive contracts); the graph regression below guards additions.
-const windowsWeb = new Set(['agent-session-view.ts','android-bridge.ts','branding.ts','branding.generated.ts','collaboration-messages.ts','common-command-messages.ts','dialog-state.tsx','i18n.tsx','item-filters.ts','modal.tsx','navigation.ts','overlay.tsx','select.tsx','settings-state.ts','styles.css','types.ts','unsaved-changes.ts']);
+const windowsWeb = new Set(['agent-session-view.ts','session-identities.ts','android-bridge.ts','branding.ts','branding.generated.ts','collaboration-messages.ts','common-command-messages.ts','dialog-state.tsx','i18n.tsx','item-filters.ts','modal.tsx','navigation.ts','overlay.tsx','select.tsx','settings-state.ts','styles.css','types.ts','unsaved-changes.ts']);
 const serverInternal = new Set(['item-execution-blockers.ts', 'item-execution-blockers.test.ts']);
 const androidWeb = new Set(['android-bridge.ts', 'android-update.ts', 'android-update.test.ts',
   'AndroidUpdateNotice.tsx', 'SdkFeedback.tsx', 'overlay.tsx', 'App.tsx']);

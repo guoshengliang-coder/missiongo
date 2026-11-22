@@ -97,3 +97,10 @@ test("a late plan response cannot repopulate the cache after confirmed denial", 
   await pending;
   expect(c.getQueryData(["plan-record", "legacy", 1])).toBeUndefined();
 });
+
+test("a launched dispatch resolves from its explicit association without probing the obsolete route", async () => {
+  vi.spyOn(api, "listAgentSessions").mockResolvedValue({ sessions: [{ id: "registered", dispatchId: "launch" } as AgentSessionSummary] });
+  const detail = vi.spyOn(api, "getAgentSession");
+  expect(await recoverAgentSession(client(), "dispatch:launch", new AbortController().signal)).toEqual({ kind: "ready" });
+  expect(detail).not.toHaveBeenCalled();
+});

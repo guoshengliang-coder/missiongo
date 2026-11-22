@@ -258,3 +258,44 @@ test("denial survives canonical mapping and a 503 retry before a successful deta
   wait.release();
   await expect(page.locator(".agent-console-message")).toContainText(`Transcript ${target}`);
 });
+
+// AND-538: the dispatch route remains valid when startup replaces the list ID.
+const dispatchRoute = `dispatch:dispatch-${target}`;
+for (const width of [320, 1440]) test.describe(`dispatch startup ${width}`, () => {
+ test.use({ viewport: { width, height: 900 }, hasTouch: width === 320 });
+ test("opening an old dispatch link reads its registered channel", async ({ page }) => {
+  const reads: string[] = [];
+  await mock(page, () => ({ sessions: [summary()] }), id => {
+    reads.push(id);
+    return id === target ? { json: detail() } : { status: 404, json: { code: "not_found" } };
+  });
+  await page.goto(url(dispatchRoute));
+  await expect(page.locator(".agent-console-message")).toContainText(`Transcript ${target}`);
+  await expect(page).toHaveURL(/session=and-516-target/);
+  expect(reads).not.toContain(dispatchRoute);
+ });
+ test("a selected starting dispatch follows its registered channel without retry", async ({ page }) => {
+  let launched = false;
+  await mock(page, () => ({ sessions: launched ? [summary()] : [{ ...summary(dispatchRoute),
+    agentSessionId: undefined, dispatchId: `dispatch-${target}`, dispatchStatus: "delivered", canReply: false }] }),
+   id => id === target ? { json: detail() } : { status: 404, json: { code: "not_found" } });
+  await page.goto(url(dispatchRoute));
+  await expect(page).toHaveURL(/session=dispatch%3Adispatch-and-516-target/);
+  launched = true; await refreshFromConsoleStream(page);
+  await expect(page.locator(".agent-console-message")).toContainText(`Transcript ${target}`);
+  await expect(page).toHaveURL(/session=and-516-target/);
+  await expect(page.getByRole("alert").filter({hasText:"该会话已失效"})).toHaveCount(0);
+ });
+ test("retry refreshes the dispatch association before reading its channel", async ({ page }) => {
+  let launched = false;
+  await mock(page, () => ({ sessions: launched ? [summary()] : [] }),
+    id => id === target ? { json: detail() } : { status: 404, json: { code: "not_found" } });
+  await page.goto(url(dispatchRoute));
+  const pane = page.locator(".agent-console-conversation");
+  await expect(pane.getByRole("alert")).toContainText("该会话已失效");
+  launched = true;
+  await pane.getByRole("button", {name:"重试",exact:true}).click();
+  await expect(page.locator(".agent-console-message")).toContainText(`Transcript ${target}`);
+  await expect(page).toHaveURL(/session=and-516-target/);
+ });
+});

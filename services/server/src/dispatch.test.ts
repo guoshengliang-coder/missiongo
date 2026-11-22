@@ -5307,3 +5307,31 @@ it("AND-499 audit R2 replays a cancelled result without queueing it again", asyn
   expect(next.statusCode).toBe(201);
   expect(next.json().id).not.toBe(original.id);
 });
+
+it("resolves the original dispatch route after a real node registers its session (AND-538)", async () => {
+  const {app,cookie}=await signedInApp();
+  const mission=await readyItem(app,cookie,"Diagnostic","DIAG");
+  const node=await registeredNode(app);
+  await heartbeat(app,node.token);
+  const headers={authorization:`Bearer ${node.token}`};
+  await app.inject({method:"PUT",url:"/api/v1/node/repos",headers,payload:{repos:[{productId:mission.productId,repoPath:"/synthetic/repo"}]}});
+  const created=await app.inject({method:"POST",url:"/api/v1/dispatches",headers:{cookie},payload:{nodeId:node.nodeId,agentKind:"claude_code",mode:"plan",itemKeys:[mission.itemKey]}});
+  expect(created.statusCode).toBe(201);
+  const dispatchId=created.json().id;
+  const alias=`dispatch:${dispatchId}`;
+  const list=async()=> (await app.inject({method:"GET",url:"/api/v1/agent-sessions",headers:{cookie}})).json().sessions;
+  expect((await list()).some((r:any)=>r.id===alias)).toBe(true);
+  await app.inject({method:"POST",url:"/api/v1/node/dispatches/claim-next",headers});
+  expect((await app.inject({method:"POST",url:`/api/v1/node/dispatches/${dispatchId}/result`,headers,payload:{status:"launched",sessionName:"Diagnostic",sessionRef:randomUUID()}})).statusCode).toBe(204);
+  const rows=await list();
+  const row=rows.find((r:any)=>r.dispatchId===dispatchId);
+  expect(row.agentSessionId).toBeTruthy();
+  const get=async(id:string)=>app.inject({method:"GET",url:`/api/v1/agent-sessions/${encodeURIComponent(id)}?history=recent`,headers:{cookie}});
+  const old=await get(alias), retry=await get(alias), real=await get(row.agentSessionId);
+  const canonical=(await import("../../../apps/web/src/agent-session-view.js")).canonicalAgentSessionId;
+  expect(canonical(alias,rows)).toBe(row.id);
+  expect((await get(canonical(alias,rows)!)).statusCode).toBe(200);
+  expect(old.statusCode).toBe(404);
+  expect(retry.statusCode).toBe(404);
+  expect(real.statusCode).toBe(200);
+});
