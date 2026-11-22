@@ -52,6 +52,11 @@ for(const width of [320,1440])for(const theme of ["light","dark"] as const){
     await page.reload();await expect(card).toContainText("继续消息已在原会话排队");expect(sends).toBe(1);
     state="delivery_unknown";await card.getByRole("button",{name:"核对发送结果",exact:true}).click();
     await expect(card).toContainText("结果待核对");await expect(card.getByRole("button",{name:"通知原会话继续",exact:true})).toHaveCount(0);
+    // Check a failed-command projection separately from a pre-enqueue rejection: no new send is offered.
+    state="failed";reason="delivery_failed";await card.getByRole("button",{name:"核对发送结果",exact:true}).click();
+    await expect(card).toContainText("请在原会话核对该条消息");await expect(card).not.toContainText("可以重试");
+    await expect(card.getByRole("button",{name:"通知原会话继续",exact:true})).toHaveCount(0);
+    reason=undefined;
     state="delivered";await card.getByRole("button",{name:"核对发送结果",exact:true}).click();
     await expect(card).toContainText("实际执行进展以原会话为准");
     unreadable=true;await card.getByRole("button",{name:"核对发送结果",exact:true}).click();

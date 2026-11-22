@@ -41,7 +41,7 @@ function MergeReconciliationContent({batchId,initiallyOpen=false,compact=false}:
     return ()=>{current=false;};
   },[batchId,compact,reviewId,snapshot,query.dataUpdatedAt]);
   const approvedRequests=query.data?.reconciliation?.requests.filter(r=>r.decision==="approved"&&!r.appliedAt)??[];
-  const approved=approvedRequests.filter(row=>row.snapshot===query.data?.snapshot).at(-1)??approvedRequests.at(-1);
+  const approved=approvedRequests.slice().reverse().find(row=>row.snapshot===query.data?.snapshot)??approvedRequests.at(-1);
   const continuation=approved?(receipt?.id===approved.id?receipt.continuation:undefined)??query.data?.continuations?.[approved.id]??
     (decide.data?.batchId===batchId?decide.data.continuation:undefined):undefined;
   const state=continuation?.state??(decide.data?.batchId===batchId&&decide.data.continuation?.queued?"queued":"not_sent");
@@ -49,7 +49,7 @@ function MergeReconciliationContent({batchId,initiallyOpen=false,compact=false}:
     delivery_unknown:"recoveryContinueUnknown",delivered:"recoveryContinueDelivered",failed:"recoveryContinueFailed",cancelled:"recoveryContinueCancelled"} as const;
   const reasonKeys={pending:"recoveryContinuePending",archived:"recoveryContinueArchived",revoked:"recoveryContinueRevoked",
     finished:"recoveryContinueFinished",managed:"recoveryContinueManaged",unavailable:"recoveryContinueUnavailable",
-    send_failed:"recoveryContinueFailureHelp",not_ready:"recoveryContinueNotReady",scope_changed:"recoveryContinueStale"} as const;
+    send_failed:"recoveryContinueFailureHelp",delivery_failed:"recoveryContinueDeliveryFailed",not_ready:"recoveryContinueNotReady",scope_changed:"recoveryContinueStale"} as const;
   if(compact&&query.data&&!pending.length)return approved?<section role="status" className="merge-delivery-notice confirmed" data-continuation>
     <div className="merge-delivery-copy">
       <strong>{t(decide.isPending?"recoveryContinueSending":sendUnknown?"recoveryContinueUnknown":statusKeys[state])}</strong>

@@ -26,7 +26,7 @@ export class MergeContinuations {
     if (reference) {
       const command = this.sessions.commandById(preview.sessionId, reference.id);
       return command ? { state: command.status, commandId: command.id,
-        ...(command.status === "failed" ? { reason: "send_failed" as const } : {}) }
+        ...(command.status === "failed" ? { reason: "delivery_failed" as const } : {}) }
         : { state: "failed", reason: "unavailable", commandId: reference.id };
     }
     const row = this.db.connection.prepare("SELECT result_json FROM idempotency_keys WHERE key=? AND operation='merge_continuation'")

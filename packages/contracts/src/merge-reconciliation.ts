@@ -26,7 +26,7 @@ export interface MergeReconciliationState {
 export interface MergeContinuation {
   state: "not_sent" | "queued" | "delivering" | "delivery_unknown" | "delivered" | "failed" | "cancelled";
   commandId?: string;
-  reason?: "pending" | "archived" | "revoked" | "finished" | "managed" | "not_ready" | "unavailable" | "send_failed" | "scope_changed";
+  reason?: "pending" | "archived" | "revoked" | "finished" | "managed" | "not_ready" | "unavailable" | "send_failed" | "delivery_failed" | "scope_changed";
 }
 export interface MergeReconciliationPreview {
   continuations?: Record<string, MergeContinuation>;

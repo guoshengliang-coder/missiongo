@@ -1486,7 +1486,7 @@ describe("AND-439 batch reconciliation",()=>{
     else {
       const id=(await f.send()).json().continuation.commandId;
       f.db.prepare("UPDATE agent_session_commands SET status=? WHERE id=?").run(kind,id);
-      expect((await f.send()).json().continuation).toMatchObject({state:kind,commandId:id});
+      expect((await f.send()).json().continuation).toMatchObject({state:kind,commandId:id,...(kind==="failed"?{reason:"delivery_failed"}:{})});
     }
     const read=await f.read();expect(read.json().continuations[f.r.key]).toMatchObject({state:["archived","revoked"].includes(kind)?"failed":kind});
     expect(read.body).not.toContain("private diagnostic");
