@@ -2,10 +2,10 @@ import {test,expect} from "@playwright/test";
 import {queueRoute} from "./integration-queue-fixture";
 
 test.use({hasTouch:true});
-for(const width of [320,1440])for(const theme of ["light","dark"] as const){
+for(const width of [320,375,1440])for(const theme of ["light","dark"] as const){
   test(`integration decision stays in conversation at ${width}px ${theme}`,async({page,request},testInfo)=>{
     const stamp="2026-11-20T08:00:00.000Z";await page.clock.setFixedTime(new Date(stamp));
-    await page.setViewportSize({width,height:900});await page.emulateMedia({colorScheme:theme});
+    await page.setViewportSize({width,height:width===375?812:900});await page.emulateMedia({colorScheme:theme});
     const product=await(await request.post("/api/v1/products",{data:{name:`Decision ${width} ${theme}`,keyPrefix:`DA${width}${theme[0]!.toUpperCase()}`}})).json();
     const id="integration-conversation",snapshot="a".repeat(64);
     const session={id,agentSessionId:id,dispatchId:"decision-dispatch",productId:product.id,agentKind:"codex",status:"idle",updatedAt:stamp,createdAt:stamp,

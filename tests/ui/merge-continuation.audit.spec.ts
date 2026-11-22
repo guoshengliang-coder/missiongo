@@ -2,10 +2,10 @@ import {test,expect} from "@playwright/test";
 import {queueRoute} from "./integration-queue-fixture";
 
 test.use({hasTouch:true});
-for(const width of [320,1440])for(const theme of ["light","dark"] as const){
+for(const width of [320,375,1440])for(const theme of ["light","dark"] as const){
   test(`continuation failure, retry and refresh at ${width}px ${theme}`,async({page,request},testInfo)=>{
     const stamp="2026-11-22T02:00:00.000Z";await page.clock.setFixedTime(new Date(stamp));
-    await page.setViewportSize({width,height:900});await page.emulateMedia({colorScheme:theme});
+    await page.setViewportSize({width,height:width===375?812:900});await page.emulateMedia({colorScheme:theme});
     const product=await(await request.post("/api/v1/products",{data:{name:`Continue ${width} ${theme}`,keyPrefix:`CT${width}${theme[0]!.toUpperCase()}`}})).json();
     const id="continuation-session",snapshot="a".repeat(64),batchId="continuation-batch",rowId="continuation-decision";
     const session={id,agentSessionId:id,dispatchId:"continue-dispatch",productId:product.id,agentKind:"codex",status:"idle",updatedAt:stamp,createdAt:stamp,
