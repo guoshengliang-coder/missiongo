@@ -1,3 +1,4 @@
+import { conversationScopeReview, type ConversationReviewEvidence } from "./conversation-scope-review.js";
 import { projectIntegrationInstructions } from "./integration-instructions.js";
 import { projectCheckSatisfied } from "@missiongo/contracts";
 import { projectCheckStateSchema, projectVerificationSchema, validateProjectChecks, assertProjectBinding } from "./project-verification.js";
@@ -93,7 +94,7 @@ interface ConversationPreparation {
   id:string; productId:string; repository:string; operation:IntegrationActionMode;
   executor:IntegrationExecutor; config:FreeSessionConfig; source:IntegrationInstruction; createdAt:string;
   drafts:{id:string;input:DeliveryInput;scope:string}[]; selection:{id:string;revision:string}[];
-  publicationScope?:PublicationScope; reviewDigest:string; reviewText:string; resumeBatchId?:string;
+  publicationScope?:PublicationScope; reviewDigest:string; reviewText:string; resumeBatchId?:string; reviewEvidence?:ConversationReviewEvidence;
 }
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const changed = () => conflict("merge_delivery_changed", "交付内容、代码或执行范围已变化，请重新核对并确认。");
@@ -1101,7 +1102,7 @@ export class MergeDeliveries {
         const {evidence:_evidence,validation:_validation,...content}=draft.input;
         const stable=`${content.repository}/pull/${content.pullRequest}@${content.head}`;
         return {...c,identity:stable,deliveryId:stable,expectedRevision:digest(content)};
-      });
+      }).sort((a,b)=>a.identity.localeCompare(b.identity));
       const reviewDigest=digest([input.operation,input.repository,selected.map(d=>[d.repository,d.pullRequest,d.head,d.targetBranch,d.itemKeys,d.scope,d.requiredArtifacts,d.noReleaseReason]),reviewCandidates]);
       const reviewText=`原会话执行范围：${input.operation}。\n执行范围摘要 ${reviewDigest}\n${selected.map(d=>`${d.repository}/pull/${d.pullRequest} · ${d.head} · ${d.itemKeys.join(",")} · ${d.summary} · ${d.requiredArtifacts.join(",")||d.noReleaseReason}`).join("\n")}${publicationScope?`\n完整发布范围 ${reviewDigest}\n${reviewCandidates!.map(c=>`${c.identity} · ${c.title} · ${(c.requiredArtifacts??[]).join(",")}${c.historicalGapReason?` · 历史缺证：${c.historicalGapReason}`:""}`).join("\n")}`:""}\n执行配置 ${JSON.stringify(config)}；仅记录原会话实际配置，不创建新会话、不改变模型或原生权限。`;
       const preparation:ConversationPreparation={id,productId:input.productId,repository:input.repository,operation:input.operation,executor,config,source,
@@ -1178,13 +1179,30 @@ export class MergeDeliveries {
         return this.batch(accountId,actor,b.id);
       }
       if(!reviewedDecision)assertIntegrationInstruction(source.text,p.operation);
-      if(source.fingerprint!==p.source.fingerprint && !source.context.includes(p.reviewText))throw changed();
+      const reviewDeliveries=[...p.drafts.map(d=>d.input),...p.selection.filter(selected=>!p.drafts.some(d=>d.id===selected.id))
+        .map(selected=>this.read<Delivery>("merge_deliveries",selected.id))];
+      const publicationReferences=(p.publicationScope?.candidates??[]).flatMap(candidate=>{
+        if(!candidate.completion)return [];
+        try {
+          const completion=normalizeCompletion({completion:candidate.completion});
+          const match=completion.kind==="github"?completion.url.match(/^(.*)\/pull\/(\d+)$/):undefined;
+          return match?[{repository:match[1]!,pullRequest:Number(match[2]),head:""}]:[];
+        }catch{return [];}// Existing publication blockers below retain malformed evidence.
+      });
+      const reviewReferences=[...reviewDeliveries,...publicationReferences.filter(ref=>!reviewDeliveries.some(d=>d.repository===ref.repository&&d.pullRequest===ref.pullRequest))];
+      const reviewEvidence=conversationScopeReview(this.db,executor,source,p.reviewText,p.reviewDigest,p.operation,reviewReferences,reviewedDecision);
+      const scopeReviewed=Boolean(reviewEvidence);
+      if(source.fingerprint!==p.source.fingerprint && !scopeReviewed)throw changed();
       const reviewed=source.text+"\n"+source.context;
-      if(!source.context.includes(p.reviewText) && p.drafts.some(d=>!new RegExp(`(?:#|PR\\s*)${d.input.pullRequest}\\b`,"i").test(reviewed)
+      if(!scopeReviewed && p.drafts.some(d=>!new RegExp(`(?:#|PR\\s*)${d.input.pullRequest}\\b`,"i").test(reviewed)
         && !reviewed.includes(d.input.head.slice(0,7))))
         throw conflict("conversation_integration_scope_review_required","当前指令上下文没有这些 PR 或完成提交的审阅依据，请先在原会话展示精确范围，不扩展到其他改动。");
-      if(p.publicationScope && !source.context.includes(p.reviewText))
+      if(p.publicationScope && !scopeReviewed)
         throw conflict("conversation_integration_scope_review_required","需先在原会话展示这份完整发布范围；已有同范围审阅与授权可复用，不要求进入待集成。");
+      if(reviewEvidence) {
+        p.reviewEvidence=reviewEvidence;
+        this.db.connection.prepare("UPDATE conversation_integration_preparations SET data_json=? WHERE id=?").run(JSON.stringify(p),p.id);
+      }
       if(p.publicationScope?.blockers.length||p.publicationScope?.candidates.some(c=>c.historicalGapReason))
         throw conflict("conversation_integration_publication_evidence_missing","发布范围含缺证或历史处置，请先按现有受限流程核实，不自动确认例外。");
       for(const draft of p.drafts) {
