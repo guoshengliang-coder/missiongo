@@ -299,3 +299,40 @@ for (const width of [320, 1440]) test.describe(`dispatch startup ${width}`, () =
   await expect(page).toHaveURL(/session=and-516-target/);
  });
 });
+
+
+test("dispatch alias denial survives canonical mapping and temporary detail failure", async ({ page }) => {
+  const legacy = `dispatch:dispatch-${target}`, wait = gate();
+  let mapped = false, successful = false, failures = 0;
+  await mock(page, () => ({ sessions: mapped ? [summary()] : [] }), async id => {
+    if (id === legacy) return { status: 403, json: { code: "forbidden" } };
+    if (!successful) { failures++; return { status: 503, json: { code: "unavailable" } }; }
+    await wait.promise; return { json: detail() };
+  });
+  await page.goto(url(legacy));
+  const pane = page.locator(".agent-console-conversation");
+  await expect(pane.getByRole("alert")).toBeVisible();
+  mapped = true; await refreshFromConsoleStream(page);
+  await expect(page).toHaveURL(/session=and-516-target/);
+  await expect.poll(() => failures).toBeGreaterThan(1);
+  await expect(pane.getByRole("button", { name: "重试", exact: true })).toBeEnabled();
+  await expect(page.locator(".agent-console-message, .agent-console-reply textarea")).toHaveCount(0);
+  await expect(pane.getByRole("button", { name: "归档", exact: true })).toHaveCount(0);
+  successful = true; await pane.getByRole("button", { name: "重试", exact: true }).click();
+  await expect(page.locator(".agent-console-reply textarea")).toHaveCount(0);
+  wait.release();
+  await expect(page.locator(".agent-console-message")).toContainText(`Transcript ${target}`);
+});
+
+
+test("a historical dispatch link opens the current merged channel", async ({ page }) => {
+  const oldRoute = "dispatch:historical-launch";
+  const reads: string[] = [];
+  await mock(page, () => ({ sessions: [{...summary(), relatedSessionIds: [oldRoute, target]}] }), id => {
+    reads.push(id); return id === target ? {json:detail()} : {status:404,json:{code:"not_found"}};
+  });
+  await page.goto(url(oldRoute));
+  await expect(page.locator(".agent-console-message")).toContainText(`Transcript ${target}`);
+  await expect(page).toHaveURL(/session=and-516-target/);
+  expect(reads).not.toContain(oldRoute);
+});

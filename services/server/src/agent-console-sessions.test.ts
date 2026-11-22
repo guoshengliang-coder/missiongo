@@ -38,7 +38,7 @@ afterEach(() => { vi.useRealTimers(); stores.splice(0).forEach((store) => store.
 it("unifies historical native mirrors, keeps their records and exposes both IDs", () => {
   const f = fixture();
   f.external.report(owner, f.externalId, f.item.key, "completed", "Local tests passed", "finish");
-  expect(f.console.list("owner")).toMatchObject([{ id: f.sessionId, relatedSessionIds: [f.sessionId, f.externalId], unread: true }]);
+  expect(f.console.list("owner")).toMatchObject([{ id: f.sessionId, relatedSessionIds: [f.sessionId, "dispatch:dispatch", f.externalId], unread: true }]);
   expect(f.console.list("owner")).toHaveLength(1);
   const detail = f.console.withMessages("owner", f.sessionId, f.dispatch.getForAccount("owner", f.sessionId));
   expect(detail.progressReports?.map((message) => message.text)).toContain(`${f.item.key} · Local tests passed`);
@@ -316,4 +316,20 @@ it("batch list attention matches individual checks for native provenance, follow
  f.db.prepare("DELETE FROM implementation_plan_approvals").run();
  f.db.prepare("UPDATE implementation_plan_requests SET proposal_json=json_set(proposal_json,'$.origin','attention')").run();
  compare();
+});
+
+
+it("retains every member's pre-launch route when a resumed channel becomes primary (AND-538)", async () => {
+  const f = fixture();
+  f.db.prepare("UPDATE agent_sessions SET archived_at=?,archive_source='source' WHERE id=?")
+    .run(new Date().toISOString(), f.sessionId);
+  const resumed = f.createDispatch("resumed-dispatch", "native-thread");
+  const rows = f.console.list("owner");
+  const { canonicalAgentSessionId } = await import("../../../apps/web/src/agent-session-view.js");
+  expect(rows[0]!.id).toBe(resumed);
+  expect(rows[0]!.relatedSessionIds).toEqual(expect.arrayContaining(["dispatch:dispatch", "dispatch:resumed-dispatch"]));
+  expect(canonicalAgentSessionId("dispatch:dispatch", rows)).toBe(resumed);
+  expect(canonicalAgentSessionId("dispatch:resumed-dispatch", rows)).toBe(resumed);
+  expect(canonicalAgentSessionId("dispatch:unrelated", rows)).toBe("dispatch:unrelated");
+  expect(f.console.list("another-owner")).toEqual([]);
 });

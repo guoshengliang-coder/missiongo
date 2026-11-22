@@ -1388,7 +1388,7 @@ describe("Commenting over MCP", () => {
     const list = () => f.app.inject({ method: "GET", url: "/api/v1/agent-sessions", headers: f.headers });
     const rows = (await list()).json().sessions;
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ id: f.sessionId, canReply: true, unread: true, needsAttention: true, relatedSessionIds: [f.sessionId, f.externalId] });
+    expect(rows[0]).toMatchObject({ id: f.sessionId, canReply: true, unread: true, needsAttention: true, relatedSessionIds: [f.sessionId, "dispatch:mirror-dispatch", f.externalId] });
     for (const id of [f.sessionId, f.externalId]) {
       const detail = await f.app.inject({ method: "GET", url: `/api/v1/agent-sessions/${id}`, headers: f.headers });
       expect(detail.statusCode).toBe(200);
