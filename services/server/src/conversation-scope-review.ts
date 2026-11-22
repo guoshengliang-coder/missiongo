@@ -1,3 +1,4 @@
+import { publicationActionBounds, scopeConflict, type ConversationPublicationBounds } from "./conversation-publication-targets.js";
 import type { MissionGoDatabase } from "./storage/database.js";
 import { conflict } from "./errors.js";
 import { assertIntegrationInstruction, integrationFingerprint, type IntegrationExecutor, type IntegrationInstruction } from "./conversation-integration-source.js";
@@ -16,7 +17,7 @@ export function conversationScopeReview(database: MissionGoDatabase, executor: I
   instruction: IntegrationInstruction, reviewText: string, reviewDigest: string,
   operation: "merge_only" | "merge_and_publish" | "publish_only",
   references: readonly {repository:string;pullRequest:number;head:string}[],
-  reviewedDecision=false): ConversationReviewEvidence | undefined {
+  reviewedDecision=false, publicationBounds:ConversationPublicationBounds={requiredArtifacts:[],declaredArtifacts:[]}): ConversationReviewEvidence | undefined {
   const assertActionBounds=(text:string,decision=false)=>{
     // This is a server-derived fact from the immediately preceding unique
     // complete review, never an MCP argument or an Agent-provided approval.
@@ -27,7 +28,7 @@ export function conversationScopeReview(database: MissionGoDatabase, executor: I
         .replace(/^(?:请)?(?:仅|只)(?=合并|发布|部署)/,"")
         .replace(/^\s*(?:please\s+)?only\s+/i,"");
       if(/(?:除|剔|跳过|忽略|保留|留着|停止|暂停|取消|撤|改|换|减少|增加|范围|权限|模型|仅|只|单独|部分)|\b(?:except|exclud\w*|without|skip|ignore|omit|minus|instead|rather|only|stop|cancel)\b/i.test(scopeText))throw changed();
-      let actionText=scopeText;
+      let actionText=publicationActionBounds(scopeText,publicationBounds).text;
       if(operation==="merge_only")actionText=actionText.replace(/(?:暂不|先不|不要|不用|无需|不)(?:进行)?(?:发布|部署)/g,"").replace(/\b(?:do not|don't|not) (?:publish|release|deploy)\b/ig,"");
       if(operation==="publish_only")actionText=actionText.replace(/(?:暂不|先不|不要|不用|无需|不)(?:进行)?合并/g,"").replace(/\b(?:do not|don't|not) merge\b/ig,"");
       actionText=actionText.replace(/(?:PR\s*#?|#)\d+\b/ig,"").replace(/\b[a-f0-9]{7,40}\b/ig,"")
@@ -36,7 +37,7 @@ export function conversationScopeReview(database: MissionGoDatabase, executor: I
         .replace(/[\s,，;；。.!！、:：]+/g,"");
       // Unparsed artifact/branch/conditional qualifiers cannot authorize the old
       // complete scope. The Agent must prepare the exact intended scope instead.
-      if(actionText)throw changed();
+      if(actionText)throw scopeConflict("qualifier_unsupported","范围限定文字无法完整识别，请核对产物、版本和条件；保留已有决定，不用重复批准或忽略剩余文字放行。");
     }
   };
   assertActionBounds(instruction.text,reviewedDecision);
@@ -64,13 +65,15 @@ export function conversationScopeReview(database: MissionGoDatabase, executor: I
       }
       return " ";
     });
-    for(const match of plain.matchAll(/(?:PR\s*#?|#)(\d+)\b/ig))
+    const referenceText=publicationActionBounds(plain,publicationBounds).text;
+    for(const match of referenceText.matchAll(/(?:PR\s*#?|#)(\d+)\b/ig))
       add(references.filter(ref=>ref.pullRequest===Number(match[1])));
-    for(const match of plain.matchAll(/\b[a-f0-9]{7,40}\b/ig))
+    for(const match of referenceText.matchAll(/\b[a-f0-9]{7,40}\b/ig))
       add(references.filter(ref=>ref.head.toLowerCase().startsWith(match[0].toLowerCase())));
     return mentioned;
   };
   const currentReferences=checkReferences(instruction.text);
+  const currentArtifacts=publicationActionBounds(instruction.text.replace(/https?:\/\/[^\s<>，。；]+/ig," "),publicationBounds).artifacts;
   // An explicitly named subset cannot authorize the rest of a frozen scope.
   if(currentReferences.size && [...expected].some(key=>!currentReferences.has(key)))throw changed();
   const db=database.connection, external=executor.kind==="external", sessionId=executor.sessionId;
@@ -106,7 +109,13 @@ export function conversationScopeReview(database: MissionGoDatabase, executor: I
     ? "SELECT id,text,created_at AS at,status FROM external_native_commands WHERE session_id=? AND julianday(created_at) BETWEEN julianday(?) AND julianday(?)"
     : "SELECT id,text,created_at AS at,status FROM agent_session_commands WHERE session_id=? AND kind='message' AND julianday(created_at) BETWEEN julianday(?) AND julianday(?)")
     .all(sessionId,row.at,instruction.occurredAt) as {id:string;text:string;at:string;status:string}[];
-  if(!external && db.prepare("SELECT 1 FROM agent_session_commands WHERE session_id=? AND kind='interrupt' AND status NOT IN ('failed','cancelled') AND julianday(created_at) BETWEEN julianday(?) AND julianday(?)").get(sessionId,row.at,instruction.occurredAt))throw changed();
+  const explicitRenewal=!reviewedDecision && expected.size>0 && currentReferences.size===expected.size
+    && (operation==="merge_only" || publicationBounds.requiredArtifacts.length>0 && currentArtifacts.length===publicationBounds.requiredArtifacts.length);
+  if(!external) {
+    const interrupts=db.prepare("SELECT status,created_at AS at FROM agent_session_commands WHERE session_id=? AND kind='interrupt' AND status NOT IN ('failed','cancelled') AND julianday(created_at) BETWEEN julianday(?) AND julianday(?)").all(sessionId,row.at,instruction.occurredAt) as {status:string;at:string}[];
+    if(interrupts.some(i=>!explicitRenewal || i.status!=="delivered" || Date.parse(i.at)>=Date.parse(instruction.occurredAt)))
+      throw scopeConflict("stopped","范围审阅后出现停止；只有后续明确重授同一完整 PR 和产物范围才可恢复，普通继续或进度询问不会解除停止。");
+  }
   for(const user of users) {
     if(!user.at || !Number.isFinite(Date.parse(user.at)))throw missing();
     const observed=db.prepare("SELECT occurred_at FROM session_message_times WHERE session_key=? AND source_id=? AND provenance='source_message'").get(key,`native:${user.source_id}`) as {occurred_at:string}|undefined;
@@ -120,11 +129,19 @@ export function conversationScopeReview(database: MissionGoDatabase, executor: I
     const text=input.text.trim();
     // These bounded non-execution messages do not change a reviewed code scope.
     if(/^(?:请)?(?:进度(?:如何)?|查看进度|当前状态|状态如何|继续(?:执行|处理)?|同意|批准|提交)[。.!！]?$/i.test(text))continue;
-    if(/(?:停止|暂停|取消|撤|不要|别|先不|改|换|仅|只|排除|增加|减少|范围|权限|模型)|\b(?:except|exclud\w*|without|skip|ignore|omit|minus|instead|rather|only|stop|cancel)\b/i.test(text.replace(/https?:\/\/[^\s<>，。；]+/ig," ")))throw changed();
+    if(explicitRenewal && /^(?:请)?(?:停止|暂停|取消)(?:执行)?[。.!！]?$/.test(text) && Date.parse(input.at!)<Date.parse(instruction.occurredAt))continue;
+    if(/(?:停止|暂停|取消|撤|不要|别|先不|改|换|仅|只|排除|增加|减少|范围|权限|模型)|\b(?:except|exclud\w*|without|skip|ignore|omit|minus|instead|rather|only|stop|cancel)\b/i.test(text.replace(/https?:\/\/[^\s<>，。；]+/ig," "))) {
+      const stopped=/^(?:请)?(?:停止|暂停|取消)(?:执行)?[。.!！]?$/.test(text);
+      throw scopeConflict(stopped?"stopped":"intervening_scope_changed",stopped
+        ?"范围审阅后出现停止、范围变化或歧义：原停止仍有效；仅后续明确重授同一完整 PR 和全部产物才可恢复，普通继续不解锁。"
+        :"范围审阅后出现停止、范围变化或歧义：存在中间范围或条件变更，请核对并展示当前完整范围，不反复批准旧范围。");
+    }
     if(/条目/.test(text) && /(?:建|提交|登记)/.test(text) && !/合并|发布|部署|PR\s*#?\d+/i.test(text))continue;
     try { assertIntegrationInstruction(text,operation); assertActionBounds(text); }
     catch { throw changed(); }
-    checkReferences(text);
+    const intermediateReferences=checkReferences(text);
+    if(intermediateReferences.size && [...expected].some(key=>!intermediateReferences.has(key)))
+      throw scopeConflict("reference_subset","中间执行指令仅覆盖部分 PR，不能由后续笼统指令扩展到完整范围；请核对当前完整范围与决定。");
   }
   return {sourceId:row.source_id,occurredAt:row.at,textDigest:integrationFingerprint(row.text),reviewDigest,
     executorBinding:executor.binding,settings:executor.settings,instructionSourceId:instruction.sourceId};
