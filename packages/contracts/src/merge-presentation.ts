@@ -35,6 +35,8 @@ export interface PublicationScopeRow {
   identity:string; title:string; createdAt?:string; completion?:unknown; requiredArtifacts?:string[];
   expectedRevision?:number|string; itemKey?:string; developmentEventId?:string; roundKey?:string|null;
   deliveryId?:string; noReleaseReason?:string; selected:boolean;
+  /** Selected original items whose integration event does not exist in this frozen scope yet. */
+  pendingItemKeys?:string[];
   /** Frozen item content, Builder and round; optional for legacy batches. */
   itemScope?:string;
   /** Historical evidence gap requiring explicit scoped review; never a publication receipt. */

@@ -2624,6 +2624,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if(decision!=="confirm" && decision!=="withdraw") throw invalidInput("Invalid delivery decision.");
     return merges.decide(requireAccountId(request),id,stringField(body,"revision")!,decision);
   });
+  app.get("/api/v1/conversation-integrations/:id/review", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    reply.header("Cache-Control", "private, no-store");
+    return merges.conversationReview(requireAccountId(request), id);
+  });
+  app.post("/api/v1/conversation-integrations/:id/review", async request => {
+    const { id } = request.params as { id: string };
+    const body = objectBody(request.body);
+    return merges.confirmConversationReview(requireAccountId(request), id, stringField(body, "reviewDigest")!);
+  });
   app.get("/api/v1/merge-batches/:id/reconciliation",async request=>{
     const {id}=request.params as {id:string};
     requireProductPermission(request,merges.batchProduct(id),"view");

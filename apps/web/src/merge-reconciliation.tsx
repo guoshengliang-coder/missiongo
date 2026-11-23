@@ -80,6 +80,7 @@ function MergeReconciliationContent({batchId,initiallyOpen=false,compact=false}:
       {reviewFailed&&<p role="alert" className="inline-error">{t("recoveryConversationReviewError")}</p>}
       <button type="button" className="secondary-button" disabled={query.isFetching||decide.isPending} onClick={()=>{setConfirmed(false);void query.refetch();}}>{t("refresh")}</button>
       {(query.isError||decide.isError)&&<p role="alert" className="inline-error">{decide.error instanceof Error?decide.error.message:t("recoveryError")}</p>}
+      {!compact&&query.data?.publicationIdentity?.unchanged&&query.data.publicationIdentity.transitions.length>0&&<p role="status">{t("publicationIdentityUnchanged")}</p>}
       {!compact&&query.data?.entries.map(entry=><div className="merge-delivery-card" key={entry.deliveryId}>
         <strong>{label(entry)}</strong>
         <p><a href={`${entry.repository}/pull/${entry.pullRequest}`} target="_blank" rel="noreferrer">PR #{entry.pullRequest}</a> → {entry.targetBranch}</p>
