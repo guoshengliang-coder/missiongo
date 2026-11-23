@@ -343,12 +343,14 @@ export const api = {
   dingtalkNotifications: (itemKey:string) => request<{notifications:DingTalkNotification[];canRetry:boolean}>(`/api/v1/items/${encodeURIComponent(itemKey)}/dingtalk-notifications`),
   commentDingtalkNotifications: (itemKey:string,commentId:string) => request<{notifications:DingTalkNotification[];canRetry:boolean}>(`/api/v1/items/${encodeURIComponent(itemKey)}/comments/${encodeURIComponent(commentId)}/dingtalk-notifications`),
   retryDingtalkNotification: (itemKey:string,id:string) => request<{notifications:DingTalkNotification[];canRetry:boolean}>(`/api/v1/items/${encodeURIComponent(itemKey)}/dingtalk-notifications/${encodeURIComponent(id)}/retry`,{method:"POST"}),
+  agentArtifactPreloads: (sessions:readonly string[], signal?:AbortSignal) =>
+    request<{images:Array<{id:string;sessionId:string;sourceId:string;href:string;sizeBytes:number}>}>(`/api/v1/agent-artifact-preloads?sessions=${encodeURIComponent(sessions.join(","))}`,{signal:signal ?? null}),
   requestAgentArtifact: (sessionId: string, messageId: string, href: string) =>
     request<AgentArtifactState>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/artifacts`, { method: "POST", body: JSON.stringify({ messageId, href }) }),
   agentArtifact: (sessionId: string, id: string) =>
     request<AgentArtifactState>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(id)}`),
-  agentArtifactBundle: (sessionId: string, id: string) =>
-    request<AgentArtifactBundle>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(id)}/bundle`),
+  agentArtifactBundle: (sessionId: string, id: string, signal?:AbortSignal) =>
+    request<AgentArtifactBundle>(`/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(id)}/bundle`,{signal:signal ?? null}),
   insightBatches: () => request<{batches: InsightBatchSummary[]}>("/api/v1/project-insights/batches"),
   createInsightBatch: (name: string, itemKeys: string[]) => request<InsightBatch>("/api/v1/project-insights/batches", {method: "POST", body: JSON.stringify({name,itemKeys})}),
   insightBatchProgress: (id: string) => request<InsightBatchProgress>(`/api/v1/project-insights/batches/${encodeURIComponent(id)}`),

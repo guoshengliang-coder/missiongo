@@ -29,7 +29,7 @@ import { assertBuilderExecution, assertDispatchExecution, assertExternalExecutio
 import { parseItemFilters } from "./item-filters.js";
 import { AgentHistory } from "./agent-history.js";
 import { AgentArtifacts, ARTIFACT_PREVIEW_POLICY, ARTIFACT_PREVIEW_SHELL } from "./agent-artifacts.js";
-import { localArtifactLinks } from "@missiongo/domain";
+import { localArtifactLinks, localArtifactImageLinks } from "@missiongo/domain";
 import { join } from "node:path";
 import { listInsightBatchSummaries, createInsightBatch, insightBatchProgress, deleteInsightBatch } from "./insight-batches.js";
 import { StatusCheckHistory } from "./status-check-history.js";
@@ -2971,23 +2971,35 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const message = snapshot.messages.find((entry) => entry.id === messageId && ["agent", "plan"].includes(entry.role));
     if (!message?.sourceId || !localArtifactLinks(message.text).includes(href)) throw notFound("Agent artifact reference");
     const accountId = requireAccountId(request);
-    const saved = agentArtifacts.saved(accountId, sessionId, message.sourceId, href);
-    if (saved) return saved;
+    const members=consoleSessions.members(accountId,sessionId);
+    const existing=agentArtifacts.find(accountId,members.map(member=>member.id),message.sourceId,href);
+    const existingBinding=existing && agentArtifacts.binding(accountId,existing.binding_session_id ?? existing.session_id);
+    if (existing?.status === "ready" || existing?.status === "pending" && existingBinding
+      && existing.node_id===existingBinding.node_id && existing.session_ref===existingBinding.session_ref)
+      return agentArtifacts.get(accountId,existing.session_id,existing.id);
     artifactSession(request, sessionId, true);
     const binding = consoleSessions.members(accountId, sessionId)
       .map((member) => agentArtifacts.binding(accountId, member.id)).find(Boolean);
-    return agentArtifacts.request(accountId, sessionId, message.sourceId, href, binding);
+    return existing ? agentArtifacts.request(accountId,existing.session_id,existing.source_id,href,
+      agentArtifacts.binding(accountId,existing.binding_session_id ?? existing.session_id))
+      : agentArtifacts.request(accountId, sessionId, message.sourceId, href, binding);
   });
+  const artifactOwner = (request: FastifyRequest,sessionId: string,artifactId: string) => {
+    const accountId=requireAccountId(request),members=consoleSessions.members(accountId,sessionId);
+    if (externalSessionStore.has(sessionId)) loadExternalSession(request,sessionId,false,false,members,false);
+    else loadAuthorizedAgentSession(request,sessionId,false,false,members,false);
+    return agentArtifacts.ownerSession(accountId,members.map(member=>member.id),artifactId);
+  };
   app.get("/api/v1/agent-sessions/:sessionId/artifacts/:artifactId", async (request, reply) => {
     const { sessionId, artifactId } = request.params as { sessionId: string; artifactId: string };
-    artifactSession(request, sessionId);
+    const owner=artifactOwner(request,sessionId,artifactId);
     reply.header("cache-control", "private, no-store");
-    return agentArtifacts.get(requireAccountId(request), sessionId, artifactId);
+    return agentArtifacts.get(requireAccountId(request), owner, artifactId);
   });
   app.get("/api/v1/agent-sessions/:sessionId/artifacts/:artifactId/preview", async (request, reply) => {
     const { sessionId, artifactId } = request.params as { sessionId: string; artifactId: string };
-    artifactSession(request, sessionId);
-    if (agentArtifacts.get(requireAccountId(request), sessionId, artifactId).status !== "ready") throw notFound("Saved agent artifact");
+    const owner=artifactOwner(request,sessionId,artifactId);
+    if (agentArtifacts.get(requireAccountId(request), owner, artifactId).status !== "ready") throw notFound("Saved agent artifact");
     return reply.type("text/html").header("cache-control", "private, no-store")
       .header("content-security-policy", ARTIFACT_PREVIEW_POLICY).header("x-content-type-options", "nosniff")
       .header("referrer-policy", "no-referrer").header("x-frame-options", "SAMEORIGIN").send(ARTIFACT_PREVIEW_SHELL);
@@ -2995,16 +3007,47 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // Return inert JSON, never active HTML from the authenticated application origin.
   app.get("/api/v1/agent-sessions/:sessionId/artifacts/:artifactId/bundle", async (request, reply) => {
     const { sessionId, artifactId } = request.params as { sessionId: string; artifactId: string };
-    artifactSession(request, sessionId);
+    const owner=artifactOwner(request,sessionId,artifactId);
     reply.header("cache-control", "private, no-store").header("x-content-type-options", "nosniff");
-    return agentArtifacts.bundle(requireAccountId(request), sessionId, artifactId);
+    return agentArtifacts.bundle(requireAccountId(request), owner, artifactId);
   });
-  const authorizeArtifactNode = (accountId: string, sessionId: string) => {
-    const members = consoleSessions.members(accountId, sessionId);
-    for (const productId of new Set(members.flatMap(sessionProducts))) requireNodeAccountPermission(accountId, productId);
-    for (const key of new Set(members.flatMap((member) => member.items.map((item) => item.key)))) {
-      requireNodeAccountPermission(accountId, store.getWorkItem(key).productId, false);
+  app.get("/api/v1/agent-artifact-preloads", async (request,reply) => {
+    const ids=stringField(request.query as Record<string,unknown>,"sessions")!.split(",");
+    if (!ids.length || ids.length>8 || ids.some(id=>!id || id.length>200)) throw invalidInput("Invalid preload session range.");
+    const accountId=requireAccountId(request);
+    const images=[];
+    for (const sessionId of new Set(ids)) {
+      const members=consoleSessions.members(accountId,sessionId);
+      if (externalSessionStore.has(sessionId)) loadExternalSession(request,sessionId,false,false,members,false);
+      else loadAuthorizedAgentSession(request,sessionId,false,false,members,false);
+      if (members.every(member=>Boolean(member.archivedAt))) continue;
+      images.push(...(await agentArtifacts.readyImages(accountId,members.map(member=>member.id))).map(image=>({...image,sessionId})));
     }
+    reply.header("cache-control","private, no-store");
+    return {images:images.slice(0,12)};
+  });
+  const authorizeArtifactNode = (accountId: string, sessionId: string,operate=false) => {
+    const members = consoleSessions.members(accountId, sessionId);
+    if (operate) {
+      if (externalSessionStore.has(sessionId)) assertExternalExecution(store.database,sessionId);
+      else {
+        const dispatchId=members.find(member=>member.id===sessionId)?.dispatchId;
+        if (!dispatchId) throw notFound("Agent session binding");
+        assertDispatchExecution(store.database,dispatchId);
+      }
+    }
+    for (const productId of new Set(members.flatMap(sessionProducts))) requireNodeAccountPermission(accountId, productId, operate);
+    for (const key of new Set(members.flatMap((member) => member.items.map((item) => item.key)))) {
+      requireNodeAccountPermission(accountId, store.getWorkItem(key).productId, operate);
+    }
+  };
+  const prepareSnapshotImages = (accountId:string,sessionId:string,messages:readonly {sourceId:string;role:string;text:string;phase?:string | null}[]) => {
+    // Status-only heartbeats and ordinary text require no collection/identity queries.
+    if (!messages.slice(-50).some(message=>["agent","plan"].includes(message.role) && message.phase!=="execution" && localArtifactImageLinks(message.text).length)) return;
+    const members=consoleSessions.members(accountId,sessionId);
+    if (members.every(member=>Boolean(member.archivedAt)) || members.some(member=>member.managedExecution)) return;
+    try { authorizeArtifactNode(accountId,sessionId,true); } catch { return; }
+    agentArtifacts.prepare(accountId,sessionId,messages,members.map(member=>member.id));
   };
   app.get("/api/v1/node/agent-history", async request => {
     const node = requireNode(request);
@@ -3024,14 +3067,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.get("/api/v1/node/agent-artifacts", async (request) => {
     const node = requireNode(request);
     return { jobs: agentArtifacts.jobs(node.accountId, node.nodeId).filter((job) => {
-      try { authorizeArtifactNode(node.accountId, job.sessionId); return true; } catch { agentArtifacts.rejectJob(job.id); return false; }
+      try { authorizeArtifactNode(node.accountId, job.sessionId,true); return true; } catch { agentArtifacts.rejectJob(job.id); return false; }
     }) };
   });
   app.post("/api/v1/node/agent-artifacts/:artifactId", { bodyLimit: 46 * 1024 * 1024 }, async (request, reply) => {
     const node = requireNode(request);
     const { artifactId } = request.params as { artifactId: string };
     const job = agentArtifacts.authorizeJob(node.accountId, node.nodeId, artifactId);
-    authorizeArtifactNode(node.accountId, job.session_id);
+    authorizeArtifactNode(node.accountId, job.session_id,true);
     await agentArtifacts.complete(node.accountId, node.nodeId, artifactId, request.body);
     return reply.status(204).send();
   });
@@ -4020,6 +4063,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         recordDevelopmentReviews(store.database,node.nodeId,sessionId,body.developmentReviews,body.developmentReviewRequired,body.developmentReviewTaskId,body.developmentReviewRevision);
         performanceSends.observe(sessionId,typeof body.commandId==="string"?body.commandId:undefined,commandStatus,messages);
         agentHistory.observe(node.accountId, node.nodeId, sessionId, body.history);
+        prepareSnapshotImages(node.accountId,sessionId,messages);
         synchronizeNativePlan(store.database,node.accountId,sessionId);
         resumeApprovedPlan(node.accountId,sessionId);
         if (commandStatus === "delivering") reply.header("X-MissionGo-Command-Status", "delivering");
@@ -4065,6 +4109,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       recordDevelopmentReviews(store.database,node.nodeId,sessionId,body.developmentReviews,body.developmentReviewRequired,body.developmentReviewTaskId,body.developmentReviewRevision);
       performanceSends.observe(sessionId,typeof body.commandId==="string"?body.commandId:undefined,commandStatus,messages);
       agentHistory.observe(node.accountId, node.nodeId, sessionId, body.history);
+      prepareSnapshotImages(node.accountId,sessionId,messages);
       if (body.approval !== undefined) {
         const approval = objectBody(body.approval);
         const kind = stringField(approval, "kind");
