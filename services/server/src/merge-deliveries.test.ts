@@ -138,6 +138,71 @@ describe("integration directly in the original conversation",()=>{
       expect(f.merges.readForAccount(f.owner.id,f.d.id).state).toBe("proposed");
     }
   });
+  it.each(["matching", "persisted association", "unassociated", "changed head", "question", "prior stop"] as const)("direct one-PR integration from the original context: %s", async scenario => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-22T08:00:00Z"));
+    const f = await prepared();
+    const input = { ...scope(f), operation: "merge_and_publish" as const };
+    const head = scenario === "changed head" ? "e".repeat(40) : f.input.head;
+    if (scenario === "unassociated") f.db.prepare("DELETE FROM merge_deliveries WHERE id=?").run(f.d.id);
+    new AgentSessionStore(f.store.database).recordSnapshot({ nodeId: f.node.nodeId, sessionId: f.projectSessionId, status: "idle", messages: [
+      { sourceId: "ready-single-pr", role: "agent", phase: "final_answer", text: scenario === "persisted association" ? "代码验证已通过。" : `PR ${f.input.repository}/pull/${f.input.pullRequest} 已就绪，提交 ${head}。`, occurredAt: new Date().toISOString() },
+    ] });
+    vi.setSystemTime(Date.now() + 10);
+    if (scenario === "prior stop") {
+      human(f, "停止执行");
+      vi.setSystemTime(Date.now() + 10);
+    }
+    human(f, scenario === "question" ? "能否合并并发布？" : "合并并发布");
+    const preparation = f.merges.prepareConversation(f.owner.id, "original-client", f.identity, "direct", input);
+    const start = () => f.merges.startConversation(f.owner.id, "original-client", f.identity, preparation.id);
+    if (scenario !== "matching" && scenario !== "persisted association") {
+      expect(start).toThrow();
+      expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({ n: 0 });
+      return;
+    }
+    const batch = start();
+    expect(batch.conversation?.direct).toBe(true);
+    expect(batch.prerequisiteGate).toMatchObject({ required: false, ready: true });
+    expect(batch.entries[0]?.mergeReady).toBe(false);
+    if (scenario === "persisted association") {
+      vi.setSystemTime(Date.now() + 10);
+      human(f, "重试");
+      const retry = f.merges.prepareConversation(f.owner.id, "original-client", f.identity, "direct-retry", input);
+      expect(f.merges.startConversation(f.owner.id, "original-client", f.identity, retry.id).id).toBe(batch.id);
+    }
+    vi.setSystemTime(Date.now() + 10);
+    human(f, "进度如何");
+    expect(() => f.merges.integrate(f.owner.id, f.dispatch.id, batch.id, batch.integration!.revision, "progress",
+      { kind: "progress", deliveryId: batch.deliveries[0]!, phase: "investigating", expectedHead: f.input.head, detail: "Existing batch still authorized" })).not.toThrow();
+    vi.setSystemTime(Date.now() + 10);
+    human(f, "停止执行");
+    human(f, "进度如何");
+    expect(() => f.merges.integrate(f.owner.id, f.dispatch.id, batch.id, batch.integration!.revision + 1, "stopped",
+      { kind: "progress", deliveryId: batch.deliveries[0]!, phase: "investigating", expectedHead: f.input.head, detail: "Stop still applies" })).toThrow();
+  });
+
+  it("keeps a frozen confirmation link valid through a harmless status question", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-22T08:00:00Z"));
+    const f = await prepared();
+    human(f, "准备发布范围");
+    const preparation = f.merges.prepareConversation(f.owner.id, "original-client", f.identity, "web-status",
+      { ...scope(f), operation: "merge_and_publish" });
+    vi.setSystemTime(Date.now() + 10);
+    human(f, "能否合并并发布？");
+    expect(f.merges.confirmConversationReview(f.owner.id, preparation.id, preparation.reviewDigest)).toEqual({ confirmed: true });
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({ n: 0 });
+    vi.setSystemTime(Date.now() + 10);
+    human(f, "进度如何");
+    expect(f.merges.conversationReview(f.owner.id, preparation.id).confirmed).toBe(true);
+    vi.setSystemTime(Date.now() + 10);
+    human(f, "重试");
+    const retry = f.merges.prepareConversation(f.owner.id, "original-client", f.identity, "after-status",
+      { ...scope(f), operation: "merge_and_publish" });
+    expect(f.merges.startConversation(f.owner.id, "original-client", f.identity, retry.id).sessionId).toBe(f.projectSessionId);
+  });
+
   it("requires complete publication scope display and handles only historical candidates without a selection",async()=>{
     const f=await prepared();await f.complete(f.identity);human(f,"执行发布");
     const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"publish",{...scope(f),operation:"publish_only",deliveries:[]});

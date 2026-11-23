@@ -5,7 +5,7 @@ import { projectCheckSatisfied } from "@missiongo/contracts";
 import { projectCheckStateSchema, projectVerificationSchema, validateProjectChecks, assertProjectBinding } from "./project-verification.js";
 import {deliveryScope,historicalDeliveryFingerprint,previouslyReviewedHistoricalGaps} from "./historical-delivery-review.js";
 import {conversationDecisionEvidence} from "./conversation-decision-evidence.js";
-import { integrationExecutor, integrationInstruction, assertIntegrationInstruction, isIntegrationRetry, assertConversationRetryHistory, type IntegrationExecutor, type IntegrationInstruction, type ConversationIdentity } from "./conversation-integration-source.js";
+import { integrationExecutor, integrationInstruction, assertIntegrationInstruction, isIntegrationRetry, isIntegrationStatus, isDirectIntegrationAction, hasIntegrationStop, assertConversationRetryHistory, type IntegrationExecutor, type IntegrationInstruction, type ConversationIdentity } from "./conversation-integration-source.js";
 import {mergeReviewSummary} from "./merge-review-summary.js";
 import { developmentReviewBlocker, developmentReviewExpiry } from "./development-reviews.js";
 import type { SQLInputValue, StatementSync } from "node:sqlite";
@@ -69,7 +69,7 @@ interface Delivery extends DeliveryInput {
   reconfirmation?: boolean;
 }
 interface Batch {
-  conversation?: { clientId:string; executor: IntegrationExecutor; preparationId: string; authorization: IntegrationInstruction; input: IntegrationInstruction; repository: string; configurationChanges?:{executor:IntegrationExecutor;source:IntegrationInstruction}[] };
+  conversation?: { clientId:string; executor: IntegrationExecutor; preparationId: string; authorization: IntegrationInstruction; input: IntegrationInstruction; repository: string; direct?: boolean; configurationChanges?:{executor:IntegrationExecutor;source:IntegrationInstruction}[] };
   publicationTargets?:PublicationTarget[];
   operation?:IntegrationActionMode;
   publicationScope?:PublicationScope|undefined;
@@ -239,20 +239,20 @@ export class MergeDeliveries {
   private deliveryScope(d:Delivery) {
     return d.itemKeys.length ? this.scope(d.itemKeys) : this.projectSource(d.accountId,d.clientId,d.identity,d.productId).scope;
   }
-  private sourceValid(d: Delivery) {
+  private sourceValid(d: Delivery, ignoreActivity = false) {
     assertProjectBinding(d.evidence.verification,d.repository,d.targetBranch);
     for (const itemKey of d.itemKeys) {
       recoverExecutionAuthorization(this.store, d.accountId, d.clientId, {itemKey, ...d.identity});
       if (!["in_progress","development_complete","pending_verification"].includes(this.store.getWorkItem(itemKey).status)) throw changed();
     }
-    if (this.deliveryScope(d) !== d.scope || this.activity(d.sessionId) !== d.activity) throw changed();
+    if (this.deliveryScope(d) !== d.scope || !ignoreActivity && this.activity(d.sessionId) !== d.activity) throw changed();
   }
   private fresh(e: Evidence, head: string) {
     const age = Date.now() - Date.parse(e.checkedAt);
     return e.head === head && age >= -30_000 && age <= 5 * 60_000;
   }
-  private eligible(d: Delivery): string | undefined {
-    try { this.sourceValid(d); } catch { return "changed"; }
+  private eligible(d: Delivery, ignoreActivity = false): string | undefined {
+    try { this.sourceValid(d, ignoreActivity); } catch { return "changed"; }
     if (d.state === "batched") return d.itemKeys.some(key => collaborationBlockers(this.db, this.store.getWorkItem(key).id)>0) ? "dependency" : undefined;
     const reviewBlocker = developmentReviewBlocker(this.db,d.sessionId,d.head,d.evidence.base,d.repository);
     if (reviewBlocker) return reviewBlocker;
@@ -313,9 +313,9 @@ export class MergeDeliveries {
     return (this.db.connection.prepare("SELECT data_json FROM merge_deliveries WHERE product_id=? ORDER BY rowid DESC").all(productId) as {data_json:string}[])
       .map(row => JSON.parse(row.data_json) as Delivery);
   }
-  private view(d: Delivery) {
+  private view(d: Delivery, ignoreActivity = false) {
     const {clientId:_client,identity:_identity,activity:_activity,scope:_scope,...visible} = d;
-    return {...visible, blocker: ["proposed","confirmed","batched"].includes(d.state) ? this.eligible(d) : undefined,
+    return {...visible, blocker: ["proposed","confirmed","batched"].includes(d.state) ? this.eligible(d, ignoreActivity) : undefined,
       pullRequestUrl:`${d.repository}/pull/${d.pullRequest}`};
   }
   recomputeList(productId: string, accountId: string) {
@@ -1149,13 +1149,16 @@ export class MergeDeliveries {
       && left.executor.settings === right.executor.settings;
   }
 
-  private conversationAuthorization(executor: IntegrationExecutor, source: IntegrationInstruction, decision?: ConversationPreparation["decision"]) {
+  private conversationAuthorization(executor: IntegrationExecutor, source: IntegrationInstruction, decision?: ConversationPreparation["decision"], readOnly = false) {
     let authorization = source;
-    for (let count = 0; count < 20 && isIntegrationRetry(authorization.text) && decision?.inputFingerprint !== authorization.fingerprint; count++) {
+    const allowStatus = readOnly || isIntegrationRetry(source.text);
+    for (let count = 0; count < 20; count++) {
+      if (decision?.inputFingerprint === authorization.fingerprint
+        || !(isIntegrationRetry(authorization.text) || allowStatus && isIntegrationStatus(authorization.text))) break;
       authorization = integrationInstruction(this.db, executor, undefined, authorization.occurredAt);
     }
     if (decision && authorization !== source && decision.inputFingerprint === authorization.fingerprint)
-      assertConversationRetryHistory(this.db, executor, authorization, source);
+      assertConversationRetryHistory(this.db, executor, authorization, source, allowStatus);
     return authorization;
   }
 
@@ -1165,7 +1168,7 @@ export class MergeDeliveries {
     if (!previous || !this.sameConversationScope(preparation, previous.preparation)) return false;
     if (previous.batchId) return true;
     const decision = previous.preparation.decision;
-    return decision?.inputFingerprint === this.conversationAuthorization(executor, source, decision).fingerprint;
+    return decision?.inputFingerprint === this.conversationAuthorization(executor, source, decision, true).fingerprint;
   }
 
   conversationReview(accountId: string, id: string) {
@@ -1190,7 +1193,10 @@ export class MergeDeliveries {
       if (reviewDigest !== preparation.reviewDigest || preparation.resumeBatchId) throw changed();
       if (row.batch_id) return { confirmed: true };
       const input = integrationInstruction(this.db, executor);
-      if (input.fingerprint !== preparation.source.fingerprint) throw changed();
+      if (input.fingerprint !== preparation.source.fingerprint) {
+        if (!isIntegrationStatus(input.text)) throw changed();
+        assertConversationRetryHistory(this.db, executor, preparation.source, input, true);
+      }
       try {
         if (this.currentConversationConfirmation(accountId, row.client_id, executor, preparation, input)) return { confirmed: true };
       } catch (error) {
@@ -1270,6 +1276,42 @@ export class MergeDeliveries {
       return preparation;
     });
   }
+  private directConversationScope(preparation: ConversationPreparation, authorization: IntegrationInstruction) {
+    if (!isDirectIntegrationAction(authorization.text, preparation.operation) || preparation.selection.length !== 1) return false;
+    const executor = preparation.executor;
+    const priorReview = this.db.connection.prepare(executor.kind === "external"
+      ? `SELECT 1 FROM external_native_messages WHERE session_id=?
+         AND json_extract(payload_json,'$.role')='agent' AND json_extract(payload_json,'$.phase')='final_answer'
+         AND instr(json_extract(payload_json,'$.text'),'原会话执行范围：')>0 LIMIT 1`
+      : `SELECT 1 FROM agent_session_messages WHERE session_id=? AND role='agent' AND phase='final_answer'
+         AND instr(text,'原会话执行范围：')>0 LIMIT 1`).get(executor.sessionId);
+    if (priorReview) return false;
+    const selected = preparation.selection[0]!;
+    const delivery = preparation.drafts.find(draft => draft.id === selected.id)?.input
+      ?? this.read<Delivery>("merge_deliveries", selected.id);
+    const url = `${delivery.repository}/pull/${delivery.pullRequest}`;
+    // Bind the short instruction to a persisted original-session delivery.
+    // Any exact reference in the latest reply must agree with that delivery.
+    const links = authorization.context.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+\b/ig) ?? [];
+    const heads = authorization.context.match(/\b[a-f0-9]{40}\b/ig) ?? [];
+    const exactContext = new Set(links).size === 1 && links[0] === url
+      && new Set(heads.map(head => head.toLowerCase())).size === 1 && heads[0]?.toLowerCase() === delivery.head;
+    const rows = this.db.connection.prepare(`SELECT data_json FROM merge_deliveries
+      WHERE product_id=? AND json_extract(data_json,'$.sessionId')=? AND state IN ('proposed','confirmed','batched','merged')`)
+      .all(preparation.productId, preparation.executor.sessionId) as { data_json: string }[];
+    const refs = new Set(rows.map(row => {
+      const d = JSON.parse(row.data_json) as Delivery;
+      return `${d.repository}/pull/${d.pullRequest}@${d.head}:${d.targetBranch}`;
+    }));
+    const expected = `${url}@${delivery.head}:${delivery.targetBranch}`;
+    if (refs.size !== 1 || !refs.has(expected)) return false;
+    if ((links.length || heads.length) && !exactContext) return false;
+    if (preparation.publicationTargets?.some(target => target.version)) return false;
+    return !preparation.publicationScope || preparation.publicationScope.candidates.length > 0
+      && preparation.publicationScope.candidates.every(candidate => candidate.selected && !candidate.historicalGapReason)
+      && preparation.publicationScope.blockers.length === 0;
+  }
+
   startConversation(accountId:string,clientId:string,identity:ConversationIdentity,preparationId:string) {
     return this.db.transaction(()=>{
       const row=this.db.connection.prepare("SELECT data_json,batch_id FROM conversation_integration_preparations WHERE id=? AND account_id=? AND client_id=?")
@@ -1362,11 +1404,15 @@ export class MergeDeliveries {
       const boundDecision = decision?.inputFingerprint === authorization.fingerprint;
       const authorizedDecision = isReviewedDecision(authorization);
       if (!boundDecision && !authorizedDecision) assertIntegrationInstruction(authorization.text, p.operation);
-      const reviewEvidence = boundDecision ? undefined : evaluateScopeReview(authorization, authorizedDecision, retry ? source : undefined);
+      const hasPriorVersion = p.operation !== "merge_only" && decided?.productId === p.productId
+        && decided.publicationTargets?.some(target => target.version);
+      const direct = !boundDecision && !authorizedDecision && !hasPriorVersion && this.directConversationScope(p, authorization) && !hasIntegrationStop(this.db, executor);
+      if (direct && retry) assertConversationRetryHistory(this.db, executor, authorization, source, true);
+      const reviewEvidence = boundDecision || direct ? undefined : evaluateScopeReview(authorization, authorizedDecision, retry ? source : undefined);
       if (boundDecision && decisionRecord?.batchId) return this.batch(accountId, actor, decisionRecord.batchId);
-      if (retry && !boundDecision && !reviewEvidence)
+      if (retry && !boundDecision && !direct && !reviewEvidence)
         throw conflict("conversation_integration_scope_review_required", "无法核对上一次明确授权对应的完整范围，请在原会话核实准备记录和来源。");
-      const scopeReviewed=boundDecision || Boolean(reviewEvidence);
+      const scopeReviewed=boundDecision || direct || Boolean(reviewEvidence);
       if(source.fingerprint!==p.source.fingerprint && !scopeReviewed)throw changed();
       const accepted = this.db.connection.prepare(`SELECT p.batch_id FROM conversation_integration_preparations p
         JOIN merge_batches b ON b.id=p.batch_id
@@ -1394,9 +1440,21 @@ export class MergeDeliveries {
         const d=this.propose(accountId,clientId,identity,`conversation:${p.id}:${draft.id}`,draft.input,undefined,draft.id);
         this.confirm(this.read<Delivery>("merge_deliveries",d.id),"session-instruction",authorization.text);
       }
-      const conversation={clientId,executor,preparationId:p.id,authorization,input:source,repository:p.repository};
+      const conversation={clientId,executor,preparationId:p.id,authorization,input:source,repository:p.repository,...(direct?{direct:true}:{})};
       const b=this.start(accountId,`conversation-${p.id}`,p.selection,p.config,p.operation!=="merge_only",1,false,p.operation,p.publicationScope?.digest,false,conversation);
-      if(p.publicationTargets){b.publicationTargets=p.publicationTargets;this.saveBatch(b);}
+      if (p.publicationTargets) b.publicationTargets = p.publicationTargets;
+      if (direct && b.integration) {
+        const deliveryId = b.deliveries[0]!;
+        const delivery = this.read<Delivery>("merge_deliveries", deliveryId);
+        applyIntegrationAction(b.integration, {
+          kind: "plan", base: delivery.evidence.base,
+          summary: "原会话单 PR 集成",
+          validation: "核对 PR 精确提交、GitHub 当前检查与项目发布结果。",
+          entries: [{ deliveryId, head: delivery.head, dependsOn: [], group: "原会话 PR",
+            reason: delivery.summary, validation: delivery.validation }],
+        }, `direct-plan:${p.id}`, b.results);
+      }
+      if (direct || p.publicationTargets) this.saveBatch(b);
       this.db.connection.prepare("UPDATE conversation_integration_preparations SET batch_id=? WHERE id=?").run(b.id,p.id);
       return this.batch(accountId,actor,b.id);
     });
@@ -1483,12 +1541,14 @@ export class MergeDeliveries {
     }
     const hasRelease=Boolean(b.publicationScope?.requiredArtifacts.length)||b.deliveries.some(id=>this.read<Delivery>("merge_deliveries",id).requiredArtifacts.length>0);
     const gate=prerequisiteGate(b,hasRelease);
-    if(gate.required)try{this.assertPublicationScope(b);}catch{
+    if(gate.required || b.conversation?.direct && b.publish)try{this.assertPublicationScope(b);}catch{
       gate.ready=false;gate.blockers.push({id:"publication_scope",code:"stale",reason:"发布范围尚未核实或已经变化，不能沿用原范围证据",owner:"集成执行者与原授权用户",resumeWhen:"在原会话重新核对范围；有变化时重新审阅"});
     }
     return {...b, ...(!b.conversation?{dispatchId}:{}), projectWorkflowInstructions:projectIntegrationInstructions, prerequisiteObservation:prerequisiteObservation({...b,entries:b.deliveries.map(id=>{const d=this.read<Delivery>("merge_deliveries",id);return {id,head:d.head};})}), publicationDeferred:batchPublicationDeferred(b), prerequisiteGate:gate, publicationPrerequisiteGate:prerequisiteGate(b,hasRelease,undefined,Date.now(),"pre_publish"), resultsDigest:digest(b.results), entries:b.deliveries.map(id=>{
-      const d=this.view(this.read<Delivery>("merge_deliveries",id));
-      let mergeReady=!b.references?.[id]&&!d.blocker&&!b.results[id]&&b.state==="active" && this.conversationInputCurrent(b);
+      const inputCurrent = this.conversationInputCurrent(b);
+      const delivery = this.read<Delivery>("merge_deliveries", id);
+      const d = this.view(delivery, Boolean(b.conversation?.direct && inputCurrent && delivery.sessionId === b.sessionId));
+      let mergeReady=!b.references?.[id]&&!d.blocker&&!b.results[id]&&b.state==="active" && inputCurrent;
       if(b.integration&&!b.integration.prerequisitesOnly){try{assertIntegrationMerge(b.integration,id,b.results,{allowPendingCI:true});}catch{mergeReady=false;}}
       if(!gate.ready||!prerequisiteGate(b,hasRelease,b.integration?.entries[id]?.check?.base).ready)mergeReady=false;
       return {...d,...(b.references?.[id]?{reference:b.references[id],referenceVerified:b.verifiedReferences?.[id],blocker:d.itemKeys.map(key=>this.itemBlocker(this.read<Delivery>("merge_deliveries",id),key,true)).find(Boolean)}:{}),executionHead:b.integration?.entries[id]?.head??d.head,expectedBase:b.integration?.entries[id]?.check?.base,mergeReady};
@@ -1565,7 +1625,11 @@ export class MergeDeliveries {
           || (partial?.decision==="defer_publication" && partial.resultsDigest===digest(b.results))) throw changed();
       }
       const affected="deliveryId" in action?[action.deliveryId]:b.deliveries.filter(id=>!b.results[id]);
-      for(const id of affected){if(!b.deliveries.includes(id))throw changed();this.sourceValid(this.read<Delivery>("merge_deliveries",id));}
+      for (const id of affected) {
+        if (!b.deliveries.includes(id)) throw changed();
+        const delivery = this.read<Delivery>("merge_deliveries", id);
+        this.sourceValid(delivery, Boolean(b.conversation?.direct && delivery.sessionId === b.sessionId));
+      }
       if(action.kind==="check") {const d=this.read<Delivery>("merge_deliveries",action.deliveryId);assertProjectBinding(action.verification,d.repository,d.targetBranch);}
       if(action.kind==="prerequisites") {
         if(action.workflow) {const repositories=[...new Set(b.deliveries.map(id=>this.read<Delivery>("merge_deliveries",id).repository))].sort();
@@ -1597,7 +1661,7 @@ export class MergeDeliveries {
         sha.parse(result.commit);
         if(b.integration&&!b.integration.prerequisitesOnly)assertIntegrationMerge(b.integration,deliveryId,b.results);
         const hasRelease=Boolean(b.publicationScope?.requiredArtifacts.length)||b.deliveries.some(id=>this.read<Delivery>("merge_deliveries",id).requiredArtifacts.length>0);
-        if(prerequisiteGate(b,hasRelease).required)this.assertPublicationScope(b);
+        if(prerequisiteGate(b,hasRelease).required || b.conversation?.direct && b.publish)this.assertPublicationScope(b);
         if(!prerequisiteGate(b,hasRelease,b.integration?.entries[deliveryId]?.check?.base).ready)
           integrationDenied("发布前置条件未满足或证据已失效；保留原批次核实，不重复执行 Git。外部合并请走原批次对账。");
         if(!b.conversation && this.activity(d.sessionId)!==d.activity)throw changed();
@@ -1637,7 +1701,12 @@ export class MergeDeliveries {
     if(!b.conversation)return true;
     try{
       const e=b.conversation.executor,current=integrationExecutor(this.db,b.accountId,e.kind==="external"?e.clientId:"",e.kind==="dispatch"?{dispatchId:e.dispatchId}:{sessionId:e.sessionId},b.productId);
-      return current.executor.settings===e.settings && integrationInstruction(this.db,e).fingerprint===b.conversation.input.fingerprint;
+      if (!this.sameConversationExecutor(current.executor, e) || current.executor.settings !== e.settings) return false;
+      const source = integrationInstruction(this.db, e);
+      if (source.fingerprint === b.conversation.input.fingerprint) return true;
+      if (!b.conversation.direct || !isIntegrationStatus(source.text)) return false;
+      assertConversationRetryHistory(this.db, e, b.conversation.input, source, true);
+      return true;
     }catch{return false;}
   }
   private permit(accountId:string,b:Batch,write:boolean,continuation=true) {
