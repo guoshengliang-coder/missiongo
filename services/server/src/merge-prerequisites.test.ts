@@ -14,16 +14,16 @@ export function prerequisiteEvidence(batch=fixture()) {
 const fixture=():PrerequisiteBatch=>({id:"batch",publish:true,state:"active",operation:"merge_and_publish",deliveries:["one","two"],selection:[{id:"one",revision:"frozen-1"},{id:"two",revision:"frozen-2"}],results:{},
   integration:{protocol:1,revision:0,events:[],plans:[],entries:Object.fromEntries(["one","two"].map(id=>[id,{itemKeys:[],originalHead:"a".repeat(40),head:"a".repeat(40),progress:"queued",detail:"",repairs:[]}]))}});
 describe("publication prerequisites",()=>{
-  it("audit 3 shows base invalidation in the batch gate, then reuses unrelated evidence after refresh",()=>{
+  it("uses the exact Git check without gating a second copy of main and authorization",()=>{
     const b=fixture(),a=prerequisiteEvidence();recordPrerequisites(b,a);
     const newer=new Date(Date.parse(a.checkedAt)+1).toISOString();
     b.integration!.entries.one!.check={head:"a".repeat(40),base:"f".repeat(40),checkedAt:newer,source:"Fresh target query",checks:"passed",mergeable:"clean",local:"passed",validation:"Actual target changed"};
-    expect(prerequisiteGate(b,true).blockers).toEqual([expect.objectContaining({id:"main",code:"stale"})]);
+    expect(prerequisiteGate(b,true).blockers).toEqual([]);
     const permission=b.integration!.prerequisites!.conditions.find(c=>c.kind==="authorization");
     recordPrerequisites(b,{...a,checkedAt:newer,context:{...a.context,base:"f".repeat(40)},conditions:[a.conditions[0]!]});
     expect(prerequisiteGate(b,true).ready).toBe(true);
     expect(b.integration!.prerequisites!.conditions.find(c=>c.kind==="authorization")).toEqual(permission);
-    expect(prerequisiteGate(b,true,"b".repeat(40)).ready).toBe(false);
+    expect(prerequisiteGate(b,true,"b".repeat(40)).ready).toBe(true);
   });
   it("audit 2 accepts the script's exact immutable observation without recomputing it from a later batch",async()=>{
     const {collectReadiness}=await import("../../../scripts/release-readiness.mjs");
@@ -65,34 +65,41 @@ describe("publication prerequisites",()=>{
     expect(()=>recordPrerequisites(b,{...fix,dependencyResolutions:[...fix.dependencyResolutions,...fix.dependencyResolutions]})).toThrow();
     recordPrerequisites(b,fix);
     expect(prerequisiteGate(b,true).blockers.map(c=>c.code)).not.toContain("cycle");
-    expect(prerequisiteGate(b,true).blockers.map(c=>c.id)).toEqual(["required_capability","authorization"]);
+    expect(prerequisiteGate(b,true).blockers).toEqual([]);
     recordPrerequisites(b,{...fix,conditions:a.conditions.slice(2,4),dependencyResolutions:[]});
     expect(prerequisiteGate(b,true).ready).toBe(true);
     expect(b.integration!.prerequisites!.resolutions).toHaveLength(1);
     expect(b.integration!.prerequisites!.conditions.find(c=>c.kind==="authorization")!.authorizationRef).toBe(a.conditions[3]!.authorizationRef);
   });
-  it("fails closed on missing, unknown and expired evidence without treating progress as a scope change",()=>{
-    const b=fixture(),a=prerequisiteEvidence();expect(prerequisiteGate(b,true).ready).toBe(false);
-    a.conditions[0]!.state="unknown";recordPrerequisites(b,a);expect(prerequisiteGate(b,true).blockers[0]!.code).toBe("pending");
-    a.conditions[0]!.state="satisfied";recordPrerequisites(b,a);expect(prerequisiteGate(b,true).ready).toBe(true);
-    b.integration!.revision++;b.integration!.events.push({id:"progress",action:"progress",detail:"Waiting",digest:"f",at:a.checkedAt});
+  it("does not require duplicate authorization, but still blocks an independent project prerequisite",()=>{
+    const b=fixture(),a=prerequisiteEvidence();
     expect(prerequisiteGate(b,true).ready).toBe(true);
-    expect(prerequisiteGate(b,true,undefined,Date.parse(a.checkedAt)+300001).blockers.every(c=>c.code==="stale")).toBe(true);
+    const auth=a.conditions.find(c=>c.kind==="authorization")!;
+    auth.state="unknown";
+    delete auth.authorizationRef;
+    recordPrerequisites(b,a);
+    expect(prerequisiteGate(b,true).ready).toBe(true);
+    const independent={...a.conditions[0]!,id:"dependency-freeze",kind:"investigation" as const,state:"unknown" as const};
+    recordPrerequisites(b,{...a,conditions:[independent]});
+    expect(prerequisiteGate(b,true).blockers).toEqual([expect.objectContaining({id:independent.id,code:"pending"})]);
+    recordPrerequisites(b,{...a,conditions:[{...independent,state:"satisfied"}]});
+    expect(prerequisiteGate(b,true).ready).toBe(true);
+    expect(prerequisiteGate(b,true,undefined,Date.parse(a.checkedAt)+300001).blockers).toEqual([expect.objectContaining({id:independent.id,code:"stale"})]);
   });
   it("invalidates only dependent evidence and reuses the same original authorization reference",()=>{
     const b=fixture(),a=prerequisiteEvidence();recordPrerequisites(b,a);
     b.integration!.entries.one!.head="f".repeat(40);
-    expect(prerequisiteGate(b,true).blockers.map(c=>c.id)).toEqual(["main"]);
+    expect(prerequisiteGate(b,true).blockers).toEqual([]);
     const auth=b.integration!.prerequisites!.conditions.find(c=>c.kind==="authorization");
     recordPrerequisites(b,{...a,observation:prerequisiteObservation(b),conditions:[a.conditions[0]!]});
     expect(prerequisiteGate(b,true).ready).toBe(true);
     expect(b.integration!.prerequisites!.conditions.find(c=>c.kind==="authorization")).toEqual(auth);
     const changed={...a,observation:prerequisiteObservation(b),context:{...a.context,tools:"f".repeat(64)},conditions:[a.conditions[1]!]};recordPrerequisites(b,changed);
-    expect(prerequisiteGate(b,true).blockers.map(c=>c.id)).toEqual(["required_capability","authorization"]);
+    expect(prerequisiteGate(b,true).blockers).toEqual([]);
     recordPrerequisites(b,{...changed,conditions:a.conditions.slice(2,4)});
     expect(prerequisiteGate(b,true).ready).toBe(true);
     expect(b.integration!.prerequisites!.conditions.find(c=>c.kind==="authorization")!.authorizationRef).toBe(auth!.authorizationRef);
-    expect(prerequisiteGate(b,true,"0".repeat(40)).blockers.map(c=>c.id)).toEqual(["main"]);
+    expect(prerequisiteGate(b,true,"0".repeat(40)).blockers).toEqual([]);
   });
   it("does not gate merge-only, publish-only, completed references or pure no-release batches",()=>{
     for(const operation of ["merge_only","publish_only"])expect(prerequisiteGate({...fixture(),operation},true).required).toBe(false);
@@ -127,7 +134,7 @@ describe("publication prerequisites",()=>{
     recordPrerequisites(b,{...a,conditions:[...a.conditions,c,{...c,id:"tool-diff",kind:"tool_difference",category:"notice",stage:"pre_merge"}]});
     expect(prerequisiteGate(b,true).ready).toBe(true);
     b.selection[0]!.revision="new-content";
-    expect(prerequisiteGate(b,true).blockers.map(c=>c.id)).toEqual(["authorization","scope"]);
+    expect(prerequisiteGate(b,true).blockers).toEqual([]);
   });
 });
 
@@ -164,7 +171,7 @@ describe("native project stage adaptation",()=>{
   it("refreshes project rule bindings without changing scope authorization or granting permission",()=>{
     const b=fixture(),a=native(b);recordPrerequisites(b,a);
     recordPrerequisites(b,{...a,workflow:{...a.workflow!,source:"Changed project rule source"},conditions:[a.conditions[0]!]});
-    expect(prerequisiteGate(b,true).ready).toBe(false);
+    expect(prerequisiteGate(b,true).ready).toBe(true);
     expect(()=>prerequisitesActionSchema.parse({...a,conditions:[{...a.conditions.find(c=>c.kind==="authorization")!,authorizationRef:undefined}]})).toThrow();
   });
 });
@@ -190,7 +197,7 @@ describe("audit publication target and sustainable refresh",()=>{
     expect(prerequisiteGate(b,true,undefined,Date.now(),"pre_publish").blockers.some(c=>c.id==="combined_target")).toBe(true);
     b.results={one:{status:"merged",head:"a".repeat(40)},two:{status:"merged",head:"a".repeat(40)}};
     b.integration!.finalValidation={head:"d".repeat(40),checkedAt:new Date().toISOString(),source:"Final target",validation:"Combined",selectionDigest:createHash("sha256").update(JSON.stringify(b.results)).digest("hex")};
-    expect(prerequisiteGate(b,true,undefined,Date.now(),"pre_publish").blockers).toEqual([expect.objectContaining({id:"main",code:"stale"})]);
+    expect(prerequisiteGate(b,true,undefined,Date.now(),"pre_publish").blockers).toEqual([]);
     const authorization=b.integration!.prerequisites!.conditions.find(c=>c.kind==="authorization");
     recordPrerequisites(b,{...native,context:{...native.context,base:"d".repeat(40)},conditions:[native.conditions.find(c=>c.kind==="main")!]});
     expect(prerequisiteGate(b,true,undefined,Date.now(),"pre_publish").ready).toBe(true);
@@ -198,6 +205,19 @@ describe("audit publication target and sustainable refresh",()=>{
     b.integration!.finalValidation.selectionDigest="0".repeat(64);
     expect(prerequisiteGate(b,true,undefined,Date.now(),"pre_publish").ready).toBe(false);
   });
+  it("requires a fresh target on start but not for a continuous same-result publication heartbeat",()=>{
+    const b=fixture(),now=Date.now(), resultDigest=createHash("sha256").update(JSON.stringify(b.results)).digest("hex");
+    b.integration!.finalValidation={head:"b".repeat(40),checkedAt:new Date(now-310_000).toISOString(),
+      source:"Final target",validation:"Verified",selectionDigest:resultDigest};
+    const check=()=>prerequisiteGate(b,true,undefined,now,"pre_publish");
+    expect(check().ready).toBe(false);
+    b.integration!.publication={state:"publishing",checkedAt:new Date(now-20_000).toISOString(),
+      expiresAt:new Date(now+280_000).toISOString(),resultsDigest:resultDigest,detail:"Ongoing deployment"};
+    expect(check().ready).toBe(true);
+    b.integration!.publication.expiresAt=new Date(now-1).toISOString();
+    expect(check().ready).toBe(false);
+  });
+
   it("continues ordinary renewals and substantive history beyond fifty updates without losing the original records",()=>{
     const b=fixture(),a=prerequisiteEvidence(b);recordPrerequisites(b,a);
     for(let i=0;i<60;i++)recordPrerequisites(b,{...a,checkedAt:new Date().toISOString()});

@@ -71,7 +71,6 @@ export const prerequisitesActionSchema = z.object({
 });
 export type PrerequisitesAction = z.infer<typeof prerequisitesActionSchema>;
 export interface PrerequisiteBatch {
-  conversation?: { direct?: boolean };
   id:string;
   publish: boolean; state?:string; operation?: string; selection: {id:string;revision:string}[];
   publicationScope?: {digest:string} | undefined; references?: Record<string,unknown>;
@@ -133,39 +132,36 @@ export function recordPrerequisites(batch:PrerequisiteBatch, action:Prerequisite
   state.prerequisites={observation:action.observation,context:action.context,workflow,conditions:[...conditions.values()],resolutions,history};
 }
 export function prerequisiteGate(batch:PrerequisiteBatch, hasRelease:boolean, base?:string, now=Date.now(), stage:"pre_merge"|"pre_publish"="pre_merge"):IntegrationPrerequisiteGate {
-  // For one already-bound PR, the usual exact-head Git/CI check and actual
-  // publication workflow provide these facts without a second declaration.
-  const direct = batch.conversation?.direct && !batch.integration?.prerequisites;
-  if (direct && stage === "pre_merge") return { required: false, ready: true, blockers: [] };
-  const required=batch.state!=="finished" && batch.publish && hasRelease && !batchPublicationDeferred(batch)
-    && (stage==="pre_publish" ? (direct || Boolean(batch.integration?.prerequisites?.workflow) || Boolean(batch.integration?.prerequisites?.conditions.some(c=>c.required&&c.stage==="pre_publish"))) : batch.deliveries.some(id=>!batch.references?.[id]&&!batch.results[id]) && batch.operation!=="merge_only" && batch.operation!=="publish_only");
-  const gate:IntegrationPrerequisiteGate={required,ready:true,blockers:[]};
-  if(!required)return gate;
-  const record=batch.integration?.prerequisites, conditions=record?.conditions??[];
+  // These facts already have authoritative checks: dispatch/batch authorization,
+  // exact-head Git evidence, frozen release scope, and the publication entry point.
+  const record = batch.integration?.prerequisites;
+  const conditions = (record?.conditions ?? []).filter(c => c.required && c.stage === stage
+    && (!core.includes(c.kind as typeof core[number]) || Boolean(c.dependsOnDeliveries?.length)));
+  const required = batch.state !== "finished" && (stage === "pre_publish"
+    ? batch.publish && hasRelease && !batchPublicationDeferred(batch)
+    : conditions.length > 0 && batch.deliveries.some(id => !batch.references?.[id] && !batch.results[id]));
+  const gate: IntegrationPrerequisiteGate = { required, ready: true, blockers: [] };
+  if (!required) return gate;
   if(stage==="pre_publish") {
     const recovery=batch.reconciliation?.finalValidation, integration=batch.integration?.finalValidation;
     const resultDigest=hash(batch.results);
     const target=recovery?.resultsDigest===resultDigest ? recovery : integration?.selectionDigest===resultDigest ? integration : undefined;
     const age=target ? now-Date.parse(target.checkedAt) : NaN;
-    if(!target || !Number.isFinite(age) || age < -30_000 || age>300_000)
+    const publication = batch.integration?.publication;
+    const renewing = publication?.state === "publishing" && publication.resultsDigest === resultDigest
+      && Date.parse(publication.expiresAt) >= now;
+    if(!target || !Number.isFinite(age) || age < -30_000 || age>300_000 && !renewing)
       gate.blockers.push({id:"combined_target",code:target?"stale":"missing",reason:"发布前需要核实当前完整结果对应的实际目标分支组合验证",owner:"集成执行者",resumeWhen:"在原批次刷新最终目标 head 与组合验证"});
     base=target?.head;
   }
-  if (direct) {
-    gate.ready = gate.blockers.length === 0;
-    return gate;
-  }
-  if(record&&!record.observation)gate.blockers.push({id:"observation",code:"missing",reason:"旧前置记录缺少实际观察的版本",owner:"集成执行者",resumeWhen:"重新读取并核实原批次版本，不复用旧快照"});
-  const names={main:"当前主线",installation_integrity:"工具安装完整性",required_capability:"必需能力",authorization:"原生授权依据",scope:"发布范围"};
-  const necessary=record?.workflow?.tools==="project_native"?core.filter(kind=>!["installation_integrity","required_capability"].includes(kind)):core;
-  const missing=necessary.filter(kind=>!conditions.some(c=>c.kind===kind));
-  if(missing.length)gate.blockers.push({id:"required_evidence",code:"missing",reason:`尚未核实：${missing.map(kind=>names[kind]).join("、")}`,owner:"集成执行者",resumeWhen:"在原批次核实并登记必要前置条件"});
+  if (record && conditions.length && !record.observation)
+    gate.blockers.push({id:"observation",code:"missing",reason:"项目专用前置记录缺少实际观察版本",owner:"集成执行者",resumeWhen:"重新核实这一实际前置条件"});
   if(record) {
     const values=bindings(batch,{...record.context,workflowDigest:record.workflow?hash(record.workflow):undefined,...(base?{base}:{})});
     const newerChecks=batch.deliveries.filter(id=>!batch.results[id]&&!batch.references?.[id]).flatMap(id=>{
       const check=batch.integration?.entries[id]?.check;return check?[check]:[];
     });
-    for(const c of conditions.filter(c=>c.required && (c.stage===stage || stage==="pre_publish"&&["main","authorization","scope"].includes(c.kind)))) {
+    for(const c of conditions) {
       const age=now-Date.parse(c.checkedAt);
       const cycle=c.dependsOnDeliveries?.some(d=>batch.results[d.deliveryId]?.status!=="merged");
       const stale=!Number.isFinite(age)||age < -30_000||age>300_000||c.dependencies.some(key=>c.binding[key]!==values[key])

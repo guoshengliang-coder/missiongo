@@ -182,6 +182,23 @@ describe("integration directly in the original conversation",()=>{
       { kind: "progress", deliveryId: batch.deliveries[0]!, phase: "investigating", expectedHead: f.input.head, detail: "Stop still applies" })).toThrow();
   });
 
+  it("does not restore an original batch by asking for status after the Stop command", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-22T08:00:00Z"));
+    const f = await prepared();
+    human(f,"执行合并");
+    const preparation=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"stop-batch",scope(f));
+    const b=f.merges.startConversation(f.owner.id,"original-client",f.identity,preparation.id);
+    vi.setSystemTime(Date.now()+10);
+    const stopped=human(f,"native Stop fixture");
+    f.db.prepare("UPDATE agent_session_commands SET kind='interrupt' WHERE id=?").run(stopped.id);
+    vi.setSystemTime(Date.now()+10);
+    human(f,"进度如何");
+    expect(()=>f.merges.integrate(f.owner.id,f.dispatch.id,b.id,b.integration!.revision,"after-stop",{
+      kind:"progress",deliveryId:b.deliveries[0]!,expectedHead:f.input.head,phase:"investigating",detail:"Should remain stopped",
+    })).toThrow();
+  });
+
   it("keeps a frozen confirmation link valid through a harmless status question", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-11-22T08:00:00Z"));
@@ -1035,7 +1052,7 @@ describe("AND-423 explicit merge deliveries",()=>{
     const f=await prepared();f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm");
     const b=f.merges.start(f.owner.id,randomUUID(),[{id:f.d.id,revision:f.d.revision}],f.config,publish,1);
     const prompt=(f.db.prepare("SELECT initial_text FROM free_session_starts WHERE dispatch_id=?").get(b.dispatchId) as {initial_text:string}).initial_text;
-    for(const text of ["不要求新增配置文件","未开启 auto-merge","项目自有流程","失败","not_applicable","unknown","不得 --admin","精确 executionHead","原有效 authorizationRef","不重复合并","对象/结果/证据与验证缺口/下一步责任","人工验收由人决定"])
+    for(const text of ["不要求新增配置文件","未开启 auto-merge","项目专用发布前条件","失败","not_applicable","unknown","不得 --admin","精确 executionHead","不手填或补写 authorizationRef","不重复合并","对象/结果/证据与验证缺口/下一步责任","人工验收由人决定"])
       expect(prompt).toContain(text);
     expect(prompt).not.toContain("missiongo-release readiness --candidates");
     expect(prompt).not.toContain("不要逐项等待 CI 通知或手动合并");
@@ -1216,21 +1233,30 @@ describe("planned integration batches",()=>{
     expect(()=>f.act(publishing())).toThrow(/发布前置/);
     expect(f.current().results[d.id]?.status).toBe("merged");
     f.act({...action,observation:f.current().prerequisiteObservation,context:{...action.context,base:"c".repeat(40)},conditions:[{...action.conditions.at(-1)!,state:"satisfied"}]});
-    expect(()=>f.act(publishing())).toThrow(/发布前置/);
-    f.act({...action,observation:f.current().prerequisiteObservation,context:{...action.context,base:"c".repeat(40)},conditions:[action.conditions.find(c=>c.kind==="main")!]});
+
     f.act(publishing());expect(f.current().integration!.publication?.state).toBe("publishing");
   });
-  it("keeps AND-520 ownership while AND-521 waits and resumes the same batch",async()=>{
+  it("records a known exact-head merge after the Git check expires without rechecking publication scope",async()=>{
+    const f=await batchFixture(1,false,true),d=f.deliveries[0]!;
+    f.act(f.plan);f.check(d.id);
+    const now = Date.now(), clock = vi.spyOn(Date, "now").mockReturnValue(now + 301_000);
+    try {
+      expect(f.current().entries[0]!.mergeReady).toBe(false);
+      f.merged(d.id);
+      expect(f.current().results[d.id]?.status).toBe("merged");
+    } finally { clock.mockRestore(); }
+  });
+  it("keeps queue ownership without a duplicated authorization form",async()=>{
     const f=await batchFixture(1,false,true),d=f.deliveries[0]!;
     f.act(f.plan);f.check(d.id);
     const queue=()=>f.merges.queue(f.item.productId,f.owner.id);
     expect(queue().deliveries).toEqual([]);
     expect(queue().occupancy).toMatchObject({active:true,sessionId:f.b.sessionId});
-    expect(f.current().entries[0]!.mergeReady).toBe(false);
+    expect(f.current().entries[0]!.mergeReady).toBe(true);
     const wait=syntheticPrerequisites(f.current());
     wait.conditions.find(c=>c.kind==="authorization")!.state="pending";
     f.act(wait);
-    expect(f.current().prerequisiteGate.ready).toBe(false);
+    expect(f.current().prerequisiteGate.ready).toBe(true);
     expect(queue().deliveries).toEqual([]);
     f.act(syntheticPrerequisites(f.current()));
     expect(f.current().entries[0]!.mergeReady).toBe(true);
@@ -1263,11 +1289,10 @@ describe("planned integration batches",()=>{
     expect(publication()).toBe("pending");
     f.merged(d.id);expect(f.current().results[d.id]!.status).toBe("merged");
   });
-  it("AND-521 gates first merge, waits without a final result, and composes with existing blockers",async()=>{
+  it("keeps account and exact-head CI gates without requiring duplicate authorization",async()=>{
     const f=await batchFixture(1,false,true),d=f.deliveries[0]!;
     f.act(f.plan);f.check(d.id);
-    expect(f.current().entries[0]!.mergeReady).toBe(false);
-    expect(()=>f.merged(d.id)).toThrow(/前置/);
+    expect(f.current().entries[0]!.mergeReady).toBe(true);
     const wait=syntheticPrerequisites(f.current());wait.conditions.find(c=>c.kind==="authorization")!.state="pending";
     const before=f.store.getTimeline(f.item.key);
     const input={batchId:f.b.id,dispatchId:f.b.dispatchId,expectedRevision:f.current().integration!.revision,idempotencyKey:"waiting",action:wait};
@@ -1286,13 +1311,13 @@ describe("planned integration batches",()=>{
     for(const command of f.db.prepare("SELECT id FROM agent_session_commands WHERE session_id=? AND status='queued'").all(f.b.sessionId) as {id:string}[])
       new AgentSessionStore(f.store.database).recordSnapshot({nodeId:f.node.nodeId,sessionId:f.b.sessionId,status:"active",messages:[],turnState:{turnActive:true},commandId:command.id,commandStatus:"delivered"});
     f.act(f.plan);f.check(first.id);
-    expect(f.current().prerequisiteGate.ready).toBe(false);
+    expect(f.current().prerequisiteGate.ready).toBe(true);
     const snapshot=f.merges.preview(f.owner.id,f.b.id).snapshot,key="defer-frozen-batch";
     f.merges.requestReconciliation(f.owner.id,f.b.dispatchId,f.b.id,key,snapshot,{kind:"defer_publication",reason:"Complete the selected integrations; publish later"});
     expect(()=>f.merges.applyReconciliation(f.owner.id,f.b.dispatchId,f.b.id,key)).toThrow(/人工/);
-    expect(f.current().prerequisiteGate.required).toBe(true);
+    expect(f.current().publicationPrerequisiteGate.required).toBe(true);
     f.merges.decideReconciliation(f.owner.id,f.b.id,key,snapshot,"approved",true);
-    expect(f.current().prerequisiteGate.required).toBe(true);
+    expect(f.current().publicationPrerequisiteGate.required).toBe(true);
     f.merges.applyReconciliation(f.owner.id,f.b.dispatchId,f.b.id,key);
     expect(f.current()).toMatchObject({publish:true,publicationDeferred:true,prerequisiteGate:{required:false,ready:true}});
     f.act({kind:"check",deliveryId:first.id,expectedHead:first.head,base:"b".repeat(40),checkedAt:new Date().toISOString(),
@@ -1329,11 +1354,11 @@ describe("planned integration batches",()=>{
     const f=await batchFixture(1,true,true);f.act(f.plan);f.check(f.deliveries[0]!.id);
     expect(f.current().prerequisiteGate.required).toBe(false);expect(f.current().entries[0]!.mergeReady).toBe(true);
   });
-  it("AND-521 cannot evade the batch prerequisite by merging a no-release row first",async()=>{
+  it("permits a verified no-release row before the batch enters publication",async()=>{
     const f=await batchFixture(2,true,true),first=f.deliveries[0]!;
     f.act(f.plan);f.check(first.id);
-    expect(first.requiredArtifacts).toEqual([]);expect(f.current().prerequisiteGate.required).toBe(true);
-    expect(f.current().entries.find(e=>e.id===first.id)!.mergeReady).toBe(false);
+    expect(first.requiredArtifacts).toEqual([]);expect(f.current().prerequisiteGate.required).toBe(false);
+    expect(f.current().entries.find(e=>e.id===first.id)!.mergeReady).toBe(true);
     f.act(syntheticPrerequisites(f.current()));expect(f.current().entries.find(e=>e.id===first.id)!.mergeReady).toBe(true);
   });
   it("AND-520 owns extra item events exactly and keeps a later offer for the same item independent",async()=>{
@@ -1630,7 +1655,9 @@ describe("planned integration batches",()=>{
     const f=await batchFixture(1,false,true),d=f.deliveries[0]!;
     f.act({...f.plan,summary:"Large history. ".repeat(250),validation:"Verification. ".repeat(250),
       entries:f.plan.entries.map(entry=>({...entry,reason:"Reason. ".repeat(450),validation:"Validation. ".repeat(300)}))});
-    f.check(d.id);f.act(syntheticPrerequisites(f.current()));
+    f.check(d.id);
+    const pre = syntheticPrerequisites(f.current());
+    f.act({...pre,conditions:[{...pre.conditions[0]!,id:"project-specific-freeze",kind:"investigation"}]});
     const read=()=>JSON.parse(f.merges.serializeList(f.item.productId,f.owner.id).toString("utf8")).batches[0];
     expect(read().prerequisiteGate.ready).toBe(true);
     const now=Date.now(),clock=vi.spyOn(Date,"now").mockReturnValue(now+301_000);
@@ -2997,7 +3024,8 @@ describe("AND-511 two-step integration queue",()=>{
     f.store.updateWorkItem(f.item.key,{description:"Changed scope",attribution:{accountId:config.id}});
     const changed=f.merges.publicationPreview(f.owner.id,f.item.productId,f.selection);
     expect(changed.candidates.find(c=>c.developmentEventId===f.old)?.historicalGapPreviouslyReviewed).toBeUndefined();
-    expect(live().prerequisiteGate.blockers.some(blocker=>blocker.id==="publication_scope")).toBe(true);
+    expect(live().prerequisiteGate.ready).toBe(true);
+    expect(f.merges.preview(f.owner.id,second.id).publicationIdentity.unchanged).toBe(false);
   });
   it("retains only the historical warning after the replacement delivery is fully published",async()=>{
     const f=await historicalProject(),record=f.store.getDeliveryRecords(f.item.key).find(r=>r.id!==f.old)!;
@@ -3208,7 +3236,7 @@ describe("AND-511 two-step integration queue",()=>{
     act({kind:"plan",base:"b".repeat(40),summary:"Mixed plan",validation:"Combination",entries:[f.d,d].map(v=>({deliveryId:v.id,head:v.head,dependsOn:[],group:"mixed",reason:"Synthetic",validation:"Verify"}))});
     act({kind:"verify_reference",deliveryId:f.d.id,expectedHead:f.d.head,commit:"c".repeat(40),checkedAt:new Date().toISOString(),source:"Synthetic target ancestor"});
     act({kind:"check",deliveryId:d.id,expectedHead:d.head,base:"b".repeat(40),checkedAt:new Date().toISOString(),source:"Synthetic live checks",checks:"passed",mergeable:"clean",local:"passed",validation:"Synthetic local and CI"});
-    expect(current.prerequisiteGate.ready).toBe(false);
+    expect(current.prerequisiteGate.ready).toBe(true);
     act(syntheticPrerequisites(current));
     current=f.merges.report(f.owner.id,b.dispatchId,b.id,d.id,{status:"merged",head:d.head,commit:"d".repeat(40),detail:"New merge only"});
     act({kind:"final_validation",head:"d".repeat(40),checkedAt:new Date().toISOString(),validation:"Mixed target verified",source:"Synthetic"});
