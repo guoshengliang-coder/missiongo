@@ -27,7 +27,7 @@ export interface MergeIntegration {
   prerequisites?: IntegrationPrerequisites;
   /** Legacy merge authority may record prerequisites, never acquire repair authority. */
   prerequisitesOnly?: true;
-  publication?: { state: "publishing" | "failed" | "ended"; checkedAt: string; expiresAt: string; resultsDigest: string; detail: string };
+  publication?: { state: "publishing" | "failed" | "ended"; checkedAt: string; expiresAt: string; resultsDigest: string; detail: string; publicationVersions?:{artifact:string;version?:string|undefined}[] };
   recoveredAuthorization?: { dispatchId: string; promptDigest: string };
   plans: (IntegrationPlan & { at: string })[];
   entries: Record<string, IntegrationEntry>;

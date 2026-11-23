@@ -1,7 +1,7 @@
 ---
 name: missiongo
 description: 通过 MissionGo MCP 查询项目概览、吞吐、交付周期和验收打回率，或完整读取及处理指定条目、评论、创建和上传附件；核实合并与发布后可靠交接。不修改条目正文与字段，不决定验收。
-version: 5.81.0
+version: 5.82.0
 ---
 
 # MissionGo 条目读取与评论
@@ -866,3 +866,17 @@ checks 和 local 可为 not_applicable，仅限经核实项目不要求该检查
 
 
 5.78 审计补修：读取分支 active rules 时必须完整分页；合并方式取仓库能力与全部目标分支规则的交集，线性历史不选 merge。保护摘要不完整保持未知，不能据此推断无 CI。pending 的自动合并就绪必须显式提供当前 verification，旧记录仍保留，但缺字段不能推断存在可靠保护；不具备该证据时等待实际检查完成即可，不要求补项目配置。发布前先核实当前完整结果的 final_validation/组合验证，再将 main 前置的 context.base 刷新到该实际最终目标 head；复用未受影响的原授权与范围证据。普通时效续期不重复保存整份适配历史，实质替换保留历史，不因累计五十次补证锁死原批次。
+
+
+## 原会话授权的产物、版本与停止恢复（AND-543）
+
+支持新版 publicationTargets 的原会话入口可将完整已声明产物及可选目标版本随 prepare_conversation_integration.scope 绑定。目标版本是用户授权约束，不是仓库或上线事实：先读取对应仓库声明并核实版本，再展示包含约束的完整 reviewText；不得用 Agent 自述冒充人工决定。原已审阅版本和指令一致时复用同范围有效授权，不重复索批。旧端不支持时明确能力缺口，不删除用户的版本限定或改用普通接口放行。
+
+- artifact_subset / artifact_mismatch / artifact_ambiguous：核对当前产品声明、完整候选与明确产物标识；部分产物不能授权整个范围。别名仅唯一映射时接受，不按常识猜 Android 对应 App 还是 SDK。
+- version_evidence_missing / version_mismatch：缺少绑定目标或版本不符；先读取实际版本、原指令和当前固定范围，补齐对应约束与展示依据。保留原决定；只有版本或范围实质改变才请求一次新决定，不能让用户反复重发同一授权。
+- history_incomplete / source_missing：核对原节点身份、来源时钟和同步缺页；保持原会话与权限，不伪造来源或换身份。可执行的只读调查继续，无法取得的证据准确列明。
+- stopped：原停止仍有效，普通继续、状态询问或裸批准不能解除。后续明确重授同一完整 PR 和全部产物范围才可恢复；修改范围或未知条件须重新完整审阅。未送达或结果未知的中断不自动清除。
+
+开始前只读检查实际仓库、当前准备与原批次。已接受的 preparationId 原样重试仅返回原批次；已有批次用 resumeBatchId，不能重建批次、重复 Git 或发布。不自动给原生端发继续消息、不拦截 Stop、不由服务端自动续办。原会话应诊断具体拒绝原因，在既有授权内修复可核实的绑定/同步/解析问题，不停留在反复报告“已有授权但不能执行”。
+
+发布前读取实际项目版本/manifest，用 record_merge_integration 的 publication_progress（state=publishing）提供 publicationVersions 与实时 checkedAt、resultsDigest、核验来源 detail；必须符合批次 publicationTargets，再执行项目正式发布入口。该观察不是正式发布回执，不能替代完整候选、质量门禁、公开产物和发布后交接。只有原会话获得合并/发布授权才能操作；本规则不扩大权限。
