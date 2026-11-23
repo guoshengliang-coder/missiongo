@@ -15,9 +15,16 @@ describe("reviewed publication constraints",()=>{
   ])("rejects mismatched constraint: %s",(text,reason)=>{
     expect(()=>publicationActionBounds(text!,bounds)).toThrowError(expect.objectContaining({code:`conversation_integration_${reason}`}));
   });
-  it("does not guess an Android alias when the product declares both android and androidApp",()=>{
-    expect(()=>publicationActionBounds("发布 Android 和 Web",{...bounds,declaredArtifacts:[...bounds.declaredArtifacts,"android"]})).toThrow(/多个/);
-    expect(publicationActionBounds("发布 androidApp 和 Web",{...bounds,declaredArtifacts:[...bounds.declaredArtifacts,"android"]}).artifacts).toHaveLength(2);
+  it("prefers canonical Android identifiers and checks the frozen scope", () => {
+    const declaredArtifacts = [...bounds.declaredArtifacts, "android"];
+    const hermes = {
+      requiredArtifacts: ["android", "web"],
+      declaredArtifacts,
+      targets: [{ artifact: "android", version: "0.1.204" }, { artifact: "web" }],
+    };
+    expect(publicationActionBounds("发布 Android 0.1.204 和 Web", hermes).artifacts).toEqual(["android", "web"]);
+    expect(() => publicationActionBounds("发布 Android 和 Web", { ...bounds, declaredArtifacts })).toThrow(/不在已审阅/);
+    expect(publicationActionBounds("发布 androidApp 和 Web", { ...bounds, declaredArtifacts }).artifacts).toEqual(["androidApp", "web"]);
   });
   it("rejects an adjacent unknown version instead of treating it as free narration",()=>{
     expect(()=>publicationActionBounds("发布 Web Canary",{requiredArtifacts:["web"],declaredArtifacts:["web"]})).toThrow(/版本/);

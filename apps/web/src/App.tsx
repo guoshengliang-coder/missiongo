@@ -9,6 +9,7 @@ import { useConsoleConnection, useConsoleEvents } from "./console-events";
 import { isItemListRow, type WorkItemRow } from "./types";
 import { inconsistentItemPage } from "./item-list-state";
 import { DeliveryEvidence } from "./delivery-evidence";
+import { ConversationIntegrationReview } from "./conversation-integration-review";
 import { PlanDocumentPage } from "./plan-document-page";
 import { PendingMergeButton, MergeProgressBadge, useMergeProgress } from "./merge-console";
 import { PRODUCT_ICON_URL } from "./branding.generated";
@@ -1313,6 +1314,8 @@ export function App() {
 
   const planDocumentId = new URLSearchParams(window.location.search).get("planDocument");
   if (planDocumentId) return <PlanDocumentPage documentId={planDocumentId} />;
+  const integrationReviewId = new URLSearchParams(window.location.search).get("conversationIntegrationReview");
+  if (integrationReviewId) return <ConversationIntegrationReview key={integrationReviewId} preparationId={integrationReviewId} />;
 
   if (settings.route) {
     if (!bootstrapQuery.data) return <BootSkeleton />;

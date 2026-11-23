@@ -725,6 +725,91 @@ describe("integration directly in the original conversation",()=>{
     expect(b.entries[0]!.mergeReady).toBe(false);
     expect(f.store.getWorkItem(f.item.key).status).toBe("in_progress");
   });
+  it("binds a Web decision to one exact scope across fresh preparations and explicit retry", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-22T08:00:00Z"));
+    const f = await prepared();
+    human(f, "看看发布范围");
+    const input = { ...scope(f), operation: "merge_and_publish" as const };
+    const prepare = (key: string, next = input) => f.merges.prepareConversation(f.owner.id, "original-client", f.identity, key, next);
+    const initial = prepare("web-decision-first");
+    expect(f.merges.conversationReview(f.owner.id, initial.id)).toMatchObject({ confirmed: false });
+    expect(() => f.merges.confirmConversationReview(f.owner.id, initial.id, "a".repeat(64))).toThrow();
+    expect(f.merges.confirmConversationReview(f.owner.id, initial.id, initial.reviewDigest)).toEqual({ confirmed: true });
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({ n: 0 });
+    vi.setSystemTime(Date.now() + 10);
+    human(f, "你再试下");
+    const changed = prepare("web-decision-changed", { ...input, deliveries: [{ ...f.input, requiredArtifacts: ["web", "androidApp"] }] });
+    expect(() => f.merges.startConversation(f.owner.id, "original-client", f.identity, changed.id)).toThrow();
+    const refreshed = prepare("web-decision-refresh");
+    const batch = f.merges.startConversation(f.owner.id, "original-client", f.identity, refreshed.id);
+    const replay = prepare("web-decision-replay");
+    expect(f.merges.conversationReview(f.owner.id, replay.id)).toMatchObject({ confirmed: true });
+    expect(f.merges.confirmConversationReview(f.owner.id, replay.id, replay.reviewDigest)).toEqual({ confirmed: true });
+    expect(f.merges.startConversation(f.owner.id, "original-client", f.identity, replay.id).id).toBe(batch.id);
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({ n: 1 });
+  });
+
+  it("rejects a structured retry when a stop shares the retry clock", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-22T08:00:00Z"));
+    const f = await prepared();
+    human(f, "看看发布范围");
+    const input = { ...scope(f), operation: "merge_and_publish" as const };
+    const prepare = (key: string) => f.merges.prepareConversation(f.owner.id, "original-client", f.identity, key, input);
+    const initial = prepare("web-stop-first");
+    f.merges.confirmConversationReview(f.owner.id, initial.id, initial.reviewDigest);
+    vi.setSystemTime(Date.now() + 10);
+    human(f, "停止");
+    human(f, "你再试下");
+    const retry = prepare("web-stop-retry");
+    expect(() => f.merges.startConversation(f.owner.id, "original-client", f.identity, retry.id)).toThrow(/不同输入/);
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({ n: 0 });
+  });
+
+  it("accepts a structured confirmation made after the retry input", async () => {
+    const f = await prepared();
+    human(f, "你再试下");
+    const p = f.merges.prepareConversation(f.owner.id, "original-client", f.identity, "confirmed-retry",
+      { ...scope(f), operation: "merge_and_publish" });
+    expect(f.merges.conversationReview(f.owner.id, p.id).targetBranches).toEqual([f.input.targetBranch]);
+    f.merges.confirmConversationReview(f.owner.id, p.id, p.reviewDigest);
+    expect(f.merges.startConversation(f.owner.id, "original-client", f.identity, p.id).sessionId).toBe(f.projectSessionId);
+  });
+
+  it.each([false, true])("retries an unstarted reviewed scope only without intervening stop (%s)", async stopped => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-22T08:00:00Z"));
+    const f = await prepared(), sessions = new AgentSessionStore(f.store.database);
+    const input = { ...scope(f), operation: "merge_and_publish" as const };
+    human(f, "合并和发布");
+    const first = f.merges.prepareConversation(f.owner.id, "original-client", f.identity, "retry-first", input);
+    vi.setSystemTime(Date.now() + 10);
+    sessions.recordSnapshot({ nodeId: f.node.nodeId, sessionId: f.projectSessionId, status: "idle", messages: [
+      { sourceId: "retry-review", role: "agent", phase: "final_answer", text: first.reviewText, occurredAt: new Date().toISOString() },
+    ] });
+    vi.setSystemTime(Date.now() + 10);
+    human(f, "合并和发布");
+    if (stopped) {
+      vi.setSystemTime(Date.now() + 10);
+      human(f, "停止");
+    }
+    vi.setSystemTime(Date.now() + 10);
+    human(f, "你再试下");
+    const retry = f.merges.prepareConversation(f.owner.id, "original-client", f.identity, "retry-refreshed", input);
+    const start = () => f.merges.startConversation(f.owner.id, "original-client", f.identity, retry.id);
+    if (stopped) {
+      expect(start).toThrow();
+      expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({ n: 0 });
+    } else {
+      const batch = start();
+      expect(batch.conversation?.authorization.text).toBe("合并和发布");
+      expect(batch.conversation?.input.text).toBe("你再试下");
+      expect(start().id).toBe(batch.id);
+      const fresh = f.merges.prepareConversation(f.owner.id, "original-client", f.identity, "legacy-replay", input);
+      expect(f.merges.startConversation(f.owner.id, "original-client", f.identity, fresh.id).id).toBe(batch.id);
+    }
+  });
   it("refreshes identical reviewed scope without another approval and completes merge-and-publish gates",async()=>{
     vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(new Date("2026-11-22T08:00:00Z"));
     const f=await prepared(),sessions=new AgentSessionStore(f.store.database);human(f,"准备合并和发布");

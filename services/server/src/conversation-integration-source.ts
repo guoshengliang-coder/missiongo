@@ -54,18 +54,18 @@ export function integrationExecutor(database: MissionGoDatabase, accountId: stri
 export interface IntegrationInstruction { sourceId: string; text: string; occurredAt: string; context: string; fingerprint: string }
 
 /** Read only authenticated user records, not quotes supplied by the Agent or work-item content. */
-export function integrationInstruction(database: MissionGoDatabase, executor: IntegrationExecutor, sourceId?: string): IntegrationInstruction {
+export function integrationInstruction(database: MissionGoDatabase, executor: IntegrationExecutor, sourceId?: string, before?: string): IntegrationInstruction {
   const db = database.connection, external = executor.kind === "external", sessionId = executor.sessionId;
   const command = db.prepare(external
-    ? "SELECT id,text,created_at,status FROM external_native_commands WHERE session_id=? ORDER BY rowid DESC LIMIT 1"
-    : "SELECT id,text,created_at,status FROM agent_session_commands WHERE session_id=? AND kind='message' ORDER BY rowid DESC LIMIT 1")
-    .get(sessionId) as { id: string; text: string; created_at: string; status: string } | undefined;
+    ? "SELECT id,text,created_at,status FROM external_native_commands WHERE session_id=? AND (? IS NULL OR julianday(created_at)<julianday(?)) ORDER BY rowid DESC LIMIT 1"
+    : "SELECT id,text,created_at,status FROM agent_session_commands WHERE session_id=? AND kind='message' AND (? IS NULL OR julianday(created_at)<julianday(?)) ORDER BY rowid DESC LIMIT 1")
+    .get(sessionId, before ?? null, before ?? null) as { id: string; text: string; created_at: string; status: string } | undefined;
   const message = db.prepare(external
     ? `SELECT source_id,json_extract(payload_json,'$.text') AS text,json_extract(payload_json,'$.occurredAt') AS occurred_at,
         json_extract(payload_json,'$.clientMessageId') AS client_message_id FROM external_native_messages
-       WHERE session_id=? AND json_extract(payload_json,'$.role')='user' AND COALESCE(json_extract(payload_json,'$.phase'),'')<>'execution' ORDER BY position DESC,rowid DESC LIMIT 1`
-    : "SELECT source_id,text,occurred_at,client_message_id FROM agent_session_messages WHERE session_id=? AND role='user' AND COALESCE(phase,'')<>'execution' ORDER BY position DESC,rowid DESC LIMIT 1")
-    .get(sessionId) as { source_id: string; text: string; occurred_at: string | null; client_message_id: string | null } | undefined;
+       WHERE session_id=? AND json_extract(payload_json,'$.role')='user' AND COALESCE(json_extract(payload_json,'$.phase'),'')<>'execution' AND (? IS NULL OR julianday(json_extract(payload_json,'$.occurredAt')) IS NULL OR julianday(json_extract(payload_json,'$.occurredAt'))<julianday(?)) ORDER BY position DESC,rowid DESC LIMIT 1`
+    : "SELECT source_id,text,occurred_at,client_message_id FROM agent_session_messages WHERE session_id=? AND role='user' AND COALESCE(phase,'')<>'execution' AND (? IS NULL OR julianday(occurred_at) IS NULL OR julianday(occurred_at)<julianday(?)) ORDER BY position DESC,rowid DESC LIMIT 1")
+    .get(sessionId, before ?? null, before ?? null) as { source_id: string; text: string; occurred_at: string | null; client_message_id: string | null } | undefined;
   const clock = message ? db.prepare("SELECT occurred_at FROM session_message_times WHERE session_key=? AND source_id=? AND provenance='source_message'")
     .get(external ? `external:${sessionId}` : `dispatch:${executor.kind === "dispatch" ? executor.dispatchId : ""}`, `native:${message.source_id}`) as { occurred_at: string } | undefined : undefined;
   const sameCommand = command && message && (message.source_id === command.id || message.source_id === `answer-${command.id}` || message.client_message_id === command.id);
@@ -110,4 +110,39 @@ export function assertIntegrationInstruction(text: string, operation: "merge_onl
   const merge = /合并|\bmerge\b/i.test(text), publish = /发布|部署|\b(?:publish|release|deploy)\b/i.test(text);
   if (merge !== (operation !== "publish_only") || publish !== (operation !== "merge_only"))
     throw conflict("conversation_integration_operation_mismatch", "指令与仅合并／仅发布／合并并发布动作不一致，不能扩大授权。");
+}
+
+export const isIntegrationRetry = (text: string) => /^(?:请|你)?(?:再试(?:一?下|一次)?|重试(?:一?下|一次)?|retry)[。.!！]?$/i.test(text.trim());
+
+/** Check the inclusive interval so two records with the same clock cannot hide a stop. */
+export function assertConversationRetryHistory(database: MissionGoDatabase, executor: IntegrationExecutor,
+  authorization: IntegrationInstruction, retry: IntegrationInstruction) {
+  const external = executor.kind === "external";
+  const db = database.connection;
+  const args = [executor.sessionId, authorization.occurredAt, retry.occurredAt] as const;
+  const commands = db.prepare(external
+    ? "SELECT text,created_at AS at,status FROM external_native_commands WHERE session_id=? AND (julianday(created_at) BETWEEN julianday(?) AND julianday(?) OR julianday(created_at) IS NULL)"
+    : "SELECT text,created_at AS at,status FROM agent_session_commands WHERE session_id=? AND kind='message' AND (julianday(created_at) BETWEEN julianday(?) AND julianday(?) OR julianday(created_at) IS NULL)")
+    .all(...args) as { text: string; at: string; status: string }[];
+  const messages = db.prepare(external
+    ? `SELECT source_id,json_extract(payload_json,'$.text') AS text,json_extract(payload_json,'$.occurredAt') AS at
+       FROM external_native_messages WHERE session_id=? AND json_extract(payload_json,'$.role')='user'
+       AND COALESCE(json_extract(payload_json,'$.phase'),'')<>'execution'
+       AND (julianday(json_extract(payload_json,'$.occurredAt')) BETWEEN julianday(?) AND julianday(?) OR julianday(json_extract(payload_json,'$.occurredAt')) IS NULL)`
+    : `SELECT source_id,text,occurred_at AS at FROM agent_session_messages WHERE session_id=? AND role='user'
+       AND COALESCE(phase,'')<>'execution' AND (julianday(occurred_at) BETWEEN julianday(?) AND julianday(?) OR julianday(occurred_at) IS NULL)`)
+    .all(...args) as { source_id: string; text: string; at: string }[];
+  const key = external ? `external:${executor.sessionId}` : `dispatch:${executor.dispatchId}`;
+  const clock = db.prepare("SELECT occurred_at FROM session_message_times WHERE session_key=? AND source_id=? AND provenance='source_message'");
+  if (commands.some(command => !["delivered", "failed", "cancelled"].includes(command.status)) || messages.some(message => {
+    const record = clock.get(key, `native:${message.source_id}`) as { occurred_at: string } | undefined;
+    return !record || Date.parse(record.occurred_at) !== Date.parse(message.at);
+  })) throw conflict("conversation_integration_history_incomplete", "重试区间的可信输入历史不完整。");
+  const delivered = commands.filter(command => command.status === "delivered");
+  const authorizedAt = Date.parse(authorization.occurredAt);
+  if ([...delivered, ...messages].some(input => {
+    const at = Date.parse(input.at);
+    return !(input.text === authorization.text && at === authorizedAt
+      || at > authorizedAt && isIntegrationRetry(input.text));
+  })) throw conflict("conversation_integration_input_changed", "原决定之后有不同输入，请核对停止、撤权或范围变化。");
 }
