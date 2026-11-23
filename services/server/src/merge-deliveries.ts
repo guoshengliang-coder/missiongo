@@ -5,7 +5,7 @@ import { projectCheckSatisfied } from "@missiongo/contracts";
 import { projectCheckStateSchema, projectVerificationSchema, validateProjectChecks, assertProjectBinding } from "./project-verification.js";
 import {deliveryScope,historicalDeliveryFingerprint} from "./historical-delivery-review.js";
 import {conversationDecisionEvidence} from "./conversation-decision-evidence.js";
-import { integrationExecutor, integrationInstruction, assertIntegrationInstruction, type IntegrationExecutor, type IntegrationInstruction, type ConversationIdentity } from "./conversation-integration-source.js";
+import { integrationExecutor, integrationInstruction, assertIntegrationInstruction, isIntegrationRetry, assertConversationRetryHistory, type IntegrationExecutor, type IntegrationInstruction, type ConversationIdentity } from "./conversation-integration-source.js";
 import {mergeReviewSummary} from "./merge-review-summary.js";
 import { developmentReviewBlocker, developmentReviewExpiry } from "./development-reviews.js";
 import type { SQLInputValue, StatementSync } from "node:sqlite";
@@ -99,7 +99,7 @@ interface ConversationPreparation {
   executor:IntegrationExecutor; config:FreeSessionConfig; source:IntegrationInstruction; createdAt:string;
   drafts:{id:string;input:DeliveryInput;scope:string}[]; selection:{id:string;revision:string}[];
   publicationTargets?:PublicationTarget[];
-  publicationScope?:PublicationScope; reviewDigest:string; reviewText:string; resumeBatchId?:string; reviewEvidence?:ConversationReviewEvidence;
+  publicationScope?:PublicationScope; reviewDigest:string; reviewText:string; resumeBatchId?:string; reviewEvidence?:ConversationReviewEvidence; decision?: { at: string; inputFingerprint: string };
 }
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const changed = () => conflict("merge_delivery_changed", "交付内容、代码或执行范围已变化，请重新核对并确认。");
@@ -1108,6 +1108,89 @@ export class MergeDeliveries {
       .get(id,accountId,clientId) as {productId:string}|undefined;
     if(!row)throw changed();return row.productId;
   }
+  private humanConversationPreparation(accountId: string, id: string) {
+    const row = this.db.connection.prepare("SELECT client_id,data_json,batch_id FROM conversation_integration_preparations WHERE id=? AND account_id=?")
+      .get(id, accountId) as { client_id: string; data_json: string; batch_id: string | null } | undefined;
+    if (!row) throw changed();
+    const preparation = JSON.parse(row.data_json) as ConversationPreparation;
+    const identity = preparation.executor.kind === "dispatch"
+      ? { dispatchId: preparation.executor.dispatchId }
+      : { sessionId: preparation.executor.sessionId };
+    this.conversationPermit(accountId, preparation.productId);
+    const { executor } = integrationExecutor(this.db, accountId, row.client_id, identity, preparation.productId);
+    if (!this.sameConversationExecutor(executor, preparation.executor) || executor.settings !== preparation.executor.settings) throw changed();
+    return { row, preparation, executor };
+  }
+
+  private latestConversationDecision(accountId: string, clientId: string, executor: IntegrationExecutor) {
+    const row = this.db.connection.prepare(`SELECT data_json,batch_id FROM conversation_integration_preparations
+      WHERE account_id=? AND client_id=? AND json_extract(data_json,'$.executor.binding')=?
+        AND json_extract(data_json,'$.decision.at') IS NOT NULL
+      ORDER BY json_extract(data_json,'$.decision.at') DESC, batch_id IS NOT NULL DESC, rowid DESC LIMIT 1`)
+      .get(accountId, clientId, executor.binding) as { data_json: string; batch_id: string | null } | undefined;
+    return row ? { preparation: JSON.parse(row.data_json) as ConversationPreparation, batchId: row.batch_id } : undefined;
+  }
+
+  private sameConversationScope(left: ConversationPreparation, right: ConversationPreparation) {
+    return left.reviewDigest === right.reviewDigest && left.productId === right.productId
+      && left.executor.settings === right.executor.settings;
+  }
+
+  private conversationAuthorization(executor: IntegrationExecutor, source: IntegrationInstruction, decision?: ConversationPreparation["decision"]) {
+    let authorization = source;
+    for (let count = 0; count < 20 && isIntegrationRetry(authorization.text) && decision?.inputFingerprint !== authorization.fingerprint; count++) {
+      authorization = integrationInstruction(this.db, executor, undefined, authorization.occurredAt);
+    }
+    if (decision && authorization !== source && decision.inputFingerprint === authorization.fingerprint)
+      assertConversationRetryHistory(this.db, executor, authorization, source);
+    return authorization;
+  }
+
+  private currentConversationConfirmation(accountId: string, clientId: string, executor: IntegrationExecutor,
+    preparation: ConversationPreparation, source: IntegrationInstruction) {
+    const previous = this.latestConversationDecision(accountId, clientId, executor);
+    if (!previous || !this.sameConversationScope(preparation, previous.preparation)) return false;
+    if (previous.batchId) return true;
+    const decision = previous.preparation.decision;
+    return decision?.inputFingerprint === this.conversationAuthorization(executor, source, decision).fingerprint;
+  }
+
+  conversationReview(accountId: string, id: string) {
+    const { preparation, row, executor } = this.humanConversationPreparation(accountId, id);
+    let confirmed = Boolean(row.batch_id);
+    if (!confirmed) {
+      try {
+        const input = integrationInstruction(this.db, executor);
+        confirmed = this.currentConversationConfirmation(accountId, row.client_id, executor, preparation, input);
+      } catch (error) {
+        if (!(error instanceof MissionGoError)) throw error;
+      }
+    }
+    const branches = preparation.drafts.map(draft => draft.input.targetBranch);
+    return { reviewText: preparation.reviewText, reviewDigest: preparation.reviewDigest,
+      targetBranches: [...new Set(branches)], confirmed };
+  }
+
+  confirmConversationReview(accountId: string, id: string, reviewDigest: string) {
+    return this.db.transaction(() => {
+      const { row, preparation, executor } = this.humanConversationPreparation(accountId, id);
+      if (reviewDigest !== preparation.reviewDigest || preparation.resumeBatchId) throw changed();
+      if (row.batch_id) return { confirmed: true };
+      const input = integrationInstruction(this.db, executor);
+      if (input.fingerprint !== preparation.source.fingerprint) throw changed();
+      try {
+        if (this.currentConversationConfirmation(accountId, row.client_id, executor, preparation, input)) return { confirmed: true };
+      } catch (error) {
+        // A fresh exact human decision can replace a stopped or changed pending decision.
+        if (!(error instanceof MissionGoError) || error.code !== "conversation_integration_input_changed") throw error;
+      }
+      preparation.decision = { at: new Date().toISOString(), inputFingerprint: input.fingerprint };
+      this.db.connection.prepare("UPDATE conversation_integration_preparations SET data_json=? WHERE id=?")
+        .run(JSON.stringify(preparation), id);
+      return { confirmed: true };
+    });
+  }
+
   prepareConversation(accountId:string,clientId:string,identity:ConversationIdentity,key:string,raw:z.input<typeof conversationIntegrationSchema>) {
     const input=conversationIntegrationSchema.parse(raw);
     return this.db.transaction(()=>{
@@ -1189,9 +1272,11 @@ export class MergeDeliveries {
       if(executor.settings!==p.executor.settings)throw changed();
       if(Date.now()-Date.parse(p.createdAt)>600000)throw conflict("conversation_integration_preparation_expired","准备快照已过期，请在原会话刷新真实 Git 与范围证据。");
       const source=integrationInstruction(this.db,executor);
-      const reviewedDecision=["同意","批准"].includes(source.text) && source.context.includes(p.reviewText)
-        && (source.context.match(/原会话执行范围：/g)?.length??0)===1;
-      const evaluateScopeReview=()=>{
+      const isReviewedDecision = (instruction: IntegrationInstruction) =>
+        ["同意","批准"].includes(instruction.text) && instruction.context.includes(p.reviewText)
+        && (instruction.context.match(/原会话执行范围：/g)?.length??0)===1;
+      const reviewedDecision = isReviewedDecision(source);
+      const evaluateScopeReview=(instruction = source, decision = reviewedDecision, retry?:IntegrationInstruction)=>{
         const reviewDeliveries=[...p.drafts.map(d=>d.input),...p.selection.filter(selected=>!p.drafts.some(d=>d.id===selected.id))
         .map(selected=>this.read<Delivery>("merge_deliveries",selected.id))];
         const publicationReferences=(p.publicationScope?.candidates??[]).flatMap(candidate=>{
@@ -1203,13 +1288,13 @@ export class MergeDeliveries {
           }catch{return [];}// Existing publication blockers below retain malformed evidence.
         });
         const reviewReferences=[...reviewDeliveries,...publicationReferences.filter(ref=>!reviewDeliveries.some(d=>d.repository===ref.repository&&d.pullRequest===ref.pullRequest))];
-        return conversationScopeReview(this.db,executor,source,p.reviewText,p.reviewDigest,p.operation,reviewReferences,reviewedDecision,{requiredArtifacts:p.publicationScope?.requiredArtifacts??[],declaredArtifacts:this.store.getProduct(p.productId).releaseArtifacts,targets:p.publicationTargets});
+        return conversationScopeReview(this.db,executor,instruction,p.reviewText,p.reviewDigest,p.operation,reviewReferences,decision,{requiredArtifacts:p.publicationScope?.requiredArtifacts??[],declaredArtifacts:this.store.getProduct(p.productId).releaseArtifacts,targets:p.publicationTargets},retry);
       };
       if(p.resumeBatchId) {
         const b=this.batch(accountId,actor,p.resumeBatchId);
         if(!b.conversation||b.state!=="active")throw changed();
         const configurationChanged=executor.settings!==b.conversation.executor.settings;
-        const continuing=/^(?:请)?(?:继续(?:执行|处理)?|进度(?:如何)?|查看进度|当前状态|状态如何|continue|status)[。.!！]?$/i.test(source.text.trim());
+        const continuing=isIntegrationRetry(source.text)||/^(?:请)?(?:继续(?:执行|处理)?|进度(?:如何)?|查看进度|当前状态|状态如何|continue|status)[。.!！]?$/i.test(source.text.trim());
         const renewalReview=!continuing?evaluateScopeReview():undefined;
         if(continuing || !renewalReview){
           // A later status question cannot erase an intervening stop or scope change.
@@ -1235,7 +1320,7 @@ export class MergeDeliveries {
             : "SELECT source_id,text,client_message_id,occurred_at AS at FROM agent_session_messages WHERE session_id=? AND role='user' AND julianday(occurred_at)>=julianday(?) AND julianday(occurred_at)<=julianday(?)")
             .all(b.sessionId,prior.occurredAt,source.occurredAt) as {source_id:string;text:string;client_message_id:string|null;at:string}[];
           const intervening=[...commands.filter(c=>c.id!==commandId),...messages.filter(m=>prior.sourceId!==`native:${m.source_id}`&&!(commandId&&(m.source_id===commandId||m.source_id===`answer-${commandId}`||m.client_message_id===commandId)&&m.text===prior.text))];
-          if(intervening.filter(m=>!(m.text===source.text&&Date.parse(m.at)===Date.parse(source.occurredAt))).some(m=>!/^(?:请)?(?:继续(?:执行|处理)?|进度(?:如何)?|查看进度|当前状态|状态如何|continue|status)[。.!！]?$/i.test(m.text.trim())))throw changed();
+          if(intervening.filter(m=>!(m.text===source.text&&Date.parse(m.at)===Date.parse(source.occurredAt))).some(m=>!isIntegrationRetry(m.text)&&!/^(?:请)?(?:继续(?:执行|处理)?|进度(?:如何)?|查看进度|当前状态|状态如何|continue|status)[。.!！]?$/i.test(m.text.trim())))throw changed();
         }
         if((!continuing || configurationChanged) && !reviewedDecision)assertIntegrationInstruction(source.text,p.operation);
         if(continuing && configurationChanged)evaluateScopeReview();
@@ -1256,18 +1341,36 @@ export class MergeDeliveries {
         this.db.connection.prepare("UPDATE conversation_integration_preparations SET batch_id=? WHERE id=?").run(b.id,p.id);
         return this.batch(accountId,actor,b.id);
       }
-      if(!reviewedDecision)assertIntegrationInstruction(source.text,p.operation);
-      const reviewEvidence=evaluateScopeReview();
-      const scopeReviewed=Boolean(reviewEvidence);
+      const retry = isIntegrationRetry(source.text);
+      const decisionRecord = this.latestConversationDecision(accountId, clientId, executor);
+      const decided = decisionRecord?.preparation;
+      const decision = decided && this.sameConversationScope(decided, p) ? decided.decision : undefined;
+      const authorization = this.conversationAuthorization(executor, source, decision);
+      const boundDecision = decision?.inputFingerprint === authorization.fingerprint;
+      const authorizedDecision = isReviewedDecision(authorization);
+      if (!boundDecision && !authorizedDecision) assertIntegrationInstruction(authorization.text, p.operation);
+      const reviewEvidence = boundDecision ? undefined : evaluateScopeReview(authorization, authorizedDecision, retry ? source : undefined);
+      if (boundDecision && decisionRecord?.batchId) return this.batch(accountId, actor, decisionRecord.batchId);
+      if (retry && !boundDecision && !reviewEvidence)
+        throw conflict("conversation_integration_scope_review_required", "无法核对上一次明确授权对应的完整范围，请在原会话核实准备记录和来源。");
+      const scopeReviewed=boundDecision || Boolean(reviewEvidence);
       if(source.fingerprint!==p.source.fingerprint && !scopeReviewed)throw changed();
+      const accepted = this.db.connection.prepare(`SELECT p.batch_id FROM conversation_integration_preparations p
+        JOIN merge_batches b ON b.id=p.batch_id
+        WHERE p.account_id=? AND p.client_id=? AND json_extract(p.data_json,'$.productId')=? AND json_extract(p.data_json,'$.reviewDigest')=?
+          AND json_extract(p.data_json,'$.executor.binding')=? AND json_extract(p.data_json,'$.executor.settings')=?
+          AND json_extract(b.data_json,'$.conversation.authorization.fingerprint')=?
+        ORDER BY p.rowid DESC LIMIT 1`).get(accountId, clientId, p.productId, p.reviewDigest, executor.binding, executor.settings, authorization.fingerprint) as { batch_id: string } | undefined;
+      if (accepted) return this.batch(accountId, actor, accepted.batch_id);
       const reviewed=source.text+"\n"+source.context;
       if(!scopeReviewed && p.drafts.some(d=>!new RegExp(`(?:#|PR\\s*)${d.input.pullRequest}\\b`,"i").test(reviewed)
         && !reviewed.includes(d.input.head.slice(0,7))))
         throw conflict("conversation_integration_scope_review_required","当前指令上下文没有这些 PR 或完成提交的审阅依据，请先在原会话展示精确范围，不扩展到其他改动。");
       if((p.publicationScope || p.publicationTargets) && !scopeReviewed)
         throw conflict("conversation_integration_scope_review_required","需先在原会话展示这份完整发布范围；已有同范围审阅与授权可复用，不要求进入待集成。");
-      if(reviewEvidence) {
-        p.reviewEvidence=reviewEvidence;
+      if (reviewEvidence || boundDecision) {
+        if (reviewEvidence) p.reviewEvidence = reviewEvidence;
+        if (boundDecision && decided?.decision) p.decision = decided.decision;
         this.db.connection.prepare("UPDATE conversation_integration_preparations SET data_json=? WHERE id=?").run(JSON.stringify(p),p.id);
       }
       if(p.publicationScope?.blockers.length||p.publicationScope?.candidates.some(c=>c.historicalGapReason))
@@ -1276,9 +1379,9 @@ export class MergeDeliveries {
         const scope=draft.input.itemKeys.length?this.scope(draft.input.itemKeys):this.projectSource(accountId,clientId,identity,p.productId).scope;
         if(scope!==draft.scope)throw changed();
         const d=this.propose(accountId,clientId,identity,`conversation:${p.id}:${draft.id}`,draft.input,undefined,draft.id);
-        this.confirm(this.read<Delivery>("merge_deliveries",d.id),"session-instruction",source.text);
+        this.confirm(this.read<Delivery>("merge_deliveries",d.id),"session-instruction",authorization.text);
       }
-      const conversation={clientId,executor,preparationId:p.id,authorization:source,input:source,repository:p.repository};
+      const conversation={clientId,executor,preparationId:p.id,authorization,input:source,repository:p.repository};
       const b=this.start(accountId,`conversation-${p.id}`,p.selection,p.config,p.operation!=="merge_only",1,false,p.operation,p.publicationScope?.digest,false,conversation);
       if(p.publicationTargets){b.publicationTargets=p.publicationTargets;this.saveBatch(b);}
       this.db.connection.prepare("UPDATE conversation_integration_preparations SET batch_id=? WHERE id=?").run(b.id,p.id);

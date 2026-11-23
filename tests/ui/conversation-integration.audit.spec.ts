@@ -33,3 +33,28 @@ for(const width of [320,1440])for(const theme of ["light","dark"] as const){
     await page.keyboard.press("Escape");await expect(dialog).toHaveCount(0);await expect(draft).toHaveValue("保留原会话草稿");await expect(trigger).toBeFocused();
   });
 }
+
+test("displays and confirms one frozen execution scope", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  const digest = "a".repeat(64);
+  const reviewText = "合并 PR #764 · " + "b".repeat(40) + "\n发布 Android 0.1.204 和 Web";
+  let decisions = 0;
+  await page.route("**/api/v1/conversation-integrations/test-scope/review", async route => {
+    if (route.request().method() === "POST") {
+      expect(route.request().postDataJSON()).toEqual({ reviewDigest: digest });
+      decisions++;
+      await route.fulfill({ json: { confirmed: true } });
+      return;
+    }
+    await route.fulfill({ json: { reviewText, reviewDigest: digest, targetBranches: ["main"], confirmed: decisions > 0 } });
+  });
+  await page.goto("/?conversationIntegrationReview=test-scope");
+  await expect(page.getByText("目标分支 · main")).toBeVisible();
+  await expect(page.getByText("发布 Android 0.1.204 和 Web", { exact: false })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.getByRole("button", { name: "确认此执行范围" }).click();
+  await expect(page.getByRole("status")).toHaveText("执行范围已确认。请回到原会话继续。");
+  await page.reload();
+  await expect(page.getByRole("status")).toHaveText("执行范围已确认。请回到原会话继续。");
+  expect(decisions).toBe(1);
+});

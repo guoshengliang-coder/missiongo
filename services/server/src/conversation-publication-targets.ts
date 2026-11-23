@@ -17,9 +17,20 @@ const escaped=(s:string)=>s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
 /** Remove only uniquely resolved artifacts and their checked version constraints.
  * Unknown qualifiers are left for the conservative action grammar to reject. */
 export function publicationActionBounds(text:string,bounds:ConversationPublicationBounds):{text:string;artifacts:string[]} {
-  const names=new Map<string,Set<string>>();
-  for(const artifact of bounds.declaredArtifacts)for(const name of [artifact,...(aliases[artifact]??[])]) {
-    const key=name.toLowerCase();if(!names.has(key))names.set(key,new Set());names.get(key)!.add(artifact);
+  const names = new Map<string, Set<string>>();
+  for (const artifact of bounds.declaredArtifacts) {
+    const key = artifact.toLowerCase();
+    if (!names.has(key)) names.set(key, new Set());
+    names.get(key)!.add(artifact);
+  }
+  const exactNames = new Set(names.keys());
+  for (const artifact of bounds.declaredArtifacts) {
+    for (const alias of aliases[artifact] ?? []) {
+      const key = alias.toLowerCase();
+      if (exactNames.has(key)) continue;
+      if (!names.has(key)) names.set(key, new Set());
+      names.get(key)!.add(artifact);
+    }
   }
   const tokens=[...names.keys()].sort((a,b)=>b.length-a.length).map(escaped);
   if(!tokens.length)return {text,artifacts:[]};

@@ -1,7 +1,7 @@
 import { publicationActionBounds, scopeConflict, type ConversationPublicationBounds } from "./conversation-publication-targets.js";
 import type { MissionGoDatabase } from "./storage/database.js";
 import { conflict } from "./errors.js";
-import { assertIntegrationInstruction, integrationFingerprint, type IntegrationExecutor, type IntegrationInstruction } from "./conversation-integration-source.js";
+import { assertIntegrationInstruction, integrationFingerprint, isIntegrationRetry, type IntegrationExecutor, type IntegrationInstruction } from "./conversation-integration-source.js";
 
 export interface ConversationReviewEvidence {
   sourceId: string; occurredAt: string; textDigest: string; reviewDigest: string;
@@ -17,7 +17,7 @@ export function conversationScopeReview(database: MissionGoDatabase, executor: I
   instruction: IntegrationInstruction, reviewText: string, reviewDigest: string,
   operation: "merge_only" | "merge_and_publish" | "publish_only",
   references: readonly {repository:string;pullRequest:number;head:string}[],
-  reviewedDecision=false, publicationBounds:ConversationPublicationBounds={requiredArtifacts:[],declaredArtifacts:[]}): ConversationReviewEvidence | undefined {
+  reviewedDecision=false, publicationBounds:ConversationPublicationBounds={requiredArtifacts:[],declaredArtifacts:[]}, retry?:IntegrationInstruction): ConversationReviewEvidence | undefined {
   const assertActionBounds=(text:string,decision=false)=>{
     // This is a server-derived fact from the immediately preceding unique
     // complete review, never an MCP argument or an Agent-provided approval.
@@ -86,17 +86,19 @@ export function conversationScopeReview(database: MissionGoDatabase, executor: I
     : `SELECT source_id,text,occurred_at AS at FROM agent_session_messages WHERE session_id=? AND role='agent'
        AND phase='final_answer' AND instr(text,'原会话执行范围：')>0
        AND (julianday(occurred_at)<julianday(?) OR julianday(occurred_at) IS NULL) ORDER BY position DESC,rowid DESC LIMIT 1`)
-    .get(sessionId,instruction.occurredAt) as {source_id:string;text:string;at:string|null}|undefined;
+    .get(sessionId,retry?.occurredAt ?? instruction.occurredAt) as {source_id:string;text:string;at:string|null}|undefined;
   if(!row)return undefined;
   if(!row.at || !Number.isFinite(Date.parse(row.at)))throw missing();
   const key=external?`external:${sessionId}`:`dispatch:${executor.dispatchId}`;
   const clock=db.prepare("SELECT occurred_at FROM session_message_times WHERE session_key=? AND source_id=? AND provenance='source_message'")
     .get(key,`native:${row.source_id}`) as {occurred_at:string}|undefined;
   if(!clock || Date.parse(clock.occurred_at)!==Date.parse(row.at))throw missing();
+  if(Date.parse(row.at)>=Date.parse(instruction.occurredAt))return undefined;
   if(!row.text.includes(reviewText) || (row.text.match(/原会话执行范围：/g)?.length??0)!==1)return undefined;
 
   // The current input still needs its own authorization. Do not infer consent
   // from old input, progress, a tool parameter or an unbound "approve".
+  const latest = retry ?? instruction;
   const users=db.prepare(external
     ? `SELECT source_id,json_extract(payload_json,'$.text') AS text,json_extract(payload_json,'$.occurredAt') AS at
        FROM external_native_messages WHERE session_id=? AND json_extract(payload_json,'$.role')='user'
@@ -104,15 +106,15 @@ export function conversationScopeReview(database: MissionGoDatabase, executor: I
        AND (julianday(json_extract(payload_json,'$.occurredAt')) BETWEEN julianday(?) AND julianday(?) OR julianday(json_extract(payload_json,'$.occurredAt')) IS NULL)`
     : `SELECT source_id,text,occurred_at AS at FROM agent_session_messages WHERE session_id=? AND role='user'
        AND COALESCE(phase,'')<>'execution' AND (julianday(occurred_at) BETWEEN julianday(?) AND julianday(?) OR julianday(occurred_at) IS NULL)`)
-    .all(sessionId,row.at,instruction.occurredAt) as {source_id:string;text:string;at:string|null}[];
+    .all(sessionId,row.at,latest.occurredAt) as {source_id:string;text:string;at:string|null}[];
   const commands=db.prepare(external
     ? "SELECT id,text,created_at AS at,status FROM external_native_commands WHERE session_id=? AND julianday(created_at) BETWEEN julianday(?) AND julianday(?)"
     : "SELECT id,text,created_at AS at,status FROM agent_session_commands WHERE session_id=? AND kind='message' AND julianday(created_at) BETWEEN julianday(?) AND julianday(?)")
-    .all(sessionId,row.at,instruction.occurredAt) as {id:string;text:string;at:string;status:string}[];
+    .all(sessionId,row.at,latest.occurredAt) as {id:string;text:string;at:string;status:string}[];
   const explicitRenewal=!reviewedDecision && expected.size>0 && currentReferences.size===expected.size
     && (operation==="merge_only" || publicationBounds.requiredArtifacts.length>0 && currentArtifacts.length===publicationBounds.requiredArtifacts.length);
   if(!external) {
-    const interrupts=db.prepare("SELECT status,created_at AS at FROM agent_session_commands WHERE session_id=? AND kind='interrupt' AND status NOT IN ('failed','cancelled') AND julianday(created_at) BETWEEN julianday(?) AND julianday(?)").all(sessionId,row.at,instruction.occurredAt) as {status:string;at:string}[];
+    const interrupts=db.prepare("SELECT status,created_at AS at FROM agent_session_commands WHERE session_id=? AND kind='interrupt' AND status NOT IN ('failed','cancelled') AND julianday(created_at) BETWEEN julianday(?) AND julianday(?)").all(sessionId,row.at,latest.occurredAt) as {status:string;at:string}[];
     if(interrupts.some(i=>!explicitRenewal || i.status!=="delivered" || Date.parse(i.at)>=Date.parse(instruction.occurredAt)))
       throw scopeConflict("stopped","范围审阅后出现停止；只有后续明确重授同一完整 PR 和产物范围才可恢复，普通继续或进度询问不会解除停止。");
   }
@@ -126,6 +128,8 @@ export function conversationScopeReview(database: MissionGoDatabase, executor: I
   for(const input of inputs) {
     // Exact current command and its clocked mirror are checked by integrationInstruction.
     if(input.text===instruction.text && Date.parse(input.at!)===Date.parse(instruction.occurredAt))continue;
+    if (retry && Date.parse(input.at!) > Date.parse(instruction.occurredAt) && isIntegrationRetry(input.text)) continue;
+    if (retry && Date.parse(input.at!) >= Date.parse(instruction.occurredAt)) throw changed();
     const text=input.text.trim();
     // These bounded non-execution messages do not change a reviewed code scope.
     if(/^(?:请)?(?:进度(?:如何)?|查看进度|当前状态|状态如何|继续(?:执行|处理)?|同意|批准|提交)[。.!！]?$/i.test(text))continue;
