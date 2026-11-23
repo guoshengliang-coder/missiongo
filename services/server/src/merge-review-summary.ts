@@ -11,7 +11,7 @@ export function mergeReviewSummary(preview:MergeReconciliationPreview,requestId:
   const scope=row.publicationScope;
   if(scope){
     lines.push(`发布产物：${scope.requiredArtifacts.map(integrationArtifactName).join(" / ")}`);
-    for(const c of scope.candidates)lines.push(`${c.historicalGapReason?"历史缺证：":!c.selected?"额外包含：":""}${c.title} · ${c.requiredArtifacts?.map(integrationArtifactName).join(" / ")||"历史范围缺证"}${c.historicalGapReason?`；保留缺口：${c.historicalGapReason}`:""}`);
+    for(const c of scope.candidates)lines.push(`${c.historicalGapPreviouslyReviewed?"历史缺证已审阅：":c.historicalGapReason?"历史缺证：":!c.selected?"额外包含：":""}${c.title} · ${c.requiredArtifacts?.map(integrationArtifactName).join(" / ")||"历史范围缺证"}${c.historicalGapReason?`；保留缺口：${c.historicalGapReason}`:""}`);
     for(const blocker of scope.blockers)lines.push(`仍需核实：${blocker}`);
     for(const e of scope.exclusions??[])lines.push(`未纳入：${e.title}；${e.reason}`);
   }else for(const e of preview.entries.filter(e=>!("deliveryId"in row.action)||row.action.deliveryId===e.deliveryId))

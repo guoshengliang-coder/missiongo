@@ -235,9 +235,10 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
   const scope=useQuery({queryKey:["merge-deliveries",productId,"preview",selection],
     queryFn:()=>post<PublicationScope>(`/api/v1/products/${encodeURIComponent(productId)}/integration-preview`,{selection}),
     enabled:step===2&&effectivePublish&&selection.length>0,staleTime:0});
+  const historicalGaps=scope.data?.candidates.filter(c=>c.historicalGapReason&&!c.historicalGapPreviouslyReviewed)??[];
   const start=useMutation({mutationFn:async()=>{
     if(!config)throw new Error("Missing configuration");
-    frozen.current??={requestKey:crypto.randomUUID(),selection,config,publish:effectivePublish,saveAsDefault,operation,...(effectivePublish&&scope.data?{scopeDigest:scope.data.digest,...(scope.data.candidates.some(c=>c.historicalGapReason)?{historicalGapsAcknowledged:historyReviewDigest===scope.data.digest}:{})}:{})};
+    frozen.current??={requestKey:crypto.randomUUID(),selection,config,publish:effectivePublish,saveAsDefault,operation,...(effectivePublish&&scope.data?{scopeDigest:scope.data.digest,...(historicalGaps.length?{historicalGapsAcknowledged:historyReviewDigest===scope.data.digest}:{})}:{})};
     const f=frozen.current;
     return post<Batch>(`/api/v1/products/${productId}/merge-batches`,{...f.config,requestKey:f.requestKey,selection:f.selection,publish:f.publish,saveAsDefault:f.saveAsDefault,operation:f.operation,...(f.scopeDigest?{scopeDigest:f.scopeDigest}:{}),...(f.historicalGapsAcknowledged?{historicalGapsAcknowledged:true}:{}),integrationProtocol:1});
   },onSuccess:b=>{
@@ -258,7 +259,6 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
   const selectedCount=Object.keys(selected).length;
   const mergeCount=chosen.filter(d=>d.queue.stage==="merge").length;
   const releaseCount=chosen.length-mergeCount;
-  const historicalGaps=scope.data?.candidates.filter(c=>c.historicalGapReason)??[];
   const historyReviewNeeded=historicalGaps.length>0&&historyReviewDigest!==scope.data?.digest;
   const extraScope=scope.data?.candidates.filter(c=>!c.selected&&!c.historicalGapReason)??[];
   const extraGroups=new Set(extraScope.map(c=>JSON.stringify(c.completion??c.identity))).size;
@@ -334,7 +334,9 @@ function MergeDialog({productId,onClose,onSession}:{productId:string;onClose:()=
           </section>}
           {scope.data.exclusions?.map(e=><p className="integration-note" key={e.identity}>{e.title} · {e.reason}</p>)}
           {scope.data.blockers.map(b=><p className="inline-error" role="alert" key={b}>{b}</p>)}
-          <details><summary>{t("queueScopeDetails")}</summary>{scope.data.candidates.map(c=><p key={c.identity}>{c.title} · {c.requiredArtifacts?.map(artifactName).join(" / ")}</p>)}</details>
+          <details><summary>{t("queueScopeDetails")}</summary>{scope.data.candidates.map(c=><p key={c.identity}>{c.itemKey&&c.historicalGapReason?`${c.itemKey} · `:""}{c.title}{c.historicalGapPreviouslyReviewed
+            ?<> · {t("queueHistoricalGapReviewed")}<br/>{c.historicalGapReason}</>
+            :c.requiredArtifacts?.length?<> · {c.requiredArtifacts.map(artifactName).join(" / ")}</>:null}</p>)}</details>
         </>}
         </>}
       </section>

@@ -389,7 +389,8 @@ for(const theme of ["light","dark"] as const)test(`publication recovery preserve
   const id="scope-recovery-session",at="2026-11-08T08:00:00Z",snapshot="a".repeat(64),scopeDigest="b".repeat(64),reviewedDigest="d".repeat(64);
   let approved=false;
   const session={id,agentSessionId:id,dispatchId:"scope-dispatch",productId:product.id,agentKind:"codex",status:"idle",updatedAt:at,createdAt:at,nodeName:"Fixture",nodeId:"fixture",nodeConnectionState:"online",mode:"auto",dispatchStatus:"launched",activities:[],settings:{},unread:false,canReply:true,canRetry:false,canStop:false,canArchive:true,attention:{state:"none"},needsAttention:false,items:[]};
-  const candidates=[{identity:"RC-1:current-event",title:"Current merged delivery",itemKey:"RC-1",developmentEventId:"current-event",roundKey:"current-round",expectedRevision:4,selected:true,completion:{kind:"github",url:"https://github.com/example/project/pull/12"},requiredArtifacts:["web","windowsApp"]},{identity:"RC-1:old-event",title:"Historical manual completion",itemKey:"RC-1",developmentEventId:"old-event",roundKey:"old-round",expectedRevision:4,selected:false,historicalGapReason:"历史手动开发完成记录缺少集成和范围；当前交付仍完整纳入"}];
+  const candidates=[{identity:"RC-1:current-event",title:"Current merged delivery",itemKey:"RC-1",developmentEventId:"current-event",roundKey:"current-round",expectedRevision:4,selected:true,completion:{kind:"github",url:"https://github.com/example/project/pull/12"},requiredArtifacts:["web","windowsApp"]},{identity:"RC-1:old-event",title:"Historical manual completion",itemKey:"RC-1",developmentEventId:"old-event",roundKey:"old-round",expectedRevision:4,selected:false,historicalGapReason:"历史手动开发完成记录缺少集成和范围；当前交付仍完整纳入"},
+    {identity:"RC-1:reviewed-event",title:"Previously reviewed completion",itemKey:"RC-1",developmentEventId:"reviewed-event",roundKey:"old-round",expectedRevision:4,selected:false,historicalGapReason:"沿用已有历史处置",historicalGapPreviouslyReviewed:true}];
   const scope={digest:reviewedDigest,candidates,requiredArtifacts:["web","windowsApp"],blockers:[]};
   const batch={id:"scope-batch",sessionId:id,state:"finished",deliveries:["delivery"],publish:true,results:{}};
   await page.route("**/api/v1/agent-sessions**",route=>queueRoute(route).fulfill({json:new URL(route.request().url()).pathname==="/api/v1/agent-sessions"?{sessions:[session]}:{...session,messages:[]}}));
@@ -404,6 +405,7 @@ for(const theme of ["light","dark"] as const)test(`publication recovery preserve
   const region=page.getByRole("region",{name:"批次对账"});
   await expect(region).toContainText("Current merged delivery");await expect(region).toContainText("Web/Server / Windows");
   await expect(region).toContainText("Historical manual completion");await expect(region).toContainText("历史缺证，不纳入本次交付承诺");
+  await expect(region.getByRole("listitem").filter({hasText:"Previously reviewed completion"})).toContainText("历史缺证已审阅");
   await expect(region.getByRole("button",{name:"批准本次恢复"})).toBeDisabled();
   await region.getByText("查看改动与验证详情",{exact:true}).first().click();
   await expect(region).toContainText("current-round");

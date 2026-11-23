@@ -41,6 +41,8 @@ export interface PublicationScopeRow {
   itemScope?:string;
   /** Historical evidence gap requiring explicit scoped review; never a publication receipt. */
   historicalGapReason?:string;
+  /** The same signed-in account already reviewed this exact historical record. */
+  historicalGapPreviouslyReviewed?:true;
 }
 export interface PublicationScope {
   digest:string; candidates:PublicationScopeRow[]; requiredArtifacts:string[]; blockers:string[];

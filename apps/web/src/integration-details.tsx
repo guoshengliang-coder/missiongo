@@ -69,7 +69,7 @@ export function IntegrationProgress({batch}:{batch:Batch}) {
         </button>;
       })}</div>
       {batch.presentation?.ownedExtras?.length?<section><h3>{t("integrationOwnedExtras")}</h3>{batch.presentation.ownedExtras.map(row=><div key={row.id}><strong>{row.title}</strong><p>{t(integrationPublicationLabels[row.publication])}</p>{row.pendingArtifacts.length>0&&<p>{t("queuePendingArtifacts")}: {row.pendingArtifacts.join(" / ")}</p>}{row.blocker&&<p role="status" className="integration-attention">{row.blocker}</p>}</div>)}</section>:null}
-      {batch.presentation?.historicalGaps?.length?<section className="integration-attention"><h3>{t("queueHistoricalGaps")}</h3>{batch.presentation.historicalGaps.map(row=><p key={row.identity}><strong>{row.title}</strong><br/>{row.reason}</p>)}<p>{t("queueHistoricalGapsHelp")}</p></section>:null}
+      {batch.presentation?.historicalGaps?.length?<section className="integration-attention"><h3>{t("queueHistoricalGaps")}</h3>{batch.presentation.historicalGaps.map(row=><p key={row.identity}><strong>{row.title}</strong><br/>{row.reason}</p>)}</section>:null}
       {!order.length&&<p>{t(batch.operation==="publish_only"?"queuePublishOnlyHelp":"integrationPlanning")}</p>}
       <button type="button" className="integration-drill" onClick={()=>enter("recovery")}>{t("recoveryOpen")}<ChevronRight size={18} aria-hidden="true"/></button>
     </div>
