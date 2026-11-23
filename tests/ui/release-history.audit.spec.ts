@@ -8,8 +8,8 @@ for(const width of [320,1440])for(const theme of ['light','dark'] as const) {
     const row={id:'pending',productId:product.id,sessionId:'source',revision:'r',state:'confirmed',summary:'本次 Web 修复',validation:'Synthetic',itemKeys:[],head:'a'.repeat(40),requiredArtifacts:['web'],pullRequestUrl:'https://github.com/example/project/pull/1',evidence:{checkedAt:new Date().toISOString(),source:'Fixture'},queue:{stage:'merge',publishedArtifacts:[],pendingArtifacts:['web'],records:[]}};
     await page.route('**/integration-queue?**',route=>route.fulfill({json:{deliveries:[row],counts:{merge:1}}}));
     await page.route(/\/merge-deliveries(?:\?.*)?$/,route=>route.fulfill({json:{deliveries:[],batches:[]}}));
-    let revision=1,blocked=false;
-    await page.route('**/integration-preview',route=>route.fulfill({json:{digest:`scope-${revision}`,requiredArtifacts:['web'],candidates:[{identity:'delivery:pending',title:'本次 Web 修复',selected:true,requiredArtifacts:['web']},{identity:'SYN-1:old',itemKey:'SYN-1',title:'Windows 客户端',selected:false,historicalGapReason:'人工标记开发完成后已退回处理，后续已有独立集成交付；此旧记录缺少集成与范围，保留历史告警，不计为本次交付。'}],blockers:blocked?['另一份实际交付缺少发布范围，请补齐后重试']:[]}}));
+    let revision=1,blocked=false,reviewed=false;
+    await page.route('**/integration-preview',route=>route.fulfill({json:{digest:`scope-${revision}`,requiredArtifacts:['web'],candidates:[{identity:'delivery:pending',title:'本次 Web 修复',selected:true,requiredArtifacts:['web']},{identity:'SYN-1:old',itemKey:'SYN-1',title:'Windows 客户端',selected:false,historicalGapReason:'人工标记开发完成后已退回处理，后续已有独立集成交付；此旧记录缺少集成与范围，保留历史告警，不计为本次交付。',...(reviewed?{historicalGapPreviouslyReviewed:true}:{})}],blockers:blocked?['另一份实际交付缺少发布范围，请补齐后重试']:[]}}));
     await page.route('**/api/v1/nodes',route=>route.fulfill({json:{nodes:[{id:'node',name:'Fixture',online:true,supportsFreeSessions:true,agents:[{kind:'codex',planApprovalProtocol:1,ready:true,models:[]}],repos:[{productId:product.id,repoPath:'fixture'}],repoCandidates:[],createdAt:new Date().toISOString()}]}}));
     for(const name of ['dispatch-defaults','integration-defaults'])await page.route('**/api/v1/'+name,route=>route.fulfill({json:{nodeId:'node',agentKind:'codex',agents:{codex:{mode:'auto'}}}}));
     const bodies:Record<string,unknown>[]=[];
@@ -34,5 +34,13 @@ for(const width of [320,1440])for(const theme of ['light','dark'] as const) {
     blocked=true;await start.click();await expect(dialog.getByText('另一份实际交付缺少发布范围，请补齐后重试')).toBeVisible();await expect(start).toBeDisabled();
     // Returning to merge-only remains available without publication approval.
     await dialog.getByRole('checkbox',{name:/合并后发布/}).uncheck();await expect(start).toBeEnabled();
+    revision=3;blocked=false;reviewed=true;
+    await dialog.getByRole('checkbox',{name:/合并后发布/}).check();
+    await expect(review).toHaveCount(0);await expect(start).toBeEnabled();
+    await dialog.getByText('查看完整发布清单').click();
+    await expect(dialog.getByText(/SYN-1.*历史缺证已审阅/)).toBeVisible();
+    await start.click();await expect.poll(()=>bodies.length).toBe(3);
+    expect(bodies[2]).toMatchObject({scopeDigest:'scope-3'});
+    expect(bodies[2]).not.toHaveProperty('historicalGapsAcknowledged');
   });
 }

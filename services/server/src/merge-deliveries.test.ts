@@ -1,4 +1,4 @@
-import {reviewedHistoricalDeliveries} from "./historical-delivery-review.js";
+import {previouslyReviewedHistoricalGaps,reviewedHistoricalDeliveries} from "./historical-delivery-review.js";
 import { MissionGoError } from "./errors.js";
 import { mergeContinuationKey } from "./merge-continuation.js";
 import {AgentHistory} from "./agent-history.js";
@@ -1950,7 +1950,10 @@ describe("AND-439 batch reconciliation",()=>{
     return {...f,scope,gap,action,historical};
   }
   it("uses applied recovery review for manual acceptance without fabricating historical publication",async()=>{
-    const f=await publicationRefreshFixture(),r=f.request(f.action);f.approve(r);f.apply(r.key);
+    const f=await publicationRefreshFixture(),r=f.request(f.action);
+    const reviewed=()=>previouslyReviewedHistoricalGaps(f.store.database,f.item.productId,[f.gap],f.owner.id);
+    f.approve(r);expect(reviewed().size).toBe(0);
+    f.apply(r.key);expect(reviewed().has(f.gap.identity)).toBe(true);
     const record=f.store.getDeliveryRecords(f.item.key).find(row=>row.id!==f.gap.developmentEventId)!;
     expect(f.store.submitReleaseBatch({productId:f.item.productId,idempotencyKey:"recovery-published",deployedCommit:"e".repeat(40),receiptDigest:"f".repeat(64),attribution:{accountId:f.owner.id,clientId:"original-client"},
       items:[{itemKey:f.item.key,expectedRevision:f.store.getWorkItem(f.item.key).revision,developmentEventId:record.id,roundKey:record.roundKey!,completion:record.completion!,releases:record.requiredArtifacts!.map(artifact=>({artifact,version:"1",sourceCommit:"e".repeat(40)}))}]}).results[0]?.outcome).toBe("submitted");
@@ -2606,6 +2609,86 @@ describe("AND-511 two-step integration queue",()=>{
     expect(scope.requiredArtifacts).toContain("windowsApp");
     expect(scope.candidates.filter(c=>c.itemKey===f.item.key)).toHaveLength(2);
     expect(()=>f.merges.start(f.owner.id,"cannot-hide-known",f.selection,f.conf,true,1,false,"publish_only",scope.digest,true)).toThrow();
+  });
+  it.each(["queue","original conversation"] as const)("reuses an exact saved historical review in the next %s batch",async entry=>{
+    vi.useFakeTimers({toFake:["Date"]});vi.setSystemTime(new Date("2026-11-22T08:00:00Z"));
+    const f=await historicalProject(),scope=f.merges.publicationPreview(f.owner.id,f.item.productId,f.selection);
+    const first=f.merges.start(f.owner.id,"initial-review",f.selection,f.conf,true,1,false,"publish_only",scope.digest,true);
+    f.launchBatch(first);
+    let current=f.merges.batch(f.owner.id,first.dispatchId,first.id);
+    function act(action:Parameters<MergeDeliveries["integrate"]>[5]) {
+      current=f.merges.integrate(f.owner.id,first.dispatchId,first.id,current.integration!.revision,randomUUID(),action);
+    }
+    act({kind:"plan",base:"b".repeat(40),summary:"Verify original",validation:"Verify",entries:[{deliveryId:f.d.id,head:f.d.head,dependsOn:[],group:"one",reason:"Reference",validation:"Verify"}]});
+    act({kind:"verify_reference",deliveryId:f.d.id,expectedHead:f.d.head,commit:"c".repeat(40),checkedAt:new Date().toISOString(),source:"Synthetic"});
+    act({kind:"final_validation",head:"c".repeat(40),checkedAt:new Date().toISOString(),validation:"Verified",source:"Synthetic"});
+    for(const command of f.db.prepare("SELECT id FROM agent_session_commands WHERE session_id=? AND status='queued'").all(first.sessionId) as {id:string}[])
+      new AgentSessionStore(f.store.database).recordSnapshot({nodeId:f.node.nodeId,sessionId:first.sessionId,status:"active",messages:[],turnState:{turnActive:true},commandId:command.id,commandStatus:"delivered"});
+    const recovery=f.merges.preview(f.owner.id,first.id),refresh=recovery.publicationRefresh!;
+    expect(refresh.candidates.find(c=>c.developmentEventId===f.old)?.historicalGapPreviouslyReviewed).toBe(true);
+    const requested=f.merges.requestReconciliation(f.owner.id,first.dispatchId,first.id,"refresh",recovery.snapshot,{
+      kind:"allow_partial_publication",reason:"Approve the next publication snapshot",
+      publicationRefresh:{scopeDigest:refresh.digest,historicalGaps:[]},
+    }).reconciliation!.requests.find(r=>r.id==="refresh")!;
+    expect(requested.publicationScope?.candidates.find(c=>c.developmentEventId===f.old)?.historicalGapPreviouslyReviewed).toBe(true);
+    expect(()=>f.merges.applyReconciliation(f.owner.id,first.dispatchId,first.id,"refresh")).toThrow(/人工/);
+    f.merges.decideReconciliation(f.owner.id,first.id,"refresh",recovery.snapshot,"approved",true,requested.publicationScope!.digest);
+    f.merges.applyReconciliation(f.owner.id,first.dispatchId,first.id,"refresh");
+    const snapshot=f.merges.preview(f.owner.id,first.id).snapshot;
+    f.merges.requestReconciliation(f.owner.id,first.dispatchId,first.id,"defer",snapshot,{kind:"defer_publication",reason:"Synthetic human choice"});
+    f.merges.decideReconciliation(f.owner.id,first.id,"defer",snapshot,"approved",true);
+    f.merges.applyReconciliation(f.owner.id,first.dispatchId,first.id,"defer");
+    f.merges.finish(f.owner.id,first.dispatchId,first.id);
+
+    if(entry==="original conversation") {
+      const sessions=new AgentSessionStore(f.store.database),identity={dispatchId:f.dispatch.id};
+      f.db.prepare("UPDATE agent_sessions SET applied_settings_revision=settings_revision WHERE id=?").run(f.projectSessionId);
+      const human=(text:string)=>{
+        const command=sessions.enqueue(f.owner.id,f.projectSessionId,text,[]);
+        f.db.prepare("UPDATE agent_session_commands SET status='delivered' WHERE id=?").run(command.id);
+      };
+      human("执行发布");
+      const p=f.merges.prepareConversation(f.owner.id,"original-client",identity,"publish-next",{
+        productId:f.item.productId,repository:f.input.repository,operation:"publish_only",deliveries:[],
+      });
+      expect(p.publicationScope?.candidates.find(c=>c.developmentEventId===f.old)?.historicalGapPreviouslyReviewed).toBe(true);
+      expect(()=>f.merges.startConversation(f.owner.id,"original-client",identity,p.id)).toThrow(/完整发布范围/);
+      vi.setSystemTime(Date.now()+10);
+      sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",
+        messages:[{sourceId:"next-publication-scope",role:"agent",phase:"final_answer",text:p.reviewText,occurredAt:new Date(Date.now()-1).toISOString()}]});
+      human("批准");
+      const b=f.merges.startConversation(f.owner.id,"original-client",identity,p.id);
+      expect(b.sessionId).toBe(f.projectSessionId);
+      expect(b.publicationReview).toBeUndefined();
+      expect(b.publicationScope?.requiredArtifacts).toEqual(["web"]);
+      return;
+    }
+
+    const next=f.merges.propose(f.owner.id,"original-client",{dispatchId:f.dispatch.id},"next-delivery",
+      {...f.input,pullRequest:999,head:"f".repeat(40),requiredArtifacts:["windowsApp"],evidence:{...f.input.evidence,head:"f".repeat(40)}});
+    f.merges.decide(f.owner.id,next.id,next.revision,"confirm");
+    const selection=[{id:next.id,revision:next.revision}];
+    const preview=f.merges.publicationPreview(f.owner.id,f.item.productId,selection);
+    const old=preview.candidates.find(c=>c.developmentEventId===f.old)!;
+    expect(preview.digest).not.toBe(scope.digest);
+    expect(preview.requiredArtifacts).toEqual(["web","windowsApp"]);
+    expect(old).toMatchObject({historicalGapReason:expect.any(String),historicalGapPreviouslyReviewed:true});
+    expect(previouslyReviewedHistoricalGaps(f.store.database,f.item.productId,[old],f.other.id).size).toBe(0);
+    expect(previouslyReviewedHistoricalGaps(f.store.database,"other-project",[old],f.owner.id).size).toBe(0);
+    const second=f.merges.start(f.owner.id,"next-batch",selection,f.conf,true,1,false,"merge_and_publish",preview.digest);
+    expect(second.publicationReview).toBeUndefined();
+    expect(f.merges.start(f.owner.id,"next-batch",selection,f.conf,true,1,false,"merge_and_publish",preview.digest).id).toBe(second.id);
+    expect(f.merges.start(f.owner.id,"next-batch",selection,f.conf,true,1,false,"merge_and_publish",preview.digest,true).id).toBe(second.id);
+    expect(f.merges.batches(f.item.productId,f.owner.id).find(row=>row.id===second.id)!.presentation.historicalGaps).toBeUndefined();
+    f.launchBatch(second);
+    const live=()=>f.merges.batch(f.owner.id,second.dispatchId,second.id);
+    expect(live().publicationScope?.candidates).toContainEqual(old);
+    expect(live().prerequisiteGate.blockers.some(blocker=>blocker.id==="publication_scope")).toBe(false);
+
+    f.store.updateWorkItem(f.item.key,{description:"Changed scope",attribution:{accountId:config.id}});
+    const changed=f.merges.publicationPreview(f.owner.id,f.item.productId,f.selection);
+    expect(changed.candidates.find(c=>c.developmentEventId===f.old)?.historicalGapPreviouslyReviewed).toBeUndefined();
+    expect(live().prerequisiteGate.blockers.some(blocker=>blocker.id==="publication_scope")).toBe(true);
   });
   it("retains only the historical warning after the replacement delivery is fully published",async()=>{
     const f=await historicalProject(),record=f.store.getDeliveryRecords(f.item.key).find(r=>r.id!==f.old)!;

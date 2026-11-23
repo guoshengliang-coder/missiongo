@@ -9,32 +9,65 @@ export const historicalDeliveryFingerprint=(row:PublicationScopeRow)=>digest([
 ]);
 
 type ReviewedBatch={accountId:string;publicationScope?:PublicationScope;publicationReview?:{accountId:string;at:string;scopeDigest:string};
-  reconciliation?:{requests:{action:{kind:string};decision?:string;decidedAt?:string;decidedBy?:string;appliedAt?:string;publicationScope?:PublicationScope}[]}};
+  reconciliation?:{
+    requests:{action:{kind:string;publicationRefresh?:unknown};decision?:string;decidedAt?:string;decidedBy?:string;appliedAt?:string;publicationScope?:PublicationScope}[];
+    history?:{action:string;previous?:unknown}[];
+  }};
 type Delivery={id:string;roundKey:string|null;completion?:unknown;requiredArtifacts:readonly string[]|null};
+
+function reviewedScopes(batch:ReviewedBatch,accountId?:string):PublicationScope[] {
+  // Recovery keeps the previous applied scope when it replaces the current snapshot.
+  const snapshots=new Map<string,PublicationScope>();
+  for(const entry of batch.reconciliation?.history??[]) {
+    if(entry.action!=="refresh_publication_scope"||!entry.previous)continue;
+    const scope=entry.previous as PublicationScope;
+    snapshots.set(scope.digest,scope);
+  }
+  if(batch.publicationScope)snapshots.set(batch.publicationScope.digest,batch.publicationScope);
+  const scopes:PublicationScope[]=[],startReview=batch.publicationReview;
+  if(startReview?.accountId===batch.accountId&&startReview.at&&(accountId===undefined||startReview.accountId===accountId)) {
+    const original=snapshots.get(startReview.scopeDigest);
+    if(original)scopes.push(original);
+  }
+  for(const review of batch.reconciliation?.requests??[]) {
+    if(review.action.kind!=="allow_partial_publication"||!review.action.publicationRefresh||review.decision!=="approved"
+      ||!review.decidedAt||!review.decidedBy||!review.appliedAt||!review.publicationScope||(accountId!==undefined&&review.decidedBy!==accountId))continue;
+    const applied=snapshots.get(review.publicationScope.digest);
+    if(applied&&digest(applied)===digest(review.publicationScope))scopes.push(applied);
+  }
+  return scopes;
+}
+
+/** Match the original human review, without treating inherited reviews as new approvals. */
+export function previouslyReviewedHistoricalGaps(db:MissionGoDatabase,productId:string,candidates:readonly PublicationScopeRow[],accountId?:string) {
+  const reviewed=new Set<string>();
+  const fingerprints=new Map(candidates.map(row=>[row.identity,historicalDeliveryFingerprint(row)]));
+  if(!fingerprints.size)return reviewed;
+  const batches=db.connection.prepare(`SELECT data_json FROM merge_batches WHERE product_id=?
+    AND (json_extract(data_json,'$.publicationReview') IS NOT NULL OR EXISTS (
+      SELECT 1 FROM json_each(json_extract(data_json,'$.reconciliation.requests')) r
+      WHERE json_extract(r.value,'$.publicationScope') IS NOT NULL AND json_extract(r.value,'$.appliedAt') IS NOT NULL))`)
+    .iterate(productId) as Iterable<{data_json:string}>;
+  for(const raw of batches) {
+    for(const scope of reviewedScopes(JSON.parse(raw.data_json) as ReviewedBatch,accountId)) {
+      for(const row of scope.candidates) {
+        const expected=fingerprints.get(row.identity);
+        if(expected&&row.historicalGapReason&&!row.historicalGapPreviouslyReviewed&&expected===historicalDeliveryFingerprint(row))
+          reviewed.add(row.identity);
+      }
+    }
+    if(reviewed.size===fingerprints.size)break;
+  }
+  return reviewed;
+}
 
 /** A history disposition only affects eligibility; it never publishes or accepts work. */
 export function reviewedHistoricalDeliveries(db:MissionGoDatabase,item:{id:string;key:string;productId:string;contentVersion:number;builderAccountId?:string|null;roundKey:string|null},records:readonly Delivery[]) {
-  const candidates=records.filter(r=>!r.completion||r.requiredArtifacts===null),reviewed=new Set<string>();
-  if(!candidates.length)return reviewed;
   const itemScope=deliveryScope([[item.id,item.contentVersion,item.builderAccountId??null,item.roundKey]]);
-  const batches=db.connection.prepare(`SELECT data_json FROM merge_batches WHERE product_id=? AND EXISTS
-    (SELECT 1 FROM json_each(json_extract(data_json,'$.publicationScope.candidates')) c WHERE json_extract(c.value,'$.itemKey')=?)`)
-    .all(item.productId,item.key) as {data_json:string}[];
-  for(const raw of batches) {
-    const batch=JSON.parse(raw.data_json) as ReviewedBatch,scope=batch.publicationScope;
-    if(!scope)continue;
-    const startReview=batch.publicationReview;
-    const reviewedAtStart=startReview?.accountId===batch.accountId&&Boolean(startReview.at)&&startReview.scopeDigest===scope.digest;
-    const reviewedInRecovery=batch.reconciliation?.requests.some(r=>r.action.kind==="allow_partial_publication"&&r.decision==="approved"
-      &&r.decidedAt&&r.decidedBy&&r.appliedAt&&r.publicationScope?.digest===scope.digest&&digest(r.publicationScope)===digest(scope));
-    if(!reviewedAtStart&&!reviewedInRecovery)continue;
-    for(const record of candidates) {
-      const identity=`${item.key}:${record.id}`,frozen=scope.candidates.find(c=>c.identity===identity);
-      if(!frozen?.historicalGapReason)continue;
-      const observed:PublicationScopeRow={identity,title:frozen.title,selected:false,itemKey:item.key,developmentEventId:record.id,
-        roundKey:record.roundKey,completion:record.completion,...(record.requiredArtifacts!==null?{requiredArtifacts:[...record.requiredArtifacts]}:{}),itemScope};
-      if(historicalDeliveryFingerprint(frozen)===historicalDeliveryFingerprint(observed))reviewed.add(record.id);
-    }
-  }
-  return reviewed;
+  const candidates=records.filter(r=>!r.completion||r.requiredArtifacts===null).map(record=>({
+    identity:`${item.key}:${record.id}`,title:"",selected:false,itemKey:item.key,developmentEventId:record.id,
+    roundKey:record.roundKey,completion:record.completion,...(record.requiredArtifacts!==null?{requiredArtifacts:[...record.requiredArtifacts]}:{}),itemScope,
+  }));
+  const reviewed=previouslyReviewedHistoricalGaps(db,item.productId,candidates);
+  return new Set(candidates.filter(row=>reviewed.has(row.identity)).map(row=>row.developmentEventId));
 }

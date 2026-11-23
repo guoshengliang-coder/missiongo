@@ -104,8 +104,8 @@ function MergeReconciliationContent({batchId,initiallyOpen=false,compact=false}:
           <p>{t("recoveryScope")}: {row.publicationScope.requiredArtifacts.map(integrationArtifactName).join(" / ")}</p>
           <ul>{row.publicationScope.candidates.map(candidate=><li key={candidate.identity}>
             <strong>{candidate.title}</strong>{!compact&&<p><code>{candidate.identity}</code></p>}
-            <p>{candidate.requiredArtifacts?.map(integrationArtifactName).join(" / ")||t("recoveryMissing")}</p>
-            {candidate.historicalGapReason&&<p>{t("recoveryHistoricalGap")}: {candidate.historicalGapReason}</p>}
+            {!candidate.historicalGapPreviouslyReviewed&&<p>{candidate.requiredArtifacts?.map(integrationArtifactName).join(" / ")||t("recoveryMissing")}</p>}
+            {candidate.historicalGapReason&&<p>{t(candidate.historicalGapPreviouslyReviewed?"queueHistoricalGapReviewed":"recoveryHistoricalGap")}: {candidate.historicalGapReason}</p>}
             <details><summary>{t("mergeDetails")}</summary><p><code>{JSON.stringify(candidate)}</code></p></details>
           </li>)}</ul>
           {row.publicationScope.exclusions?.map(candidate=><p key={candidate.identity}>{candidate.title} · {candidate.identity} · {candidate.reason}</p>)}
