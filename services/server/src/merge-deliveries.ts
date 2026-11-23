@@ -1,3 +1,4 @@
+import { publicationTargetsSchema, assertPublicationVersions, scopeConflict, type PublicationTarget } from "./conversation-publication-targets.js";
 import { conversationScopeReview, type ConversationReviewEvidence } from "./conversation-scope-review.js";
 import { projectIntegrationInstructions } from "./integration-instructions.js";
 import { projectCheckSatisfied } from "@missiongo/contracts";
@@ -69,6 +70,7 @@ interface Delivery extends DeliveryInput {
 }
 interface Batch {
   conversation?: { clientId:string; executor: IntegrationExecutor; preparationId: string; authorization: IntegrationInstruction; input: IntegrationInstruction; repository: string; configurationChanges?:{executor:IntegrationExecutor;source:IntegrationInstruction}[] };
+  publicationTargets?:PublicationTarget[];
   operation?:IntegrationActionMode;
   publicationScope?:PublicationScope|undefined;
   publicationTransitions?: (PublicationIdentityTransition & {at:string})[];
@@ -90,11 +92,13 @@ export const conversationIntegrationSchema = z.object({
   deliveries: z.array(deliverySchema).max(20).default([]),
   selection: z.array(z.object({id:z.string().uuid(),revision:z.string().length(64)}).strict()).max(20).default([]),
   resumeBatchId: z.string().uuid().optional(),
+  publicationTargets:publicationTargetsSchema.optional(),
 }).strict();
 interface ConversationPreparation {
   id:string; productId:string; repository:string; operation:IntegrationActionMode;
   executor:IntegrationExecutor; config:FreeSessionConfig; source:IntegrationInstruction; createdAt:string;
   drafts:{id:string;input:DeliveryInput;scope:string}[]; selection:{id:string;revision:string}[];
+  publicationTargets?:PublicationTarget[];
   publicationScope?:PublicationScope; reviewDigest:string; reviewText:string; resumeBatchId?:string; reviewEvidence?:ConversationReviewEvidence;
 }
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -1144,19 +1148,27 @@ export class MergeDeliveries {
       if(!selected.length&&input.operation!=="publish_only"||selected.length>20||new Set(selected.map(d=>`${d.repository}/${d.pullRequest}`)).size!==selected.length||new Set(selected.map(d=>d.targetBranch)).size>1)throw changed();
       const selection=resume?.selection??selected.map(d=>({id:d.id,revision:d.revision}));
       const publicationScope=input.operation!=="merge_only"?this.publicationCandidates(selected,input.productId,selection,input.repository):undefined;
+      const publicationTargets=(resume?.publicationTargets??input.publicationTargets)?.slice().sort((a,b)=>a.artifact.localeCompare(b.artifact));
+      if(resume && input.publicationTargets && digest(input.publicationTargets.slice().sort((a,b)=>a.artifact.localeCompare(b.artifact)))!==digest(resume.publicationTargets?.slice().sort((a,b)=>a.artifact.localeCompare(b.artifact))))throw changed();
+      if(publicationTargets) {
+        const declared=this.store.getProduct(input.productId).releaseArtifacts;
+        const required=publicationScope?.requiredArtifacts??[];
+        if(input.operation==="merge_only" || publicationTargets.length!==required.length || publicationTargets.some(t=>!required.includes(t.artifact)||!declared.includes(t.artifact)))
+          throw scopeConflict("artifact_mismatch","目标产物必须完整对应当前产品已声明的发布范围，不能增加、漏掉或重复产物。");
+      }
       // Human scope excludes random reservations and refreshed check clocks. A new
       // preparation of identical code/scope must not require a second decision.
       const reviewCandidates=publicationScope?.candidates.map(c=>{
-        const draft=drafts.find(d=>d.id===c.deliveryId);
-        if(!draft)return c;
-        const {evidence:_evidence,validation:_validation,...content}=draft.input;
+        const selectedDelivery=selected.find(d=>d.id===c.deliveryId);
+        if(!selectedDelivery)return c;
+        const {evidence:_evidence,validation:_validation,...content}=deliverySchema.parse(selectedDelivery);
         const stable=`${content.repository}/pull/${content.pullRequest}@${content.head}`;
         return {...c,identity:stable,deliveryId:stable,expectedRevision:digest(content)};
       }).sort((a,b)=>a.identity.localeCompare(b.identity));
-      const reviewDigest=digest([input.operation,input.repository,selected.map(d=>[d.repository,d.pullRequest,d.head,d.targetBranch,d.itemKeys,d.scope,d.requiredArtifacts,d.noReleaseReason]),reviewCandidates]);
-      const reviewText=`原会话执行范围：${input.operation}。\n执行范围摘要 ${reviewDigest}\n${selected.map(d=>`${d.repository}/pull/${d.pullRequest} · ${d.head} · ${d.itemKeys.join(",")} · ${d.summary} · ${d.requiredArtifacts.join(",")||d.noReleaseReason}`).join("\n")}${publicationScope?`\n完整发布范围 ${reviewDigest}\n${reviewCandidates!.map(c=>`${c.identity} · ${c.title} · ${(c.requiredArtifacts??[]).join(",")}${c.historicalGapReason?` · 历史缺证：${c.historicalGapReason}`:""}`).join("\n")}`:""}\n执行配置 ${JSON.stringify(config)}；仅记录原会话实际配置，不创建新会话、不改变模型或原生权限。`;
+      const reviewDigest=digest([input.operation,input.repository,selected.map(d=>[d.repository,d.pullRequest,d.head,d.targetBranch,d.itemKeys,d.scope,d.requiredArtifacts,d.noReleaseReason]),reviewCandidates,...(publicationTargets?[publicationTargets]:[])]);
+      const reviewText=`原会话执行范围：${input.operation}。\n执行范围摘要 ${reviewDigest}\n${selected.map(d=>`${d.repository}/pull/${d.pullRequest} · ${d.head} · ${d.itemKeys.join(",")} · ${d.summary} · ${d.requiredArtifacts.join(",")||d.noReleaseReason}`).join("\n")}${publicationScope?`\n完整发布范围 ${reviewDigest}\n${reviewCandidates!.map(c=>`${c.identity} · ${c.title} · ${(c.requiredArtifacts??[]).join(",")}${c.historicalGapReason?` · 历史缺证：${c.historicalGapReason}`:""}`).join("\n")}`:""}${publicationTargets?`\n目标产物与版本约束 ${JSON.stringify(publicationTargets)}；这是授权约束，不是仓库或上线版本证明，发布前仍须核验。`:""}\n执行配置 ${JSON.stringify(config)}；仅记录原会话实际配置，不创建新会话、不改变模型或原生权限。`;
       const preparation:ConversationPreparation={id,productId:input.productId,repository:input.repository,operation:input.operation,executor,config,source,
-        createdAt:new Date().toISOString(),drafts,selection,reviewDigest,reviewText,...(publicationScope?{publicationScope}:{}),...(input.resumeBatchId?{resumeBatchId:input.resumeBatchId}:{})};
+        createdAt:new Date().toISOString(),drafts,selection,reviewDigest,reviewText,...(publicationTargets?{publicationTargets}:{}),...(publicationScope?{publicationScope}:{}),...(input.resumeBatchId?{resumeBatchId:input.resumeBatchId}:{})};
       this.db.connection.prepare("INSERT INTO conversation_integration_preparations(id,account_id,client_id,request_key,request_digest,data_json) VALUES (?,?,?,?,?,?)")
         .run(id,accountId,clientId,key,requestDigest,JSON.stringify(preparation));
       return preparation;
@@ -1179,12 +1191,27 @@ export class MergeDeliveries {
       const source=integrationInstruction(this.db,executor);
       const reviewedDecision=["同意","批准"].includes(source.text) && source.context.includes(p.reviewText)
         && (source.context.match(/原会话执行范围：/g)?.length??0)===1;
+      const evaluateScopeReview=()=>{
+        const reviewDeliveries=[...p.drafts.map(d=>d.input),...p.selection.filter(selected=>!p.drafts.some(d=>d.id===selected.id))
+        .map(selected=>this.read<Delivery>("merge_deliveries",selected.id))];
+        const publicationReferences=(p.publicationScope?.candidates??[]).flatMap(candidate=>{
+          if(!candidate.completion)return [];
+          try {
+            const completion=normalizeCompletion({completion:candidate.completion});
+            const match=completion.kind==="github"?completion.url.match(/^(.*)\/pull\/(\d+)$/):undefined;
+            return match?[{repository:match[1]!,pullRequest:Number(match[2]),head:""}]:[];
+          }catch{return [];}// Existing publication blockers below retain malformed evidence.
+        });
+        const reviewReferences=[...reviewDeliveries,...publicationReferences.filter(ref=>!reviewDeliveries.some(d=>d.repository===ref.repository&&d.pullRequest===ref.pullRequest))];
+        return conversationScopeReview(this.db,executor,source,p.reviewText,p.reviewDigest,p.operation,reviewReferences,reviewedDecision,{requiredArtifacts:p.publicationScope?.requiredArtifacts??[],declaredArtifacts:this.store.getProduct(p.productId).releaseArtifacts,targets:p.publicationTargets});
+      };
       if(p.resumeBatchId) {
         const b=this.batch(accountId,actor,p.resumeBatchId);
         if(!b.conversation||b.state!=="active")throw changed();
         const configurationChanged=executor.settings!==b.conversation.executor.settings;
         const continuing=/^(?:请)?(?:继续(?:执行|处理)?|进度(?:如何)?|查看进度|当前状态|状态如何|continue|status)[。.!！]?$/i.test(source.text.trim());
-        if(continuing){
+        const renewalReview=!continuing?evaluateScopeReview():undefined;
+        if(continuing || !renewalReview){
           // A later status question cannot erase an intervening stop or scope change.
           const prior=b.conversation.input,commandId=prior.sourceId.startsWith("command:")?prior.sourceId.slice(8):undefined;
           if(Date.parse(source.occurredAt)<Date.parse(prior.occurredAt))throw changed();
@@ -1200,17 +1227,18 @@ export class MergeDeliveries {
             : "SELECT 1 FROM agent_session_messages WHERE session_id=? AND role='user' AND julianday(occurred_at) IS NULL LIMIT 1").get(b.sessionId);
           if(missingClock)throw conflict("conversation_integration_history_incomplete","用户来源历史缺少有效时钟，不能通过状态查询恢复执行。");
           const commands=this.db.connection.prepare(executor.kind==="external"
-            ? "SELECT id,text FROM external_native_commands WHERE session_id=? AND julianday(created_at)>=julianday(?) AND julianday(created_at)<=julianday(?)"
-            : "SELECT id,text FROM agent_session_commands WHERE session_id=? AND kind='message' AND julianday(created_at)>=julianday(?) AND julianday(created_at)<=julianday(?)")
-            .all(b.sessionId,prior.occurredAt,source.occurredAt) as {id:string;text:string}[];
+            ? "SELECT id,text,created_at AS at FROM external_native_commands WHERE session_id=? AND julianday(created_at)>=julianday(?) AND julianday(created_at)<=julianday(?)"
+            : "SELECT id,text,created_at AS at FROM agent_session_commands WHERE session_id=? AND kind='message' AND julianday(created_at)>=julianday(?) AND julianday(created_at)<=julianday(?)")
+            .all(b.sessionId,prior.occurredAt,source.occurredAt) as {id:string;text:string;at:string}[];
           const messages=this.db.connection.prepare(executor.kind==="external"
-            ? "SELECT source_id,json_extract(payload_json,'$.text') AS text,json_extract(payload_json,'$.clientMessageId') AS client_message_id FROM external_native_messages WHERE session_id=? AND json_extract(payload_json,'$.role')='user' AND julianday(json_extract(payload_json,'$.occurredAt'))>=julianday(?) AND julianday(json_extract(payload_json,'$.occurredAt'))<=julianday(?)"
-            : "SELECT source_id,text,client_message_id FROM agent_session_messages WHERE session_id=? AND role='user' AND julianday(occurred_at)>=julianday(?) AND julianday(occurred_at)<=julianday(?)")
-            .all(b.sessionId,prior.occurredAt,source.occurredAt) as {source_id:string;text:string;client_message_id:string|null}[];
+            ? "SELECT source_id,json_extract(payload_json,'$.text') AS text,json_extract(payload_json,'$.clientMessageId') AS client_message_id,json_extract(payload_json,'$.occurredAt') AS at FROM external_native_messages WHERE session_id=? AND json_extract(payload_json,'$.role')='user' AND julianday(json_extract(payload_json,'$.occurredAt'))>=julianday(?) AND julianday(json_extract(payload_json,'$.occurredAt'))<=julianday(?)"
+            : "SELECT source_id,text,client_message_id,occurred_at AS at FROM agent_session_messages WHERE session_id=? AND role='user' AND julianday(occurred_at)>=julianday(?) AND julianday(occurred_at)<=julianday(?)")
+            .all(b.sessionId,prior.occurredAt,source.occurredAt) as {source_id:string;text:string;client_message_id:string|null;at:string}[];
           const intervening=[...commands.filter(c=>c.id!==commandId),...messages.filter(m=>prior.sourceId!==`native:${m.source_id}`&&!(commandId&&(m.source_id===commandId||m.source_id===`answer-${commandId}`||m.client_message_id===commandId)&&m.text===prior.text))];
-          if(intervening.some(m=>!/^(?:请)?(?:继续(?:执行|处理)?|进度(?:如何)?|查看进度|当前状态|状态如何|continue|status)[。.!！]?$/i.test(m.text.trim())))throw changed();
+          if(intervening.filter(m=>!(m.text===source.text&&Date.parse(m.at)===Date.parse(source.occurredAt))).some(m=>!/^(?:请)?(?:继续(?:执行|处理)?|进度(?:如何)?|查看进度|当前状态|状态如何|continue|status)[。.!！]?$/i.test(m.text.trim())))throw changed();
         }
         if((!continuing || configurationChanged) && !reviewedDecision)assertIntegrationInstruction(source.text,p.operation);
+        if(continuing && configurationChanged)evaluateScopeReview();
         if(configurationChanged && !source.context.includes(p.reviewText))throw changed();
         if(configurationChanged){(b.conversation.configurationChanges??=[]).push({executor,source});b.conversation.executor=executor;b.config=p.config;}
         if(b.publish)this.assertPublicationScope(b);
@@ -1229,25 +1257,14 @@ export class MergeDeliveries {
         return this.batch(accountId,actor,b.id);
       }
       if(!reviewedDecision)assertIntegrationInstruction(source.text,p.operation);
-      const reviewDeliveries=[...p.drafts.map(d=>d.input),...p.selection.filter(selected=>!p.drafts.some(d=>d.id===selected.id))
-        .map(selected=>this.read<Delivery>("merge_deliveries",selected.id))];
-      const publicationReferences=(p.publicationScope?.candidates??[]).flatMap(candidate=>{
-        if(!candidate.completion)return [];
-        try {
-          const completion=normalizeCompletion({completion:candidate.completion});
-          const match=completion.kind==="github"?completion.url.match(/^(.*)\/pull\/(\d+)$/):undefined;
-          return match?[{repository:match[1]!,pullRequest:Number(match[2]),head:""}]:[];
-        }catch{return [];}// Existing publication blockers below retain malformed evidence.
-      });
-      const reviewReferences=[...reviewDeliveries,...publicationReferences.filter(ref=>!reviewDeliveries.some(d=>d.repository===ref.repository&&d.pullRequest===ref.pullRequest))];
-      const reviewEvidence=conversationScopeReview(this.db,executor,source,p.reviewText,p.reviewDigest,p.operation,reviewReferences,reviewedDecision);
+      const reviewEvidence=evaluateScopeReview();
       const scopeReviewed=Boolean(reviewEvidence);
       if(source.fingerprint!==p.source.fingerprint && !scopeReviewed)throw changed();
       const reviewed=source.text+"\n"+source.context;
       if(!scopeReviewed && p.drafts.some(d=>!new RegExp(`(?:#|PR\\s*)${d.input.pullRequest}\\b`,"i").test(reviewed)
         && !reviewed.includes(d.input.head.slice(0,7))))
         throw conflict("conversation_integration_scope_review_required","当前指令上下文没有这些 PR 或完成提交的审阅依据，请先在原会话展示精确范围，不扩展到其他改动。");
-      if(p.publicationScope && !scopeReviewed)
+      if((p.publicationScope || p.publicationTargets) && !scopeReviewed)
         throw conflict("conversation_integration_scope_review_required","需先在原会话展示这份完整发布范围；已有同范围审阅与授权可复用，不要求进入待集成。");
       if(reviewEvidence) {
         p.reviewEvidence=reviewEvidence;
@@ -1263,6 +1280,7 @@ export class MergeDeliveries {
       }
       const conversation={clientId,executor,preparationId:p.id,authorization:source,input:source,repository:p.repository};
       const b=this.start(accountId,`conversation-${p.id}`,p.selection,p.config,p.operation!=="merge_only",1,false,p.operation,p.publicationScope?.digest,false,conversation);
+      if(p.publicationTargets){b.publicationTargets=p.publicationTargets;this.saveBatch(b);}
       this.db.connection.prepare("UPDATE conversation_integration_preparations SET batch_id=? WHERE id=?").run(b.id,p.id);
       return this.batch(accountId,actor,b.id);
     });
@@ -1409,7 +1427,11 @@ export class MergeDeliveries {
         this.saveBatch(b);return this.batch(accountId,dispatchId,id);
       }
       if(action.kind==="final_validation" && Object.keys(b.references??{}).some(id=>!b.verifiedReferences?.[id]||!freshIntegrationCheck(b.verifiedReferences[id]!.checkedAt)))throw changed();
-      if(action.kind==="publication_progress" && action.state==="publishing"){this.assertReferences(b,true);this.assertPublicationScope(b);this.recordPublicationSuccessors(b);
+      if (action.kind === "publication_progress" && action.state === "publishing") {
+        assertPublicationVersions(b.publicationTargets, action.publicationVersions);
+        this.assertReferences(b, true);
+        this.assertPublicationScope(b);
+        this.recordPublicationSuccessors(b);
         const hasRelease=Boolean(b.publicationScope?.requiredArtifacts.length)||b.deliveries.some(id=>this.read<Delivery>("merge_deliveries",id).requiredArtifacts.length>0);
         if(!prerequisiteGate(b,hasRelease,undefined,Date.now(),"pre_publish").ready)integrationDenied("项目实际发布前置条件未满足；代码合并事实保持，继续在原批次核实发布条件。");
       }
@@ -1786,6 +1808,10 @@ export class MergeDeliveries {
       this.reconciliation(b).finalValidation={...input,resultsDigest:digest(b.results)};this.saveBatch(b);return this.preview(accountId,id);
     });
   }
+  private assertTargetReceipts(b:Batch,required:readonly string[],releases:readonly PublicationTarget[]) {
+    const targets=b.publicationTargets?.filter(t=>required.includes(t.artifact));
+    assertPublicationVersions(targets,releases);
+  }
   private assertPublication(b:Batch) {
     if(batchPublicationDeferred(b))return;
     const decision=b.reconciliation?.publication;
@@ -1801,6 +1827,20 @@ export class MergeDeliveries {
         complete=d.itemKeys.length?d.itemKeys.every(key=>this.publishedHandoff(d,key)):d.requiredArtifacts.every(a=>d.releaseReceipts?.some(r=>r.releases.some(v=>v.artifact===a)));
       }
       if(!complete)throw conflict("merge_publication_incomplete",`${row.title} 缺少完整产物发布凭据或交接；保留批次。`);
+      if(row.itemKey) {
+        const record=this.store.getDeliveryRecords(row.itemKey).find(r=>r.id===row.developmentEventId);
+        this.assertTargetReceipts(b,row.requiredArtifacts??[],record?.releases??[]);
+      } else if(row.deliveryId) {
+        const d=this.read<Delivery>("merge_deliveries",row.deliveryId);
+        if(d.itemKeys.length)for(const key of d.itemKeys) {
+          const record=this.store.getDeliveryRecords(key).find(r=>r.completion&&sameCompletion(r.completion,{kind:"github",url:`${d.repository}/pull/${d.pullRequest}`}));
+          this.assertTargetReceipts(b,record?.requiredArtifacts??[],record?.releases??[]);
+        } else {
+          const latest=new Map<string,PublicationTarget>();
+          for(const receipt of d.releaseReceipts??[])for(const release of receipt.releases)latest.set(release.artifact,release);
+          this.assertTargetReceipts(b,d.requiredArtifacts,[...latest.values()]);
+        }
+      }
     }
     for(const id of b.deliveries) {
       if(b.results[id]?.status!=="merged")continue;

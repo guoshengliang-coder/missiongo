@@ -1,3 +1,4 @@
+import { publicationTargetsSchema } from "./conversation-publication-targets.js";
 import { projectCheckSatisfied, projectAutoMergeReady } from "@missiongo/contracts";
 import { projectCheckStateSchema, projectVerificationSchema, validateProjectChecks } from "./project-verification.js";
 import { z } from "zod";
@@ -20,7 +21,7 @@ export const integrationActionSchema=z.discriminatedUnion("kind",[
   z.object({kind:z.literal("check"),...entry,base:sha,checkedAt:z.string().datetime(),source:text,
     checks:projectCheckStateSchema,verification:projectVerificationSchema.optional(),mergeable:z.enum(["clean","conflicting","unknown"]),local:z.enum(["passed","failed","pending","not_applicable"]),validation:text}).superRefine(validateProjectChecks),
   z.object({kind:z.literal("progress"),...entry,phase:z.enum(["queued","investigating","waiting_ci"]),detail:text}),
-  z.object({kind:z.literal("publication_progress"),state:z.enum(["publishing","failed","ended"]),checkedAt:z.string().datetime(),resultsDigest:z.string().regex(/^[a-f0-9]{64}$/),detail:text}),
+  z.object({kind:z.literal("publication_progress"),state:z.enum(["publishing","failed","ended"]),checkedAt:z.string().datetime(),resultsDigest:z.string().regex(/^[a-f0-9]{64}$/),detail:text,publicationVersions:publicationTargetsSchema.optional()}),
   z.object({kind:z.literal("final_validation"),head:sha,checkedAt:z.string().datetime(),validation:text,source:text}),
 ]);
 export type IntegrationAction=z.infer<typeof integrationActionSchema>;
@@ -48,7 +49,7 @@ export function applyIntegrationAction(state:MergeIntegration, action:Integratio
   } else if(action.kind==="publication_progress") {
     if (!freshIntegrationCheck(action.checkedAt) || action.resultsDigest !== integrationDigest(results)) integrationDenied("发布阶段的时间或批次结果已变化。");
     state.publication = { state: action.state, checkedAt: action.checkedAt,
-      expiresAt: new Date(Date.now() + 300_000).toISOString(), resultsDigest: action.resultsDigest, detail: action.detail };
+      expiresAt: new Date(Date.now() + 300_000).toISOString(), resultsDigest: action.resultsDigest, detail: action.detail, ...(action.publicationVersions?{publicationVersions:action.publicationVersions}:{}) };
   } else if(action.kind==="final_validation") {
     if(!state.plans.length||Object.keys(state.entries).some(id=>!results[id]))integrationDenied("先核实每项合并结果，再登记组合验证。");
     if(!freshIntegrationCheck(action.checkedAt))integrationDenied("组合验证证据已过期。");

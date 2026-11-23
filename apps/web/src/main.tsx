@@ -1,3 +1,4 @@
+import { retainArtifactCache } from "./artifact-cache";
 import { CommonCommandProvider } from "./common-commands";
 import { StrictMode, Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
@@ -29,6 +30,7 @@ const queryClient = new QueryClient({
 // Before the first render, so the previous screen is what paints rather than a
 // skeleton. Synchronous by design; see query-persistence.ts.
 retainSessionCache(queryClient);
+retainArtifactCache(queryClient);
 restorePersistedQueryCache(queryClient);
 persistQueryCache(queryClient);
 

@@ -1,3 +1,4 @@
+import { clearArtifactAccountCache } from "./artifact-cache";
 import type { ConsoleChangeResource } from "@missiongo/contracts";
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
@@ -8,7 +9,7 @@ import { checkReleaseStatus } from "./release-status";
 
 export type ChangeResource = ConsoleChangeResource;
 const itemRoots = new Set(["item","timeline","delivery","collaboration","dingtalk-notifications","comment-dingtalk-notifications","dispatches"]);
-const sessionRoots = new Set(["agent-sessions","agent-session","dispatches","merge-deliveries","delivery","personal-todos","personal-attention","personal-notifications"]);
+const sessionRoots = new Set(["artifact-preloads","agent-sessions","agent-session","dispatches","merge-deliveries","delivery","personal-todos","personal-attention","personal-notifications"]);
 const allConfig = new Set(["common-commands","products","components","builders","accounts","account-permissions","dingtalk-bindings","dingtalk-settings","dingtalk-project","dispatch-defaults","integration-defaults","insight-batches","insight-batch","insight-batch-candidates","ai-authorizations","ai-title-settings","product-accounts","sdk-tokens"]);
 export function changeAffects(key: QueryKey, change: ChangeResource, relatedIds?: readonly string[]): boolean {
  const root=String(key[0]);
@@ -30,7 +31,7 @@ export function changeAffects(key: QueryKey, change: ChangeResource, relatedIds?
   case "products": return ["products","components","builders","items","item","item-filter-options","collaboration-targets","collaboration-grants","collaboration-directory"].includes(root);
   case "personal": return ["personal-todos","personal-attention","personal-notifications"].includes(root);
   case "plan": return ["agent-plan-records","agent-plan-record","plan-records","plan-record","plan-overview","agent-sessions","agent-session"].includes(root);
-  case "artifact": return ["artifact-state","artifact-bundle"].includes(root) && key[1]===change.resourceId;
+  case "artifact": return root==="artifact-preloads" || ["artifact-state","artifact-bundle"].includes(root) && key[1]===change.resourceId;
   case "history": return ["agent-session","agent-history-result"].includes(root) && key[1]===change.resourceId;
   case "admin": return allConfig.has(root);
   case "config": return allConfig.has(root);
@@ -112,7 +113,7 @@ export function startConsoleEvents(client:QueryClient, fetcher:typeof fetch=(inp
     credentials:"same-origin",cache:"no-store",signal:controller.signal,headers:{accept:"text/event-stream"}});
    if(attempt!==generation||stopped){await response.body?.cancel();return;}
    if(activeController.signal.aborted){await response.body?.cancel();throw new Error("Console handshake cancelled");}
-   if(response.status===401||response.status===403){stopped=true;refresh.stop();void client.cancelQueries().then(()=>{if(attempt!==generation)return;client.removeQueries({predicate:q=>q.queryKey[0]!=="bootstrap"});return client.resetQueries({queryKey:["bootstrap"]});});setConnection("disconnected");return;}
+   if(response.status===401||response.status===403){stopped=true;refresh.stop();clearArtifactAccountCache(client);void client.cancelQueries().then(()=>{if(attempt!==generation)return;client.removeQueries({predicate:q=>q.queryKey[0]!=="bootstrap"});return client.resetQueries({queryKey:["bootstrap"]});});setConnection("disconnected");return;}
    if(!response.ok||!response.body||!response.headers.get("content-type")?.includes("text/event-stream"))throw new Error("Console stream unavailable");
    if(attempt!==generation||stopped){await response.body.cancel();return;}
    connecting=false;connected=true;heartbeat();setConnection("connected");retry=0;window.dispatchEvent(new Event("missiongo:console-connected"));
@@ -123,7 +124,7 @@ export function startConsoleEvents(client:QueryClient, fetcher:typeof fetch=(inp
      if(attempt!==generation||stopped)break;
      for(const frame of frames.push(decoder.decode(chunk.value,{stream:true}))) {
       const data=JSON.parse(frame.data) as {epoch?:string;version?:number;resources?:ChangeResource[]};
-      if(frame.event==="unauthorized"){stopped=true;refresh.stop();void client.cancelQueries().then(()=>{if(attempt!==generation)return;client.removeQueries({predicate:q=>q.queryKey[0]!=="bootstrap"});return client.resetQueries({queryKey:["bootstrap"]});});setConnection("disconnected");controller.abort();break;}
+      if(frame.event==="unauthorized"){stopped=true;refresh.stop();clearArtifactAccountCache(client);void client.cancelQueries().then(()=>{if(attempt!==generation)return;client.removeQueries({predicate:q=>q.queryKey[0]!=="bootstrap"});return client.resetQueries({queryKey:["bootstrap"]});});setConnection("disconnected");controller.abort();break;}
       if(frame.event==="hello") {
        if(!cursor)enqueue([],`${data.epoch}:${data.version}`,true);
       } else if(frame.event==="reset") enqueue([],frame.id,true);
@@ -163,6 +164,7 @@ export function useConsoleEvents(client:QueryClient,accountId:string|undefined,i
  const previousAccount=useRef(accountId);
  useEffect(()=>{
   if(previousAccount.current && previousAccount.current!==accountId){
+   clearArtifactAccountCache(client);
    const predicate=(q:{queryKey:QueryKey})=>["agent-session","agent-sessions","agent-history-result","merge-deliveries"].includes(String(q.queryKey[0]));
    void client.cancelQueries({predicate});client.removeQueries({predicate});
   }

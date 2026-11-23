@@ -1,4 +1,5 @@
 import { AppNotice, type Notice, type NoticeHandler } from "./app-notice";
+import { clearArtifactAccountCache } from "./artifact-cache";
 import { clearPerformanceSends } from "./console-performance";
 import { shareSessionListData, useSessionListIntent, noteListIntent } from "./session-list-performance";
 import { useCommonCommands } from "./common-commands";
@@ -887,6 +888,7 @@ export function App() {
         // well as the copy on disk: clearing only the disk leaves them in memory,
         // where the persistence subscription promptly writes them back out.
         if (error instanceof ApiError && error.status === 401) {
+          clearArtifactAccountCache(queryClient);
           for (const key of ["products", "items", "components", "project-insights", "project-insight-items"]) {
             queryClient.removeQueries({ queryKey: [key] });
           }

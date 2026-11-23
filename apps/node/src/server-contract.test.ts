@@ -8,6 +8,8 @@ import { createAiAccessToken } from "../../../services/server/src/admin-auth.js"
 import { main } from "./cli.js";
 import { loadConfig, saveConfig } from "./storage.js";
 
+// Real server setup includes SQLite migrations and password hashing; allow the
+// same bounded startup window as the server integration suite on hosted runners.
 it("configures repositories through the real server contract and preserves existing mappings", async () => {
   const directory = realpathSync(mkdtempSync("/tmp/mg-contract-"));
   const repository = join(directory, "repository"); mkdirSync(repository);
@@ -63,4 +65,4 @@ it("configures repositories through the real server contract and preserves exist
       expect((await app.inject({ method: "PUT", url: "/api/v1/node/repos", headers, payload: { repos: [{ productId: second, repoPath }] } })).statusCode).toBe(400);
     }
   } finally { vi.restoreAllMocks(); vi.unstubAllEnvs(); await app.close(); rmSync(directory, { recursive: true, force: true }); }
-});
+}, 15_000);
