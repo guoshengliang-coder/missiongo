@@ -81,9 +81,9 @@ export function applyIntegrationAction(state:MergeIntegration, action:Integratio
   state.events.push({id:key,digest:integrationDigest(action),action:action.kind,at,
     ...("deliveryId" in action?{deliveryId:action.deliveryId}:{}),detail:"detail" in action?action.detail:"reason" in action?action.reason:"summary" in action?action.summary:"validation" in action?action.validation:action.source});
 }
-export function assertIntegrationMerge(state:MergeIntegration,id:string,results:Record<string,{status:string}>,{allowPendingCI=false}:{allowPendingCI?:boolean}={}) {
+export function assertIntegrationMerge(state:MergeIntegration,id:string,results:Record<string,{status:string}>,{allowPendingCI=false,allowExpiredCheck=false}:{allowPendingCI?:boolean;allowExpiredCheck?:boolean}={}) {
   const plan=state.plans.at(-1),e=state.entries[id],check=e?.check;
   const ciReady=projectCheckSatisfied(check?.checks,check?.verification)||(allowPendingCI&&check?.checks==="pending"&&projectAutoMergeReady(check.verification));
-  if(!plan||!e||e.repair||!check||check.head!==e.head||!freshIntegrationCheck(check.checkedAt)||!ciReady||check.mergeable!=="clean"||!projectCheckSatisfied(check.local,check.verification,true))integrationDenied("必须完成整批规划，并核验最终提交的本地检查、CI 与冲突结果。");
+  if(!plan||!e||e.repair||!check||check.head!==e.head||!allowExpiredCheck&&!freshIntegrationCheck(check.checkedAt)||!ciReady||check.mergeable!=="clean"||!projectCheckSatisfied(check.local,check.verification,true))integrationDenied("必须完成整批规划，并核验最终提交的本地检查、CI 与冲突结果。");
   if(plan.entries.find(entry=>entry.deliveryId===id)!.dependsOn.some(dep=>results[dep]?.status!=="merged"))integrationDenied("计划依赖尚未合并。");
 }

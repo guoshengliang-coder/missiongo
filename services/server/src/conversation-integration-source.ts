@@ -145,6 +145,10 @@ export function assertConversationRetryHistory(database: MissionGoDatabase, exec
   const external = executor.kind === "external";
   const db = database.connection;
   const args = [executor.sessionId, authorization.occurredAt, retry.occurredAt] as const;
+  if (!external && db.prepare(`SELECT 1 FROM agent_session_commands WHERE session_id=? AND kind='interrupt'
+    AND status NOT IN ('failed','cancelled')
+    AND (julianday(created_at) BETWEEN julianday(?) AND julianday(?) OR julianday(created_at) IS NULL)`).get(...args))
+    throw conflict("conversation_integration_stopped", "原决定之后收到停止指令，请先核实执行状态。");
   const commands = db.prepare(external
     ? "SELECT text,created_at AS at,status FROM external_native_commands WHERE session_id=? AND (julianday(created_at) BETWEEN julianday(?) AND julianday(?) OR julianday(created_at) IS NULL)"
     : "SELECT text,created_at AS at,status FROM agent_session_commands WHERE session_id=? AND kind='message' AND (julianday(created_at) BETWEEN julianday(?) AND julianday(?) OR julianday(created_at) IS NULL)")

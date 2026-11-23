@@ -1381,7 +1381,6 @@ export class MergeDeliveries {
         if(continuing && configurationChanged)evaluateScopeReview();
         if(configurationChanged && !source.context.includes(p.reviewText))throw changed();
         if(configurationChanged){(b.conversation.configurationChanges??=[]).push({executor,source});b.conversation.executor=executor;b.config=p.config;}
-        if(b.publish)this.assertPublicationScope(b);
         // Only an unchanged, explicitly continuing input is rebound; stop/rework/scope changes are never ignored.
         b.conversation.input=source;
         for(const id of b.deliveries){const d=this.read<Delivery>("merge_deliveries",id);if(d.sessionId===b.sessionId){
@@ -1519,6 +1518,20 @@ export class MergeDeliveries {
       return b;
     });
   }
+  private publicationGate(batch: Batch, hasRelease: boolean) {
+    const gate = prerequisiteGate(batch, hasRelease, undefined, Date.now(), "pre_publish");
+    if (!gate.required || !gate.ready) return gate;
+    try {
+      this.assertPublicationScope(batch);
+    } catch (error) {
+      if (!(error instanceof MissionGoError)) throw error;
+      gate.ready = false;
+      gate.blockers.push({ id: "publication_scope", code: "stale", reason: error.message,
+        owner: "集成执行者", resumeWhen: "核对当前发布范围" });
+    }
+    return gate;
+  }
+
   batch(accountId: string, dispatchId: string, id: string) {
     const b=this.read<Batch>("merge_batches",id);
     this.permit(accountId,b,false);
@@ -1541,13 +1554,10 @@ export class MergeDeliveries {
     }
     const hasRelease=Boolean(b.publicationScope?.requiredArtifacts.length)||b.deliveries.some(id=>this.read<Delivery>("merge_deliveries",id).requiredArtifacts.length>0);
     const gate=prerequisiteGate(b,hasRelease);
-    if(gate.required || b.conversation?.direct && b.publish)try{this.assertPublicationScope(b);}catch{
-      gate.ready=false;gate.blockers.push({id:"publication_scope",code:"stale",reason:"发布范围尚未核实或已经变化，不能沿用原范围证据",owner:"集成执行者与原授权用户",resumeWhen:"在原会话重新核对范围；有变化时重新审阅"});
-    }
-    return {...b, ...(!b.conversation?{dispatchId}:{}), projectWorkflowInstructions:projectIntegrationInstructions, prerequisiteObservation:prerequisiteObservation({...b,entries:b.deliveries.map(id=>{const d=this.read<Delivery>("merge_deliveries",id);return {id,head:d.head};})}), publicationDeferred:batchPublicationDeferred(b), prerequisiteGate:gate, publicationPrerequisiteGate:prerequisiteGate(b,hasRelease,undefined,Date.now(),"pre_publish"), resultsDigest:digest(b.results), entries:b.deliveries.map(id=>{
+    return {...b, ...(!b.conversation?{dispatchId}:{}), projectWorkflowInstructions:projectIntegrationInstructions, prerequisiteObservation:prerequisiteObservation({...b,entries:b.deliveries.map(id=>{const d=this.read<Delivery>("merge_deliveries",id);return {id,head:d.head};})}), publicationDeferred:batchPublicationDeferred(b), prerequisiteGate:gate, publicationPrerequisiteGate:this.publicationGate(b,hasRelease), resultsDigest:digest(b.results), entries:b.deliveries.map(id=>{
       const inputCurrent = this.conversationInputCurrent(b);
       const delivery = this.read<Delivery>("merge_deliveries", id);
-      const d = this.view(delivery, Boolean(b.conversation?.direct && inputCurrent && delivery.sessionId === b.sessionId));
+      const d = this.view(delivery, Boolean(b.conversation && inputCurrent && delivery.sessionId === b.sessionId));
       let mergeReady=!b.references?.[id]&&!d.blocker&&!b.results[id]&&b.state==="active" && inputCurrent;
       if(b.integration&&!b.integration.prerequisitesOnly){try{assertIntegrationMerge(b.integration,id,b.results,{allowPendingCI:true});}catch{mergeReady=false;}}
       if(!gate.ready||!prerequisiteGate(b,hasRelease,b.integration?.entries[id]?.check?.base).ready)mergeReady=false;
@@ -1628,7 +1638,7 @@ export class MergeDeliveries {
       for (const id of affected) {
         if (!b.deliveries.includes(id)) throw changed();
         const delivery = this.read<Delivery>("merge_deliveries", id);
-        this.sourceValid(delivery, Boolean(b.conversation?.direct && delivery.sessionId === b.sessionId));
+        this.sourceValid(delivery, Boolean(b.conversation && delivery.sessionId === b.sessionId));
       }
       if(action.kind==="check") {const d=this.read<Delivery>("merge_deliveries",action.deliveryId);assertProjectBinding(action.verification,d.repository,d.targetBranch);}
       if(action.kind==="prerequisites") {
@@ -1659,11 +1669,12 @@ export class MergeDeliveries {
       if(b.integration?.entries[deliveryId]?.repair) throw changed();
       if(result.status==="merged") {
         sha.parse(result.commit);
-        if(b.integration&&!b.integration.prerequisitesOnly)assertIntegrationMerge(b.integration,deliveryId,b.results);
-        const hasRelease=Boolean(b.publicationScope?.requiredArtifacts.length)||b.deliveries.some(id=>this.read<Delivery>("merge_deliveries",id).requiredArtifacts.length>0);
-        if(prerequisiteGate(b,hasRelease).required || b.conversation?.direct && b.publish)this.assertPublicationScope(b);
-        if(!prerequisiteGate(b,hasRelease,b.integration?.entries[deliveryId]?.check?.base).ready)
-          integrationDenied("发布前置条件未满足或证据已失效；保留原批次核实，不重复执行 Git。外部合并请走原批次对账。");
+        if(b.integration&&!b.integration.prerequisitesOnly)assertIntegrationMerge(b.integration,deliveryId,b.results,{allowExpiredCheck:true});
+        const check = b.integration?.entries[deliveryId]?.check;
+        const prerequisitesReady = prerequisiteGate(b, false, check?.base).ready
+          || Boolean(check && prerequisiteGate(b, false, check.base, Date.parse(check.checkedAt)).ready);
+        if (!prerequisitesReady)
+          integrationDenied("项目专用合并前置条件未满足，请核对 Git 结果并按原批次对账。");
         if(!b.conversation && this.activity(d.sessionId)!==d.activity)throw changed();
         d.state="merged"; this.save(d);
       }
@@ -1704,7 +1715,7 @@ export class MergeDeliveries {
       if (!this.sameConversationExecutor(current.executor, e) || current.executor.settings !== e.settings) return false;
       const source = integrationInstruction(this.db, e);
       if (source.fingerprint === b.conversation.input.fingerprint) return true;
-      if (!b.conversation.direct || !isIntegrationStatus(source.text)) return false;
+      if (!isIntegrationStatus(source.text)) return false;
       assertConversationRetryHistory(this.db, e, b.conversation.input, source, true);
       return true;
     }catch{return false;}

@@ -1,7 +1,7 @@
 ---
 name: missiongo
 description: 通过 MissionGo MCP 查询项目概览、吞吐、交付周期和验收打回率，或完整读取及处理指定条目、评论、创建和上传附件；核实合并与发布后可靠交接。不修改条目正文与字段，不决定验收。
-version: 5.84.0
+version: 5.85.0
 ---
 
 # MissionGo 条目读取与评论
@@ -862,7 +862,7 @@ checks 和 local 可为 not_applicable，仅限经核实项目不要求该检查
 
 ### 分阶段前置与原批次恢复
 
-合并并发布且有实际发布需求的项目，用 prerequisites 绑定 get_merge_batch.prerequisiteObservation 和实际 context。自有发布流程可附 workflow:{tools:project_native,repositories:精确仓库列表,source:规则来源,digest:规则摘要}；context 包含 base/candidates，main 绑定 base/heads，authorization 绑定 scope 并引用原有效 authorizationRef，scope 绑定 scope/candidates。不要求未使用工具的安装摘要。仍采用 MissionGo 入口时 tools=missiongo，保留原五类检查及真实 tools/capabilities。规则来源与工具模式变更使相关旧事实失效，需要刷新，不扩大权限。
+服务端直接核验原会话或控制台批次的已保存授权。无需重复填写 authorizationRef、主线、通用工具状态或冻结发布范围。prerequisites 只用于确有独立意义的项目专用前置条件和真实依赖；历史记录继续可读。核实 GitHub 实时检查与精确提交后合并。已发生的合并如实登记，即使旧检查或发布条件随后变化。正式发布阶段独立核验最终目标、完整覆盖及适用的项目发布条件。
 
 实际发布工具、签名与凭据可以按项目规则列为 pre_publish，只阻止发布，不一律阻止代码集成；发布启动时仍检验本项目必需发布条件。不可逆顺序依赖或项目明确要求发布前禁止合并时遵守原规则。旧条件须显式更新不适用原因，不能隐去历史；未解除的依赖和未知副作用不能借流程适配清除。恢复使用原 batchId/dispatchId、expectedRevision、新动作幂等键与既有授权；不要求重复批准同一范围。
 
