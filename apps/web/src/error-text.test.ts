@@ -71,3 +71,10 @@ it("localizes stale approvals and retries without treating them as task failures
   expect(errorMessageKey(new ApiError(409, "approval_retry_unavailable", "Only a current denial…"))).toBe("errorApprovalRetryUnavailable");
   expect(errorMessageKey(new ApiError(409, "approval_retry_in_progress", "Pending."))).toBe("errorApprovalRetryPending");
 });
+
+it("explains an unpublished delivery consistently in notices and transition forms", async () => {
+  const { transitionErrorText } = await import("./transition-attachments");
+  const error = new ApiError(409, "verification_delivery_unpublished", "Raw server failure");
+  expect(localizedErrorText(error, t)).toBe("<verificationDeliveryUnpublished>");
+  expect(transitionErrorText(error, t)).toBe("<verificationDeliveryUnpublished>");
+});
