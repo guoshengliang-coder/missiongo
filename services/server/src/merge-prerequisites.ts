@@ -71,6 +71,7 @@ export const prerequisitesActionSchema = z.object({
 });
 export type PrerequisitesAction = z.infer<typeof prerequisitesActionSchema>;
 export interface PrerequisiteBatch {
+  conversation?: { direct?: boolean };
   id:string;
   publish: boolean; state?:string; operation?: string; selection: {id:string;revision:string}[];
   publicationScope?: {digest:string} | undefined; references?: Record<string,unknown>;
@@ -132,8 +133,12 @@ export function recordPrerequisites(batch:PrerequisiteBatch, action:Prerequisite
   state.prerequisites={observation:action.observation,context:action.context,workflow,conditions:[...conditions.values()],resolutions,history};
 }
 export function prerequisiteGate(batch:PrerequisiteBatch, hasRelease:boolean, base?:string, now=Date.now(), stage:"pre_merge"|"pre_publish"="pre_merge"):IntegrationPrerequisiteGate {
+  // For one already-bound PR, the usual exact-head Git/CI check and actual
+  // publication workflow provide these facts without a second declaration.
+  const direct = batch.conversation?.direct && !batch.integration?.prerequisites;
+  if (direct && stage === "pre_merge") return { required: false, ready: true, blockers: [] };
   const required=batch.state!=="finished" && batch.publish && hasRelease && !batchPublicationDeferred(batch)
-    && (stage==="pre_publish" ? (Boolean(batch.integration?.prerequisites?.workflow) || Boolean(batch.integration?.prerequisites?.conditions.some(c=>c.required&&c.stage==="pre_publish"))) : batch.deliveries.some(id=>!batch.references?.[id]&&!batch.results[id]) && batch.operation!=="merge_only" && batch.operation!=="publish_only");
+    && (stage==="pre_publish" ? (direct || Boolean(batch.integration?.prerequisites?.workflow) || Boolean(batch.integration?.prerequisites?.conditions.some(c=>c.required&&c.stage==="pre_publish"))) : batch.deliveries.some(id=>!batch.references?.[id]&&!batch.results[id]) && batch.operation!=="merge_only" && batch.operation!=="publish_only");
   const gate:IntegrationPrerequisiteGate={required,ready:true,blockers:[]};
   if(!required)return gate;
   const record=batch.integration?.prerequisites, conditions=record?.conditions??[];
@@ -145,6 +150,10 @@ export function prerequisiteGate(batch:PrerequisiteBatch, hasRelease:boolean, ba
     if(!target || !Number.isFinite(age) || age < -30_000 || age>300_000)
       gate.blockers.push({id:"combined_target",code:target?"stale":"missing",reason:"发布前需要核实当前完整结果对应的实际目标分支组合验证",owner:"集成执行者",resumeWhen:"在原批次刷新最终目标 head 与组合验证"});
     base=target?.head;
+  }
+  if (direct) {
+    gate.ready = gate.blockers.length === 0;
+    return gate;
   }
   if(record&&!record.observation)gate.blockers.push({id:"observation",code:"missing",reason:"旧前置记录缺少实际观察的版本",owner:"集成执行者",resumeWhen:"重新读取并核实原批次版本，不复用旧快照"});
   const names={main:"当前主线",installation_integrity:"工具安装完整性",required_capability:"必需能力",authorization:"原生授权依据",scope:"发布范围"};

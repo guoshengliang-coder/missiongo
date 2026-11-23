@@ -112,11 +112,36 @@ export function assertIntegrationInstruction(text: string, operation: "merge_onl
     throw conflict("conversation_integration_operation_mismatch", "指令与仅合并／仅发布／合并并发布动作不一致，不能扩大授权。");
 }
 
+/** A short command may not reauthorize a previously stopped operation. */
+export function hasIntegrationStop(database: MissionGoDatabase, executor: IntegrationExecutor) {
+  const db = database.connection;
+  const external = executor.kind === "external";
+  if (!external && db.prepare("SELECT 1 FROM agent_session_commands WHERE session_id=? AND kind='interrupt' AND status NOT IN ('failed','cancelled') LIMIT 1").get(executor.sessionId)) return true;
+  const rows = db.prepare(external
+    ? `SELECT text FROM external_native_commands WHERE session_id=?1 AND status NOT IN ('failed','cancelled')
+       UNION ALL SELECT json_extract(payload_json,'$.text') FROM external_native_messages
+       WHERE session_id=?1 AND json_extract(payload_json,'$.role')='user' AND COALESCE(json_extract(payload_json,'$.phase'),'')<>'execution'`
+    : `SELECT text FROM agent_session_commands WHERE session_id=?1 AND kind='message' AND status NOT IN ('failed','cancelled')
+       UNION ALL SELECT text FROM agent_session_messages WHERE session_id=?1 AND role='user' AND COALESCE(phase,'')<>'execution'`)
+    .all({ "1": executor.sessionId }) as { text: string | null }[];
+  return rows.some(row => /^(?:请)?(?:先)?(?:停止|暂停|取消|撤销)(?:执行|操作|合并|发布|合并并发布|合并和发布)?[。.!！]?$|^(?:please )?(?:stop|cancel|pause)(?: (?:merge|publish|execution))?[.!]?$/i.test(row.text?.trim() ?? ""));
+}
+
+export const isIntegrationStatus = (text: string) =>
+  /^(?:请)?(?:进度(?:如何|怎么样)?|查看进度|当前状态|状态如何|能否(?:合并|发布|合并和发布|合并并发布)|可以(?:合并|发布|合并和发布|合并并发布)吗|status)[。.!！?？]?$/i.test(text.trim());
+
+export function isDirectIntegrationAction(text: string, operation: "merge_only" | "merge_and_publish" | "publish_only") {
+  const command = text.trim().replace(/^(?:请|直接|现在|执行|开始)+/, "").replace(/[。.!！]$/, "").trim();
+  if (operation === "merge_only") return /^(?:仅|只)?合并$/.test(command) || /^(?:please )?merge$/i.test(command);
+  if (operation === "publish_only") return /^(?:仅|只)?(?:发布|部署)$/.test(command) || /^(?:please )?(?:publish|deploy)$/i.test(command);
+  return /^合并(?:和|并|及|、)(?:发布|部署)$/.test(command) || /^(?:please )?merge and (?:publish|deploy)$/i.test(command);
+}
+
 export const isIntegrationRetry = (text: string) => /^(?:请|你)?(?:再试(?:一?下|一次)?|重试(?:一?下|一次)?|retry)[。.!！]?$/i.test(text.trim());
 
 /** Check the inclusive interval so two records with the same clock cannot hide a stop. */
 export function assertConversationRetryHistory(database: MissionGoDatabase, executor: IntegrationExecutor,
-  authorization: IntegrationInstruction, retry: IntegrationInstruction) {
+  authorization: IntegrationInstruction, retry: IntegrationInstruction, allowStatus = false) {
   const external = executor.kind === "external";
   const db = database.connection;
   const args = [executor.sessionId, authorization.occurredAt, retry.occurredAt] as const;
@@ -143,6 +168,6 @@ export function assertConversationRetryHistory(database: MissionGoDatabase, exec
   if ([...delivered, ...messages].some(input => {
     const at = Date.parse(input.at);
     return !(input.text === authorization.text && at === authorizedAt
-      || at > authorizedAt && isIntegrationRetry(input.text));
+      || at > authorizedAt && (isIntegrationRetry(input.text) || allowStatus && isIntegrationStatus(input.text)));
   })) throw conflict("conversation_integration_input_changed", "原决定之后有不同输入，请核对停止、撤权或范围变化。");
 }
