@@ -141,7 +141,7 @@ export const isIntegrationRetry = (text: string) => /^(?:请|你)?(?:再试(?:�
 
 /** Check the inclusive interval so two records with the same clock cannot hide a stop. */
 export function assertConversationRetryHistory(database: MissionGoDatabase, executor: IntegrationExecutor,
-  authorization: IntegrationInstruction, retry: IntegrationInstruction, allowStatus = false) {
+  authorization: IntegrationInstruction, retry: IntegrationInstruction, allowStatus = false, allowEndpoint = false) {
   const external = executor.kind === "external";
   const db = database.connection;
   const args = [executor.sessionId, authorization.occurredAt, retry.occurredAt] as const;
@@ -172,6 +172,7 @@ export function assertConversationRetryHistory(database: MissionGoDatabase, exec
   if ([...delivered, ...messages].some(input => {
     const at = Date.parse(input.at);
     return !(input.text === authorization.text && at === authorizedAt
+      || at > authorizedAt && allowEndpoint && at === Date.parse(retry.occurredAt) && input.text === retry.text
       || at > authorizedAt && (isIntegrationRetry(input.text) || allowStatus && isIntegrationStatus(input.text)));
   })) throw conflict("conversation_integration_input_changed", "原决定之后有不同输入，请核对停止、撤权或范围变化。");
 }

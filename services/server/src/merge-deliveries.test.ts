@@ -515,6 +515,62 @@ describe("integration directly in the original conversation",()=>{
     record("retained-progress","CI 仍在运行，尚未执行。",5);
     return {...f,sessions,input,first,record,at};
   };
+  it.each(["confirmed", "persisted-pr", "retried", "stopped", "changed-version", "changed-head", "other-pr", "other-repository", "extra-release-candidate", "mixed-confirmation", "unrelated-confirmation"] as const)(
+    "binds version confirmation to the original scoped action: %s", async scenario => {
+      vi.useFakeTimers({toFake:["Date"]});
+      vi.setSystemTime(new Date("2026-11-24T10:00:00Z"));
+      const f=await acrossTurns();
+      f.store.recordProductReleaseArtifacts(f.item.productId,["web","androidApp"]);
+      const original=f.input.deliveries[0]!;
+      vi.setSystemTime(Date.now()+10);
+      const context=scenario==="persisted-pr"?"准备发布已登记的改动。"
+        :scenario==="other-repository"?`other/repo#${original.pullRequest} at ${original.head}`
+        :`Completed ${original.repository}/pull/${original.pullRequest} at ${original.head}`;
+      f.record("completed-pr",context,25);
+      vi.setSystemTime(Date.now()+20);
+      human(f,"合并和发布");
+      const head=scenario==="changed-head"?"e".repeat(40):original.head;
+      const pullRequest=scenario==="other-pr"?99:original.pullRequest;
+      if(scenario==="extra-release-candidate")
+        f.safe(await f.call("submit_development_complete",{itemKey:f.item.key,...f.identity,completion:{kind:"github",url:`${f.input.repository}/pull/13`},requiredArtifacts:["web"],idempotencyKey:"extra-release-candidate"}));
+      const delivery={...original,head,pullRequest,evidence:{...original.evidence,head}};
+      const input={...f.input,deliveries:[scenario==="extra-release-candidate"?{...delivery,itemKeys:[],productId:f.item.productId}:delivery],publicationTargets:[{artifact:"web",version:"1.2.3"}]};
+      const prepare=(scope=input)=>f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),scope);
+      const offered=prepare();
+      const prompt=f.merges.conversationVersionPrompt(offered);
+      if(scenario==="changed-head"||scenario==="other-pr"||scenario==="other-repository"||scenario==="extra-release-candidate"){
+        expect(prompt).toBeUndefined();
+        return;
+      }
+      expect(prompt).toBeDefined();
+      vi.setSystemTime(Date.now()+10);
+      f.record("version-offer",scenario==="mixed-confirmation"?prompt+"\n确认要创建条目吗？":prompt!,55);
+      if(scenario==="unrelated-confirmation")f.record("unrelated-question","确认要创建条目吗？",56);
+      vi.setSystemTime(Date.now()+20);
+      if(scenario==="stopped")human(f,"停止");
+      vi.setSystemTime(Date.now()+20);
+      human(f,"确认");
+      if(scenario==="retried"){
+        vi.setSystemTime(Date.now()+20);
+        human(f,"进度如何");
+        vi.setSystemTime(Date.now()+20);
+        human(f,"重试");
+      }
+      const start=()=>{
+        const fresh=prepare(scenario==="changed-version"?{...input,publicationTargets:[{artifact:"web",version:"2.0.0"}]}:input);
+        return f.merges.startConversation(f.owner.id,"original-client",f.identity,fresh.id);
+      };
+      if(scenario==="confirmed"||scenario==="persisted-pr"||scenario==="retried"){
+        const batch=start();
+        expect(batch.conversation?.authorization.text).toBe("合并和发布");
+        expect(batch.conversation?.versionConfirmation?.text).toBe("确认");
+        expect(batch.publicationTargets).toEqual(input.publicationTargets);
+        expect(start().id).toBe(batch.id);
+      }else{
+        expect(start).toThrow();
+        expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({n:0});
+      }
+    });
   it("accepts exact reviewed artifact/version instruction without expanding publication",async()=>{
     const f=await acrossTurns();f.store.recordProductReleaseArtifacts(f.item.productId,["web","androidApp"]);
     const input={...f.input,publicationTargets:[{artifact:"web",version:"1.2.3"}]};
