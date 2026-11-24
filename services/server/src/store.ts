@@ -1815,7 +1815,21 @@ export class MissionGoStore {
   getDeliveryRecords(itemKey: string, includeHistorical = false) {
     const rowId=this.workItemId(itemKey),round=deliveryRound(this.database,rowId);
     const events=this.getTimeline(itemKey).filter(e=>!e.historySourceKey);
-    return events.filter(e=>(e.eventType==="delivery_recorded" || e.eventType==="status_changed" && e.toStatus==="development_complete") && (includeHistorical || e.payload.roundKey===round)).map(event=>{
+    // Manual handovers can lack a round key. A return still closes that attempt,
+    // so an earlier unkeyed delivery cannot count as a current one.
+    let currentStart = 0;
+    if (!includeHistorical) {
+      for (let index = events.length - 1; index >= 0; index--) {
+        const event = events[index]!;
+        if (event.eventType === "status_changed" && event.actorKind === "human"
+          && event.fromStatus === "pending_verification" && event.toStatus === "ready") {
+          currentStart = index + 1;
+          break;
+        }
+      }
+    }
+    const candidates = currentStart ? events.slice(currentStart) : events;
+    return candidates.filter(e=>(e.eventType==="delivery_recorded" || e.eventType==="status_changed" && e.toStatus==="development_complete") && (includeHistorical || e.payload.roundKey===round)).map(event=>{
       const eventRound=event.payload.roundKey as string|null;
       const scopedEvents=events.filter(e=>e.id===event.id || e.eventType==="delivery_evidence_added" && e.payload.developmentEventId===event.id && e.payload.roundKey===eventRound);
       const last=scopedEvents.at(-1)!;

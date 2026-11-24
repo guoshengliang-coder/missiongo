@@ -61,3 +61,33 @@ describe("verification return summary", () => {
     expect(store.getWorkItem(item.key).verificationReturn?.note).toBe("Second return");
   });
 });
+
+describe("verification after repeated returns", () => {
+  it.each([false, true])("isolates manual handovers after two returns (initial claim: %s)", async (initialClaim) => {
+    const { store, item, move } = await seed();
+    const publishManually = () => {
+      move("development_complete", "manual_override", "Development completed outside MissionGo.");
+      move("pending_verification", "release_verified");
+    };
+
+    if (initialClaim) move("in_progress", "claim");
+    for (let attempt = 0; attempt < 2; attempt++) {
+      publishManually();
+      move("ready", "verification_failed", "Needs another revision.");
+      expect(store.getDeliveryRecords(item.key)).toEqual([]);
+    }
+    publishManually();
+
+    const history = store.getDeliveryRecords(item.key, true);
+    expect(history).toHaveLength(3);
+    expect(store.getDeliveryRecords(item.key)).toEqual([history[2]]);
+    const current = store.getWorkItem(item.key);
+    const accept = {
+      itemKey: item.key, to: "done", reason: "verification_passed", actor: "human",
+    } as const;
+    expect(() => store.transitionWorkItem({ ...accept, expectedRevision: current.revision - 1 }))
+      .toThrow(expect.objectContaining({ code: "transition_revision_changed" }));
+    expect(store.transitionWorkItem({ ...accept, expectedRevision: current.revision }).status).toBe("done");
+    expect(store.getDeliveryRecords(item.key, true)).toEqual(history);
+  });
+});
