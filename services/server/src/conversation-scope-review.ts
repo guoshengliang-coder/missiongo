@@ -21,7 +21,7 @@ export function conversationScopeReview(database: MissionGoDatabase, executor: I
   const assertActionBounds=(text:string,decision=false)=>{
     // This is a server-derived fact from the immediately preceding unique
     // complete review, never an MCP argument or an Agent-provided approval.
-    if(!(decision && ["同意","批准"].includes(text))) {
+    if (!decision) {
       // Reject scope qualifications instead of counting excluded references as
       // positive authorization. An operation-only "only merge/publish" remains valid.
       const scopeText=text.replace(/https?:\/\/[^\s<>，。；]+/ig," ")
