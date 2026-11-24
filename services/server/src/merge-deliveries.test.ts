@@ -138,6 +138,101 @@ describe("integration directly in the original conversation",()=>{
       expect(f.merges.readForAccount(f.owner.id,f.d.id).state).toBe("proposed");
     }
   });
+  it.each(["same-scope", "status-before-prepare", "changed-head", "different-base", "different-artifact", "unclocked", "stopped", "competing-pr", "quoted", "added-item", "merge-only-unclocked", "merge-only-blockquote", "merge-only-same-scope"] as const)(
+    "binds a new PR to the reviewed local commit: %s", async scenario => {
+      vi.useFakeTimers({toFake:["Date"]});
+      vi.setSystemTime(new Date("2026-11-24T08:00:00Z"));
+      const f=await prepared(),sessions=new AgentSessionStore(f.store.database);
+      f.db.prepare("DELETE FROM merge_deliveries WHERE id=?").run(f.d.id);
+      f.store.recordProductReleaseArtifacts(f.item.productId,["web","androidApp"]);
+      const marker=`本次待交付提交 ${f.input.repository}/commit/${f.input.head} → main · web`;
+      const context=scenario==="competing-pr"?marker+"\n另外处理 other/repo#99"
+        :scenario==="quoted"?"```text\n"+marker+"\n```":scenario==="merge-only-blockquote"?"> "+marker:marker;
+      sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[
+        {sourceId:"local-handoff",role:"agent",phase:"final_answer",
+          text:context,occurredAt:new Date().toISOString()},
+      ]});
+      if(scenario==="unclocked"||scenario==="merge-only-unclocked")f.db.prepare("DELETE FROM session_message_times WHERE source_id='native:local-handoff'").run();
+      vi.setSystemTime(Date.now()+10);
+      const mergeOnly=scenario.startsWith("merge-only");
+      human(f,mergeOnly?"合并":"合并和发布");
+      const head=scenario==="changed-head"?"e".repeat(40):f.input.head;
+      const delivery={...f.input,head,evidence:{...f.input.evidence,head},
+        ...(scenario==="added-item"?{}:{itemKeys:[],productId:f.item.productId}),
+        targetBranch:scenario==="different-base"?"other":"main",
+        requiredArtifacts:scenario==="different-artifact"?["androidApp"]:["web"]};
+      const input={...scope(f),operation:mergeOnly?"merge_only" as const:"merge_and_publish" as const,deliveries:[delivery]};
+      const prepare=(scope=input)=>f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),scope);
+      const start=(id:string)=>f.merges.startConversation(f.owner.id,"original-client",f.identity,id);
+      const initial=scenario==="status-before-prepare"?undefined:prepare();
+      if(scenario==="merge-only-unclocked"||scenario==="merge-only-blockquote")expect(()=>start(initial!.id)).toThrow();
+      vi.setSystemTime(Date.now()+600001);
+      if(scenario==="stopped"){
+        human(f,"停止");
+        vi.setSystemTime(Date.now()+10);
+      }
+      human(f,"发布进度如何？");
+      if(initial)expect(()=>start(initial.id)).toThrow(/过期/);
+      const refreshed=prepare();
+      if(scenario!=="same-scope" && scenario!=="merge-only-same-scope" && scenario!=="status-before-prepare"){
+        expect(()=>start(refreshed.id)).toThrow();
+        expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({n:0});
+        return;
+      }
+      const batch=start(refreshed.id);
+      expect(batch.conversation?.authorization.text).toBe(mergeOnly?"合并":"合并和发布");
+      expect(batch.conversation?.direct).toBe(true);
+      vi.setSystemTime(Date.now()+10);
+      human(f,"重试");
+      expect(start(prepare().id).id).toBe(batch.id);
+      expect(()=>start(prepare({...input,deliveries:[{...delivery,pullRequest:99}]}).id)).toThrow();
+      if(scenario!=="status-before-prepare")return;
+      const deliveryId=batch.deliveries[0]!;
+      const check=(revision:number,checks:"passed"|"failed")=>f.merges.integrate(f.owner.id,f.dispatch.id,batch.id,revision,`ci-${checks}`,{
+        kind:"check",deliveryId,expectedHead:head,base:delivery.evidence.base,checkedAt:new Date().toISOString(),
+        checks,local:"passed",mergeable:"clean",source:"Synthetic GitHub CI",validation:"Same exact PR",
+      });
+      const failed=check(batch.integration!.revision,"failed");
+      expect(failed.entries[0]?.mergeReady).toBe(false);
+      vi.setSystemTime(Date.now()+10);
+      human(f,"重新试一下");
+      const passed=check(failed.integration!.revision,"passed");
+      expect(passed.entries[0]?.mergeReady).toBe(true);
+
+      const commit="c".repeat(40);
+      f.merges.report(f.owner.id,f.dispatch.id,batch.id,deliveryId,{status:"merged",head,commit,detail:"Synthetic exact GitHub merge"});
+      const merged=f.merges.batch(f.owner.id,f.dispatch.id,batch.id);
+      const validated=f.merges.integrate(f.owner.id,f.dispatch.id,batch.id,merged.integration!.revision,"main-ci",{
+        kind:"final_validation",head:commit,checkedAt:new Date().toISOString(),source:"Synthetic main CI",validation:"Passed",
+      });
+      expect(validated.publicationPrerequisiteGate.blockers).toEqual([]);
+      const publishing=f.merges.integrate(f.owner.id,f.dispatch.id,batch.id,validated.integration!.revision,"publish-web",{
+        kind:"publication_progress",state:"publishing",checkedAt:new Date().toISOString(),
+        resultsDigest:validated.resultsDigest,detail:"Synthetic Web publication start",
+      });
+      expect(publishing.integration?.publication?.state).toBe("publishing");
+    });
+  it.each(["批准", "授权", "确认。", "可以执行", "确认吗？", "不批准", "mixed confirmation"] as const)(
+    "recognizes scoped decisions without requiring particular wording: %s", async reply => {
+      vi.useFakeTimers({toFake:["Date"]});
+      vi.setSystemTime(new Date("2026-11-24T08:00:00Z"));
+      const f=await prepared();
+      human(f,"请核对执行范围");
+      const prepare=()=>f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),scope(f));
+      const shown=prepare();
+      vi.setSystemTime(Date.now()+10);
+      new AgentSessionStore(f.store.database).recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[
+        {sourceId:"decision-scope",role:"agent",phase:"final_answer",text:reply==="mixed confirmation"?shown.reviewText+"\n另一个请求也确认吗？":shown.reviewText,occurredAt:new Date().toISOString()},
+      ]});
+      vi.setSystemTime(Date.now()+10);
+      human(f,reply==="mixed confirmation"?"确认":reply);
+      const start=()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,prepare().id);
+      if(reply.endsWith("吗？")||reply.startsWith("不")||reply==="mixed confirmation"){
+        expect(start).toThrow();
+        return;
+      }
+      expect(start().conversation?.authorization.text).toBe(reply);
+    });
   it.each(["matching", "persisted association", "unassociated", "changed head", "question", "prior stop"] as const)("direct one-PR integration from the original context: %s", async scenario => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-11-22T08:00:00Z"));

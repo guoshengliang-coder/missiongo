@@ -51,7 +51,7 @@ export function integrationExecutor(database: MissionGoDatabase, accountId: stri
       ...(settings.model ? { model: settings.model } : {}), ...(settings.effort ? { effort: settings.effort } : {}) } };
 }
 
-export interface IntegrationInstruction { sourceId: string; text: string; occurredAt: string; context: string; fingerprint: string }
+export interface IntegrationInstruction { sourceId: string; text: string; occurredAt: string; context: string; contextTrusted?: boolean; fingerprint: string }
 
 /** Read only authenticated user records, not quotes supplied by the Agent or work-item content. */
 export function integrationInstruction(database: MissionGoDatabase, executor: IntegrationExecutor, sourceId?: string, before?: string): IntegrationInstruction {
@@ -82,12 +82,15 @@ export function integrationInstruction(database: MissionGoDatabase, executor: In
   if(!external && db.prepare("SELECT 1 FROM agent_session_commands WHERE session_id=? AND kind='interrupt' AND status NOT IN ('failed','cancelled') AND julianday(created_at)>=julianday(?)").get(sessionId,current.occurredAt))throw unavailable();
   if (sourceId && sourceId !== current.sourceId) throw conflict("conversation_integration_input_changed", "当前用户输入已变化，请核对原会话指令，不重建或重复执行未知操作。");
   const contextRow = db.prepare(external
-    ? `SELECT payload_json FROM external_native_messages WHERE session_id=? AND json_extract(payload_json,'$.role')='agent'
+    ? `SELECT source_id,json_extract(payload_json,'$.text') AS text,json_extract(payload_json,'$.occurredAt') AS at FROM external_native_messages WHERE session_id=? AND json_extract(payload_json,'$.role')='agent'
        AND json_extract(payload_json,'$.phase')='final_answer' AND julianday(json_extract(payload_json,'$.occurredAt'))<julianday(?) ORDER BY position DESC,rowid DESC LIMIT 1`
-    : "SELECT text FROM agent_session_messages WHERE session_id=? AND role='agent' AND phase='final_answer' AND julianday(occurred_at)<julianday(?) ORDER BY position DESC,rowid DESC LIMIT 1")
-    .get(sessionId, current.occurredAt) as { text?: string; payload_json?: string } | undefined;
-  const context: string = contextRow?.text ?? (contextRow?.payload_json ? JSON.parse(contextRow.payload_json).text : "");
-  return { ...current, context, fingerprint: integrationFingerprint([current, context]) };
+    : "SELECT source_id,text,occurred_at AS at FROM agent_session_messages WHERE session_id=? AND role='agent' AND phase='final_answer' AND julianday(occurred_at)<julianday(?) ORDER BY position DESC,rowid DESC LIMIT 1")
+    .get(sessionId, current.occurredAt) as { source_id: string; text: string; at: string } | undefined;
+  const context = contextRow?.text ?? "";
+  const contextClock = contextRow ? db.prepare("SELECT occurred_at FROM session_message_times WHERE session_key=? AND source_id=? AND provenance='source_message'")
+    .get(external ? `external:${sessionId}` : `dispatch:${executor.kind === "dispatch" ? executor.dispatchId : ""}`, `native:${contextRow.source_id}`) as { occurred_at: string } | undefined : undefined;
+  const contextTrusted = Boolean(contextRow && contextClock && Date.parse(contextRow.at) === Date.parse(contextClock.occurred_at));
+  return { ...current, context, contextTrusted, fingerprint: integrationFingerprint([current, context]) };
 }
 
 /** Conservative rejection filter, never an automatic execution trigger. Agent still resolves scope and meaning. */
@@ -128,7 +131,7 @@ export function hasIntegrationStop(database: MissionGoDatabase, executor: Integr
 }
 
 export const isIntegrationStatus = (text: string) =>
-  /^(?:请)?(?:进度(?:如何|怎么样)?|查看进度|当前状态|状态如何|能否(?:合并|发布|合并和发布|合并并发布)|可以(?:合并|发布|合并和发布|合并并发布)吗|status)[。.!！?？]?$/i.test(text.trim());
+  /^(?:请)?(?:进度(?:如何|怎么样)?|查看进度|当前状态|状态如何|(?:现在)?(?:合并|发布)(?:进度|状态)(?:如何|怎么样)?|(?:现在)?(?:合并|发布)了吗|(?:还有)?多久(?:能|可以)?(?:合并|发布)|能否(?:合并|发布|合并和发布|合并并发布)|可以(?:合并|发布|合并和发布|合并并发布)吗|status)[。.!！?？]?$/i.test(text.trim());
 
 export function isDirectIntegrationAction(text: string, operation: "merge_only" | "merge_and_publish" | "publish_only") {
   const command = text.trim().replace(/^(?:请|直接|现在|执行|开始)+/, "").replace(/[。.!！]$/, "").trim();
@@ -137,7 +140,7 @@ export function isDirectIntegrationAction(text: string, operation: "merge_only" 
   return /^合并(?:和|并|及|、)(?:发布|部署)$/.test(command) || /^(?:please )?merge and (?:publish|deploy)$/i.test(command);
 }
 
-export const isIntegrationRetry = (text: string) => /^(?:请|你)?(?:再试(?:一?下|一次)?|重试(?:一?下|一次)?|retry)[。.!！]?$/i.test(text.trim());
+export const isIntegrationRetry = (text: string) => /^(?:请|你)?(?:(?:再试|重新试|重试)(?:一?下|一次)?|retry)[。.!！]?$/i.test(text.trim());
 
 /** Check the inclusive interval so two records with the same clock cannot hide a stop. */
 export function assertConversationRetryHistory(database: MissionGoDatabase, executor: IntegrationExecutor,
