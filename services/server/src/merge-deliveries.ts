@@ -5,7 +5,7 @@ import { projectCheckSatisfied } from "@missiongo/contracts";
 import { projectCheckStateSchema, projectVerificationSchema, validateProjectChecks, assertProjectBinding } from "./project-verification.js";
 import {deliveryScope,historicalDeliveryFingerprint,previouslyReviewedHistoricalGaps} from "./historical-delivery-review.js";
 import {conversationDecisionEvidence} from "./conversation-decision-evidence.js";
-import { integrationExecutor, integrationInstruction, assertIntegrationInstruction, isIntegrationRetry, integrationConsentReply, isIntegrationConsent, isIntegrationContinue, isIntegrationStatus, isDirectIntegrationAction, isWholeScopeIntegrationCommand, isIntegrationStop, hasIntegrationStop, assertConversationRetryHistory, type IntegrationExecutor, type IntegrationInstruction, type ConversationIdentity } from "./conversation-integration-source.js";
+import { integrationExecutor, integrationInstruction, assertIntegrationInstruction, isIntegrationRetry, integrationConsentReply, isIntegrationConsent, isIntegrationContinue, isIntegrationStatus, isDirectIntegrationAction, isWholeScopeIntegrationCommand, isIntegrationStop, hasIntegrationStop, permitsBoundIntegrationInput, assertConversationRetryHistory, type IntegrationExecutor, type IntegrationInstruction, type ConversationIdentity } from "./conversation-integration-source.js";
 import {mergeReviewSummary} from "./merge-review-summary.js";
 import { developmentReviewBlocker, developmentReviewExpiry } from "./development-reviews.js";
 import type { SQLInputValue, StatementSync } from "node:sqlite";
@@ -1615,39 +1615,18 @@ export class MergeDeliveries {
         const b=this.batch(accountId,actor,p.resumeBatchId);
         if(!b.conversation||b.state!=="active")throw changed();
         const configurationChanged=executor.settings!==b.conversation.executor.settings;
-        const continuing=isIntegrationStatus(source.text)||isIntegrationRetry(source.text)||/^(?:请)?(?:继续(?:执行|处理)?|进度(?:如何)?|查看进度|当前状态|状态如何|continue|status)[。.!！]?$/i.test(source.text.trim());
-        const renewalReview=!continuing?evaluateScopeReview():undefined;
-        if(continuing || !renewalReview){
-          // A later status question cannot erase an intervening stop or scope change.
-          const prior=b.conversation.input,commandId=prior.sourceId.startsWith("command:")?prior.sourceId.slice(8):undefined;
-          if(Date.parse(source.occurredAt)<Date.parse(prior.occurredAt))throw changed();
-          const priorRecord=this.db.connection.prepare(commandId
-            ? executor.kind==="external"?"SELECT text,created_at AS at FROM external_native_commands WHERE session_id=? AND id=?":"SELECT text,created_at AS at FROM agent_session_commands WHERE session_id=? AND id=? AND kind='message'"
-            : executor.kind==="external"?"SELECT json_extract(payload_json,'$.text') AS text,json_extract(payload_json,'$.occurredAt') AS at FROM external_native_messages WHERE session_id=? AND source_id=? AND json_extract(payload_json,'$.role')='user'":"SELECT text,occurred_at AS at FROM agent_session_messages WHERE session_id=? AND source_id=? AND role='user'")
-            .get(b.sessionId,commandId??prior.sourceId.slice(7)) as {text:string;at:string}|undefined;
-          if(!priorRecord||priorRecord.text!==prior.text||Date.parse(priorRecord.at)!==Date.parse(prior.occurredAt))
-            throw conflict("conversation_integration_history_incomplete","原输入历史缺失或已变化，不能通过状态查询恢复执行。");
-          if(executor.kind==="dispatch"&&this.db.connection.prepare("SELECT 1 FROM agent_session_commands WHERE session_id=? AND kind='interrupt' AND status NOT IN ('failed','cancelled') AND julianday(created_at)>=julianday(?) AND julianday(created_at)<=julianday(?)").get(b.sessionId,prior.occurredAt,source.occurredAt))throw changed();
-          const missingClock=this.db.connection.prepare(executor.kind==="external"
-            ? "SELECT 1 FROM external_native_messages WHERE session_id=? AND json_extract(payload_json,'$.role')='user' AND julianday(json_extract(payload_json,'$.occurredAt')) IS NULL LIMIT 1"
-            : "SELECT 1 FROM agent_session_messages WHERE session_id=? AND role='user' AND julianday(occurred_at) IS NULL LIMIT 1").get(b.sessionId);
-          if(missingClock)throw conflict("conversation_integration_history_incomplete","用户来源历史缺少有效时钟，不能通过状态查询恢复执行。");
-          const commands=this.db.connection.prepare(executor.kind==="external"
-            ? "SELECT id,text,created_at AS at FROM external_native_commands WHERE session_id=? AND julianday(created_at)>=julianday(?) AND julianday(created_at)<=julianday(?)"
-            : "SELECT id,text,created_at AS at FROM agent_session_commands WHERE session_id=? AND kind='message' AND julianday(created_at)>=julianday(?) AND julianday(created_at)<=julianday(?)")
-            .all(b.sessionId,prior.occurredAt,source.occurredAt) as {id:string;text:string;at:string}[];
-          const messages=this.db.connection.prepare(executor.kind==="external"
-            ? "SELECT source_id,json_extract(payload_json,'$.text') AS text,json_extract(payload_json,'$.clientMessageId') AS client_message_id,json_extract(payload_json,'$.occurredAt') AS at FROM external_native_messages WHERE session_id=? AND json_extract(payload_json,'$.role')='user' AND julianday(json_extract(payload_json,'$.occurredAt'))>=julianday(?) AND julianday(json_extract(payload_json,'$.occurredAt'))<=julianday(?)"
-            : "SELECT source_id,text,client_message_id,occurred_at AS at FROM agent_session_messages WHERE session_id=? AND role='user' AND julianday(occurred_at)>=julianday(?) AND julianday(occurred_at)<=julianday(?)")
-            .all(b.sessionId,prior.occurredAt,source.occurredAt) as {source_id:string;text:string;client_message_id:string|null;at:string}[];
-          const intervening=[...commands.filter(c=>c.id!==commandId),...messages.filter(m=>prior.sourceId!==`native:${m.source_id}`&&!(commandId&&(m.source_id===commandId||m.source_id===`answer-${commandId}`||m.client_message_id===commandId)&&m.text===prior.text))];
-          if(intervening.filter(m=>!(m.text===source.text&&Date.parse(m.at)===Date.parse(source.occurredAt))).some(m=>!isIntegrationStatus(m.text)&&!isIntegrationRetry(m.text)&&!/^(?:请)?(?:继续(?:执行|处理)?|进度(?:如何)?|查看进度|当前状态|状态如何|continue|status)[。.!！]?$/i.test(m.text.trim())))throw changed();
+        const acceptsInput = (text: string) => permitsBoundIntegrationInput(text, b.integration?.protocol === 1
+          && !b.integration.prerequisitesOnly && b.operation !== "publish_only");
+        const continuing = acceptsInput(source.text);
+        const renewalReview = continuing ? undefined : evaluateScopeReview();
+        if (continuing || !renewalReview) {
+          assertConversationRetryHistory(this.db, executor, b.conversation.input, source, true, false, acceptsInput);
         }
         if((!continuing || configurationChanged) && !(reviewedDecision && renewalReview))assertIntegrationInstruction(source.text,p.operation);
         if(continuing && configurationChanged)evaluateScopeReview();
         if(configurationChanged && !source.context.includes(p.reviewText))throw changed();
         if(configurationChanged){(b.conversation.configurationChanges??=[]).push({executor,source});b.conversation.executor=executor;b.config=p.config;}
-        // Only an unchanged, explicitly continuing input is rebound; stop/rework/scope changes are never ignored.
+        // Keep the original authorization and update the observed input boundary.
         b.conversation.input=source;
         for(const id of b.deliveries){const d=this.read<Delivery>("merge_deliveries",id);if(d.sessionId===b.sessionId){
           if(configurationChanged&&!d.itemKeys.length)d.scope=this.deliveryScope(d);
@@ -1867,14 +1846,15 @@ export class MergeDeliveries {
     }
     const hasRelease=Boolean(b.publicationScope?.requiredArtifacts.length)||b.deliveries.some(id=>this.read<Delivery>("merge_deliveries",id).requiredArtifacts.length>0);
     const gate=prerequisiteGate(b,hasRelease);
+    const conversationBlocker = this.conversationInputBlocker(b);
     return {...b, ...(!b.conversation?{dispatchId}:{}), projectWorkflowInstructions:projectIntegrationInstructions, prerequisiteObservation:prerequisiteObservation({...b,entries:b.deliveries.map(id=>{const d=this.read<Delivery>("merge_deliveries",id);return {id,head:d.head};})}), publicationDeferred:batchPublicationDeferred(b), prerequisiteGate:gate, publicationPrerequisiteGate:this.publicationGate(b,hasRelease), resultsDigest:digest(b.results), entries:b.deliveries.map(id=>{
-      const inputCurrent = this.conversationInputCurrent(b);
+      const inputCurrent = !conversationBlocker;
       const delivery = this.read<Delivery>("merge_deliveries", id);
       const d = this.view(delivery, Boolean(b.conversation && inputCurrent && delivery.sessionId === b.sessionId));
       let mergeReady=!b.references?.[id]&&!d.blocker&&!b.results[id]&&b.state==="active" && inputCurrent;
       if(b.integration&&!b.integration.prerequisitesOnly){try{assertIntegrationMerge(b.integration,id,b.results,{allowPendingCI:true});}catch{mergeReady=false;}}
       if(!gate.ready||!prerequisiteGate(b,hasRelease,b.integration?.entries[id]?.check?.base).ready)mergeReady=false;
-      return {...d,...(b.references?.[id]?{reference:b.references[id],referenceVerified:b.verifiedReferences?.[id],blocker:d.itemKeys.map(key=>this.itemBlocker(this.read<Delivery>("merge_deliveries",id),key,true)).find(Boolean)}:{}),executionHead:b.integration?.entries[id]?.head??d.head,expectedBase:b.integration?.entries[id]?.check?.base,mergeReady};
+      return {...d, ...(conversationBlocker && delivery.sessionId === b.sessionId ? {blocker:conversationBlocker} : {}), ...(b.references?.[id]?{reference:b.references[id],referenceVerified:b.verifiedReferences?.[id],blocker:d.itemKeys.map(key=>this.itemBlocker(this.read<Delivery>("merge_deliveries",id),key,true)).find(Boolean)}:{}),executionHead:b.integration?.entries[id]?.head??d.head,expectedBase:b.integration?.entries[id]?.check?.base,mergeReady};
     })};
   }
   integrate(accountId:string,dispatchId:string,id:string,expectedRevision:number,key:string,raw:IntegrationAction) {
@@ -2021,22 +2001,24 @@ export class MergeDeliveries {
   private reconciliation(b: Batch) {
     return b.reconciliation ??= {requests:[],history:[],handoffs:{}};
   }
-  private conversationInputCurrent(b:Batch) {
-    if(!b.conversation)return true;
+  private conversationInputBlocker(b:Batch) {
+    if(!b.conversation)return undefined;
     try{
       const e=b.conversation.executor,current=integrationExecutor(this.db,b.accountId,e.kind==="external"?e.clientId:"",e.kind==="dispatch"?{dispatchId:e.dispatchId}:{sessionId:e.sessionId},b.productId);
-      if (!this.sameConversationExecutor(current.executor, e) || current.executor.settings !== e.settings) return false;
+      if (!this.sameConversationExecutor(current.executor, e) || current.executor.settings !== e.settings) return "原会话的执行身份或配置已变化，请核对当前配置。";
       const source = integrationInstruction(this.db, e);
-      if (source.fingerprint === b.conversation.input.fingerprint) return true;
-      if (!isIntegrationStatus(source.text) && !isIntegrationRetry(source.text) && !isIntegrationContinue(source.text)) return false;
-      assertConversationRetryHistory(this.db, e, b.conversation.input, source, true);
-      return true;
-    }catch{return false;}
+      const acceptsInput = (text: string) => permitsBoundIntegrationInput(text, b.integration?.protocol === 1
+        && !b.integration.prerequisitesOnly && b.operation !== "publish_only");
+      assertConversationRetryHistory(this.db, e, b.conversation.input, source, true, false, acceptsInput);
+      return undefined;
+    } catch (error) {
+      return error instanceof MissionGoError ? error.message : "无法核实原会话的执行来源。";
+    }
   }
   private permit(accountId:string,b:Batch,write:boolean,continuation=true) {
     const accounts=new AccountStore(this.db),account=accounts.findActive(accountId);
     if(b.accountId!==accountId || !account || !accounts.allows(account,b.productId,"view")
-      || write && (continuation && !this.conversationInputCurrent(b) || !accounts.allows(account,b.productId,"operate") || !accounts.allows(account,b.productId,"ai") || this.store.getProduct(b.productId).archivedAt)) throw changed();
+      || write && (continuation && this.conversationInputBlocker(b) || !accounts.allows(account,b.productId,"operate") || !accounts.allows(account,b.productId,"ai") || this.store.getProduct(b.productId).archivedAt)) throw changed();
   }
   batchProduct(id:string) {return this.read<Batch>("merge_batches",id).productId;}
   private publishedHandoff(d:Delivery,key:string) {
@@ -2250,7 +2232,7 @@ export class MergeDeliveries {
       const b=this.batch(accountId,dispatchId,id);this.permit(accountId,b,true,false);
       const r=this.reconciliation(b),request=r.requests.find(p=>p.id===requestId);
       if(!request||request.decision!=="approved")throw conflict("recovery_approval_required","需要人工确认这次对账快照及恢复操作。");
-      if(b.conversation&&!this.conversationInputCurrent(b)){
+      if(b.conversation&&this.conversationInputBlocker(b)){
         // Recording a human decision never authorizes unrelated later input.
         // Only its exact, delivered original input can resume this snapshot.
         const e=b.conversation.executor,current=integrationExecutor(this.db,accountId,b.conversation.clientId,e.kind==="dispatch"?{dispatchId:e.dispatchId}:{sessionId:e.sessionId},b.productId);

@@ -205,13 +205,37 @@ describe("integration directly in the original conversation",()=>{
       const deliveryId=batch.deliveries[0]!;
       const record=(revision:number,action:Parameters<typeof f.merges.integrate>[5])=>
         f.merges.integrate(f.owner.id,f.dispatch.id,batch.id,revision,randomUUID(),action);
-      const checked=record(batch.integration!.revision,{
-        kind:"check",deliveryId,expectedHead:head,base:delivery.evidence.base,checkedAt:new Date().toISOString(),
-        checks:"passed",local:"passed",mergeable:"clean",source:"Synthetic GitHub CI",validation:"Passed",
+      const check=(revision:number, exactHead:string, checks:"failed"|"passed")=>record(revision,{
+        kind:"check",deliveryId,expectedHead:exactHead,base:delivery.evidence.base,checkedAt:new Date().toISOString(),
+        checks,local:"passed",mergeable:"clean",source:"Synthetic GitHub CI",validation:"Verified exact head",
       });
+      const failed=check(batch.integration!.revision,head,"failed");
+      expect(failed.entries[0]?.mergeReady).toBe(false);
+      vi.setSystemTime(Date.now()+10);
+      human(f,"那接下来要如何才能继续搞好？");
+      vi.setSystemTime(Date.now()+10);
+      human(f,"那授权你去处理修复，直到合并和发布完成");
+      const reserved=record(failed.integration!.revision,{
+        kind:"prepare_repair",deliveryId,expectedHead:head,base:delivery.evidence.base,reason:"CI download repair",
+      });
+      vi.setSystemTime(Date.now()+10);
+      human(f,"PR #12 和 Web 1.1.79 目前进度如何");
+      const restarted = new MergeDeliveries(f.store);
+      const resume = restarted.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),
+        {...input,deliveries:[],resumeBatchId:batch.id});
+      const recovered = restarted.startConversation(f.owner.id,"original-client",f.identity,resume.id);
+      expect(recovered.id).toBe(batch.id);
+      expect(recovered.conversation?.authorization).toEqual(batch.conversation?.authorization);
+      const repairedHead="e".repeat(40);
+      const repaired=record(reserved.integration!.revision,{
+        kind:"repair",deliveryId,expectedHead:head,repairId:reserved.integration!.entries[deliveryId]!.repair!.id,
+        head:repairedHead,commits:[repairedHead],source:"Synthetic verified commit chain",validation:"CI download repaired",
+      });
+      expect(repaired.entries[0]?.mergeReady).toBe(false);
+      const checked=check(repaired.integration!.revision,repairedHead,"passed");
       expect(checked.entries[0]?.mergeReady).toBe(true);
       const commit="c".repeat(40);
-      f.merges.report(f.owner.id,f.dispatch.id,batch.id,deliveryId,{status:"merged",head,commit,detail:"Synthetic exact merge"});
+      f.merges.report(f.owner.id,f.dispatch.id,batch.id,deliveryId,{status:"merged",head:repairedHead,commit,detail:"Synthetic exact merge"});
       const merged=f.merges.batch(f.owner.id,f.dispatch.id,batch.id);
       const validated=record(merged.integration!.revision,{kind:"final_validation",head:commit,
         checkedAt:new Date().toISOString(),source:"Synthetic main CI",validation:"Passed"});
@@ -219,6 +243,18 @@ describe("integration directly in the original conversation",()=>{
         checkedAt:new Date().toISOString(),resultsDigest:validated.resultsDigest,detail:"Synthetic Web release",
         publicationVersions:[{artifact:"web",version:"1.1.79"}]});
       expect(publishing.integration?.publication?.state).toBe("publishing");
+      const offered=f.merges.releaseCandidates(f.item.productId).find(row=>row.candidate.deliveryId===deliveryId)?.candidate;
+      expect(offered).toBeDefined();
+      const submitted=await f.call("submit_release_batch",{productId:f.item.productId,idempotencyKey:"one-command-release",
+        deployedCommit:commit,receiptDigest:"d".repeat(64),deliveries:[{deliveryId,expectedRevision:offered!.expectedRevision,
+          releases:[{artifact:"web",version:"1.1.79",sourceCommit:commit}]}]});
+      f.safe(submitted);
+      expect(submitted.structuredContent?.deliveries).toMatchObject([{deliveryId,outcome:"submitted"}]);
+      const released=f.merges.batch(f.owner.id,f.dispatch.id,batch.id);
+      record(released.integration!.revision,{kind:"publication_progress",state:"ended",checkedAt:new Date().toISOString(),
+        resultsDigest:released.resultsDigest,detail:"Release receipt submitted"});
+      expect(f.merges.finish(f.owner.id,f.dispatch.id,batch.id).state).toBe("finished");
+
     });
   it.each(["same-scope", "status-before-prepare", "changed-head", "different-base", "different-artifact", "unclocked", "stopped", "competing-pr", "quoted", "added-item", "claimed-item", "merge-only-unclocked", "merge-only-blockquote", "merge-only-same-scope"] as const)(
     "binds a new PR to the reviewed local commit: %s", async scenario => {
@@ -552,6 +588,30 @@ describe("integration directly in the original conversation",()=>{
     const renewed=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"renewed",{...scope(f),deliveries:[],resumeBatchId:b.id});
     expect(f.merges.startConversation(f.owner.id,"original-client",f.identity,renewed.id).id).toBe(b.id);
   });
+  it.each(["先缓一缓", "先搁置，进度如何", "无需修复，可以结束", "暂缓，进度如何", "请合并所有 PR，进度如何", "撤销发布授权", "换一个 PR", "改成只发布 Android", "先把认证流程重做一遍", "do not proceed", "请修复，等验收通过再合并和发布", "请修复，验收后再合并和发布"])(
+    "keeps the original batch blocked after %s even with a later progress message",async instruction=>{
+      const f=await prepared();
+      vi.useFakeTimers({toFake:["Date"]});
+      const sessions=new AgentSessionStore(f.store.database);
+      const time=Date.now();
+      sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",settingsRevision:1,messages:[
+        {sourceId:"repair:original",role:"user",text:"合并 PR #12",occurredAt:new Date(time-100).toISOString()},
+      ]});
+      const start=(input:Parameters<typeof f.merges.prepareConversation>[4])=>{
+        const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),input);
+        return f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id);
+      };
+      const b=start(scope(f));
+      const resume={...scope(f),deliveries:[],resumeBatchId:b.id};
+      vi.setSystemTime(time+10);human(f,"进度如何");
+      expect(start(resume).id).toBe(b.id);
+      vi.setSystemTime(time+20);human(f,instruction);
+      vi.setSystemTime(time+30);human(f,"进度如何");
+      expect(()=>start(resume)).toThrow();
+      expect(()=>f.merges.integrate(f.owner.id,f.dispatch.id,b.id,0,randomUUID(),{
+        kind:"progress",phase:"investigating",deliveryId:b.deliveries[0]!,expectedHead:f.input.head,detail:"must remain blocked",
+      })).toThrow();
+    });
   it.each([false,true])("records Web recovery approval separately from delivery and later stop (%s)",async stop=>{
     const f=await prepared();human(f,"执行合并");
     const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"prepare",scope(f));
