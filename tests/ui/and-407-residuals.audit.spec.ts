@@ -5,10 +5,17 @@ import {MissionGoStore} from "../../services/server/dist/store.js";
 import {DispatchStore} from "../../services/server/dist/dispatch-store.js";
 import {ExternalAgentSessionStore} from "../../services/server/dist/external-agent-session-store.js";
 
+function openFixtureStore(directory: string) {
+  const store = new MissionGoStore(join(directory, "missiongo.sqlite"));
+  // The UI server and this fixture have separate SQLite connections.
+  store.database.connection.exec("PRAGMA busy_timeout = 5000;");
+  return store;
+}
+
 function setup() {
   const directory=process.env.MISSIONGO_UI_FIXTURE_DATA;
   if(!directory)throw new Error("Isolated UI fixture required");
-  const store=new MissionGoStore(join(directory,"missiongo.sqlite")),accountId="ui-fixture";
+  const store=openFixtureStore(directory),accountId="ui-fixture";
   try {
     const product=store.createProduct({name:"Residual guidance",keyPrefix:`RG${randomUUID().slice(0,6).toUpperCase()}`,createdByAccountId:accountId});
     const create=(title:string)=>store.createWorkItem({productId:product.id,title,description:"Isolated guidance fixture",type:"bug",priority:"normal",status:"ready",environment:{platform:"web"}});
@@ -95,7 +102,7 @@ for(const width of [320,1440])for(const theme of ["light","dark"] as const)test.
       expect((await (await request.get(`/api/v1/items/${f.stale.key}`)).json()).status).toBe("ready");
       expect((await (await request.get(`/api/v1/items/${f.partial.key}`)).json()).status).toBe("development_complete");
     } finally {
-      const store=new MissionGoStore(join(process.env.MISSIONGO_UI_FIXTURE_DATA!,"missiongo.sqlite"));
+      const store=openFixtureStore(process.env.MISSIONGO_UI_FIXTURE_DATA!);
       try {new DispatchStore(store.database).revokeNode("ui-fixture",f.nodeId);} finally {store.close();}
     }
   });
