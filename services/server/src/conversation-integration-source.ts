@@ -150,6 +150,26 @@ export const isIntegrationContinue = (text: string) => /^(?:请)?(?:继续(?:执
 
 export const isIntegrationRetry = (text: string) => /^(?:请|你)?(?:(?:再试|重新试|重试)(?:一?下|一次)?|retry)[。.!！]?$/i.test(text.trim());
 
+/** Later chat cannot enlarge the operation already frozen in the batch. */
+export function permitsBoundIntegrationInput(text: string, allowRepair: boolean) {
+  if (isIntegrationStatus(text) || isIntegrationRetry(text) || isIntegrationContinue(text)) return true;
+  if (/(?:停|撤|取消|搁置|终止|中止|作废|到此为止|结束本次|结束批次|别|勿|禁止|暂停|暂缓|延后|推迟|稍后|缓[一缓]|缓缓|等下|等等|等我|等通知|等.+(?:再|才|之后|通过|完成|确认|批准)|待.+(?:再|才|之后|通过|完成|确认|批准)|如果|假如|除非|(?:验收|审核|审批|确认|批准)(?:通过|完成)?(?:之后|以后|后|再|才)|暂不|先不|不再|不用|不要|不许|不必|无需|无须|没必要|不(?:想|打算|需要)?(?:修复|补修|修好|继续|处理)|返工|重做|改成|改为|换(?:个|一|到|掉)|改用|范围|另开|另起|另外|顺带|顺便|升级|重构|增加|加上|扩大|缩小|仅|只|\b(?:stop|pause|hold|cancel|revoke|wait|switch|instead|only|except|scope|rework|not|don't|redo|if|unless|after|until)\b)/i.test(text))
+    return false;
+  if (/^(?:好|好的|收到|明白|了解|谢谢|ok|thanks)[。.!！]?$/i.test(text.trim())) return true;
+  if (/(?:进度如何|进展怎么样|状态如何|还要多久)[?？。]?\s*$|(?:进度|进展|状态)[?？]\s*$|(?:接下来|什么时候|多久|status|progress).*?[?？]\s*$/i.test(text)) {
+    return !/修改|更换|重来|改变|change|replace/i.test(text)
+      && !/(?:^|[，。；,;])\s*(?:请|直接|现在|立即)?\s*(?:合并|发布|部署|推送|merge|publish|deploy|push)(?!\s*(?:进度|状态|了|status|progress))/i.test(text);
+  }
+
+  if (/(?:#\s*\d+|\/(?:pull|commit)\/|\b[a-f0-9]{7,40}\b|\b\d+\.\d+\.\d+\b)/i.test(text)) return false;
+
+  // The batch already grants necessary repairs to its exact delivery.
+  if (!allowRepair || !/修复|补修|修好|\brepair\b|\bfix\b/i.test(text)
+      || !/授权|同意|可以|请|(?:你)?去|\b(?:go ahead|please|authorized?|allow)\b/i.test(text)) return false;
+  const repairText = text.replace(/(?:直到|直至|然后|并)\s*(?:完成)?(?:合并(?:和|并|及|、)?(?:发布|部署)?|发布|部署)(?:完成)?[。.!！]?\s*$/i, "");
+  return !/合并|发布|部署|推送|\b(?:merge|publish|deploy|release|push)\b/i.test(repairText);
+}
+
 export function integrationConsentReply(text: string) {
   const reply = text.trim().replace(/[。.!！‘’]$/, "");
   return /^(?:同意|批准|授权|确认|可以执行|同意执行|确认执行)$/.test(reply) ? reply : undefined;
@@ -171,7 +191,8 @@ export function distinctConversationInputs<Clock extends string | null>(
 
 /** Check the inclusive interval so two records with the same clock cannot hide a stop. */
 export function assertConversationRetryHistory(database: MissionGoDatabase, executor: IntegrationExecutor,
-  authorization: IntegrationInstruction, retry: IntegrationInstruction, allowStatus = false, allowEndpoint = false) {
+  authorization: IntegrationInstruction, retry: IntegrationInstruction, allowStatus = false, allowEndpoint = false,
+  boundInput?: (text: string) => boolean) {
   const external = executor.kind === "external";
   const db = database.connection;
   const args = [executor.sessionId, authorization.occurredAt, retry.occurredAt] as const;
@@ -198,12 +219,20 @@ export function assertConversationRetryHistory(database: MissionGoDatabase, exec
     const record = clock.get(key, `native:${message.source_id}`) as { occurred_at: string } | undefined;
     return !record || Date.parse(record.occurred_at) !== Date.parse(message.at);
   })) throw conflict("conversation_integration_history_incomplete", "重试区间的可信输入历史不完整。");
+  if (boundInput) {
+    const original = authorization.sourceId.startsWith("command:")
+      ? commands.find(command => command.id === authorization.sourceId.slice(8) && command.status === "delivered")
+      : messages.find(message => message.source_id === authorization.sourceId.slice(7));
+    if (!original || original.text !== authorization.text || Date.parse(original.at) !== Date.parse(authorization.occurredAt))
+      throw conflict("conversation_integration_history_incomplete", "原批次的可信输入历史缺失。");
+  }
   const authorizedAt = Date.parse(authorization.occurredAt);
   // A trusted native mirror can have a different clock from the delivered command.
   if (distinctConversationInputs(commands, messages).some(input => {
     const at = Date.parse(input.at);
     return !(input.text === authorization.text && at === authorizedAt
       || at > authorizedAt && allowEndpoint && at === Date.parse(retry.occurredAt) && input.text === retry.text
-      || at > authorizedAt && (isIntegrationRetry(input.text) || isIntegrationContinue(input.text) || allowStatus && isIntegrationStatus(input.text)));
+      || at >= authorizedAt && (boundInput ? boundInput(input.text)
+        : at > authorizedAt && (isIntegrationRetry(input.text) || isIntegrationContinue(input.text) || allowStatus && isIntegrationStatus(input.text))));
   })) throw conflict("conversation_integration_input_changed", "原决定之后有不同输入，请核对停止、撤权或范围变化。");
 }
