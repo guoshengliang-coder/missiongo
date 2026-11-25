@@ -138,6 +138,88 @@ describe("integration directly in the original conversation",()=>{
       expect(f.merges.readForAccount(f.owner.id,f.d.id).state).toBe("proposed");
     }
   });
+  it.each(["one action", "refresh", "changed head", "another PR", "another repo", "old final", "old stop", "recent stop", "unrelated version", "same PR version", "mirrored action", "no action"] as const)(
+    "binds structured local delivery without a review page: %s", async scenario => {
+      vi.useFakeTimers({toFake:["Date"]});
+      vi.setSystemTime(new Date("2026-11-24T08:00:00Z"));
+      const f=await prepared(),sessions=new AgentSessionStore(f.store.database);
+      f.db.prepare("DELETE FROM merge_deliveries WHERE id=?").run(f.d.id);
+      f.store.recordProductReleaseArtifacts(f.item.productId,["web"]);
+      if(scenario==="old stop") {
+        human(f,"停止");
+        vi.setSystemTime(Date.now()+10);
+      }
+      human(f,"请完成开发");
+      const delivery={...f.input,itemKeys:[],productId:f.item.productId};
+      const {head,targetBranch,requiredArtifacts,itemKeys}=delivery;
+      const input={...scope(f),operation:"merge_and_publish" as const};
+      const prepare=(value:Parameters<typeof f.merges.prepareConversation>[4])=>
+        f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),value);
+      const start=(id:string)=>f.merges.startConversation(f.owner.id,"original-client",f.identity,id);
+      const checkpoint=prepare({...input,deliveries:[],localDelivery:{head,targetBranch,requiredArtifacts,itemKeys}});
+      expect(()=>start(checkpoint.id)).toThrow();
+      if(scenario==="unrelated version"||scenario==="same PR version"){
+        const id=randomUUID();
+        const pullRequest=scenario==="same PR version"?delivery.pullRequest:99;
+        const previous={...checkpoint,id,localDelivery:undefined,
+          decision:{at:checkpoint.createdAt,inputFingerprint:"previous-action"},
+          publicationTargets:[{artifact:"web",version:"1.1.78"}],
+          publicationScope:{candidates:[{completion:{kind:"github",url:`${delivery.repository}/pull/${pullRequest}`}}]}};
+        f.db.prepare("INSERT INTO conversation_integration_preparations(id,account_id,client_id,request_key,request_digest,data_json) VALUES (?,?,?,?,?,?)")
+          .run(id,f.owner.id,"original-client",id,id,JSON.stringify(previous));
+      }
+      vi.setSystemTime(Date.now()+10);
+      if(scenario==="recent stop"){
+        human(f,"停止");
+        vi.setSystemTime(Date.now()+10);
+      }
+      if(scenario!=="old final") sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[
+        {sourceId:"natural-handoff",role:"agent",phase:"final_answer",
+          text:scenario==="another PR"?"已完成 PR #99。":scenario==="another repo"?`已完成 other/repo#${delivery.pullRequest}。`:"已修复 issue #334，Web 改动已验证。",occurredAt:new Date().toISOString()},
+      ]});
+      vi.setSystemTime(Date.now()+10);
+      const action=human(f,scenario==="no action"?"能否合并和发布？":"合并和发布");
+      if(scenario==="mirrored action") sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[
+        {sourceId:`answer-${action.id}`,clientMessageId:action.id,role:"user",phase:"final_answer",
+          text:"合并和发布",occurredAt:new Date(Date.now()-2).toISOString()},
+      ]});
+      const changedHead=scenario==="changed head"?"e".repeat(40):head;
+      const actual={...input,deliveries:[{...delivery,head:changedHead,evidence:{...delivery.evidence,head:changedHead}}]};
+      const p=prepare(actual);
+      if(scenario==="refresh") {
+        vi.setSystemTime(Date.now()+600001);
+        expect(()=>start(p.id)).toThrow(/过期/);
+      }
+      if(scenario!=="one action" && scenario!=="refresh" && scenario!=="old stop" && scenario!=="unrelated version" && scenario!=="mirrored action"){
+        expect(()=>start(p.id)).toThrow();
+        expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({n:0});
+        return;
+      }
+      const batch=start(scenario==="refresh"?prepare(actual).id:p.id);
+      expect(batch.conversation?.authorization.text).toBe("合并和发布");
+      expect(batch.conversation?.direct).toBe(true);
+      expect(batch.publicationTargets).toBeUndefined();
+      expect(start(prepare(actual).id).id).toBe(batch.id);
+      expect(()=>start(prepare({...actual,deliveries:[{...delivery,pullRequest:99}]}).id)).toThrow();
+      if(scenario!=="one action")return;
+      const deliveryId=batch.deliveries[0]!;
+      const record=(revision:number,action:Parameters<typeof f.merges.integrate>[5])=>
+        f.merges.integrate(f.owner.id,f.dispatch.id,batch.id,revision,randomUUID(),action);
+      const checked=record(batch.integration!.revision,{
+        kind:"check",deliveryId,expectedHead:head,base:delivery.evidence.base,checkedAt:new Date().toISOString(),
+        checks:"passed",local:"passed",mergeable:"clean",source:"Synthetic GitHub CI",validation:"Passed",
+      });
+      expect(checked.entries[0]?.mergeReady).toBe(true);
+      const commit="c".repeat(40);
+      f.merges.report(f.owner.id,f.dispatch.id,batch.id,deliveryId,{status:"merged",head,commit,detail:"Synthetic exact merge"});
+      const merged=f.merges.batch(f.owner.id,f.dispatch.id,batch.id);
+      const validated=record(merged.integration!.revision,{kind:"final_validation",head:commit,
+        checkedAt:new Date().toISOString(),source:"Synthetic main CI",validation:"Passed"});
+      const publishing=record(validated.integration!.revision,{kind:"publication_progress",state:"publishing",
+        checkedAt:new Date().toISOString(),resultsDigest:validated.resultsDigest,detail:"Synthetic Web release",
+        publicationVersions:[{artifact:"web",version:"1.1.79"}]});
+      expect(publishing.integration?.publication?.state).toBe("publishing");
+    });
   it.each(["same-scope", "status-before-prepare", "changed-head", "different-base", "different-artifact", "unclocked", "stopped", "competing-pr", "quoted", "added-item", "claimed-item", "merge-only-unclocked", "merge-only-blockquote", "merge-only-same-scope"] as const)(
     "binds a new PR to the reviewed local commit: %s", async scenario => {
       vi.useFakeTimers({toFake:["Date"]});
