@@ -138,6 +138,88 @@ describe("integration directly in the original conversation",()=>{
       expect(f.merges.readForAccount(f.owner.id,f.d.id).state).toBe("proposed");
     }
   });
+  it.each(["one action", "refresh", "changed head", "another PR", "another repo", "old final", "old stop", "recent stop", "unrelated version", "same PR version", "mirrored action", "no action"] as const)(
+    "binds structured local delivery without a review page: %s", async scenario => {
+      vi.useFakeTimers({toFake:["Date"]});
+      vi.setSystemTime(new Date("2026-11-24T08:00:00Z"));
+      const f=await prepared(),sessions=new AgentSessionStore(f.store.database);
+      f.db.prepare("DELETE FROM merge_deliveries WHERE id=?").run(f.d.id);
+      f.store.recordProductReleaseArtifacts(f.item.productId,["web"]);
+      if(scenario==="old stop") {
+        human(f,"停止");
+        vi.setSystemTime(Date.now()+10);
+      }
+      human(f,"请完成开发");
+      const delivery={...f.input,itemKeys:[],productId:f.item.productId};
+      const {head,targetBranch,requiredArtifacts,itemKeys}=delivery;
+      const input={...scope(f),operation:"merge_and_publish" as const};
+      const prepare=(value:Parameters<typeof f.merges.prepareConversation>[4])=>
+        f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),value);
+      const start=(id:string)=>f.merges.startConversation(f.owner.id,"original-client",f.identity,id);
+      const checkpoint=prepare({...input,deliveries:[],localDelivery:{head,targetBranch,requiredArtifacts,itemKeys}});
+      expect(()=>start(checkpoint.id)).toThrow();
+      if(scenario==="unrelated version"||scenario==="same PR version"){
+        const id=randomUUID();
+        const pullRequest=scenario==="same PR version"?delivery.pullRequest:99;
+        const previous={...checkpoint,id,localDelivery:undefined,
+          decision:{at:checkpoint.createdAt,inputFingerprint:"previous-action"},
+          publicationTargets:[{artifact:"web",version:"1.1.78"}],
+          publicationScope:{candidates:[{completion:{kind:"github",url:`${delivery.repository}/pull/${pullRequest}`}}]}};
+        f.db.prepare("INSERT INTO conversation_integration_preparations(id,account_id,client_id,request_key,request_digest,data_json) VALUES (?,?,?,?,?,?)")
+          .run(id,f.owner.id,"original-client",id,id,JSON.stringify(previous));
+      }
+      vi.setSystemTime(Date.now()+10);
+      if(scenario==="recent stop"){
+        human(f,"停止");
+        vi.setSystemTime(Date.now()+10);
+      }
+      if(scenario!=="old final") sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[
+        {sourceId:"natural-handoff",role:"agent",phase:"final_answer",
+          text:scenario==="another PR"?"已完成 PR #99。":scenario==="another repo"?`已完成 other/repo#${delivery.pullRequest}。`:"已修复 issue #334，Web 改动已验证。",occurredAt:new Date().toISOString()},
+      ]});
+      vi.setSystemTime(Date.now()+10);
+      const action=human(f,scenario==="no action"?"能否合并和发布？":"合并和发布");
+      if(scenario==="mirrored action") sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[
+        {sourceId:`answer-${action.id}`,clientMessageId:action.id,role:"user",phase:"final_answer",
+          text:"合并和发布",occurredAt:new Date(Date.now()-2).toISOString()},
+      ]});
+      const changedHead=scenario==="changed head"?"e".repeat(40):head;
+      const actual={...input,deliveries:[{...delivery,head:changedHead,evidence:{...delivery.evidence,head:changedHead}}]};
+      const p=prepare(actual);
+      if(scenario==="refresh") {
+        vi.setSystemTime(Date.now()+600001);
+        expect(()=>start(p.id)).toThrow(/过期/);
+      }
+      if(scenario!=="one action" && scenario!=="refresh" && scenario!=="old stop" && scenario!=="unrelated version" && scenario!=="mirrored action"){
+        expect(()=>start(p.id)).toThrow();
+        expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({n:0});
+        return;
+      }
+      const batch=start(scenario==="refresh"?prepare(actual).id:p.id);
+      expect(batch.conversation?.authorization.text).toBe("合并和发布");
+      expect(batch.conversation?.direct).toBe(true);
+      expect(batch.publicationTargets).toBeUndefined();
+      expect(start(prepare(actual).id).id).toBe(batch.id);
+      expect(()=>start(prepare({...actual,deliveries:[{...delivery,pullRequest:99}]}).id)).toThrow();
+      if(scenario!=="one action")return;
+      const deliveryId=batch.deliveries[0]!;
+      const record=(revision:number,action:Parameters<typeof f.merges.integrate>[5])=>
+        f.merges.integrate(f.owner.id,f.dispatch.id,batch.id,revision,randomUUID(),action);
+      const checked=record(batch.integration!.revision,{
+        kind:"check",deliveryId,expectedHead:head,base:delivery.evidence.base,checkedAt:new Date().toISOString(),
+        checks:"passed",local:"passed",mergeable:"clean",source:"Synthetic GitHub CI",validation:"Passed",
+      });
+      expect(checked.entries[0]?.mergeReady).toBe(true);
+      const commit="c".repeat(40);
+      f.merges.report(f.owner.id,f.dispatch.id,batch.id,deliveryId,{status:"merged",head,commit,detail:"Synthetic exact merge"});
+      const merged=f.merges.batch(f.owner.id,f.dispatch.id,batch.id);
+      const validated=record(merged.integration!.revision,{kind:"final_validation",head:commit,
+        checkedAt:new Date().toISOString(),source:"Synthetic main CI",validation:"Passed"});
+      const publishing=record(validated.integration!.revision,{kind:"publication_progress",state:"publishing",
+        checkedAt:new Date().toISOString(),resultsDigest:validated.resultsDigest,detail:"Synthetic Web release",
+        publicationVersions:[{artifact:"web",version:"1.1.79"}]});
+      expect(publishing.integration?.publication?.state).toBe("publishing");
+    });
   it.each(["same-scope", "status-before-prepare", "changed-head", "different-base", "different-artifact", "unclocked", "stopped", "competing-pr", "quoted", "added-item", "claimed-item", "merge-only-unclocked", "merge-only-blockquote", "merge-only-same-scope"] as const)(
     "binds a new PR to the reviewed local commit: %s", async scenario => {
       vi.useFakeTimers({toFake:["Date"]});
@@ -212,7 +294,7 @@ describe("integration directly in the original conversation",()=>{
       });
       expect(publishing.integration?.publication?.state).toBe("publishing");
     });
-  it.each(["批准", "授权", "确认。", "可以执行", "确认吗？", "不批准", "mixed confirmation"] as const)(
+  it.each(["批准", "批准‘", "授权", "确认。", "可以执行", "确认吗？", "不批准", "mixed confirmation"] as const)(
     "recognizes scoped decisions without requiring particular wording: %s", async reply => {
       vi.useFakeTimers({toFake:["Date"]});
       vi.setSystemTime(new Date("2026-11-24T08:00:00Z"));
@@ -311,8 +393,10 @@ describe("integration directly in the original conversation",()=>{
     vi.setSystemTime(Date.now() + 600001);
     human(f, reply);
     expect(f.merges.conversationReview(f.owner.id, preparation.id).confirmed).toBe(true);
+    expect(f.merges.confirmConversationReview(f.owner.id, preparation.id, preparation.reviewDigest)).toEqual({ confirmed: true });
     const retry = f.merges.prepareConversation(f.owner.id, "original-client", f.identity, "after-status",
-      { ...scope(f), operation: "merge_and_publish" });
+      { ...scope(f), operation: "merge_and_publish", deliveries: [{ ...f.input, summary: "仅刷新交付标题" }] });
+    expect(retry.reviewDigest).not.toBe(preparation.reviewDigest);
     expect(f.merges.startConversation(f.owner.id, "original-client", f.identity, retry.id).sessionId).toBe(f.projectSessionId);
   });
 
@@ -845,6 +929,81 @@ describe("integration directly in the original conversation",()=>{
     const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),f.input);
     expect(f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id).conversation?.authorization.text).toBe(command.text);
   });
+  it.each(["same", "with-alternative", "hypothetical-pr", "contradiction", "later-contradiction", "later-plain-contradiction", "later-pin-conflict", "old-pin-conflict", "pin-disclosed", "pin-undisclosed", "pin-conflict", "new-head", "different-version", "different-artifact", "missing-candidate", "stopped", "stopped-before-command", "unclocked", "ambiguous", "wrong-pr-prefix", "wrong-artifact-prefix", "superseded"] as const)(
+    "recovers the original decision from the older publication summary: %s", async scenario => {
+      vi.useFakeTimers({toFake:["Date"]});
+      vi.setSystemTime(new Date("2026-11-24T10:00:00Z"));
+      const f=await prepared(),sessions=new AgentSessionStore(f.store.database);
+      f.store.recordProductReleaseArtifacts(f.item.productId,["web","androidApp"]);
+      human(f,"核对发布范围");
+      f.safe(await f.call("submit_development_complete",{itemKey:f.item.key,...f.identity,
+        completion:{kind:"github",url:`${f.input.repository}/pull/13`},requiredArtifacts:["web"],idempotencyKey:"older-publication-candidate"}));
+      const delivery={...f.input,itemKeys:[],productId:f.item.productId,requiredArtifacts:["androidApp"]};
+      const input={...scope(f),operation:"merge_and_publish" as const,deliveries:[delivery],
+        publicationTargets:[{artifact:"androidApp",version:"0.1.205"},{artifact:"web"}]};
+      const prepare=(scope=input)=>f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),scope);
+      const freshPin=scenario==="pin-disclosed"||scenario==="pin-undisclosed"||scenario==="pin-conflict";
+      const old=prepare(freshPin?{...input,publicationTargets:[{artifact:"androidApp"},{artifact:"web"}]}:input);
+      const disclose=(p:typeof old,id:string,text:string)=>sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[
+        {sourceId:id,role:"agent",phase:"final_answer",text:`完整发布范围 ${p.reviewDigest} [查看范围](/?conversationIntegrationReview=${p.id})：${text}。`,
+          occurredAt:new Date().toISOString()},
+      ]});
+      vi.setSystemTime(Date.now()+10);
+      const review=`合并 ${delivery.repository}/pull/${delivery.pullRequest}，发布 Android 0.1.205 以及覆盖 ${f.item.key} 的 Web`;
+      const disclosure=scenario==="missing-candidate"?review.replace(f.item.key,"另一项")
+        :scenario==="wrong-pr-prefix"?review.replace("/pull/12","/pull/123")
+        :scenario==="wrong-artifact-prefix"?review.replace("Android","Android SDK").replace("Web","Webhook")
+        :scenario==="pin-undisclosed"?review.replace("Android 0.1.205","Android，另有 Web 0.1.205")
+        :scenario==="pin-conflict"?review+"；也可能采用 Android 0.1.206"
+        :scenario==="contradiction"?review+"；本次不发布 Web"
+        :scenario==="old-pin-conflict"?review.replace("Android 0.1.205","Android 0.1.206，Web 0.1.205")
+        :scenario==="hypothetical-pr"?review.replace(`合并 ${delivery.repository}/pull/${delivery.pullRequest}，`,"")+`\n\n如果要合并，可选 ${delivery.repository}/pull/${delivery.pullRequest}`
+        :scenario==="with-alternative"?review+"。\n\n如果暂不发 Web，可以先仅合并":review;
+      disclose(old,"legacy-disclosure",disclosure);
+      if(scenario==="unclocked")f.db.prepare("DELETE FROM session_message_times WHERE source_id='native:legacy-disclosure'").run();
+      vi.setSystemTime(Date.now()+10);
+      if(scenario==="stopped-before-command"){human(f,"停止");vi.setSystemTime(Date.now()+10);}
+      human(f,"全部合并和发布");
+      const afterFailure=prepare({...input,deliveries:[{...delivery,summary:"相同交付的另一种标题"}]});
+      vi.setSystemTime(Date.now()+10);
+      disclose(afterFailure,"legacy-failed-start",scenario==="later-contradiction"?review+"；本次不发布 Web"
+        :scenario==="later-pin-conflict"?review.replace("0.1.205","0.1.206"):review);
+      if(scenario==="later-plain-contradiction"){
+        vi.setSystemTime(Date.now()+10);
+        sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[
+          {sourceId:"plain-scope-change",role:"agent",phase:"final_answer",text:"本次只发 Android。",occurredAt:new Date().toISOString()},
+        ]});
+      }
+      if(scenario==="ambiguous"){
+        vi.setSystemTime(Date.now()+10);
+        disclose(afterFailure,"legacy-ambiguous",review+"；另一个完整发布范围 "+"b".repeat(64));
+      }
+      if(scenario==="superseded"){
+        const changedScope=prepare({...input,publicationTargets:[{artifact:"androidApp",version:"0.1.206"},{artifact:"web"}]});
+        vi.setSystemTime(Date.now()+10);
+        expect(f.merges.confirmConversationReview(f.owner.id,changedScope.id,changedScope.reviewDigest)).toEqual({confirmed:true});
+      }
+      vi.setSystemTime(Date.now()+600001);
+      if(scenario==="stopped"){human(f,"停止");vi.setSystemTime(Date.now()+10);}
+      human(f,"继续");
+      const head=scenario==="new-head"?"e".repeat(40):delivery.head;
+      const targets=scenario==="different-version"?[{artifact:"androidApp",version:"0.1.206"},{artifact:"web"}]:input.publicationTargets;
+      const fresh=prepare({...input,publicationTargets:scenario==="different-artifact"?undefined!:targets,deliveries:[{
+        ...delivery,head,evidence:{...delivery.evidence,head},summary:"重新核对同一交付",
+        requiredArtifacts:scenario==="different-artifact"?["web"]:delivery.requiredArtifacts,
+      }]});
+      const start=()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,fresh.id);
+      expect(fresh.reviewDigest).not.toBe(old.reviewDigest);
+      if(scenario!=="same"&&scenario!=="pin-disclosed"&&scenario!=="with-alternative"){
+        expect(start).toThrow();
+        expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({n:0});
+        return;
+      }
+      const batch=start();
+      expect(batch.conversation?.authorization.text).toBe("全部合并和发布");
+      expect(batch.entries).toHaveLength(1);
+      expect(start().id).toBe(batch.id);
+    });
   it.each(["合并和发布 PR #12","全部合并和发布"])("binds only the disclosed scope with an added publication candidate: %s",async instruction=>{
     const f=await acrossTurns();
     f.safe(await f.call("submit_development_complete",{itemKey:f.item.key,...f.identity,completion:{kind:"github",url:`${f.input.repository}/pull/13`},requiredArtifacts:["web"],idempotencyKey:"additional-candidate"}));

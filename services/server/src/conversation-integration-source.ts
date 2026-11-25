@@ -51,7 +51,7 @@ export function integrationExecutor(database: MissionGoDatabase, accountId: stri
       ...(settings.model ? { model: settings.model } : {}), ...(settings.effort ? { effort: settings.effort } : {}) } };
 }
 
-export interface IntegrationInstruction { sourceId: string; text: string; occurredAt: string; context: string; contextTrusted?: boolean; fingerprint: string }
+export interface IntegrationInstruction { sourceId: string; text: string; occurredAt: string; context: string; contextTrusted?: boolean; contextOccurredAt?: string; fingerprint: string }
 
 /** Read only authenticated user records, not quotes supplied by the Agent or work-item content. */
 export function integrationInstruction(database: MissionGoDatabase, executor: IntegrationExecutor, sourceId?: string, before?: string): IntegrationInstruction {
@@ -90,7 +90,7 @@ export function integrationInstruction(database: MissionGoDatabase, executor: In
   const contextClock = contextRow ? db.prepare("SELECT occurred_at FROM session_message_times WHERE session_key=? AND source_id=? AND provenance='source_message'")
     .get(external ? `external:${sessionId}` : `dispatch:${executor.kind === "dispatch" ? executor.dispatchId : ""}`, `native:${contextRow.source_id}`) as { occurred_at: string } | undefined : undefined;
   const contextTrusted = Boolean(contextRow && contextClock && Date.parse(contextRow.at) === Date.parse(contextClock.occurred_at));
-  return { ...current, context, contextTrusted, fingerprint: integrationFingerprint([current, context]) };
+  return { ...current, context, contextTrusted, ...(contextTrusted && contextRow ? {contextOccurredAt:contextRow.at} : {}), fingerprint: integrationFingerprint([current, context]) };
 }
 
 const wholeScopeCommand = /^(?:全部|一起)(?=(?:合并(?:和|并|及|、)(?:发布|部署)|合并|发布|部署)[。.!！]?\s*$)/;
@@ -119,6 +119,8 @@ export function assertIntegrationInstruction(text: string, operation: "merge_onl
     throw conflict("conversation_integration_operation_mismatch", "指令与仅合并／仅发布／合并并发布动作不一致，不能扩大授权。");
 }
 
+export const isIntegrationStop = (text: string) => /^(?:请)?(?:先)?(?:停止|暂停|取消|撤销)(?:执行|操作|合并|发布|合并并发布|合并和发布)?[。.!！]?$|^(?:please )?(?:stop|cancel|pause)(?: (?:merge|publish|execution))?[.!]?$/i.test(text.trim());
+
 /** A short command may not reauthorize a previously stopped operation. */
 export function hasIntegrationStop(database: MissionGoDatabase, executor: IntegrationExecutor) {
   const db = database.connection;
@@ -131,7 +133,7 @@ export function hasIntegrationStop(database: MissionGoDatabase, executor: Integr
     : `SELECT text FROM agent_session_commands WHERE session_id=?1 AND kind='message' AND status NOT IN ('failed','cancelled')
        UNION ALL SELECT text FROM agent_session_messages WHERE session_id=?1 AND role='user' AND COALESCE(phase,'')<>'execution'`)
     .all({ "1": executor.sessionId }) as { text: string | null }[];
-  return rows.some(row => /^(?:请)?(?:先)?(?:停止|暂停|取消|撤销)(?:执行|操作|合并|发布|合并并发布|合并和发布)?[。.!！]?$|^(?:please )?(?:stop|cancel|pause)(?: (?:merge|publish|execution))?[.!]?$/i.test(row.text?.trim() ?? ""));
+  return rows.some(row => isIntegrationStop(row.text ?? ""));
 }
 
 export const isIntegrationStatus = (text: string) =>
@@ -148,9 +150,11 @@ export const isIntegrationContinue = (text: string) => /^(?:请)?(?:继续(?:执
 
 export const isIntegrationRetry = (text: string) => /^(?:请|你)?(?:(?:再试|重新试|重试)(?:一?下|一次)?|retry)[。.!！]?$/i.test(text.trim());
 
-export function isIntegrationConsent(text: string) {
-  return /^(?:同意|批准|授权|确认|可以执行|同意执行|确认执行)[。.!！]?$/.test(text.trim());
+export function integrationConsentReply(text: string) {
+  const reply = text.trim().replace(/[。.!！‘’]$/, "");
+  return /^(?:同意|批准|授权|确认|可以执行|同意执行|确认执行)$/.test(reply) ? reply : undefined;
 }
+export const isIntegrationConsent = (text: string) => Boolean(integrationConsentReply(text));
 
 export function distinctConversationInputs<Clock extends string | null>(
   commands: Array<{ id: string; status: string; text: string; at: Clock }>,
