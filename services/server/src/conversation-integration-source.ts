@@ -148,9 +148,11 @@ export const isIntegrationContinue = (text: string) => /^(?:请)?(?:继续(?:执
 
 export const isIntegrationRetry = (text: string) => /^(?:请|你)?(?:(?:再试|重新试|重试)(?:一?下|一次)?|retry)[。.!！]?$/i.test(text.trim());
 
-export function isIntegrationConsent(text: string) {
-  return /^(?:同意|批准|授权|确认|可以执行|同意执行|确认执行)[。.!！]?$/.test(text.trim());
+export function integrationConsentReply(text: string) {
+  const reply = text.trim().replace(/[。.!！‘’]$/, "");
+  return /^(?:同意|批准|授权|确认|可以执行|同意执行|确认执行)$/.test(reply) ? reply : undefined;
 }
+export const isIntegrationConsent = (text: string) => Boolean(integrationConsentReply(text));
 
 export function distinctConversationInputs<Clock extends string | null>(
   commands: Array<{ id: string; status: string; text: string; at: Clock }>,

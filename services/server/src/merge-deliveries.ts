@@ -5,7 +5,7 @@ import { projectCheckSatisfied } from "@missiongo/contracts";
 import { projectCheckStateSchema, projectVerificationSchema, validateProjectChecks, assertProjectBinding } from "./project-verification.js";
 import {deliveryScope,historicalDeliveryFingerprint,previouslyReviewedHistoricalGaps} from "./historical-delivery-review.js";
 import {conversationDecisionEvidence} from "./conversation-decision-evidence.js";
-import { integrationExecutor, integrationInstruction, assertIntegrationInstruction, isIntegrationRetry, isIntegrationConsent, isIntegrationContinue, isIntegrationStatus, isDirectIntegrationAction, isWholeScopeIntegrationCommand, hasIntegrationStop, assertConversationRetryHistory, type IntegrationExecutor, type IntegrationInstruction, type ConversationIdentity } from "./conversation-integration-source.js";
+import { integrationExecutor, integrationInstruction, assertIntegrationInstruction, isIntegrationRetry, integrationConsentReply, isIntegrationConsent, isIntegrationContinue, isIntegrationStatus, isDirectIntegrationAction, isWholeScopeIntegrationCommand, hasIntegrationStop, assertConversationRetryHistory, type IntegrationExecutor, type IntegrationInstruction, type ConversationIdentity } from "./conversation-integration-source.js";
 import {mergeReviewSummary} from "./merge-review-summary.js";
 import { developmentReviewBlocker, developmentReviewExpiry } from "./development-reviews.js";
 import type { SQLInputValue, StatementSync } from "node:sqlite";
@@ -1145,8 +1145,8 @@ export class MergeDeliveries {
   }
 
   private sameConversationScope(left: ConversationPreparation, right: ConversationPreparation) {
-    return left.reviewDigest === right.reviewDigest && left.productId === right.productId
-      && left.executor.settings === right.executor.settings;
+    return left.productId === right.productId && left.executor.settings === right.executor.settings
+      && (left.reviewDigest === right.reviewDigest || this.conversationExecutionScope(left) === this.conversationExecutionScope(right));
   }
 
   private conversationAuthorization(executor: IntegrationExecutor, source: IntegrationInstruction, decision?: ConversationPreparation["decision"], readOnly = false) {
@@ -1214,15 +1214,15 @@ export class MergeDeliveries {
       if (reviewDigest !== preparation.reviewDigest || preparation.resumeBatchId) throw changed();
       if (row.batch_id) return { confirmed: true };
       const input = integrationInstruction(this.db, executor);
-      if (input.fingerprint !== preparation.source.fingerprint) {
-        if (!isIntegrationStatus(input.text)) throw changed();
-        assertConversationRetryHistory(this.db, executor, preparation.source, input, true);
-      }
       try {
         if (this.currentConversationConfirmation(accountId, row.client_id, executor, preparation, input)) return { confirmed: true };
       } catch (error) {
         // A fresh exact human decision can replace a stopped or changed pending decision.
         if (!(error instanceof MissionGoError) || error.code !== "conversation_integration_input_changed") throw error;
+      }
+      if (input.fingerprint !== preparation.source.fingerprint) {
+        if (!isIntegrationStatus(input.text)) throw changed();
+        assertConversationRetryHistory(this.db, executor, preparation.source, input, true);
       }
       preparation.decision = { at: new Date().toISOString(), inputFingerprint: input.fingerprint };
       this.db.connection.prepare("UPDATE conversation_integration_preparations SET data_json=? WHERE id=?")
@@ -1304,6 +1304,109 @@ export class MergeDeliveries {
       AND json_extract(data_json,'$.productId')=? AND json_extract(data_json,'$.reviewDigest')=?
       AND json_extract(data_json,'$.source.fingerprint')=? AND json_extract(data_json,'$.resumeBatchId') IS NULL
       LIMIT 1`).get(accountId, clientId, p.executor.binding, p.executor.settings, p.productId, p.reviewDigest, source.fingerprint));
+  }
+
+  private conversationExecutionScope(preparation: ConversationPreparation, includeVersions = true) {
+    const draftKey = ({input,scope}: ConversationPreparation["drafts"][number]) => digest([
+      input.repository,input.pullRequest,input.head,input.targetBranch,[...input.itemKeys].sort(),[...input.requiredArtifacts].sort(),input.noReleaseReason,scope,
+    ]);
+    const drafts = new Map(preparation.drafts.map(draft => [draft.id,draftKey(draft)]));
+    const selected = preparation.selection.map(row => drafts.get(row.id) ?? digest([row.id,row.revision])).sort();
+    const scope = preparation.publicationScope;
+    const candidates = scope?.candidates.map(row => {
+      const draft = row.deliveryId && drafts.get(row.deliveryId);
+      return digest([draft || row.identity, row.completion, row.requiredArtifacts?.slice().sort(), row.itemKey, row.developmentEventId,
+        row.roundKey, draft ? undefined : row.expectedRevision, row.itemScope, row.selected, row.pendingItemKeys?.slice().sort(),
+        row.noReleaseReason, row.historicalGapReason, row.historicalGapPreviouslyReviewed]);
+    }).sort();
+    return digest([preparation.operation,preparation.repository,selected,candidates,scope?.requiredArtifacts,scope?.blockers,
+      scope?.exclusions?.map(row => digest([row.identity,row.reason])).sort(),
+      includeVersions ? preparation.publicationTargets?.filter(target => target.version) ?? [] : []]);
+  }
+
+  private recoverDisclosedPublicationScope(accountId: string, clientId: string, current: ConversationPreparation,
+    authorization: IntegrationInstruction, source: IntegrationInstruction) {
+    if (!current.publicationScope || !authorization.contextTrusted || !isWholeScopeIntegrationCommand(authorization.text)
+        || hasIntegrationStop(this.db,current.executor)) return false;
+    const executor = current.executor;
+    const expected = this.conversationExecutionScope(current,false);
+    const pins = new Map(current.publicationTargets?.filter(target => target.version).map(target => [target.artifact,target.version!]));
+    // A linked snapshot never overrides an exclusion in the corresponding disclosure.
+    // A separate hypothetical alternative is not part of the disclosed action.
+    const positiveParagraphs = (text: string) => text.split(/\n\s*\n/)
+      .filter(paragraph => !/^(?:如果|若|假如|if\b)/i.test(paragraph.trim())).join("\n\n");
+    const withoutLinks = (text: string) => text.replace(/https?:\/\/[^\s()[\]<>，。；]+/g, " ");
+    const contradicts = (text: string) => /(?:暂不|不要|不再|不)(?:合并|发布|部署|发)|(?:暂缓|推迟|延后)(?:.{0,8}(?:发布|部署)|\s*(?:web|android)\b)|\b(?:web|android)\b[ \t]*(?:暂缓|推迟|延后)|(?:仅|只)(?:合并|发布|部署|发(?=\s|[A-Za-z]))|(?:排除|跳过|除外)|\b(?:do not|don't|without|exclude|skip) (?:merge|publish|release|deploy|web|android)\b/i.test(text);
+    const disclosure = positiveParagraphs(authorization.context);
+    const disclosedText = withoutLinks(disclosure);
+    if (contradicts(disclosedText)) return false;
+    const exactNames: Record<string,string> = {web:"web(?:/server)?",androidApp:"android(?:[ -]app)?",androidSdk:"android[ -]+sdk",macosApp:"macos",windowsApp:"windows",linuxCli:"linux(?:[ -]cli)?"};
+    const escapePattern = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const shownVersions = (text: string, artifact: string) => new Set([...text.matchAll(new RegExp(
+      `\\b(?:${Object.hasOwn(exactNames,artifact) ? exactNames[artifact] : escapePattern(artifact)})[ \t]*[：:]?[ \t]*\\x60?([0-9][a-z0-9._+-]*)`, "ig",
+    ))].map(match => match[1]!));
+    const pinsMatch = (text: string, requireDisclosure: boolean) => [...pins].every(([artifact,version]) => {
+      const shown = shownVersions(text,artifact);
+      return !shown.size && !requireDisclosure || shown.size === 1 && shown.has(version);
+    });
+    if (!pinsMatch(disclosedText,true)) return false;
+    const read = this.db.connection.prepare(`
+      SELECT data_json FROM conversation_integration_preparations WHERE id=? AND account_id=? AND client_id=?
+      AND json_extract(data_json,'$.productId')=? AND json_extract(data_json,'$.executor.binding')=?
+      AND json_extract(data_json,'$.executor.settings')=? AND json_extract(data_json,'$.resumeBatchId') IS NULL`);
+    const disclosed = (context: string, at: string) => {
+      const refs = [...context.matchAll(/[?&]conversationIntegrationReview=([0-9a-f-]{36})\b/ig)];
+      const digests = [...context.matchAll(/完整发布范围\s*[：:]?\s*\x60?([0-9a-f]{64})\b/ig)];
+      if (refs.length !== 1 || digests.length !== 1) return false;
+      const row = read.get(refs[0]![1]!,accountId,clientId,current.productId,executor.binding,executor.settings) as {data_json:string}|undefined;
+      if (!row) return false;
+      const saved = JSON.parse(row.data_json) as ConversationPreparation;
+      const savedPins = new Map(saved.publicationTargets?.filter(target => target.version).map(target => [target.artifact,target.version!]));
+      return Date.parse(saved.createdAt) <= Date.parse(at)
+        && [saved.reviewDigest,saved.publicationScope?.digest].includes(digests[0]![1])
+        && this.conversationExecutionScope(saved,false) === expected
+        && [...savedPins].every(([artifact,version]) => pins.get(artifact) === version);
+    };
+    if (!disclosed(disclosure,authorization.occurredAt)) return false;
+    const shown = disclosure.toLowerCase();
+    const prose = disclosedText.toLowerCase();
+    const shownItem = (key: string) => new RegExp(`\\b${key.toLowerCase()}\\b`).test(prose);
+    const shownPulls: string[] = shown.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+\b/g) ?? [];
+    if (!current.drafts.every(({input}) => shownPulls.includes(`${input.repository.toLowerCase()}/pull/${input.pullRequest}`)
+        && input.itemKeys.every(shownItem))) return false;
+    if (!current.publicationScope.candidates.every(row => {
+      if (row.historicalGapPreviouslyReviewed) return true;
+      if (row.itemKey) return shownItem(row.itemKey);
+      const completion = row.completion as { kind?: string; url?: string } | undefined;
+      return completion?.kind === "github" && Boolean(completion.url && shownPulls.includes(completion.url.toLowerCase()));
+    })) return false;
+    const artifactNames: Record<string,RegExp> = {
+      web:/\bweb\b/,androidApp:/\bandroid\b(?![ \t-]*sdk\b)/,androidSdk:/\bandroid[ \t-]+sdk\b/,
+      macosApp:/\bmacos\b/,windowsApp:/\bwindows\b/,linuxCli:/\blinux\b/,
+    };
+    const words: string[] = prose.match(/[a-z0-9_-]+/g) ?? [];
+    if (!current.publicationScope.requiredArtifacts.every(artifact =>
+      Object.hasOwn(artifactNames,artifact) ? artifactNames[artifact]!.test(prose) : words.includes(artifact.toLowerCase()))) return false;
+    const external = executor.kind === "external";
+    const finals = this.db.connection.prepare(external
+      ? `SELECT source_id,json_extract(payload_json,'$.text') AS text,json_extract(payload_json,'$.occurredAt') AS at
+         FROM external_native_messages WHERE session_id=? AND json_extract(payload_json,'$.role')='agent'
+         AND json_extract(payload_json,'$.phase')='final_answer' AND (julianday(json_extract(payload_json,'$.occurredAt')) BETWEEN julianday(?) AND julianday(?) OR julianday(json_extract(payload_json,'$.occurredAt')) IS NULL)`
+      : `SELECT source_id,text,occurred_at AS at FROM agent_session_messages WHERE session_id=? AND role='agent'
+         AND phase='final_answer' AND (julianday(occurred_at) BETWEEN julianday(?) AND julianday(?) OR julianday(occurred_at) IS NULL)`)
+      .all(executor.sessionId,authorization.occurredAt,source.occurredAt) as {source_id:string;text:string;at:string|null}[];
+    const key = external ? `external:${executor.sessionId}` : `dispatch:${executor.dispatchId}`;
+    const clocks = this.db.connection.prepare("SELECT occurred_at FROM session_message_times WHERE session_key=? AND source_id=? AND provenance='source_message'");
+    for (const final of finals) {
+      const prose = withoutLinks(positiveParagraphs(final.text));
+      if (contradicts(prose) || !pinsMatch(prose,false)) return false;
+      if (!/完整发布范围|原会话执行范围：|conversationIntegrationReview=/.test(final.text)) continue;
+      const clock = clocks.get(key,`native:${final.source_id}`) as {occurred_at:string}|undefined;
+      if (!final.at || !clock || Date.parse(clock.occurred_at) !== Date.parse(final.at)) return false;
+      if (!containsConversationScope(final.text,current.reviewText) && !disclosed(final.text,final.at)) return false;
+    }
+    assertConversationRetryHistory(this.db,executor,authorization,source,true);
+    return true;
   }
 
   private directConversationScope(preparation: ConversationPreparation, authorization: IntegrationInstruction) {
@@ -1415,9 +1518,10 @@ export class MergeDeliveries {
       if(Date.now()-Date.parse(p.createdAt)>600000)throw conflict("conversation_integration_preparation_expired","准备快照已过期，请在原会话刷新真实 Git 与范围证据。");
       const source=integrationInstruction(this.db,executor);
       const isReviewedDecision = (instruction: IntegrationInstruction) => {
-        const reply = instruction.text.trim().replace(/[。.!！]$/, "");
+        const reply = integrationConsentReply(instruction.text);
+        if (!reply) return false;
         if (instruction.context.includes("请回复「确认」以采用以下发布版本")) return false;
-        if (isIntegrationConsent(reply) && !["同意", "批准"].includes(reply)) return containsConversationScope(instruction.context, p.reviewText, true);
+        if (!["同意", "批准"].includes(reply)) return containsConversationScope(instruction.context, p.reviewText, true);
         return ["同意", "批准"].includes(reply) && containsConversationScope(instruction.context, p.reviewText);
       };
       const reviewedDecision = isReviewedDecision(source);
@@ -1524,11 +1628,14 @@ export class MergeDeliveries {
       const direct = !boundDecision && !authorizedDecision && !hasPriorVersion && this.directConversationScope(p, authorization) && !hasIntegrationStop(this.db, executor);
       if (direct && retry) assertConversationRetryHistory(this.db, executor, authorization, source, true);
       const reviewEvidence = versionReview ?? (boundDecision || direct ? undefined : evaluateScopeReview(authorization, authorizedDecision, retry ? source : undefined));
+      const superseded = decided?.decision && !decision && Date.parse(decided.decision.at) >= Date.parse(authorization.occurredAt);
+      const recoveredScope = !boundDecision && !direct && !reviewEvidence && !superseded
+        && this.recoverDisclosedPublicationScope(accountId,clientId,p,authorization,source);
       if (authorizedDecision && !boundDecision && !reviewEvidence) throw changed();
       if (boundDecision && decisionRecord?.batchId) return this.batch(accountId, actor, decisionRecord.batchId);
-      if (retry && !boundDecision && !direct && !reviewEvidence)
+      if (retry && !boundDecision && !direct && !reviewEvidence && !recoveredScope)
         throw conflict("conversation_integration_scope_review_required", "无法核对上一次明确授权对应的完整范围，请在原会话核实准备记录和来源。");
-      const scopeReviewed=boundDecision || direct || Boolean(reviewEvidence);
+      const scopeReviewed=boundDecision || direct || recoveredScope || Boolean(reviewEvidence);
       if (!scopeReviewed && isWholeScopeIntegrationCommand(authorization.text))
         throw scopeConflict("scope_review_required", "当前没有可唯一核实的完整执行范围，请核对本次要合并或发布的交付。");
       if (!scopeReviewed && authorization.context.includes("本次待交付提交"))

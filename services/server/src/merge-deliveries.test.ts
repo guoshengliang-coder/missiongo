@@ -212,7 +212,7 @@ describe("integration directly in the original conversation",()=>{
       });
       expect(publishing.integration?.publication?.state).toBe("publishing");
     });
-  it.each(["批准", "授权", "确认。", "可以执行", "确认吗？", "不批准", "mixed confirmation"] as const)(
+  it.each(["批准", "批准‘", "授权", "确认。", "可以执行", "确认吗？", "不批准", "mixed confirmation"] as const)(
     "recognizes scoped decisions without requiring particular wording: %s", async reply => {
       vi.useFakeTimers({toFake:["Date"]});
       vi.setSystemTime(new Date("2026-11-24T08:00:00Z"));
@@ -311,8 +311,10 @@ describe("integration directly in the original conversation",()=>{
     vi.setSystemTime(Date.now() + 600001);
     human(f, reply);
     expect(f.merges.conversationReview(f.owner.id, preparation.id).confirmed).toBe(true);
+    expect(f.merges.confirmConversationReview(f.owner.id, preparation.id, preparation.reviewDigest)).toEqual({ confirmed: true });
     const retry = f.merges.prepareConversation(f.owner.id, "original-client", f.identity, "after-status",
-      { ...scope(f), operation: "merge_and_publish" });
+      { ...scope(f), operation: "merge_and_publish", deliveries: [{ ...f.input, summary: "仅刷新交付标题" }] });
+    expect(retry.reviewDigest).not.toBe(preparation.reviewDigest);
     expect(f.merges.startConversation(f.owner.id, "original-client", f.identity, retry.id).sessionId).toBe(f.projectSessionId);
   });
 
@@ -845,6 +847,81 @@ describe("integration directly in the original conversation",()=>{
     const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),f.input);
     expect(f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id).conversation?.authorization.text).toBe(command.text);
   });
+  it.each(["same", "with-alternative", "hypothetical-pr", "contradiction", "later-contradiction", "later-plain-contradiction", "later-pin-conflict", "old-pin-conflict", "pin-disclosed", "pin-undisclosed", "pin-conflict", "new-head", "different-version", "different-artifact", "missing-candidate", "stopped", "stopped-before-command", "unclocked", "ambiguous", "wrong-pr-prefix", "wrong-artifact-prefix", "superseded"] as const)(
+    "recovers the original decision from the older publication summary: %s", async scenario => {
+      vi.useFakeTimers({toFake:["Date"]});
+      vi.setSystemTime(new Date("2026-11-24T10:00:00Z"));
+      const f=await prepared(),sessions=new AgentSessionStore(f.store.database);
+      f.store.recordProductReleaseArtifacts(f.item.productId,["web","androidApp"]);
+      human(f,"核对发布范围");
+      f.safe(await f.call("submit_development_complete",{itemKey:f.item.key,...f.identity,
+        completion:{kind:"github",url:`${f.input.repository}/pull/13`},requiredArtifacts:["web"],idempotencyKey:"older-publication-candidate"}));
+      const delivery={...f.input,itemKeys:[],productId:f.item.productId,requiredArtifacts:["androidApp"]};
+      const input={...scope(f),operation:"merge_and_publish" as const,deliveries:[delivery],
+        publicationTargets:[{artifact:"androidApp",version:"0.1.205"},{artifact:"web"}]};
+      const prepare=(scope=input)=>f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),scope);
+      const freshPin=scenario==="pin-disclosed"||scenario==="pin-undisclosed"||scenario==="pin-conflict";
+      const old=prepare(freshPin?{...input,publicationTargets:[{artifact:"androidApp"},{artifact:"web"}]}:input);
+      const disclose=(p:typeof old,id:string,text:string)=>sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[
+        {sourceId:id,role:"agent",phase:"final_answer",text:`完整发布范围 ${p.reviewDigest} [查看范围](/?conversationIntegrationReview=${p.id})：${text}。`,
+          occurredAt:new Date().toISOString()},
+      ]});
+      vi.setSystemTime(Date.now()+10);
+      const review=`合并 ${delivery.repository}/pull/${delivery.pullRequest}，发布 Android 0.1.205 以及覆盖 ${f.item.key} 的 Web`;
+      const disclosure=scenario==="missing-candidate"?review.replace(f.item.key,"另一项")
+        :scenario==="wrong-pr-prefix"?review.replace("/pull/12","/pull/123")
+        :scenario==="wrong-artifact-prefix"?review.replace("Android","Android SDK").replace("Web","Webhook")
+        :scenario==="pin-undisclosed"?review.replace("Android 0.1.205","Android，另有 Web 0.1.205")
+        :scenario==="pin-conflict"?review+"；也可能采用 Android 0.1.206"
+        :scenario==="contradiction"?review+"；本次不发布 Web"
+        :scenario==="old-pin-conflict"?review.replace("Android 0.1.205","Android 0.1.206，Web 0.1.205")
+        :scenario==="hypothetical-pr"?review.replace(`合并 ${delivery.repository}/pull/${delivery.pullRequest}，`,"")+`\n\n如果要合并，可选 ${delivery.repository}/pull/${delivery.pullRequest}`
+        :scenario==="with-alternative"?review+"。\n\n如果暂不发 Web，可以先仅合并":review;
+      disclose(old,"legacy-disclosure",disclosure);
+      if(scenario==="unclocked")f.db.prepare("DELETE FROM session_message_times WHERE source_id='native:legacy-disclosure'").run();
+      vi.setSystemTime(Date.now()+10);
+      if(scenario==="stopped-before-command"){human(f,"停止");vi.setSystemTime(Date.now()+10);}
+      human(f,"全部合并和发布");
+      const afterFailure=prepare({...input,deliveries:[{...delivery,summary:"相同交付的另一种标题"}]});
+      vi.setSystemTime(Date.now()+10);
+      disclose(afterFailure,"legacy-failed-start",scenario==="later-contradiction"?review+"；本次不发布 Web"
+        :scenario==="later-pin-conflict"?review.replace("0.1.205","0.1.206"):review);
+      if(scenario==="later-plain-contradiction"){
+        vi.setSystemTime(Date.now()+10);
+        sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[
+          {sourceId:"plain-scope-change",role:"agent",phase:"final_answer",text:"本次只发 Android。",occurredAt:new Date().toISOString()},
+        ]});
+      }
+      if(scenario==="ambiguous"){
+        vi.setSystemTime(Date.now()+10);
+        disclose(afterFailure,"legacy-ambiguous",review+"；另一个完整发布范围 "+"b".repeat(64));
+      }
+      if(scenario==="superseded"){
+        const changedScope=prepare({...input,publicationTargets:[{artifact:"androidApp",version:"0.1.206"},{artifact:"web"}]});
+        vi.setSystemTime(Date.now()+10);
+        expect(f.merges.confirmConversationReview(f.owner.id,changedScope.id,changedScope.reviewDigest)).toEqual({confirmed:true});
+      }
+      vi.setSystemTime(Date.now()+600001);
+      if(scenario==="stopped"){human(f,"停止");vi.setSystemTime(Date.now()+10);}
+      human(f,"继续");
+      const head=scenario==="new-head"?"e".repeat(40):delivery.head;
+      const targets=scenario==="different-version"?[{artifact:"androidApp",version:"0.1.206"},{artifact:"web"}]:input.publicationTargets;
+      const fresh=prepare({...input,publicationTargets:scenario==="different-artifact"?undefined!:targets,deliveries:[{
+        ...delivery,head,evidence:{...delivery.evidence,head},summary:"重新核对同一交付",
+        requiredArtifacts:scenario==="different-artifact"?["web"]:delivery.requiredArtifacts,
+      }]});
+      const start=()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,fresh.id);
+      expect(fresh.reviewDigest).not.toBe(old.reviewDigest);
+      if(scenario!=="same"&&scenario!=="pin-disclosed"&&scenario!=="with-alternative"){
+        expect(start).toThrow();
+        expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({n:0});
+        return;
+      }
+      const batch=start();
+      expect(batch.conversation?.authorization.text).toBe("全部合并和发布");
+      expect(batch.entries).toHaveLength(1);
+      expect(start().id).toBe(batch.id);
+    });
   it.each(["合并和发布 PR #12","全部合并和发布"])("binds only the disclosed scope with an added publication candidate: %s",async instruction=>{
     const f=await acrossTurns();
     f.safe(await f.call("submit_development_complete",{itemKey:f.item.key,...f.identity,completion:{kind:"github",url:`${f.input.repository}/pull/13`},requiredArtifacts:["web"],idempotencyKey:"additional-candidate"}));
