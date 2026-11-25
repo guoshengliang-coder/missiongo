@@ -138,6 +138,51 @@ describe("integration directly in the original conversation",()=>{
       expect(f.merges.readForAccount(f.owner.id,f.d.id).state).toBe("proposed");
     }
   });
+  it.each(["named PR", "bare number", "local commit", "unproven commit", "changed head", "changed head without retry", "different branch", "later stop"])(
+    "uses the original merge instruction for the first batch: %s",async scenario=>{
+      vi.useFakeTimers({toFake:["Date"]});
+      vi.setSystemTime(new Date("2026-11-25T08:00:00Z"));
+      const f=await prepared(),sessions=new AgentSessionStore(f.store.database);
+      f.db.prepare("DELETE FROM merge_deliveries WHERE id=?").run(f.d.id);
+      const delivery={...f.input,itemKeys:[],productId:f.item.productId};
+      const input={...scope(f),deliveries:[delivery]};
+      const prep=(value:Parameters<typeof f.merges.prepareConversation>[4])=>
+        f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),value);
+      const start=(value:ReturnType<typeof prep>)=>f.merges.startConversation(f.owner.id,"original-client",f.identity,value.id);
+      const review=scenario==="local commit"||scenario==="different branch"?`完成提交 ${delivery.repository}/commit/${delivery.head} → main · web`:"已完成修改。";
+      sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[
+        {sourceId:"plain-handoff",role:"agent",phase:"final_answer",text:review,occurredAt:new Date().toISOString()},
+      ]});
+      vi.setSystemTime(Date.now()+10);
+      const named=!(scenario==="local commit"||scenario==="unproven commit"||scenario==="different branch");
+      const command=scenario==="bare number"?"合并 PR #12"
+        :named?`合并 ${delivery.repository}/pull/12`:"合并";
+      human(f,command);
+      if(!named){
+        const {head,targetBranch,requiredArtifacts,itemKeys}=delivery;
+        prep({...input,deliveries:[],localDelivery:{head,targetBranch,requiredArtifacts,itemKeys}});
+      }else {
+        prep(input);
+      }
+      vi.setSystemTime(Date.now()+10);
+      if(scenario==="later stop"){
+        human(f,"停止");
+        vi.setSystemTime(Date.now()+10);
+      }
+      if(scenario!=="changed head without retry")human(f,"继续");
+      const changed="e".repeat(40);
+      const final=prep(scenario.startsWith("changed head")?{...input,deliveries:[{...delivery,head:changed,evidence:{...delivery.evidence,head:changed}}]}
+        :scenario==="different branch"?{...input,deliveries:[{...delivery,targetBranch:"other"}]}:input);
+      if(scenario!=="named PR"&&scenario!=="local commit"){
+        expect(()=>start(final)).toThrow();
+        return;
+      }
+      const batch=start(final);
+      expect(batch.conversation?.authorization.text).toBe(command);
+      expect(batch.conversation?.direct).toBe(true);
+      expect(batch.publish).toBe(false);
+      expect(start(prep(input)).id).toBe(batch.id);
+    });
   it.each(["one action", "refresh", "changed head", "another PR", "another repo", "old final", "old stop", "recent stop", "unrelated version", "same PR version", "mirrored action", "no action"] as const)(
     "binds structured local delivery without a review page: %s", async scenario => {
       vi.useFakeTimers({toFake:["Date"]});
@@ -595,7 +640,7 @@ describe("integration directly in the original conversation",()=>{
       const sessions=new AgentSessionStore(f.store.database);
       const time=Date.now();
       sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",settingsRevision:1,messages:[
-        {sourceId:"repair:original",role:"user",text:"合并 PR #12",occurredAt:new Date(time-100).toISOString()},
+        {sourceId:"repair:original",role:"user",text:`合并 ${f.input.repository}/pull/12`,occurredAt:new Date(time-100).toISOString()},
       ]});
       const start=(input:Parameters<typeof f.merges.prepareConversation>[4])=>{
         const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),input);
@@ -1322,7 +1367,9 @@ describe("integration directly in the original conversation",()=>{
   it("checks MCP read/write scope, product access, strict inputs and the original identity",async()=>{
     const f=await prepared();human(f,"执行合并");
     const input={identity:f.identity,idempotencyKey:"mcp-direct",scope:scope(f)};
-    f.safe(await f.call("prepare_conversation_integration",input));
+    const preparation=await f.call("prepare_conversation_integration",input);
+    f.safe(preparation);
+    expect(preparation.structuredContent).not.toHaveProperty("reviewPath");
     for(const options of [{scopes:["missiongo:read"]},{accountId:f.other.id}]){
       const result=await f.call("prepare_conversation_integration",input,options);expect(result.error??result.isError).toBeTruthy();
     }
