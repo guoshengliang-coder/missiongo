@@ -138,14 +138,14 @@ describe("integration directly in the original conversation",()=>{
       expect(f.merges.readForAccount(f.owner.id,f.d.id).state).toBe("proposed");
     }
   });
-  it.each(["same-scope", "status-before-prepare", "changed-head", "different-base", "different-artifact", "unclocked", "stopped", "competing-pr", "quoted", "added-item", "merge-only-unclocked", "merge-only-blockquote", "merge-only-same-scope"] as const)(
+  it.each(["same-scope", "status-before-prepare", "changed-head", "different-base", "different-artifact", "unclocked", "stopped", "competing-pr", "quoted", "added-item", "claimed-item", "merge-only-unclocked", "merge-only-blockquote", "merge-only-same-scope"] as const)(
     "binds a new PR to the reviewed local commit: %s", async scenario => {
       vi.useFakeTimers({toFake:["Date"]});
       vi.setSystemTime(new Date("2026-11-24T08:00:00Z"));
       const f=await prepared(),sessions=new AgentSessionStore(f.store.database);
       f.db.prepare("DELETE FROM merge_deliveries WHERE id=?").run(f.d.id);
       f.store.recordProductReleaseArtifacts(f.item.productId,["web","androidApp"]);
-      const marker=`本次待交付提交 ${f.input.repository}/commit/${f.input.head} → main · web`;
+      const marker=`本次待交付提交 ${f.input.repository}/commit/${f.input.head} → main · web${scenario==="claimed-item"?" · "+f.item.key:""}`;
       const context=scenario==="competing-pr"?marker+"\n另外处理 other/repo#99"
         :scenario==="quoted"?"```text\n"+marker+"\n```":scenario==="merge-only-blockquote"?"> "+marker:marker;
       sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[
@@ -158,7 +158,7 @@ describe("integration directly in the original conversation",()=>{
       human(f,mergeOnly?"合并":"合并和发布");
       const head=scenario==="changed-head"?"e".repeat(40):f.input.head;
       const delivery={...f.input,head,evidence:{...f.input.evidence,head},
-        ...(scenario==="added-item"?{}:{itemKeys:[],productId:f.item.productId}),
+        ...(scenario==="added-item"||scenario==="claimed-item"?{}:{itemKeys:[],productId:f.item.productId}),
         targetBranch:scenario==="different-base"?"other":"main",
         requiredArtifacts:scenario==="different-artifact"?["androidApp"]:["web"]};
       const input={...scope(f),operation:mergeOnly?"merge_only" as const:"merge_and_publish" as const,deliveries:[delivery]};
@@ -174,7 +174,7 @@ describe("integration directly in the original conversation",()=>{
       human(f,"发布进度如何？");
       if(initial)expect(()=>start(initial.id)).toThrow(/过期/);
       const refreshed=prepare();
-      if(scenario!=="same-scope" && scenario!=="merge-only-same-scope" && scenario!=="status-before-prepare"){
+      if(scenario!=="same-scope" && scenario!=="merge-only-same-scope" && scenario!=="status-before-prepare" && scenario!=="claimed-item"){
         expect(()=>start(refreshed.id)).toThrow();
         expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({n:0});
         return;
@@ -294,7 +294,7 @@ describe("integration directly in the original conversation",()=>{
     })).toThrow();
   });
 
-  it("keeps a frozen confirmation link valid through a harmless status question", async () => {
+  it.each(["重试", "继续", "请继续处理"])("starts the first batch after a saved Web decision and %s", async reply => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-11-22T08:00:00Z"));
     const f = await prepared();
@@ -308,8 +308,9 @@ describe("integration directly in the original conversation",()=>{
     vi.setSystemTime(Date.now() + 10);
     human(f, "进度如何");
     expect(f.merges.conversationReview(f.owner.id, preparation.id).confirmed).toBe(true);
-    vi.setSystemTime(Date.now() + 10);
-    human(f, "重试");
+    vi.setSystemTime(Date.now() + 600001);
+    human(f, reply);
+    expect(f.merges.conversationReview(f.owner.id, preparation.id).confirmed).toBe(true);
     const retry = f.merges.prepareConversation(f.owner.id, "original-client", f.identity, "after-status",
       { ...scope(f), operation: "merge_and_publish" });
     expect(f.merges.startConversation(f.owner.id, "original-client", f.identity, retry.id).sessionId).toBe(f.projectSessionId);
@@ -610,7 +611,7 @@ describe("integration directly in the original conversation",()=>{
     record("retained-progress","CI 仍在运行，尚未执行。",5);
     return {...f,sessions,input,first,record,at};
   };
-  it.each(["confirmed", "persisted-pr", "retried", "stopped", "changed-version", "changed-head", "other-pr", "other-repository", "extra-release-candidate", "mixed-confirmation", "unrelated-confirmation"] as const)(
+  it.each(["confirmed", "clocked-mirror", "persisted-pr", "retried", "stopped", "changed-version", "changed-head", "other-pr", "other-repository", "extra-release-candidate", "mixed-confirmation", "unrelated-confirmation"] as const)(
     "binds version confirmation to the original scoped action: %s", async scenario => {
       vi.useFakeTimers({toFake:["Date"]});
       vi.setSystemTime(new Date("2026-11-24T10:00:00Z"));
@@ -623,7 +624,7 @@ describe("integration directly in the original conversation",()=>{
         :`Completed ${original.repository}/pull/${original.pullRequest} at ${original.head}`;
       f.record("completed-pr",context,25);
       vi.setSystemTime(Date.now()+20);
-      human(f,"合并和发布");
+      const command=human(f,"合并和发布");
       const head=scenario==="changed-head"?"e".repeat(40):original.head;
       const pullRequest=scenario==="other-pr"?99:original.pullRequest;
       if(scenario==="extra-release-candidate")
@@ -642,6 +643,9 @@ describe("integration directly in the original conversation",()=>{
       f.record("version-offer",scenario==="mixed-confirmation"?prompt+"\n确认要创建条目吗？":prompt!,55);
       if(scenario==="unrelated-confirmation")f.record("unrelated-question","确认要创建条目吗？",56);
       vi.setSystemTime(Date.now()+20);
+      if(scenario==="clocked-mirror")f.sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[
+        {sourceId:`answer-${command.id}`,clientMessageId:command.id,role:"user",text:command.text,occurredAt:new Date(Date.parse(command.createdAt)+1).toISOString()},
+      ]});
       if(scenario==="stopped")human(f,"停止");
       vi.setSystemTime(Date.now()+20);
       human(f,"确认");
@@ -655,7 +659,7 @@ describe("integration directly in the original conversation",()=>{
         const fresh=prepare(scenario==="changed-version"?{...input,publicationTargets:[{artifact:"web",version:"2.0.0"}]}:input);
         return f.merges.startConversation(f.owner.id,"original-client",f.identity,fresh.id);
       };
-      if(scenario==="confirmed"||scenario==="persisted-pr"||scenario==="retried"){
+      if(scenario==="confirmed"||scenario==="clocked-mirror"||scenario==="persisted-pr"||scenario==="retried"){
         const batch=start();
         expect(batch.conversation?.authorization.text).toBe("合并和发布");
         expect(batch.conversation?.versionConfirmation?.text).toBe("确认");
@@ -810,27 +814,54 @@ describe("integration directly in the original conversation",()=>{
     expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id)).toThrow(/范围/);
     expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({n:0});
   });
-  it.each(["PR #12 PR #13","a".repeat(12)+" "+"b".repeat(12),""])("accepts complete or generic two-delivery instruction: %s",async reference=>{
+  it.each(["PR #12 PR #13","a".repeat(12)+" "+"b".repeat(12),"","全部"])("accepts complete or generic two-delivery instruction: %s",async reference=>{
     const f=await acrossTurns();
     const other={...f.input.deliveries[0]!,itemKeys:[],productId:f.item.productId,pullRequest:13,head:"b".repeat(40),evidence:{...f.input.deliveries[0]!.evidence,head:"b".repeat(40)}};
     const input={...f.input,deliveries:[...f.input.deliveries,other]};
     const reviewed=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),input);
     f.record("all-reviewed",reviewed.reviewText,6);f.record("all-progress","CI 仍在运行。",7);
-    human(f,`合并和发布 ${reference}`.trim());
+    human(f,reference==="全部"?"全部合并和发布":`合并和发布 ${reference}`.trim());
     const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),input);
     expect(p.reviewText).toBe(reviewed.reviewText);
     expect(f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id).entries).toHaveLength(2);
   });
-  it("includes additional product publication candidates in explicit scope matching",async()=>{
+  it.each(["全部合并的 PR #12","全部合并","全部合并，不发布"])("blocks unreviewed merge scope: %s",async reply=>{
+    const f=await prepared();
+    human(f,reply);
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),scope(f));
+    expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id)).toThrow();
+  });
+  it("continues a reviewed command with a separately clocked mirror",async()=>{
+    vi.useFakeTimers({toFake:["Date"]});
+    vi.setSystemTime(new Date("2026-11-24T10:00:00Z"));
+    const f=await acrossTurns();
+    vi.setSystemTime(Date.now()+20);
+    const command=human(f,"全部合并和发布");
+    vi.setSystemTime(Date.now()+20);
+    f.sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[
+      {sourceId:`answer-${command.id}`,clientMessageId:command.id,role:"user",text:command.text,occurredAt:new Date(Date.parse(command.createdAt)+1).toISOString()},
+    ]});
+    human(f,"继续");
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),f.input);
+    expect(f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id).conversation?.authorization.text).toBe(command.text);
+  });
+  it.each(["合并和发布 PR #12","全部合并和发布"])("binds only the disclosed scope with an added publication candidate: %s",async instruction=>{
     const f=await acrossTurns();
     f.safe(await f.call("submit_development_complete",{itemKey:f.item.key,...f.identity,completion:{kind:"github",url:`${f.input.repository}/pull/13`},requiredArtifacts:["web"],idempotencyKey:"additional-candidate"}));
     const input={...f.input,deliveries:[{...f.input.deliveries[0]!,itemKeys:[],productId:f.item.productId}]};
     const reviewed=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),input);
     expect(reviewed.publicationScope?.candidates).toHaveLength(2);
-    f.record("additional-candidate-reviewed",reviewed.reviewText,6);
-    human(f,"合并和发布 PR #12");
+    f.record("additional-candidate-reviewed",reviewed.reviewText.split("\n执行配置 ")[0]!.replaceAll(" · ", "  ·  "),6);
+    human(f,instruction);
     const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),input);
-    expect(()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id)).toThrow(/范围/);
+    const start=()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id);
+    if(instruction==="全部合并和发布"){
+      const batch=start();
+      expect(batch.entries).toHaveLength(1);
+      expect(batch.publicationScope?.candidates).toHaveLength(2);
+      return;
+    }
+    expect(start).toThrow(/范围/);
     expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({n:0});
   });
   it.each(["merge and publish PR #12 except PR #13","merge and publish PR #12 ignore PR #13","merge and publish Android"])("rejects qualified intervening action inside a reviewed two-PR scope: %s",async instruction=>{

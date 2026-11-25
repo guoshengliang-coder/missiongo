@@ -1,7 +1,7 @@
 import { publicationActionBounds, scopeConflict, type ConversationPublicationBounds } from "./conversation-publication-targets.js";
 import type { MissionGoDatabase } from "./storage/database.js";
 import { conflict } from "./errors.js";
-import { assertIntegrationInstruction, integrationFingerprint, isIntegrationRetry, type IntegrationExecutor, type IntegrationInstruction } from "./conversation-integration-source.js";
+import { assertIntegrationInstruction, distinctConversationInputs, integrationFingerprint, isIntegrationRetry, isIntegrationContinue, isIntegrationStatus, type IntegrationExecutor, type IntegrationInstruction } from "./conversation-integration-source.js";
 
 export interface ConversationReviewEvidence {
   sourceId: string; occurredAt: string; textDigest: string; reviewDigest: string;
@@ -9,6 +9,16 @@ export interface ConversationReviewEvidence {
 }
 const missing = () => conflict("conversation_integration_history_incomplete", "范围审阅来源或中间输入不完整，请核对原会话历史，不自动复用旧决定。");
 const changed = () => conflict("conversation_integration_scope_review_required", "范围审阅后出现停止、范围变化或歧义，请核对当前范围与决定，不自动复用旧决定。");
+
+/** Match the disclosed scope across harmless Markdown and line-wrap changes. */
+export function containsConversationScope(text: string, reviewText: string, wholeMessage = false) {
+  const normalize = (value: string) => value.replace(/\r/g, "").replace(/[ \t]+/g, " ").replace(/\n+/g, "\n").trim();
+  const withoutConfiguration = (value: string) => value.replace(/\n执行配置 \{[^\n]*\}；仅记录原会话实际配置，不创建新会话、不改变模型或原生权限。\s*$/, "");
+  const scope = normalize(withoutConfiguration(reviewText));
+  const matches = wholeMessage ? normalize(withoutConfiguration(text)) === scope : normalize(text).includes(scope);
+  return matches
+    && (text.match(/原会话执行范围：/g)?.length ?? 0) === 1;
+}
 
 /** The latest *scope-bearing* final answer is a review, not an execution grant.
  * Ordinary progress cannot hide it; a newer different scope cannot be skipped.
@@ -32,7 +42,7 @@ export function conversationScopeReview(database: MissionGoDatabase, executor: I
       if(operation==="merge_only")actionText=actionText.replace(/(?:暂不|先不|不要|不用|无需|不)(?:进行)?(?:发布|部署)/g,"").replace(/\b(?:do not|don't|not) (?:publish|release|deploy)\b/ig,"");
       if(operation==="publish_only")actionText=actionText.replace(/(?:暂不|先不|不要|不用|无需|不)(?:进行)?合并/g,"").replace(/\b(?:do not|don't|not) merge\b/ig,"");
       actionText=actionText.replace(/(?:PR\s*#?|#)\d+\b/ig,"").replace(/\b[a-f0-9]{7,40}\b/ig,"")
-        .replace(/请|现在|直接|立即|继续|执行|开始|帮我|麻烦|把|将|合并|发布|部署|和|并|及|当前|本次|这个|这些|此|全部/g,"")
+        .replace(/请|现在|直接|立即|继续|执行|开始|帮我|麻烦|把|将|合并|发布|部署|和|并|及|一起|当前|本次|这个|这些|此|全部/g,"")
         .replace(/\b(?:merge|publish|release|deploy|and|please|now|this|these|the|pr|go|ahead)\b/ig,"")
         .replace(/[\s,，;；。.!！、:：]+/g,"");
       // Unparsed artifact/branch/conditional qualifiers cannot authorize the old
@@ -94,19 +104,20 @@ export function conversationScopeReview(database: MissionGoDatabase, executor: I
     .get(key,`native:${row.source_id}`) as {occurred_at:string}|undefined;
   if(!clock || Date.parse(clock.occurred_at)!==Date.parse(row.at))throw missing();
   if(Date.parse(row.at)>=Date.parse(instruction.occurredAt))return undefined;
-  if(!row.text.includes(reviewText) || (row.text.match(/原会话执行范围：/g)?.length??0)!==1)return undefined;
+  if(!containsConversationScope(row.text,reviewText))return undefined;
 
   // The current input still needs its own authorization. Do not infer consent
   // from old input, progress, a tool parameter or an unbound "approve".
   const latest = retry ?? instruction;
   const users=db.prepare(external
-    ? `SELECT source_id,json_extract(payload_json,'$.text') AS text,json_extract(payload_json,'$.occurredAt') AS at
+    ? `SELECT source_id,json_extract(payload_json,'$.text') AS text,json_extract(payload_json,'$.occurredAt') AS at,
+       json_extract(payload_json,'$.clientMessageId') AS client_message_id
        FROM external_native_messages WHERE session_id=? AND json_extract(payload_json,'$.role')='user'
        AND COALESCE(json_extract(payload_json,'$.phase'),'')<>'execution'
        AND (julianday(json_extract(payload_json,'$.occurredAt')) BETWEEN julianday(?) AND julianday(?) OR julianday(json_extract(payload_json,'$.occurredAt')) IS NULL)`
-    : `SELECT source_id,text,occurred_at AS at FROM agent_session_messages WHERE session_id=? AND role='user'
+    : `SELECT source_id,text,occurred_at AS at,client_message_id FROM agent_session_messages WHERE session_id=? AND role='user'
        AND COALESCE(phase,'')<>'execution' AND (julianday(occurred_at) BETWEEN julianday(?) AND julianday(?) OR julianday(occurred_at) IS NULL)`)
-    .all(sessionId,row.at,latest.occurredAt) as {source_id:string;text:string;at:string|null}[];
+    .all(sessionId,row.at,latest.occurredAt) as {source_id:string;client_message_id:string|null;text:string;at:string|null}[];
   const commands=db.prepare(external
     ? "SELECT id,text,created_at AS at,status FROM external_native_commands WHERE session_id=? AND julianday(created_at) BETWEEN julianday(?) AND julianday(?)"
     : "SELECT id,text,created_at AS at,status FROM agent_session_commands WHERE session_id=? AND kind='message' AND julianday(created_at) BETWEEN julianday(?) AND julianday(?)")
@@ -124,11 +135,11 @@ export function conversationScopeReview(database: MissionGoDatabase, executor: I
     if(!observed || Date.parse(observed.occurred_at)!==Date.parse(user.at))throw missing();
   }
   for(const command of commands)if(!["delivered","failed","cancelled"].includes(command.status))throw missing();
-  const inputs=[...users,...commands.filter(c=>c.status==="delivered")];
+  const inputs=distinctConversationInputs(commands, users);
   for(const input of inputs) {
     // Exact current command and its clocked mirror are checked by integrationInstruction.
     if(input.text===instruction.text && Date.parse(input.at!)===Date.parse(instruction.occurredAt))continue;
-    if (retry && Date.parse(input.at!) > Date.parse(instruction.occurredAt) && isIntegrationRetry(input.text)) continue;
+    if (retry && Date.parse(input.at!) > Date.parse(instruction.occurredAt) && (isIntegrationRetry(input.text) || isIntegrationContinue(input.text) || isIntegrationStatus(input.text))) continue;
     if (retry && Date.parse(input.at!) >= Date.parse(instruction.occurredAt)) throw changed();
     const text=input.text.trim();
     // These bounded non-execution messages do not change a reviewed code scope.

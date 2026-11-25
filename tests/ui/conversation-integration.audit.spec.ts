@@ -46,10 +46,15 @@ test("displays and confirms one frozen execution scope", async ({ page }) => {
       await route.fulfill({ json: { confirmed: true } });
       return;
     }
-    await route.fulfill({ json: { reviewText, reviewDigest: digest, targetBranches: ["main"], confirmed: decisions > 0 } });
+    await route.fulfill({ json: { reviewText, reviewDigest: digest, targetBranches: ["main"], confirmed: decisions > 0, operation:"merge_and_publish", merges:[{repository:"https://github.com/example/project",pullRequest:764,title:"Android 修复"}], artifacts:["Android","Web"], publicationTargets:[{artifact:"Android",version:"0.1.204"}], releaseCandidates:[{identity:"web-added",title:"已合并的 Web 修复",artifacts:["Web"]}] } });
   });
   await page.goto("/?conversationIntegrationReview=test-scope");
   await expect(page.getByText("目标分支 · main")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "合并和发布" })).toBeVisible();
+  await expect(page.getByText("已合并的 Web 修复", { exact: false })).toBeVisible();
+  await expect(page.getByText("目标版本 · Android 0.1.204")).toBeVisible();
+  await expect(page.getByText("发布 Android 0.1.204 和 Web", { exact: false })).toBeHidden();
+  await page.getByText("执行详情").click();
   await expect(page.getByText("发布 Android 0.1.204 和 Web", { exact: false })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole("button", { name: "确认此执行范围" }).click();

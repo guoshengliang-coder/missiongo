@@ -93,6 +93,9 @@ export function integrationInstruction(database: MissionGoDatabase, executor: In
   return { ...current, context, contextTrusted, fingerprint: integrationFingerprint([current, context]) };
 }
 
+const wholeScopeCommand = /^(?:全部|一起)(?=(?:合并(?:和|并|及|、)(?:发布|部署)|合并|发布|部署)[。.!！]?\s*$)/;
+export const isWholeScopeIntegrationCommand = (text: string) => /^[\s,，;；]*(?:全部|一起)(?=合并|发布|部署)/.test(text);
+
 /** Conservative rejection filter, never an automatic execution trigger. Agent still resolves scope and meaning. */
 export function assertIntegrationInstruction(text: string, operation: "merge_only" | "merge_and_publish" | "publish_only") {
   // An explicit exclusion narrows this action; it must never authorize the excluded operation.
@@ -102,6 +105,7 @@ export function assertIntegrationInstruction(text: string, operation: "merge_onl
   // Only a removed exclusion can leave a trailing separator; do not strip narrative clauses.
   if (text !== raw) text=text.replace(/[\s,，;；]+([。.!！]?)$/, "$1");
   text=text.replace(/^[\s,，;；]+/,"");
+  text=text.replace(wholeScopeCommand,"");
   if (!text.trim() || raw.length > 4000 || /[?？“”「」『』"`]|(?:不|别|勿|禁止|停止|暂停|暂缓|取消|以后|明天|后天|如果|假如|等我|(?:等|待).*(?:后|再|通过|完成|结束|确认|批准)|(?:通过|完成|结束|确认|批准)(?:之|以)?(?:后|再)|是否|能否|为什么|怎么|吗|么|添加|加入|提交到|方案|建议|准备|计划|引用|文档里|文档中|例如)|\b(?:not|don't|do not|can't|cannot|if|when|once|after|later|tomorrow|why|whether|queue|plan|prepare)\b/i.test(text))
     throw conflict("conversation_integration_instruction_ambiguous", "这条消息不是范围明确的当前执行指令，请先澄清；不能把讨论或加入清单当作合并发布授权。");
   // Continue is a new execution entry: accept a complete imperative, not arbitrary trailing narration.
@@ -140,7 +144,26 @@ export function isDirectIntegrationAction(text: string, operation: "merge_only" 
   return /^合并(?:和|并|及|、)(?:发布|部署)$/.test(command) || /^(?:please )?merge and (?:publish|deploy)$/i.test(command);
 }
 
+export const isIntegrationContinue = (text: string) => /^(?:请)?(?:继续(?:执行|处理)?|continue)[。.!！]?$/i.test(text.trim());
+
 export const isIntegrationRetry = (text: string) => /^(?:请|你)?(?:(?:再试|重新试|重试)(?:一?下|一次)?|retry)[。.!！]?$/i.test(text.trim());
+
+export function isIntegrationConsent(text: string) {
+  return /^(?:同意|批准|授权|确认|可以执行|同意执行|确认执行)[。.!！]?$/.test(text.trim());
+}
+
+export function distinctConversationInputs<Clock extends string | null>(
+  commands: Array<{ id: string; status: string; text: string; at: Clock }>,
+  messages: Array<{ source_id: string; client_message_id: string | null; text: string; at: Clock }>,
+): Array<{ text: string; at: Clock }> {
+  const delivered = commands.filter(command => command.status === "delivered");
+  const commandsById = new Map(delivered.map(command => [command.id, command]));
+  const nativeOnly = messages.filter(message => {
+    const commandId = message.client_message_id ?? message.source_id.replace(/^answer-/, "");
+    return commandsById.get(commandId)?.text !== message.text;
+  });
+  return [...delivered, ...nativeOnly];
+}
 
 /** Check the inclusive interval so two records with the same clock cannot hide a stop. */
 export function assertConversationRetryHistory(database: MissionGoDatabase, executor: IntegrationExecutor,
@@ -153,29 +176,30 @@ export function assertConversationRetryHistory(database: MissionGoDatabase, exec
     AND (julianday(created_at) BETWEEN julianday(?) AND julianday(?) OR julianday(created_at) IS NULL)`).get(...args))
     throw conflict("conversation_integration_stopped", "原决定之后收到停止指令，请先核实执行状态。");
   const commands = db.prepare(external
-    ? "SELECT text,created_at AS at,status FROM external_native_commands WHERE session_id=? AND (julianday(created_at) BETWEEN julianday(?) AND julianday(?) OR julianday(created_at) IS NULL)"
-    : "SELECT text,created_at AS at,status FROM agent_session_commands WHERE session_id=? AND kind='message' AND (julianday(created_at) BETWEEN julianday(?) AND julianday(?) OR julianday(created_at) IS NULL)")
-    .all(...args) as { text: string; at: string; status: string }[];
+    ? "SELECT id,text,created_at AS at,status FROM external_native_commands WHERE session_id=? AND (julianday(created_at) BETWEEN julianday(?) AND julianday(?) OR julianday(created_at) IS NULL)"
+    : "SELECT id,text,created_at AS at,status FROM agent_session_commands WHERE session_id=? AND kind='message' AND (julianday(created_at) BETWEEN julianday(?) AND julianday(?) OR julianday(created_at) IS NULL)")
+    .all(...args) as { id: string; text: string; at: string; status: string }[];
   const messages = db.prepare(external
-    ? `SELECT source_id,json_extract(payload_json,'$.text') AS text,json_extract(payload_json,'$.occurredAt') AS at
+    ? `SELECT source_id,json_extract(payload_json,'$.text') AS text,json_extract(payload_json,'$.occurredAt') AS at,
+       json_extract(payload_json,'$.clientMessageId') AS client_message_id
        FROM external_native_messages WHERE session_id=? AND json_extract(payload_json,'$.role')='user'
        AND COALESCE(json_extract(payload_json,'$.phase'),'')<>'execution'
        AND (julianday(json_extract(payload_json,'$.occurredAt')) BETWEEN julianday(?) AND julianday(?) OR julianday(json_extract(payload_json,'$.occurredAt')) IS NULL)`
-    : `SELECT source_id,text,occurred_at AS at FROM agent_session_messages WHERE session_id=? AND role='user'
+    : `SELECT source_id,text,occurred_at AS at,client_message_id FROM agent_session_messages WHERE session_id=? AND role='user'
        AND COALESCE(phase,'')<>'execution' AND (julianday(occurred_at) BETWEEN julianday(?) AND julianday(?) OR julianday(occurred_at) IS NULL)`)
-    .all(...args) as { source_id: string; text: string; at: string }[];
+    .all(...args) as { source_id: string; text: string; at: string; client_message_id: string | null }[];
   const key = external ? `external:${executor.sessionId}` : `dispatch:${executor.dispatchId}`;
   const clock = db.prepare("SELECT occurred_at FROM session_message_times WHERE session_key=? AND source_id=? AND provenance='source_message'");
   if (commands.some(command => !["delivered", "failed", "cancelled"].includes(command.status)) || messages.some(message => {
     const record = clock.get(key, `native:${message.source_id}`) as { occurred_at: string } | undefined;
     return !record || Date.parse(record.occurred_at) !== Date.parse(message.at);
   })) throw conflict("conversation_integration_history_incomplete", "重试区间的可信输入历史不完整。");
-  const delivered = commands.filter(command => command.status === "delivered");
   const authorizedAt = Date.parse(authorization.occurredAt);
-  if ([...delivered, ...messages].some(input => {
+  // A trusted native mirror can have a different clock from the delivered command.
+  if (distinctConversationInputs(commands, messages).some(input => {
     const at = Date.parse(input.at);
     return !(input.text === authorization.text && at === authorizedAt
       || at > authorizedAt && allowEndpoint && at === Date.parse(retry.occurredAt) && input.text === retry.text
-      || at > authorizedAt && (isIntegrationRetry(input.text) || allowStatus && isIntegrationStatus(input.text)));
+      || at > authorizedAt && (isIntegrationRetry(input.text) || isIntegrationContinue(input.text) || allowStatus && isIntegrationStatus(input.text)));
   })) throw conflict("conversation_integration_input_changed", "原决定之后有不同输入，请核对停止、撤权或范围变化。");
 }
