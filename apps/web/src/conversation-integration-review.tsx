@@ -16,7 +16,6 @@ interface Review {
   blockers?: string[];
   publicationTargets?: Array<{ artifact: string; version?: string }>;
   releaseCandidates?: Array<{ identity: string; title: string; artifacts: string[]; note?: string }>;
-  confirmationBlocker?: string;
 }
 
 export function ConversationIntegrationReview({ preparationId }: { preparationId: string }) {
@@ -44,7 +43,7 @@ export function ConversationIntegrationReview({ preparationId }: { preparationId
       {review.data.publicationTargets?.some(target => target.version) && <p>{t("conversationIntegrationVersions", {
         versions: review.data.publicationTargets.filter(target => target.version).map(target => `${target.artifact} ${target.version}`).join(", "),
       })}</p>}
-      {review.data.confirmationBlocker && <p role="alert">{review.data.confirmationBlocker}</p>}
+      <p>{t("conversationIntegrationHistory")}</p>
       {Boolean(review.data.blockers?.length) && <ul>{review.data.blockers?.map(blocker => <li key={blocker}>{blocker}</li>)}</ul>}
       {review.data.operation
         ? <details><summary>{t("conversationIntegrationDetails")}</summary>

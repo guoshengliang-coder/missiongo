@@ -1379,7 +1379,8 @@ describe("integration directly in the original conversation",()=>{
     const refreshed = prepare("web-decision-refresh");
     const batch = f.merges.startConversation(f.owner.id, "original-client", f.identity, refreshed.id);
     const replay = prepare("web-decision-replay");
-    expect(f.merges.conversationReview(f.owner.id, replay.id)).toMatchObject({ confirmed: true });
+    expect(f.merges.conversationReview(f.owner.id, refreshed.id)).toMatchObject({ confirmed: true });
+    expect(f.merges.conversationReview(f.owner.id, replay.id)).toMatchObject({ confirmed: false });
     expect(f.merges.confirmConversationReview(f.owner.id, replay.id, replay.reviewDigest)).toEqual({ confirmed: true });
     expect(f.merges.startConversation(f.owner.id, "original-client", f.identity, replay.id).id).toBe(batch.id);
     expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({ n: 1 });
@@ -1471,21 +1472,83 @@ describe("integration directly in the original conversation",()=>{
     f.safe(result);expect(result.structuredContent?.results,JSON.stringify(result)).toMatchObject([{outcome:"submitted"}]);
     expect(f.merges.finish(f.owner.id,f.dispatch.id,b.id).state).toBe("finished");
   });
-  it("checks MCP read/write scope, product access, strict inputs and the original identity",async()=>{
+  it("redirects new MCP execution and still resumes or replays accepted legacy batches",async()=>{
     const f=await prepared();human(f,"执行合并");
     const input={identity:f.identity,idempotencyKey:"mcp-direct",scope:scope(f)};
-    const preparation=await f.call("prepare_conversation_integration",input);
-    f.safe(preparation);
-    expect(preparation.structuredContent).not.toHaveProperty("reviewPath");
+    const redirected=await f.call("prepare_conversation_integration",input);
+    expect(redirected.isError).toBe(true);
+    expect(JSON.stringify(redirected)).toContain("conversation_integration_use_platform");
+    const unattached=await f.call("prepare_conversation_integration",{...input,identity:{dispatchId:randomUUID()}});
+    expect(unattached.structuredContent?.code).toBe("conversation_integration_use_platform");
+    f.accounts.replacePermissions(f.other.id,[]);
     for(const options of [{scopes:["missiongo:read"]},{accountId:f.other.id}]){
-      const result=await f.call("prepare_conversation_integration",input,options);expect(result.error??result.isError).toBeTruthy();
+      const result=await f.call("prepare_conversation_integration",input,options);
+      expect(result.error??result.isError).toBeTruthy();
+      expect(JSON.stringify(result)).not.toContain("conversation_integration_use_platform");
     }
-    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"mcp-start",scope(f));
-    const result=await f.call("start_conversation_integration",{identity:f.identity,preparationId:p.id});f.safe(result);
-    const batch=result.structuredContent?.batch as {id:string};
-    f.safe(await f.call("get_merge_batch",{dispatchId:f.dispatch.id,batchId:batch.id}));
-    expect((await f.call("start_conversation_integration",{identity:f.identity,preparationId:p.id,approved:true})).error??(await f.call("start_conversation_integration",{identity:f.identity,preparationId:p.id,approved:true})).isError).toBeTruthy();
-    f.grant(false,true);expect((await f.call("start_conversation_integration",{identity:f.identity,preparationId:p.id})).isError).toBeTruthy();
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,input.idempotencyKey,input.scope);
+    const staleRefresh=await f.call("prepare_conversation_integration",{...input,scope:{...input.scope,deliveries:[{...f.input,summary:"Refreshed evidence after CI retry"}]}});
+    expect(staleRefresh.structuredContent?.code).toBe("conversation_integration_use_platform");
+    const start={identity:f.identity,preparationId:p.id};
+    const stale=await f.call("start_conversation_integration",start);
+    expect(stale.isError).toBe(true);
+    expect(JSON.stringify(stale)).toContain("conversation_integration_use_platform");
+    expect(() => f.merges.confirmConversationReview(f.owner.id,p.id,p.reviewDigest,true))
+      .toThrowError(expect.objectContaining({code:"conversation_integration_use_platform"}));
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({n:0});
+
+    // Seed an accepted legacy batch; existing clients must be able to resume it.
+    const batch=f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id);
+    const replay=await f.call("prepare_conversation_integration",input);
+    f.safe(replay);
+    expect(replay.structuredContent).toMatchObject({preparation:{id:p.id}});
+    expect(replay.structuredContent).not.toHaveProperty("versionConfirmationText");
+    const result=await f.call("start_conversation_integration",start);
+    f.safe(result);expect(result.structuredContent?.batch).toMatchObject({id:batch.id});
+    const resumed=await f.call("prepare_conversation_integration",{...input,idempotencyKey:"legacy-resume",scope:{...input.scope,deliveries:[],resumeBatchId:batch.id}});
+    f.safe(resumed);
+    const resumePreparation=resumed.structuredContent?.preparation as {id:string};
+    const recovered=await f.call("start_conversation_integration",{...start,preparationId:resumePreparation.id});
+    f.safe(recovered);expect(recovered.structuredContent?.batch).toMatchObject({id:batch.id});
+
+    // History is readable independently of the current native linkage or reply.
+    f.db.prepare("UPDATE agent_sessions SET applied_settings_revision=settings_revision-1 WHERE id=?").run(f.projectSessionId);
+    expect(f.merges.conversationReview(f.owner.id,p.id)).toMatchObject({confirmed:true,sessionId:f.projectSessionId});
+    expect(f.merges.confirmConversationReview(f.owner.id,p.id,p.reviewDigest,true)).toEqual({confirmed:true});
+    f.db.prepare("UPDATE agent_sessions SET applied_settings_revision=settings_revision WHERE id=?").run(f.projectSessionId);
+
+    const forged=await f.call("start_conversation_integration",{...start,approved:true});
+    expect(forged.error??forged.isError).toBeTruthy();
+    f.grant(false,true);
+    expect((await f.call("start_conversation_integration",start)).isError).toBeTruthy();
+  });
+
+  it("records PR #670 merge and Web 1.1.83 release without a MissionGo execution batch",async()=>{
+    const f=await fixture(), launched=f.launch("codex"), productId=f.item.productId, itemKey=f.item.key;
+    const identity={dispatchId:launched.dispatch.id};
+    f.safe(await f.call("claim_item",{...f.claimInput,session:undefined,...identity}));
+    const completion={kind:"github",url:"https://github.com/guoshengliang-coder/missiongo/pull/670"};
+    const mergedCommit="1769a1d5c9d5759ffafabf87546de3fa370e4e22";
+    // External steps are replayed facts. The release receipt is synthetic;
+    // this test makes no GitHub or production deployment request.
+    f.safe(await f.call("append_comment",{itemKey,idempotencyKey:"pr-670-merge-comment",text:"GitHub CI retry passed. PR #670 merged at "+mergedCommit+"."}));
+    const merged=await f.call("submit_development_complete",{itemKey,...identity,completion,requiredArtifacts:["web"],idempotencyKey:"pr-670-merged"});
+    f.safe(merged);
+    expect(merged.structuredContent?.item).toMatchObject({status:"development_complete"});
+    const delivery=f.store.getDeliveryRecords(itemKey)[0]!;
+    f.safe(await f.call("append_comment",{itemKey,idempotencyKey:"pr-670-release-comment",text:"Fixture deployment verified Web/Server 1.1.83 from "+mergedCommit+"."}));
+    const publication={productId,idempotencyKey:"pr-670-web-1.1.83",deployedCommit:mergedCommit,receiptDigest:"d".repeat(64),
+      items:[{itemKey,expectedRevision:f.store.getWorkItem(itemKey).revision,developmentEventId:delivery.id,roundKey:delivery.roundKey,completion,
+        releases:[{artifact:"web",version:"1.1.83",sourceCommit:mergedCommit}]}]};
+    const recorded=await f.call("submit_release_batch",publication);
+    f.safe(recorded);
+    expect(recorded.structuredContent?.results).toMatchObject([{itemKey,outcome:"submitted"}]);
+    expect(f.store.getWorkItem(itemKey).status).toBe("pending_verification");
+    f.safe(await f.call("submit_release_batch",publication));
+    expect(f.store.getDeliveryRecords(itemKey)).toHaveLength(1);
+    for(const table of ["conversation_integration_preparations","merge_batches"]){
+      expect(f.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).toMatchObject({n:0});
+    }
   });
 });
 const protectedVerification=(d:{repository:string;targetBranch:string})=>({repository:d.repository,targetBranch:d.targetBranch,rulesSource:"Observed project and platform requirements",rulesDigest:"f".repeat(64),ci:"required" as const,local:"required" as const,reason:"Live required checks cover the pending job",platformRead:"complete" as const,requiredChecks:["build"],observedChecks:["build"],autoMerge:true,protectedChecks:true,mergeMethod:"merge" as const});

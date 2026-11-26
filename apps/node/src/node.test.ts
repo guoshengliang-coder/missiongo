@@ -95,6 +95,9 @@ describe("headless configuration and scope", () => {
           expect(prompt).toContain("向 request_plan_approval 提交的 plan/validation");
           expect(prompt).toContain("特别是与推荐不同的选择");
           expect(prompt).toContain("普通进度、澄清和等待提示不是正式方案");
+          expect(prompt).toContain("用当前仓库的 GitHub（或实际托管平台）和项目正式发布工具直接操作");
+          expect(prompt).toContain("原会话内同范围续办、CI 重跑和进度消息沿用已明确的操作");
+          expect(prompt).toContain("MissionGo 工具在结果发生后按真实证据登记");
           expect(prompt).toContain("有边界的复现或实验计划");
           expect(prompt).toContain("研发审查默认执行，不绑定仓库");
           expect(prompt).toContain("直接调用当前原生端的独立 Agent 做只读审查");

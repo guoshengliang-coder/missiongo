@@ -323,17 +323,22 @@ export class MissionGoStore {
   transferReferences(itemKey: string, canView: (productId: string) => boolean): Pick<WorkItemSnapshot, "transferredFrom" | "transferredTo"> {
     const item = this.getWorkItemRow(itemKey.toUpperCase());
     if (!item) throw notFound("Work item");
-    const reference = (direction: "source" | "target") => {
-      const other = direction === "source" ? "target" : "source";
-      const row = this.database.connection.prepare(`
-        SELECT w.item_key AS key, w.product_id AS productId FROM item_transfers t
-        JOIN work_items w ON w.id = t.${other}_item_id WHERE t.${direction}_item_id = ?
-      `).get(item.id) as { key: string; productId: string } | undefined;
-      return row && canView(row.productId) ? row : undefined;
-    };
-    const to = reference("source");
-    const from = reference("target");
-    return { ...(to ? { transferredTo: to } : {}), ...(from ? { transferredFrom: from } : {}) };
+    return this.transferReferencesByItemId(item.id, canView);
+  }
+
+  transferReferencesByItemId(itemId: string, canView: (productId: string) => boolean): Pick<WorkItemSnapshot, "transferredFrom" | "transferredTo"> {
+    const rows = this.database.connection.prepare(`
+      SELECT w.item_key AS key, w.product_id AS productId, 'to' AS direction
+        FROM item_transfers t JOIN work_items w ON w.id = t.target_item_id WHERE t.source_item_id = ?
+      UNION ALL
+      SELECT w.item_key AS key, w.product_id AS productId, 'from' AS direction
+        FROM item_transfers t JOIN work_items w ON w.id = t.source_item_id WHERE t.target_item_id = ?
+    `).all(itemId, itemId) as { key: string; productId: string; direction: "from" | "to" }[];
+    const references: { transferredFrom?: { key: string; productId: string }; transferredTo?: { key: string; productId: string } } = {};
+    for (const {key, productId, direction} of rows) {
+      if (canView(productId)) references[direction === "to" ? "transferredTo" : "transferredFrom"] = {key, productId};
+    }
+    return references;
   }
 
   close(): void {

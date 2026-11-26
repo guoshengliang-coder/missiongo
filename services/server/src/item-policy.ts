@@ -1,4 +1,4 @@
-import { collaborationTransitionDenial, collaborationVerifier } from "./collaboration-policy.js";
+import { collaborationTransitionDenial, collaborationVerifier, type collaborationPolicyFacts } from "./collaboration-policy.js";
 import { requiresExecutionStopCheck, hasBlockingItemExecution } from "./builder-authority.js";
 import { evaluateWorkItemTransition, type ActorKind, type TransitionReason, type WorkItemStatus } from "@missiongo/domain";
 import { AccountStore } from "./accounts-store.js";
@@ -22,19 +22,19 @@ export function itemRoles(database: MissionGoDatabase, item: PolicyItem, account
   const roles = [manager && (account?.role === "admin" ? "system_admin" : "project_admin"),proposer && "proposer",builder && "builder",executor && "executor",operate && "operator"].filter((v):v is string=>!!v);
   return {view,manager,proposer,builder,executor,operate,roles};
 }
-export function transitionPolicy(database: MissionGoDatabase,item: PolicyItem,accountId: string|undefined,to: WorkItemStatus,reason: TransitionReason,actor: ActorKind = "human", context?:ReturnType<typeof itemRoles>, archived?:boolean) {
+export function transitionPolicy(database: MissionGoDatabase,item: PolicyItem,accountId: string|undefined,to: WorkItemStatus,reason: TransitionReason,actor: ActorKind = "human", context?:ReturnType<typeof itemRoles>, archived?:boolean, collaboration?:ReturnType<typeof collaborationPolicyFacts>) {
   const roles = context ?? itemRoles(database,item,accountId);
   if (item.status === "pending_verification" && to === "ready") reason="verification_failed";
   if (item.status === "pending_verification" && to === "done") reason="verification_passed";
   if (item.status === "done" && to === "ready") reason="reopened";
   if (item.status === "cancelled" && to === "inbox") reason="restored";
   const result = (allowed:boolean,code:string) => ({allowed,code:allowed ? "allowed" : code,roles:roles.roles,basis:reason === "manual_override" ? "manager_correction" : roles.roles.join("+")});
-  const denied=collaborationTransitionDenial(database,item,to,actor,accountId);
+  const denied=collaborationTransitionDenial(database,item,to,actor,accountId,collaboration);
   if(denied)return result(false,denied);
   if (item.transferred) return result(false,"item_transferred");
   const isArchived = archived ?? Boolean((database.connection.prepare("SELECT archived_at FROM products WHERE id=?").get(item.productId) as {archived_at:string|null}|undefined)?.archived_at);
   if (isArchived) return result(false,"project_archived");
-  const verifier=collaborationVerifier(database,item.id);
+  const verifier=collaboration ? collaboration.verifier : collaborationVerifier(database,item.id);
   if(verifier && actor === "human" && accountId === verifier && item.status === "pending_verification" && ["done","ready"].includes(to)) {
     const source=database.connection.prepare("SELECT s.product_id FROM collaboration_requests r JOIN work_items s ON s.id=r.source_item_id WHERE r.target_item_id=? AND r.access_revoked_at IS NULL AND r.verifier_account_id=? LIMIT 1").get(item.id,accountId) as {product_id:string}|undefined;
     const accounts=new AccountStore(database),account=accounts.findActive(accountId);

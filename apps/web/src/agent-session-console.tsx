@@ -798,8 +798,6 @@ export function AgentSessionConsole({
   const messages = projectConversationMessages(history.messages, Boolean(selected?.productId));
   const attachmentMessages = sessionQuery.data?.attachmentMessages ?? [];
   const visibleMessages = agentChatMessages(messages, attachmentMessages);
-  const latestFinal = [...visibleMessages].reverse().find(message => message.role === "agent" && message.phase === "final_answer");
-  const integrationReviewId = latestFinal?.text?.match(/[?&]conversationIntegrationReview=([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\b/i)?.[1];
   const planMessages = inlinePlanTranscript(withOutgoingReply(visibleMessages, outgoing), sessionQuery.data);
   const rememberReadingPosition = useTranscriptAnchor(messagesRef, `${selectedId}:${conversationOpen}`, followLatest, history.revision, history.messages, outgoingSignature);
   const activities = sessionQuery.data?.activities ?? [];
@@ -1556,8 +1554,6 @@ export function AgentSessionConsole({
                         disabled={!canApprovePlan || dismissAttention.isPending}
                         onClick={approvePlan}>{t("agentPlanApprove")}</button>
                     </div>}
-                    {integrationReviewId && !showPlanApproval && selected.needsAttention &&
-                      <a className="secondary-button" href={`/?conversationIntegrationReview=${integrationReviewId}`}>{t("agentIntegrationAttentionReview")}</a>}
                     {(!showPlanApproval || !planApproved) && (showPlanApproval || selected.needsAttention
                       && selected.status !== "stalled"
                       && selected.agentSessionId
@@ -1572,7 +1568,6 @@ export function AgentSessionConsole({
                         })}
                       >
                         {dismissAttention.isPending && <LoaderCircle className="spin" size={14} />}
-                        {t(integrationReviewId && !showPlanApproval ? "agentIntegrationAttentionDismiss" : "agentAttentionDismiss")}
                       </button>
                     )}
                   </div>

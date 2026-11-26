@@ -117,6 +117,8 @@ interface ConversationPreparation {
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const namedMergeInstruction = /^(?:请|现在|直接|立即|执行|开始|把|将|仅|只)*合并\s*(?:PR\s*#?\s*(\d+)|#(\d+)|(https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+))[。！!]?$/i;
 const changed = () => conflict("merge_delivery_changed", "交付内容、代码或执行范围已变化，请重新核对并确认。");
+const directIntegrationMoved = () => conflict("conversation_integration_use_platform",
+  "原会话的合并发布直接使用 GitHub（或实际托管平台）和项目正式发布工具。沿用操作人的明确同范围指令，无需准备、绑定会话或再次批准。执行后登记真实结果；这两个工具仅用于恢复已存在的集成批次。");
 
 /** Copy JSON containers while reusing immutable primitive values. The private
  * parsed template never escapes; __proto__ stays an ordinary own JSON key. */
@@ -1160,11 +1162,14 @@ export class MergeDeliveries {
       .get(id,accountId,clientId) as {productId:string}|undefined;
     if(!row)throw changed();return row.productId;
   }
-  private humanConversationPreparation(accountId: string, id: string) {
+  private ownedConversationPreparation(accountId: string, id: string) {
     const row = this.db.connection.prepare("SELECT client_id,data_json,batch_id FROM conversation_integration_preparations WHERE id=? AND account_id=?")
       .get(id, accountId) as { client_id: string; data_json: string; batch_id: string | null } | undefined;
     if (!row) throw changed();
-    const preparation = JSON.parse(row.data_json) as ConversationPreparation;
+    return {row, preparation:JSON.parse(row.data_json) as ConversationPreparation};
+  }
+  private humanConversationPreparation(accountId: string, id: string) {
+    const {row, preparation} = this.ownedConversationPreparation(accountId,id);
     const identity = preparation.executor.kind === "dispatch"
       ? { dispatchId: preparation.executor.dispatchId }
       : { sessionId: preparation.executor.sessionId };
@@ -1211,31 +1216,15 @@ export class MergeDeliveries {
   }
 
   conversationReview(accountId: string, id: string) {
-    const { preparation, row, executor } = this.humanConversationPreparation(accountId, id);
-    if (preparation.localDelivery) throw changed();
-    let confirmed = Boolean(row.batch_id);
-    let confirmationBlocker: string | undefined;
-    if (!confirmed) {
-      try {
-        const input = integrationInstruction(this.db, executor);
-        confirmed = this.currentConversationConfirmation(accountId, row.client_id, executor, preparation, input);
-        if (!confirmed && input.fingerprint !== preparation.source.fingerprint) {
-          if (!isIntegrationStatus(input.text)) {
-            confirmationBlocker = "原会话收到新输入，请回到原会话刷新执行范围。";
-          } else {
-            assertConversationRetryHistory(this.db, executor, preparation.source, input, true);
-          }
-        }
-      } catch (error) {
-        if (!(error instanceof MissionGoError)) throw error;
-        confirmationBlocker = error.message;
-      }
-    }
+    const {preparation, row} = this.ownedConversationPreparation(accountId,id);
+    const accounts = new AccountStore(this.db), account = accounts.findActive(accountId);
+    if (!account || !accounts.allows(account,preparation.productId,"view") || preparation.localDelivery) throw changed();
+    const confirmed = Boolean(row.batch_id || preparation.decision);
     const branches = preparation.drafts.map(draft => draft.input.targetBranch);
     return { reviewText: preparation.reviewText, reviewDigest: preparation.reviewDigest,
-      targetBranches: [...new Set(branches)], confirmed, confirmationBlocker,
+      targetBranches: [...new Set(branches)], confirmed,
       operation: preparation.operation,
-      sessionId: executor.sessionId,
+      sessionId: preparation.executor.sessionId,
       productId: preparation.productId,
       merges: preparation.drafts.map(({input}) => ({repository:input.repository,pullRequest:input.pullRequest,title:input.summary})),
       artifacts: preparation.publicationScope?.requiredArtifacts ?? [],
@@ -1248,10 +1237,16 @@ export class MergeDeliveries {
     };
   }
 
-  confirmConversationReview(accountId: string, id: string, reviewDigest: string) {
+  confirmConversationReview(accountId: string, id: string, reviewDigest: string, existingBatchOnly = false) {
     return this.db.transaction(() => {
-      const { row, preparation, executor } = this.humanConversationPreparation(accountId, id);
+      const {row, preparation} = this.ownedConversationPreparation(accountId,id);
       if (reviewDigest !== preparation.reviewDigest || preparation.resumeBatchId) throw changed();
+      this.conversationPermit(accountId,preparation.productId);
+      if (existingBatchOnly) {
+        if (row.batch_id) return {confirmed:true};
+        throw directIntegrationMoved();
+      }
+      const {executor} = this.humanConversationPreparation(accountId,id);
       if (row.batch_id) return { confirmed: true };
       if (preparation.localDelivery) throw changed();
       const input = integrationInstruction(this.db, executor);
@@ -1272,15 +1267,17 @@ export class MergeDeliveries {
     });
   }
 
-  prepareConversation(accountId:string,clientId:string,identity:ConversationIdentity,key:string,raw:z.input<typeof conversationIntegrationSchema>) {
+  prepareConversation(accountId:string,clientId:string,identity:ConversationIdentity,key:string,raw:z.input<typeof conversationIntegrationSchema>, existingBatchOnly = false) {
     const input=conversationIntegrationSchema.parse(raw);
     return this.db.transaction(()=>{
       this.conversationPermit(accountId,input.productId);
-      const {executor,config}=integrationExecutor(this.db,accountId,clientId,identity,input.productId);
       const requestDigest=digest([identity,input]);
-      const prior=this.db.connection.prepare("SELECT request_digest,data_json FROM conversation_integration_preparations WHERE account_id=? AND client_id=? AND request_key=?")
-        .get(accountId,clientId,key) as {request_digest:string;data_json:string}|undefined;
-      if(prior){if(prior.request_digest!==requestDigest)throw changed();return JSON.parse(prior.data_json) as ConversationPreparation;}
+      const prior=this.db.connection.prepare("SELECT request_digest,data_json,batch_id FROM conversation_integration_preparations WHERE account_id=? AND client_id=? AND request_key=?")
+        .get(accountId,clientId,key) as {request_digest:string;data_json:string;batch_id:string|null}|undefined;
+      if(existingBatchOnly && !input.resumeBatchId && !prior?.batch_id)throw directIntegrationMoved();
+      if(prior && prior.request_digest!==requestDigest)throw changed();
+      const {executor,config}=integrationExecutor(this.db,accountId,clientId,identity,input.productId);
+      if(prior)return JSON.parse(prior.data_json) as ConversationPreparation;
       const source=integrationInstruction(this.db,executor);
       const id=randomUUID(),drafts:ConversationPreparation["drafts"]=[],selected:Delivery[]=[];
       if (input.localDelivery) {
@@ -1700,13 +1697,14 @@ export class MergeDeliveries {
       && preparation.publicationScope?.candidates.every(candidate => candidate.selected || !candidate.requiredArtifacts?.length);
   }
 
-  startConversation(accountId:string,clientId:string,identity:ConversationIdentity,preparationId:string) {
+  startConversation(accountId:string,clientId:string,identity:ConversationIdentity,preparationId:string, existingBatchOnly = false) {
     return this.db.transaction(()=>{
       const row=this.db.connection.prepare("SELECT data_json,batch_id FROM conversation_integration_preparations WHERE id=? AND account_id=? AND client_id=?")
         .get(preparationId,accountId,clientId) as {data_json:string;batch_id:string|null}|undefined;
       if(!row)throw changed();
       const p=JSON.parse(row.data_json) as ConversationPreparation;
       this.conversationPermit(accountId,p.productId);
+      if(existingBatchOnly && !row.batch_id && !p.resumeBatchId)throw directIntegrationMoved();
       const {executor}=integrationExecutor(this.db,accountId,clientId,identity,p.productId);
       if(!this.sameConversationExecutor(executor,p.executor))throw changed();
       const actor=executor.kind==="dispatch"?executor.dispatchId:executor.sessionId;
