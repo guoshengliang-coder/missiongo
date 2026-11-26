@@ -34,19 +34,14 @@ for(const width of [320,1440])for(const theme of ["light","dark"] as const){
   });
 }
 
-test("displays and confirms one frozen execution scope", async ({ page }) => {
+test("displays a frozen execution scope and its existing decision without a confirmation control", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 720 });
   const digest = "a".repeat(64);
   const reviewText = "合并 PR #764 · " + "b".repeat(40) + "\n发布 Android 0.1.204 和 Web";
   let decisions = 0;
   await page.route("**/api/v1/conversation-integrations/test-scope/review", async route => {
-    if (route.request().method() === "POST") {
-      expect(route.request().postDataJSON()).toEqual({ reviewDigest: digest });
-      decisions++;
-      await route.fulfill({ json: { confirmed: true } });
-      return;
-    }
-    await route.fulfill({ json: { reviewText, reviewDigest: digest, targetBranches: ["main"], confirmed: decisions > 0, operation:"merge_and_publish", merges:[{repository:"https://github.com/example/project",pullRequest:764,title:"Android 修复"}], artifacts:["Android","Web"], publicationTargets:[{artifact:"Android",version:"0.1.204"}], releaseCandidates:[{identity:"web-added",title:"已合并的 Web 修复",artifacts:["Web"]}] } });
+    if (route.request().method() !== "GET") decisions++;
+    await route.fulfill({ json: { reviewText, reviewDigest: digest, targetBranches: ["main"], confirmed: true, operation:"merge_and_publish", merges:[{repository:"https://github.com/example/project",pullRequest:764,title:"Android 修复"}], artifacts:["Android","Web"], publicationTargets:[{artifact:"Android",version:"0.1.204"}], releaseCandidates:[{identity:"web-added",title:"已合并的 Web 修复",artifacts:["Web"]}] } });
   });
   await page.goto("/?conversationIntegrationReview=test-scope");
   await expect(page.getByText("目标分支 · main")).toBeVisible();
@@ -57,9 +52,9 @@ test("displays and confirms one frozen execution scope", async ({ page }) => {
   await page.getByText("执行详情").click();
   await expect(page.getByText("发布 Android 0.1.204 和 Web", { exact: false })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.getByRole("button", { name: "确认此执行范围" }).click();
+  await expect(page.getByRole("button", { name: "确认此执行范围" })).toHaveCount(0);
   await expect(page.getByRole("status")).toHaveText("执行范围已确认。请回到原会话继续。");
   await page.reload();
   await expect(page.getByRole("status")).toHaveText("执行范围已确认。请回到原会话继续。");
-  expect(decisions).toBe(1);
+  expect(decisions).toBe(0);
 });
