@@ -2833,5 +2833,26 @@ export class MissionGoDatabase {
       });
     }
 
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611260338").get()) {
+      this.transaction(() => {
+        for (const table of ["agent_session_commands","external_native_commands"]) {
+          this.connection.exec(`CREATE TRIGGER display_${table}_delivery_status AFTER UPDATE OF status ON ${table}
+            WHEN OLD.status IS NOT NEW.status AND EXISTS (
+              SELECT 1 FROM merge_delivery_projection p JOIN merge_deliveries d ON d.id=p.id
+              WHERE p.session_id=NEW.session_id AND d.state IN ('confirmed','batched')
+              AND (json_extract(d.data_json,'$.confirmedSource') IS NOT NULL ${table === "agent_session_commands" ? "OR NEW.kind='interrupt' AND json_extract(d.data_json,'$.confirmedAt') IS NOT NULL" : ""}))
+            BEGIN
+              INSERT INTO merge_display_dirty VALUES ('session',NEW.session_id) ON CONFLICT DO NOTHING;
+            END;`);
+        }
+        this.connection.exec(`CREATE TRIGGER display_agent_session_interrupt_delivery AFTER INSERT ON agent_session_commands
+          WHEN NEW.kind='interrupt'
+          BEGIN
+            INSERT INTO merge_display_dirty VALUES ('session',NEW.session_id) ON CONFLICT DO NOTHING;
+          END;`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202611260338,new Date().toISOString());
+      });
+    }
+
   }
 }

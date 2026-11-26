@@ -34,3 +34,17 @@ for(const width of [320,375,1440])for(const theme of ["light","dark"] as const){
     await page.screenshot({path:testInfo.outputPath("conversation-decision-approved.png"),fullPage:true});
   });
 }
+
+test("the original integration review link shows scope without a second confirmation",async({page})=>{
+  const id="old-preparation";
+  await page.route(`**/api/v1/conversation-integrations/${id}/review`,route=>{
+    expect(route.request().method()).toBe("GET");
+    return queueRoute(route).fulfill({json:{reviewText:"Frozen PR scope",reviewDigest:"a".repeat(64),confirmed:false,
+      targetBranches:["main"],sessionId:"original-session",operation:"merge_only",
+      merges:[{repository:"https://github.com/example/repo",pullRequest:12,title:"Existing change"}]}});
+  });
+  await page.goto(`/?conversationIntegrationReview=${id}`);
+  await expect(page.locator("main")).toContainText("PR #12");
+  await expect(page.locator("main a[href*='session=original-session']")).toBeVisible();
+  await expect(page.locator("main button")).toHaveCount(0);
+});
