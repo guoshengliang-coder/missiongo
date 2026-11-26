@@ -1360,7 +1360,10 @@ export class MergeDeliveries {
 
   private recoverDisclosedPublicationScope(accountId: string, clientId: string, current: ConversationPreparation,
     authorization: IntegrationInstruction, source: IntegrationInstruction) {
-    if (!current.publicationScope || !authorization.contextTrusted || !isWholeScopeIntegrationCommand(authorization.text)
+    const approved = isIntegrationConsent(authorization.text);
+    if (!current.publicationScope || !authorization.contextOccurredAt
+        || approved && (current.operation !== "merge_and_publish" || current.drafts.length !== 1 || current.selection.length !== 1)
+        || !approved && !isWholeScopeIntegrationCommand(authorization.text)
         || hasIntegrationStop(this.db,current.executor)) return false;
     const executor = current.executor;
     const expected = this.conversationExecutionScope(current,false);
@@ -1376,7 +1379,7 @@ export class MergeDeliveries {
     if (contradicts(disclosedText)) return false;
     const exactNames: Record<string,string> = {web:"web(?:/server)?",androidApp:"android(?:[ -]app)?",androidSdk:"android[ -]+sdk",macosApp:"macos",windowsApp:"windows",linuxCli:"linux(?:[ -]cli)?"};
     const escapePattern = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const shownVersions = (text: string, artifact: string) => new Set([...text.matchAll(new RegExp(
+    const shownVersions = (text: string, artifact: string) => new Set([...text.replace(/／/g,"/").matchAll(new RegExp(
       `\\b(?:${Object.hasOwn(exactNames,artifact) ? exactNames[artifact] : escapePattern(artifact)})[ \t]*[：:]?[ \t]*\\x60?([0-9][a-z0-9._+-]*)`, "ig",
     ))].map(match => match[1]!));
     const pinsMatch = (text: string, requireDisclosure: boolean) => [...pins].every(([artifact,version]) => {
@@ -1388,26 +1391,55 @@ export class MergeDeliveries {
       SELECT data_json FROM conversation_integration_preparations WHERE id=? AND account_id=? AND client_id=?
       AND json_extract(data_json,'$.productId')=? AND json_extract(data_json,'$.executor.binding')=?
       AND json_extract(data_json,'$.executor.settings')=? AND json_extract(data_json,'$.resumeBatchId') IS NULL`);
+    const byDigest = this.db.connection.prepare(`
+      SELECT data_json FROM conversation_integration_preparations WHERE account_id=? AND client_id=?
+      AND json_extract(data_json,'$.productId')=? AND json_extract(data_json,'$.executor.binding')=?
+      AND json_extract(data_json,'$.executor.settings')=? AND json_extract(data_json,'$.resumeBatchId') IS NULL
+      AND json_extract(data_json,'$.reviewDigest')=?
+      AND julianday(json_extract(data_json,'$.createdAt'))<=julianday(?)`);
     const disclosed = (context: string, at: string) => {
       const refs = [...context.matchAll(/[?&]conversationIntegrationReview=([0-9a-f-]{36})\b/ig)];
-      const digests = [...context.matchAll(/完整发布范围\s*[：:]?\s*\x60?([0-9a-f]{64})\b/ig)];
-      if (refs.length !== 1 || digests.length !== 1) return false;
-      const row = read.get(refs[0]![1]!,accountId,clientId,current.productId,executor.binding,executor.settings) as {data_json:string}|undefined;
-      if (!row) return false;
-      const saved = JSON.parse(row.data_json) as ConversationPreparation;
-      const savedPins = new Map(saved.publicationTargets?.filter(target => target.version).map(target => [target.artifact,target.version!]));
-      return Date.parse(saved.createdAt) <= Date.parse(at)
-        && [saved.reviewDigest,saved.publicationScope?.digest].includes(digests[0]![1])
-        && this.conversationExecutionScope(saved,false) === expected
-        && [...savedPins].every(([artifact,version]) => pins.get(artifact) === version);
+      const digests = [...context.replace(/\*\*|__/g,"").matchAll(/完整发布范围\s*[：:]?\s*\x60?([0-9a-f]{64})\b/ig)];
+      if (digests.length !== 1 || refs.length > 1 || !approved && refs.length !== 1) return false;
+      const digest = digests[0]![1]!;
+      const rows = refs.length
+        ? [read.get(refs[0]![1]!,accountId,clientId,current.productId,executor.binding,executor.settings)]
+        : byDigest.all(accountId,clientId,current.productId,executor.binding,executor.settings,digest,at);
+      return rows.length > 0 && rows.every(raw => {
+        const row = raw as {data_json:string}|undefined;
+        if (!row) return false;
+        const saved = JSON.parse(row.data_json) as ConversationPreparation;
+        if (Date.parse(saved.createdAt) > Date.parse(at) || ![saved.reviewDigest,saved.publicationScope?.digest].includes(digest)) return false;
+        if (approved) return this.conversationExecutionScope(saved) === this.conversationExecutionScope(current);
+        const savedPins = saved.publicationTargets?.filter(target => target.version) ?? [];
+        return this.conversationExecutionScope(saved,false) === expected
+          && savedPins.every(({artifact,version}) => pins.get(artifact) === version);
+      });
     };
-    if (!disclosed(disclosure,authorization.occurredAt)) return false;
+    if (!disclosed(disclosure,approved ? authorization.contextOccurredAt : authorization.occurredAt)) return false;
     const shown = disclosure.toLowerCase();
     const prose = disclosedText.toLowerCase();
     const shownItem = (key: string) => new RegExp(`\\b${key.toLowerCase()}\\b`).test(prose);
     const shownPulls: string[] = shown.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+\b/g) ?? [];
     if (!current.drafts.every(({input}) => shownPulls.includes(`${input.repository.toLowerCase()}/pull/${input.pullRequest}`)
-        && input.itemKeys.every(shownItem))) return false;
+        && input.itemKeys.every(shownItem)
+        && (!approved || new RegExp(`\\b${input.head}\\b`, "i").test(prose)
+          && new RegExp(`(?:合入|目标分支)[ \t]*\\x60?${escapePattern(input.targetBranch)}(?=$|[\\s\\x60，。；、）),;])`).test(disclosedText)))) return false;
+    if (approved) {
+      const head = current.drafts[0]!.input.head;
+      const expectedPulls = new Set(current.publicationScope.candidates.flatMap(candidate => {
+        const completion = candidate.completion as {kind?:string;url?:string}|undefined;
+        return completion?.kind === "github" && completion.url ? [completion.url.toLowerCase()] : [];
+      }));
+      const text = prose.replace(/[*_]/g, "");
+      if (current.publicationScope.candidates.some(candidate => !candidate.selected && !candidate.historicalGapPreviouslyReviewed)
+          || current.publicationScope.requiredArtifacts.some(artifact => shownVersions(disclosedText.replace(/／/g,"/"),artifact).size > 1)
+          || shownPulls.some(url => !expectedPulls.has(url))
+          || [...text.matchAll(/\b[a-f0-9]{40}\b/g)].some(([sha]) => sha !== head)
+          || !/(?:^|\n)[- ]*合并(?:\s|[：:])/.test(text)
+          || !/(?:^|\n)[- ]*发布(?:\s|[：:])/.test(text)
+          || /(?:仅合并|只合并|暂停|撤销|待.+(?:再|后)|等.+(?:再|后)|验收后|审批后|预检|试跑|演练|模拟|dry[- ]?run|preview|rehearsal)/i.test(text)) return false;
+    }
     if (!current.publicationScope.candidates.every(row => {
       if (row.historicalGapPreviouslyReviewed) return true;
       if (row.itemKey) return shownItem(row.itemKey);
@@ -1418,9 +1450,25 @@ export class MergeDeliveries {
       web:/\bweb\b/,androidApp:/\bandroid\b(?![ \t-]*sdk\b)/,androidSdk:/\bandroid[ \t-]+sdk\b/,
       macosApp:/\bmacos\b/,windowsApp:/\bwindows\b/,linuxCli:/\blinux\b/,
     };
-    const words: string[] = prose.match(/[a-z0-9_-]+/g) ?? [];
-    if (!current.publicationScope.requiredArtifacts.every(artifact =>
-      Object.hasOwn(artifactNames,artifact) ? artifactNames[artifact]!.test(prose) : words.includes(artifact.toLowerCase()))) return false;
+    const publication = approved ? prose.replace(/[*_]/g,"").split(/\r?\n/)
+      .filter(line => /^[- ]*发布(?:\s|[：:])/.test(line)).map(line => line.split("。")[0]).join(" ") : prose;
+    const publicationWords: string[] = publication.match(/[a-z0-9_-]+/g) ?? [];
+    const artifactShown = (artifact: string) => Object.hasOwn(artifactNames,artifact)
+      ? artifactNames[artifact]!.test(publication) : publicationWords.includes(artifact.toLowerCase());
+    if (approved) {
+      // Non-Web builds can select a version independently of the Git head.
+      if (current.publicationScope.requiredArtifacts.some(artifact => artifact !== "web" && !pins.has(artifact))) return false;
+      const declared = this.store.getProduct(current.productId).releaseArtifacts;
+      if (declared.some(artifact => !current.publicationScope!.requiredArtifacts.includes(artifact) && artifactShown(artifact))) return false;
+    }
+    if (!current.publicationScope.requiredArtifacts.every(artifactShown)) return false;
+    const webVersion = approved && current.publicationScope.requiredArtifacts.includes("web")
+      ? pins.get("web") ?? [...shownVersions(publication.replace(/／/g,"/"),"web")][0]?.replace(/\.$/,"") : undefined;
+    if (webVersion && !pins.has("web")) {
+      if (!/^\d+\.\d+\.\d+$/.test(webVersion)) return false;
+      pins.set("web",webVersion);
+    }
+
     const external = executor.kind === "external";
     const finals = this.db.connection.prepare(external
       ? `SELECT source_id,json_extract(payload_json,'$.text') AS text,json_extract(payload_json,'$.occurredAt') AS at
@@ -1440,7 +1488,7 @@ export class MergeDeliveries {
       if (!containsConversationScope(final.text,current.reviewText) && !disclosed(final.text,final.at)) return false;
     }
     assertConversationRetryHistory(this.db,executor,authorization,source,true);
-    return true;
+    return {webVersion};
   }
 
   private matchesPreparedLocalDelivery(accountId: string, clientId: string, preparation: ConversationPreparation,
@@ -1672,12 +1720,16 @@ export class MergeDeliveries {
       const decided = decisionRecord?.preparation;
       const decision = decided && this.sameConversationScope(decided, p) ? decided.decision : undefined;
       let currentDecision = this.conversationAuthorization(executor, source, decision);
+      let statusApproval: ReturnType<MergeDeliveries["recoverDisclosedPublicationScope"]> = false;
       if (isIntegrationStatus(source.text)) {
         const original = this.conversationAuthorization(executor, source, decision, true);
         if (isDirectIntegrationAction(original.text, p.operation)
           && (this.matchesPreparedLocalDelivery(accountId,clientId,p,original) || this.matchesLocalConversationHandoff(p, original) || this.hasConversationPreparationFor(accountId, clientId, p, original))) {
           assertConversationRetryHistory(this.db, executor, original, source, true);
           currentDecision = original;
+        } else if (isIntegrationConsent(original.text)) {
+          statusApproval = this.recoverDisclosedPublicationScope(accountId,clientId,p,original,source);
+          if (statusApproval) currentDecision = original;
         }
       }
       let versionReview: ConversationReviewEvidence | undefined;
@@ -1700,7 +1752,11 @@ export class MergeDeliveries {
       }
       const boundDecision = decision?.inputFingerprint === authorization.fingerprint;
       const authorizedDecision = isReviewedDecision(authorization);
-      if (!boundDecision && !authorizedDecision && !versionReview) assertIntegrationInstruction(authorization.text, p.operation);
+      const superseded = decided?.decision && !decision && Date.parse(decided.decision.at) >= Date.parse(authorization.occurredAt);
+      const savedApproval = !boundDecision && !authorizedDecision && !versionReview && !superseded
+        && isIntegrationConsent(authorization.text)
+        && (statusApproval || this.recoverDisclosedPublicationScope(accountId,clientId,p,authorization,source));
+      if (!boundDecision && !authorizedDecision && !versionReview && !savedApproval) assertIntegrationInstruction(authorization.text, p.operation);
       const preparedLocal = !boundDecision && !authorizedDecision && isDirectIntegrationAction(authorization.text,p.operation)
         ? this.matchesPreparedLocalDelivery(accountId,clientId,p,authorization) : undefined;
       const localPr = preparedLocal ? p.drafts[0]?.input : undefined;
@@ -1717,10 +1773,10 @@ export class MergeDeliveries {
       const direct = !boundDecision && !authorizedDecision && !hasPriorVersion
         && this.directConversationScope(p, authorization, preparedLocal) && (preparedLocal || !hasIntegrationStop(this.db, executor));
       if (direct && retry) assertConversationRetryHistory(this.db, executor, authorization, source, true);
-      const reviewEvidence = versionReview ?? (boundDecision || direct ? undefined : evaluateScopeReview(authorization, authorizedDecision, retry ? source : undefined));
-      const superseded = decided?.decision && !decision && Date.parse(decided.decision.at) >= Date.parse(authorization.occurredAt);
-      const recoveredScope = !boundDecision && !direct && !reviewEvidence && !superseded
-        && this.recoverDisclosedPublicationScope(accountId,clientId,p,authorization,source);
+      const reviewEvidence = versionReview ?? (boundDecision || direct || savedApproval ? undefined : evaluateScopeReview(authorization, authorizedDecision, retry ? source : undefined));
+      const recoveredScope = savedApproval || (!boundDecision && !direct && !reviewEvidence && !superseded
+        && !isIntegrationConsent(authorization.text)
+        && this.recoverDisclosedPublicationScope(accountId,clientId,p,authorization,source));
       if (authorizedDecision && !boundDecision && !reviewEvidence) throw changed();
       if (boundDecision && decisionRecord?.batchId) return this.batch(accountId, actor, decisionRecord.batchId);
       if (retry && !boundDecision && !direct && !reviewEvidence && !recoveredScope)
@@ -1762,7 +1818,11 @@ export class MergeDeliveries {
       }
       const conversation={clientId,executor,preparationId:p.id,authorization,input:source,repository:p.repository,...(versionReview?{versionConfirmation:currentDecision}:{}),...(direct?{direct:true}:{})};
       const b=this.start(accountId,`conversation-${p.id}`,p.selection,p.config,p.operation!=="merge_only",1,false,p.operation,p.publicationScope?.digest,false,conversation);
-      if (p.publicationTargets) b.publicationTargets = p.publicationTargets;
+      if (savedApproval && savedApproval.webVersion) {
+        const webVersion = savedApproval.webVersion;
+        const targets = p.publicationTargets ?? p.publicationScope!.requiredArtifacts.map(artifact => ({artifact}));
+        b.publicationTargets = targets.map(target => target.artifact === "web" ? {...target,version:webVersion} : target);
+      } else if (p.publicationTargets) b.publicationTargets = p.publicationTargets;
       if (direct && b.integration) {
         const deliveryId = b.deliveries[0]!;
         const delivery = this.read<Delivery>("merge_deliveries", deliveryId);
@@ -1774,7 +1834,7 @@ export class MergeDeliveries {
             reason: delivery.summary, validation: delivery.validation }],
         }, `direct-plan:${p.id}`, b.results);
       }
-      if (direct || p.publicationTargets) this.saveBatch(b);
+      if (direct || b.publicationTargets) this.saveBatch(b);
       this.db.connection.prepare("UPDATE conversation_integration_preparations SET batch_id=? WHERE id=?").run(b.id,p.id);
       return this.batch(accountId,actor,b.id);
     });

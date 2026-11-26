@@ -1034,6 +1034,77 @@ describe("integration directly in the original conversation",()=>{
     const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),f.input);
     expect(f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id).conversation?.authorization.text).toBe(command.text);
   });
+  it.each(["same scope", "status after approval", "later version conflict", "different head", "different branch", "extra PR", "extra candidate", "branch case", "branch suffix", "artifact only in commentary", "dry run", "extra artifact", "conflicting version", "unclocked", "missing stored digest", "later stop"] as const)(
+    "reuses an in-chat publication approval after a digest refresh: %s",async scenario=>{
+      vi.useFakeTimers({toFake:["Date"]});
+      vi.setSystemTime(new Date("2026-11-26T02:45:00Z"));
+      const f=await prepared(),sessions=new AgentSessionStore(f.store.database);
+      f.store.recordProductReleaseArtifacts(f.item.productId,["web","androidApp"]);
+      if(scenario==="extra candidate")f.safe(await f.call("submit_development_complete",{itemKey:f.item.key,...f.identity,
+        completion:{kind:"github",url:`${f.input.repository}/pull/13`},requiredArtifacts:["web"],idempotencyKey:"compact-extra-candidate"}));
+      human(f,"合并和发布");
+      const delivery={...f.input,summary:"AND-544 原展示标题"};
+      const input={...scope(f),operation:"merge_and_publish" as const,deliveries:[delivery]};
+      const prepare=(scope=input)=>f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),scope);
+      const old=prepare();
+      vi.setSystemTime(Date.now()+10);
+      const shown=scenario==="missing stored digest"?"b".repeat(64):old.reviewDigest;
+      const branch=scenario==="branch case"?"Main":scenario==="branch suffix"?"main中文":"main";
+      const artifact=scenario==="dry run"?"Web／Server 1.1.82（仅做预检）":scenario==="artifact only in commentary"?"其他制品。Web 仅用于背景说明":scenario==="extra artifact"?"Web／Server 1.1.82 和 Android"
+        :scenario==="conflicting version"?"Web／Server 1.1.82 和 Web 1.1.83":"Web／Server 1.1.82";
+      const review=`- **合并**　将 ${f.item.key} 的 [PR #12](${delivery.repository}/pull/12) 合入 \`${branch}\`，精确提交为 \`${delivery.head}\`。
+- **发布**　${artifact}。
+- **完整发布范围**　\`${shown}\`${scenario==="extra PR"?`\n另含 ${delivery.repository}/pull/99`:""}`;
+      sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[
+        {sourceId:"compact-approval-review",role:"agent",phase:"final_answer",text:review,occurredAt:new Date().toISOString()},
+      ]});
+      if(scenario==="unclocked")f.db.prepare("DELETE FROM session_message_times WHERE source_id='native:compact-approval-review'").run();
+      vi.setSystemTime(Date.now()+10);
+      human(f,"批准");
+      if(scenario==="later version conflict"){
+        vi.setSystemTime(Date.now()+10);
+        sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[
+          {sourceId:"new-version",role:"agent",phase:"final_answer",text:"当前预计发布 Web／Server 1.1.83。",occurredAt:new Date().toISOString()},
+        ]});
+      }
+      if(scenario==="status after approval"||scenario==="later version conflict"){
+        vi.setSystemTime(Date.now()+10);human(f,"发布进度如何？");
+      }
+      if(scenario==="later stop"){
+        vi.setSystemTime(Date.now()+10);human(f,"停止");
+        vi.setSystemTime(Date.now()+10);human(f,"继续");
+      }
+      const head=scenario==="different head"?"e".repeat(40):delivery.head;
+      const refreshed=prepare({...input,deliveries:[{...delivery,head,evidence:{...delivery.evidence,head},
+        targetBranch:scenario==="different branch"?"other":"main",summary:"刷新后的标题"}]});
+      expect(refreshed.reviewDigest).not.toBe(old.reviewDigest);
+      const start=()=>f.merges.startConversation(f.owner.id,"original-client",f.identity,refreshed.id);
+      if(scenario!=="same scope"&&scenario!=="status after approval"){
+        expect(start).toThrow();
+        return;
+      }
+      const b=start();
+      expect(b.conversation?.authorization.text).toBe("批准");
+      expect(b.publish).toBe(true);
+      expect(b.publicationTargets).toEqual([{artifact:"web",version:"1.1.82"}]);
+      expect(start().id).toBe(b.id);
+      if(scenario!=="same scope")return;
+      const deliveryId=b.deliveries[0]!,base=delivery.evidence.base;
+      const act=(revision:number,action:Parameters<typeof f.merges.integrate>[5])=>
+        f.merges.integrate(f.owner.id,f.dispatch.id,b.id,revision,randomUUID(),action);
+      const planned=act(b.integration!.revision,{kind:"plan",base,summary:"Approved scope",validation:"Validate exact merge",
+        entries:[{deliveryId,head,dependsOn:[],group:"Web",reason:"Single delivery",validation:"Git and CI"}]});
+      act(planned.integration!.revision,{kind:"check",deliveryId,expectedHead:head,base,checks:"passed",local:"passed",
+        mergeable:"clean",checkedAt:new Date().toISOString(),source:"Synthetic CI",validation:"Exact head passed"});
+      const merged=f.merges.report(f.owner.id,f.dispatch.id,b.id,deliveryId,{status:"merged",head,commit:"c".repeat(40),detail:"Synthetic exact merge"});
+      const validated=act(merged.integration!.revision,{kind:"final_validation",head:"c".repeat(40),
+        checkedAt:new Date().toISOString(),source:"Synthetic main CI",validation:"Pass"});
+      const progress={kind:"publication_progress" as const,state:"publishing" as const,checkedAt:new Date().toISOString(),
+        resultsDigest:validated.resultsDigest,detail:"Check recovered version"};
+      expect(()=>act(validated.integration!.revision,{...progress,publicationVersions:[{artifact:"web",version:"1.1.83"}]})).toThrow(/版本/);
+      expect(act(validated.integration!.revision,{...progress,publicationVersions:[{artifact:"web",version:"1.1.82"}]}).integration?.publication?.state).toBe("publishing");
+
+    });
   it.each(["same", "with-alternative", "hypothetical-pr", "contradiction", "later-contradiction", "later-plain-contradiction", "later-pin-conflict", "old-pin-conflict", "pin-disclosed", "pin-undisclosed", "pin-conflict", "new-head", "different-version", "different-artifact", "missing-candidate", "stopped", "stopped-before-command", "unclocked", "ambiguous", "wrong-pr-prefix", "wrong-artifact-prefix", "superseded"] as const)(
     "recovers the original decision from the older publication summary: %s", async scenario => {
       vi.useFakeTimers({toFake:["Date"]});

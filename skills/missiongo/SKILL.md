@@ -1,7 +1,7 @@
 ---
 name: missiongo
 description: 通过 MissionGo MCP 查询项目概览、吞吐、交付周期和验收打回率，或完整读取及处理指定条目、评论、创建和上传附件；核实合并与发布后可靠交接。不修改条目正文与字段，不决定验收。
-version: 5.91.0
+version: 5.92.0
 ---
 
 # MissionGo 条目读取与评论
@@ -631,7 +631,7 @@ AI 每小时能建的条目有上限：衍生条目按来源条目计，独立�
 检查 supportsConversationIntegration 及 writeTools 中的 prepare_conversation_integration、start_conversation_integration。入口缺失或节点来源不全时说明准确缺口，不能伪造 approved／用户原话／历史，不通过普通 REST、旧脚本或其他身份绕过；待集成是可选兼容路径，不是唯一产品规则。旧批次仍在其原会话恢复，不迁移到本会话。
 
 1. 用原 identity（dispatchId 或已验证原生外部 sessionId，只选一种）调用 prepare_conversation_integration，scope 指定 productId、repository、operation（merge_only／publish_only／merge_and_publish）。新合并用 deliveries 提供与交付提议相同的真实依据；已合并交付用 selection 提供精确 id/revision。仅历史条目发布可传空 deliveries/selection，不造占位交付或新条目。准备只保存快照，不确认清单、不执行 Git，不产生新会话。
-2. 读取准备返回的全部 reviewText 和 publicationScope。执行前在当前入口展示精确范围；发布必须展示“完整发布范围 <digest>”及全部候选、产物和额外影响。已有相同范围的完整审阅与明确授权直接复用，不能仅因调用准备工具重复索批；未展示、范围有变化或存在历史例外时，先补齐具体审阅与决定。不要把历史缺证改写成已发布或默认排除。来源执行指令必须可由服务端认证的人类消息或原节点原生消息核实；引用参数不是授权。
+2. 读取准备返回的全部 reviewText 和 publicationScope。执行前在当前入口展示精确范围；发布必须展示“完整发布范围 <digest>”及全部候选、产物和额外影响。已有相同范围的完整审阅与明确授权直接复用；如果单个 PR 的发布范围在同一会话已有可信摘要和人类批准，重新准备后复用服务端保存的原范围，摘要或标题变化无需再次批准；未展示、范围有变化或存在历史例外时，先补齐具体审阅与决定。不要把历史缺证改写成已发布或默认排除。来源执行指令必须可由服务端认证的人类消息或原节点原生消息核实；引用参数不是授权。
 3. start_conversation_integration 只传原 identity 和 preparationId，不传批准事实。它绑定原会话和当前可信执行指令，返回持久 batch；不运行 Git 或生产操作。结果未知原样重试同一 preparationId，返回原批次，不另建派单。准备快照十分钟有效，过期须刷新真实证据；新 head、设置、范围或权限变化不能套旧授权。
 4. 继续沿用原 get_merge_batch、record_merge_integration、report_merge_batch、finish_merge_batch 及发布／无需发布交接协议。派单会话传原 dispatchId；已验证外部原生会话传 sessionId，不把外部 ID 冒充派单。读取 executionHead、mergeReady、计划、修复预留、实时 Git／CI、组合验证和完整发布凭据，不能以已绑定批次代替任何检查。仅历史候选发布可登记 entries=[] 的计划并验证实际目标，不执行新合并。
 5. 已绑定的活动批次沿用原授权。同范围进度询问、重试和明确授权的必要 CI 补修不会要求重复回复或打开确认页。先核对在途结果，证据过期或断线后用原身份、原 operation 和 resumeBatchId 刷新。明确停止、撤权、返工或范围、权限及配置变化须核对后才继续。已有的 Git 或线上结果先独立核实并登记。结果未知时保持原批次，不重复部署。
