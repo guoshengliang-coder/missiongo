@@ -16,7 +16,7 @@ const escaped=(s:string)=>s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
 
 /** Remove only uniquely resolved artifacts and their checked version constraints.
  * Unknown qualifiers are left for the conservative action grammar to reject. */
-export function publicationActionBounds(text:string,bounds:ConversationPublicationBounds):{text:string;artifacts:string[]} {
+export function publicationActionBounds(text:string,bounds:ConversationPublicationBounds, requirePinnedVersions=false):{text:string;artifacts:string[]} {
   const names = new Map<string, Set<string>>();
   for (const artifact of bounds.declaredArtifacts) {
     const key = artifact.toLowerCase();
@@ -35,6 +35,7 @@ export function publicationActionBounds(text:string,bounds:ConversationPublicati
   const tokens=[...names.keys()].sort((a,b)=>b.length-a.length).map(escaped);
   if(!tokens.length)return {text,artifacts:[]};
   const seen=new Set<string>();
+  const namedVersions=new Set<string>();
   const pattern=new RegExp(`\\b(${tokens.join("|")})\\b(?:\\s+([A-Za-z0-9][A-Za-z0-9._+-]{0,79})(?=$|[\\s,，;；。!！、]))?`,"ig");
   const remaining=text.replace(pattern,(_raw:string,name:string,version:string|undefined)=>{
     const matches=names.get(name.toLowerCase())!;
@@ -49,12 +50,15 @@ export function publicationActionBounds(text:string,bounds:ConversationPublicati
     if(version && version.endsWith(".") && version.slice(0,-1)===target?.version)version=version.slice(0,-1);
     if(version) {
       if(!target?.version)throw scopeConflict("version_evidence_missing",`产物 ${artifact} 缺少已审阅的目标版本约束；请先核实仓库版本并展示绑定版本的完整范围，保留原明确指令。`);
+      namedVersions.add(artifact);
       if(version!==target.version)throw scopeConflict("version_mismatch",`产物 ${artifact} 的指令版本 ${version} 与已审阅目标 ${target.version} 不一致，请核对版本，不自动沿用旧范围。`);
     }
     if(seen.has(artifact))throw scopeConflict("artifact_ambiguous",`产物 ${artifact} 重复出现，请核对是否存在冲突限定。`);
     seen.add(artifact);return ` ${separator} `;
   });
   if(seen.size && bounds.requiredArtifacts.some(a=>!seen.has(a)))throw scopeConflict("artifact_subset","指令仅覆盖部分发布产物，不能授权完整范围；请准备实际限定范围，不自动补齐或排除其他产物。");
+  if (requirePinnedVersions && bounds.targets?.some(target => target.version && !namedVersions.has(target.artifact)))
+    throw scopeConflict("version_evidence_missing","指令未明确所有固定版本。");
   return {text:remaining,artifacts:[...seen]};
 }
 

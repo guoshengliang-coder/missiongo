@@ -183,7 +183,7 @@ describe("integration directly in the original conversation",()=>{
       expect(batch.publish).toBe(false);
       expect(start(prep(input)).id).toBe(batch.id);
     });
-  it.each(["one action", "refresh", "changed head", "another PR", "another repo", "old final", "old stop", "recent stop", "unrelated version", "same PR version", "mirrored action", "no action"] as const)(
+  it.each(["one action", "deferred", "deferred status", "deferred changed head", "deferred ambiguous plan", "refresh", "changed head", "another PR", "another repo", "old final", "old stop", "recent stop", "unrelated version", "same PR version", "mirrored action", "no action"] as const)(
     "binds structured local delivery without a review page: %s", async scenario => {
       vi.useFakeTimers({toFake:["Date"]});
       vi.setSystemTime(new Date("2026-11-24T08:00:00Z"));
@@ -220,28 +220,31 @@ describe("integration directly in the original conversation",()=>{
       }
       if(scenario!=="old final") sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[
         {sourceId:"natural-handoff",role:"agent",phase:"final_answer",
-          text:scenario==="another PR"?"已完成 PR #99。":scenario==="another repo"?`已完成 other/repo#${delivery.pullRequest}。`:"已修复 issue #334，Web 改动已验证。",occurredAt:new Date().toISOString()},
+          text:scenario==="deferred ambiguous plan"?"这里是下一轮开发计划。":scenario.startsWith("deferred")?`本次待交付提交 ${delivery.repository}/commit/${head} → ${targetBranch} · web`:scenario==="another PR"?"已完成 PR #99。":scenario==="another repo"?`已完成 other/repo#${delivery.pullRequest}。`:"已修复 issue #334，Web 改动已验证。",occurredAt:new Date().toISOString()},
       ]});
       vi.setSystemTime(Date.now()+10);
-      const action=human(f,scenario==="no action"?"能否合并和发布？":"合并和发布");
+      const action=human(f,scenario==="no action"?"能否合并和发布？":scenario.startsWith("deferred")?"那按你最新方案执行迭代，完成后合并和发布":"合并和发布");
       if(scenario==="mirrored action") sessions.recordSnapshot({nodeId:f.node.nodeId,sessionId:f.projectSessionId,status:"idle",messages:[
         {sourceId:`answer-${action.id}`,clientMessageId:action.id,role:"user",phase:"final_answer",
           text:"合并和发布",occurredAt:new Date(Date.now()-2).toISOString()},
       ]});
-      const changedHead=scenario==="changed head"?"e".repeat(40):head;
+      if (scenario==="deferred status") {
+        vi.setSystemTime(Date.now()+10);human(f,"进度如何");
+      }
+      const changedHead=scenario.endsWith("changed head")?"e".repeat(40):head;
       const actual={...input,deliveries:[{...delivery,head:changedHead,evidence:{...delivery.evidence,head:changedHead}}]};
       const p=prepare(actual);
       if(scenario==="refresh") {
         vi.setSystemTime(Date.now()+600001);
         expect(()=>start(p.id)).toThrow(/过期/);
       }
-      if(scenario!=="one action" && scenario!=="refresh" && scenario!=="old stop" && scenario!=="unrelated version" && scenario!=="mirrored action"){
+      if(scenario!=="one action" && scenario!=="deferred" && scenario!=="deferred status" && scenario!=="refresh" && scenario!=="old stop" && scenario!=="unrelated version" && scenario!=="mirrored action"){
         expect(()=>start(p.id)).toThrow();
         expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({n:0});
         return;
       }
       const batch=start(scenario==="refresh"?prepare(actual).id:p.id);
-      expect(batch.conversation?.authorization.text).toBe("合并和发布");
+      expect(batch.conversation?.authorization.text).toBe(action.text);
       expect(batch.conversation?.direct).toBe(true);
       expect(batch.publicationTargets).toBeUndefined();
       expect(start(prepare(actual).id).id).toBe(batch.id);
@@ -580,6 +583,8 @@ describe("integration directly in the original conversation",()=>{
     f.safe(await f.call("get_merge_batch",{sessionId:id,batchId:b.id}));
     expect((await f.call("get_merge_batch",{sessionId:id,batchId:b.id},{clientId:"wrong"})).isError).toBe(true);
     expect((await f.call("get_merge_batch",{dispatchId:id,batchId:b.id})).isError).toBe(true);
+    // Legacy snapshot still requires a separate human recovery decision.
+    f.db.prepare("UPDATE merge_batches SET data_json=json_remove(data_json,'$.integration') WHERE id=?").run(b.id);
     const snapshot=merges.preview(f.owner.id,b.id).snapshot,key=randomUUID();
     merges.requestReconciliation(f.owner.id,id,b.id,key,snapshot,{kind:"retry_blocked",deliveryId:b.deliveries[0]!,reason:"Verified external retry scope"});
     const login=await f.app.inject({method:"POST",url:"/api/v1/auth/login",payload:{username:"owner@example.test",password:"synthetic password"}});
@@ -657,11 +662,28 @@ describe("integration directly in the original conversation",()=>{
         kind:"progress",phase:"investigating",deliveryId:b.deliveries[0]!,expectedHead:f.input.head,detail:"must remain blocked",
       })).toThrow();
     });
+  it("retries an active original same-scope batch without a separate decision",async()=>{
+    const f=await prepared();
+    human(f,"执行合并");
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"retry-original",scope(f));
+    const b=f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id);
+    const deliveryId=b.deliveries[0]!;
+    f.merges.report(f.owner.id,f.dispatch.id,b.id,deliveryId,{status:"blocked",head:f.input.head,detail:"CI runner unavailable"});
+    vi.useFakeTimers({toFake:["Date"]});
+    vi.setSystemTime(Date.now()+10);human(f,"那授权你去处理修复");
+    const snapshot=f.merges.preview(f.owner.id,b.id).snapshot;
+    f.merges.requestReconciliation(f.owner.id,f.dispatch.id,b.id,"same-scope",snapshot,{kind:"retry_blocked",deliveryId,reason:"CI runner recovered"});
+    expect(f.merges.preview(f.owner.id,b.id).reconciliation?.requests[0]?.reusesBatchAuthority).toBe(true);
+    expect(()=>f.merges.reviewReconciliation(f.owner.id,b.id,"same-scope",snapshot)).toThrow();
+    expect(f.merges.applyReconciliation(f.owner.id,f.dispatch.id,b.id,"same-scope").entries[0]?.result).toBeUndefined();
+  });
   it.each([false,true])("records Web recovery approval separately from delivery and later stop (%s)",async stop=>{
     const f=await prepared();human(f,"执行合并");
     const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"prepare",scope(f));
     const b=f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id),id=b.deliveries[0]!;
     f.merges.report(f.owner.id,f.dispatch.id,b.id,id,{status:"blocked",head:f.input.head,detail:"Resolved obstacle"});
+    // This fixture represents a legacy batch without durable repair authority.
+    f.db.prepare("UPDATE merge_batches SET data_json=json_remove(data_json,'$.integration') WHERE id=?").run(b.id);
     const snapshot=f.merges.preview(f.owner.id,b.id).snapshot,key="retry";
     f.merges.requestReconciliation(f.owner.id,f.dispatch.id,b.id,key,snapshot,{kind:"retry_blocked",deliveryId:id,reason:"Obstacle resolved"});
     f.merges.reviewReconciliation(f.owner.id,b.id,key,snapshot);
@@ -729,6 +751,8 @@ describe("integration directly in the original conversation",()=>{
     const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,"prepare",scope(f));
     const b=f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id),id=b.deliveries[0]!;
     f.merges.report(f.owner.id,f.dispatch.id,b.id,id,{status:"blocked",head:f.input.head,detail:"Resolved obstacle"});
+    // Legacy snapshot still requires a separate human recovery decision.
+    f.db.prepare("UPDATE merge_batches SET data_json=json_remove(data_json,'$.integration') WHERE id=?").run(b.id);
     const snapshot=f.merges.preview(f.owner.id,b.id).snapshot,key="native-retry";
     f.merges.requestReconciliation(f.owner.id,f.dispatch.id,b.id,key,snapshot,{kind:"retry_blocked",deliveryId:id,reason:"Obstacle resolved"});
     const text=f.merges.preview(f.owner.id,b.id).reconciliation!.requests[0]!.reviewText!;vi.useRealTimers();const at=Date.now()-1000;
@@ -859,6 +883,18 @@ describe("integration directly in the original conversation",()=>{
         expect(f.db.prepare("SELECT COUNT(*) AS n FROM merge_batches").get()).toMatchObject({n:0});
       }
     });
+  it.each([false,true])("records an exact user-specified version on the unique existing PR without confirmation (retry %s)",async retry=>{
+    const f=await acrossTurns();f.store.recordProductReleaseArtifacts(f.item.productId,["web"]);
+    const input={...f.input,publicationTargets:[{artifact:"web",version:"1.2.3"}]};
+    const {repository,head}=input.deliveries[0]!;
+    f.record("exact-PR-delivery",`PR ${repository}/pull/12 · ${head} → main`,10);
+    human(f,"合并 PR #12 并发布 Web 1.2.3");
+    if (retry) { vi.setSystemTime(Date.now()+10);human(f,"重试"); }
+    const p=f.merges.prepareConversation(f.owner.id,"original-client",f.identity,randomUUID(),input);
+    const b=f.merges.startConversation(f.owner.id,"original-client",f.identity,p.id);
+    expect(b.publicationTargets).toEqual(input.publicationTargets);
+    expect(b.conversation?.versionConfirmation).toBeUndefined();
+  });
   it("accepts exact reviewed artifact/version instruction without expanding publication",async()=>{
     const f=await acrossTurns();f.store.recordProductReleaseArtifacts(f.item.productId,["web","androidApp"]);
     const input={...f.input,publicationTargets:[{artifact:"web",version:"1.2.3"}]};
@@ -1512,6 +1548,24 @@ describe("AND-423 explicit merge deliveries",()=>{
     expect(()=>f.merges.decide(f.other.id,f.d.id,f.d.revision,"confirm")).toThrow();
     expect(f.merges.decide(f.owner.id,f.d.id,f.d.revision,"confirm").state).toBe("confirmed");
     expect(f.store.getWorkItem(f.item.key).status).toBe("in_progress");
+  });
+  it.each(["text stop","native interrupt"])("keeps a confirmed queue delivery across verified status updates, then stops on %s",async stop=>{
+    const f=await prepared();
+    vi.useFakeTimers({toFake:["Date"]});
+    f.db.prepare("UPDATE agent_sessions SET applied_settings_revision=settings_revision WHERE id=?").run(f.projectSessionId);
+    const send=(text:string)=>{
+      const command=new AgentSessionStore(f.store.database).enqueue(f.owner.id,f.projectSessionId,text,[]);
+      f.store.database.transaction(()=>f.db.prepare("UPDATE agent_session_commands SET status='delivered' WHERE id=?").run(command.id));
+    };
+    send("加入待集成");
+    const d=f.merges.propose(f.owner.id,"original-client",f.identity,randomUUID(),f.input,{quote:"加入待集成"});
+    expect(d.state).toBe("confirmed");
+    vi.setSystemTime(Date.now()+10);send("进度如何");
+    expect(f.merges.list(f.item.productId,f.owner.id).find(row=>row.id===d.id)?.state).toBe("confirmed");
+    vi.setSystemTime(Date.now()+10);
+    if (stop==="text stop") send("停止");
+    else new AgentSessionStore(f.store.database).enqueueInterrupt(f.owner.id,f.projectSessionId);
+    expect(f.merges.list(f.item.productId,f.owner.id).find(row=>row.id===d.id)).toBeUndefined();
   });
   it("invalidates a human confirmation when development continues or head changes",async()=>{
     const f=await prepared();
