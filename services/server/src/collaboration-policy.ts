@@ -83,6 +83,15 @@ export function collaborationVerifier(
       .get(itemId) as { verifier_account_id: string } | undefined
   )?.verifier_account_id;
 }
+/** Cache only within one synchronous item presentation. Policy writes read fresh facts. */
+export function collaborationPolicyFacts(database: MissionGoDatabase, itemId: string) {
+  let blockers: number | undefined;
+  return {
+    verifier: collaborationVerifier(database, itemId),
+    blockers: () => blockers ??= collaborationBlockers(database, itemId),
+  };
+}
+
 /** Runs even for system handovers and legacy/no-account callers. No UI bypass. */
 export function collaborationTransitionDenial(
   database: MissionGoDatabase,
@@ -90,13 +99,14 @@ export function collaborationTransitionDenial(
   to: WorkItemStatus,
   actor: ActorKind,
   accountId?: string,
+  facts?: ReturnType<typeof collaborationPolicyFacts>,
 ): string | undefined {
   if (
     ["development_complete", "pending_verification", "done"].includes(to) &&
-    collaborationBlockers(database, item.id)
+    (facts?.blockers() ?? collaborationBlockers(database, item.id))
   )
     return "collaboration_blocked";
-  const verifier = collaborationVerifier(database, item.id);
+  const verifier = facts ? facts.verifier : collaborationVerifier(database, item.id);
   if (verifier && to === "pending_verification") {
     const missing = database.connection
       .prepare(

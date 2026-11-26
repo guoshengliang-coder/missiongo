@@ -16,7 +16,7 @@ import { MergeContinuations } from "./merge-continuation.js";
 import { MergeDeliveries } from "./merge-deliveries.js";
 import { FreeSessionStore } from "./free-session-store.js";
 import { registerCollaborationRoutes } from "./collaboration-routes.js";
-import { collaborationLinkedRead, collaborationUploadAllowed, collaborationVerifier } from "./collaboration-policy.js";
+import { collaborationLinkedRead, collaborationUploadAllowed, collaborationVerifier, collaborationPolicyFacts } from "./collaboration-policy.js";
 import { z } from "zod";
 import { registerPersonalNotificationRoutes } from "./personal-notifications.js";
 import { evaluateWorkItemTransition } from "@missiongo/domain";
@@ -1903,11 +1903,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   // AND-356: acceptance belongs to a person with a project role or the
   // account that proposed the item, independently of ordinary operation rights.
-  function canVerifyItem(request: FastifyRequest, item: Omit<ReturnType<MissionGoStore["getWorkItem"]>,"description"|"report"|"attachments"|"diagnosticSummary">): boolean {
+  const transitionOptions = new Map(WORK_ITEM_STATUSES.map(from => [
+    from, WORK_ITEM_STATUSES.flatMap(to => TRANSITION_REASONS
+      .filter(reason => reason === "manual_override" && to !== from
+        || evaluateWorkItemTransition({from,to,actor:"human",reason,note:"policy check"}).allowed)
+      .map(reason => ({to,reason}))),
+  ]));
+
+  function canVerifyItem(request: FastifyRequest, item: Omit<ReturnType<MissionGoStore["getWorkItem"]>,"description"|"report"|"attachments"|"diagnosticSummary">,
+    account = sessionAccount(request), collaboration?: ReturnType<typeof collaborationPolicyFacts>): boolean {
     if (unauthenticatedDeployment) return true; // The local console's synthetic administrator.
-    const account = sessionAccount(request);
     if (!account) return false; // A deployment/AI token is not a human account.
-    const verifier=collaborationVerifier(store.database,item.id);
+    const verifier=collaboration ? collaboration.verifier : collaborationVerifier(store.database,item.id);
     if(verifier)return verifier===account.id;
     const creator = item.createdBy;
     return account.role === "admin"
@@ -2632,7 +2639,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.post("/api/v1/conversation-integrations/:id/review", async request => {
     const { id } = request.params as { id: string };
     const body = objectBody(request.body);
-    return merges.confirmConversationReview(requireAccountId(request), id, stringField(body, "reviewDigest")!);
+    return merges.confirmConversationReview(requireAccountId(request), id, stringField(body, "reviewDigest")!, true);
   });
   app.get("/api/v1/merge-batches/:id/reconciliation",async request=>{
     const {id}=request.params as {id:string};
@@ -4749,8 +4756,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const nextBeforeSequence = items.length === effectiveLimit
       ? sequenceFromItemKey(items.at(-1)?.key)
       : undefined;
+    const account = sessionAccount(request);
+    const archived = Boolean(store.getProduct(productId).archivedAt);
     return {
-      items: withCreatorNames(items.map((item) => withTransferReferences(request, item))),
+      items: withCreatorNames(items.map((item) => withTransferReferences(request, item, {account, archived}))),
       summary: store.getWorkItemListSummary({
         ...builderFilter,
         productId,
@@ -4813,24 +4822,27 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     return withCreatorNames([withTransferReferences(request, store.getWorkItem(requireItemPermission(request, itemKey)))])[0];
   });
 
-  function withTransferReferences(request: FastifyRequest, item: Omit<ReturnType<MissionGoStore["getWorkItem"]>,"description"|"report"|"attachments"|"diagnosticSummary">) {
-    const accountId=sessionAccount(request)?.id;
+  function withTransferReferences(request: FastifyRequest, item: Omit<ReturnType<MissionGoStore["getWorkItem"]>,"description"|"report"|"attachments"|"diagnosticSummary">,
+    page?: { account: AccountSnapshot | undefined; archived: boolean }) {
+    const account = page ? page.account : sessionAccount(request);
+    const accountId = account?.id;
     const roles=itemRoles(store.database,item,accountId);
-    const archived=Boolean(store.getProduct(item.productId).archivedAt);
+    const archived=page?.archived ?? Boolean(store.getProduct(item.productId).archivedAt);
+    const collaboration = unauthenticatedDeployment ? undefined : collaborationPolicyFacts(store.database,item.id);
     // AND-406: say plainly why this item is readable without its project, so
     // the console can render it read-only and keep the source project closed.
     const linkedRead = !roles.view && !unauthenticatedDeployment
       && collaborationLinkedRead(store.database, item, accountId);
     return { ...item,
-      transitionDecisions: WORK_ITEM_STATUSES.flatMap(to => TRANSITION_REASONS.filter(reason => reason === "manual_override" && to !== item.status || evaluateWorkItemTransition({from:item.status,to,actor:"human",reason,note:"policy check"}).allowed).map(reason => ({to,reason,
-        ...(unauthenticatedDeployment ? {allowed:true,code:"allowed"} : transitionPolicy(store.database,item,accountId,to,reason,"human",roles,archived))}))),
+      transitionDecisions: transitionOptions.get(item.status)!.map(({to,reason}) => ({to,reason,
+        ...(unauthenticatedDeployment ? {allowed:true,code:"allowed"} : transitionPolicy(store.database,item,accountId,to,reason,"human",roles,archived,collaboration))})),
       access: {
         canOperate: !archived && (unauthenticatedDeployment || roles.operate),
         canRequestCollaboration: !archived && !item.transferred && roles.operate && (roles.builder || roles.manager) && ["ready","in_progress","on_hold"].includes(item.status),
-        canVerify: !item.transferred && canVerifyItem(request, item),
+        canVerify: !item.transferred && canVerifyItem(request, item, account, collaboration),
         ...(linkedRead ? { readOnlySource: { productName: store.getProduct(item.productId).name } } : {}),
       },
-      ...store.transferReferences(item.key, (id) => bearerAuthorized(request)
+      ...store.transferReferencesByItemId(item.id, (id) => bearerAuthorized(request)
       || accountStore.allows(requireAccount(request), id, "view")) };
   }
 

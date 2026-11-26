@@ -211,6 +211,15 @@ function textResult(data: Readonly<Record<string, unknown>>, summary?: string) {
   };
 }
 
+function existingIntegrationResult<T>(operation: () => T, field: "preparation" | "batch") {
+  try {
+    return textResult({[field]:operation()});
+  } catch (error) {
+    if (!(error instanceof MissionGoError) || error.code !== "conversation_integration_use_platform") throw error;
+    return {...textResult({code:error.code, message:error.message}), isError:true};
+  }
+}
+
 /** Text-only clients receive the same usable identity, never the internal claim credential. */
 function conversationResult(result: Readonly<Record<string, unknown>>, summary: string, originalDispatchId?: string) {
   const { executionAuthorization: _credential, ...visible } = result;
@@ -987,29 +996,29 @@ export function createMissionGoMcpServer(
   };
   server.registerTool(
     "prepare_conversation_integration", {
-    title:"Prepare integration in this original conversation",
-    description:"Prepare an immutable scope snapshot for merge_only, publish_only or merge_and_publish in the original conversation, without creating/starting another session, running Git, deploying or approving. Use the actual product/repository, original dispatchId or verified external sessionId. Pass current verified deliveries for new merges, existing merged selection references, or no selection for a product publication. A resumeBatchId only prepares continuation of that original active conversation batch. A single PR may start from the original authorized local commit shown before PR creation, or an existing exact session delivery, when no additional release scope or version constraint needs a decision. Before an integration request, record the verified clean local commit with scope.localDelivery in this original conversation, with empty deliveries and selection. This creates a checkpoint, not an execution grant or review. After the human requests execution, verify and supply the exact new PR as a regular preparation. Existing clients can still use the older handoff line: 本次待交付提交 <repository>/commit/<full SHA> → <target branch> · <sorted comma-separated artifacts, or 无发布> · <sorted item keys, optional for standalone>. Verify GitHub head, branch, and artifacts before binding; an existing prepared action survives routine status messages and scope refreshes. Read reviewText as the execution scope. Use the original authenticated action; if scope evidence is missing, identify the missing PR, commit, or artifact in the original conversation. A previously saved decision can start the first batch when the user continues in the same scope. When resuming a pre-upgrade publication, try to recover the original explicit action against the authenticated historical summary and saved scope. If a human already approved a single-PR release disclosed in a trusted original-session summary, prepare fresh evidence and start with the same scope; the service can match the original stored scope despite a new digest. A refreshed digest alone is not a reason to ask again. Explain any actual scope change or missing evidence. This tool never approves an operation. For repository-declared default patch versions, verify the version in Git and at release time, report repository observations in publication_progress.publicationVersions, and omit publicationTargets.version. This does not require a user decision. Only use publicationTargets.version when the user specifies a version or the project actually needs a human version choice. Optional publicationTargets freezes the complete declared artifact set with target version constraints; these are reviewed constraints, not repository/deployment proof. An artifact-qualified instruction must match all required artifacts; aliases must resolve uniquely. Versions in human input require matching reviewed targets. For a single selected PR with an existing explicit action, prepare the exact versioned scope before asking for the version and use the returned versionConfirmationText verbatim as the entire final reply. Refresh the same scope after the user replies 确认 and reuse the original action. Keep these targets on resume, and report fresh matching publicationVersions with publication_progress publishing before actual release. This queue-independent path is optional alongside the existing pending-integration UI. Missing authenticated node/source evidence is a specific capability gap, never permission to bypass it.",
+    title:"Prepare recovery of an existing original-conversation batch",
+    description:"Compatibility only. Prepare recovery using resumeBatchId for an existing active batch or replay an accepted preparation request. For a new original-conversation merge or publication, follow the operator’s explicit instruction and use GitHub or the repository host and the project’s release tools directly. No MissionGo approval, scope snapshot, conversation binding, or batch is required. After the operation, record verified results. Existing queued or active batches keep their own reconciliation.",
     inputSchema:z.object({identity:mergeIdentity,idempotencyKey:z.string().min(1).max(200),scope:conversationIntegrationSchema}).strict(),
     annotations:{readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
   },async(input,ctx)=>{
     requireWriteScope(ctx);requireAccessibleProduct(ctx,input.scope.productId);const access=mergeAccess(ctx,input.scope.productId,true);
     for(const d of input.scope.deliveries)for(const key of d.itemKeys)requireItemAccess(ctx,store,key);
     for(const key of input.scope.localDelivery?.itemKeys??[])requireItemAccess(ctx,store,key);
-    const preparation = merges.prepareConversation(access.accountId,access.clientId??"",{...(input.identity.dispatchId?{dispatchId:input.identity.dispatchId}:{}),...(input.identity.sessionId?{sessionId:input.identity.sessionId}:{})},input.idempotencyKey,input.scope);
-    const versionConfirmationText = merges.conversationVersionPrompt(preparation);
-    return textResult({ preparation, versionConfirmationText });
+    const identity = {...(input.identity.dispatchId ? {dispatchId:input.identity.dispatchId} : {}), ...(input.identity.sessionId ? {sessionId:input.identity.sessionId} : {})};
+    return existingIntegrationResult(() => merges.prepareConversation(access.accountId,access.clientId??"",identity,input.idempotencyKey,input.scope,true),"preparation");
   });
   server.registerTool(
     "start_conversation_integration", {
-    title:"Bind an authorized integration to this conversation",
-    description:"Bind or recover one exact preparation through its original identity; never create a session, execute Git, publish, accept items or take another batch. The server reads authenticated current human input and existing scope evidence, not Agent quote/approved parameters. An explicit merge-only instruction cannot publish; publish-only cannot merge. Already accepted preparations return their original batch even after response loss. A directly bound single-PR batch already has a single-entry plan and needs no generic prerequisite declaration; still record exact-head GitHub checks and project publication results. Do not call start for status questions or dry runs. For an active bound batch, compatible progress questions and authorization for needed same-scope repairs leave its original authorization in place. Continue exact-scope work without asking for a keyword or a second approval. Use resumeBatchId when a fresh execution snapshot is needed. Stop, changed settings, scope or permissions require rechecking before further writes. Use get_merge_batch and existing integration/report/finish tools with this same dispatchId or external sessionId, and all live Git/CI/publication gates. When complete scope was not previously reviewed show it in this conversation once; reuse an existing matching decision. Distinguish artifact_subset/artifact_mismatch/artifact_ambiguous, version_evidence_missing/version_mismatch, history_incomplete and stopped; inspect and fix the specific source/scope evidence in this original conversation, never bypass or repeatedly ask for the same approval. A stop for the current delivery still requires a fresh explicit complete same-scope PR and artifact instruction. A fresh checkpoint after a new work request can support a different delivery despite an older stop. Ordinary continue/status or bare approval cannot clear a stop. Changed scope requires current review.",
+    title:"Recover an existing original-conversation batch",
+    description:"Compatibility only. Resume the same active batch or read the batch from its accepted preparation. For a new request, merge directly with GitHub or the repository host and publish with the project’s release tools. A same-scope continuation does not require another approval, exact wording, or a MissionGo batch. Report failing CI by check and link. Record actual merge and publication results afterward.",
     inputSchema:z.object({identity:mergeIdentity,preparationId:z.string().uuid()}).strict(),
     annotations:{readOnlyHint: false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
   },async(input,ctx)=>{
     requireWriteScope(ctx);const access=accountAccess(ctx);
     const productId=merges.conversationProduct(access.accountId,access.clientId??"",input.preparationId);
     requireAccessibleProduct(ctx,productId);mergeAccess(ctx,productId,true);
-    return textResult({batch:merges.startConversation(access.accountId,access.clientId??"",{...(input.identity.dispatchId?{dispatchId:input.identity.dispatchId}:{}),...(input.identity.sessionId?{sessionId:input.identity.sessionId}:{})},input.preparationId)});
+    const identity = {...(input.identity.dispatchId ? {dispatchId:input.identity.dispatchId} : {}), ...(input.identity.sessionId ? {sessionId:input.identity.sessionId} : {})};
+    return existingIntegrationResult(() => merges.startConversation(access.accountId,access.clientId??"",identity,input.preparationId,true),"batch");
   });
   server.registerTool(
     "request_collaboration_approval", {

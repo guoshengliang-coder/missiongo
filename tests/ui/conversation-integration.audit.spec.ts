@@ -53,8 +53,9 @@ test("displays a frozen execution scope and its existing decision without a conf
   await expect(page.getByText("发布 Android 0.1.204 和 Web", { exact: false })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await expect(page.getByRole("button", { name: "确认此执行范围" })).toHaveCount(0);
-  await expect(page.getByRole("status")).toHaveText("执行范围已确认。请回到原会话继续。");
+  await expect(page.getByText("此页只显示旧版执行范围记录。")).toBeVisible();
+  await expect(page.getByRole("status")).toHaveText("该历史范围曾登记确认。");
   await page.reload();
-  await expect(page.getByRole("status")).toHaveText("执行范围已确认。请回到原会话继续。");
+  await expect(page.getByRole("status")).toHaveText("该历史范围曾登记确认。");
   expect(decisions).toBe(0);
 });
