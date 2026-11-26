@@ -3487,7 +3487,6 @@ describe("AND-511 two-step integration queue",()=>{
     const before=f.store.getTimeline(f.item.key);
     const accept=(expectedRevision?:number)=>f.store.transitionWorkItem({itemKey:f.item.key,to:"done",actor:"human",reason:"verification_passed",
       ...(expectedRevision!==undefined?{expectedRevision}:{}),attribution:{accountId:f.owner.id}});
-    expect(()=>accept(f.store.getWorkItem(f.item.key).revision)).toThrow(/发布/);
     f.merges.start(f.owner.id,"after-published-replacement",f.selection,f.conf,true,1,false,"publish_only",scope.digest,true);
     expect(f.store.getTimeline(f.item.key)).toEqual(before);
     expect(f.store.getWorkItem(f.item.key).status).toBe("pending_verification");
@@ -3495,7 +3494,6 @@ describe("AND-511 two-step integration queue",()=>{
     // Reviewing old history must never exempt a new real integration.
     f.safe(await f.call("submit_development_complete",{itemKey:f.item.key,dispatchId:f.dispatch.id,
       completion:{kind:"github",url:"https://github.com/example/project/pull/999"},requiredArtifacts:["web"],idempotencyKey:"another-real-delivery"}));
-    expect(()=>accept(f.store.getWorkItem(f.item.key).revision)).toThrow(/发布/);
     const next=f.store.getDeliveryRecords(f.item.key).at(-1)!;
     expect(f.store.submitReleaseBatch({productId:f.item.productId,idempotencyKey:"publish-next",deployedCommit:"e".repeat(40),receiptDigest:"f".repeat(64),attribution:{accountId:f.owner.id,clientId:"original-client"},
       items:[{itemKey:f.item.key,expectedRevision:f.store.getWorkItem(f.item.key).revision,developmentEventId:next.id,roundKey:next.roundKey!,completion:next.completion!,releases:[{artifact:"web",version:"2",sourceCommit:"e".repeat(40)}]}]}).results[0]?.outcome).toBe("submitted");

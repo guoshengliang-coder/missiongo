@@ -20,6 +20,9 @@ for(const width of [320,1440])for(const source of ["list","detail"] as const)tes
       const menu=page.locator(".item-row .row-more-menu");await menu.locator(":scope > summary").click();
       await menu.getByRole("button",{name:"验证通过",exact:true}).click();
     } else await page.locator(".detail-toolbar").getByRole("button",{name:"验证通过",exact:true}).click();
+    const dialog=page.getByRole("dialog");
+    await expect(dialog).toContainText("暂无交付记录");
+    await dialog.getByRole("button",{name:"验证通过（1）",exact:true}).click();
   };
   if(width===320)await page.evaluate(()=>{document.documentElement.dataset.fontScale="large";});
   await action();
@@ -81,7 +84,9 @@ test("AND-534 a late failure stays bound to the submitted item after switching d
   let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});let submitted=false;
   await page.route(`**/api/v1/items/${first.key}/transitions`,async route=>{submitted=true;await gate;await route.fulfill({status:409,json:{code:"verification_delivery_unpublished",title:"Unpublished"}});});
   await page.goto(`/?product=${fixture.productId}&status=all&q=${encodeURIComponent("迟到反馈")}&item=${first.key}`);
-  await page.locator(".detail-toolbar").getByRole("button",{name:"验证通过",exact:true}).click();await expect.poll(()=>submitted).toBe(true);
+  await page.locator(".detail-toolbar").getByRole("button",{name:"验证通过",exact:true}).click();
+  await page.getByRole("dialog").getByRole("button",{name:"验证通过（1）",exact:true}).click();
+  await expect.poll(()=>submitted).toBe(true);
   await page.locator(".item-row").filter({hasText:second.key}).locator(".item-row-main").click();
   await expect(page.locator(".detail-toolbar > code")).toHaveText(second.key);release();
   const notice=page.locator(".toast-error");await expect(notice).toContainText(first.key);await expect(notice).not.toContainText(second.key);

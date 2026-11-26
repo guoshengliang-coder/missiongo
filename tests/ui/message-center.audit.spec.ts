@@ -211,6 +211,7 @@ for(const width of [390,1440])test.describe(`attention lifecycle ${width}`,()=>{
     await page.getByRole("button",{name:"待处理",exact:true}).click();
     await page.locator(".message-list-row").filter({hasText:item.key}).click();
     await detail(page).getByRole("button",{name:"验证通过",exact:true}).click();
+    await page.getByRole("dialog").getByRole("button",{name:"验证通过（1）",exact:true}).click();
     await expect.poll(async()=>(await(await page.request.get(`/api/v1/items/${item.key}`)).json()).status).toBe("done");
     await expect(detail(page).locator(".detail-toolbar code")).toHaveText(item.key);
     await expect(page.locator(".message-detail-pane > .message-reason")).toContainText("业务状态或你的权限已变化");

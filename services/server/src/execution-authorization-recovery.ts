@@ -35,7 +35,7 @@ function unavailable(reason?: keyof typeof recoveryReasons): never {
 }
 
 /** Recover an existing claim, never create a session, credential, or processing round. */
-export function recoverExecutionAuthorization(store: MissionGoStore, accountId: string, clientId: string, input: RecoveryInput) {
+export function recoverExecutionAuthorization(store: MissionGoStore, accountId: string, clientId: string, input: RecoveryInput, allowAcceptedEvidence = false) {
   const db = store.database.connection;
   const item = store.getWorkItem(input.itemKey);
   store.assertWorkItemWritable(item.key);
@@ -116,6 +116,6 @@ export function recoverExecutionAuthorization(store: MissionGoStore, accountId: 
     unavailable(receipt ? "records_missing" : "claim_not_found");
   }
   const executionAuthorization = credentials[0]!.id;
-  assertExecutionAuthorization(store.database, item.id, accountId, clientId, executionAuthorization);
+  assertExecutionAuthorization(store.database, item.id, accountId, clientId, executionAuthorization, allowAcceptedEvidence);
   return { itemKey: item.key, executionAuthorization, ...conversation, statusChanged: false };
 }

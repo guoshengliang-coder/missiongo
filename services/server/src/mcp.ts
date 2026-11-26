@@ -268,13 +268,13 @@ export function createMissionGoMcpServer(
     [input.dispatchId, input.sessionId, input.session, input.executionAuthorization].filter(value => value !== undefined).length === 1;
   const authorizeSession = (ctx: ServerContext, sessionId: string, itemKey: string) =>
     sessions.authorize(accountAccess(ctx), sessionId, itemKey, (key) => requireItemAccess(ctx, store, key),id=>requireProductAccess(ctx,id));
-  const authorizeExecution = (ctx: ServerContext, itemKey: string, credential?: string) => {
+  const authorizeExecution = (ctx: ServerContext, itemKey: string, credential: string | undefined, allowAcceptedEvidence = false) => {
     const access = accountAccess(ctx), key = requireItemAccess(ctx,store,itemKey);
     if (options.canOperate && !options.canOperate(access.accountId,store.getWorkItem(key).productId)) throw new Error("Product operation is not permitted.");
     store.assertWorkItemWritable(key);
-    assertExecutionAuthorization(store.database,store.getWorkItem(key).id,access.accountId,access.clientId ?? "",credential);
+    assertExecutionAuthorization(store.database,store.getWorkItem(key).id,access.accountId,access.clientId ?? "",credential,allowAcceptedEvidence);
   };
-  const authorizeHandover = (ctx: ServerContext, input: z.infer<typeof handoverAuthorizationSchema> & { itemKey: string }) => {
+  const authorizeHandover = (ctx: ServerContext, input: z.infer<typeof handoverAuthorizationSchema> & { itemKey: string }, allowAcceptedEvidence = false) => {
     const access = accountAccess(ctx), key = requireItemAccess(ctx, store, input.itemKey);
     if (options.canOperate && !options.canOperate(access.accountId, store.getWorkItem(key).productId)) throw new Error("Product operation is not permitted.");
     const credential = input.executionAuthorization ?? recoverExecutionAuthorization(store, access.accountId, access.clientId ?? "", {
@@ -282,8 +282,8 @@ export function createMissionGoMcpServer(
       ...(input.dispatchId ? { dispatchId: input.dispatchId } : {}),
       ...(input.sessionId ? { sessionId: input.sessionId } : {}),
       ...(input.session ? { session: input.session } : {}),
-    }).executionAuthorization;
-    authorizeExecution(ctx, key, credential);
+    }, allowAcceptedEvidence).executionAuthorization;
+    authorizeExecution(ctx, key, credential, allowAcceptedEvidence);
   };
   const server = new McpServer(
     { name: "missiongo", version: "0.1.0" },
@@ -1677,7 +1677,7 @@ export function createMissionGoMcpServer(
     "submit_non_release_for_verification",
     {
       title:"Submit no-release work for human verification",
-      description:"Only for explicitly no-release work already development complete. Read get_item_context.developmentEvidence and use its exact revision, event, round, completion and digest. Independently verify integration or local file changes and write a completion comment first. Include actual validation outcomes, remaining human checks and known limitations. This submits evidence, never proves publication or acceptance. Use the original claim identity; a merge integrator may instead use only its original dispatchId plus the exact active batch/delivery and integration revision after its verified merged report. Never scan or backfill other items. The server checks identity and evidence consistency, not file contents or Git truth.",
+      description:"Only for explicitly no-release work with an exact development event. Append evidence without changing pending-verification or accepted state. Read get_item_context.developmentEvidence and use its exact revision, event, round, completion and digest. Independently verify integration or local file changes and write a completion comment first. Include actual validation outcomes, remaining human checks and known limitations. This submits evidence, never proves publication or acceptance. Use the original claim identity; a merge integrator may instead use only its original dispatchId plus the exact active batch/delivery and integration revision after its verified merged report. Never scan or backfill other items. The server checks identity and evidence consistency, not file contents or Git truth.",
       inputSchema:z.object({
         itemKey:z.string().min(2).max(50), ...handoverAuthorizationFields,
         completion:completionSchema,expectedRevision:z.number().int().nonnegative(),
@@ -1692,11 +1692,13 @@ export function createMissionGoMcpServer(
     async (input,ctx)=>{
       requireWriteScope(ctx);
       const access=accountAccess(ctx),key=requireItemAccess(ctx,store,input.itemKey);
+      const previousStatus=store.getWorkItem(key).status;
       const raw={...input,itemKey:key,attribution:{accountId:access.accountId,clientId:access.clientId??""}};
       const item=input.batch
         ? merges.submitNonRelease(access.accountId,merges.actor(access.accountId,access.clientId??"",input.batch.batchId,{...(input.dispatchId?{dispatchId:input.dispatchId}:{}),...(input.sessionId?{sessionId:input.sessionId}:{})}),input.batch,raw)
-        : (()=>{authorizeHandover(ctx,input);return store.submitNonReleaseForVerification(raw);})();
-      return textResult({item,statusChanged:item.status === "pending_verification"},`${key}: no-release evidence submitted; human verification is still required. No publication or acceptance was recorded.`);
+        : (()=>{authorizeHandover(ctx,input,true);return store.submitNonReleaseForVerification(raw);})();
+      const next = item.status === "done" ? "Existing human acceptance was preserved." : "Human verification remains a human decision.";
+      return textResult({item,statusChanged:item.status !== previousStatus},`${key}: no-release evidence submitted. ${next}`);
     },
   );
 
@@ -1704,7 +1706,7 @@ export function createMissionGoMcpServer(
     "submit_for_verification",
     {
       title: "Hand published work over for verification",
-      description: "Provide exactly one original dispatchId, external sessionId or session, or the legacy executionAuthorization. The server verifies the original claim, current round and revocation; operation and AI permission are rechecked for every write. Use developmentEventId for the exact integration. Record partial or complete artifact publication for this delivery; only complete coverage makes it verifiable. Append publication in pending-verification without rewinding state. Only after independently checking the integration reference, verified release receipt and every required public artifact, move a development-complete item to pending verification. Read the item fully and write a release comment first. Artifacts must match the identifiers recorded at handover. The receipt digest and artifact versions are recorded for audit; the server cannot itself verify the repository host or public downloads.",
+      description: "Provide exactly one original dispatchId, external sessionId or session, or the legacy executionAuthorization. The server verifies the original claim, current round and revocation; operation and AI permission are rechecked for every write. Use developmentEventId for the exact integration. Record partial or complete artifact publication for this delivery; only complete coverage makes it verifiable. Append verified publication to pending-verification or already accepted work without rewinding state. Only after independently checking the integration reference, verified release receipt and every required public artifact, move a development-complete item to pending verification. Read the item fully and write a release comment first. Artifacts must match the identifiers recorded at handover. The receipt digest and artifact versions are recorded for audit; the server cannot itself verify the repository host or public downloads.",
       inputSchema: z.object({
         itemKey: z.string().min(2).max(50),
         ...handoverAuthorizationFields,
@@ -1725,7 +1727,7 @@ export function createMissionGoMcpServer(
       const { itemKey, completion, pullRequestUrl, releases, deployedCommit, receiptDigest, idempotencyKey, developmentEventId } = input;
       requireWriteScope(ctx);
       const access = accountAccess(ctx);
-      authorizeHandover(ctx, input);
+      authorizeHandover(ctx, input,true);
       const previousStatus=store.getWorkItem(itemKey).status;
       const item = store.submitForVerification({
         itemKey: requireItemAccess(ctx, store, itemKey), completion: normalizeCompletion({ completion, pullRequestUrl }), releases, deployedCommit, receiptDigest, ...(developmentEventId?{developmentEventId}:{}),
@@ -1761,7 +1763,7 @@ export function createMissionGoMcpServer(
     "supplement_release_evidence",
     {
       title: "Supplement missing integration and release scope",
-      description: "For user-authorized work or publication, the current conversation may append missing integration and complete release scope to a development-complete item. Independently verify Git and all required artifacts/configuration first; use the exact candidate revision, development event and round. Product operation and AI permissions are required. No original developer/merge identity or separate recovery approval is needed. Existing conflicts, content/Builder/round changes are refused. This preserves human events and does not change item status or approve work. Refresh candidates after success.",
+      description: "For user-authorized work or publication, the current conversation may append missing integration and complete release scope to an exact development event, preserving pending-verification or accepted state when present. Independently verify Git and all required artifacts/configuration first; use the exact candidate revision, development event and round. Product operation and AI permissions are required. No original developer/merge identity or separate recovery approval is needed. Existing conflicts, content/Builder/round changes are refused. This preserves human events and does not change item status or approve work. Refresh candidates after success.",
       inputSchema: releaseEvidenceSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },

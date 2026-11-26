@@ -1,4 +1,3 @@
-import {reviewedHistoricalDeliveries} from "./historical-delivery-review.js";
 import { collaborationBlockers } from "./collaboration-policy.js";
 import { assertItemExecutionIdentity, takeOverItemExecutions } from "./item-execution-blockers.js";
 import { AgentHandoffs } from "./agent-handoffs.js";
@@ -1000,7 +999,11 @@ export class MissionGoStore {
   } {
     const clauses = ["product_id = ?"];
     const values: SQLInputValue[] = [input.productId];
-    if (input.releaseCandidates) { clauses.push("status IN ('development_complete','pending_verification')"); }
+    if (input.releaseCandidates) { clauses.push(`(status IN ('development_complete','pending_verification') OR (status='done' AND EXISTS (
+      SELECT 1 FROM work_item_events e WHERE e.item_id=work_items.id AND e.to_status='done'
+      AND e.history_source_key IS NULL AND json_array_length(e.payload_json,'$.verificationDeliveryGaps')>0
+      AND e.timeline_seq=(SELECT MAX(latest.timeline_seq) FROM work_item_events latest WHERE latest.item_id=work_items.id
+        AND latest.event_type='status_changed' AND latest.history_source_key IS NULL))))`); }
     else if (input.status) {
       if (!isOneOf(input.status, WORK_ITEM_STATUSES)) throw invalidInput("Unsupported work-item status.");
       clauses.push("status = ?");
@@ -1484,12 +1487,18 @@ export class MissionGoStore {
       if (input.expectedRevision !== undefined && current.revision !== input.expectedRevision) {
         throw conflict("transition_revision_changed", "条目已发生变化，请刷新后重新确认。");
       }
-      if(current.status==="pending_verification" && input.to==="done") {
-        const deliveries=this.getDeliveryRecords(current.item_key);
-        const continuous=deliveries.length>1 || this.getTimeline(current.item_key).some(e=>e.eventType==="delivery_recorded" && deliveries.some(d=>d.id===e.id));
-        const reviewedHistory=reviewedHistoricalDeliveries(this.database,{id:current.id,key:current.item_key,productId:current.product_id,contentVersion:current.content_version,builderAccountId:current.builder_account_id??null,roundKey:deliveryRound(this.database,current.id)},deliveries);
-        if(continuous && deliveries.some(d=>!d.published&&!reviewedHistory.has(d.id))) throw conflict("verification_delivery_unpublished","存在新增交付尚未完整发布，请核对待验版本后再验收。");
-        if(continuous && input.expectedRevision===undefined) throw conflict("transition_version_required","验收必须绑定当前交付修订。");
+      const accepting = input.actor === "human" && input.to === "done";
+      const deliveries = accepting ? this.getDeliveryRecords(current.item_key) : [];
+      const verificationDeliveryGaps = deliveries.filter(delivery => !delivery.published).map(delivery => ({
+        developmentEventId: delivery.id,
+        missingIntegration: !delivery.completion,
+        missingScope: delivery.requiredArtifacts === null,
+        missingArtifacts: (delivery.requiredArtifacts ?? []).filter(artifact => !delivery.releases.some(release => release.artifact === artifact)),
+        missingNonReleaseEvidence: delivery.requiredArtifacts?.length === 0,
+      }));
+      if (accepting && current.status === "pending_verification" && input.expectedRevision === undefined && (deliveries.length > 1 ||
+        this.getTimeline(current.item_key).some(event => event.eventType === "delivery_recorded" && deliveries.some(delivery => delivery.id === event.id)))) {
+        throw conflict("transition_version_required", "验收必须绑定当前交付修订。");
       }
       const uploads = ids.length ? this.getTimeline(current.item_key) : [];
       const attachments = ids.length ? this.listAttachmentsByItemId(current.id) : [];
@@ -1504,7 +1513,7 @@ export class MissionGoStore {
         if (attachment.commentId || attachment.transitionEventId) throw invalidInput("Attachment already belongs to another operation.");
       }
       this.applyTransition(current, input.to, input.actor, input.reason, input.note, now, input.attribution ?? {},
-        { ...(current.status==="pending_verification" && input.to==="done" ? {acceptedDeliveryId:this.getDeliveryRecords(current.item_key).slice().reverse().find(d=>d.published)?.id,acceptedRevision:current.revision} : {}), ...(input.collaborationDisposition ? {collaborationDisposition:input.collaborationDisposition} : {}), ...(ids.length ? { attachmentIds: ids } : {}), ...(input.executionDisposition ? {executionDisposition:input.executionDisposition} : {}) });
+        { ...(accepting ? { acceptedRevision: current.revision, verificationDeliveryGaps, verificationHadNoDelivery: deliveries.length === 0 } : {}), ...(input.collaborationDisposition ? {collaborationDisposition:input.collaborationDisposition} : {}), ...(ids.length ? { attachmentIds: ids } : {}), ...(input.executionDisposition ? {executionDisposition:input.executionDisposition} : {}) });
       if (key) this.saveIdempotentResult(key, operation, true, now);
     });
     return this.getWorkItem(input.itemKey);
@@ -1886,13 +1895,13 @@ export class MissionGoStore {
 
   /** Shared append-only writer for bounded merge recovery and authorized release evidence. */
   supplementDevelopmentEvidence(input: {itemKey:string;accountId:string;batchId?:string;requestId:string;clientId?:string;releaseEvidenceId?:string;
-    completion: ReturnType<typeof normalizeCompletion>; requiredArtifacts:string[];noReleaseReason?:string;preserveVerification?:boolean}) {
+    completion: ReturnType<typeof normalizeCompletion>; requiredArtifacts:string[];noReleaseReason?:string;preserveVerification?:boolean;developmentEventId?:string}) {
     this.assertWorkItemWritable(input.itemKey);
-    const item = this.getWorkItem(input.itemKey), resolved = this.getDevelopmentEvidence(item.key);
-    if ((item.status !== "development_complete" && !(input.preserveVerification && item.status === "pending_verification")) || !resolved.handover || !resolved.roundKey
+    const item = this.getWorkItem(input.itemKey), resolved = this.getDevelopmentEvidence(item.key,input.developmentEventId);
+    if ((item.status !== "development_complete" && !(input.preserveVerification && (item.status === "pending_verification" || item.status === "done"))) || !resolved.handover || !resolved.roundKey
       || resolved.handover.payload.roundKey !== resolved.roundKey) throw conflict("delivery_evidence_changed", "开发事件或处理轮次已变化，不能补入旧交付证据。");
     const completion = normalizeCompletion({completion:input.completion});
-    const scope = this.getDevelopmentReleaseDecision(item.key);
+    const scope = this.getDevelopmentReleaseDecision(item.key,input.developmentEventId);
     if(completion.kind === "local_change" && (input.requiredArtifacts.length !== 0 || !input.noReleaseReason?.trim()))throw invalidInput("Local evidence is only for no-release work.");
     if (resolved.completion && !sameCompletion(resolved.completion, completion)
       || scope.requiredArtifacts !== null && JSON.stringify([...scope.requiredArtifacts].sort()) !== JSON.stringify([...input.requiredArtifacts].sort())
@@ -1943,7 +1952,7 @@ export class MissionGoStore {
       if(this.getIdempotentResult(key,operation))return this.getWorkItem(raw.itemKey);
       const item=this.getWorkItem(raw.itemKey), resolved=this.getDevelopmentEvidence(item.key,raw.developmentEventId);
       const scope=this.getDevelopmentReleaseDecision(item.key,raw.developmentEventId);
-      if(!["development_complete","pending_verification"].includes(item.status) || item.revision !== raw.expectedRevision
+      if(!["development_complete","pending_verification","done"].includes(item.status) || item.revision !== raw.expectedRevision
         || !resolved.handover || resolved.handover.id !== raw.developmentEventId
         || !resolved.roundKey || resolved.roundKey !== raw.roundKey
         || resolved.handover.payload.roundKey !== resolved.roundKey
@@ -1953,7 +1962,7 @@ export class MissionGoStore {
         || raw.evidenceDigest !== evidenceDigest(resolved.completion)) {
         throw conflict("non_release_evidence_changed","交付依据、轮次、版本或无需发布范围已变化，请重新核对。");
       }
-      if(item.status==="pending_verification") {
+      if(item.status==="pending_verification" || item.status==="done") {
         this.insertEvent(item.id,"non_release_submitted","agent",null,null,{...completionPayload(completion),validation,
           developmentEventId:raw.developmentEventId,roundKey:raw.roundKey,reason:"non_release_submitted",evidenceDigest:raw.evidenceDigest},new Date().toISOString(),raw.attribution??{});
         this.database.connection.prepare("UPDATE work_items SET revision=revision+1 WHERE id=?").run(item.id);
@@ -1989,7 +1998,7 @@ export class MissionGoStore {
       if (repeated) return repeated;
       const item = this.getWorkItemRow(input.itemKey);
       if (!item) throw notFound("Work item");
-      if (!["development_complete","pending_verification"].includes(item.status)) {
+      if (!["development_complete","pending_verification","done"].includes(item.status)) {
         throw conflict("item_not_ready_for_verification", "Only development-complete or verification work can record publication.");
       }
       const selected=this.getDeliveryRecords(item.item_key).find(d=>input.developmentEventId ? d.id===input.developmentEventId : d.completion && sameCompletion(d.completion,completion));
@@ -2014,7 +2023,7 @@ export class MissionGoStore {
       }
       const covered=new Set([...(selected?.releases ?? []),...releases].map(r=>r.artifact));
       const full=required.every(a=>covered.has(a));
-      if(item.status==="pending_verification" || !full) {
+      if(item.status==="pending_verification" || item.status==="done" || !full) {
         this.insertEvent(item.id,"release_evidence_added","agent",null,null,{...completionPayload(completion),releases,
           deployedCommit:input.deployedCommit,receiptDigest:input.receiptDigest,developmentEventId:handover.id,
           roundKey:deliveryRound(this.database,item.id),partial:!full},now,input.attribution ?? {});
@@ -2047,10 +2056,10 @@ export class MissionGoStore {
         if (previous.digest !== digest) throw conflict("idempotency_conflict", "Evidence request changed; reverify before retrying.");
         return { item: this.getWorkItem(item.key), alreadyRecorded: true };
       }
-      this.assertReleaseCandidate(input);
+      this.assertReleaseCandidate(input,true);
       this.supplementDevelopmentEvidence({ itemKey:item.key, accountId:input.attribution.accountId,
         clientId:input.attribution.clientId, requestId:input.idempotencyKey, releaseEvidenceId:id,
-        completion, requiredArtifacts:[...input.requiredArtifacts] });
+        completion, requiredArtifacts:[...input.requiredArtifacts], developmentEventId:input.developmentEventId,preserveVerification:true });
       this.saveIdempotentResult(id, "release_evidence", {digest}, new Date().toISOString());
       return { item: this.getWorkItem(item.key), alreadyRecorded: false };
     });
@@ -2108,7 +2117,7 @@ export class MissionGoStore {
 
   private assertReleaseCandidate(row: {itemKey:string;expectedRevision:number;developmentEventId:string;roundKey:string}, preserveVerification=false) {
     const item = this.getWorkItem(row.itemKey);
-    if (item.status !== "development_complete" && !(preserveVerification && item.status === "pending_verification")) throw conflict("item_not_ready_for_verification", "Only development-complete work can enter verification.");
+    if (item.status !== "development_complete" && !(preserveVerification && (item.status === "pending_verification" || item.status === "done"))) throw conflict("item_not_ready_for_verification", "Only development-complete work can enter verification.");
     const timeline = this.getTimeline(item.key).filter(event => !event.historySourceKey);
     const handover = this.getDevelopmentEvidence(item.key,row.developmentEventId).handover;
     if (item.revision !== row.expectedRevision || handover?.id !== row.developmentEventId
@@ -2144,32 +2153,41 @@ export class MissionGoStore {
           const prior = this.getIdempotentResult<{ itemKey: string }>(key, "release_batch_item");
           const item = this.getWorkItem(itemKey);
           if (prior) return { itemKey, outcome: "already_submitted", currentStatus: item.status };
+          const submitted = (updated: WorkItemSnapshot) => {
+            this.saveIdempotentResult(key, "release_batch_item", {
+              itemKey, revisionDelta: updated.revision! - item.revision!,
+            }, new Date().toISOString());
+            return { itemKey, outcome: "submitted", currentStatus: updated.status };
+          };
           const delivery=this.getDeliveryRecords(itemKey).find(d=>d.id===row.developmentEventId);
+          // Only writes from this batch may advance a candidate's frozen item revision.
+          const ownWrites=input.items.slice(0,input.items.indexOf(row)).reduce((total, previous) => {
+            if (previous.itemKey.toUpperCase() !== itemKey) return total;
+            const receipt=this.getIdempotentResult<{revisionDelta?:number}>(
+              `release-batch-item:${batchId}:${itemKey}:${previous.developmentEventId}`,"release_batch_item");
+            return total + (receipt ? receipt.revisionDelta ?? 1 : 0);
+          },0);
+          const candidate={...row,expectedRevision:row.expectedRevision+ownWrites};
           if(delivery?.completion && delivery.requiredArtifacts?.length) {
-
-            // Entries for one item may share the frozen pre-batch revision. Only this batch's own writes may advance it.
-            const ownWrites=input.items.slice(0,input.items.indexOf(row)).filter(r=>r.itemKey.toUpperCase()===itemKey).filter(r=>
-              this.getIdempotentResult(`release-batch-item:${batchId}:${itemKey}:${r.developmentEventId}`,"release_batch_item")).length;
-            this.assertReleaseCandidate({...row,expectedRevision:row.expectedRevision+ownWrites},true);
+            this.assertReleaseCandidate(candidate,true);
             if(row.releases.length!==delivery.requiredArtifacts.length) throw invalidInput("Release batch must cover every required artifact.");
             const published=this.submitVerifiedRelease({...row,deployedCommit:input.deployedCommit,receiptDigest:input.receiptDigest,
               attribution:input.attribution,idempotencyKey:`release-transition:${batchId}:${itemKey}:${row.developmentEventId}`}, {id:batchId,developmentEventId:row.developmentEventId,expectedRevision:row.expectedRevision});
-            this.saveIdempotentResult(key,"release_batch_item",{itemKey},new Date().toISOString());
-            return {itemKey,outcome:"submitted",currentStatus:published.status};
+            return submitted(published);
           }
-          if(item.status==="pending_verification") {
+          if(item.status==="pending_verification" || item.status==="done") {
             // Explicit publication repair for a manually advanced card. Append
             // proof to this exact round; never replay a transition or acceptance.
-            this.assertWorkItemWritable(itemKey);this.assertReleaseCandidate(row,true);
+            this.assertWorkItemWritable(itemKey);this.assertReleaseCandidate(candidate,true);
             const completion=normalizeCompletion(row);
             if((completion.kind==="manual"||completion.kind==="local_change")||!/^[0-9a-f]{40}$/.test(input.deployedCommit)||!/^[0-9a-f]{64}$/.test(input.receiptDigest))throw invalidInput("Verified publication proof required.");
             const timeline=this.getTimeline(itemKey).filter(e=>!e.historySourceKey);
-            const previous=[...timeline].reverse().find(e=>e.eventType==="release_evidence_added"||e.eventType==="status_changed"&&e.toStatus==="pending_verification");
-            if(previous?.payload.receiptDigest)throw conflict("release_evidence_conflict","已有发布凭据，不能替换；请核对原发布记录。");
+            const previous=timeline.find(e=>e.payload.developmentEventId===row.developmentEventId && e.payload.receiptDigest);
+            if(previous || delivery?.releases.length)throw conflict("release_evidence_conflict","已有发布凭据，不能替换；请核对原发布记录。");
             this.supplementDevelopmentEvidence({itemKey,accountId:input.attribution.accountId,clientId:input.attribution.clientId,
-              requestId:`release-evidence:${batchId}:${itemKey}`,releaseEvidenceId:batchId,completion,
-              requiredArtifacts:row.releases.map(r=>r.artifact),preserveVerification:true});
-            const required=this.getDevelopmentReleaseScope(itemKey);
+              requestId:`release-evidence:${batchId}:${itemKey}:${row.developmentEventId}`,releaseEvidenceId:batchId,completion,
+              requiredArtifacts:row.releases.map(r=>r.artifact),preserveVerification:true,developmentEventId:row.developmentEventId});
+            const required=this.getDevelopmentReleaseDecision(itemKey,row.developmentEventId).requiredArtifacts;
             if(!required?.length||row.releases.length!==required.length||new Set(row.releases.map(r=>r.artifact)).size!==row.releases.length
               ||row.releases.some(r=>!required.includes(r.artifact)||!r.version.trim()||r.version.length>100||!/^[0-9a-f]{40}$/.test(r.sourceCommit)))throw invalidInput("Release evidence must cover every required artifact.");
             const now=new Date().toISOString();
@@ -2178,23 +2196,21 @@ export class MissionGoStore {
               developmentEventId:row.developmentEventId,roundKey:row.roundKey,expectedRevision:row.expectedRevision,
               authorizationBasis:"product_release_batch",preservedStatus:item.status},now,input.attribution);
             this.database.connection.prepare("UPDATE work_items SET revision=revision+1,updated_at=? WHERE id=?").run(now,item.id);
-            this.saveIdempotentResult(key,"release_batch_item",{itemKey},now);
-            return {itemKey,outcome:"submitted",currentStatus:item.status};
+            return submitted(this.getWorkItem(itemKey));
           }
-          this.assertReleaseCandidate(row);
-          const evidence = this.getDevelopmentEvidence(itemKey), scope = this.getDevelopmentReleaseScope(itemKey);
+          this.assertReleaseCandidate(candidate);
+          const evidence = this.getDevelopmentEvidence(itemKey,row.developmentEventId), scope = this.getDevelopmentReleaseDecision(itemKey,row.developmentEventId).requiredArtifacts;
           if (!evidence.completion || scope === null) {
             // Old clients already send an explicit integration and the complete verified
             // artifact set. Repair and transition share this transaction: failed release
             // validation rolls back the evidence as well.
-            this.supplementReleaseEvidence({ productId:input.productId, ...row,
+            this.supplementReleaseEvidence({ productId:input.productId, ...candidate,
               requiredArtifacts:row.releases.map(release => release.artifact),
-              idempotencyKey:`release-evidence:${batchId}:${itemKey}`, attribution:input.attribution });
+              idempotencyKey:`release-evidence:${batchId}:${itemKey}:${row.developmentEventId}`, attribution:input.attribution });
           }
           const published = this.submitVerifiedRelease({ ...row, deployedCommit: input.deployedCommit, receiptDigest: input.receiptDigest,
-            attribution: input.attribution, idempotencyKey: `release-transition:${batchId}:${itemKey}` }, { id: batchId, developmentEventId: row.developmentEventId, expectedRevision: row.expectedRevision });
-          this.saveIdempotentResult(key, "release_batch_item", { itemKey }, new Date().toISOString());
-          return { itemKey, outcome: "submitted", currentStatus: published.status };
+            attribution: input.attribution, idempotencyKey: `release-transition:${batchId}:${itemKey}:${row.developmentEventId}` }, { id: batchId, developmentEventId: row.developmentEventId, expectedRevision: row.expectedRevision });
+          return submitted(published);
         });
       } catch (error) {
         if (!(error instanceof MissionGoError)) throw error;
