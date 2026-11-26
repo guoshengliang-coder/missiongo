@@ -114,6 +114,7 @@ interface ConversationPreparation {
   publicationScope?:PublicationScope; reviewDigest:string; reviewText:string; resumeBatchId?:string; reviewEvidence?:ConversationReviewEvidence; decision?: { at: string; inputFingerprint: string };
 }
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const namedMergeInstruction = /^(?:请|现在|直接|立即|执行|开始|把|将|仅|只)*合并\s*(?:PR\s*#?\s*(\d+)|#(\d+)|(https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+))[。！!]?$/i;
 const changed = () => conflict("merge_delivery_changed", "交付内容、代码或执行范围已变化，请重新核对并确认。");
 
 /** Copy JSON containers while reusing immutable primitive values. The private
@@ -1449,9 +1450,10 @@ export class MergeDeliveries {
       SELECT data_json FROM conversation_integration_preparations WHERE account_id=? AND client_id=?
         AND json_extract(data_json,'$.executor.binding')=? AND json_extract(data_json,'$.executor.settings')=?
         AND json_extract(data_json,'$.productId')=? AND json_extract(data_json,'$.localDelivery') IS NOT NULL
-        AND julianday(json_extract(data_json,'$.createdAt'))<julianday(?)
+        AND (julianday(json_extract(data_json,'$.createdAt'))<julianday(?)
+          OR (?='merge_only' AND json_extract(data_json,'$.source.fingerprint')=?))
       ORDER BY rowid DESC LIMIT 1`).get(accountId,clientId,preparation.executor.binding,preparation.executor.settings,
-        preparation.productId,authorization.occurredAt) as {data_json:string}|undefined;
+        preparation.productId,authorization.occurredAt,preparation.operation,authorization.fingerprint) as {data_json:string}|undefined;
     if (!row) return undefined;
     const checkpoint=JSON.parse(row.data_json) as ConversationPreparation;
     const local=checkpoint.localDelivery!;
@@ -1467,7 +1469,15 @@ export class MergeDeliveries {
       throw error;
     }
     if (!matches || !draft || isIntegrationStop(checkpoint.source.text)) return false;
-    if (!authorization.contextOccurredAt || Date.parse(authorization.contextOccurredAt) < Date.parse(checkpoint.createdAt)) return false;
+    if (!authorization.contextOccurredAt) return false;
+    if (Date.parse(checkpoint.createdAt) >= Date.parse(authorization.occurredAt)) {
+      // A checkpoint recorded during the original action cannot supply the
+      // original scope itself. The preceding trusted handoff must name it.
+      const itemKeys = local.itemKeys.length ? ` · ${[...local.itemKeys].sort().join(",")}` : "";
+      const scope = `${checkpoint.repository}/commit/${local.head} → ${local.targetBranch} · ${[...local.requiredArtifacts].sort().join(",") || "无发布"}${itemKeys}`;
+      const handoffs = authorization.context.split(/\r?\n/).filter(line => /^(?:本次待交付提交|完成提交) /.test(line));
+      if (handoffs.length !== 1 || !(handoffs[0] === `完成提交 ${scope}` || handoffs[0] === `本次待交付提交 ${scope}`) || /(?:^|\n)[ \t]*(?:`{3,}|~{3,})/.test(authorization.context)) return false;
+    } else if (Date.parse(authorization.contextOccurredAt) < Date.parse(checkpoint.createdAt)) return false;
     const links = authorization.context.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+\b/ig) ?? [];
     const numbers = [...authorization.context.matchAll(/(?:([\w.-]+\/[\w.-]+)#|\bPR\s*#?\s*)(\d+)\b/ig)];
     const declaredCommits = authorization.context.matchAll(/(?:\bcommit\s+|\/commit\/|提交(?:为|是)?\s*[`]?)([a-f0-9]{7,40})\b/ig);
@@ -1481,7 +1491,7 @@ export class MergeDeliveries {
   }
 
   private directConversationScope(preparation: ConversationPreparation, authorization: IntegrationInstruction, preparedLocal?: boolean) {
-    if (!isDirectIntegrationAction(authorization.text, preparation.operation) || preparation.selection.length !== 1) return false;
+    if (preparation.selection.length !== 1) return false;
     const executor = preparation.executor;
     const priorReview = this.db.connection.prepare(executor.kind === "external"
       ? `SELECT 1 FROM external_native_messages WHERE session_id=?
@@ -1493,6 +1503,7 @@ export class MergeDeliveries {
     const delivery = preparation.drafts.find(draft => draft.id === selected.id)?.input
       ?? this.read<Delivery>("merge_deliveries", selected.id);
     const url = `${delivery.repository}/pull/${delivery.pullRequest}`;
+    const namedMerge = preparation.operation === "merge_only" && namedMergeInstruction.exec(authorization.text.trim());
     // Bind the short instruction to a persisted original-session delivery.
     // Any exact reference in the latest reply must agree with that delivery.
     const links = authorization.context.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+\b/ig) ?? [];
@@ -1500,7 +1511,12 @@ export class MergeDeliveries {
     const exactContext = new Set(links).size === 1 && links[0] === url
       && new Set(heads.map(head => head.toLowerCase())).size === 1 && heads[0]?.toLowerCase() === delivery.head;
     const localMatch = preparedLocal ?? this.matchesLocalConversationHandoff(preparation, authorization);
-    if (localMatch) {
+    const exactMerge = namedMerge && (namedMerge[3] === url
+      || Number(namedMerge[1] ?? namedMerge[2]) === delivery.pullRequest
+        && (localMatch || this.hasExactSessionDelivery(preparation, delivery, authorization.occurredAt)
+          || authorization.contextTrusted && links.length === 1 && links[0] === url));
+    if (!exactMerge && !isDirectIntegrationAction(authorization.text, preparation.operation)) return false;
+    if (localMatch || exactMerge) {
       // Once the reviewed local commit is bound to its first PR, the same
       // instruction cannot select another PR, even after its batch is closed.
       const previous = this.db.connection.prepare(`SELECT p.data_json FROM conversation_integration_preparations p
@@ -1510,6 +1526,16 @@ export class MergeDeliveries {
           AND json_extract(p.data_json,'$.resumeBatchId') IS NULL
         ORDER BY p.rowid LIMIT 1`).get(executor.binding, authorization.fingerprint) as {data_json:string}|undefined;
       if (previous && !this.sameConversationScope(preparation, JSON.parse(previous.data_json) as ConversationPreparation)) return false;
+      if (exactMerge) {
+        const original = this.db.connection.prepare(`SELECT data_json FROM conversation_integration_preparations
+          WHERE json_extract(data_json,'$.executor.binding')=? AND json_extract(data_json,'$.source.fingerprint')=?
+          AND json_extract(data_json,'$.operation')='merge_only' AND json_extract(data_json,'$.localDelivery') IS NULL
+          AND json_extract(data_json,'$.resumeBatchId') IS NULL ORDER BY rowid LIMIT 1`)
+          .get(executor.binding,authorization.fingerprint) as {data_json:string}|undefined;
+        if (original && !this.sameConversationScope(preparation, JSON.parse(original.data_json) as ConversationPreparation)) return false;
+      }
+      if (exactMerge && !localMatch && (links.some(link => link !== url)
+          || heads.some(head => head.toLowerCase() !== delivery.head))) return false;
     } else {
       if (authorization.context.includes("本次待交付提交") || priorReview || !this.hasExactSessionDelivery(preparation, delivery)) return false;
       if (preparedLocal === false && (!authorization.contextTrusted || !exactContext)) return false;
@@ -1536,7 +1562,7 @@ export class MergeDeliveries {
   }
 
   private hasExactSessionDelivery(preparation: ConversationPreparation,
-    delivery: Pick<Delivery, "repository" | "pullRequest" | "head" | "targetBranch" | "itemKeys" | "requiredArtifacts" | "noReleaseReason">) {
+    delivery: Pick<Delivery, "repository" | "pullRequest" | "head" | "targetBranch" | "itemKeys" | "requiredArtifacts" | "noReleaseReason">, before?: string) {
     const rows = this.db.connection.prepare(`SELECT data_json FROM merge_deliveries
       WHERE product_id=? AND json_extract(data_json,'$.sessionId')=? AND state IN ('proposed','confirmed','batched','merged')`)
       .all(preparation.productId, preparation.executor.sessionId) as { data_json: string }[];
@@ -1544,7 +1570,8 @@ export class MergeDeliveries {
       d.repository, d.pullRequest, d.head, d.targetBranch, [...d.itemKeys].sort(),
       [...d.requiredArtifacts].sort(), d.noReleaseReason ?? "",
     ]);
-    const scopes = new Set(rows.map(row => scopeKey(JSON.parse(row.data_json) as Delivery)));
+    const scopes = new Set(rows.map(row => JSON.parse(row.data_json) as Delivery)
+      .filter(row => !before || Date.parse(row.createdAt) < Date.parse(before)).map(scopeKey));
     return scopes.size === 1 && scopes.has(scopeKey(delivery));
   }
 
@@ -1697,10 +1724,12 @@ export class MergeDeliveries {
       if (authorizedDecision && !boundDecision && !reviewEvidence) throw changed();
       if (boundDecision && decisionRecord?.batchId) return this.batch(accountId, actor, decisionRecord.batchId);
       if (retry && !boundDecision && !direct && !reviewEvidence && !recoveredScope)
-        throw conflict("conversation_integration_scope_review_required", "无法核对上一次明确授权对应的完整范围，请在原会话核实准备记录和来源。");
+        throw conflict("conversation_integration_scope_review_required", "上一次执行指令缺少可核实的目标关联，请在原会话明确 PR、提交或发布产物中缺少的部分。");
       const scopeReviewed=boundDecision || direct || recoveredScope || Boolean(reviewEvidence);
       if (!scopeReviewed && isWholeScopeIntegrationCommand(authorization.text))
         throw scopeConflict("scope_review_required", "当前没有可唯一核实的完整执行范围，请核对本次要合并或发布的交付。");
+      if (!scopeReviewed && p.operation === "merge_only" && namedMergeInstruction.test(authorization.text.trim()))
+        throw scopeConflict("scope_review_required", "无法将原合并指令绑定到同一个仓库、PR 和提交，请核对变化的部分。");
       if (!scopeReviewed && (preparedLocal !== undefined || authorization.context.includes("本次待交付提交")))
         throw scopeConflict("scope_review_required", "待交付提交与当前 PR 范围无法唯一绑定，请核对仓库、提交、目标分支和产物。");
       if(source.fingerprint!==p.source.fingerprint && !scopeReviewed)throw changed();
