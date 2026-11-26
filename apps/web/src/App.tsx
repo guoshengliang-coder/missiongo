@@ -2563,10 +2563,11 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork, openInitially = f
   useEffect(()=>{if(openInitially && moreActionsRef.current){moreActionsRef.current.open=true;moreActionsRef.current.querySelector("summary")?.focus();}},[openInitially]);
   const [transferring, setTransferring] = useState(false);
   const [noteAction, setNoteAction] = useState<TransitionAction | null>(null);
+  const [verification, setVerifyAction] = useState<{ action: TransitionAction; item: WorkItem } | null>(null);
   const [transitionKeys]=useState(()=>new TransitionCommandKeys());
   const mutation = useMutation({
-    mutationFn: ({ action, note, files, attempt }: { action: TransitionAction; note?: string; files?: readonly File[]; attempt?: TransitionAttachmentAttempt }) =>
-      attempt ? attempt.submit(item.key, item.status, action, note!, files ?? [], item.revision) : api.transitionItem(item.key, action, note, transitionKeys.options(item,action)),
+    mutationFn: ({ action, note, files, attempt, target = item }: { action: TransitionAction; note?: string; files?: readonly File[]; attempt?: TransitionAttachmentAttempt; target?: WorkItem }) =>
+      attempt ? attempt.submit(target.key, target.status, action, note!, files ?? [], target.revision) : api.transitionItem(target.key, action, note, transitionKeys.options(target,action)),
     onSuccess: async (updated) => {
       setNoteAction(null);
       await applyConfirmedItemTransition(queryClient, updated);
@@ -2585,6 +2586,7 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork, openInitially = f
   const startTransition = (action: TransitionAction) => {
     // Picking up waiting work asks how first: by hand, or through an AI (AND-68).
     if (isStartWork(item.status, action)) onStartWork(item);
+    else if (item.status === "pending_verification" && action.to === "done") setVerifyAction({ action, item });
     else if (action.reason === "manual_override" || transitionRequiresNote(item.status, action.to)) setNoteAction(action);
     else mutation.mutate({ action });
   };
@@ -2651,6 +2653,13 @@ function ItemRowActions({ item, onEdit, onNotice, onStartWork, openInitially = f
     {/* Outside the menu on purpose: a closed <details> hides everything but its
         <summary>, and a <dialog> under a hidden ancestor never paints. */}
     {transferring && <TransferItemDialog item={item} onClose={() => setTransferring(false)} />}
+    {verification && <Modal title={t("verifySelected", { count: 1 })} subtitle={verification.item.key} onClose={() => { setVerifyAction(null); mutation.reset(); }}>
+          <VerificationDeliveryNotice itemKey={verification.item.key} />
+          <div className="form-footer">
+            <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={() => { setVerifyAction(null); mutation.reset(); }}>{t("cancel")}</button>
+            <button type="button" className="primary-button positive" disabled={mutation.isPending} onClick={() => { setVerifyAction(null); mutation.mutate({ action: verification.action, target: verification.item }); }}>{t("verifySelected", { count: 1 })}</button>
+          </div>
+        </Modal>}
     {noteAction && (
       <Modal
         title={t(transitionNoteCopy(noteAction.to,noteAction.reason).title)}
@@ -2877,6 +2886,7 @@ function DetailPane({
 
 
   const [noteAction, setNoteAction] = useState<TransitionAction | null>(null);
+  const [verification, setVerifyAction] = useState<{ action: TransitionAction; item: WorkItem } | null>(null);
   const [transitionKeys]=useState(()=>new TransitionCommandKeys());
   const detailTransitionTarget = useRef(itemKey);
   detailTransitionTarget.current = itemKey;
@@ -2905,7 +2915,7 @@ function DetailPane({
     onError: (error) => onNotice(errorMessage(error, t("somethingWentWrong"))),
   });
 
-  useEffect(() => { transitionMutation.reset(); }, [itemKey, transitionMutation.reset]);
+  useEffect(() => { transitionMutation.reset(); setVerifyAction(null); }, [itemKey, transitionMutation.reset]);
   useDialogDraft(false,transitionMutation.isPending);
 
   if (!itemKey) {
@@ -2927,6 +2937,7 @@ function DetailPane({
   // Same rule as the list row: the domain decides whether this move owes a reason.
   const startTransition = (action: TransitionAction) => {
     if (isStartWork(item.status, action)) onStartWork(item);
+    else if (item.status === "pending_verification" && action.to === "done") setVerifyAction({ action, item });
     else if (action.reason === "manual_override" || transitionRequiresNote(item.status, action.to)) setNoteAction(action);
     else transitionMutation.mutate({ target: item, action });
   };
@@ -3231,7 +3242,7 @@ function DetailPane({
                       {/* Why it moved. Going back to Ready has to say so, which is
                           the case this is here for; a handover carries the agent's
                           summary in the same field and is worth reading too. */}
-                      {event.eventType === "status_changed" && <StatusNoteLine payload={event.payload} item={item} />}
+                      {event.eventType === "status_changed" && <><StatusNoteLine payload={event.payload} item={item} /><VerificationAuditNotice payload={event.payload} /></>}
                       <DeliveryEvidence payload={event.payload} />
                       {["item_transferred_in", "item_transferred_out"].includes(event.eventType) && Array.isArray(event.payload.clearedComponents) && event.payload.clearedComponents.length > 0 && (
                         <p>{t("transferClearedComponents", { names: event.payload.clearedComponents.flatMap((c: unknown) => c && typeof c === "object" && "name" in c && typeof c.name === "string" ? [c.name] : []).join("、") })}</p>
@@ -3290,6 +3301,13 @@ function DetailPane({
           />
         </Modal>
       )}
+      {verification && <Modal title={t("verifySelected", { count: 1 })} subtitle={verification.item.key} onClose={() => { setVerifyAction(null); transitionMutation.reset(); }}>
+          <VerificationDeliveryNotice itemKey={verification.item.key} />
+          <div className="form-footer">
+            <button type="button" className="secondary-button" disabled={transitionMutation.isPending} onClick={() => { setVerifyAction(null); transitionMutation.reset(); }}>{t("cancel")}</button>
+            <button type="button" className="primary-button positive" disabled={transitionMutation.isPending} onClick={() => { setVerifyAction(null); transitionMutation.mutate({ target: verification.item, action: verification.action }); }}>{t("verifySelected", { count: 1 })}</button>
+          </div>
+        </Modal>}
       {noteAction && (
         <Modal
           title={t(transitionNoteCopy(noteAction.to,noteAction.reason).title)}
@@ -4910,6 +4928,38 @@ function RefreshButton({ onRefresh }: { onRefresh: () => unknown }) {
  * Confirming a bulk verification close (AND-66). Closing is the last word on an
  * item, so the list of what is about to close is shown before it happens.
  */
+function VerificationAuditNotice({ payload }: { readonly payload: Record<string, unknown> }) {
+  const { t } = useI18n();
+  const gaps: unknown[] = Array.isArray(payload.verificationDeliveryGaps) ? payload.verificationDeliveryGaps : [];
+  const ids = gaps.flatMap(gap => gap && typeof gap === "object" && "developmentEventId" in gap
+    && typeof gap.developmentEventId === "string" ? [gap.developmentEventId] : []);
+  if (ids.length > 0) return <p>{t("verificationAuditGaps", { ids: ids.join(", ") })}</p>;
+  if (payload.verificationHadNoDelivery === true) return <p>{t("verificationAuditNoDelivery")}</p>;
+  return null;
+}
+
+function VerificationDeliveryNotice({ itemKey }: { readonly itemKey: string }) {
+  const { t } = useI18n();
+  const query = useItemDelivery(itemKey);
+  if (!query.data) return <p role="status">{t(query.isError ? "verificationEvidenceUnavailable" : "verificationEvidenceLoading")}</p>;
+  const deliveries = query.data.deliveries ?? [];
+  const incomplete = deliveries.filter(delivery => !delivery.published);
+  if (deliveries.length === 0) return <p role="status">{t("verificationNoDelivery")}</p>;
+  if (incomplete.length === 0) return null;
+  return <div role="status">
+    <p>{t("verificationEvidenceAdvisory")}</p>
+    <ul>{incomplete.map(delivery => {
+      const missing = delivery.requiredArtifacts?.filter(artifact => !delivery.releases.some(release => release.artifact === artifact));
+      return <li key={delivery.id}><code>{delivery.id}</code>
+        {query.data?.deliveryExplanations?.find(explanation => explanation.developmentEventId === delivery.id)?.missing.includes("integration") && <p>{t("deliveryMissingIntegration")}</p>}
+        {delivery.requiredArtifacts == null ? <p>{t("deliveryMissingScope")}</p>
+          : missing?.length ? <p>{t("deliveryMissingArtifacts", { artifacts: missing.join("、") })}</p>
+          : <p>{t("deliveryMissingNoRelease")}</p>}
+      </li>;
+    })}</ul>
+  </div>;
+}
+
 function BulkVerifyDialog({ items, onClose, onDone }: {
   readonly items: readonly WorkItem[];
   readonly onClose: () => void;
@@ -4927,7 +4977,7 @@ function BulkVerifyDialog({ items, onClose, onDone }: {
     <div className="bulk-verify">
       <p className="dispatch-note">{t("verifySelectedHelp")}</p>
       <ul className="bulk-verify-list">
-        {items.map((item) => <li key={item.key}><code>{item.key}</code> {item.title}</li>)}
+        {items.map((item) => <li key={item.key}><code>{item.key}</code> {item.title}<VerificationDeliveryNotice itemKey={item.key} /></li>)}
       </ul>
       {mutation.isError && (
         <div className="inline-error"><CirclePause size={16} /><span>{errorMessage(mutation.error, t("somethingWentWrong"))}</span></div>

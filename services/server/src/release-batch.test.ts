@@ -111,6 +111,29 @@ describe("AND-415 release batch", () => {
     expect((await f.call("submit_release_batch", { ...request, receiptDigest: "c".repeat(64) })).isError).toBe(true);
   });
 
+  it("lets only the original execution append no-release evidence after human acceptance", async () => {
+    const f=await fixture();
+    const item=f.store.createWorkItem({productId:f.product.id,title:"No release",description:"Test",type:"task",
+      priority:"normal",status:"ready",environment:{platform:"server"}});
+    const session={agentKind:"codex",refKind:"tracking",sessionRef:randomUUID()};
+    const claim=await f.call("claim_item",{itemKey:item.key,agentId:"Codex",session,idempotencyKey:randomUUID()},f.developer.id);
+    expect(claim.isError,JSON.stringify(claim)).toBeFalsy();
+    const development={itemKey:item.key,completion,requiredArtifacts:[],noReleaseReason:"Test only",session,idempotencyKey:randomUUID()};
+    expect((await f.call("submit_development_complete",development,f.developer.id)).isError).toBeFalsy();
+    f.store.transitionWorkItem({itemKey:item.key,to:"pending_verification",actor:"human",reason:"release_verified",attribution:{accountId:config.id}});
+    f.store.transitionWorkItem({itemKey:item.key,to:"done",actor:"human",reason:"verification_passed",
+      expectedRevision:f.store.getWorkItem(item.key).revision,attribution:{accountId:config.id}});
+    const evidence=f.store.getDevelopmentEvidence(item.key);
+    const proof={itemKey:item.key,completion,session,developmentEventId:evidence.handover!.id,roundKey:evidence.roundKey!,
+      expectedRevision:f.store.getWorkItem(item.key).revision!,evidenceDigest:evidence.handover!.payload.evidenceDigest,
+      validation:{checks:[{name:"Local check",method:"Fixture",result:"passed",evidence:"Exact commit"}],remainingVerification:[],limitations:[]},idempotencyKey:randomUUID()};
+    expect((await f.call("submit_non_release_for_verification",{...proof,session:{...session,sessionRef:randomUUID()}},f.developer.id)).isError).toBe(true);
+    const recorded=await f.call("submit_non_release_for_verification",proof,f.developer.id);
+    expect(recorded.structuredContent?.item?.status,JSON.stringify(recorded)).toBe("done");
+    expect(recorded.structuredContent.statusChanged).toBe(false);
+    expect((await f.call("submit_development_complete",{...development,idempotencyKey:randomUUID()},f.developer.id)).isError).toBe(true);
+  });
+
   it("skips incomplete artifacts independently and allows a newly verified batch to repair the omission", async () => {
     const f = await fixture(), incomplete = await f.add(["web", "macosApp"]), eligible = await f.add();
     const request = await f.batch();
