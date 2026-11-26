@@ -146,6 +146,11 @@ export function isDirectIntegrationAction(text: string, operation: "merge_only" 
   return /^合并(?:和|并|及|、)(?:发布|部署)$/.test(command) || /^(?:please )?merge and (?:publish|deploy)$/i.test(command);
 }
 
+/** The remainder can execute only after the exact previously saved delivery is ready. */
+export function deferredIntegrationAction(text: string): string | undefined {
+  return /^(?:(?:先(?:实施|修复|修改|开发|执行)|(?:那)?按(?:你(?:的)?)?(?:最新|当前|已定)?方案(?:执行迭代|实施|执行))[，,、\s]*)?(?:完成|做完|改完)后[，,\s]*(合并(?:和|并|及)(?:发布|部署)|合并)[。.!！]?$/i.exec(text.trim())?.[1];
+}
+
 export const isIntegrationContinue = (text: string) => /^(?:请)?(?:继续(?:执行|处理)?|continue)[。.!！]?$/i.test(text.trim());
 
 export const isIntegrationRetry = (text: string) => /^(?:请|你)?(?:(?:再试|重新试|重试)(?:一?下|一次)?|retry)[。.!！]?$/i.test(text.trim());
@@ -192,13 +197,13 @@ export function distinctConversationInputs<Clock extends string | null>(
 /** Check the inclusive interval so two records with the same clock cannot hide a stop. */
 export function assertConversationRetryHistory(database: MissionGoDatabase, executor: IntegrationExecutor,
   authorization: IntegrationInstruction, retry: IntegrationInstruction, allowStatus = false, allowEndpoint = false,
-  boundInput?: (text: string) => boolean) {
+  boundInput?: (text: string) => boolean, interruptAfter?: string) {
   const external = executor.kind === "external";
   const db = database.connection;
   const args = [executor.sessionId, authorization.occurredAt, retry.occurredAt] as const;
   if (!external && db.prepare(`SELECT 1 FROM agent_session_commands WHERE session_id=? AND kind='interrupt'
     AND status NOT IN ('failed','cancelled')
-    AND (julianday(created_at) BETWEEN julianday(?) AND julianday(?) OR julianday(created_at) IS NULL)`).get(...args))
+    AND (julianday(created_at) BETWEEN julianday(?) AND julianday(?) OR julianday(created_at) IS NULL)`).get(executor.sessionId,interruptAfter ?? authorization.occurredAt,retry.occurredAt))
     throw conflict("conversation_integration_stopped", "原决定之后收到停止指令，请先核实执行状态。");
   const commands = db.prepare(external
     ? "SELECT id,text,created_at AS at,status FROM external_native_commands WHERE session_id=? AND (julianday(created_at) BETWEEN julianday(?) AND julianday(?) OR julianday(created_at) IS NULL)"

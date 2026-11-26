@@ -15,6 +15,7 @@ export interface MergeReconciliationState {
   transportReceipts?:Record<string,{digest:string}>;
   requests:{id:string;digest:string;snapshot:string;action:MergeRecoveryAction;at:string;publicationScope?:PublicationScope;
     review?:{accountId:string;sessionId:string;activity:string;at:string};
+    reusesBatchAuthority?:boolean;
     decisionSource?:{kind:"conversation";commandId:string}|{kind:"native_history";sourceId:string};
     reviewText?:string;
     decision?:"approved"|"rejected";decidedAt?:string;decidedBy?:string;appliedAt?:string}[];
