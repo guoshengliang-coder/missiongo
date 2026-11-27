@@ -384,27 +384,16 @@ public struct SessionLauncher: AgentAdapter {
         if let problem = AgentModelSettings.problem(model: model, effort: effort) {
             throw LaunchError(problem)
         }
-        return LaunchCommand(
-            file: "script",
-            args: [
-                "-q",
-                "/dev/null",
-                "claude",
-                "--no-chrome",
-                "--remote-control",
-                sessionName,
-                "--disallowedTools",
-                ClaudeHostArguments.disallowedTools.joined(separator: ","),
-                "--permission-mode",
-                mode,
-                "-n",
-                sessionName,
-            ]
-                + (model.map { ["--model", $0] } ?? [])
-                + (effort.map { ["--effort", $0] } ?? [])
-                + additionalDirectories.flatMap { ["--add-dir", $0] }
-                + [prompt]
-        )
+        var arguments = [
+            "-q", "/dev/null", "claude", "--no-chrome", "--remote-control", sessionName,
+            "--disallowedTools", ClaudeHostArguments.disallowedTools.joined(separator: ","),
+            "--permission-mode", mode, "-n", sessionName,
+        ]
+        if let model { arguments += ["--model", model] }
+        if let effort { arguments += ["--effort", effort] }
+        for directory in additionalDirectories { arguments += ["--add-dir", directory] }
+        arguments.append(prompt)
+        return LaunchCommand(file: "script", args: arguments)
     }
 
     private static let sessionUrlPattern = try! NSRegularExpression(
