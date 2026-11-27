@@ -22,11 +22,70 @@ export interface NewConversationDraft {
   requestKey?: string; dispatch?: Dispatch; uploaded?: string[];
 }
 
+export function useNewConversationSend(onChange: (draft: NewConversationDraft) => void, onStarted: (dispatch: Dispatch) => void) {
+  const active = useRef<symbol | null>(null);
+  const [phase, setPhase] = useState<"preparing" | "uploading" | "starting">("preparing");
+  const [uploadIndex, setUploadIndex] = useState(0);
+  const send = useMutation({
+    onSuccess: (dispatch, { token }) => { if (active.current === token) onStarted(dispatch); },
+    onSettled: (_data, _error, { token }) => { if (active.current === token) active.current = null; },
+    mutationFn: async ({ draft, config, token }: { draft: NewConversationDraft; config: FreeSessionConfig; token: symbol }) => {
+      const assertCurrent = () => { if (token !== active.current) throw new Error("Conversation send was superseded"); };
+      assertCurrent();
+      setPhase("preparing");
+      let sending = { ...draft, config, requestKey: draft.requestKey ?? crypto.randomUUID(), uploaded: [...(draft.uploaded ?? [])] };
+      onChange(sending);
+      const context={productId:sending.config.productId,agentKind:sending.config.agentKind,sendKind:"new_send"};
+      beginPerformanceSend(sending.requestKey,context);
+      let dispatch = sending.dispatch;
+      if (!dispatch) {
+        try {
+          dispatch = await measurePerformance(context,sending.requestKey,"prepare",()=>api.prepareProjectConversation({ ...sending.config,
+            requestKey: sending.requestKey, text: sending.text, attachmentCount: sending.files.length }));
+        } catch (error) {
+          // A rejected reservation created nothing. Keep content editable so the
+          // person can repair the configuration; an uncertain response reuses its key.
+          if (error instanceof ApiError && error.status >= 400 && error.status < 500 && error.code !== "free_session_changed") {
+            assertCurrent();
+            const { requestKey: _requestKey, ...editable } = draft;
+            onChange(editable);
+          }
+          throw error;
+        }
+      }
+      assertCurrent();
+      sending = { ...sending, dispatch };
+      onChange(sending);
+      if (!dispatch.agentSessionId) throw new Error("Conversation reservation has no session ID");
+      for (let index = sending.uploaded.length; index < sending.files.length; index++) {
+        setPhase("uploading"); setUploadIndex(index + 1);
+        const attachment = await measurePerformance(context,sending.requestKey,"upload",()=>api.uploadAgentSessionAttachment(dispatch!.agentSessionId!, sending.files[index]!, `${sending.requestKey}-${index}`));
+        assertCurrent();
+        sending = { ...sending, uploaded: [...sending.uploaded, attachment.id] };
+        onChange(sending);
+      }
+      setPhase("starting");
+      const started = await measurePerformance(context,sending.requestKey,"start",()=>api.startProjectConversation(dispatch!.id, sending.uploaded));
+      assertCurrent();
+      const initial=started as Dispatch & {performanceCommandId?:string};
+      if(initial.performanceCommandId&&initial.agentSessionId)bindPerformanceSend(sending.requestKey,initial.performanceCommandId,initial.agentSessionId);
+      return started;
+    },
+  });
+  const submit = (draft: NewConversationDraft, config: FreeSessionConfig) => {
+    if (active.current) return;
+    const token = Symbol();
+    active.current = token;
+    send.mutate({ draft, config, token });
+  };
+  return { send, phase, uploadIndex, submit, clear: () => { active.current = null; send.reset(); } };
+}
+
 /** Parent owns drafts so Back, project switching and reopening never create empty history. */
-export function NewSessionDraft({ draft, projectName, onChange, onBack, onConfigure, onPending, onStarted }: {
+export function NewSessionDraft({ draft, projectName, onChange, onBack, onConfigure, submission }: {
   draft: NewConversationDraft; projectName: string;
   onChange: (draft: NewConversationDraft) => void; onBack: () => void; onConfigure: () => void;
-  onPending: (pending: boolean) => void; onStarted: (dispatch: Dispatch) => Promise<void>;
+  submission: ReturnType<typeof useNewConversationSend>;
 }) {
   const { t } = useI18n();
   const agentKey = agentLabelKey(draft.config.agentKind);
@@ -45,48 +104,9 @@ export function NewSessionDraft({ draft, projectName, onChange, onBack, onConfig
   const catalogUnavailable = Boolean(!draft.requestKey && !models && (config.model || config.effort));
   const modeIssue = draft.requestKey ? undefined : modeProblem(config.agentKind, config.mode, node?.agents.find(agent => agent.kind === config.agentKind)?.modes, config.model);
   const configBlocked = modelUnavailable || catalogUnavailable || Boolean(modeIssue);
-  const submitLock = useRef(false);
-  const [phase, setPhase] = useState<"preparing" | "uploading" | "starting">("preparing");
-  const [uploadIndex, setUploadIndex] = useState(0);
-  const send = useMutation({ onSettled: () => { submitLock.current = false; }, mutationFn: async () => {
-    setPhase("preparing");
-    let sending = { ...draft, config, requestKey: draft.requestKey ?? crypto.randomUUID(), uploaded: [...(draft.uploaded ?? [])] };
-    onChange(sending);
-    const context={productId:sending.config.productId,agentKind:sending.config.agentKind,sendKind:"new_send"};
-    beginPerformanceSend(sending.requestKey,context);
-    let dispatch = sending.dispatch;
-    if (!dispatch) {
-      try {
-        dispatch = await measurePerformance(context,sending.requestKey,"prepare",()=>api.prepareProjectConversation({ ...sending.config,
-          requestKey: sending.requestKey, text: sending.text, attachmentCount: sending.files.length }));
-      } catch (error) {
-        // A rejected reservation created nothing. Keep content editable so the
-        // person can repair the configuration; an uncertain response reuses its key.
-        if (error instanceof ApiError && error.status >= 400 && error.status < 500 && error.code !== "free_session_changed") {
-          const { requestKey: _requestKey, ...editable } = draft;
-          onChange(editable);
-        }
-        throw error;
-      }
-    }
-    sending = { ...sending, dispatch };
-    onChange(sending);
-    if (!dispatch.agentSessionId) throw new Error(t("somethingWentWrong"));
-    for (let index = sending.uploaded.length; index < sending.files.length; index++) {
-      setPhase("uploading"); setUploadIndex(index + 1);
-      const attachment = await measurePerformance(context,sending.requestKey,"upload",()=>api.uploadAgentSessionAttachment(dispatch!.agentSessionId!, sending.files[index]!, `${sending.requestKey}-${index}`));
-      sending = { ...sending, uploaded: [...sending.uploaded, attachment.id] };
-      onChange(sending);
-    }
-    setPhase("starting");
-    const started = await measurePerformance(context,sending.requestKey,"start",()=>api.startProjectConversation(dispatch!.id, sending.uploaded));
-    const initial=started as Dispatch & {performanceCommandId?:string};
-    if(initial.performanceCommandId&&initial.agentSessionId)bindPerformanceSend(sending.requestKey,initial.performanceCommandId,initial.agentSessionId);
-    await onStarted(started);
-  } });
+  const { send, phase, uploadIndex, submit } = submission;
   const problemKey = send.error instanceof ApiError ? dispatchProblemKey(send.error.code) : null;
   const errorText = problemKey ? t(problemKey, { agent: agentName, reason: send.error?.message ?? "" }) : localizedErrorText(send.error, t);
-  useEffect(() => { onPending(send.isPending); return () => onPending(false); }, [send.isPending, onPending]);
   const locked = send.isPending || Boolean(draft.requestKey);
   useEffect(() => {
     if (locked || draft.config.effort === config.effort) return;
@@ -105,14 +125,14 @@ export function NewSessionDraft({ draft, projectName, onChange, onBack, onConfig
   const commandUndo = useCommandTarget("new-session",draft.text,text=>onChange({...draft,text}),locked);
   return <>
     <header className="agent-console-conversation-head new-session-head">
-      <button type="button" className="icon-button" aria-label={t("agentConsoleBackToSessions")} disabled={send.isPending} onClick={onBack}><ArrowLeft size={19} /></button>
+      <button type="button" className="icon-button" aria-label={t("agentConsoleBackToSessions")} onClick={onBack}><ArrowLeft size={19} /></button>
       <div className="agent-console-heading"><h2>{t("newSession")}</h2>
         <small>{projectName} · {agentName} · {draft.config.nodeName}</small></div>
       <button type="button" className="secondary-button" disabled={locked} onClick={onConfigure}>{t("newSessionConfigure")}</button>
     </header>
     <div className="agent-console-empty agent-console-empty-conversation"><MessageSquare size={24} /><p>{t("newSessionEmpty")}</p></div>
     <footer className="agent-console-reply">
-      <form onSubmit={event => { event.preventDefault(); if (!submitLock.current && !send.isPending && !configBlocked && (!draft.files.length || draft.config.canAttach) && (draft.text.trim() || draft.files.length)) { submitLock.current = true; send.mutate(); } }} {...dropHandlers}>
+      <form onSubmit={event => { event.preventDefault(); if (!send.isPending && !configBlocked && (!draft.files.length || draft.config.canAttach) && (draft.text.trim() || draft.files.length)) { submit(draft, config); } }} {...dropHandlers}>
         {isDraggingFiles && <FileDropOverlay remaining={10 - draft.files.length} />}
         <AutoGrowTextarea data-command-target="new-session" autoFocus submitOnEnter rows={2} value={draft.text} maxLength={20000} disabled={locked}
           aria-label={t("agentSessionReplyPlaceholder", { agent: agentName })}

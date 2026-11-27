@@ -1,12 +1,14 @@
 import { expect, test } from "@playwright/test";
 import { solidPng } from "../../scripts/seed-ui-fixture.mjs";
-import { openConsoleSearch } from "./console-helpers";
+import { chooseSessionStatus, openConsoleSearch } from "./console-helpers";
+import { advanceSessionListPoll } from "./polling";
 
 for (const width of [375, 768, 1440]) {
   test(`project conversation retains a local draft and retries first send once at ${width}px`, async ({ page, request }, testInfo) => {
     await page.setViewportSize({ width, height: 900 });
     const product = await (await request.post("/api/v1/products", { data: { name: `Project conversation ${width}`, keyPrefix: `PC${width}` } })).json();
     const now = "2026-11-09T06:00:00.000Z";
+    if (width === 375) await page.clock.install({ time: new Date(now) });
     await page.clock.setFixedTime(new Date(now));
     const node = { id: "fixture-node", name: "Fixture Mac", online: true, supportsFreeSessions: true, supportsChatAttachments: true,
       agents: [{ kind: "codex", planApprovalProtocol: 1, ready: true, models: [{ id: "draft-beta", label: "Draft Beta", efforts: ["low", "high"] }] }], repos: [{ productId: product.id, repoPath: "fixture-repository" }], repoCandidates: [], createdAt: now };
@@ -14,6 +16,8 @@ for (const width of [375, 768, 1440]) {
     await page.route("**/api/v1/dispatch-defaults", route => route.fulfill({ json: { nodeId: node.id, agentKind: "codex", agents: { codex: { mode: "auto" } } } }));
     let prepareCount = 0, uploadCount = 0, startCount = 0;
     let started = false;
+    let reservationKey: string | undefined;
+    let releasePrepare: (() => void) | undefined;
     const dispatch = { id: "free-dispatch", agentSessionId: "free-session", productId: product.id, nodeId: node.id, nodeName: node.name,
       agentKind: "codex", mode: "auto", status: "queued", itemKeys: [], createdAt: now };
     const summary = { ...dispatch, id: "free-session", dispatchId: dispatch.id, status: "active", dispatchStatus: "queued",
@@ -27,7 +31,9 @@ for (const width of [375, 768, 1440]) {
         return route.fulfill({ status: 201, json: { id: "first-file", filename: "notes.txt", kind: "document", contentType: "text/plain", sizeBytes: 5, sha256: "synthetic", createdAt: now } });
       }
       const detail = { ...summary, messages: [], canResolveDelivery: true };
-      return route.fulfill({ json: url.pathname === "/api/v1/agent-sessions" ? { sessions: started ? [summary] : [] } : detail });
+      const reserved = { ...summary, status: "idle", command: undefined, startReady: false, startRequestKey: reservationKey };
+      return route.fulfill({ json: url.pathname === "/api/v1/agent-sessions"
+        ? { sessions: started ? [summary] : reservationKey ? [reserved] : [] } : detail });
     });
     await page.route("**/api/v1/project-conversations**", async route => {
       if (new URL(route.request().url()).pathname.endsWith("/start")) {
@@ -38,6 +44,10 @@ for (const width of [375, 768, 1440]) {
         return route.fulfill({ json: { ...dispatch, startReady: true } });
       }
       prepareCount++;
+      if (width === 375 && prepareCount === 1) {
+        reservationKey = route.request().postDataJSON().requestKey;
+        await new Promise<void>(resolve => { releasePrepare = resolve; });
+      }
       if (width === 1440 && prepareCount === 1) return route.fulfill({ status: 409, json: { code: "node_offline", title: "This node is offline" } });
       expect(route.request().postDataJSON()).toMatchObject({ productId: product.id, nodeId: node.id, agentKind: "codex", mode: "auto", model: "draft-beta", effort: "high", text: "先讨论这个方案" });
       return route.fulfill({ status: 201, json: dispatch });
@@ -131,6 +141,19 @@ for (const width of [375, 768, 1440]) {
     await expect(page.locator(".agent-chat-draft-files")).toContainText("notes.txt");
     if (width === 1440) await draft.press("Enter");
     else await page.locator(".agent-console-reply button[type=submit]").click();
+    if (width === 375) {
+      await expect.poll(() => Boolean(releasePrepare)).toBe(true);
+      await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+      const sendingRow = page.locator(".agent-console-session-row").filter({ hasText: "先讨论这个方案" });
+      await expect(sendingRow).toHaveCount(1);
+      await expect(sendingRow).toContainText("发送中");
+      await advanceSessionListPoll(page);
+      await expect(sendingRow).toHaveCount(1);
+      await chooseSessionStatus(page, "active");
+      await expect(sendingRow).toHaveCount(1);
+      await sendingRow.locator(".agent-console-session").click();
+      releasePrepare!();
+    }
     await expect(page.locator(".agent-console-reply [role=alert]")).toBeVisible();
     await expect(draft).toHaveValue("先讨论这个方案");
     if (width === 1440) {

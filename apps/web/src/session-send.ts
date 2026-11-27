@@ -27,18 +27,21 @@ export class SessionSender {
   private listeners = new Set<() => void>();
   constructor(private readonly transport: Pick<typeof api, "getAgentSendRequest" | "uploadAgentSessionAttachment" | "sendAgentSessionCommand"> & Partial<Pick<typeof api, "deleteAgentSessionAttachment">> = api, private readonly onSent?: (input: SendAttempt) => void) {}
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
+  private version = 0;
+  getVersion = () => this.version;
+  private notify() { this.version++; this.listeners.forEach(listener => listener()); }
   get = (sessionId: string) => this.attempts.get(sessionId);
   private update(attempt: SendAttempt, patch: Partial<SendAttempt>) {
     const next = { ...attempt, ...patch };
     if (this.get(attempt.sessionId)?.requestKey !== attempt.requestKey) return next;
     this.attempts.set(attempt.sessionId, next);
-    this.listeners.forEach(listener => listener());
+    this.notify();
     return next;
   }
   private assertCurrent(attempt: SendAttempt) {
     if (this.get(attempt.sessionId)?.requestKey !== attempt.requestKey) throw new SendSuperseded("The local send attempt was cleared.");
   }
-  clear() { clearPerformanceSends(); this.busy.clear(); this.attempts.clear(); this.listeners.forEach(listener => listener()); }
+  clear() { clearPerformanceSends(); this.busy.clear(); this.attempts.clear(); this.notify(); }
   send(input: SendInput): Promise<AgentSessionCommand> {
     let attempt = this.get(input.sessionId);
     if (input.recovery && (!attempt || (input.requestKey !== undefined && input.requestKey !== attempt.requestKey))) {
@@ -64,6 +67,7 @@ export class SessionSender {
       return this.run(frozen, Boolean(unresolved), input.recovery);
     });
     this.busy.set(input.sessionId, promise);
+    this.notify();
     void promise.finally(() => { if (this.busy.get(input.sessionId) === promise) this.busy.delete(input.sessionId); }).catch(() => {});
     return promise;
   }

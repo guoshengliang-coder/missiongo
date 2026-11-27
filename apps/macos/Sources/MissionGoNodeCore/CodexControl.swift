@@ -618,7 +618,7 @@ public enum CodexProtocol {
         return ["threadId": threadId, "turnId": turnId]
     }
 
-    public static func threadSnapshot(fromRead result: [String: Any], includeExecutionItems: Bool = false) throws -> CodexThreadSnapshot {
+    public static func threadSnapshot(fromRead result: [String: Any], includeExecutionItems: Bool = false, executionItems: [[String: Any]]? = nil) throws -> CodexThreadSnapshot {
         guard let thread = result["thread"] as? [String: Any] else {
             throw CodexControlError.invalidResponse(method: "thread/read")
         }
@@ -730,7 +730,9 @@ public enum CodexProtocol {
             runtimeStatus: type,
             waitingOnApproval: ((thread["status"] as? [String: Any])?["activeFlags"] as? [String] ?? []).contains("waitingOnApproval"),
             waitingOnUserInput: ((thread["status"] as? [String: Any])?["activeFlags"] as? [String] ?? []).contains("waitingOnUserInput"),
-            execution: NativeExecutionProgress.codex(turns: turns)
+            execution: NativeExecutionProgress.codex(turns: executionItems.flatMap { items in
+                turns.last.map { turn in [turn.merging(["items": items]) { _, replacement in replacement }] }
+            } ?? turns)
         )
     }
 
@@ -1005,7 +1007,12 @@ public struct CodexAppServerControl: CodexControl {
         // Turn summaries omit commentary and plans. They supply runtime/turn
         // metadata only; visible conversation content must come from item pages.
         do {
-            let items = try visibleItemPage(connection: connection, threadId: threadId, cursor: nil, timeout: timeout)
+            let items = try visibleItemPage(connection: connection, threadId: threadId, cursor: nil, timeout: timeout,
+                executionTurnId: snapshot.activeTurnId)
+            if !items.executionItems.isEmpty {
+                snapshot = try CodexProtocol.threadSnapshot(fromRead: ["thread": thread], executionItems: items.executionItems)
+                snapshot.historyLimited = true
+            }
             if items.messages.isEmpty && hadSummaryMessages {
                 throw CodexControlError.invalidResponse(method: "thread/items/list missing visible history")
             }
@@ -1022,6 +1029,7 @@ public struct CodexAppServerControl: CodexControl {
         let messages: [AgentSessionMessage]
         let nextCursor: String?
         var error: String? = nil
+        var executionItems: [[String: Any]] = []
     }
 
     /// Version the cursor so cached turn-summary pages cannot silently be
@@ -1029,12 +1037,13 @@ public struct CodexAppServerControl: CodexControl {
     /// bound thread's item lane; source IDs deduplicate the overlap.
     static let itemCursorPrefix = "items-v1:"
     static func visibleItemPage(connection: JSONRPCWebSocket, threadId: String,
-        cursor: String?, timeout: TimeInterval) throws -> VisibleItemPage {
+        cursor: String?, timeout: TimeInterval, executionTurnId: String? = nil) throws -> VisibleItemPage {
         var cursor = cursor.flatMap { $0.hasPrefix(itemCursorPrefix) ? String($0.dropFirst(itemCursorPrefix.count)) : nil }
         var seen = Set<String>()
         if let cursor { seen.insert(cursor) }
         var messages: [AgentSessionMessage] = []
         var visibleBytes = 0
+        var executionItems: [[String: Any]] = []
         let started = Date()
         let initialBytes = connection.receivedBytes
         for _ in 0..<8 {
@@ -1055,6 +1064,10 @@ public struct CodexAppServerControl: CodexControl {
                         throw CodexControlError.invalidResponse(method: "thread/items/list entry")
                     }
                     item["createdAt"] = item["createdAt"] ?? entry["startedAtMs"] ?? entry["completedAtMs"]
+                    if turnId == executionTurnId && executionItems.count < 50 {
+                        item["completedAt"] = item["completedAt"] ?? entry["completedAtMs"]
+                        executionItems.append(item)
+                    }
                     let parsed = try CodexProtocol.threadSnapshot(fromRead: ["thread": ["turns": [["id": turnId, "items": [item]]]]]).messages
                     messages += parsed
                     visibleBytes += parsed.reduce(0) { $0 + $1.text.utf8.count }
@@ -1067,11 +1080,11 @@ public struct CodexAppServerControl: CodexControl {
                 if case CodexControlError.invalidResponse = error { throw error }
                 guard let previous else { throw error }
                 return VisibleItemPage(messages: AgentSessionAnswerTrace.markingAnswered(Array(messages.reversed())),
-                    nextCursor: itemCursorPrefix + previous, error: "unavailable")
+                    nextCursor: itemCursorPrefix + previous, error: "unavailable", executionItems: Array(executionItems.reversed()))
             }
         }
         return VisibleItemPage(messages: AgentSessionAnswerTrace.markingAnswered(Array(messages.reversed())),
-            nextCursor: cursor.map { itemCursorPrefix + $0 })
+            nextCursor: cursor.map { itemCursorPrefix + $0 }, executionItems: Array(executionItems.reversed()))
     }
 
     private struct SummaryPage {
