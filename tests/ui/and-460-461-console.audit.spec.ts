@@ -14,16 +14,26 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
       nodeConnectionState: "online", activities: [], settings: { adjustable: false }, favorite,
       ...(archived ? { archivedAt: stamp } : {}), canReply: !archived, canRetry: false, canStop: false, canArchive: true,
       unread: false, waitingForReply: false, needsAttention: false,
-      attention: { state: "needed", kind: "instruction", revision: id, reason: "等待发起合并", handledByDelivery: true } });
+      attention: { state: "needed", kind: "instruction", revision: id, reason: "等待发起合并", handledByDelivery: true, dismissed: false } });
     const rows = [row("active-chat"), row("archived-chat", true, true),
       { ...row("today-chat"), sessionName: "当天长标题：允许重复派单与并行分支开发及会话列表排版", activityAt: "2026-11-08T10:00:00.000Z" },
       { ...row("older-chat"), sessionName: "跨天长标题：恢复会话列表紧凑排版并保留收藏功能", activityAt: "2026-10-28T00:00:00.000Z" },
       { ...row("independent-chat"), needsAttention: true,
-      attention: { state: "needed", kind: "instruction", revision: "independent", reason: "请决定另一项独立安排", handledByDelivery: false } }];
+      attention: { state: "needed", kind: "instruction", revision: "independent", reason: "请决定另一项独立安排", handledByDelivery: false, dismissed: false } }];
     let failed = true, writes = 0;
     await page.route("**/api/v1/agent-sessions**", async route => {
       const path = new URL(route.request().url()).pathname;
       const id = decodeURIComponent(path.split("/")[4] ?? ""); const current = rows.find(row => row.id === id);
+      if (path.endsWith("/attention/dismiss")) {
+        expect(route.request().method()).toBe("POST");
+        expect(route.request().postDataJSON()).toEqual({ revision: "independent" });
+        expect(current?.id).toBe("independent-chat");
+        current!.needsAttention = false;
+        current!.attention.dismissed = true;
+        current!.attention.state = "not_needed";
+        current!.attention.reason = "已由用户标记为无需处理。";
+        return queueRoute(route).fulfill({ json: current });
+      }
       if (path.endsWith("/favorite")) {
         writes++;
         if (failed) return queueRoute(route).fulfill({ status: 503, json: { title: "Synthetic failure" } });
@@ -113,5 +123,10 @@ for (const width of [320, 1440]) for (const theme of ["light", "dark"] as const)
     await expect(page.locator(".agent-console-attention-banner")).toBeVisible();
     await page.locator(".agent-console-attention-banner summary").click();
     await expect(page.locator(".agent-console-attention-detail")).toContainText("请决定另一项独立安排");
+    const dismiss = page.locator(".agent-console-attention-banner").getByRole("button", { name: "无需处理", exact: true });
+    await expect(dismiss).toBeVisible();
+    await dismiss.click();
+    await expect(page.locator(".agent-console-attention-banner")).toContainText("已标记为无需处理");
+    await expect(dismiss).toHaveCount(0);
   });
 }
