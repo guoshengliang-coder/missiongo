@@ -1,3 +1,4 @@
+import { projectRepositoryIdentity } from "@missiongo/domain";
 import { localDevelopmentReviewSnapshot, localDevelopmentReviewRequired } from "./development-reviews.js";
 import { NativePerformanceUploader } from "./console-performance.js";
 import { SessionWorkQueue, SessionUploadGate, SnapshotReports, SnapshotHealth, ControlReports, hasControlWork, observationSession } from "./session-work.js";
@@ -56,7 +57,7 @@ export async function detectAgents(config: Config, expected?: string, resolveCla
         }
         native=await cached.value.catch(()=>undefined);
       }
-      agents.push({ models, ...native, planApprovalProtocol:1, kind, version: parsedVersion, ready: true, skill });
+      agents.push({ models, ...native, planApprovalProtocol:1, ...(kind === "codex" ? { repositoryScopeProtocol: 1 } : {}), kind, version: parsedVersion, ready: true, skill });
     } catch (error) { agents.push({ kind, ready: false, unavailableReason: safeError(error) }); }
   }
   return agents;
@@ -78,7 +79,26 @@ export async function verifyRepo(path: string): Promise<string> {
 export async function launch(root: string, job: Dispatch, entry: string, options: { externalPrompt?: string; signal?: AbortSignal } = {}): Promise<HostState> {
   launchPrompt(job);
   socketPath(root, job.dispatchId);
-  job.repoPath = await verifyRepo(job.repoPath);
+  if (job.repositories) {
+    if (job.agentKind !== "codex" || !job.repositories.some(repository => repository.repoPath === job.repoPath)
+        || job.repositories.some(repository => !/^[a-f0-9-]{36}$/.test(repository.id))) {
+      throw new Error("Invalid repository scope in dispatch.");
+    }
+    const roots = new Set<string>();
+    for (const repository of job.repositories) {
+      if (!repository.repoPath) continue;
+      const original = repository.repoPath;
+      const canonical = await verifyRepo(original);
+      const remote = await probe("git", ["-C", canonical, "remote", "get-url", "origin"]);
+      const normalized = projectRepositoryIdentity(remote);
+      if (normalized !== repository.repository || roots.has(canonical)) {
+        throw new Error("A dispatch checkout no longer matches its registered repository.");
+      }
+      roots.add(canonical);
+      repository.repoPath = canonical;
+      if (original === job.repoPath) job.repoPath = canonical;
+    }
+  } else job.repoPath = await verifyRepo(job.repoPath);
   const directory = hostDirectory(root, job.dispatchId); privateDir(directory);
   const path = join(directory, "state.json");
   if (!existsSync(path)) {
@@ -284,7 +304,7 @@ export async function runNode(root: string, entry: string, signal: AbortSignal, 
         const job = await api.call("POST", "/api/v1/node/dispatches/claim-next", { waitMs: 25_000, availableAgentKinds: kinds }) as Dispatch | undefined;
         if (!job) return;
         try {
-          if (!repos.some((r) => r.repoPath === job.repoPath) || !loadConfig(root).agents[job.agentKind]) throw new Error("Dispatch repository or Agent is not enabled on this node");
+          if ((!job.repositories && !repos.some((r) => r.repoPath === job.repoPath)) || !loadConfig(root).agents[job.agentKind]) throw new Error("Dispatch repository or Agent is not enabled on this node");
           const permit = await api.call("POST", `/api/v1/node/dispatches/${encodeURIComponent(job.dispatchId)}/permit-start`, {});
           if (!permit.allowed) return;
           await launch(root, job, entry, { signal }); await recoverResults();

@@ -1,6 +1,7 @@
+import { plannedRepositories, registeredRepository } from "./project-repositories.js";
 import { mergeReviewSummary } from "./merge-review-summary.js";
 import { DocumentPlanApprovals } from "./document-plan-approval.js";
-import { releaseCandidatePage } from "./release-candidate-page.js";
+import { releaseCandidatePage, repositoryReleasePage } from "./release-candidate-page.js";
 import { nonReleaseSupplementSchema } from "./non-release-evidence.js";
 import { deliveryValidationSchema, evidenceDigest } from "./non-release-evidence.js";
 import { PlanDocuments } from "./plan-documents.js";
@@ -293,6 +294,9 @@ export function createMissionGoMcpServer(
       ...(input.session ? { session: input.session } : {}),
     }, allowAcceptedEvidence).executionAuthorization;
     authorizeExecution(ctx, key, credential, allowAcceptedEvidence);
+    const authority = store.database.connection.prepare("SELECT dispatch_id FROM builder_execution_authorizations WHERE id=?")
+      .get(credential) as { dispatch_id: string | null };
+    return authority.dispatch_id;
   };
   const server = new McpServer(
     { name: "missiongo", version: "0.1.0" },
@@ -502,13 +506,16 @@ export function createMissionGoMcpServer(
         productId: z.string().min(1),
         limit: z.number().int().min(1).max(100).default(50),
         beforeSequence: z.number().int().positive().optional(),
+        repository: z.string().max(500).optional().describe("For an authorized single-repository release, the exact registered HTTPS repository URL."),
         includeUnscoped: z.boolean().default(false),
       }),
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ productId, limit, beforeSequence, includeUnscoped }, ctx) => {
+    async ({ productId, limit, beforeSequence, includeUnscoped, repository }, ctx) => {
       requireProductAccess(ctx, productId);
-      return textResult(releaseCandidatePage(store,new MergeDeliveries(store),productId,limit,beforeSequence,includeUnscoped));
+      if (repository && !registeredRepository(store.database, productId, repository)) throw new Error("Select the registered release repository.");
+      const page = releaseCandidatePage(store,new MergeDeliveries(store),productId,limit,beforeSequence,includeUnscoped);
+      return textResult(repository ? repositoryReleasePage(page, store, repository) : page);
     },
   );
 
@@ -1337,6 +1344,7 @@ export function createMissionGoMcpServer(
         .get(dispatchId,access.accountId) as {id:string;product_id:string|null}|undefined;
       if(!dispatched || keys.some(key=>!plans.dispatchKeys(dispatchId).includes(key)&&dispatched.product_id!==store.getWorkItem(key).productId)) throw new Error("Dispatch scope does not contain these items.");
     }
+    if (dispatchId && !input.parentDocumentId) plannedRepositories(store.database, dispatchId, input.summary);
     const document=planDocuments.prepare({accountId:access.accountId,identity:planIdentity(access.clientId,input.session,dispatchId),keys,
       summary:input.summary,markdown:input.markdown,...(projectId?{projectId}:{}),origin:options.publicOrigin ?? "",requestKey:input.idempotencyKey,...(input.parentDocumentId ? {parentDocumentId:input.parentDocumentId} : {})});
     return textResult({documentId:document.id,sha256:document.sha256,version:document.version,rounds:document.rounds,plan:document.plan,
@@ -1657,12 +1665,12 @@ export function createMissionGoMcpServer(
       const { itemKey, completion, pullRequestUrl, requiredArtifacts, noReleaseReason, summary, idempotencyKey } = input;
       requireWriteScope(ctx);
       const access = accountAccess(ctx);
-      authorizeHandover(ctx, input);
+      const authorizedDispatch = authorizeHandover(ctx, input);
       const previousStatus=store.getWorkItem(itemKey).status;
       const item = store.submitDevelopmentComplete({
         itemKey: requireItemAccess(ctx, store, itemKey),
         completion: normalizeCompletion({ completion, pullRequestUrl }),
-        sourceIdentity:planIdentity(access.clientId,input.session,input.dispatchId) || (input.sessionId ? `session:${input.sessionId}` : "legacy"),
+        sourceIdentity: authorizedDispatch ? `dispatch:${authorizedDispatch}` : planIdentity(access.clientId,input.session,input.dispatchId) || (input.sessionId ? `session:${input.sessionId}` : "legacy"),
         ...(requiredArtifacts ? {requiredArtifacts} : {}),
         ...(noReleaseReason ? { noReleaseReason } : {}),
         ...(summary ? { summary } : {}),

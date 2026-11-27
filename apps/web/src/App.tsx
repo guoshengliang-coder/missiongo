@@ -1,3 +1,4 @@
+import { ProjectRepositorySettings } from "./project-repositories";
 import { AppNotice, type Notice, type NoticeHandler } from "./app-notice";
 import { clearArtifactAccountCache } from "./artifact-cache";
 import { clearPerformanceSends } from "./console-performance";
@@ -4627,6 +4628,7 @@ function ProductSettings({
             {productMutation.isPending ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} {t("saveProduct")}
           </button>
           </div>
+          <ProjectRepositorySettings productId={product.id} writable={canOperate && mayArchive && !product.archivedAt} />
           <div className="archive-row">
             <p>{mayArchive ? t("archiveProductHelp") : t("archiveNotOwner")}</p>
             <button

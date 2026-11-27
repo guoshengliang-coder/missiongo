@@ -141,6 +141,18 @@ export function DispatchDialog({
   }, [agentKind, defaultsApplied, defaultsQuery.data, defaultsQuery.isSuccess, touched]);
   const itemKeys = useMemo(() => items.map((item) => item.key), [items]);
   const productIds = useMemo(() => isNewSession ? [projectId] : [...new Set(items.map((item) => item.productId))], [items, isNewSession, projectId]);
+  const scopedProduct = !newSession && !handoff && productIds.length === 1 ? productIds[0] : undefined;
+  const repositoryQuery = useQuery({
+    queryKey: ["project-repositories", scopedProduct],
+    queryFn: () => api.projectRepositories(scopedProduct!),
+    enabled: Boolean(scopedProduct),
+  });
+  const [repositoryIds, setRepositoryIds] = useState<string[]>([]);
+  const repositoryCatalog = useMemo(() => repositoryQuery.data ?? [], [repositoryQuery.data]);
+  const dispatchRepositoryIds = repositoryIds.length ? repositoryIds : repositoryCatalog.map(repository => repository.id);
+  const selectedNode = nodes.find(node => node.id === nodeId);
+  const missing = repositoryCatalog.filter(repository => dispatchRepositoryIds.includes(repository.id)
+    && !selectedNode?.mappedRepositoryIds?.includes(repository.id));
   const eligibility = useQuery({
     queryKey: [...ACTIVE_DISPATCHES_QUERY_KEY,"eligibility",...itemKeys],
     queryFn: () => api.checkRedispatch(itemKeys),
@@ -151,8 +163,21 @@ export function DispatchDialog({
   const conflicts = handoff ? [] : eligibility.data?.conflicts ?? [];
 
   const ineligibility = useMemo(
-    () => new Map(nodes.map((node) => [node.id, nodeIneligibility(node, { productIds, agentKind })])),
-    [agentKind, nodes, productIds],
+    () => new Map(nodes.map(node => {
+      const reason = nodeIneligibility(node, { productIds, agentKind });
+      if (!repositoryCatalog.length) return [node.id, reason] as const;
+      const agent = node.agents.find(entry => entry.kind === agentKind);
+      if (agent?.repositoryScopeProtocol !== 1) {
+        return [node.id, repositoryIds.length && !reason ? { reason: "node_upgrade_required" as const } : reason] as const;
+      }
+      if (reason && reason.reason !== "repo_unmapped") return [node.id, reason] as const;
+      const selected = repositoryIds.length ? repositoryIds : repositoryCatalog.map(repository => repository.id);
+      const mappedCount = selected.filter(id => node.mappedRepositoryIds?.includes(id)).length;
+      if (!repositoryIds.length && mappedCount === 0 && !reason) return [node.id, null] as const;
+      return [node.id, mappedCount === 0 || repositoryIds.length > 0 && mappedCount < selected.length
+        ? { reason: "repo_unmapped" as const, productIds: [...productIds] } : null] as const;
+    })),
+    [agentKind, nodes, productIds, repositoryCatalog, repositoryIds],
   );
 
   // Land on a machine that can actually take the batch. Changing the agent can
@@ -160,9 +185,11 @@ export function DispatchDialog({
   useEffect(() => {
     if (nodes.length === 0 || (!defaultsApplied && !touched)) return;
     if (nodes.some((node) => node.id === nodeId && !ineligibility.get(node.id))) return;
-    const firstEligible = nodes.find((node) => !ineligibility.get(node.id));
+    const eligible = nodes.filter(node => !ineligibility.get(node.id));
+    const firstEligible = eligible.find(node => repositoryCatalog.length > 0 &&
+      repositoryCatalog.every(repository => node.mappedRepositoryIds?.includes(repository.id))) ?? eligible[0];
     setNodeId(firstEligible?.id ?? nodes[0]!.id);
-  }, [defaultsApplied, touched, ineligibility, nodeId, nodes]);
+  }, [defaultsApplied, touched, ineligibility, nodeId, nodes, repositoryCatalog]);
 
   const selectedAgent = nodes.find(node=>node.id===nodeId)?.agents.find(agent=>agent.kind===agentKind);
   useEffect(() => {
@@ -211,9 +238,10 @@ export function DispatchDialog({
       ...(model ? { model } : {}),
       ...(effort ? { effort } : {}),
       itemKeys,
+      ...(repositoryIds.length ? { repositoryIds } : {}),
       saveAsDefault,
       idempotencyKey: (() => {
-        const signature=JSON.stringify([nodeId,agentKind,mode,model,effort,itemKeys,saveAsDefault]);
+        const signature=JSON.stringify([nodeId,agentKind,mode,model,effort,itemKeys,saveAsDefault,repositoryIds]);
         if(!requestKeys.has(signature)) requestKeys.set(signature,crypto.randomUUID());
         return requestKeys.get(signature)!;
       })(),
@@ -362,6 +390,17 @@ export function DispatchDialog({
           ))}
         </Select>
       </label>
+      {repositoryCatalog.length > 0 && <details>
+        <summary>{t("dispatchRepositoryLimit")}</summary>
+        {repositoryCatalog.map(repository => <label key={repository.id}>
+          <input type="checkbox" checked={repositoryIds.includes(repository.id)} onChange={event => {
+            setRepositoryIds(ids => event.target.checked ? [...ids, repository.id] : ids.filter(id => id !== repository.id));
+          }} /> {repository.name}
+        </label>)}
+      </details>}
+      {repositoryCatalog.length > 0 && selectedNode && (selectedAgent?.repositoryScopeProtocol === 1 && missing.length < dispatchRepositoryIds.length
+        ? missing.length > 0 && <p role="status">{t("dispatchRepositoryMissing", { names: missing.map(repository => repository.name).join(", ") })}</p>
+        : <p role="status">{t("dispatchRepositoryLegacy")}</p>)}
       {nodesQuery.isLoading && <p className="section-empty"><LoaderCircle className="spin" size={14} /></p>}
       {/* A failed request is not an empty machine room: saying "no devices"
           here sent people to install a client the server simply failed to

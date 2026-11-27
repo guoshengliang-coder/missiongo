@@ -306,6 +306,7 @@ export interface NodeAgentModel {
 
 export interface NodeAgentReport {
   readonly planApprovalProtocol?: number;
+  readonly repositoryScopeProtocol?: number;
   readonly modes?: readonly AgentModeCapability[];
   readonly kind: AgentKind;
   readonly version?: string;
@@ -379,6 +380,7 @@ export interface RepoCandidate {
  * a clock skewed on this device must not make a silent machine look reachable.
  */
 export interface DispatchNode {
+  readonly mappedRepositoryIds?: readonly string[];
   readonly supportsFreeSessions?: boolean;
   readonly supportsChatAttachments?: boolean;
   readonly id: string;
@@ -736,6 +738,7 @@ export interface AgentApproval {
 }
 
 export interface CreateDispatchInput {
+  readonly repositoryIds?: string[];
   readonly saveAsDefault?: boolean;
   readonly nodeId: string;
   readonly agentKind: AgentKind;

@@ -104,6 +104,7 @@ public enum AgentDispatchAvailability: Equatable, Sendable {
 /// repository path — never a command line. What the session is actually told
 /// to do is decided on this machine (see `LaunchPrompt`).
 public struct DispatchJob: Equatable, Sendable {
+    public let repositories: [DispatchRepository]?
     public let sessionTitle: String?
     public let freeSession: Bool
     public let dispatchId: String
@@ -131,8 +132,10 @@ public struct DispatchJob: Equatable, Sendable {
         model: String? = nil,
         effort: String? = nil,
         freeSession: Bool = false,
-        sessionTitle: String? = nil
+        sessionTitle: String? = nil,
+        repositories: [DispatchRepository]? = nil
     ) {
+        self.repositories = repositories
         self.sessionTitle = sessionTitle
         self.freeSession = freeSession
         self.dispatchId = dispatchId

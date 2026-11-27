@@ -545,7 +545,42 @@ public struct CodexLauncher: AgentAdapter {
             throw LaunchError(reason, failureCode: "resource_exhausted", failureStage: "readiness")
         }
 
-        let worktreePath = try CodexWorkspace.worktreePath(repoPath: job.repoPath, dispatchId: job.dispatchId)
+        let worktreePath = try job.repositories == nil ? CodexWorkspace.worktreePath(repoPath: job.repoPath, dispatchId: job.dispatchId) : nil
+        var cwd = job.repoPath
+        var workspaceRoots = worktreePath.map { [cwd, $0] } ?? []
+        var scope: String?
+        if let repositories = job.repositories {
+            guard repositories.contains(where: { $0.repoPath == job.repoPath }) else {
+                throw LaunchError("派单缺少入口仓库。")
+            }
+            var worktrees: [String: String] = [:]
+            var verified = Set<String>()
+            for repository in repositories {
+                guard let path = repository.repoPath else { continue }
+                guard Paths.isAbsolute(path) else { throw LaunchError("仓库路径必须是绝对路径。") }
+                let canonical = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
+                let top = await run("git", ["-C", canonical, "rev-parse", "--show-toplevel"])
+                let remote = await run("git", ["-C", canonical, "remote", "get-url", "origin"])
+                let normalized = remote.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(of: #"^git@([^:]+):"#, with: "https://$1/", options: .regularExpression)
+                    .replacingOccurrences(of: #"^ssh://git@"#, with: "https://", options: .regularExpression)
+                    .replacingOccurrences(of: #"/$"#, with: "", options: .regularExpression)
+                    .replacingOccurrences(of: #"\.git$"#, with: "", options: .regularExpression)
+                let canonicalRemote = normalized.lowercased().hasPrefix("https://github.com/") ? normalized.lowercased() : normalized
+                guard top.code == 0, top.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == canonical,
+                      remote.code == 0, canonicalRemote == repository.repository, verified.insert(canonical).inserted else {
+                    throw LaunchError("派单检出与登记的仓库不匹配。")
+                }
+                let tree = try CodexWorkspace.worktreePath(repoPath: canonical, dispatchId: job.dispatchId, repositoryId: repository.id)
+                workspaceRoots += [canonical, tree]
+                worktrees[repository.id] = tree
+                if path == job.repoPath { cwd = canonical }
+            }
+            let encoder = JSONEncoder()
+            let candidateJSON = String(decoding: try encoder.encode(repositories), as: UTF8.self)
+            let worktreeJSON = String(decoding: try encoder.encode(worktrees), as: UTF8.self)
+            scope = "\(candidateJSON)；worktree 映射 \(worktreeJSON)"
+        }
         guard let skill = try? String(contentsOfFile: location.skillPath, encoding: .utf8),
               let skillVersion = SkillSync.version(ofSkill: skill) else {
             throw LaunchError(
@@ -555,16 +590,16 @@ public struct CodexLauncher: AgentAdapter {
         }
         let prompt = try LaunchPrompt.build(
             itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode, reworkItemKeys: job.reworkItemKeys,
-            client: .codex, worktreePath: worktreePath, freeSession: job.freeSession
+            client: .codex, worktreePath: worktreePath, freeSession: job.freeSession, repositoryScope: scope
         )
         let sessionName = SessionLauncher.sessionName(for: job)
         let request = CodexThreadRequest(
             socketPath: location.controlSocketPath,
-            cwd: job.repoPath,
+            cwd: cwd,
             settings: settings,
             name: sessionName,
             prompt: prompt,
-            workspaceRoots: [job.repoPath, worktreePath],
+            workspaceRoots: workspaceRoots,
             skillVersion: skillVersion,
             model: job.model,
             effort: job.effort

@@ -1,3 +1,6 @@
+import { projectRepositoryIdentity } from "@missiongo/domain";
+import { completionRepository, plannedRepositories } from "./project-repositories.js";
+import { ImplementationPlans } from "./implementation-plans.js";
 import { itemRoles, transitionPolicy } from "./item-policy.js";
 import { deliveryExplanations } from "./delivery-explanation.js";
 import { BuilderHandovers } from "./builder-handovers.js";
@@ -129,7 +132,48 @@ export function registerItemDeliveryRoutes(app: FastifyInstance, {store, account
       && (!item.builderHandover || item.builderHandover.status === "completed")
       && transitionPolicy(store.database,item,account.id,"in_progress","claim","human",roles).code === "execution_stop_unconfirmed";
     const deliveries=store.getDeliveryRecords(itemKey),explanations=deliveryExplanations(store,itemKey,deliveries);
-    return { deliveries, deliveryExplanation:explanations.at(-1), deliveryExplanations:explanations, manualClaimBlocked, builderHandover: item.builderHandover,
+    const dispatches = db.prepare(`SELECT d.id,d.account_id,d.repository_scope_json AS scope
+      FROM dispatches d JOIN dispatch_items di ON di.dispatch_id=d.id
+      WHERE di.item_id=? AND d.repository_scope_json IS NOT NULL
+        AND d.status IN ('delivered','launched')
+        AND NOT EXISTS (SELECT 1 FROM builder_revoked_dispatches r WHERE r.dispatch_id=d.id)
+        AND NOT EXISTS (SELECT 1 FROM work_item_events e WHERE e.item_id=di.item_id AND e.history_source_key IS NULL
+          AND e.event_type='status_changed' AND e.created_at>=d.created_at
+          AND json_extract(e.payload_json,'$.reason')='verification_failed')
+      ORDER BY d.created_at`).all(item.id) as unknown as
+      { id: string; account_id: string; scope: string }[];
+    const repositories = new Set(deliveries.filter(record => record.expectedRepositories.length)
+      .map(record => completionRepository(record.completion)).filter((repository): repository is string => Boolean(repository)));
+    const names = new Map<string, string>();
+    const approvedDispatchIds = [];
+    const plans = new ImplementationPlans(store.database);
+    for (const dispatch of dispatches) {
+      const proposal = plans.proposal(dispatch.account_id, `dispatch:${dispatch.id}`);
+      const candidates = JSON.parse(dispatch.scope) as { name: string; repository: string }[];
+      for (const candidate of candidates) names.set(candidate.repository, candidate.name);
+      if (!proposal?.approved || !proposal.valid || !proposal.keys.includes(item.key)) continue;
+      try {
+        for (const repository of plannedRepositories(store.database, dispatch.id, proposal.plan) ?? []) repositories.add(repository);
+        approvedDispatchIds.push(dispatch.id);
+      } catch { /* A historical scope is still represented by its integrated evidence. */ }
+    }
+    const pending = approvedDispatchIds.length ? (db.prepare(`SELECT data_json FROM merge_deliveries WHERE product_id=?
+      AND state IN ('confirmed','batched','proposed')
+      AND json_extract(data_json,'$.identity.dispatchId') IN (SELECT value FROM json_each(?))
+    `).all(item.productId, JSON.stringify(approvedDispatchIds)) as unknown as { data_json: string }[])
+      .map(row => JSON.parse(row.data_json) as { itemKeys: string[]; repository: string; pullRequest: number; state: string })
+      .filter(record => record.itemKeys.includes(item.key)) : [];
+    const repositoryDeliveries = [...repositories].sort().map(repository => ({
+      repository, name: names.get(repository) ?? repository,
+      pending: pending.filter(record => projectRepositoryIdentity(record.repository) === repository)
+        .map(record => ({ url: `${repository}/pull/${record.pullRequest}`, state: record.state })),
+      integrated: deliveries.filter(record => completionRepository(record.completion) === repository).map(record => ({
+        id: record.id, url: record.completion && "url" in record.completion ? record.completion.url : undefined,
+        status: record.status, noRelease: record.requiredArtifacts?.length === 0,
+        remainingArtifacts: record.requiredArtifacts?.filter(artifact => !record.releases.some(release => release.artifact === artifact)) ?? [],
+      })),
+    }));
+    return { deliveries, repositoryDeliveries, deliveryExplanation:explanations.at(-1), deliveryExplanations:explanations, manualClaimBlocked, builderHandover: item.builderHandover,
       canTakeOver: Boolean(item.builderHandover?.canTakeOver && item.builderAccountId === account.id && accounts.allows(account,item.productId,"operate") && accounts.allows(account,item.productId,"ai")), builderAccountId: item.builderAccountId ?? null, builderName: item.builderName ?? null,
       builderNeedsReassignment: item.builderNeedsReassignment ?? false, canManage: manages(account,item), canManageBuilder: managesBuilder(account,item), currentAccountId: account.id,
       candidates: candidates(item.productId).map(row => ({id:row.id,name:name(row.id)})),

@@ -1249,7 +1249,8 @@ public final class NodeLoop: @unchecked Sendable {
                 model: request.model,
                 effort: request.effort,
                 freeSession: request.freeSession == true,
-                sessionTitle: request.sessionTitle
+                sessionTitle: request.sessionTitle,
+                repositories: request.repositories
             ))
             log("会话「\(launched.sessionName)」已启动" + (launched.logPath.map { "，日志 \($0)" } ?? ""))
             if let url = launched.sessionUrl {

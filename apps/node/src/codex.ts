@@ -7,7 +7,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { JsonProcess } from "./process.js";
 import { normalizeAgentMode, localArtifactPath } from "@missiongo/domain";
 import { pathToFileURL } from "node:url";
-import { worktreePath } from "./prompt.js";
+import { dispatchWorkspaceRoots, dispatchWorktrees } from "./prompt.js";
 import type { Adapter, Approval, Command, Dispatch, Message, Session, Snapshot, Wire } from "./types.js";
 import { id, object, InputRejected } from "./types.js";
 import { managedPolicy, managedPrompt, validateManagedScope, validateManagedMcp, validateManagedVersion, type ManagedJob, type ManagedReceipt } from "./managed-policy.js";
@@ -19,7 +19,7 @@ export function codexPolicy(mode: string) {
 }
 export function validatePolicy(result: Wire, job: Dispatch): void {
   const policy = codexPolicy(job.mode);
-  const roots=[job.repoPath,worktreePath(job)];
+  const roots=dispatchWorkspaceRoots(job);
   if (result.approvalPolicy !== policy.approvalPolicy || result.approvalsReviewer !== policy.approvalsReviewer
     || result.cwd !== job.repoPath || result.sandbox?.type !== (policy.sandbox==="read-only" ? "readOnly" : "workspaceWrite")
     || !Array.isArray(result.runtimeWorkspaceRoots) || !roots.every(root=>result.runtimeWorkspaceRoots.includes(root))
@@ -152,11 +152,11 @@ export class CodexAdapter implements Adapter {
   }
   async start(prompt: string): Promise<string> {
     this.job = { ...this.job, repoPath: realpathSync(this.job.repoPath) };
-    if (existsSync(worktreePath(this.job))) throw new Error("Dispatch worktree path already exists");
+    if (dispatchWorktrees(this.job).some(({ worktree }) => existsSync(worktree))) throw new Error("Dispatch worktree path already exists");
     await this.rpc.call("initialize", { clientInfo: { name: "missiongo_linux", version: "1" }, capabilities: { experimentalApi: true } });
     this.rpc.write({ method: "initialized" });
     const result = await this.rpc.call("thread/start", { cwd: realpathSync(this.job.repoPath), ...codexPolicy(this.job.mode),
-      runtimeWorkspaceRoots: [this.job.repoPath, worktreePath(this.job)], ...(this.job.model ? { model: this.job.model } : {}) });
+      runtimeWorkspaceRoots: dispatchWorkspaceRoots(this.job), ...(this.job.model ? { model: this.job.model } : {}) });
     this.ref = id(result.thread?.id);
     validatePolicy(result, this.job);
     this.model=result.model ?? this.job.model ?? "";
@@ -206,7 +206,7 @@ export class CodexAdapter implements Adapter {
       ...(this.job.model ? { model: this.job.model } : {}), ...(this.job.effort ? { effort: this.job.effort } : {}),
       approvalPolicy:"on-request",approvalsReviewer:codexPolicy(this.job.mode).approvalsReviewer,
       sandboxPolicy:this.job.mode==="read-only" ? {type:"readOnly"} : {
-        type:"workspaceWrite",writableRoots:[this.job.repoPath,worktreePath(this.job)],networkAccess:false,excludeTmpdirEnvVar:false,excludeSlashTmp:false},
+        type:"workspaceWrite",writableRoots:dispatchWorkspaceRoots(this.job),networkAccess:false,excludeTmpdirEnvVar:false,excludeSlashTmp:false},
       collaborationMode:{mode:"default",settings:{model:this.model,reasoning_effort:this.job.effort ?? null,developer_instructions:null}} };
   }
   async controlSnapshot(): Promise<Snapshot> {
@@ -324,7 +324,7 @@ export class CodexAdapter implements Adapter {
       await this.rpc.call("thread/settings/update", { threadId: this.ref, approvalPolicy: policy.approvalPolicy,
         approvalsReviewer: policy.approvalsReviewer,
         sandboxPolicy: policy.sandbox === "read-only" ? { type: "readOnly", networkAccess: false }
-          : { type: "workspaceWrite", writableRoots: [updated.repoPath, worktreePath(updated)], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+          : { type: "workspaceWrite", writableRoots: dispatchWorkspaceRoots(updated), networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
         ...(updated.model ? { model: updated.model } : {}), ...(updated.effort ? { effort: updated.effort } : {}) });
       result = await this.rpc.call("thread/resume", { threadId: this.ref, excludeTurns: true });
       if (result.thread?.id !== this.ref) throw new InputRejected("Codex resumed a different native thread; settings were not confirmed");

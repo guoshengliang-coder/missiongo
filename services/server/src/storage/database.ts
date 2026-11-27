@@ -2854,5 +2854,27 @@ export class MissionGoDatabase {
       });
     }
 
+    if (!this.connection.prepare("SELECT version FROM schema_migrations WHERE version = 202611270100").get()) {
+      this.transaction(() => {
+        this.connection.exec(`CREATE TABLE project_repositories (
+          id TEXT PRIMARY KEY,
+          product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+          name TEXT NOT NULL,
+          repository TEXT NOT NULL,
+          responsibility TEXT NOT NULL,
+          archived_at TEXT,
+          UNIQUE(product_id, repository)
+        ) STRICT;
+        CREATE TABLE node_repository_paths (
+          node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+          repository_id TEXT NOT NULL REFERENCES project_repositories(id) ON DELETE CASCADE,
+          repo_path TEXT NOT NULL,
+          PRIMARY KEY(node_id, repository_id)
+        ) STRICT;
+        ALTER TABLE dispatches ADD COLUMN repository_scope_json TEXT;`);
+        this.connection.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)").run(202611270100, new Date().toISOString());
+      });
+    }
+
   }
 }

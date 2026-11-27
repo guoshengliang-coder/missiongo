@@ -1,3 +1,4 @@
+import { RepositoryDevicePaths } from "./project-repositories";
 import { Select } from "./select";
 import { Modal } from "./modal";
 import { useConfirm } from "./confirm-dialog";
@@ -484,6 +485,7 @@ function NodeCard({
               </div>
             </label>
           ))}
+          {rows.map(({ product }) => <RepositoryDevicePaths key={product.id} nodeId={node.id} productId={product.id} />)}
           <div className="form-footer"><button type="button" className="secondary-button" disabled={reposMutation.isPending || Boolean(node.revokedAt)} onClick={() => { setDrafts({}); setManual({}); reposMutation.reset(); }}>{t("cancel")}</button>
           <button
             type="button"

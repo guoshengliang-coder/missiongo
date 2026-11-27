@@ -3,14 +3,18 @@ import Foundation
 /// Reserve a single sibling path without creating a directory or Git branch.
 /// The full dispatch id prevents concurrent batches and rework sharing a tree.
 public enum CodexWorkspace {
-    public static func worktreePath(repoPath: String, dispatchId: String) throws -> String {
+    public static func worktreePath(repoPath: String, dispatchId: String, repositoryId: String? = nil) throws -> String {
         guard LaunchPrompt.dispatchIdPattern.matches(dispatchId), dispatchId.utf8.count <= 100 else {
             throw LaunchPrompt.ValidationError.invalidDispatchId(dispatchId)
         }
         guard Paths.isAbsolute(repoPath) else { throw LaunchError("仓库路径必须是绝对路径。") }
         let repo = URL(fileURLWithPath: repoPath).standardizedFileURL.resolvingSymlinksInPath()
         guard repo.path != "/" else { throw LaunchError("不能把文件系统根目录作为派单仓库。") }
-        let path = repo.deletingLastPathComponent().appendingPathComponent("missiongo-\(dispatchId)").path
+        if let repositoryId, UUID(uuidString: repositoryId) == nil {
+            throw LaunchError("无效的仓库标识。")
+        }
+        let suffix = repositoryId.map { "-\($0)" } ?? ""
+        let path = repo.deletingLastPathComponent().appendingPathComponent("missiongo-\(dispatchId)\(suffix)").path
         guard path != repo.path else { throw LaunchError("独立 worktree 不能与主仓库相同。") }
         // Existing paths may contain someone else's work or resolve through a
         // symlink. Never grant them access merely because their name matches.
