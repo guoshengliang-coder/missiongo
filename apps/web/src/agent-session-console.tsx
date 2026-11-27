@@ -1568,6 +1568,7 @@ export function AgentSessionConsole({
                         })}
                       >
                         {dismissAttention.isPending && <LoaderCircle className="spin" size={14} />}
+                        {t("agentAttentionDismiss")}
                       </button>
                     )}
                   </div>
