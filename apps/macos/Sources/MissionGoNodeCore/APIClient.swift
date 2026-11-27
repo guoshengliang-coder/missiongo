@@ -118,7 +118,8 @@ public struct DetectedAgent: Codable, Equatable, Sendable {
         mcpAuth: McpAuthSnapshot? = nil
     ) {
         self.planApprovalProtocol = 1
-        self.repositoryScopeProtocol = kind == "codex" ? 1 : nil
+        self.repositoryScopeProtocol = kind == "codex" || kind == "claude_code"
+            || kind == "opencode" && (try? OpenCodeRegistration.load().isLocal) == true ? 1 : nil
         self.modes = modes
         self.kind = kind
         self.version = version

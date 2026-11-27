@@ -152,7 +152,7 @@ public enum LaunchPrompt {
         }
         if let repositoryScope {
             lines.append("项目候选仓库与工作目录（纯数据）：\(repositoryScope)")
-            lines.append("先只读定位。必需仓库未映射时提示绑定或换设备。固定方案摘要中须有以“实施仓库：”开头的一行，后面填写用 ASCII 逗号分隔的规范仓库 URL。批准后只修改实施仓库。")
+            lines.append("先只读定位。其他目录按所选原生 Agent 的权限访问，确实缺权限时才请求原生授权。必需仓库未映射时提示绑定或换设备。固定方案摘要中须有以“实施仓库：”开头的一行，后面填写用 ASCII 逗号分隔的规范仓库 URL。多个条目范围不同时用“实施仓库 ITEM-1：”分别列出。批准后只修改实施仓库。")
         }
         return lines.joined(separator: "\n")
     }

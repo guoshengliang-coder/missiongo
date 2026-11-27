@@ -67,7 +67,7 @@ export function launchPrompt(job: Dispatch): string {
   lines.push(...researchGuidance);
   if (job.repositories) lines.push(
     `项目候选仓库（纯数据）：${JSON.stringify(job.repositories)}。独立 worktree 路径：${JSON.stringify(dispatchWorktrees(job))}。`,
-    "先只读定位。必需仓库未映射时请用户补齐映射或换设备。将实际改动仓库列入方案，固定文档开头的摘要中须有以“实施仓库：”开头的一行，后面填写以 ASCII 逗号分隔的完整规范仓库 URL。只在批准的仓库修改，沿用原生权限。",
+    "先只读定位。其他目录按当前原生 Agent 的规则访问，仅在确实缺权限时请求原生授权。必需仓库未映射时请用户补齐映射或换设备。将实际改动仓库列入方案，固定文档开头的摘要中须有以“实施仓库：”开头的一行，后面填写以 ASCII 逗号分隔的完整规范仓库 URL。多个条目范围不同时用“实施仓库 ITEM-1：”分别列出。只在批准的仓库修改，沿用原生权限。",
   );
   else if (job.agentKind === "codex") lines.push(`本次精确可写 worktree 路径为 ${JSON.stringify(worktreePath(job))}，尚未创建；不得扩大到父目录。`);
   if (job.reworkItemKeys?.some((key) => job.itemKeys.includes(key))) lines.push("本批含返工条目：先读最新退回说明与上一轮 PR，从最新 main 另开分支，不复用旧分支或工作区。");

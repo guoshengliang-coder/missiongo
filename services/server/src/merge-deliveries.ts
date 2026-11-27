@@ -1,5 +1,5 @@
 import { projectRepositoryIdentity } from "@missiongo/domain";
-import { completionRepository, registeredRepository, scopedRepositoryApproval } from "./project-repositories.js";
+import { completionRepository, registeredRepository, repositoryCandidates, scopedRepositoryApproval } from "./project-repositories.js";
 import { publicationActionBounds, publicationTargetsSchema, assertPublicationVersions, scopeConflict, type PublicationTarget } from "./conversation-publication-targets.js";
 import { containsConversationScope, conversationScopeReview, type ConversationReviewEvidence } from "./conversation-scope-review.js";
 import { projectIntegrationInstructions } from "./integration-instructions.js";
@@ -336,7 +336,8 @@ export class MergeDeliveries {
         .get(identity.dispatchId!) as {id:string}|undefined)?.id;
       if (!sessionId) throw changed();
       for (const key of keys) {
-        if (identity.dispatchId) scopedRepositoryApproval(this.db, identity.dispatchId, accountId, key, input.repository);
+        const source = identity.dispatchId ? `dispatch:${identity.dispatchId}` : identity.sessionId ? `session:${identity.sessionId}` : undefined;
+        if (source) scopedRepositoryApproval(this.db, source, accountId, key, input.repository);
       }
       const history = this.listRaw(productId);
       const overlaps = (d:Delivery) => keys.length ? projectRepositoryIdentity(d.repository) === projectRepositoryIdentity(input.repository) && d.itemKeys.some(key=>keys.includes(key))
@@ -2375,12 +2376,18 @@ export class MergeDeliveries {
           const blocker=this.itemBlocker(d,itemKey);if(blocker)throw conflict("handoff_blocked",blocker);
           const item=this.store.getWorkItem(itemKey);
           const completion={kind:"github" as const,url:`${d.repository}/pull/${d.pullRequest}`};
-          if(item.status==="in_progress")this.store.submitDevelopmentComplete({itemKey,completion,requiredArtifacts:d.requiredArtifacts,
-            ...(d.noReleaseReason?{noReleaseReason:d.noReleaseReason}:{}),summary:b.results[d.id]!.detail,...(d.identity.dispatchId ? { sourceIdentity: `dispatch:${d.identity.dispatchId}` } : {}),idempotencyKey:`merge-batch:${b.id}:${d.id}:${itemKey}`,attribution:{accountId:b.accountId}});
+          const sourceIdentity = d.identity.dispatchId ? `dispatch:${d.identity.dispatchId}`
+            : d.identity.sessionId ? `session:${d.identity.sessionId}` : undefined;
+          const submit = () => this.store.submitDevelopmentComplete({ itemKey, completion, requiredArtifacts: d.requiredArtifacts,
+            ...(d.noReleaseReason ? { noReleaseReason: d.noReleaseReason } : {}),
+            summary: b.results[d.id]!.detail, ...(sourceIdentity ? { sourceIdentity } : {}),
+            idempotencyKey: `merge-batch:${b.id}:${d.id}:${itemKey}`, attribution: { accountId: b.accountId } });
+          const scopedExisting = sourceIdentity && repositoryCandidates(this.db, sourceIdentity, itemKey)
+            && this.store.getDeliveryRecords(itemKey).some(record => record.completion && sameCompletion(record.completion, completion));
+          if (item.status === "in_progress" || scopedExisting && ["development_complete", "pending_verification"].includes(item.status)) submit();
           else if((item.status==="development_complete" || item.status==="pending_verification") && !this.publishedHandoff(d,itemKey)) {
             const e=this.store.getDevelopmentEvidence(itemKey),scope=this.store.getDevelopmentReleaseDecision(itemKey);
-            if(e.handover?.actorKind==="agent" && e.completion && !sameCompletion(e.completion,completion))this.store.submitDevelopmentComplete({itemKey,completion,requiredArtifacts:d.requiredArtifacts,
-              ...(d.noReleaseReason?{noReleaseReason:d.noReleaseReason}:{}),summary:b.results[d.id]!.detail,...(d.identity.dispatchId ? { sourceIdentity: `dispatch:${d.identity.dispatchId}` } : {}),idempotencyKey:`merge-batch:${b.id}:${d.id}:${itemKey}`,attribution:{accountId:b.accountId}});
+            if(e.handover?.actorKind==="agent" && e.completion && !sameCompletion(e.completion,completion)) submit();
             else if(requestId)this.store.supplementDevelopmentEvidence({itemKey,accountId:b.accountId,batchId:b.id,requestId,completion,requiredArtifacts:d.requiredArtifacts,preserveVerification:item.status==="pending_verification",...(d.noReleaseReason?{noReleaseReason:d.noReleaseReason}:{})});
             else if(!e.completion||!sameCompletion(e.completion,completion)||scope.requiredArtifacts===null||digest([...scope.requiredArtifacts].sort())!==digest([...d.requiredArtifacts].sort()))throw conflict("handoff_evidence_missing","人工推进后的交付依据缺失或冲突，请在对账预览中申请补证据。");
           }

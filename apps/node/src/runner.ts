@@ -37,7 +37,8 @@ export async function detectAgents(config: Config, expected?: string, resolveCla
   for (const [kind, settings] of Object.entries(config.agents) as [Kind, AgentConfig][]) {
     try {
       const launch = kind === "claude_code" ? await resolveClaude(settings) : await resolveAgentLaunch(kind, settings);
-      const text = kind === "opencode" ? (await new OpenCodeAPI(settings.serviceRegistration, launch.env).call("GET", "/api/info")).version : await probe(launch.executable, ["--version"], undefined, launch.env);
+      const openCode = kind === "opencode" ? new OpenCodeAPI(settings.serviceRegistration, launch.env) : undefined;
+      const text = openCode ? (await openCode.call("GET", "/api/info")).version : await probe(launch.executable, ["--version"], undefined, launch.env);
       const semver = "([0-9]+\\.[0-9]+\\.[0-9]+(?:[a-z0-9._+-]*)?)";
       const parsedVersion = kind === "opencode" ? new RegExp(`^${semver}$`, "i").exec(String(text))?.[1]
         : kind === "codex" ? new RegExp(`\\bcodex(?:-cli)?\\s+v?${semver}`, "i").exec(String(text))?.[1]
@@ -57,7 +58,7 @@ export async function detectAgents(config: Config, expected?: string, resolveCla
         }
         native=await cached.value.catch(()=>undefined);
       }
-      agents.push({ models, ...native, planApprovalProtocol:1, ...(kind === "codex" ? { repositoryScopeProtocol: 1 } : {}), kind, version: parsedVersion, ready: true, skill });
+      agents.push({ models, ...native, planApprovalProtocol:1, ...(!openCode || openCode.usesLocalService() ? { repositoryScopeProtocol: 1 } : {}), kind, version: parsedVersion, ready: true, skill });
     } catch (error) { agents.push({ kind, ready: false, unavailableReason: safeError(error) }); }
   }
   return agents;
@@ -80,8 +81,8 @@ export async function launch(root: string, job: Dispatch, entry: string, options
   launchPrompt(job);
   socketPath(root, job.dispatchId);
   if (job.repositories) {
-    if (job.agentKind !== "codex" || !job.repositories.some(repository => repository.repoPath === job.repoPath)
-        || job.repositories.some(repository => !/^[a-f0-9-]{36}$/.test(repository.id))) {
+    if (!job.repositories.some(repository => repository.repoPath === job.repoPath)
+        || job.repositories.some(repository => !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(repository.id))) {
       throw new Error("Invalid repository scope in dispatch.");
     }
     const roots = new Set<string>();

@@ -545,42 +545,11 @@ public struct CodexLauncher: AgentAdapter {
             throw LaunchError(reason, failureCode: "resource_exhausted", failureStage: "readiness")
         }
 
-        let worktreePath = try job.repositories == nil ? CodexWorkspace.worktreePath(repoPath: job.repoPath, dispatchId: job.dispatchId) : nil
-        var cwd = job.repoPath
-        var workspaceRoots = worktreePath.map { [cwd, $0] } ?? []
-        var scope: String?
-        if let repositories = job.repositories {
-            guard repositories.contains(where: { $0.repoPath == job.repoPath }) else {
-                throw LaunchError("派单缺少入口仓库。")
-            }
-            var worktrees: [String: String] = [:]
-            var verified = Set<String>()
-            for repository in repositories {
-                guard let path = repository.repoPath else { continue }
-                guard Paths.isAbsolute(path) else { throw LaunchError("仓库路径必须是绝对路径。") }
-                let canonical = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
-                let top = await run("git", ["-C", canonical, "rev-parse", "--show-toplevel"])
-                let remote = await run("git", ["-C", canonical, "remote", "get-url", "origin"])
-                let normalized = remote.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-                    .replacingOccurrences(of: #"^git@([^:]+):"#, with: "https://$1/", options: .regularExpression)
-                    .replacingOccurrences(of: #"^ssh://git@"#, with: "https://", options: .regularExpression)
-                    .replacingOccurrences(of: #"/$"#, with: "", options: .regularExpression)
-                    .replacingOccurrences(of: #"\.git$"#, with: "", options: .regularExpression)
-                let canonicalRemote = normalized.lowercased().hasPrefix("https://github.com/") ? normalized.lowercased() : normalized
-                guard top.code == 0, top.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == canonical,
-                      remote.code == 0, canonicalRemote == repository.repository, verified.insert(canonical).inserted else {
-                    throw LaunchError("派单检出与登记的仓库不匹配。")
-                }
-                let tree = try CodexWorkspace.worktreePath(repoPath: canonical, dispatchId: job.dispatchId, repositoryId: repository.id)
-                workspaceRoots += [canonical, tree]
-                worktrees[repository.id] = tree
-                if path == job.repoPath { cwd = canonical }
-            }
-            let encoder = JSONEncoder()
-            let candidateJSON = String(decoding: try encoder.encode(repositories), as: UTF8.self)
-            let worktreeJSON = String(decoding: try encoder.encode(worktrees), as: UTF8.self)
-            scope = "\(candidateJSON)；worktree 映射 \(worktreeJSON)"
-        }
+        let scoped = try await DispatchRepositoryWorkspace.verify(job, run: run)
+        let worktreePath = try scoped == nil ? CodexWorkspace.worktreePath(repoPath: job.repoPath, dispatchId: job.dispatchId) : nil
+        let cwd = scoped?.cwd ?? job.repoPath
+        let workspaceRoots = scoped?.workspaceRoots ?? worktreePath.map { [cwd, $0] } ?? []
+        let scope = scoped?.prompt
         guard let skill = try? String(contentsOfFile: location.skillPath, encoding: .utf8),
               let skillVersion = SkillSync.version(ofSkill: skill) else {
             throw LaunchError(

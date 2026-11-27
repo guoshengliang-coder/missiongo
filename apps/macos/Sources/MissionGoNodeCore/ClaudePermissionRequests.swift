@@ -28,9 +28,10 @@ public enum ClaudeHostArguments {
         sessionRef: String,
         resuming: Bool,
         model: String? = nil,
-        effort: String? = nil
+        effort: String? = nil,
+        additionalDirectories: [String] = []
     ) -> [String] {
-        [
+        var args = [
             "--output-format", "stream-json",
             "--verbose",
             "--input-format", "stream-json",
@@ -42,9 +43,11 @@ public enum ClaudeHostArguments {
             "--permission-mode", mode,
             "--name", sessionName,
         ]
-            + (model.map { ["--model", $0] } ?? [])
-            + (effort.map { ["--effort", $0] } ?? [])
-            + (resuming ? ["--resume", sessionRef] : ["--session-id", sessionRef])
+        if let model { args += ["--model", model] }
+        if let effort { args += ["--effort", effort] }
+        args += additionalDirectories.flatMap { ["--add-dir", $0] }
+        args += [resuming ? "--resume" : "--session-id", sessionRef]
+        return args
     }
 }
 

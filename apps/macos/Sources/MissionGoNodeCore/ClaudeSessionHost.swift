@@ -56,6 +56,7 @@ public struct ClaudeHostConfiguration: Codable, Equatable, Sendable {
     /// change made while the session was suspended takes effect on resume.
     public let settingsRevision: Int?
     /// Local-only external bridge metadata. No provider credentials are persisted.
+    public let additionalDirectories: [String]?
     public let externalArguments: [String]?
     public let externalResume: Bool?
     public let externalEnvironmentFingerprint: String?
@@ -77,6 +78,7 @@ public struct ClaudeHostConfiguration: Codable, Equatable, Sendable {
         effort: String? = nil,
         modelsCachePath: String? = nil,
         settingsRevision: Int? = nil,
+        additionalDirectories: [String]? = nil,
         externalArguments: [String]? = nil,
         externalResume: Bool? = nil,
         externalEnvironmentFingerprint: String? = nil
@@ -97,6 +99,7 @@ public struct ClaudeHostConfiguration: Codable, Equatable, Sendable {
         self.effort = effort
         self.modelsCachePath = modelsCachePath
         self.settingsRevision = settingsRevision
+        self.additionalDirectories = additionalDirectories
         self.externalArguments = externalArguments
         self.externalResume = externalResume
         self.externalEnvironmentFingerprint = externalEnvironmentFingerprint
@@ -112,7 +115,7 @@ public struct ClaudeHostConfiguration: Codable, Equatable, Sendable {
             idleTimeoutSeconds: idleTimeoutSeconds, stallWarningSeconds: stallWarningSeconds,
             model: settings.model ?? model, effort: settings.effort ?? effort,
             modelsCachePath: modelsCachePath, settingsRevision: settings.revision,
-            externalArguments: externalArguments, externalResume: externalResume,
+            additionalDirectories: additionalDirectories, externalArguments: externalArguments, externalResume: externalResume,
             externalEnvironmentFingerprint: externalEnvironmentFingerprint
         )
     }
@@ -120,7 +123,7 @@ public struct ClaudeHostConfiguration: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case version, claudeExecutable, cwd, mode, sessionName, sessionRef, prompt
         case statePath, commandsDirectory, logPath, idleTimeoutSeconds, stallWarningSeconds
-        case model, effort, modelsCachePath, settingsRevision, externalArguments, externalResume, externalEnvironmentFingerprint
+        case model, effort, modelsCachePath, settingsRevision, additionalDirectories, externalArguments, externalResume, externalEnvironmentFingerprint
     }
 
     public init(from decoder: Decoder) throws {
@@ -141,6 +144,7 @@ public struct ClaudeHostConfiguration: Codable, Equatable, Sendable {
         effort = try values.decodeIfPresent(String.self, forKey: .effort)
         modelsCachePath = try values.decodeIfPresent(String.self, forKey: .modelsCachePath)
         settingsRevision = try values.decodeIfPresent(Int.self, forKey: .settingsRevision)
+        additionalDirectories = try values.decodeIfPresent([String].self, forKey: .additionalDirectories)
         externalArguments = try values.decodeIfPresent([String].self, forKey: .externalArguments)
         externalResume = try values.decodeIfPresent(Bool.self, forKey: .externalResume)
         externalEnvironmentFingerprint = try values.decodeIfPresent(String.self, forKey: .externalEnvironmentFingerprint)

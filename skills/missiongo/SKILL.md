@@ -1,7 +1,7 @@
 ---
 name: missiongo
 description: 通过 MissionGo MCP 查询项目概览、吞吐、交付周期和验收打回率，或完整读取及处理指定条目、评论、创建和上传附件；核实合并与发布后可靠交接。不修改条目正文与字段，不决定验收。
-version: 5.94.0
+version: 5.95.0
 ---
 
 # MissionGo 条目读取与评论
@@ -435,6 +435,8 @@ frontmatter 中的 `version` 对比。
 - 领取前主动取得**当前对话**的可信身份，不直接跳到 tracking：Codex 只读客户端已提供的 `CODEX_THREAD_ID`；Claude 桥接只读 `MISSIONGO_AGENT_SESSION_REF`，或使用 SessionStart hook 输出的本会话身份；OpenCode 使用 MissionGo 插件的当前 context hook 身份。环境读取只访问这两个已知键，不读取整个环境、凭据或其它会话文件。可信值不存在时才生成 tracking UUID，不用条目编号猜匹配。
 - 每个对话使用一份稳定 `session`：`agentKind` 是 `codex|claude_code|opencode|hermes|other`；`sessionRef` 是已从可信客户端取得的原生会话 ID，配 `refKind: "native"`。拿不到原生 ID 时为本次对话生成一个 UUID，配 `refKind: "tracking"`，不得编造原生 ID、用 Agent 名称代替、扫描其他聊天或按条目编号猜匹配。`name` 可填简短自述名称，不构成身份。Codex、Claude Code、OpenCode 的可信 native 身份默认带 `autoConnect: true`；用户要求仅进展时省略或设 false。tracking 和其他 Agent 不带 autoConnect。
 - 待处理条目领取时将这份 `session` 传给 `claim_item`，保存返回的服务端 `sessionId`。同一对话处理多条用户指定的条目时复用同一份 `session`，合并为一条控制台记录。旧客户端不带 `session` 时服务端只生成每次领取的跟踪记录，不能保证跨条目合并。
+- Codex、Claude Code 和 OpenCode 的派单或独立会话领取后，若服务端提供 `get_item_execution_repositories`，带原身份读取当前条目的候选仓库。候选按本轮与原会话固定；只有已核实节点关联才会返回该节点的检出路径。否则从原生端已有授权目录核对真实 Git remote，缺必要检出或权限才提示。保持原生模式，按原生方式处理访问，逐仓创建独立 worktree。
+- 回执中 `scoped: true` 时，先只读定位，再在固定方案摘要中写一行 `实施仓库：` 加逗号分隔的实际改动仓库完整 URL。多个条目涉及不同仓库时，分别写 `实施仓库 ITEM-1：`，用实际条目编号。沿用一次已有人工方案确认。实际改动的仓库分别登记 PR、合并及适用发布证据，未修改的候选无需交付。同一会话跨端继续时复用原身份；独立会话分别授权。各仓按原项目规则独立合并发布，整条需求自动待验证才需要逐仓证据齐备。
 - 对已在处理中、开发完成或待验证的条目，只有本会话自己领取过或用户明确要求继续处理时，才调用 `register_agent_session` 关联这份 `session`，保存返回的 `sessionId`。登记不会领取条目，不得借此抢占其他会话的工作。
 - 已保存本次对话的跟踪 `sessionId`，或用户从该记录复制了接入请求时，取得本会话可信原生 ID 后调用 `register_agent_session`，同时带原 `sessionId`、一个已关联的条目和 native `session`（含 `autoConnect: true`）。服务端核对账号、OAuth 客户端和全部关联权限，保留同一条记录及进展；不能扫描其它记录、替别的 Agent 改身份、换原生 ID或合并其他会话。当前客户端无原生身份或输入通道时，如实说明本机接入条件。
 - 为已关联条目调用 `append_comment` 时带 `sessionId`，服务端会在同一事务中把评论内容或摘要记入进展；未关联的评论不按客户端名称猜会话。仍按原有规则写条目评论，不能用会话上报替代结局回写。

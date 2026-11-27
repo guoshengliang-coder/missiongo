@@ -330,3 +330,210 @@ it("returns the same read-only delivery explanation in MCP text and structured c
   expect(JSON.parse(text(context)).deliveryExplanations).toEqual(context.structuredContent?.deliveryExplanations);
   expect(f.snapshot()).toEqual(before);
 });
+
+describe("AND-545 standalone native repository scope", () => {
+  it("keeps a console dispatch as the original scope when its native identity is used", async () => {
+    const f = await fixture();
+    const { dispatch } = f.launch();
+    const repositories = [{ id: randomUUID(), name: "Frontend", repository: "https://github.com/example/front", responsibility: "", repoPath: "/fixture/front" }];
+    f.db.prepare("UPDATE dispatches SET repository_scope_json=? WHERE id=?").run(JSON.stringify(repositories), dispatch.id);
+    const first = await f.call("claim_item", { itemKey: f.item.key, agentId: "OpenCode", dispatchId: dispatch.id,
+      authorizationMode: "conversation", idempotencyKey: "original-dispatch" });
+    f.safe(first);
+    const second = await f.call("claim_item", { ...f.claimInput, idempotencyKey: "native-alias" });
+    f.safe(second);
+    expect(textIdentity(second)).toEqual({ dispatchId: dispatch.id });
+    const registered = await f.call("register_agent_session", { itemKey: f.item.key, session: f.session });
+    f.safe(registered);
+    expect(registered.structuredContent).toMatchObject({ dispatchId: dispatch.id, sessionSource: "dispatch" });
+    expect(f.db.prepare("SELECT COUNT(*) AS count FROM external_agent_sessions").get()).toEqual({ count: 0 });
+    const scope = await f.call("get_item_execution_repositories", { itemKey: f.item.key, session: f.session });
+    f.safe(scope);
+    expect(scope.structuredContent).toMatchObject({ scoped: true, candidates: repositories });
+  });
+
+  it("binds different repository ranges for different items in one native plan", async () => {
+    const f = await fixture();
+    const { ProjectRepositories, nativeRepositoryPlanIdentity } = await import("./project-repositories.js");
+    const { ImplementationPlans } = await import("./implementation-plans.js");
+    const registry = new ProjectRepositories(f.store);
+    const front = registry.save(f.item.productId, { name: "Front", repository: "https://github.com/example/front", responsibility: "" });
+    const back = registry.save(f.item.productId, { name: "Back", repository: "https://github.com/example/back", responsibility: "" });
+    const second = f.store.createWorkItem({ productId: f.item.productId, title: "Second repo", description: "Synthetic",
+      type: "task", priority: "normal", status: "ready", environment: { platform: "shared" } });
+    f.safe(await f.call("claim_item", f.claimInput));
+    f.safe(await f.call("claim_item", { ...f.claimInput, itemKey: second.key, idempotencyKey: "second-item" }));
+    const keys = [f.item.key, second.key];
+    const plan = `实施仓库 ${f.item.key}：${front.repository}\n实施仓库 ${second.key}：${back.repository}`;
+    const document = await f.call("prepare_plan_document", {
+      itemKeys: keys, session: f.session, summary: plan, markdown: plan + "\n\nValidation", idempotencyKey: "item-scopes",
+    });
+    f.safe(document);
+    const request = await f.call("request_plan_approval", { itemKeys: keys, session: f.session,
+      documentId: document.structuredContent?.documentId, plan: document.structuredContent?.plan, validation: "", approvalMethod: "web" });
+    f.safe(request);
+    const plans = new ImplementationPlans(f.store.database);
+    const identity = nativeRepositoryPlanIdentity("original-client", f.session.agentKind, f.session.refKind, f.session.sessionRef);
+    const revision = String(request.structuredContent?.revision);
+    plans.record({ accountId: f.owner.id, identity, revision, planHash: revision, keys, source: "web", plan });
+    const reference = (repository: string) => ({ kind: "github", url: `${repository}/pull/1` });
+    const handover = (repository: string, idempotencyKey: string) => f.call("submit_development_complete", {
+      itemKey: f.item.key, session: f.session, completion: reference(repository), requiredArtifacts: ["web"], idempotencyKey,
+    });
+    expect((await handover(back.repository, "wrong-item-repo")).isError).toBe(true);
+    f.safe(await handover(front.repository, "right-item-repo"));
+    f.safe(await f.call("submit_for_verification", { itemKey: f.item.key, session: f.session,
+      ...release, completion: reference(front.repository), idempotencyKey: "front-item-release" }));
+    expect(f.store.getWorkItem(f.item.key).status).toBe("pending_verification");
+    expect(f.store.getWorkItem(second.key).status).toBe("in_progress");
+  });
+
+  it("preserves a valid legacy approval that predates the first native claim", async () => {
+    const f = await fixture();
+    const { ProjectRepositories, nativeRepositoryPlanIdentity } = await import("./project-repositories.js");
+    const { ImplementationPlans } = await import("./implementation-plans.js");
+    new ProjectRepositories(f.store).save(f.item.productId, { name: "Legacy", repository: "https://github.com/example/legacy", responsibility: "" });
+    const plans = new ImplementationPlans(f.store.database);
+    const identity = nativeRepositoryPlanIdentity("original-client", f.session.agentKind, f.session.refKind, f.session.sessionRef);
+    const keys = [f.item.key];
+    const plan = "Existing single-checkout implementation plan";
+    plans.request(f.owner.id, identity, "legacy", { keys, plan, validation: "" });
+    plans.record({ accountId: f.owner.id, identity, revision: "legacy", planHash: "legacy", keys, source: "web", plan });
+    const claimed = await f.call("claim_item", f.claimInput);
+    f.safe(claimed);
+    const execution = textIdentity(claimed);
+    const result = await f.call("get_item_execution_repositories", { itemKey: f.item.key, ...execution });
+    f.safe(result);
+    expect(result.structuredContent).toMatchObject({ scoped: false, candidates: [] });
+    f.safe(await f.complete(execution));
+  });
+
+  it.each([false, true])("links independent same-repository evidence without duplicate PRs (first claim legacy: %s)", async legacy => {
+    const f = await fixture();
+    const { ProjectRepositories, nativeRepositoryPlanIdentity } = await import("./project-repositories.js");
+    const { ImplementationPlans } = await import("./implementation-plans.js");
+    const { repository } = new ProjectRepositories(f.store).save(f.item.productId,
+      { name: "Shared", repository: "https://github.com/example/shared", responsibility: "" });
+    const keys = [f.item.key], plan = `实施仓库：${repository}`;
+    const plans = new ImplementationPlans(f.store.database);
+    const begin = async (isLegacy = false) => {
+      const session = { ...f.session, sessionRef: randomUUID(), refKind: isLegacy ? "tracking" : "native" };
+      f.safe(await f.call("claim_item", { ...f.claimInput, session, idempotencyKey: session.sessionRef }));
+      const identity = nativeRepositoryPlanIdentity("original-client", session.agentKind, session.refKind, session.sessionRef);
+      plans.request(f.owner.id, identity, "approved", { keys, plan, validation: "" });
+      plans.record({ accountId: f.owner.id, identity, revision: "approved", planHash: "approved", keys, source: "web", plan });
+      return session;
+    };
+    const a = await begin(legacy), b = await begin();
+    const reference = { kind: "github", url: `${repository}/pull/1` };
+    const handover = (session: typeof a) => f.call("submit_development_complete", { itemKey: f.item.key, session,
+      completion: reference, requiredArtifacts: ["web"], idempotencyKey: "shared-merge" });
+    f.safe(await handover(a));
+    f.safe(await f.call("submit_for_verification", { itemKey: f.item.key, session: a,
+      ...release, completion: reference, idempotencyKey: "shared-release" }));
+    expect(f.store.getWorkItem(f.item.key).status).toBe("development_complete");
+    f.safe(await handover(b));
+    expect(f.store.getWorkItem(f.item.key).status).toBe("pending_verification");
+    expect(f.store.getDeliveryRecords(f.item.key)).toHaveLength(1);
+  });
+
+  it("keeps another session's approved repository in scope while a revision is pending", async () => {
+    const f = await fixture();
+    const { ProjectRepositories, nativeRepositoryPlanIdentity } = await import("./project-repositories.js");
+    const { ImplementationPlans } = await import("./implementation-plans.js");
+    const registry = new ProjectRepositories(f.store);
+    const first = registry.save(f.item.productId, { name: "A", repository: "https://github.com/example/a", responsibility: "" });
+    const second = registry.save(f.item.productId, { name: "B", repository: "https://github.com/example/b", responsibility: "" });
+    const plans = new ImplementationPlans(f.store.database);
+    const keys = [f.item.key];
+    const begin = async (repository: string) => {
+      const session = { ...f.session, sessionRef: randomUUID() };
+      const claim = await f.call("claim_item", { ...f.claimInput, session, idempotencyKey: session.sessionRef });
+      f.safe(claim);
+      const identity = nativeRepositoryPlanIdentity("original-client", session.agentKind, session.refKind, session.sessionRef);
+      const plan = `实施仓库：${repository}`;
+      plans.request(f.owner.id, identity, "approved", { keys, plan, validation: "" });
+      plans.record({ accountId: f.owner.id, identity, revision: "approved", planHash: "approved", keys, source: "web", plan });
+      return { session, identity };
+    };
+    const a = await begin(first.repository);
+    const b = await begin(second.repository);
+    plans.request(f.owner.id, b.identity, "pending", { keys, plan: `实施仓库：${first.repository}`, validation: "" });
+    const reference = { kind: "github", url: `${first.repository}/pull/1` };
+    f.safe(await f.call("submit_development_complete", { itemKey: f.item.key, session: a.session,
+      completion: reference, requiredArtifacts: ["web"], idempotencyKey: "parallel-a-merge" }));
+    f.safe(await f.call("submit_for_verification", { itemKey: f.item.key, session: a.session,
+      ...release, completion: reference, idempotencyKey: "parallel-a-release" }));
+    expect(f.store.getWorkItem(f.item.key).status).toBe("development_complete");
+  });
+
+  it.each(["codex", "claude_code", "opencode"])("tracks independent repository handovers in one %s session", async agentKind => {
+    const f = await fixture();
+    const { ProjectRepositories, nativeRepositoryPlanIdentity } = await import("./project-repositories.js");
+    const { ImplementationPlans } = await import("./implementation-plans.js");
+    const registry = new ProjectRepositories(f.store);
+    const back = registry.save(f.item.productId, { name: "Backend", repository: "https://github.com/example/performance", responsibility: "" });
+    const front = registry.save(f.item.productId, { name: "Frontend", repository: "https://github.com/example/portal", responsibility: "" });
+    const board = registry.save(f.item.productId, { name: "Board", repository: "https://github.com/example/board", responsibility: "" });
+    const device = new DispatchStore(f.store.database);
+    const node = device.registerNode({ accountId: f.owner.id, installationId: randomUUID(), name: "Other checkout" });
+    device.setRepositoryPath(f.owner.id, node.nodeId, f.item.productId, back.id, "/fixtures/backend");
+
+    const session = { ...f.session, agentKind };
+    const claimed = await f.call("claim_item", { ...f.claimInput, session });
+    f.safe(claimed);
+    const bound = textIdentity(claimed);
+    const query = () => f.call("get_item_execution_repositories", { itemKey: f.item.key, ...bound });
+    const candidates = await query();
+    f.safe(candidates);
+    expect(candidates.structuredContent).toMatchObject({ scoped: true, candidates: [back, board, front] });
+    expect(JSON.stringify(candidates)).not.toContain("/fixtures/backend");
+    device.recordHeartbeat(node.nodeId, [{ kind: agentKind, ready: true, planApprovalProtocol: 1, repositoryScopeProtocol: 1 }]);
+    const externalId = bound.sessionId!;
+    f.db.prepare("UPDATE external_agent_sessions SET native_node_id=?,native_generation=1 WHERE id=?").run(node.nodeId, externalId);
+    expect(JSON.stringify(await query())).not.toContain("/fixtures/backend");
+    f.db.prepare("UPDATE external_agent_sessions SET native_synced_at=?,native_snapshot_json=? WHERE id=?")
+      .run(new Date().toISOString(), JSON.stringify({ status: "active" }), externalId);
+    expect((await query()).structuredContent).toMatchObject({ candidates: [{ ...back, repoPath: "/fixtures/backend" }, board, front] });
+    f.db.prepare("UPDATE nodes SET revoked_at=? WHERE id=?").run(new Date().toISOString(), node.nodeId);
+    expect(JSON.stringify(await query())).not.toContain("/fixtures/backend");
+    const anotherClient = await f.call("get_item_execution_repositories", { itemKey: f.item.key, ...bound }, { clientId: "another-client" });
+    expect(anotherClient.isError ?? anotherClient.error).toBeTruthy();
+
+    const plans = new ImplementationPlans(f.store.database);
+    const identity = nativeRepositoryPlanIdentity("original-client", agentKind, "native", session.sessionRef);
+    const approve = async (repositories: string[], key: string) => {
+      const summary = `实施仓库：${repositories.join(",")}`;
+      const prepared = await f.call("prepare_plan_document", { itemKeys: [f.item.key], session,
+        summary, markdown: summary + "\n\nValidation", idempotencyKey: key });
+      f.safe(prepared);
+      const request = await f.call("request_plan_approval", { itemKeys: [f.item.key], session,
+        documentId: prepared.structuredContent?.documentId, plan: prepared.structuredContent?.plan, validation: "", approvalMethod: "web" });
+      f.safe(request);
+      const revision = String(request.structuredContent?.revision);
+      plans.record({ accountId: f.owner.id, identity, revision, planHash: revision, keys: [f.item.key], source: "web" });
+    };
+    await approve([back.repository, front.repository], "native-multi-plan");
+
+    const reference = (repository: string) => ({ kind: "github", url: `${repository}/pull/1` });
+    const integrate = (repository: string, suffix: string) => f.call("submit_development_complete", {
+      itemKey: f.item.key, session, completion: reference(repository), requiredArtifacts: ["web"], idempotencyKey: `merge-${suffix}`,
+    });
+    const publish = (repository: string, suffix: string) => f.call("submit_for_verification", {
+      itemKey: f.item.key, ...bound, ...release, completion: reference(repository), idempotencyKey: `publish-${suffix}`,
+    });
+    expect((await integrate(board.repository, "board")).isError).toBe(true);
+    f.safe(await integrate(back.repository, "back"));
+    f.safe(await publish(back.repository, "back"));
+    expect(f.store.getWorkItem(f.item.key).status).toBe("development_complete");
+
+    if (agentKind === "claude_code") {
+      await approve([back.repository], "native-reduced-plan");
+      f.store.reconcileRepositoryVerification(f.item.key);
+    } else {
+      f.safe(await integrate(front.repository, "front"));
+      f.safe(await publish(front.repository, "front"));
+    }
+    expect(f.store.getWorkItem(f.item.key).status).toBe("pending_verification");
+  });
+});

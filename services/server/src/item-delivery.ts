@@ -1,5 +1,5 @@
 import { projectRepositoryIdentity } from "@missiongo/domain";
-import { completionRepository, plannedRepositories } from "./project-repositories.js";
+import { activeRepositoryClaims, approvedSessionRepositories, completionRepository, plannedRepositories, repositoryCandidates } from "./project-repositories.js";
 import { ImplementationPlans } from "./implementation-plans.js";
 import { itemRoles, transitionPolicy } from "./item-policy.js";
 import { deliveryExplanations } from "./delivery-explanation.js";
@@ -153,14 +153,28 @@ export function registerItemDeliveryRoutes(app: FastifyInstance, {store, account
       for (const candidate of candidates) names.set(candidate.repository, candidate.name);
       if (!proposal?.approved || !proposal.valid || !proposal.keys.includes(item.key)) continue;
       try {
-        for (const repository of plannedRepositories(store.database, dispatch.id, proposal.plan) ?? []) repositories.add(repository);
+        for (const repository of plannedRepositories(store.database, `dispatch:${dispatch.id}`, item.key, proposal.plan) ?? []) repositories.add(repository);
         approvedDispatchIds.push(dispatch.id);
       } catch { /* A historical scope is still represented by its integrated evidence. */ }
     }
-    const pending = approvedDispatchIds.length ? (db.prepare(`SELECT data_json FROM merge_deliveries WHERE product_id=?
+    const approvedSessionIds = [];
+    for (const claim of activeRepositoryClaims(store.database, item.id)) {
+      if (!claim.source?.startsWith("session:")) continue;
+      for (const candidate of repositoryCandidates(store.database, claim.source, item.key) ?? []) {
+        names.set(candidate.repository, candidate.name);
+      }
+      try {
+        const expected = approvedSessionRepositories(store.database, claim.source, claim.accountId, item.key, true);
+        if (!expected) continue;
+        for (const repository of expected) repositories.add(repository);
+        approvedSessionIds.push(claim.source.slice("session:".length));
+      } catch { /* Integrated records still represent their exact repository. */ }
+    }
+    const pending = approvedDispatchIds.length || approvedSessionIds.length ? (db.prepare(`SELECT data_json FROM merge_deliveries WHERE product_id=?
       AND state IN ('confirmed','batched','proposed')
-      AND json_extract(data_json,'$.identity.dispatchId') IN (SELECT value FROM json_each(?))
-    `).all(item.productId, JSON.stringify(approvedDispatchIds)) as unknown as { data_json: string }[])
+      AND (json_extract(data_json,'$.identity.dispatchId') IN (SELECT value FROM json_each(?))
+        OR json_extract(data_json,'$.identity.sessionId') IN (SELECT value FROM json_each(?)))
+    `).all(item.productId, JSON.stringify(approvedDispatchIds), JSON.stringify(approvedSessionIds)) as unknown as { data_json: string }[])
       .map(row => JSON.parse(row.data_json) as { itemKeys: string[]; repository: string; pullRequest: number; state: string })
       .filter(record => record.itemKeys.includes(item.key)) : [];
     const repositoryDeliveries = [...repositories].sort().map(repository => ({

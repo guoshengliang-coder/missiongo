@@ -625,7 +625,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   const storedMessages = new StoredSessionMessages(store.database);
   const agentApprovalStore = new AgentApprovalStore(store.database);
-  const planApprovals = new PlanApprovalService(store.database);
+  const planApprovals = new PlanApprovalService(store.database, itemKey => store.reconcileRepositoryVerification(itemKey));
   const documentApprovals = new DocumentPlanApprovals(store.database);
   const merges = new MergeDeliveries(store);
   const mergeContinuations = new MergeContinuations(store.database, {

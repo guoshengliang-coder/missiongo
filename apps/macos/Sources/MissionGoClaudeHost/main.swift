@@ -119,7 +119,8 @@ private func run(configPath: String) throws {
         sessionRef: config.sessionRef,
         resuming: resuming,
         model: config.model,
-        effort: config.effort
+        effort: config.effort,
+        additionalDirectories: config.additionalDirectories ?? []
     )
     process.currentDirectoryURL = URL(fileURLWithPath: config.cwd, isDirectory: true)
     var environment = ProcessInfo.processInfo.environment
