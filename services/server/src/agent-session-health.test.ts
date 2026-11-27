@@ -11,6 +11,12 @@ describe("native execution health", () => {
     expect(sessionHealth("active", { ...active, lastProgressAt: at(SESSION_PROGRESS_WARNING_MS - 1) }, now)).toEqual({ status: "active" });
     expect(sessionHealth("active", { ...active, lastProgressAt: at(0) }, now)).toEqual({ status: "active" });
   });
+  it("uses new wait evidence without extending the deadline on a mirror heartbeat", () => {
+    const waiting = { ...active, waitingActivityAt: at(1) };
+    expect(sessionHealth("active", waiting, now)).toEqual({ status: "active" });
+    const expired = now + SESSION_PROGRESS_WARNING_MS - 1;
+    expect(sessionHealth("active", { ...waiting, observedAt: new Date(expired).toISOString() }, expired)).toMatchObject({ status: "stalled" });
+  });
   it("distinguishes lost observation from absent execution progress", () => {
     expect(sessionHealth("active", { ...active, observedAt: at(SESSION_OBSERVATION_TIMEOUT_MS) }, now)).toMatchObject({ status: "unavailable" });
     expect(sessionHealth("active", { ...active, observedAt: at(SESSION_OBSERVATION_TIMEOUT_MS - 1) }, now)).toMatchObject({ status: "stalled" });

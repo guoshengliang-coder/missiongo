@@ -29,7 +29,7 @@ import { Modal } from "./modal";
 import { useMediaQuery } from "./use-media-query";
 import { BackButton } from "./back-button";
 import { useConfirm } from "./confirm-dialog";
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type FormEvent } from "react";
+import { useCallback, useEffect, useSyncExternalStore, useId, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
@@ -230,6 +230,7 @@ export function AgentSessionConsole({
   selectedSessionId,
   conversationOpen,
   draftView,
+  firstSend,
   bulkMode,
   onBulkModeChange,
   onBulkAvailabilityChange,
@@ -248,6 +249,7 @@ export function AgentSessionConsole({
   selectedSessionId: string | null;
   conversationOpen: boolean;
   draftView?: ReactNode;
+  firstSend?: { row: AgentSessionSummary; label: "agentReplySendingShort" | "agentReplyQueuedShort" | "agentSendUnconfirmedShort" | "agentSessionFailed"; requestKey?: string; open: () => void };
   bulkMode: boolean;
   onBulkModeChange: (enabled: boolean) => void;
   onBulkAvailabilityChange: (available: boolean) => void;
@@ -300,10 +302,29 @@ export function AgentSessionConsole({
   const unseenMessageIdsRef = useRef(new Set<string>());
   const hasSessionsError = sessionsError !== null && sessionsError !== undefined;
 
-  const productSessions = useMemo(
-    () => allSessions.filter((session) => session.productId === productId || session.items.some((item) => item.productId === productId)),
-    [allSessions, productId],
-  );
+  const sendVersion = useSyncExternalStore(sender.subscribe, sender.getVersion, sender.getVersion);
+  const productSessions = useMemo(() => {
+    const rows = allSessions.filter(session => session.productId === productId || session.items.some(item => item.productId === productId));
+    if (firstSend?.row.productId === productId && !rows.some(row => sessionRouteIds(row).includes(firstSend.row.id)
+      || (firstSend.requestKey && row.startRequestKey === firstSend.requestKey))) rows.push(firstSend.row);
+    return rows.map(session => {
+      const first = firstSend && (sessionRouteIds(session).includes(firstSend.row.id) || (firstSend.requestKey && session.startRequestKey === firstSend.requestKey));
+      const attempt = sender.get(session.agentSessionId ?? "");
+      const observed = session.command;
+      const local = attempt?.command;
+      const newerReceipt = local && (!observed || (local.id !== observed.id && Date.parse(local.createdAt) > Date.parse(observed.createdAt)));
+      const command = newerReceipt ? local : observed;
+      const sending = attempt && attempt.phase !== "sent";
+      const reply = sessionReplyPresentation(session.status, command, Boolean(sending && attempt.phase !== "unconfirmed" && sendAttemptLocked(attempt)), session.stopCommand);
+      const label = first && !session.startReady ? firstSend.label
+        : sending && attempt.phase === "unconfirmed" ? "agentSendUnconfirmedShort"
+        : sending && attempt.phase === "failed" ? "agentSessionFailed"
+        : command?.kind === "message" && command.status === "failed" ? "agentSessionFailed"
+        : reply?.labelKey;
+      const listRunning = session.status === "active" || label === "agentReplySendingShort" || label === "agentReplyQueuedShort" || label === "agentReplyDeliveringShort";
+      return { ...session, ...(first && !session.startReady ? { canArchive: false } : {}), listRunning, listLabel: label, listReplyIcon: reply?.iconStatus, opensDraft: Boolean(first && firstSend.label !== "agentReplyQueuedShort" && !session.startReady) };
+    });
+  }, [allSessions, productId, sender, sendVersion, firstSend]);
   const countMatches = (scope: readonly AgentSessionSummary[], key: AgentSessionFilter) =>
     scope.filter(session => agentSessionMatches(session, key, agentFilter, search, association));
   const counts = {
@@ -324,7 +345,7 @@ export function AgentSessionConsole({
   const optionCounts = useMemo(() => {
     const stats = (agent: AgentKindFilter, associationOption: AgentAssociationFilter) => {
       const rows = productSessions.filter(session => agentSessionMatches(session, filter, agent, search, associationOption));
-      return { total: rows.length, running: rows.filter(session => !session.archivedAt && session.status === "active").length };
+      return { total: rows.length, running: rows.filter(session => !session.archivedAt && session.listRunning).length };
     };
     return {
       association: { all: stats(agentFilter, "all"), unlinked: stats(agentFilter, "unlinked"), linked: stats(agentFilter, "linked"), integration: stats(agentFilter, "integration") },
@@ -858,12 +879,21 @@ export function AgentSessionConsole({
   const waitingText = selected?.agentKind === "codex"
     ? t("agentSessionWaitingApproval", { agent: agentName })
     : t("agentSessionWaitingForInput", { agent: agentName });
+  const currentTool = activities.find(activity => activity.wait?.kind === "tool") ?? activities.find(activity => !activity.wait);
+  const ciActivity = activities.find(activity => activity.wait?.kind === "ci" && activity.wait.url
+    && Date.parse(activity.wait.at) + 10 * 60_000 > clock);
+  const activeWaitLabel = turnRunning && ciActivity && (!currentTool?.wait || Date.parse(currentTool.wait.at) <= Date.parse(ciActivity.wait!.at))
+    ? t("agentSessionWaitingCI")
+    : turnRunning && currentTool?.wait?.kind === "tool"
+      ? t("agentSessionWaitingTool", { duration: elapsed(currentTool.startedAt, clock) ?? "–" }) : undefined;
   const activityText = replyPresentation ? t(replyPresentation.labelKey) : selected?.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected)) : agentWaiting
     ? waitingText
     : claudeBackgroundOnly
       ? t("agentSessionWaitingBackground", { count: activities.length })
-      : turnRunning && activities.length > 0
-        ? t("agentSessionWaitingTool", { duration: elapsed(activities[0]?.startedAt, clock) ?? "–" })
+      : activeWaitLabel
+        ? activeWaitLabel
+      : turnRunning && currentTool
+        ? t("agentSessionWaitingTool", { duration: elapsed(currentTool.startedAt, clock) ?? "–" })
       : turnRunning
         ? t("agentSessionTurnRunning", { duration: elapsed(turnState?.turnStartedAt, clock) ?? "–", agent: agentName })
         : t(activityLabelKey(sessionStatus, command?.kind !== "interrupt" && command?.status === "queued"), { agent: agentName });
@@ -1220,22 +1250,14 @@ export function AgentSessionConsole({
           {visibleSessions.map((session) => {
             const selectable = archivableIds.includes(session.id);
             const checked = selectedForArchive.has(session.id);
-            // A row whose reply is still on its way reads as working, so the
-            // list does not say "ended" beside a session that is about to run
-            // (AND-195).
-            const detail = session.id === selectedId ? sessionQuery.data : undefined;
-            const rowCommand = detail ? command : session.command;
-            const rowStatus = effectiveAgentSessionStatus(detail?.status ?? session.status, rowCommand, false,
-              Boolean((detail?.turnState ?? session.turnState)?.observedAt));
-            const rowReply = sessionReplyPresentation(detail?.status ?? session.status, rowCommand,
-              send.isPending && send.variables?.sessionId === session.agentSessionId, detail?.stopCommand ?? session.stopCommand);
+            const rowStatus = session.status;
             const rowBackground = session.agentKind === "claude_code" && rowStatus === "active" && session.turnState?.turnActive === false
               && !session.turnState.waitingForInput && session.activities.length > 0;
             // Same rule as the conversation panel above (AND-222): an OpenCode
             // session blocked on a person reads as waiting, not as running.
             const rowWaiting = ["claude_code", "codex", "opencode"].includes(session.agentKind) && ["active", "idle"].includes(rowStatus)
               && (session.command?.status !== "queued" || session.agentKind === "codex") && session.turnState?.waitingForInput === true;
-            const rowLabel = rowReply ? t(rowReply.labelKey) : session.source === "external" && !session.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(session)) : rowBackground ? t("agentSessionBackgroundStatus")
+            const rowLabel = session.listLabel ? t(session.listLabel) : session.source === "external" && !session.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(session)) : rowBackground ? t("agentSessionBackgroundStatus")
               : rowWaiting ? t(session.waitingForPermission ? "agentSessionWaitingApprovalStatus" : waitingStatusLabelKey(session)) : statusLabel(rowStatus, t);
             return (
               <div
@@ -1272,6 +1294,7 @@ export function AgentSessionConsole({
                       }
                       return;
                     }
+                    if (session.opensDraft && firstSend) { firstSend.open(); return; }
                     setOpenedSessionId(session.id);
                     onSelectSession(session.id, true);
                   }}
@@ -1282,7 +1305,7 @@ export function AgentSessionConsole({
                       role="img"
                       aria-label={`${nodeConnectionLabel(session, t)} · ${session.archivedAt ? t("archived") : rowLabel}`}
                     >
-                      {session.nodeConnectionState === "offline" ? <WifiOff size={14} /> : <SessionStatusIcon status={rowReply?.iconStatus ?? (rowWaiting ? "waiting" : rowStatus)} />}
+                      {session.nodeConnectionState === "offline" ? <WifiOff size={14} /> : <SessionStatusIcon status={session.listReplyIcon ?? (session.listRunning ? "active" : rowWaiting ? "waiting" : rowStatus)} />}
                     </span>
                     {session.unread && <i className="agent-console-unread-dot" role="img" aria-label={t("agentConsoleUnreadOne")} />}
                   </span>
@@ -1294,6 +1317,7 @@ export function AgentSessionConsole({
                     </span>
                     <span className="agent-console-session-meta">
                       <small>{session.source === "external" ? t("agentExternalSource") : session.nodeName} · {agentLabel(session, t)}</small>
+                      {session.listLabel && <small>{t(session.listLabel)}</small>}
                       <SessionCategoryBadge session={session} list />
                     </span>
                     {session.archivedAt && <span className="agent-console-unlinked-badge">{t("archived")}</span>}
@@ -1305,9 +1329,9 @@ export function AgentSessionConsole({
                     )}
                   </span>
                 </button>
-                <div className="agent-console-favorite-control">
+                {!session.opensDraft && !session.id.startsWith("local:") && <div className="agent-console-favorite-control">
                   {favoriteButton(session)}
-                </div>
+                </div>}
                 {favoriteErrors.has(session.id) && <p className="inline-error agent-console-favorite-error" role="alert">{t("agentSessionFavoriteFailed")}</p>}
               </div>
             );
@@ -1685,7 +1709,7 @@ export function AgentSessionConsole({
                     <AgentRunDetails status={visualStatus} icon={<SessionStatusIcon status={replyPresentation?.iconStatus ?? (agentWaiting ? "waiting" : visualStatus)} />} actions={stopAction}
                       label={replyPresentation ? t(replyPresentation.labelKey) : selected.source === "external" && !selected.nativeConnection?.lastSyncedAt ? t(externalProgressLabelKey(selected))
                         : agentWaiting ? t(questionPermission ? "agentRunApproval" : runWaitingLabelKey({ agentKind: selected.agentKind, approval }), { agent: agentName })
-                          : claudeBackgroundOnly ? t("agentRunBackground") : sessionStatus === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(sessionStatus, t)}>
+                          : claudeBackgroundOnly ? t("agentRunBackground") : activeWaitLabel ?? (sessionStatus === "active" ? t("agentRunActive", { agent: agentName }) : statusLabel(sessionStatus, t))}>
                       {!["stalled", "unavailable", "failed"].includes(sessionStatus) && <p>{statusDetail}</p>}
                       <AgentReplySourceNotice command={command} state={sourceState} />
                       {outgoing && ["queued", "delivering"].includes(outgoing.status) && <p>
@@ -1706,7 +1730,10 @@ export function AgentSessionConsole({
                           <header><SessionStatusIcon status={visualStatus} /><strong>{t(selected.agentKind === "claude_code" ? "agentSessionBackgroundCount" : "agentSessionToolCount", { count: activities.length })}</strong></header>
                           <ul>{activities.map((activity) => (
                             <li key={activity.id}>
-                              <span>{activity.title === "等待 CI" ? t("agentSessionWaitingCI") : activity.title}</span>
+                              {activity.wait?.kind === "ci" && activity.wait.url ? <>
+                                <a href={activity.wait.url} target="_blank" rel="noreferrer">{t("agentSessionWaitingCI")}</a>
+                                <small>{t("agentSessionCILastChecked", { time: formatAgentMessageTime(activity.wait.at, locale) })}</small>
+                              </> : <span>{activity.wait?.kind === "tool" && activity.title === "等待 CI" ? t("agentSessionCurrentTool") : activity.title === "等待 CI" ? t("agentSessionWaitingCI") : activity.title}</span>}
                               <small>{activity.startedAt ? t("agentSessionBackgroundElapsed", { duration: elapsed(activity.startedAt, clock) ?? "–" }) : activity.detail}</small>
                               {selected.agentKind === "claude_code" && selected.canReply && selected.agentSessionId && !pending && !sendingSelected && (
                                 <button type="button" className="text-button" onClick={() => setReply(t("agentSessionStopTaskMessage", { title: activity.title, id: activity.id }))}>

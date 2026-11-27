@@ -1,3 +1,4 @@
+import { sessionRouteIds } from "./session-identities";
 import { ProjectRepositorySettings } from "./project-repositories";
 import { AppNotice, type Notice, type NoticeHandler } from "./app-notice";
 import { clearArtifactAccountCache } from "./artifact-cache";
@@ -16,7 +17,7 @@ import { PendingMergeButton, MergeProgressBadge, useMergeProgress } from "./merg
 import { PRODUCT_ICON_URL } from "./branding.generated";
 import { MediaLightbox } from "./media-lightbox";
 import { AgentConsoleSearch } from "./agent-console-search";
-import { NewSessionDraft, type NewConversationDraft } from "./new-session-draft";
+import { NewSessionDraft, useNewConversationSend, type NewConversationDraft } from "./new-session-draft";
 import { CollaborationPanel } from "./collaboration";
 import { MessageButton, MessageCenter } from "./message-center";
 import { TransitionCommandKeys } from "./transition-attachments";
@@ -364,9 +365,18 @@ export function App() {
   const agentConsoleMoreTriggerRef = useRef<HTMLElement>(null);
   const [newSessionConfigOpen, setNewSessionConfigOpen] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
-  const [newSessionPending, setNewSessionPending] = useState(false);
   const [newSessionDraft, setNewSessionDraft] = useState<NewConversationDraft | null>(null);
-  const closeNewSession = () => { if (newSessionPending) return false; setNewSessionOpen(false); };
+  const newSessionOpenRef = useRef(newSessionOpen);
+  newSessionOpenRef.current = newSessionOpen && agentConsoleOpen;
+  const newSessionSubmission = useNewConversationSend(setNewSessionDraft, dispatch => {
+    setNewSessionDraft(null);
+    void queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
+    if (!newSessionOpenRef.current) return;
+    setNewSessionOpen(false);
+    afterOverlaysClose(() => selectAgentSession(dispatch.agentSessionId!, true));
+  });
+  const newSessionPending = newSessionSubmission.send.isPending;
+  const closeNewSession = () => { newSessionOpenRef.current = false; setNewSessionOpen(false); };
   useOverlay(newSessionOpen && agentConsoleOpen, closeNewSession);
   useBeforeUnloadGuard(Boolean(newSessionDraft?.text.trim() || newSessionDraft?.files.length || newSessionPending));
   const beginNewSession = () => {
@@ -973,6 +983,7 @@ export function App() {
     const accountId = bootstrapQuery.data?.user.id;
     if (accountId && draftAccountId.current && accountId !== draftAccountId.current) {
       consoleDrafts.clear();
+      newSessionSubmission.clear();
       commonCommands?.clear();
       setNewSessionDraft(null);
       setNewSessionOpen(false);
@@ -981,6 +992,40 @@ export function App() {
     if (accountId) draftAccountId.current = accountId;
   }, [bootstrapQuery.data?.user.id, consoleDrafts.clear]);
   const allAgentSessions = agentSessionsQuery.data?.sessions ?? [];
+  const firstSubmission = newSessionSubmission.send;
+  useEffect(() => {
+    const id = firstSubmission.data?.agentSessionId;
+    if (id && allAgentSessions.some(row => sessionRouteIds(row).includes(id)
+      && (row.startReady === true || row.command?.kind === "message" || row.turnState?.turnActive === true))) {
+      firstSubmission.reset();
+    }
+  }, [allAgentSessions, firstSubmission.data, firstSubmission.reset]);
+  const firstDraft = firstSubmission.isSuccess ? firstSubmission.variables?.draft : newSessionDraft;
+  const firstDispatch = firstSubmission.data ?? firstDraft?.dispatch;
+  const firstSend = firstDraft && firstSubmission.variables && (firstSubmission.isPending || firstSubmission.isError || firstSubmission.isSuccess) ? {
+    ...(firstDraft.requestKey ? { requestKey: firstDraft.requestKey } : {}),
+    open: beginNewSession,
+    label: firstSubmission.isPending ? "agentReplySendingShort" : firstSubmission.isSuccess ? "agentReplyQueuedShort"
+      : firstSubmission.error instanceof ApiError && firstSubmission.error.status < 500 && firstSubmission.error.code !== "free_session_changed"
+        ? "agentSessionFailed" : "agentSendUnconfirmedShort",
+    row: {
+      id: firstDispatch?.agentSessionId ?? "local:first-send",
+      ...(firstDispatch ? { dispatchId: firstDispatch.id } : {}),
+      productId: firstDraft.config.productId,
+      sessionName: firstDraft.text.trim().slice(0, 48) || t("newSession"),
+      agentKind: firstDraft.config.agentKind,
+      mode: firstDraft.config.mode,
+      status: "idle",
+      dispatchStatus: "queued",
+      nodeName: firstDraft.config.nodeName ?? "",
+      nodeRevoked: false,
+      createdAt: firstDispatch?.createdAt ?? new Date(firstSubmission.submittedAt).toISOString(),
+      updatedAt: new Date(firstSubmission.submittedAt).toISOString(),
+      items: [], activities: [], settings: { mode: firstDraft.config.mode, adjustable: false }, attention: { state: "not_needed" },
+      needsAttention: false, waitingForReply: false, unread: false,
+      canReply: false, canRetry: false, canStop: false, canArchive: false,
+    },
+  } satisfies React.ComponentProps<typeof AgentSessionConsole>["firstSend"] : undefined;
   const unreadCounts = useMemo(() => agentUnreadCounts(allAgentSessions), [allAgentSessions]);
   const attentionCounts = useMemo(() => agentAttentionCounts(allAgentSessions), [allAgentSessions]);
 
@@ -1742,6 +1787,7 @@ export function App() {
       {agentConsoleOpen && selectedProductId && (
         <AgentSessionConsole
           drafts={consoleDrafts}
+          {...(firstSend ? { firstSend } : {})}
           productId={selectedProductId}
           search={agentConsoleSearch}
           onSearchChange={setAgentConsoleSearch}
@@ -1754,18 +1800,12 @@ export function App() {
           draftView={newSessionOpen && newSessionDraft ? <NewSessionDraft draft={newSessionDraft}
             projectName={products.find(p => p.id === newSessionDraft.config.productId)?.name ?? ""}
             onChange={setNewSessionDraft} onBack={closeNewSession} onConfigure={() => setNewSessionConfigOpen(true)}
-            onPending={setNewSessionPending} onStarted={async dispatch => {
-              await queryClient.invalidateQueries({ queryKey: ["agent-sessions"] });
-              setNewSessionOpen(false);
-              setNewSessionDraft(null);
-              afterOverlaysClose(() => selectAgentSession(dispatch.agentSessionId!, true));
-            }} /> : undefined}
+            submission={newSessionSubmission} /> : undefined}
           bulkMode={agentConsoleBulkMode}
           onBulkModeChange={setAgentConsoleBulkMode}
           onBulkAvailabilityChange={setAgentConsoleBulkAvailable}
           onSelectSession={(id, show) => {
-            if (newSessionPending) return;
-            if (newSessionOpen) { setNewSessionOpen(false); afterOverlaysClose(() => selectAgentSession(id, show)); }
+            if (newSessionOpen) { closeNewSession(); afterOverlaysClose(() => selectAgentSession(id, show)); }
             else selectAgentSession(id, show);
           }}
           onBackToSessions={closeAgentConversation}

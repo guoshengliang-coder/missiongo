@@ -802,16 +802,27 @@ public struct AgentSessionQuestion: Codable, Equatable, Sendable {
 }
 
 public struct AgentSessionActivity: Codable, Equatable, Sendable {
+    public struct Wait: Codable, Equatable, Sendable {
+        public let kind: String
+        public let at: String?
+        public let url: String?
+        public let status: String?
+        var sample: String? = nil
+        enum CodingKeys: String, CodingKey { case kind, at, url, status }
+    }
+
     public let id: String
     public let title: String
     public let detail: String?
     public let startedAt: String?
+    public let wait: Wait?
 
-    public init(id: String, title: String, detail: String? = nil, startedAt: String? = nil) {
+    public init(id: String, title: String, detail: String? = nil, startedAt: String? = nil, wait: Wait? = nil) {
         self.id = id
         self.title = title
         self.detail = detail
         self.startedAt = startedAt
+        self.wait = wait
     }
 }
 
@@ -955,10 +966,11 @@ public struct AgentSessionReport: Codable, Equatable, Sendable {
             approval: approval, approvalRetryId: approvalRetryId, approvalRetryStatus: approvalRetryStatus, approvalRetryError: approvalRetryError)
     }
 
-    public func reportingObservation(observedAt: String, lastProgressAt: String) -> AgentSessionReport {
+    public func reportingObservation(observedAt: String, lastProgressAt: String, activities: [AgentSessionActivity]? = nil) -> AgentSessionReport {
         var report = self
         report.observedAt = observedAt
         report.lastProgressAt = lastProgressAt
+        if let activities { report.activities = activities }
         return report
     }
 

@@ -505,12 +505,14 @@ export interface AgentSessionActivity {
   readonly title: string;
   readonly detail?: string;
   readonly startedAt?: string;
+  readonly wait?: { readonly kind: "tool" | "ci"; readonly at: string; readonly url?: string; readonly status?: string };
 }
 
 export interface AgentSessionTurnState {
   readonly replyReadiness?: { readonly state: "ready" | "occupied" | "unknown"; readonly checkedAt: string };
   readonly connectionCheckRequestedAt?: string;
   readonly observedAt?: string;
+  readonly waitingActivityAt?: string | null;
   readonly lastProgressAt?: string;
   readonly turnActive?: boolean;
   readonly waitingForInput?: boolean;
@@ -633,6 +635,7 @@ export interface AgentSessionSummary {
   readonly waitingForPermission?: boolean;
   readonly productId?: string;
   readonly initialText?: string;
+  readonly startRequestKey?: string;
   readonly startReady?: boolean;
   readonly relatedSessionIds?: readonly string[];
   readonly nativeConnection?: ExternalNativeConnection;

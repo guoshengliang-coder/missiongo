@@ -11,9 +11,11 @@ for (const kind of ["opencode", "codex", "claude_code"]) for (const phone of [tr
     const context = await browser.newContext({ baseURL: WEB_ORIGIN, viewport: phone ? { width: 375, height: 812 } : { width: 1440, height: 900 },
       isMobile: phone, hasTouch: phone, colorScheme: phone ? "dark" : "light", storageState: "./tests/ui/.auth/state.json" });
     const page = await context.newPage();
-    await page.clock.install();
-    const stamp = new Date().toISOString();
-    const old = new Date(Date.now() - 12 * 60_000).toISOString();
+    const stamp = "2026-11-27T06:00:00.000Z";
+    await page.clock.install({ time: new Date(stamp) });
+    await page.clock.setFixedTime(new Date(stamp));
+    const old = new Date(Date.parse(stamp) - 12 * 60_000).toISOString();
+    const ciURL = "https://github.com/example/repository/actions/runs/123";
     const id = `health-${kind}`;
     let status = "active";
     let progressed = false;
@@ -29,7 +31,8 @@ for (const kind of ["opencode", "codex", "claude_code"]) for (const phone of [tr
       const turnState = { turnActive: status !== "idle", waitingForInput: false, turnStartedAt: old,
         lastProgressAt: progressed ? stamp : old, observedAt: stamp };
       const command = { id: "queued-reply", kind: "message", text: "进度如何？", status: accepted ? "delivered" : "queued", createdAt: old };
-      const activities = status === "idle" ? [] : [{ id: "ci", title: "等待 CI", startedAt: old }];
+      const activities = status === "idle" ? [] : [{ id: "ci", title: "等待 CI", startedAt: old,
+        ...(kind === "codex" && accepted ? { wait: { kind: "ci", status: "in_progress", at: stamp, url: ciURL } } : {}) }];
       const summary = { id, agentSessionId: id, dispatchId: "health-dispatch", agentKind: kind, status,
         updatedAt: stamp, activityAt: old, nodeName: "Fixture", nodeConnectionState: "online", nodeRevoked: false,
         mode: "default", dispatchStatus: "launched", createdAt: old, nodeId: "fixture-node", settings: {}, unread: false,
@@ -49,6 +52,11 @@ for (const kind of ["opencode", "codex", "claude_code"]) for (const phone of [tr
     accepted = true;
     await advanceSessionDetailPoll(page);
     await expect(page.locator(".agent-run-diagnostics")).toContainText("尚未确认开始处理", { timeout: 10_000 });
+    if (kind === "codex") {
+      const ci = page.locator(".agent-console-background");
+      await expect(ci.getByRole("link", { name: "等待 CI" })).toHaveAttribute("href", ciURL);
+      await expect(ci).toContainText("最近一次成功检查");
+    }
     expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
     await page.screenshot({ path: testInfo.outputPath(`tool-wait-${kind}.png`) });
     status = "stalled";

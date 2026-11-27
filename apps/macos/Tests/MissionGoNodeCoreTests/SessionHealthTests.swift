@@ -74,6 +74,52 @@ final class SessionHealthTests: XCTestCase {
         XCTAssertNotNil(progress.activities.first?.startedAt)
     }
 
+    func testGitHubWaitOnlyUsesSuccessfulStatusResultsAndDoesNotRestampReplays() {
+        func snapshot(_ id: String, status: String = "queued", exitCode: Int = 0) -> NativeExecutionProgress {
+            NativeExecutionProgress.codex(turns: [["id": "turn", "status": "inProgress", "items": [
+                ["id": id, "type": "commandExecution", "status": "completed", "exitCode": exitCode,
+                 "command": "gh run view 123 --json status,url",
+                 "aggregatedOutput": #"{"status":"\#(status)","url":"https://github.com/example/repo/actions/runs/123"}"#]
+            ]]])
+        }
+        let tracker = SessionHealthTracker()
+        func observe(_ progress: NativeExecutionProgress, _ date: Date) -> AgentSessionActivity.Wait? {
+            let report = AgentSessionReport(status: "active", messages: []).reportingExecution(
+                activities: progress.activities, revision: progress.revision, turnStartedAt: nil, lastOutputAt: nil)
+            return tracker.observe(report, key: "session", now: date).activities.first?.wait
+        }
+        let first = observe(snapshot("check-1"), start)
+        XCTAssertEqual(first?.kind, "ci")
+        XCTAssertEqual(first?.status, "queued")
+        XCTAssertEqual(first?.at, observe(snapshot("check-1"), start.addingTimeInterval(700))?.at)
+        XCTAssertNotEqual(first?.at, observe(snapshot("check-2", status: "in_progress"), start.addingTimeInterval(701))?.at)
+        XCTAssertTrue(snapshot("check-3", status: "completed").activities.isEmpty)
+        XCTAssertTrue(snapshot("check-3", exitCode: 1).activities.isEmpty)
+    }
+
+    func testWatchOnlyRefreshesFromNewCompleteFrames() {
+        let command = "gh run watch 123 --repo example/repo"
+        func activities(_ command: String, _ output: String) -> [AgentSessionActivity] {
+            NativeExecutionProgress.codex(turns: [["status": "inProgress", "items": [
+                ["type": "commandExecution", "status": "inProgress", "id": "watch", "command": command, "aggregatedOutput": output]
+            ]]]).activities
+        }
+        let marker = "Refreshing run status every 3 seconds. Press Ctrl+C to quit.\n\n"
+        let frame = marker + "* main Checks · 123\n"
+        XCTAssertEqual(activities(command, marker).first?.wait?.kind, "tool")
+        XCTAssertEqual(activities(command + " | cat", frame).first?.wait?.kind, "tool")
+        let tracker = SessionHealthTracker()
+        func observe(_ activities: [AgentSessionActivity], after: TimeInterval) -> AgentSessionActivity.Wait? {
+            let report = AgentSessionReport(status: "active", messages: [], activities: activities, turnActive: true)
+            return tracker.observe(report, key: "watch", now: start.addingTimeInterval(after)).activities.first?.wait
+        }
+        let first = observe(activities(command, frame), after: 0)
+        XCTAssertEqual(first?.url, "https://github.com/example/repo/actions/runs/123")
+        _ = observe([], after: 300)
+        XCTAssertEqual(first?.at, observe(activities(command, frame), after: 610)?.at)
+        XCTAssertNotEqual(first?.at, observe(activities(command, frame + frame), after: 611)?.at)
+    }
+
     func testCodexNativeUserInputWaitIsExplicitlyRecognized() throws {
         let snapshot = try CodexProtocol.threadSnapshot(fromRead: ["thread": [
             "status": ["type": "active", "activeFlags": ["waitingOnUserInput"]],

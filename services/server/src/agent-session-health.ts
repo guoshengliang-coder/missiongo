@@ -42,6 +42,7 @@ export function mergeSessionHealth(
     // receipts are settled above and cannot renew it. Reservation/attachment
     // preparation time is not time spent executing the new turn.
     turnState.healthStartedAt = receipt.acceptedAt;
+    delete turnState.waitingActivityAt;
     turnState.waitingForInput = false;
     turnState.waitingForPermission = false;
     delete turnState.turnStartedAt;
@@ -61,8 +62,10 @@ export function sessionHealthDeadlines(turn: AgentSessionTurnState): [number, nu
   const boundary = Date.parse(turn.healthStartedAt ?? "");
   const observed = Date.parse(turn.observedAt ?? "");
   const progress = Date.parse(turn.lastProgressAt ?? "");
+  const wait = Date.parse(turn.waitingActivityAt ?? "");
+  const lastActivity = Number.isFinite(wait) ? Math.max(Number.isFinite(progress) ? progress : wait, wait) : progress;
   const floor = (value: number) => Number.isFinite(boundary) ? Math.max(Number.isFinite(value) ? value : boundary, boundary) : value;
-  return [floor(observed) + SESSION_OBSERVATION_TIMEOUT_MS, floor(progress) + SESSION_PROGRESS_WARNING_MS];
+  return [floor(observed) + SESSION_OBSERVATION_TIMEOUT_MS, floor(lastActivity) + SESSION_PROGRESS_WARNING_MS];
 }
 
 /** A read-time projection. A warning never stops a runtime or frees its execution slot. */
@@ -85,6 +88,6 @@ export function sessionHealth(status: AgentSessionStatus, turn: AgentSessionTurn
 
 /** Observation clocks must not reorder conversations or create unread activity. */
 export function executionTurnState(turn: AgentSessionTurnState): Omit<AgentSessionTurnState, "observedAt" | "lastProgressAt" | "waitingForPermission" | "healthStartedAt"> {
-  const { observedAt: _observed, lastProgressAt: _progress, waitingForPermission: _permission, healthStartedAt: _boundary, replyReadiness: _readiness, connectionCheckRequestedAt: _request, ...execution } = turn;
+  const { observedAt: _observed, lastProgressAt: _progress, waitingActivityAt: _wait, waitingForPermission: _permission, healthStartedAt: _boundary, replyReadiness: _readiness, connectionCheckRequestedAt: _request, ...execution } = turn;
   return execution;
 }

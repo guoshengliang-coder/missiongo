@@ -4017,7 +4017,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       }
       const activities = (Array.isArray(body.activities) ? body.activities : []).map((entry) => {
         const activity = objectBody(entry);
+        const wait = activity.wait && typeof activity.wait === "object" ? objectBody(activity.wait) : undefined;
+        const at = wait && typeof wait.at === "string" && Number.isFinite(Date.parse(wait.at))
+          && Date.parse(wait.at) <= Date.now() + 60_000 ? new Date(wait.at).toISOString() : undefined;
+        const url = typeof wait?.url === "string" && /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+(?:\/job\/\d+)?$/.test(wait.url) ? wait.url : undefined;
+        const status = typeof wait?.status === "string" && ["queued", "in_progress", "waiting", "requested", "pending"].includes(wait.status) ? wait.status : undefined;
+        const evidence = at && wait?.kind === "tool" ? { kind: "tool" as const, at }
+          : at && wait?.kind === "ci" && url && status ? { kind: "ci" as const, at, url, status } : undefined;
         return {
+          ...(evidence ? { wait: evidence } : {}),
           id: stringField(activity, "id")!,
           title: stringField(activity, "title")!,
           ...(stringField(activity, "detail", false) ? { detail: activity.detail as string } : {}),
@@ -4050,7 +4058,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         }
         replyReadiness = {state: state as "ready" | "occupied" | "unknown", checkedAt};
       }
+      const waitingActivityAt = activities.flatMap(activity => activity.wait ? [activity.wait.at] : []).sort().at(-1) ?? null;
       const turnState = {
+        ...(typeof body.observedAt === "string" ? { waitingActivityAt } : {}),
         ...(replyReadiness ? {replyReadiness} : {}),
         ...(typeof body.observedAt === "string" ? { observedAt: body.observedAt } : {}),
         ...(typeof body.lastProgressAt === "string" ? { lastProgressAt: body.lastProgressAt } : {}),

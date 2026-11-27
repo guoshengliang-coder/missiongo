@@ -77,6 +77,7 @@ export interface AgentSessionActivity {
   readonly title: string;
   readonly detail?: string;
   readonly startedAt?: string;
+  readonly wait?: { readonly kind: "tool" | "ci"; readonly at: string; readonly url?: string; readonly status?: string };
 }
 
 export interface AgentSessionTurnState {
@@ -87,6 +88,7 @@ export interface AgentSessionTurnState {
   /** Derived by the server from the current snapshot, never a node-supplied grant. */
   readonly waitingForPermission?: boolean;
   readonly observedAt?: string;
+  readonly waitingActivityAt?: string | null;
   readonly lastProgressAt?: string;
   readonly turnActive?: boolean;
   readonly waitingForInput?: boolean;
@@ -163,6 +165,7 @@ export interface AgentSessionListItem {
   readonly waitingForPermission?: boolean;
   readonly productId?: string;
   readonly initialText?: string;
+  readonly startRequestKey?: string;
   readonly startReady?: boolean;
   /** Original record IDs represented by this one real conversation. */
   readonly relatedSessionIds?: readonly string[];
@@ -918,11 +921,11 @@ export class AgentSessionStore {
         .all(...sessionIds) as unknown as Array<{ session_id: string } & AttentionRow>;
       for (const attention of batch) attentionBySession.set(attention.session_id, attention);
     }
-    const freeByDispatch = new Map<string, { product_id: string; initial_text: string; session_title: string | null; ready: number; dispatch_status: string; error: string | null }>();
+    const freeByDispatch = new Map<string, { product_id: string; initial_text: string; request_key: string; session_title: string | null; ready: number; dispatch_status: string; error: string | null }>();
     if (dispatchIds.length) {
-      const batch = db.prepare(`SELECT f.dispatch_id, f.product_id, f.initial_text, f.session_title, f.ready, d.status AS dispatch_status, d.error
+      const batch = db.prepare(`SELECT f.dispatch_id, f.product_id, f.initial_text, f.request_key, f.session_title, f.ready, d.status AS dispatch_status, d.error
         FROM free_session_starts f JOIN dispatches d ON d.id = f.dispatch_id WHERE f.dispatch_id IN ${holes(dispatchIds)}`)
-        .all(...dispatchIds) as unknown as Array<{ dispatch_id: string; product_id: string; initial_text: string; session_title: string | null; ready: number; dispatch_status: string; error: string | null }>;
+        .all(...dispatchIds) as unknown as Array<{ dispatch_id: string; product_id: string; initial_text: string; request_key: string; session_title: string | null; ready: number; dispatch_status: string; error: string | null }>;
       for (const free of batch) freeByDispatch.set(free.dispatch_id, free);
     }
     const pendingNatives = new Set<string>(dispatchIds.length
@@ -1086,7 +1089,7 @@ export class AgentSessionStore {
         ...(archivedAt ? { archivedAt } : {}),
         ...(archivedSource ? { archivedSource } : {}),
         nodeId: row.node_id,
-        ...(free ? { productId: free.product_id, initialText: free.initial_text, startReady: free.ready === 1 } : {}),
+        ...(free ? { productId: free.product_id, initialText: free.initial_text, startReady: free.ready === 1, startRequestKey: free.request_key } : {}),
         nodeName: row.node_name,
         nodeConnectionState: connectionState,
         ...(row.node_last_seen_at ? { nodeLastSeenAt: row.node_last_seen_at } : {}),
@@ -1741,11 +1744,13 @@ export class AgentSessionStore {
     const activities = (input.activities ?? []).map((activity) => ({
       id: requiredText(activity.id, "activity id", 200),
       title: requiredText(activity.title, "activity title", 500),
+      ...(activity.wait ? { wait: activity.wait } : {}),
       ...(activity.detail ? { detail: requiredText(activity.detail, "activity detail", 500) } : {}),
       ...(activity.startedAt ? { startedAt: normalizedSourceTimestamp(activity.startedAt, now, "activity startedAt") } : {}),
     }));
     const activitiesJson = JSON.stringify(activities);
     const incomingTurnState: AgentSessionTurnState = {
+      ...(input.turnState?.waitingActivityAt !== undefined ? { waitingActivityAt: input.turnState.waitingActivityAt } : {}),
       ...(input.turnState?.replyReadiness ? { replyReadiness: input.turnState.replyReadiness } : {}),
       ...(input.turnState?.observedAt ? { observedAt: normalizedSourceTimestamp(input.turnState.observedAt, now, "observedAt")! } : {}),
       ...(input.turnState?.lastProgressAt ? { lastProgressAt: normalizedSourceTimestamp(input.turnState.lastProgressAt, now, "lastProgressAt")! } : {}),

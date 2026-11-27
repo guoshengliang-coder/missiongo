@@ -271,7 +271,7 @@ type FilterableAgentSession = Pick<
   | "latestMessage"
   | "sessionPurpose"
   | "items"
->;
+> & { readonly listRunning?: boolean };
 
 type UnreadCountableSession = Pick<
   AgentSessionSummary,
@@ -385,7 +385,7 @@ export function agentSessionMatches(
   if (agentFilter !== "all" && session.agentKind !== agentFilter) return false;
   if (filter === "attention" && !session.needsAttention) return false;
   if (filter === "unread" && !sessionCountsAsUnread(session)) return false;
-  if (filter === "active" && session.status !== "active") return false;
+  if (filter === "active" && !(session.listRunning ?? (session.status === "active"))) return false;
   if (filter === "failed" && !isAbnormalAgentSession(session)) return false;
   if (filter === "all" && isAbnormalAgentSession(session)) return false;
   const query = search.trim().toLocaleLowerCase();
