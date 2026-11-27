@@ -37,6 +37,24 @@ export class ProjectSessionClaims {
     return row;
   }
 
+  resolveScopedDispatch(accountId: string, itemKeys: readonly string[], session?: ExternalSessionIdentity): string | undefined {
+    if (session?.refKind !== "native" || !itemKeys.length) return;
+    const db = this.store.database.connection;
+    const rows = db.prepare(`SELECT d.id FROM agent_sessions s JOIN dispatches d ON d.id=s.dispatch_id
+      JOIN nodes n ON n.id=d.node_id WHERE d.account_id=? AND s.agent_kind=? AND s.agent_session_ref=?
+        AND n.revoked_at IS NULL AND d.status='launched' AND d.archived_at IS NULL AND s.archived_at IS NULL
+        AND d.repository_scope_json IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM json_each(?) keys WHERE NOT EXISTS (
+            SELECT 1 FROM dispatch_items i JOIN work_items w ON w.id=i.item_id
+            WHERE i.dispatch_id=d.id AND w.item_key=keys.value
+          )
+        )`).all(accountId, session.agentKind, session.sessionRef, JSON.stringify(itemKeys)) as unknown as { id: string }[];
+    if (rows.length > 1) throw conflict("dispatch_identity_ambiguous", "Use the original dispatchId for this conversation.");
+    if (rows[0]) assertDispatchExecution(this.store.database, rows[0].id);
+    return rows[0]?.id;
+  }
+
   link(project: ProjectSession, itemKey: string): void {
     const item = this.store.getWorkItem(itemKey);
     // The caller wraps this association, the claim and its receipt in one transaction.

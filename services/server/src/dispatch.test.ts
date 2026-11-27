@@ -5335,3 +5335,91 @@ it("resolves the original dispatch route after a real node registers its session
   expect(retry.statusCode).toBe(404);
   expect(real.statusCode).toBe(200);
 });
+
+describe("project repository dispatch and delivery", () => {
+  it.each([false, true])("records each approved repository before verification (back no release: %s)", async noRelease => {
+    const { app, cookie } = await signedInApp();
+    const { itemKey, productId } = await readyItem(app, cookie, "Performance", "PER");
+    const store = app.missionGoStore;
+    const accountId = accountsByApp.get(app)!.id;
+    const { ProjectRepositories } = await import("./project-repositories.js");
+    const { DispatchStore } = await import("./dispatch-store.js");
+    const catalog = new ProjectRepositories(store);
+    const dispatches = new DispatchStore(store.database);
+    const front = catalog.save(productId, { name: "Front", repository: "https://github.com/Example/Performance-Front.git", responsibility: "" });
+    const back = catalog.save(productId, { name: "Back", repository: "https://github.com/example/performance-back", responsibility: "" });
+    expect(front.repository).toBe("https://github.com/example/performance-front");
+    expect(() => catalog.save(productId, { name: "Duplicate", repository: "https://github.com/EXAMPLE/performance-front", responsibility: "" })).toThrow(/already registered/);
+    const board = catalog.save(productId, { name: "Board", repository: "https://github.com/example/performance-board", responsibility: "" });
+    const node = await registeredNode(app);
+    dispatches.recordHeartbeat(node.nodeId, [{ kind: "codex", ready: true, planApprovalProtocol: 1, repositoryScopeProtocol: 1 }]);
+
+
+    const create = (repositoryIds?: string[]) => app.inject({
+      method: "POST", url: "/api/v1/dispatches", headers: { cookie },
+      payload: { nodeId: node.nodeId, agentKind: "codex", mode: "auto", itemKeys: [itemKey], ...(repositoryIds ? { repositoryIds } : {}) },
+    });
+    dispatches.replaceOwnRepos(node.nodeId, [{ productId, repoPath: "/synthetic/legacy" }]);
+    const legacy = await create();
+    expect(legacy.statusCode, legacy.body).toBe(201);
+    const legacyJob = dispatches.claimNextDispatch(node.nodeId);
+    expect(legacyJob?.repoPath).toBe("/synthetic/legacy");
+    expect(legacyJob?.repositories).toBeUndefined();
+    dispatches.setRepositoryPath(accountId, node.nodeId, productId, front.id, "/synthetic/front");
+    dispatches.setRepositoryPath(accountId, node.nodeId, productId, back.id, "/synthetic/back");
+    expect((await create([board.id])).statusCode).toBe(409);
+    const single = await create([front.id]);
+    expect(single.statusCode, single.body).toBe(201);
+    expect(dispatches.claimNextDispatch(node.nodeId)?.repositories?.map(r => r.id)).toEqual([front.id]);
+
+    const response = await create();
+    expect(response.statusCode, response.body).toBe(201);
+    const dispatchId: string = response.json().id;
+    const job = dispatches.claimNextDispatch(node.nodeId)!;
+    expect(job.repositories?.map(r => [r.id, r.repoPath])).toEqual([
+      [back.id, "/synthetic/back"], [board.id, null], [front.id, "/synthetic/front"],
+    ]);
+    store.claimWorkItem({ itemKey, dispatchId, agentId: "Codex", idempotencyKey: "repository-claim", attribution: { accountId } });
+    const sourceIdentity = `dispatch:${dispatchId}`;
+    const plans = new ImplementationPlans(store.database);
+    const plan = `实施仓库：${front.repository},${back.repository}`;
+    plans.request(accountId, sourceIdentity, "approved-scope", { keys: [itemKey], plan, validation: "" });
+    plans.record({ accountId, identity: sourceIdentity, revision: "approved-scope", planHash: "approved-scope", keys: [itemKey], source: "web" });
+
+    const completion = (repository: string) => ({ kind: "github" as const, url: `${repository}/pull/1` });
+    const integrate = (repository: string, suffix: string) => store.submitDevelopmentComplete({
+      itemKey, sourceIdentity, completion: completion(repository),
+      ...(noRelease && suffix === "back" ? { requiredArtifacts: [], noReleaseReason: "Internal test sources only" } : { requiredArtifacts: ["web"] }),
+      idempotencyKey: `repository-merge-${suffix}`, attribution: { accountId },
+    });
+    const publish = (repository: string, suffix: string) => store.submitForVerification({
+      itemKey, completion: completion(repository), idempotencyKey: `repository-release-${suffix}`,
+      deployedCommit: "a".repeat(40), receiptDigest: "b".repeat(64), attribution: { accountId },
+      releases: [{ artifact: "web", version: suffix, sourceCommit: "a".repeat(40) }],
+    });
+    expect(() => integrate(board.repository, "board")).toThrow(/approved implementation scope/);
+    expect(integrate(back.repository, "back").status).toBe("development_complete");
+    if (noRelease) {
+      const { evidenceDigest } = await import("./non-release-evidence.js");
+      const current = store.getWorkItem(itemKey);
+      const evidence = store.getDevelopmentEvidence(itemKey);
+      expect(store.submitNonReleaseForVerification({
+        itemKey, expectedRevision: current.revision, developmentEventId: evidence.handover!.id, roundKey: evidence.roundKey!,
+        completion: completion(back.repository), evidenceDigest: evidenceDigest(completion(back.repository)),
+        validation: { checks: [{ name: "test", method: "unit", result: "passed", evidence: "fixture" }], remainingVerification: [], limitations: [] },
+        idempotencyKey: "repository-no-release-back", attribution: { accountId },
+      }).status).toBe("development_complete");
+    } else {
+      expect(publish(back.repository, "back").status).toBe("development_complete");
+    }
+    expect(store.getDeliveryRecords(itemKey)).toMatchObject([{ published: true }]);
+    const status = await app.inject({ method: "GET", url: `/api/v1/items/${itemKey}/delivery`, headers: { cookie } });
+    expect(status.json().repositoryDeliveries).toMatchObject([
+      { name: "Back", integrated: [{ status: "published" }] },
+      { name: "Front", pending: [], integrated: [] },
+    ]);
+    integrate(front.repository, "front");
+    expect(publish(front.repository, "front").status).toBe("pending_verification");
+    expect(store.getDeliveryRecords(itemKey).every(record => record.published)).toBe(true);
+  });
+});

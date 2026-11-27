@@ -17,6 +17,11 @@ public struct OpenCodeRegistration: Decodable, Sendable {
     public let password: String
     public let version: String
 
+    public var isLocal: Bool {
+        guard let host = URLComponents(string: url)?.host?.lowercased() else { return false }
+        return ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host)
+    }
+
     public static func load(home: String = Paths.homeDirectory()) throws -> OpenCodeRegistration {
         let path = "\(home)/.local/state/opencode/service.json"
         guard let data = FileManager.default.contents(atPath: path),
@@ -708,6 +713,8 @@ public struct OpenCodeHTTPControl: OpenCodeControlling {
         self.session = session
     }
 
+    func usesLocalService() throws -> Bool { try OpenCodeRegistration.load(home: home).isLocal }
+
     private func call(_ method: String, _ path: String, body: [String: Any]? = nil) async throws -> [String: Any] {
         let registration = try OpenCodeRegistration.load(home: home)
         guard let origin = URL(string: registration.url),
@@ -1062,8 +1069,13 @@ public struct OpenCodeLauncher: AgentAdapter {
         guard OpenCodeModes.isAllowed(job.mode) else { throw LaunchError("不支持的 OpenCode 模式：\(job.mode)") }
         if let problem = AgentModelSettings.problem(model: job.model, effort: job.effort) { throw LaunchError(problem) }
         if let problem = Preflight.repositoryProblem(job.repoPath) { throw LaunchError(problem) }
+        if job.repositories != nil, let http = control as? OpenCodeHTTPControl, try !http.usesLocalService() {
+            throw LaunchError("多仓派单需要使用本机 OpenCode 服务。")
+        }
+        let scoped = try await DispatchRepositoryWorkspace.verify(job, run: Commands.runner(environment: ShellEnvironment.resolve()))
+        let directory = scoped?.cwd ?? job.repoPath
         _ = try await control.health()
-        switch try await control.missionGoMcpStatus(directory: job.repoPath) {
+        switch try await control.missionGoMcpStatus(directory: directory) {
         case "connected": break
         case "needs_auth":
             throw LaunchError("OpenCode 的 missiongo MCP 需要授权；请在 OpenCode 的 /mcps 中登录。",
@@ -1074,14 +1086,14 @@ public struct OpenCodeLauncher: AgentAdapter {
         }
         let prompt = try LaunchPrompt.build(
             itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode,
-            reworkItemKeys: job.reworkItemKeys, client: .openCode, freeSession: job.freeSession
+            reworkItemKeys: job.reworkItemKeys, client: .openCode, freeSession: job.freeSession, repositoryScope: scoped?.prompt
         )
         let name = SessionLauncher.sessionName(for: job)
         let catalog = await lastCatalog()
         let modelRef = resolveModelRef(model: job.model, effort: job.effort, catalog: catalog)
         let initialAgent = job.mode != "plan" ? "build" : "plan"
         let id = try await control.createSession(
-            directory: job.repoPath, agent: initialAgent, model: modelRef
+            directory: directory, agent: initialAgent, model: modelRef
         )
         do {
             let effective = try await control.sessionInfo(id: id)

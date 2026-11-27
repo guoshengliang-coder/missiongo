@@ -3,14 +3,18 @@ import Foundation
 /// Reserve a single sibling path without creating a directory or Git branch.
 /// The full dispatch id prevents concurrent batches and rework sharing a tree.
 public enum CodexWorkspace {
-    public static func worktreePath(repoPath: String, dispatchId: String) throws -> String {
+    public static func worktreePath(repoPath: String, dispatchId: String, repositoryId: String? = nil) throws -> String {
         guard LaunchPrompt.dispatchIdPattern.matches(dispatchId), dispatchId.utf8.count <= 100 else {
             throw LaunchPrompt.ValidationError.invalidDispatchId(dispatchId)
         }
         guard Paths.isAbsolute(repoPath) else { throw LaunchError("仓库路径必须是绝对路径。") }
         let repo = URL(fileURLWithPath: repoPath).standardizedFileURL.resolvingSymlinksInPath()
         guard repo.path != "/" else { throw LaunchError("不能把文件系统根目录作为派单仓库。") }
-        let path = repo.deletingLastPathComponent().appendingPathComponent("missiongo-\(dispatchId)").path
+        if let repositoryId, UUID(uuidString: repositoryId) == nil {
+            throw LaunchError("无效的仓库标识。")
+        }
+        let suffix = repositoryId.map { "-\($0)" } ?? ""
+        let path = repo.deletingLastPathComponent().appendingPathComponent("missiongo-\(dispatchId)\(suffix)").path
         guard path != repo.path else { throw LaunchError("独立 worktree 不能与主仓库相同。") }
         // Existing paths may contain someone else's work or resolve through a
         // symlink. Never grant them access merely because their name matches.
@@ -18,5 +22,51 @@ public enum CodexWorkspace {
             throw LaunchError("派单 worktree 路径已存在：\(path)。请核对已有任务与修改，不会覆盖或清理该目录。")
         }
         return path
+    }
+}
+
+struct DispatchRepositoryWorkspace {
+    let cwd: String
+    let workspaceRoots: [String]
+    let additionalCheckouts: [String]
+    let prompt: String
+
+    static func verify(_ job: DispatchJob, run: CommandRunner) async throws -> Self? {
+        guard let repositories = job.repositories else { return nil }
+        guard repositories.contains(where: { $0.repoPath == job.repoPath }) else {
+            throw LaunchError("派单缺少入口仓库。")
+        }
+        var cwd = job.repoPath
+        var workspaceRoots: [String] = []
+        var checkouts: [String] = []
+        var worktrees: [String: String] = [:]
+        var verified = Set<String>()
+        for repository in repositories {
+            guard let path = repository.repoPath else { continue }
+            guard Paths.isAbsolute(path) else { throw LaunchError("仓库路径必须是绝对路径。") }
+            let canonical = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
+            let top = await run("git", ["-C", canonical, "rev-parse", "--show-toplevel"])
+            let remote = await run("git", ["-C", canonical, "remote", "get-url", "origin"])
+            let normalized = remote.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: #"^git@([^:]+):"#, with: "https://$1/", options: .regularExpression)
+                .replacingOccurrences(of: #"^ssh://git@"#, with: "https://", options: .regularExpression)
+                .replacingOccurrences(of: #"/$"#, with: "", options: .regularExpression)
+                .replacingOccurrences(of: #"\.git$"#, with: "", options: [.regularExpression, .caseInsensitive])
+            let canonicalRemote = normalized.lowercased().hasPrefix("https://github.com/") ? normalized.lowercased() : normalized
+            guard top.code == 0, top.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == canonical,
+                  remote.code == 0, canonicalRemote == repository.repository, verified.insert(canonical).inserted else {
+                throw LaunchError("派单检出与登记的仓库不匹配。")
+            }
+            let tree = try CodexWorkspace.worktreePath(repoPath: canonical, dispatchId: job.dispatchId, repositoryId: repository.id)
+            workspaceRoots += [canonical, tree]
+            worktrees[repository.id] = tree
+            if path == job.repoPath { cwd = canonical }
+            else { checkouts.append(canonical) }
+        }
+        let encoder = JSONEncoder()
+        let candidateJSON = String(decoding: try encoder.encode(repositories), as: UTF8.self)
+        let worktreeJSON = String(decoding: try encoder.encode(worktrees), as: UTF8.self)
+        return Self(cwd: cwd, workspaceRoots: workspaceRoots, additionalCheckouts: checkouts,
+            prompt: "\(candidateJSON)；worktree 映射 \(worktreeJSON)")
     }
 }

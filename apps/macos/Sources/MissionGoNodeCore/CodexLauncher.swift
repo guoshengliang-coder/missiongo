@@ -545,7 +545,11 @@ public struct CodexLauncher: AgentAdapter {
             throw LaunchError(reason, failureCode: "resource_exhausted", failureStage: "readiness")
         }
 
-        let worktreePath = try CodexWorkspace.worktreePath(repoPath: job.repoPath, dispatchId: job.dispatchId)
+        let scoped = try await DispatchRepositoryWorkspace.verify(job, run: run)
+        let worktreePath = try scoped == nil ? CodexWorkspace.worktreePath(repoPath: job.repoPath, dispatchId: job.dispatchId) : nil
+        let cwd = scoped?.cwd ?? job.repoPath
+        let workspaceRoots = scoped?.workspaceRoots ?? worktreePath.map { [cwd, $0] } ?? []
+        let scope = scoped?.prompt
         guard let skill = try? String(contentsOfFile: location.skillPath, encoding: .utf8),
               let skillVersion = SkillSync.version(ofSkill: skill) else {
             throw LaunchError(
@@ -555,16 +559,16 @@ public struct CodexLauncher: AgentAdapter {
         }
         let prompt = try LaunchPrompt.build(
             itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode, reworkItemKeys: job.reworkItemKeys,
-            client: .codex, worktreePath: worktreePath, freeSession: job.freeSession
+            client: .codex, worktreePath: worktreePath, freeSession: job.freeSession, repositoryScope: scope
         )
         let sessionName = SessionLauncher.sessionName(for: job)
         let request = CodexThreadRequest(
             socketPath: location.controlSocketPath,
-            cwd: job.repoPath,
+            cwd: cwd,
             settings: settings,
             name: sessionName,
             prompt: prompt,
-            workspaceRoots: [job.repoPath, worktreePath],
+            workspaceRoots: workspaceRoots,
             skillVersion: skillVersion,
             model: job.model,
             effort: job.effort

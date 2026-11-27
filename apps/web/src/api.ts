@@ -217,6 +217,13 @@ function requestSignal(milliseconds: number, parent?: AbortSignal | null): Abort
   return controller.signal;
 }
 
+export interface ProjectRepository {
+  id: string;
+  name: string;
+  repository: string;
+  responsibility: string;
+}
+
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (init.method && init.method !== "GET" && deploymentInProgress()) throw new ApiError(503, "deployment_in_progress", "Deployment in progress.");
   const response = await fetch(path, {
@@ -649,6 +656,18 @@ export const api = {
     requestNoContent(`/api/v1/nodes/${encodeURIComponent(nodeId)}`, { method: "DELETE" }),
   // The whole mapping table at once: the server replaces it wholesale, so a
   // removed row is a row left out rather than a second request.
+  projectRepositories: (productId: string) =>
+    request<ProjectRepository[]>(`/api/v1/products/${encodeURIComponent(productId)}/repositories`),
+  saveProjectRepository: (productId: string, repository: Omit<ProjectRepository, "id">, id?: string) =>
+    request<ProjectRepository>(`/api/v1/products/${encodeURIComponent(productId)}/repositories${id ? `/${encodeURIComponent(id)}` : ""}`,
+      { method: id ? "PATCH" : "POST", body: JSON.stringify(repository) }),
+  archiveProjectRepository: (productId: string, id: string) =>
+    request<{ archived: boolean }>(`/api/v1/products/${encodeURIComponent(productId)}/repositories/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  repositoryPaths: (nodeId: string, productId: string) =>
+    request<{ id: string; repoPath: string | null }[]>(`/api/v1/nodes/${encodeURIComponent(nodeId)}/products/${encodeURIComponent(productId)}/repository-paths`),
+  saveRepositoryPath: (nodeId: string, productId: string, id: string, path: string) =>
+    request<{ id: string; repoPath: string | null }[]>(`/api/v1/nodes/${encodeURIComponent(nodeId)}/products/${encodeURIComponent(productId)}/repository-paths/${encodeURIComponent(id)}`,
+      { method: "PUT", body: JSON.stringify(path ? { repoPath: path } : {}) }),
   setNodeRepos: (nodeId: string, repos: readonly { productId: string; repoPath: string }[]) =>
     request<{ repos: NodeRepoMapping[] }>(`/api/v1/nodes/${encodeURIComponent(nodeId)}/repos`, {
       method: "PUT",
@@ -790,6 +809,11 @@ export interface ItemExecution {
   sessionId?: string; recorded?: boolean; sessionStatus?: string; accountName?: string; status: string; result: string; createdAt: string; startedAt: string | null; endedAt: string | null;
 }
 export interface ItemDelivery {
+  repositoryDeliveries?: {
+    repository: string; name: string;
+    pending: { url: string; state: string }[];
+    integrated: { id: string; url?: string; status: string; noRelease: boolean; remainingArtifacts: string[] }[];
+  }[];
   deliveryExplanation?: DeliveryExplanation;
   deliveryExplanations?: DeliveryExplanation[];
   manualClaimBlocked?: boolean;

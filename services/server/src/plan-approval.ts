@@ -37,7 +37,7 @@ const sourceApprovalPending = (request: AgentApproval | undefined) => Boolean(re
 export class PlanApprovalService {
   private readonly approvedRequests = new Map<string, string>();
   private readonly plans: ImplementationPlans | undefined;
-  constructor(private readonly database?: MissionGoDatabase) {
+  constructor(private readonly database?: MissionGoDatabase, private readonly verifyRepositoryScope?: (itemKey: string) => void) {
     this.plans = database ? new ImplementationPlans(database) : undefined;
   }
 
@@ -268,6 +268,7 @@ export class PlanApprovalService {
       this.plans.request(owner,this.identity(session),revision,{keys,plan,validation:prepared?.validation ?? "",...(!prepared ? {origin:"native" as const} : prepared.origin ? {origin:prepared.origin} : {})});
       this.plans.record({accountId:owner,identity:this.identity(session),revision,planHash:revision,keys,source:"web",validation:prepared?.validation ?? "",plan,
         ...(result && typeof result === "object" && "id" in result ? {commandId:String(result.id)} : {})});
+      if (this.verifyRepositoryScope) for (const key of keys) this.verifyRepositoryScope(key);
       // Running sources continue themselves. Persist a single offline/blocked idle handoff.
       if (result && typeof result === "object" && "continuationQueued" in result && !result.continuationQueued
         && (session.status !== "active" && session.turnState.turnActive !== true || this.awaitingNativePlan(session))) {

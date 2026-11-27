@@ -8,3 +8,17 @@ export function isAbsoluteRepositoryPath(path: string): boolean {
   if (path.startsWith("\\\\")) return /^\\\\[^\\/:]+\\[^\\/:]+(?:\\[^:]*)?$/.test(path);
   return path.startsWith("/") && !path.includes("\\");
 }
+
+/** Stable HTTPS spelling for project repository identity, never retaining credentials. */
+export function projectRepositoryIdentity(raw: string): string | undefined {
+  const value = raw.trim()
+    .replace(/^git@([^:]+):/, "https://$1/")
+    .replace(/^ssh:\/\/git@/, "https://")
+    .replace(/\/$/, "")
+    .replace(/\.git$/i, "");
+  const remote = value.match(/^https:\/\/([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)\/([a-z0-9_.-]+(?:\/[a-z0-9_.-]+)+)$/i);
+  if (!remote || remote[2]!.split("/").some(part => part === "." || part === "..")) return;
+  const host = remote[1]!.toLowerCase();
+  const path = host === "github.com" ? remote[2]!.toLowerCase() : remote[2]!;
+  return `https://${host}/${path}`;
+}

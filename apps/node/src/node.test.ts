@@ -590,3 +590,17 @@ it("does not grant a late native permission from external text at the actual del
   await adapter.deliver({...answer,id:"source-answer"});
   await vi.waitFor(async()=>expect((await adapter.snapshot()).waitingForInput).toBe(false));
 });
+
+it("passes only mapped secondary directories to Claude with its existing mode", () => {
+  const input = job(temporary(), "claude_code");
+  input.repositories = [
+    { id: "main", name: "Main", repository: "https://github.com/example/main", responsibility: "", repoPath: input.repoPath },
+    { id: "second", name: "Second", repository: "https://github.com/example/second", responsibility: "", repoPath: "/fixture/second" },
+    { id: "unmapped", name: "Unmapped", repository: "https://github.com/example/unmapped", responsibility: "" },
+  ];
+  const args = claudeArguments(input, "exact-ref", true);
+  expect(args.filter(value => value === "--add-dir")).toHaveLength(1);
+  expect(args[args.indexOf("--add-dir") + 1]).toBe("/fixture/second");
+  expect(args[args.indexOf("--permission-mode") + 1]).toBe(input.mode);
+  expect(args.slice(args.indexOf("--resume"), args.indexOf("--resume") + 2)).toEqual(["--resume", "exact-ref"]);
+});

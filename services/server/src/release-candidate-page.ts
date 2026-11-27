@@ -1,5 +1,7 @@
+import { projectRepositoryIdentity } from "@missiongo/domain";
 import type { MissionGoStore } from "./store.js";
 import type { MergeDeliveries } from "./merge-deliveries.js";
+import { completionRepository, registeredRepository } from "./project-repositories.js";
 import { completionPayload } from "./completion.js";
 
 /** The single candidate-page contract for MCP and explicit Web release preview. */
@@ -47,4 +49,15 @@ export function releaseCandidatePage(store:MissionGoStore,merges:MergeDeliveries
         ...(includeUnscoped ? { coverageVersion: 2, generatedAt: new Date().toISOString(), noReleaseItems, noReleaseDeliveries } : {}),
         ...(page.length === limit && Number.isSafeInteger(lastSequence) ? { nextBeforeSequence: lastSequence } : {}),
       };
+}
+
+/** Scope verified identities only. Unknown candidates remain visible for reconciliation. */
+export function repositoryReleasePage(page: ReturnType<typeof releaseCandidatePage>, store: MissionGoStore, repository: string) {
+  const canonical = projectRepositoryIdentity(repository);
+  const candidates = page.candidates.filter(raw => {
+    const candidate = raw as { completion?: { kind: string; url?: string } };
+    const other = completionRepository(candidate.completion);
+    return !other || other === canonical || !registeredRepository(store.database, page.productId, other);
+  });
+  return { ...page, repository, candidates };
 }

@@ -92,6 +92,7 @@ public struct AgentResourceSnapshot: Codable, Equatable, Sendable {
 }
 
 public struct DetectedAgent: Codable, Equatable, Sendable {
+    public let repositoryScopeProtocol: Int?
     public let planApprovalProtocol: Int?
     public let modes: [AgentModeCapability]?
     public let kind: String
@@ -117,6 +118,8 @@ public struct DetectedAgent: Codable, Equatable, Sendable {
         mcpAuth: McpAuthSnapshot? = nil
     ) {
         self.planApprovalProtocol = 1
+        self.repositoryScopeProtocol = kind == "codex" || kind == "claude_code"
+            || kind == "opencode" && (try? OpenCodeRegistration.load().isLocal) == true ? 1 : nil
         self.modes = modes
         self.kind = kind
         self.version = version
@@ -394,7 +397,16 @@ public struct RegisteredNode: Codable, Equatable, Sendable {
     public let token: String
 }
 
+public struct DispatchRepository: Codable, Equatable, Sendable {
+    public let id: String
+    public let name: String
+    public let repository: String
+    public let responsibility: String
+    public let repoPath: String?
+}
+
 public struct DispatchRequest: Codable, Equatable, Sendable {
+    public let repositories: [DispatchRepository]?
     public let sessionTitle: String?
     public let freeSession: Bool?
     public let dispatchId: String
@@ -429,8 +441,10 @@ public struct DispatchRequest: Codable, Equatable, Sendable {
         model: String? = nil,
         effort: String? = nil,
         freeSession: Bool? = nil,
-        sessionTitle: String? = nil
+        sessionTitle: String? = nil,
+        repositories: [DispatchRepository]? = nil
     ) {
+        self.repositories = repositories
         self.sessionTitle = sessionTitle
         self.freeSession = freeSession
         self.dispatchId = dispatchId

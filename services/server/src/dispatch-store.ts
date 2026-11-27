@@ -28,6 +28,7 @@ import type { MissionGoDatabase } from "./storage/database.js";
 
 export interface NodeAgentReport {
   readonly planApprovalProtocol?: number;
+  readonly repositoryScopeProtocol?: number;
   readonly modes?: readonly AgentModeCapability[] | undefined;
   readonly kind: AgentKind;
   readonly version?: string;
@@ -74,6 +75,7 @@ export interface NodeRepoMapping {
 }
 
 export interface NodeSnapshot {
+  readonly mappedRepositoryIds?: readonly string[];
   readonly supportsFreeSessions?: boolean;
   readonly supportsChatAttachments?: boolean;
   readonly id: string;
@@ -171,7 +173,16 @@ export interface DispatchHealthSnapshot {
   readonly recentFailures: readonly DispatchSnapshot[];
 }
 
+export interface DispatchRepository {
+  id: string;
+  name: string;
+  repository: string;
+  responsibility: string;
+  repoPath?: string;
+}
+
 export interface DispatchJob {
+  readonly repositories?: readonly DispatchRepository[];
   readonly freeSession?: boolean;
   readonly sessionTitle?: string;
   readonly dispatchId: string;
@@ -692,6 +703,49 @@ export class DispatchStore {
       .map((row) => ({ productId: row.product_id, productKey: row.key_prefix, repoPath: row.repo_path }));
   }
 
+  repositoryPaths(accountId: string, nodeId: string, productId: string) {
+    this.getNode(accountId, nodeId);
+    return this.database.connection.prepare(`
+      SELECT r.id, p.repo_path AS repoPath FROM project_repositories r
+      LEFT JOIN node_repository_paths p ON p.repository_id=r.id AND p.node_id=?
+      WHERE r.product_id=? AND r.archived_at IS NULL ORDER BY r.name, r.id
+    `).all(nodeId, productId) as unknown as { id: string; repoPath: string | null }[];
+  }
+
+  setRepositoryPath(accountId: string, nodeId: string, productId: string, repositoryId: string, repoPath?: string) {
+    this.getNode(accountId, nodeId);
+    const db = this.database.connection;
+    if (!db.prepare("SELECT 1 FROM project_repositories WHERE id=? AND product_id=? AND archived_at IS NULL").get(repositoryId, productId)) {
+      throw notFound("Project repository");
+    }
+    if (repoPath === undefined) {
+      db.prepare("DELETE FROM node_repository_paths WHERE node_id=? AND repository_id=?").run(nodeId, repositoryId);
+    } else {
+      const path = text(repoPath, "Repository path", 500);
+      if (!isAbsoluteRepositoryPath(path)) throw invalidInput("Repository path must be absolute.");
+      db.prepare(`INSERT INTO node_repository_paths(node_id,repository_id,repo_path) VALUES (?,?,?)
+        ON CONFLICT(node_id,repository_id) DO UPDATE SET repo_path=excluded.repo_path`).run(nodeId, repositoryId, path);
+    }
+    return this.repositoryPaths(accountId, nodeId, productId);
+  }
+
+  assertRepositoryScopeCurrent(nodeId: string, dispatchId: string, agent?: NodeAgentReport): void {
+    const db = this.database.connection;
+    const row = db.prepare("SELECT repository_scope_json AS scope FROM dispatches WHERE id=? AND node_id=?")
+      .get(dispatchId, nodeId) as { scope: string | null } | undefined;
+    if (!row?.scope) return;
+    if (agent?.repositoryScopeProtocol !== 1) throw conflict("node_upgrade_required", "This Agent cannot use the selected repository scope.");
+    const mapping = db.prepare(`SELECT r.repository, p.repo_path
+      FROM project_repositories r LEFT JOIN node_repository_paths p ON p.repository_id=r.id AND p.node_id=?
+      WHERE r.id=? AND r.archived_at IS NULL`);
+    for (const repository of JSON.parse(row.scope) as DispatchRepository[]) {
+      const current = mapping.get(nodeId, repository.id) as { repository: string; repo_path: string | null } | undefined;
+      if (!current || current.repository !== repository.repository || current.repo_path !== (repository.repoPath ?? null)) {
+        throw conflict("dispatch_changed", "Repository bindings changed. Review the device and dispatch again.");
+      }
+    }
+  }
+
   /**
    * Queue one batch for one machine.
    *
@@ -709,6 +763,8 @@ export class DispatchStore {
     model?: string;
     effort?: string;
     itemKeys: readonly string[];
+    repositoryIds?: readonly string[];
+    retryRepositories?: readonly DispatchRepository[];
     /** Internal project-scoped conversation; never accepted by the item dispatch endpoint. */
     productId?: string;
     /** Legacy compatibility flag. Parallel dispatch never cancels another queue. */
@@ -763,22 +819,52 @@ export class DispatchStore {
         return row;
       });
 
-      const repos = this.listRepos(node.id);
-      const repoPaths = new Set<string>();
-      if (input.productId) {
-        const repo = repos.find((entry) => entry.productId === input.productId);
-        if (!repo) throw conflict("repo_unmapped", "This project has no repository on this node.");
-        repoPaths.add(repo.repoPath);
+      const products = [...new Set(items.map(item => item.product_id))];
+      const candidates = products.length === 1 && !input.handoffItemId
+        ? this.database.connection.prepare(`
+          SELECT r.id, r.name, r.repository, r.responsibility, p.repo_path AS repoPath
+          FROM project_repositories r LEFT JOIN node_repository_paths p ON p.repository_id=r.id AND p.node_id=?
+          WHERE r.product_id=? AND r.archived_at IS NULL ORDER BY r.name COLLATE NOCASE, r.id
+        `).all(node.id, products[0]!) as unknown as DispatchRepository[] : [];
+      let repositories: DispatchRepository[] | undefined;
+      let repoPath: string;
+      if (input.retryRepositories || input.repositoryIds !== undefined || candidates.some(candidate => candidate.repoPath) && agent.repositoryScopeProtocol === 1) {
+        if (agent.repositoryScopeProtocol !== 1) throw conflict("node_upgrade_required", "This Agent on this device cannot use registered repositories.");
+        const requested = input.repositoryIds === undefined ? undefined : new Set(input.repositoryIds);
+        repositories = candidates.filter(repository => !requested || requested.has(repository.id));
+        if (!repositories.length || requested && repositories.length !== requested.size) throw invalidInput("Select registered repositories from the item's project.");
+        if (input.retryRepositories) {
+          const earlier = input.retryRepositories;
+          if (earlier.length !== repositories.length || earlier.some(entry => !candidates.some(candidate =>
+            candidate.id === entry.id && candidate.repository === entry.repository
+            && (candidate.repoPath ?? null) === (entry.repoPath ?? null)))) {
+            throw conflict("dispatch_changed", "Repository bindings changed. Review the device and dispatch again.");
+          }
+        }
+        const mapped = repositories.filter(repository => repository.repoPath);
+        if (!mapped.length || requested && !input.retryRepositories && mapped.length !== repositories.length) {
+          throw conflict("repo_unmapped", "Map the required repositories on this device.");
+        }
+        repoPath = mapped[0]!.repoPath!;
+      } else {
+        const repos = this.listRepos(node.id);
+        const repoPaths = new Set<string>();
+        if (input.productId) {
+          const repo = repos.find((entry) => entry.productId === input.productId);
+          if (!repo) throw conflict("repo_unmapped", "This project has no repository on this node.");
+          repoPaths.add(repo.repoPath);
+        }
+        for (const item of items) {
+          const repo = repos.find((entry) => entry.productId === item.product_id);
+          if (!repo) throw conflict("repo_unmapped", `${item.item_key}'s product has no repository on this node.`);
+          repoPaths.add(repo.repoPath);
+        }
+        if (repoPaths.size > 1) {
+          throw conflict("repo_conflict", "One session works in one checkout; these items span several repositories.");
+        }
+        repoPath = [...repoPaths][0]!;
+
       }
-      for (const item of items) {
-        const repo = repos.find((entry) => entry.productId === item.product_id);
-        if (!repo) throw conflict("repo_unmapped", `${item.item_key}'s product has no repository on this node.`);
-        repoPaths.add(repo.repoPath);
-      }
-      if (repoPaths.size > 1) {
-        throw conflict("repo_conflict", "One session works in one checkout; these items span several repositories.");
-      }
-      const repoPath = [...repoPaths][0]!;
 
       const now = new Date().toISOString();
       const dispatchId = randomUUID();
@@ -791,12 +877,12 @@ export class DispatchStore {
       this.database.connection
         .prepare(
           `INSERT INTO dispatches
-             (id, account_id, node_id, agent_kind, mode, model, effort, status, repo_path, diagnostic_snapshot_json, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`,
+             (id, account_id, node_id, agent_kind, mode, model, effort, status, repo_path, repository_scope_json, diagnostic_snapshot_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
         )
         .run(
           dispatchId, input.accountId, node.id, input.agentKind, input.mode,
-          input.model ?? null, input.effort ?? null, repoPath, JSON.stringify(diagnosticSnapshot), now,
+          input.model ?? null, input.effort ?? null, repoPath, repositories ? JSON.stringify(repositories) : null, JSON.stringify(diagnosticSnapshot), now,
         );
       for (const item of items) {
         const handover = latestBuilderHandover(this.database,item.id);
@@ -1151,10 +1237,11 @@ export class DispatchStore {
         ? ` AND d.agent_kind IN (${availableAgentKinds.map(() => "?").join(", ")})`
         : "";
       const candidates = this.claimStatement("candidates",
-          `SELECT d.id, d.agent_kind, d.mode, d.model, d.effort, d.repo_path, COALESCE(n.nickname, n.name) AS node_name
+          `SELECT d.id, d.agent_kind, d.mode, d.model, d.effort, d.repo_path, d.repository_scope_json, COALESCE(n.nickname, n.name) AS node_name
            FROM dispatches d JOIN nodes n ON n.id = d.node_id
            WHERE d.node_id = ? AND d.status = 'queued'
-             AND EXISTS (SELECT 1 FROM json_each(n.agents_json) a WHERE json_extract(a.value,'$.kind')=d.agent_kind AND json_extract(a.value,'$.planApprovalProtocol')=1)
+             AND EXISTS (SELECT 1 FROM json_each(n.agents_json) a WHERE json_extract(a.value,'$.kind')=d.agent_kind AND json_extract(a.value,'$.planApprovalProtocol')=1
+               AND (d.repository_scope_json IS NULL OR json_extract(a.value,'$.repositoryScopeProtocol')=1))
              AND NOT EXISTS (SELECT 1 FROM free_session_starts f WHERE f.dispatch_id=d.id AND (f.ready=0 OR n.supports_free_sessions!=1 OR EXISTS (SELECT 1 FROM products p WHERE p.id=f.product_id AND p.archived_at IS NOT NULL)))
              AND NOT EXISTS (SELECT 1 FROM builder_revoked_dispatches r WHERE r.dispatch_id=d.id)
              AND NOT EXISTS (SELECT 1 FROM dispatch_items i JOIN work_items w ON w.id=i.item_id JOIN products p ON p.id=w.product_id
@@ -1166,7 +1253,7 @@ export class DispatchStore {
         )
         .all(nodeId, new Date().toISOString(), ...(availableAgentKinds ?? [])) as unknown as Array<{
             id: string; agent_kind: string; mode: string; model: string | null; effort: string | null;
-            repo_path: string; node_name: string;
+            repo_path: string; repository_scope_json: string | null; node_name: string;
           }>;
       const row=candidates.find(candidate=>handoffDispatchIsCurrent(this.database,candidate.id));
       if (!row) return undefined;
@@ -1181,6 +1268,7 @@ export class DispatchStore {
         ...(free ? { freeSession: true, ...(free.session_title ? { sessionTitle: free.session_title } : {}) } : {}),
         itemKeys: this.listDispatchItemKeys(row.id),
         repoPath: row.repo_path,
+        ...(row.repository_scope_json ? { repositories: JSON.parse(row.repository_scope_json) as DispatchRepository[] } : {}),
         agentKind: row.agent_kind as AgentKind,
         mode: row.mode,
         ...(row.model ? { model: row.model } : {}),
@@ -1374,6 +1462,8 @@ export class DispatchStore {
       } else if (original.status !== "failed" && original.status !== "cancelled") {
         throw conflict("dispatch_not_retryable", "Only failed, cancelled, or timed-out deliveries can be sent again.");
       }
+      const scope = this.database.connection.prepare("SELECT repository_scope_json AS scope FROM dispatches WHERE id=?")
+        .get(dispatchId) as { scope: string | null };
       const retry = this.createDispatch({
         accountId,
         nodeId: original.nodeId,
@@ -1382,6 +1472,10 @@ export class DispatchStore {
         ...(original.model ? { model: original.model } : {}),
         ...(original.effort ? { effort: original.effort } : {}),
         itemKeys: original.itemKeys,
+        ...(scope.scope ? {
+          repositoryIds: (JSON.parse(scope.scope) as DispatchRepository[]).map(repository => repository.id),
+          retryRepositories: JSON.parse(scope.scope) as DispatchRepository[],
+        } : {}),
       }, true);
       this.database.connection.prepare("INSERT INTO idempotency_keys(key,operation,result_json,created_at) VALUES (?,?,?,?)").run(retryKey,"dispatch_retry",JSON.stringify({dispatchId:retry.id}),new Date().toISOString());
       return retry;
@@ -1543,6 +1637,12 @@ export class DispatchStore {
   }
 
   private mapNode(row: NodeRow, visibleProductIds: ProductScope = "*"): NodeSnapshot {
+    const agents = JSON.parse(row.agents_json) as NodeAgentReport[];
+    const scoped = agents.some(agent => agent.repositoryScopeProtocol === 1)
+      ? this.database.connection.prepare(`
+        SELECT r.id, r.product_id FROM node_repository_paths p JOIN project_repositories r ON r.id=p.repository_id
+        WHERE p.node_id=? AND r.archived_at IS NULL
+      `).all(row.id) as unknown as { id: string; product_id: string }[] : undefined;
     return {
       id: row.id,
       name: row.nickname ?? row.name,
@@ -1553,7 +1653,8 @@ export class DispatchStore {
       supportsChatAttachments: row.supports_chat_attachments === 1,
       ...(row.client_version ? { clientVersion: row.client_version } : {}),
       ...(row.expected_skill_version ? { expectedSkillVersion: row.expected_skill_version } : {}),
-      agents: JSON.parse(row.agents_json) as NodeAgentReport[],
+      agents,
+      ...(scoped ? { mappedRepositoryIds: scoped.filter(r => visibleProductIds === "*" || visibleProductIds.includes(r.product_id)).map(r => r.id) } : {}),
       repos: this.listRepos(row.id, visibleProductIds),
       repoCandidates: row.repo_candidates_json
         ? JSON.parse(row.repo_candidates_json) as RepoCandidate[]

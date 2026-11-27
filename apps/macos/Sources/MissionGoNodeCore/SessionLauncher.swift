@@ -104,6 +104,7 @@ public enum AgentDispatchAvailability: Equatable, Sendable {
 /// repository path — never a command line. What the session is actually told
 /// to do is decided on this machine (see `LaunchPrompt`).
 public struct DispatchJob: Equatable, Sendable {
+    public let repositories: [DispatchRepository]?
     public let sessionTitle: String?
     public let freeSession: Bool
     public let dispatchId: String
@@ -131,8 +132,10 @@ public struct DispatchJob: Equatable, Sendable {
         model: String? = nil,
         effort: String? = nil,
         freeSession: Bool = false,
-        sessionTitle: String? = nil
+        sessionTitle: String? = nil,
+        repositories: [DispatchRepository]? = nil
     ) {
+        self.repositories = repositories
         self.sessionTitle = sessionTitle
         self.freeSession = freeSession
         self.dispatchId = dispatchId
@@ -373,7 +376,7 @@ public struct SessionLauncher: AgentAdapter {
         mode: String,
         prompt: String,
         model: String? = nil,
-        effort: String? = nil
+        effort: String? = nil, additionalDirectories: [String] = []
     ) throws -> LaunchCommand {
         guard ClaudeCodeModes.isAllowed(mode) else {
             throw LaunchError("不支持的 Claude Code 模式：\(JSONValues.quote(mode))")
@@ -381,26 +384,16 @@ public struct SessionLauncher: AgentAdapter {
         if let problem = AgentModelSettings.problem(model: model, effort: effort) {
             throw LaunchError(problem)
         }
-        return LaunchCommand(
-            file: "script",
-            args: [
-                "-q",
-                "/dev/null",
-                "claude",
-                "--no-chrome",
-                "--remote-control",
-                sessionName,
-                "--disallowedTools",
-                ClaudeHostArguments.disallowedTools.joined(separator: ","),
-                "--permission-mode",
-                mode,
-                "-n",
-                sessionName,
-            ]
-                + (model.map { ["--model", $0] } ?? [])
-                + (effort.map { ["--effort", $0] } ?? [])
-                + [prompt]
-        )
+        var arguments = [
+            "-q", "/dev/null", "claude", "--no-chrome", "--remote-control", sessionName,
+            "--disallowedTools", ClaudeHostArguments.disallowedTools.joined(separator: ","),
+            "--permission-mode", mode, "-n", sessionName,
+        ]
+        if let model { arguments += ["--model", model] }
+        if let effort { arguments += ["--effort", effort] }
+        for directory in additionalDirectories { arguments += ["--add-dir", directory] }
+        arguments.append(prompt)
+        return LaunchCommand(file: "script", args: arguments)
     }
 
     private static let sessionUrlPattern = try! NSRegularExpression(
@@ -518,8 +511,9 @@ public struct SessionLauncher: AgentAdapter {
             throw LaunchError(reason)
         }
 
+        let scoped = try await DispatchRepositoryWorkspace.verify(job, run: run)
         let prompt = try LaunchPrompt.build(
-            itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode, reworkItemKeys: job.reworkItemKeys, freeSession: job.freeSession
+            itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode, reworkItemKeys: job.reworkItemKeys, freeSession: job.freeSession, repositoryScope: scoped?.prompt
         )
         let sessionName = SessionLauncher.sessionName(for: job)
         guard ClaudeCodeModes.isAllowed(job.mode) else {
@@ -549,7 +543,7 @@ public struct SessionLauncher: AgentAdapter {
         let configPath = ClaudeHostStore.configPath(root: sessionsDirectory, sessionRef: sessionRef)
         try ClaudeHostFiles.write(ClaudeHostConfiguration(
             claudeExecutable: claudeExecutable,
-            cwd: job.repoPath,
+            cwd: scoped?.cwd ?? job.repoPath,
             mode: job.mode,
             sessionName: sessionName,
             sessionRef: sessionRef,
@@ -559,7 +553,8 @@ public struct SessionLauncher: AgentAdapter {
             logPath: logPath,
             model: job.model,
             effort: job.effort,
-            modelsCachePath: ClaudeHostStore.modelsCachePath(root: sessionsDirectory)
+            modelsCachePath: ClaudeHostStore.modelsCachePath(root: sessionsDirectory),
+            additionalDirectories: scoped?.additionalCheckouts
         ), to: configPath)
 
         let process: Process
@@ -607,12 +602,14 @@ public struct SessionLauncher: AgentAdapter {
             throw LaunchError(reason)
         }
 
+        let scoped = try await DispatchRepositoryWorkspace.verify(job, run: run)
         let prompt = try LaunchPrompt.build(
-            itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode, reworkItemKeys: job.reworkItemKeys, freeSession: job.freeSession
+            itemKeys: job.itemKeys, dispatchId: job.dispatchId, mode: job.mode, reworkItemKeys: job.reworkItemKeys, freeSession: job.freeSession, repositoryScope: scoped?.prompt
         )
         let sessionName = SessionLauncher.sessionName(for: job)
         let command = try SessionLauncher.launchCommand(
-            sessionName: sessionName, mode: job.mode, prompt: prompt, model: job.model, effort: job.effort
+            sessionName: sessionName, mode: job.mode, prompt: prompt, model: job.model, effort: job.effort,
+            additionalDirectories: scoped?.additionalCheckouts ?? []
         )
 
         let logPath = SessionLauncher.logPath(for: job.dispatchId, in: logsDirectory)
@@ -640,7 +637,7 @@ public struct SessionLauncher: AgentAdapter {
             arguments[2] = launcher
         }
         process.arguments = arguments
-        process.currentDirectoryURL = URL(fileURLWithPath: job.repoPath, isDirectory: true)
+        process.currentDirectoryURL = URL(fileURLWithPath: scoped?.cwd ?? job.repoPath, isDirectory: true)
         process.environment = ClaudeProcessEnvironment.unattended(environment.environment)
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = logHandle

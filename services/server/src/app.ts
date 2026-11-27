@@ -107,6 +107,7 @@ import {
   type AgentSessionStatus,
 } from "./agent-session-store.js";
 import { optionalName, parseAgentModes, parseAgentModels } from "./agent-settings.js";
+import { ProjectRepositories } from "./project-repositories.js";
 import { DispatchStore } from "./dispatch-store.js";
 import { ManagedExecutionStore } from "./managed-execution-store.js";
 import { registerManagedExecutionRoutes } from "./managed-execution-routes.js";
@@ -624,7 +625,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   const storedMessages = new StoredSessionMessages(store.database);
   const agentApprovalStore = new AgentApprovalStore(store.database);
-  const planApprovals = new PlanApprovalService(store.database);
+  const planApprovals = new PlanApprovalService(store.database, itemKey => store.reconcileRepositoryVerification(itemKey));
   const documentApprovals = new DocumentPlanApprovals(store.database);
   const merges = new MergeDeliveries(store);
   const mergeContinuations = new MergeContinuations(store.database, {
@@ -2495,6 +2496,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     };
   });
 
+  app.get("/api/v1/nodes/:nodeId/products/:productId/repository-paths", async request => {
+    const { nodeId, productId } = request.params as { nodeId: string; productId: string };
+    requireProductPermission(request, productId);
+    return dispatchStore.repositoryPaths(requireAccountId(request), nodeId, productId);
+  });
+  app.put("/api/v1/nodes/:nodeId/products/:productId/repository-paths/:repositoryId", async request => {
+    const { nodeId, productId, repositoryId } = request.params as { nodeId: string; productId: string; repositoryId: string };
+    requireProductPermission(request, productId);
+    return dispatchStore.setRepositoryPath(requireAccountId(request), nodeId, productId, repositoryId,
+      stringField(objectBody(request.body), "repoPath", false));
+  });
+
   // `active` keeps its conflict-checking contract. `latest` is presentation:
   // the newest hand-off of each item whatever its status, so a row can always
   // say which machine and agent the work went to (AND-216); a failed attempt is
@@ -2547,7 +2560,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const requestKey = typeof body.idempotencyKey === "string" ? body.idempotencyKey.trim() : undefined;
       if (requestKey !== undefined && (!requestKey || requestKey.length > 200)) throw invalidInput("Invalid dispatch request key.");
       const operation = `dispatch:${accountId}:${requestKey}`;
-      const digest = JSON.stringify([[...authorizedKeys].sort(),body.nodeId,body.agentKind,body.mode,body.model ?? null,body.effort ?? null]);
+      const repositoryIds = stringArrayField(body, "repositoryIds");
+      if (body.repositoryIds !== undefined && (!repositoryIds?.length || repositoryIds.length > 50 || new Set(repositoryIds).size !== repositoryIds.length)) {
+        throw invalidInput("Invalid repository selection.");
+      }
+      const digest = JSON.stringify([[...authorizedKeys].sort(),body.nodeId,body.agentKind,body.mode,body.model ?? null,body.effort ?? null,
+        ...(repositoryIds ? [[...repositoryIds].sort()] : [])]);
       const prior = requestKey ? store.database.connection.prepare("SELECT result_json FROM idempotency_keys WHERE key=? AND operation=?").get(operation,"parallel_dispatch") as {result_json:string}|undefined : undefined;
       if (prior) {
         const record=JSON.parse(prior.result_json);
@@ -2562,6 +2580,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         ...(optionalName(body, "model") ? { model: optionalName(body, "model")! } : {}),
         ...(optionalName(body, "effort") ? { effort: optionalName(body, "effort")! } : {}),
         itemKeys: authorizedKeys,
+        ...(repositoryIds ? { repositoryIds } : {}),
         force: body.force === true,
         saveAsDefault: body.saveAsDefault === true,
       }, true);
@@ -4216,6 +4235,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           return {
             kind: stringField(agent, "kind")! as AgentKind,
             ...(agent.planApprovalProtocol===1 ? {planApprovalProtocol:1} : {}),
+            ...(agent.repositoryScopeProtocol===1 ? {repositoryScopeProtocol:1} : {}),
             ...(agent.modes !== undefined ? {modes:parseAgentModes(agent.modes)} : {}),
             ...(stringField(agent, "version", false) ? { version: agent.version as string } : {}),
             ...(models ? { models } : {}),
@@ -4323,8 +4343,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     const dispatch = dispatchStore.getDispatch(node.accountId, dispatchId);
     if (dispatch.productId) requireNodeAccountPermission(node.accountId, dispatch.productId, true);
     for (const key of dispatch.itemKeys) requireNodeAccountPermission(node.accountId, store.getWorkItem(key).productId, true);
-    const allowed=agentSessionStore.permitDispatchStart(node.nodeId, dispatchId);
     const agent=dispatchStore.getNode(node.accountId,node.nodeId).agents.find(entry=>entry.kind===dispatch.agentKind);
+    dispatchStore.assertRepositoryScopeCurrent(node.nodeId, dispatchId, agent);
+    const allowed=agentSessionStore.permitDispatchStart(node.nodeId, dispatchId);
     if(allowed && agent?.planApprovalProtocol!==1) throw conflict("node_upgrade_required","Update this node before starting: native implementation-plan restrictions are not confirmed.");
     return { allowed };
   });
@@ -4691,6 +4712,43 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...(body.name !== undefined ? { name: stringField(body, "name")! } : {}),
       ...(body.archived !== undefined ? { archived: booleanField(body, "archived") } : {}),
     });
+  });
+
+  const projectRepositories = new ProjectRepositories(store);
+  app.get("/api/v1/products/:productId/repositories", async request => {
+    const { productId } = request.params as { productId: string };
+    requireProductPermission(request, productId);
+    return projectRepositories.list(productId);
+  });
+  app.post("/api/v1/products/:productId/repositories", async (request, reply) => {
+    const { productId } = request.params as { productId: string };
+    requireProductPermission(request, productId, "operate");
+    requireProductOwnership(request, productId, "configure repositories");
+    const body = objectBody(request.body);
+    const repository = projectRepositories.save(productId, {
+      name: stringField(body, "name")!,
+      repository: stringField(body, "repository")!,
+      responsibility: stringField(body, "responsibility", false) ?? "",
+    });
+    return reply.status(201).send(repository);
+  });
+  app.patch("/api/v1/products/:productId/repositories/:repositoryId", async request => {
+    const { productId, repositoryId } = request.params as { productId: string; repositoryId: string };
+    requireProductPermission(request, productId, "operate");
+    requireProductOwnership(request, productId, "configure repositories");
+    const body = objectBody(request.body);
+    return projectRepositories.save(productId, {
+      name: stringField(body, "name")!,
+      repository: stringField(body, "repository")!,
+      responsibility: stringField(body, "responsibility", false) ?? "",
+    }, repositoryId);
+  });
+  app.delete("/api/v1/products/:productId/repositories/:repositoryId", async request => {
+    const { productId, repositoryId } = request.params as { productId: string; repositoryId: string };
+    requireProductPermission(request, productId, "operate");
+    requireProductOwnership(request, productId, "configure repositories");
+    projectRepositories.archive(productId, repositoryId);
+    return { archived: true };
   });
 
   app.get("/api/v1/products/:productId/components", async (request) => {

@@ -192,13 +192,28 @@ export function ItemDeliveryPanel({item,summarizedSessionId,dispatches,dispatche
   for (const notice of notificationsQuery.data?.notifications ?? []) if (notice.kind!=="comment") rows.push({key:`notice:${notice.id}`,createdAt:notice.createdAt,notice});
   rows.sort((a,b) => a.createdAt.localeCompare(b.createdAt));
   const hasExecutions=rows.length>0;
-  if(!data?.deliveries?.length && !explanations.length && !hasExecutions && !data?.executionBlockers?.length && !data?.pendingAgentHandoff && !EXECUTION_ASSIGNMENT_ENABLED && !query.isError && !dispatchesFailed && !notificationsQuery.isError) return null;
+  if(!data?.repositoryDeliveries?.length && !data?.deliveries?.length && !explanations.length && !hasExecutions && !data?.executionBlockers?.length && !data?.pendingAgentHandoff && !EXECUTION_ASSIGNMENT_ENABLED && !query.isError && !dispatchesFailed && !notificationsQuery.isError) return null;
   return <section className="delivery-panel" aria-label="执行记录">
     <div className="delivery-heading">{!hasExecutions && <h3>执行记录</h3>}
       {EXECUTION_ASSIGNMENT_ENABLED && data?.canManage && <div className="delivery-actions">
         <button type="button" className="secondary-button" onClick={()=>{setPerformer("");setScope("");setPreviousId("");setExecutionNote("");assign.reset();setMode("execution");}}>安排执行／交接</button>
       </div>}
     </div>
+    {Boolean(data?.repositoryDeliveries?.length) && <RecordDisclosure className="execution-history" summary={t("repositoryDeliveries")}>
+      <ul className="execution-list">{data?.repositoryDeliveries?.map(repository => <li key={repository.repository} className="execution-row">
+        <strong>{repository.name}</strong>
+        {!repository.pending.length && !repository.integrated.length && <p>{t("repositoryDeliveryAwaitingPr")}</p>}
+        {repository.pending.map(record => <p key={record.url}>
+          <a href={record.url} target="_blank" rel="noreferrer">{t("repositoryDeliveryPr", { number: record.url.split("/").at(-1) ?? "" })}</a> · {record.state === "proposed" ? t("repositoryDeliveryWaitingConfirmation") : t("repositoryDeliveryWaitingMerge")}
+        </p>)}
+        {repository.integrated.map(record => <p key={record.id}>
+          {record.url && <><a href={record.url} target="_blank" rel="noreferrer">{t("repositoryDeliveryPr", { number: record.url.split("/").at(-1) ?? "" })}</a> · </>}
+          {record.status === "published" ? record.noRelease ? t("repositoryDeliveryNoRelease") : t("repositoryDeliveryPublished")
+            : record.noRelease ? t("repositoryDeliveryWaitingHandover") : t("repositoryDeliveryWaitingRelease")}
+          {record.remainingArtifacts.length > 0 && <> · {record.remainingArtifacts.join("、")}</>}
+        </p>)}
+      </li>)}</ul>
+    </RecordDisclosure>}
     {awaitingPublication.length>0 && <div className="execution-record-body"><p role="status">{t("deliveryVersionAwaiting")}: {awaitingPublication.length} · {t("deliveryVersionHelp")}</p></div>}
     {explanations.map(explanation=><DeliveryExplanationNotice key={explanation.developmentEventId} explanation={explanation} identify={explanations.length>1} />)}
     {Boolean(data?.deliveries?.length) && <RecordDisclosure className="execution-history" summary={t("deliveryVersions")}>

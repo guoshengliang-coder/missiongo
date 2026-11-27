@@ -43,20 +43,32 @@ export function previouslyReviewedHistoricalGaps(db:MissionGoDatabase,productId:
   const reviewed=new Set<string>();
   const fingerprints=new Map(candidates.map(row=>[row.identity,historicalDeliveryFingerprint(row)]));
   if(!fingerprints.size)return reviewed;
-  const batches=db.connection.prepare(`SELECT data_json FROM merge_batches WHERE product_id=?
+  // Read owned bytes in bounded pages. Node 22.13 can return corrupted text
+  // from StatementSync.iterate() for large JSON values; never treat a failed
+  // decode as proof that the original review is absent.
+  const page = db.connection.prepare(`SELECT rowid AS id, CAST(data_json AS BLOB) AS data FROM merge_batches
+    WHERE product_id=? AND rowid>?
     AND (json_extract(data_json,'$.publicationReview') IS NOT NULL OR EXISTS (
       SELECT 1 FROM json_each(json_extract(data_json,'$.reconciliation.requests')) r
-      WHERE json_extract(r.value,'$.publicationScope') IS NOT NULL AND json_extract(r.value,'$.appliedAt') IS NOT NULL))`)
-    .iterate(productId) as Iterable<{data_json:string}>;
-  for(const raw of batches) {
-    for(const scope of reviewedScopes(JSON.parse(raw.data_json) as ReviewedBatch,accountId)) {
-      for(const row of scope.candidates) {
-        const expected=fingerprints.get(row.identity);
-        if(expected&&row.historicalGapReason&&!row.historicalGapPreviouslyReviewed&&expected===historicalDeliveryFingerprint(row))
-          reviewed.add(row.identity);
+      WHERE json_extract(r.value,'$.publicationScope') IS NOT NULL AND json_extract(r.value,'$.appliedAt') IS NOT NULL))
+    ORDER BY rowid LIMIT 32`);
+  let cursor = 0;
+  for (;;) {
+    const batches = page.all(productId, cursor) as unknown as { id: number; data: Uint8Array }[];
+    if (!batches.length) break;
+    for (const raw of batches) {
+      const batch = JSON.parse(Buffer.from(raw.data).toString("utf8")) as ReviewedBatch;
+      for (const scope of reviewedScopes(batch, accountId)) {
+        for (const row of scope.candidates) {
+          const expected = fingerprints.get(row.identity);
+          if (expected && row.historicalGapReason && !row.historicalGapPreviouslyReviewed && expected === historicalDeliveryFingerprint(row)) {
+            reviewed.add(row.identity);
+          }
+        }
       }
+      if (reviewed.size === fingerprints.size) return reviewed;
     }
-    if(reviewed.size===fingerprints.size)break;
+    cursor = batches.at(-1)!.id;
   }
   return reviewed;
 }

@@ -1,6 +1,7 @@
+import { captureExternalRepositoryScope, nativeRepositoryPlanIdentity, plannedRepositories, registeredRepository, repositoryCandidates } from "./project-repositories.js";
 import { mergeReviewSummary } from "./merge-review-summary.js";
 import { DocumentPlanApprovals } from "./document-plan-approval.js";
-import { releaseCandidatePage } from "./release-candidate-page.js";
+import { releaseCandidatePage, repositoryReleasePage } from "./release-candidate-page.js";
 import { nonReleaseSupplementSchema } from "./non-release-evidence.js";
 import { deliveryValidationSchema, evidenceDigest } from "./non-release-evidence.js";
 import { PlanDocuments } from "./plan-documents.js";
@@ -253,7 +254,7 @@ export function createMissionGoMcpServer(
   const nativeConfirmations = new NativeHumanConfirmations(store.database);
   const nativeAccounts = new AccountStore(store.database);
   const planIdentity = (clientId: string | undefined, session: {agentKind:string;refKind:string;sessionRef:string}|undefined, dispatchId?: string) =>
-    dispatchId ? `dispatch:${dispatchId}` : session ? `native:${clientId ?? ""}:${session.agentKind}:${session.refKind}:${session.sessionRef}` : "";
+    dispatchId ? `dispatch:${dispatchId}` : session ? nativeRepositoryPlanIdentity(clientId ?? "", session.agentKind, session.refKind, session.sessionRef) : "";
   const sessionIdentity = z.object({
     agentKind: z.enum(EXTERNAL_AGENT_KINDS),
     sessionRef: z.string().trim().min(1).max(200).regex(/^[A-Za-z0-9:_-]+$/),
@@ -286,13 +287,30 @@ export function createMissionGoMcpServer(
   const authorizeHandover = (ctx: ServerContext, input: z.infer<typeof handoverAuthorizationSchema> & { itemKey: string }, allowAcceptedEvidence = false) => {
     const access = accountAccess(ctx), key = requireItemAccess(ctx, store, input.itemKey);
     if (options.canOperate && !options.canOperate(access.accountId, store.getWorkItem(key).productId)) throw new Error("Product operation is not permitted.");
-    const credential = input.executionAuthorization ?? recoverExecutionAuthorization(store, access.accountId, access.clientId ?? "", {
+    const recovered = input.executionAuthorization ? undefined : recoverExecutionAuthorization(store, access.accountId, access.clientId ?? "", {
       itemKey: key,
       ...(input.dispatchId ? { dispatchId: input.dispatchId } : {}),
       ...(input.sessionId ? { sessionId: input.sessionId } : {}),
       ...(input.session ? { session: input.session } : {}),
-    }, allowAcceptedEvidence).executionAuthorization;
+    }, allowAcceptedEvidence);
+    const credential = input.executionAuthorization ?? recovered!.executionAuthorization;
     authorizeExecution(ctx, key, credential, allowAcceptedEvidence);
+    const authority = store.database.connection.prepare(`
+      SELECT a.dispatch_id, json_extract(r.result_json,'$.sessionId') AS session_id
+      FROM builder_execution_authorizations a LEFT JOIN mcp_agent_claim_receipts r
+      ON a.dispatch_id IS NULL AND r.account_id=a.account_id AND r.client_id=a.client_id
+        AND json_extract(r.result_json,'$.executionAuthorization')=a.id AND json_extract(r.result_json,'$.item.id')=a.item_id
+      WHERE a.id=?`).get(credential) as { dispatch_id: string | null; session_id: string | null };
+    return authority.dispatch_id ? `dispatch:${authority.dispatch_id}`
+      : authority.session_id ? `session:${authority.session_id}` : undefined;
+  };
+  const scopedPlanSource = (accountId: string, clientId: string, dispatchId?: string, session?: { agentKind: string; refKind: string; sessionRef: string }) => {
+    if (dispatchId) return `dispatch:${dispatchId}`;
+    if (!session) return;
+    const row = store.database.connection.prepare(`SELECT id FROM external_agent_sessions
+      WHERE account_id=? AND client_id=? AND agent_kind=? AND ref_kind=? AND session_ref=?`)
+      .get(accountId, clientId, session.agentKind, session.refKind, session.sessionRef) as { id: string } | undefined;
+    return row ? `session:${row.id}` : undefined;
   };
   const server = new McpServer(
     { name: "missiongo", version: "0.1.0" },
@@ -502,13 +520,16 @@ export function createMissionGoMcpServer(
         productId: z.string().min(1),
         limit: z.number().int().min(1).max(100).default(50),
         beforeSequence: z.number().int().positive().optional(),
+        repository: z.string().max(500).optional().describe("For an authorized single-repository release, the exact registered HTTPS repository URL."),
         includeUnscoped: z.boolean().default(false),
       }),
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ productId, limit, beforeSequence, includeUnscoped }, ctx) => {
+    async ({ productId, limit, beforeSequence, includeUnscoped, repository }, ctx) => {
       requireProductAccess(ctx, productId);
-      return textResult(releaseCandidatePage(store,new MergeDeliveries(store),productId,limit,beforeSequence,includeUnscoped));
+      if (repository && !registeredRepository(store.database, productId, repository)) throw new Error("Select the registered release repository.");
+      const page = releaseCandidatePage(store,new MergeDeliveries(store),productId,limit,beforeSequence,includeUnscoped);
+      return textResult(repository ? repositoryReleasePage(page, store, repository) : page);
     },
   );
 
@@ -1329,7 +1350,7 @@ export function createMissionGoMcpServer(
     }
     if(keys.length&&new Set(keys.map(key=>store.getWorkItem(key).productId)).size!==1) throw new Error("A document must remain in one product.");
     const project=input.session ? projectSessions.resolve(access.accountId,keys[0]!,{session:input.session}) : undefined;
-    const dispatchId=project?.dispatchId ?? input.dispatchId;
+    const dispatchId=project?.dispatchId ?? input.dispatchId ?? projectSessions.resolveScopedDispatch(access.accountId, keys, input.session);
     if(dispatchId) {
       assertDispatchExecution(store.database,dispatchId);
       const dispatched=store.database.connection.prepare(`SELECT d.id,f.product_id FROM dispatches d
@@ -1337,6 +1358,8 @@ export function createMissionGoMcpServer(
         .get(dispatchId,access.accountId) as {id:string;product_id:string|null}|undefined;
       if(!dispatched || keys.some(key=>!plans.dispatchKeys(dispatchId).includes(key)&&dispatched.product_id!==store.getWorkItem(key).productId)) throw new Error("Dispatch scope does not contain these items.");
     }
+    const repositorySource = scopedPlanSource(access.accountId, access.clientId ?? "", dispatchId, input.session);
+    if (repositorySource && !input.parentDocumentId) for (const key of keys) plannedRepositories(store.database, repositorySource, key, input.summary);
     const document=planDocuments.prepare({accountId:access.accountId,identity:planIdentity(access.clientId,input.session,dispatchId),keys,
       summary:input.summary,markdown:input.markdown,...(projectId?{projectId}:{}),origin:options.publicOrigin ?? "",requestKey:input.idempotencyKey,...(input.parentDocumentId ? {parentDocumentId:input.parentDocumentId} : {})});
     return textResult({documentId:document.id,sha256:document.sha256,version:document.version,rounds:document.rounds,plan:document.plan,
@@ -1375,7 +1398,7 @@ export function createMissionGoMcpServer(
       }
     }
     const project=session ? projectSessions.resolve(access.accountId,keys[0]!,{session}) : undefined;
-    const originalDispatchId=project?.dispatchId ?? dispatchId;
+    const originalDispatchId=project?.dispatchId ?? dispatchId ?? projectSessions.resolveScopedDispatch(access.accountId, keys, session);
     if(project && keys.some(key=>store.getWorkItem(key).productId!==project.productId)) throw new Error("Project conversation scope changed.");
     const identity=planIdentity(access.clientId,session,originalDispatchId);
     const document=documentId ? planDocuments.get(documentId,key=>requireItemAccess(ctx,store,key),id=>{if(id!==boundProject)throw new Error("Project scope changed");requireAccessibleProduct(ctx,id);}) : undefined;
@@ -1384,6 +1407,8 @@ export function createMissionGoMcpServer(
       planDocuments.assertCurrent(document,access.accountId,identity,keys,planDocuments.approved(document));
       if(plan!==document.plan || validation!=="") throw new Error("Display and submit the exact document plan with empty validation; full validation is in the immutable document.");
     }
+    const repositorySource = scopedPlanSource(access.accountId, access.clientId ?? "", originalDispatchId, session);
+    if (repositorySource) for (const key of keys) plannedRepositories(store.database, repositorySource, key, plan);
     const scope=plans.scope(keys);
     const previous=plans.proposal(access.accountId,identity);
     const reuseNative=!documentId && previous?.origin==="native" && previous.approved && previous.valid && previous.plan===plan
@@ -1406,6 +1431,7 @@ export function createMissionGoMcpServer(
     const reviewUrl = reviewPath ? `${options.publicOrigin ?? ""}${reviewPath}` : undefined;
     const context = {...(document ? {documentId:document.id,documentSha256:document.sha256,documentMarkdown:document.markdown} : {}),content: {plan, validation}, contentGuidance: document ? "Display the exact summary and document link in final_answer; commentary, tool output and dialogs alone are insufficient. Web registration can precede final display. If native confirmation is unresolved, retain the pending plan in final_answer. Read the fixed document in full before implementation; after approval archive it with append_comment(planDocumentId)." : CURRENT_ENTRY_CONTENT_GUIDANCE, ...(sessionId ? {sessionId} : {}),...(reviewUrl ? {reviewUrl} : {})};
     if(plans.approved(access.accountId,identity,revision)) {
+      for (const key of keys) store.reconcileRepositoryVerification(key);
       plans.nativeContinued(access.accountId,identity,revision);
       return textResult({approved:true,revision,...context},"This exact plan is already approved for this original conversation. Reuse its approval; do not ask again.");
     }
@@ -1454,6 +1480,7 @@ export function createMissionGoMcpServer(
     plans.assertRequest(access.accountId,identity,revision);
     if(plans.scope(keys)!==scope) throw new Error("Implementation scope changed while awaiting approval. Review the new plan.");
     plans.record({accountId:access.accountId,identity,revision,planHash:revision,keys,source:"native",plan,validation});
+    for (const key of keys) store.reconcileRepositoryVerification(key);
     plans.nativeContinued(access.accountId,identity,revision);
     // The native tool result resumes its own caller. Never start a second turn.
     const continuationQueued=false;
@@ -1463,7 +1490,7 @@ export function createMissionGoMcpServer(
   server.registerTool(
     "recover_plan_approval", {
     title:"Recover an original document approval from authenticated source evidence",
-    description:"Explicitly verify one current fixed document against its original conversation's authenticated messages and complete saved history. Does not ask the human to approve again. Only the original account/conversation may use it; no caller supplied approval, transcript, SQL or arbitrary fields. Returns restored/already_approved or a specific evidence/scope/identity limitation. Never starts a turn, changes item status or publishes.",
+    description:"Explicitly verify one current fixed document against its original conversation's authenticated messages and complete saved history. Does not ask the human to approve again. Only the original account/conversation may use it; no caller supplied approval, transcript, SQL or arbitrary fields. Returns restored/already_approved or a specific evidence/scope/identity limitation. Never starts a turn or publishes. A restored scope can reconcile prior verified repository receipts.",
     inputSchema:z.object({itemKey:z.string().min(2).max(50).optional(),projectId:z.string().min(1).optional(),dispatchId:z.string().min(1).max(200).optional(),sessionId:z.string().uuid().optional(),
       documentId:z.string().uuid(),revision:z.string().min(1).max(200),idempotencyKey:z.string().min(1).max(200)})
       .strict().refine(x=>Boolean(x.dispatchId)!==Boolean(x.sessionId),"Use one original conversation identity.").refine(x=>Boolean(x.itemKey)!==Boolean(x.projectId),"Use item or project scope."),
@@ -1486,7 +1513,11 @@ export function createMissionGoMcpServer(
         .get(input.dispatchId,access.accountId) as {id:string}|undefined)?.id;
     } else sessions.authorize(access,id!,key!,k=>requireItemAccess(ctx,store,k));
     if(!id) return textResult({code:"identity_unavailable"});
-    return textResult({...new DocumentPlanApprovals(store.database).recover(access.accountId,id,input.documentId,input.revision,input.idempotencyKey)});
+    const decision = new DocumentPlanApprovals(store.database).recover(access.accountId,id,input.documentId,input.revision,input.idempotencyKey);
+    if (decision.code === "restored" || decision.code === "already_approved") {
+      for (const itemKey of document.keys) store.reconcileRepositoryVerification(itemKey);
+    }
+    return textResult({...decision});
   });
 
   server.registerTool(
@@ -1540,7 +1571,7 @@ export function createMissionGoMcpServer(
           return repeated;
         }
         const project = projectSessions.resolve(access.accountId, key, { ...(dispatchId ? { dispatchId } : {}), ...(session ? { session } : {}) });
-        const executionDispatchId = project?.dispatchId ?? dispatchId;
+        const executionDispatchId = project?.dispatchId ?? dispatchId ?? projectSessions.resolveScopedDispatch(access.accountId, [key], session);
         if (executionDispatchId) {
           assertDispatchExecution(store.database, executionDispatchId);
           if (project) projectSessions.link(project, key);
@@ -1563,19 +1594,23 @@ export function createMissionGoMcpServer(
           if(!["in_progress","development_complete","pending_verification"].includes(existingItem.status)) throw new Error("Recover the original authorization; this status does not allow another claim.");
           authorizeExecution(ctx,key,existingAuth.id);
           const prior=store.database.connection.prepare("SELECT result_json FROM mcp_agent_claim_receipts WHERE json_extract(result_json,'$.executionAuthorization')=? AND account_id=? AND client_id=?").get(existingAuth.id,access.accountId,access.clientId ?? "") as {result_json:string};
-          return {...JSON.parse(prior.result_json),item:existingItem,statusChanged:false};
+          return {...JSON.parse(prior.result_json),item:existingItem,statusChanged:false,
+            ...(executionDispatchId && !dispatchId ? { dispatchId: executionDispatchId, sessionSource: "dispatch" } : {})};
         }
         if(!session && !executionDispatchId && existingItem.status!=="ready") throw new Error("Parallel participation requires this conversation's identity.");
         const item = store.claimWorkItem({ itemKey: key, agentId, executionIdentity:identity, ...(executionDispatchId ? {dispatchId: executionDispatchId} : {}),
           attribution: { accountId: access.accountId, ...(access.clientId ? { clientId: access.clientId } : {}) },
           idempotencyKey: `mcp-claim:${createHash("sha256").update(JSON.stringify([access.accountId,access.clientId ?? "",idempotencyKey])).digest("hex")}` });
         const sessionId = executionDispatchId ? undefined : sessions.register(access, session ?? sessions.claimIdentity(agentId, idempotencyKey), key);
-        if (sessionId) authorizeSession(ctx, sessionId, key);
+        if (sessionId) {
+          authorizeSession(ctx, sessionId, key);
+          if (session) captureExternalRepositoryScope(store, sessionId, key);
+        }
         const executionAuthorization = randomUUID();
         store.database.connection.prepare(`INSERT INTO builder_execution_authorizations(id,item_id,account_id,client_id,dispatch_id,created_at,round_key)
           VALUES (?,?,?,?,?,?,?)`).run(executionAuthorization,item.id,access.accountId,access.clientId ?? "",executionDispatchId ?? null,new Date().toISOString(),deliveryRound(store.database,item.id,true));
         const result = { item, executionAuthorization, statusChanged, claimIdentity:identity, ...(sessionId ? { sessionId, sessionSource: "external", progressOnly: true } : {}),
-          ...(project ? { projectSessionId: project.projectSessionId, dispatchId: project.dispatchId, sessionSource: "dispatch" } : {}) };
+          ...(project ? { projectSessionId: project.projectSessionId, dispatchId: project.dispatchId, sessionSource: "dispatch" } : executionDispatchId && !dispatchId ? { dispatchId: executionDispatchId, sessionSource: "dispatch" } : {}) };
         store.database.connection.prepare("INSERT INTO mcp_agent_claim_receipts(account_id, client_id, idempotency_key, digest, result_json) VALUES (?, ?, ?, ?, ?)")
           .run(access.accountId, access.clientId ?? "", idempotencyKey, digest, JSON.stringify(result));
         return result;
@@ -1585,6 +1620,19 @@ export function createMissionGoMcpServer(
       return textResult(result, `${key} is now in progress. Save executionAuthorization from this result and include it in every status-changing and handover tool for this handling round.${"projectSessionId" in result ? ` Reused project conversation: ${result.projectSessionId}. Its node already synchronizes messages and replies; do not register or report an external session.` : "sessionId" in result ? ` Progress session: ${result.sessionId}. Save this ID for subsequent reports.` : ""}`);
     },
   );
+
+  server.registerTool("get_item_execution_repositories", {
+    title: "Read candidate repositories for this item's original conversation",
+    description: "After claiming the item, read this conversation's frozen candidate repositories before investigating code. Local paths appear only for an authenticated, bound node. With no path, verify the exact Git remote in the native client's permitted directories or ask about a missing checkout. The candidates do not grant directory access or approve implementation. Submit the actual change scope in the existing plan with 实施仓库： for a shared scope, or separate 实施仓库 ITEM-1： lines for individual items, followed by comma-separated repository URLs.",
+    inputSchema: z.object({ itemKey: z.string().min(2).max(50), ...originalConversationFields })
+      .refine(input => [input.dispatchId, input.sessionId, input.session].filter(Boolean).length === 1, "Use the original conversation identity."),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (input, ctx) => {
+    const source = authorizeHandover(ctx, input);
+    const key = requireItemAccess(ctx, store, input.itemKey);
+    const candidates = source ? repositoryCandidates(store.database, source, key, true) : undefined;
+    return textResult({ itemKey: key, scoped: Boolean(candidates), candidates: candidates ?? [] });
+  });
 
   server.registerTool(
     "recover_execution_authorization",
@@ -1657,12 +1705,12 @@ export function createMissionGoMcpServer(
       const { itemKey, completion, pullRequestUrl, requiredArtifacts, noReleaseReason, summary, idempotencyKey } = input;
       requireWriteScope(ctx);
       const access = accountAccess(ctx);
-      authorizeHandover(ctx, input);
+      const source = authorizeHandover(ctx, input);
       const previousStatus=store.getWorkItem(itemKey).status;
       const item = store.submitDevelopmentComplete({
         itemKey: requireItemAccess(ctx, store, itemKey),
         completion: normalizeCompletion({ completion, pullRequestUrl }),
-        sourceIdentity:planIdentity(access.clientId,input.session,input.dispatchId) || (input.sessionId ? `session:${input.sessionId}` : "legacy"),
+        sourceIdentity: source ?? "legacy",
         ...(requiredArtifacts ? {requiredArtifacts} : {}),
         ...(noReleaseReason ? { noReleaseReason } : {}),
         ...(summary ? { summary } : {}),
@@ -2006,6 +2054,13 @@ export function createMissionGoMcpServer(
         projectSessions.assertLinked(project, key);
         return textResult({ projectSessionId: project.projectSessionId, dispatchId: project.dispatchId, sessionSource: "dispatch", statusChanged: false },
           "The project conversation is already linked and synchronized by its node. Do not register or report an external session.");
+      }
+      const scopedDispatch = projectSessions.resolveScopedDispatch(accountAccess(ctx).accountId, [key], session);
+      if (scopedDispatch) {
+        assertBuilderExecution(store.database, store.getWorkItem(key).id, accountAccess(ctx).accountId);
+        if (previousSessionId) throw new Error("Keep the original dispatch conversation; registration cannot merge historical records.");
+        return textResult({ dispatchId: scopedDispatch, sessionSource: "dispatch", statusChanged: false },
+          "The original dispatch already tracks this native session. Use its dispatchId.");
       }
       const sessionId = store.database.transaction(() => {
         if (previousSessionId) authorizeSession(ctx, previousSessionId, key);

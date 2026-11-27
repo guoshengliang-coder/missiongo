@@ -2,6 +2,24 @@ import XCTest
 @testable import MissionGoNodeCore
 
 final class LaunchPromptTests: XCTestCase {
+    func testScopedDispatchUsesDistinctWorktreesAndDescribesApprovedScope() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let front = try CodexWorkspace.worktreePath(
+            repoPath: base.appendingPathComponent("front").path, dispatchId: "dispatch",
+            repositoryId: "08e96172-1e6e-49fd-9a1a-3de26e872101")
+        let back = try CodexWorkspace.worktreePath(
+            repoPath: base.appendingPathComponent("back").path, dispatchId: "dispatch",
+            repositoryId: "08e96172-1e6e-49fd-9a1a-3de26e872102")
+        XCTAssertNotEqual(front, back)
+        let prompt = try LaunchPrompt.build(
+            itemKeys: ["PER-1"], dispatchId: "dispatch", mode: "auto", client: .codex,
+            repositoryScope: "\(front) \(back)")
+        XCTAssertTrue(prompt.contains("实施仓库："))
+        XCTAssertTrue(prompt.contains(front))
+        XCTAssertTrue(prompt.contains(back))
+        XCTAssertFalse(prompt.contains("整批条目走一个分支"))
+    }
+
     func testInvestigationPrecedesQuestionsAcrossClientsModesAndProjectSessions() throws {
         let matrix: [(LaunchPrompt.Client, [String])] = [
             (.claudeCode, ["plan", "default", "bypassPermissions", "acceptEdits", "auto"]),

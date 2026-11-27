@@ -11,10 +11,13 @@ import { InputRejected } from "./types.js";
 export const CLAUDE_DENIALS = ["Bash(git reflog expire:*)", "Bash(git gc --prune=now:*)", "Bash(git push --force:*)", "Bash(git push -f:*)"];
 export function claudeArguments(job: Dispatch, ref: string, resume = false): string[] {
   if (!(CLAUDE_CODE_MODES as readonly string[]).includes(job.mode)) throw new Error("Unsupported Claude mode");
+  const directories = job.repositories?.flatMap(({ repoPath }) =>
+    repoPath && repoPath !== job.repoPath ? ["--add-dir", repoPath] : []) ?? [];
   return ["--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--replay-user-messages",
     "--permission-prompt-tool", "stdio", "--permission-prompts", "host", "--no-chrome",
     "--disallowedTools", CLAUDE_DENIALS.join(","), "--permission-mode", job.mode,
     ...(resume ? ["--resume", ref] : ["--session-id", ref]), "--name", sessionName(job),
+    ...directories,
     ...(job.model ? ["--model", job.model] : []), ...(job.effort ? ["--effort", job.effort] : [])];
 }
 export function labelledAnswers(text: string): Record<string, string> {

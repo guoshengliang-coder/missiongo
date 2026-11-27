@@ -21,7 +21,7 @@ export class OpenCodeAPI {
       ...(process.platform === "win32" && env.LOCALAPPDATA ? [join(env.LOCALAPPDATA, "opencode/service.json")] : [])];
     this.registrationPath = registrationPath ?? candidates.find(existsSync) ?? candidates[0]!;
   }
-  async call(method: string, path: string, body?: unknown): Promise<Wire> {
+  private registration() {
     const stat = lstatSync(this.registrationPath);
     if (!stat.isFile() || stat.isSymbolicLink() || (process.platform !== "win32" && stat.uid !== process.getuid?.())) throw new Error("Invalid OpenCode service registration owner");
     if (process.platform === "win32") verifyNativePrivateFile(this.registrationPath);
@@ -29,6 +29,14 @@ export class OpenCodeAPI {
     const url = new URL(registration.url);
     if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || !registration.password
       || !(Number(String(registration.version).split(".")[0]) >= 2)) throw new Error("Start the registered OpenCode 2 shared service first");
+    return { url, password: registration.password as string, version: registration.version as string };
+  }
+  usesLocalService(): boolean {
+    return ["localhost", "127.0.0.1", "[::1]"].includes(this.registration().url.hostname);
+  }
+  async call(method: string, path: string, body?: unknown): Promise<Wire> {
+    const registration = this.registration();
+    const url = registration.url;
     const response = await fetch(new URL(path, url.origin), { method, redirect: "error", signal: AbortSignal.timeout(15_000),
       headers: { Authorization: `Basic ${Buffer.from(`opencode:${registration.password}`).toString("base64")}`, "Content-Type": "application/json" },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
@@ -62,6 +70,9 @@ export class OpenCodeAdapter implements Adapter {
     return adapter;
   }
   async start(prompt: string): Promise<string> {
+    if (this.job.repositories && !this.api.usesLocalService()) {
+      throw new Error("Multi-repository dispatch requires an OpenCode service on this device.");
+    }
     const info = await this.api.call("GET", "/api/info");
     if (!(Number(String(info.version).split(".")[0]) >= 2)) throw new Error("OpenCode 2 is required");
     const mcp = await this.api.call("GET", `/api/mcp?${new URLSearchParams({ "location[directory]": this.job.repoPath })}`);

@@ -5,10 +5,12 @@ export type Kind = Exclude<AgentKind, "hermes">;
 export interface Dispatch {
   freeSession?: boolean;
   sessionTitle?: string;
+  repositories?: DispatchRepository[];
   dispatchId: string; itemKeys: string[]; repoPath: string; agentKind: Kind; mode: string;
   nodeName?: string; model?: string; effort?: string; reworkItemKeys?: string[];
 }
 export interface AgentConfig { executable?: string; environmentScript?: string; shellExecutable?: string; serviceRegistration?: string; checkRevision?: string }
+export interface DispatchRepository { id: string; name: string; repository: string; responsibility: string; repoPath?: string | null }
 export interface RepoMapping { productId: string; repoPath: string; productKey?: string }
 export interface Config {
   managedExecutionEnabled?: boolean;

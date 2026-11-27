@@ -1,3 +1,5 @@
+import { projectRepositoryIdentity } from "@missiongo/domain";
+import { completionRepository, registeredRepository, repositoryCandidates, scopedRepositoryApproval } from "./project-repositories.js";
 import { publicationActionBounds, publicationTargetsSchema, assertPublicationVersions, scopeConflict, type PublicationTarget } from "./conversation-publication-targets.js";
 import { containsConversationScope, conversationScopeReview, type ConversationReviewEvidence } from "./conversation-scope-review.js";
 import { projectIntegrationInstructions } from "./integration-instructions.js";
@@ -9,7 +11,7 @@ import { integrationExecutor, integrationInstruction, assertIntegrationInstructi
 import {mergeReviewSummary} from "./merge-review-summary.js";
 import { developmentReviewBlocker, developmentReviewExpiry } from "./development-reviews.js";
 import type { SQLInputValue, StatementSync } from "node:sqlite";
-import { releaseCandidatePage } from "./release-candidate-page.js";
+import { releaseCandidatePage, repositoryReleasePage } from "./release-candidate-page.js";
 import type { IntegrationActionMode, IntegrationQueueFacts, PublicationScope, PublicationScopeRow, PublicationIdentityTransition } from "@missiongo/contracts";
 import { assertDispatchExecution, assertExternalExecution } from "./builder-authority.js";
 import type { NonReleaseVerification } from "./non-release-evidence.js";
@@ -333,8 +335,12 @@ export class MergeDeliveries {
       const sessionId = project?.sessionId ?? identity.sessionId ?? (this.db.connection.prepare("SELECT id FROM agent_sessions WHERE dispatch_id=?")
         .get(identity.dispatchId!) as {id:string}|undefined)?.id;
       if (!sessionId) throw changed();
+      for (const key of keys) {
+        const source = identity.dispatchId ? `dispatch:${identity.dispatchId}` : identity.sessionId ? `session:${identity.sessionId}` : undefined;
+        if (source) scopedRepositoryApproval(this.db, source, accountId, key, input.repository);
+      }
       const history = this.listRaw(productId);
-      const overlaps = (d:Delivery) => keys.length ? d.itemKeys.some(key=>keys.includes(key))
+      const overlaps = (d:Delivery) => keys.length ? projectRepositoryIdentity(d.repository) === projectRepositoryIdentity(input.repository) && d.itemKeys.some(key=>keys.includes(key))
         : !d.itemKeys.length && d.repository===input.repository && d.pullRequest===input.pullRequest;
       const reconfirmation = history.some(d => d.accountId === accountId && d.sessionId === sessionId
         && d.state !== "merged" && overlaps(d));
@@ -535,7 +541,9 @@ export class MergeDeliveries {
     const candidates:PublicationScopeRow[]=[],exclusions:NonNullable<PublicationScope["exclusions"]>=[];
     let cursor:number|undefined;
     do {
-      const page=releaseCandidatePage(this.store,this,productId,100,cursor,true);
+      const unfiltered=releaseCandidatePage(this.store,this,productId,100,cursor,true);
+      const page=repository && registeredRepository(this.db, productId, repository)
+        ? repositoryReleasePage(unfiltered, this.store, repository) : unfiltered;
       for(const row of page.noReleaseItems??[])exclusions.push({identity:row.itemKey,title:this.store.getWorkItem(row.itemKey).title,reason:row.noReleaseReason});
       for(const row of page.noReleaseDeliveries??[])exclusions.push({identity:row.deliveryId,title:this.read<Delivery>("merge_deliveries",row.deliveryId).summary,reason:row.noReleaseReason});
       for(const raw of page.candidates) {
@@ -561,7 +569,7 @@ export class MergeDeliveries {
       return missing.length?[`${c.itemKey?c.itemKey+" · ":""}${c.title}：缺少${missing.join("、")}。请由交付执行者核实并补齐。${selected.some(d=>d.state!=="merged")?"也可取消“合并后发布”，先仅合并。":""}`]:[];
     });
     for(const c of candidates)if(c.completion) {
-      try {const ref=normalizeCompletion({completion:c.completion});if(ref.kind!=="github"||!repository||!ref.url.startsWith(repository+"/pull/"))blockers.push(`${c.title}：不属于本次目标仓库`);}catch{blockers.push(`${c.title}：集成依据待核实`);}
+      try {const ref=normalizeCompletion({completion:c.completion});if(ref.kind!=="github"||!repository||completionRepository(ref)!==projectRepositoryIdentity(repository))blockers.push(`${c.title}：不属于本次目标仓库`);}catch{blockers.push(`${c.title}：集成依据待核实`);}
     }
     const requiredArtifacts=[...new Set(candidates.filter(c=>!c.historicalGapReason).flatMap(c=>c.requiredArtifacts??[]))].sort();
     return {digest:digest([selection,candidates,requiredArtifacts,blockers,exclusions]),candidates,requiredArtifacts,blockers,exclusions};
@@ -595,7 +603,7 @@ export class MergeDeliveries {
       if(gaps.has(row.identity))throw conflict("publication_scope_changed","已有集成及范围的交付不能作为历史缺证排除。");
       const completion=normalizeCompletion({completion:row.completion});
       const repository=b.conversation?.repository ?? this.read<Delivery>("merge_deliveries",b.deliveries[0]!).repository;
-      if(completion.kind!=="github" || !completion.url.startsWith(repository+"/pull/") || !row.requiredArtifacts?.length&&!row.noReleaseReason)throw changed();
+      if(completion.kind!=="github" || completionRepository(completion)!==projectRepositoryIdentity(repository) || !row.requiredArtifacts?.length&&!row.noReleaseReason)throw changed();
       return row;
     });
     if([...gaps.keys()].some(id=>!candidates.some(row=>row.identity===id&&row.historicalGapReason)))throw changed();
@@ -2368,12 +2376,18 @@ export class MergeDeliveries {
           const blocker=this.itemBlocker(d,itemKey);if(blocker)throw conflict("handoff_blocked",blocker);
           const item=this.store.getWorkItem(itemKey);
           const completion={kind:"github" as const,url:`${d.repository}/pull/${d.pullRequest}`};
-          if(item.status==="in_progress")this.store.submitDevelopmentComplete({itemKey,completion,requiredArtifacts:d.requiredArtifacts,
-            ...(d.noReleaseReason?{noReleaseReason:d.noReleaseReason}:{}),summary:b.results[d.id]!.detail,idempotencyKey:`merge-batch:${b.id}:${d.id}:${itemKey}`,attribution:{accountId:b.accountId}});
+          const sourceIdentity = d.identity.dispatchId ? `dispatch:${d.identity.dispatchId}`
+            : d.identity.sessionId ? `session:${d.identity.sessionId}` : undefined;
+          const submit = () => this.store.submitDevelopmentComplete({ itemKey, completion, requiredArtifacts: d.requiredArtifacts,
+            ...(d.noReleaseReason ? { noReleaseReason: d.noReleaseReason } : {}),
+            summary: b.results[d.id]!.detail, ...(sourceIdentity ? { sourceIdentity } : {}),
+            idempotencyKey: `merge-batch:${b.id}:${d.id}:${itemKey}`, attribution: { accountId: b.accountId } });
+          const scopedExisting = sourceIdentity && repositoryCandidates(this.db, sourceIdentity, itemKey)
+            && this.store.getDeliveryRecords(itemKey).some(record => record.completion && sameCompletion(record.completion, completion));
+          if (item.status === "in_progress" || scopedExisting && ["development_complete", "pending_verification"].includes(item.status)) submit();
           else if((item.status==="development_complete" || item.status==="pending_verification") && !this.publishedHandoff(d,itemKey)) {
             const e=this.store.getDevelopmentEvidence(itemKey),scope=this.store.getDevelopmentReleaseDecision(itemKey);
-            if(e.handover?.actorKind==="agent" && e.completion && !sameCompletion(e.completion,completion))this.store.submitDevelopmentComplete({itemKey,completion,requiredArtifacts:d.requiredArtifacts,
-              ...(d.noReleaseReason?{noReleaseReason:d.noReleaseReason}:{}),summary:b.results[d.id]!.detail,idempotencyKey:`merge-batch:${b.id}:${d.id}:${itemKey}`,attribution:{accountId:b.accountId}});
+            if(e.handover?.actorKind==="agent" && e.completion && !sameCompletion(e.completion,completion)) submit();
             else if(requestId)this.store.supplementDevelopmentEvidence({itemKey,accountId:b.accountId,batchId:b.id,requestId,completion,requiredArtifacts:d.requiredArtifacts,preserveVerification:item.status==="pending_verification",...(d.noReleaseReason?{noReleaseReason:d.noReleaseReason}:{})});
             else if(!e.completion||!sameCompletion(e.completion,completion)||scope.requiredArtifacts===null||digest([...scope.requiredArtifacts].sort())!==digest([...d.requiredArtifacts].sort()))throw conflict("handoff_evidence_missing","人工推进后的交付依据缺失或冲突，请在对账预览中申请补证据。");
           }

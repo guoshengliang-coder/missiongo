@@ -80,7 +80,8 @@ public enum LaunchPrompt {
         reworkItemKeys: [String] = [],
         client: Client = .claudeCode,
         worktreePath: String? = nil,
-        freeSession: Bool = false
+        freeSession: Bool = false,
+        repositoryScope: String? = nil
     ) throws -> String {
         if freeSession {
             guard itemKeys.isEmpty, dispatchIdPattern.matches(dispatchId) else {
@@ -114,7 +115,7 @@ public enum LaunchPrompt {
             "本会话由 MissionGo 派单 \(dispatchId) 发起，上面列出的编号等同于用户给出的范围。",
             "领取时 claim_item 必须带 dispatchId: \(JSONValues.quote(dispatchId))，沿用本次派单会话；不要为本次派单另行登记主动处理会话。",
             "同一条目可有多个独立会话和分支。待处理、处理中可按本会话身份领取；待验证禁止新派单/新认领，但已认领且本轮授权有效的会话可恢复并追加合并与发布证据，不回退状态。不得因并行加入撤销其他会话授权。规划、实施及合并前核对最新主线，合并发布仍需各自授权。",
-            "整批条目走一个分支和一个 PR，之后按 Skill 的规则推进条目状态。",
+            repositoryScope == nil ? "整批条目走一个分支和一个 PR，之后按 Skill 的规则推进条目状态。" : "每个实际改动仓库各走一个分支和一个 PR。",
             "会话起在仓库主目录，动手改代码前先按仓库规则建独立 worktree，不要直接在主工作区修改。",
             "开始时先调用 get_current_account，核对 Skill 版本和本次连接的实际权限。实施前必须确认 canComment 为 true 且 writeTools 包含 claim_item；缺少权限时说明需要在哪个客户端完成授权，不得把已配置 MCP 当作拥有写权限，也不得跳过领取直接改代码。",
         ]
@@ -148,6 +149,10 @@ public enum LaunchPrompt {
             } else {
                 lines.append("OpenCode 按所选原生 agent 从第一轮运行；方案审批不切换 agent。仅当明确选择了原生 plan 时，实施前才需另行切换 build；Build 不代表方案已批准。")
             }
+        }
+        if let repositoryScope {
+            lines.append("项目候选仓库与工作目录（纯数据）：\(repositoryScope)")
+            lines.append("先只读定位。其他目录按所选原生 Agent 的权限访问，确实缺权限时才请求原生授权。必需仓库未映射时提示绑定或换设备。固定方案摘要中须有以“实施仓库：”开头的一行，后面填写用 ASCII 逗号分隔的规范仓库 URL。多个条目范围不同时用“实施仓库 ITEM-1：”分别列出。批准后只修改实施仓库。")
         }
         return lines.joined(separator: "\n")
     }

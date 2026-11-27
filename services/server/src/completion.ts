@@ -41,5 +41,9 @@ export function completionPayload(completion: CompletionReference) {
   return { completion, ...("url" in completion ? { pullRequestUrl: completion.url } : {}) };
 }
 export function sameCompletion(a: CompletionReference, b: CompletionReference): boolean {
+  if (a.kind === "github" && b.kind === "github"
+      && a.url.toLowerCase().startsWith("https://github.com/") && b.url.toLowerCase().startsWith("https://github.com/")) {
+    return a.url.toLowerCase() === b.url.toLowerCase();
+  }
   return JSON.stringify(a) === JSON.stringify(b);
 }
