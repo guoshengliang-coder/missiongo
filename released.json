@@ -8,8 +8,8 @@
   ],
   "artifacts": {
     "linuxCli": {
-      "version": "0.1.34",
-      "commit": "6332b61c7f980e57884249817918916902da8f56",
+      "version": "0.1.35",
+      "commit": "c95d7521f90d05db0abfe2851562b18453b8fbbd",
       "versionFile": "product.json",
       "versionJsonPath": "linuxNode.version",
       "paths": [
@@ -17,7 +17,7 @@
         "packages/domain",
         "scripts/build-node.mjs"
       ],
-      "sha256": "ff385b319b0537987ed1fa0ebcbf82498bf98d49082baa026d388769f365b416"
+      "sha256": "c9cd285d0478ec849c93d35bf9e3cb2f25db861873282653b63e25869d7f9bfc"
     },
     "androidApp": {
       "version": "0.1.21",
@@ -39,8 +39,8 @@
       ]
     },
     "macosApp": {
-      "version": "0.4.99",
-      "commit": "44a7699bd4e640b569e751063dc7b242638df7ab",
+      "version": "0.4.100",
+      "commit": "be3fbcd8a1cb3e480c306002cd52b81f2a737064",
       "versionFile": "apps/macos/version.properties",
       "versionProperty": "missiongoMacosVersion",
       "paths": [
@@ -48,8 +48,8 @@
       ]
     },
     "windowsApp": {
-      "version": "0.1.5",
-      "commit": "6332b61c7f980e57884249817918916902da8f56",
+      "version": "0.1.6",
+      "commit": "be3fbcd8a1cb3e480c306002cd52b81f2a737064",
       "versionFile": "product.json",
       "versionJsonPath": "windows.app.version",
       "paths": [
@@ -62,7 +62,7 @@
         "product.json",
         "scripts/build-windows.mjs"
       ],
-      "sha256": "89a1ca08c8d2538ad743aeb79f726b8ebc3a6c136bd4bd113e58b77f7b6103ef"
+      "sha256": "989951d869e4415167ab51f913a9a74fd3573cef1e02d179ef88187966764ddf"
     }
   }
 }
