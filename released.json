@@ -48,8 +48,8 @@
       ]
     },
     "windowsApp": {
-      "version": "0.1.5",
-      "commit": "6332b61c7f980e57884249817918916902da8f56",
+      "version": "0.1.6",
+      "commit": "be3fbcd8a1cb3e480c306002cd52b81f2a737064",
       "versionFile": "product.json",
       "versionJsonPath": "windows.app.version",
       "paths": [
@@ -62,7 +62,7 @@
         "product.json",
         "scripts/build-windows.mjs"
       ],
-      "sha256": "89a1ca08c8d2538ad743aeb79f726b8ebc3a6c136bd4bd113e58b77f7b6103ef"
+      "sha256": "989951d869e4415167ab51f913a9a74fd3573cef1e02d179ef88187966764ddf"
     }
   }
 }
