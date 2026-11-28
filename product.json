@@ -42,7 +42,7 @@
       "packageName": "missiongo-windows",
       "artifactStem": "missiongo-windows",
       "releaseSigning": "temporary-unsigned",
-      "version": "0.1.6"
+      "version": "0.1.7"
     }
   }
 }
