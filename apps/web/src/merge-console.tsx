@@ -3,6 +3,7 @@ import { CloudUpload, GitMerge, Plus, TriangleAlert, Files, History, ArrowRight 
 import { modeProblem } from "./agent-mode-options";
 import { HelpHint } from "./help-hint";
 import { IntegrationProgress } from "./integration-details";
+import { observeConsoleRead } from "./console-read-recovery";
 import { localizedErrorText } from "./error-text";
 import type { MergeIntegration, MergeReconciliationState, MergeBatchPresentation, IntegrationQueueFacts, IntegrationQueueOccupancy, IntegrationActionMode, PublicationScope, IntegrationPrerequisiteGate } from "@missiongo/contracts";
 import { useEffect, useRef, useState } from "react";
@@ -59,7 +60,11 @@ export interface Batch {reconciliation?:MergeReconciliationState;prerequisiteGat
 const post=<T,>(path:string,body:unknown)=>request<T>(path,{method:"POST",body:JSON.stringify(body)});
 export const useDeliveries=(productId:string,sessionId?:string,enabled=true)=>useQuery({
   queryKey:sessionId ? ["merge-deliveries",productId,sessionId] : ["merge-deliveries",productId],
-  queryFn:({signal})=>request<{deliveries:Delivery[];batches:Batch[];attentionSessionIds?:string[];sessionProgress?:Record<string,MergeProgress>}>(`/api/v1/products/${encodeURIComponent(productId)}/merge-deliveries${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ""}`,{signal}),
+  queryFn:({signal})=>{
+    const read = () => request<{deliveries:Delivery[];batches:Batch[];attentionSessionIds?:string[];sessionProgress?:Record<string,MergeProgress>}>(`/api/v1/products/${encodeURIComponent(productId)}/merge-deliveries${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ""}`,{signal});
+    return sessionId ? observeConsoleRead("session_delivery", read, signal) : read();
+  },
+  ...(sessionId ? { refetchOnReconnect: false } : {}),
   enabled:Boolean(productId)&&enabled,
 });
 
@@ -122,7 +127,9 @@ export function DeliveryCards({productId,sessionId,blocked=false}:{productId:str
   };
   const rows=query.data?.deliveries.filter(d=>d.sessionId===sessionId && d.blocker!=="changed"
     && d.state==="proposed")??[];
-  const readError=query.isError ? <p role="alert" className="inline-error">{t("sessionDeliveryLoadError")} <button type="button" className="secondary-button" onClick={()=>void query.refetch()}>{t("retry")}</button></p> : null;
+  const readError = query.isError && (query.isFetching
+    ? <p role="status">{t("sessionDeliveryRefreshing")}</p>
+    : <p role="alert" className="inline-error">{t("sessionDeliveryLoadError")} <button type="button" className="secondary-button" onClick={()=>void query.refetch({ cancelRefetch: false })}>{t("retry")}</button></p>);
   const recoveries=query.data?.batches.filter(b=>b.sessionId===sessionId&&b.reconciliation?.requests.some(r=>r.decision!=="rejected"&&!r.appliedAt)).map(b=><MergeReconciliation key={b.id} batchId={b.id} compact initiallyOpen/>);
   if(!rows.length) return <>{readError}{recoveries}<SessionDeliveryNotice productId={productId} sessionId={sessionId}/></>;
   return <div className="merge-delivery-notices">{readError}{recoveries}{rows.map(d=><section role="status" className={`merge-delivery-notice ${d.state==="confirmed"?"confirmed":"proposed"}`} key={d.id}>

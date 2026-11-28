@@ -7,6 +7,7 @@ import { shareSessionListData, useSessionListIntent, noteListIntent } from "./se
 import { useCommonCommands } from "./common-commands";
 import { SessionSenderContext } from "./session-send-feedback";
 import { bootstrapCacheSeeder } from "./bootstrap-cache";
+import { observeConsoleRead } from "./console-read-recovery";
 import { useConsoleConnection, useConsoleEvents } from "./console-events";
 import { isItemListRow, type WorkItemRow } from "./types";
 import { inconsistentItemPage } from "./item-list-state";
@@ -975,7 +976,8 @@ export function App() {
   const agentSessionsQuery = useQuery({
     queryKey: ["agent-sessions"],
     structuralSharing: shareSessionListData,
-    queryFn: ({signal}) => api.listAgentSessions(undefined, signal),
+    queryFn: ({signal}) => observeConsoleRead("session_list", () => api.listAgentSessions(undefined, signal), signal),
+    refetchOnReconnect: false,
     enabled: bootstrapQuery.isSuccess && products.length > 0,
   });
   const draftAccountId = useRef<string | undefined>(undefined);
@@ -1795,6 +1797,8 @@ export function App() {
           allSessions={allAgentSessions}
           sessionsLoaded={agentSessionsQuery.data !== undefined}
           sessionsError={agentSessionsQuery.error}
+          sessionsRefreshing={agentSessionsQuery.isFetching}
+          onRetrySessions={() => void agentSessionsQuery.refetch({ cancelRefetch: false })}
           selectedSessionId={agentSessionId}
           conversationOpen={agentConversationOpen || newSessionOpen}
           draftView={newSessionOpen && newSessionDraft ? <NewSessionDraft draft={newSessionDraft}

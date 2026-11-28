@@ -311,3 +311,72 @@ it.each(["resolve","reject"])("defers a scheduled list follow-up if the page hid
  await vi.advanceTimersByTimeAsync(100);await settle();
  expect(read).toHaveBeenCalledTimes(2);expect(f.client.getQueryData(["agent-sessions"])).toBe("latest");
 });
+
+it("recovers fresh failed reads on foreground without duplicating a manual retry", async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  await settle();
+  const listKey = ["agent-sessions"];
+  const deliveryKey = ["merge-deliveries", "product", "session"];
+  const queueKey = ["merge-deliveries", "product", "queue", "all"];
+  const list = vi.fn().mockResolvedValueOnce("cached list").mockRejectedValueOnce(new DOMException("timeout", "TimeoutError")).mockResolvedValue("updated list");
+  const delivery = vi.fn().mockRejectedValueOnce(new TypeError("network")).mockResolvedValue("updated delivery");
+  const queue = vi.fn().mockRejectedValue(new TypeError("network"));
+  const observers = ([[listKey, list], [deliveryKey, delivery], [queueKey, queue]] as const).map(([key, read]) => {
+    const observer = new QueryObserver(f.client, { queryKey: key, queryFn: read, staleTime: Infinity });
+    cleanup.push(observer.subscribe(() => {}));
+    return observer;
+  });
+  await settle();
+  await observers[0]!.refetch();
+  expect(f.client.getQueryData(listKey)).toBe("cached list");
+  f.documentTarget.visibilityState = "hidden";
+  f.documentTarget.dispatchEvent(new Event("visibilitychange"));
+  f.documentTarget.visibilityState = "visible";
+  f.documentTarget.dispatchEvent(new Event("visibilitychange"));
+  f.windowTarget.dispatchEvent(new Event("online"));
+  await observers[0]!.refetch({ cancelRefetch: false });
+  await vi.advanceTimersByTimeAsync(SESSION_LIST_REFRESH_WINDOW_MS);
+  expect(list).toHaveBeenCalledTimes(3);
+  expect(delivery).toHaveBeenCalledTimes(2);
+  expect(queue).toHaveBeenCalledOnce();
+  expect(f.client.getQueryData(listKey)).toBe("updated list");
+  expect(f.client.getQueryData(deliveryKey)).toBe("updated delivery");
+});
+
+it("recovers failed reads on a stream reconnect and stops after one failed recovery", async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  await settle();
+  const read = vi.fn().mockRejectedValue(new TypeError("network"));
+  const observer = new QueryObserver(f.client, { queryKey: ["merge-deliveries", "p", "s"], queryFn: read });
+  cleanup.push(observer.subscribe(() => {}));
+  await settle();
+  f.streams[0]!.close();
+  await settle();
+  await vi.advanceTimersByTimeAsync(10_000);
+  expect(f.fetcher).toHaveBeenCalledTimes(2);
+  expect(read).toHaveBeenCalledTimes(2);
+});
+
+it("recovers when an old request times out after the connection already came back", async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  await settle();
+  let failOldRead!: (error: DOMException) => void;
+  const read = vi.fn()
+    .mockImplementationOnce(() => new Promise((_resolve, reject) => { failOldRead = reject; }))
+    .mockResolvedValue("recovered");
+  const observer = new QueryObserver(f.client, { queryKey: ["merge-deliveries", "p", "s"], queryFn: read });
+  cleanup.push(observer.subscribe(() => {}));
+  await settle();
+  f.streams[0]!.close();
+  await settle();
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(f.fetcher).toHaveBeenCalledTimes(2);
+  expect(read).toHaveBeenCalledOnce();
+  failOldRead(new DOMException("timeout", "TimeoutError"));
+  await settle();
+  expect(read).toHaveBeenCalledTimes(2);
+  expect(observer.getCurrentResult().data).toBe("recovered");
+});

@@ -227,6 +227,8 @@ export function AgentSessionConsole({
   allSessions,
   sessionsLoaded,
   sessionsError,
+  sessionsRefreshing,
+  onRetrySessions,
   selectedSessionId,
   conversationOpen,
   draftView,
@@ -246,6 +248,8 @@ export function AgentSessionConsole({
   allSessions: readonly AgentSessionSummary[];
   sessionsLoaded: boolean;
   sessionsError: unknown;
+  sessionsRefreshing?: boolean;
+  onRetrySessions?: () => void;
   selectedSessionId: string | null;
   conversationOpen: boolean;
   draftView?: ReactNode;
@@ -1243,7 +1247,11 @@ export function AgentSessionConsole({
         </p>}
         <div className="agent-console-session-list" ref={sessionListRef}>
           {!sessionsLoaded && !hasSessionsError && <div className="agent-console-empty"><LoaderCircle className="spin" size={20} /></div>}
-          {hasSessionsError && <p className="inline-error">{localizedErrorText(sessionsError, t)}</p>}
+          {hasSessionsError && (sessionsRefreshing
+            ? <p role="status">{t("sessionListRefreshing")}</p>
+            : <p role="alert" className="inline-error">{t("sessionListLoadError")} {localizedErrorText(sessionsError, t)}
+                {onRetrySessions && <button type="button" className="secondary-button" onClick={onRetrySessions}>{t("retry")}</button>}
+              </p>)}
           {sessionsLoaded && visibleSessions.length === 0 && (
             <div className="agent-console-empty"><Bot size={22} /><p>{t(search.trim() ? "agentConsoleNoMatch" : "agentConsoleEmpty")}</p></div>
           )}

@@ -9,8 +9,12 @@ for(const width of [320,1440])for(const surface of ["console","panel"] as const)
  const summary={id,agentSessionId:id,dispatchId:"recovery-dispatch",agentKind:"codex",status:"idle",updatedAt:stamp,createdAt:stamp,
  nodeName:"Fixture",nodeId:"fixture-node",nodeConnectionState:"online",mode:"auto",dispatchStatus:"launched",activities:[],settings:{},unread:false,
  canReply:true,canRetry:false,canStop:false,canArchive:true,attention:{state:"not_needed"},needsAttention:false,items:[{key:fixture.detailKey,title:"Recovery",productId:fixture.productId}]};
- let body="Cached conversation",scopedFailure=false,hasOffer=false;
- await page.route("**/api/v1/agent-sessions**",route=>queueRoute(route).fulfill({json:new URL(route.request().url()).pathname==="/api/v1/agent-sessions"?{sessions:[summary]}:{...summary,messages:[{id:"message",role:"agent",text:body,occurredAt:stamp}]}}));
+ let body="Cached conversation",scopedFailure=false,hasOffer=false,listFailure=false;
+ await page.route("**/api/v1/agent-sessions**",route=>{
+  const isList=new URL(route.request().url()).pathname==="/api/v1/agent-sessions";
+  if(isList&&listFailure)return queueRoute(route).fulfill({status:503,json:{title:"List unavailable"}});
+  return queueRoute(route).fulfill({json:isList?{sessions:[summary]}:{...summary,messages:[{id:"message",role:"agent",text:body,occurredAt:stamp}]}});
+ });
  await page.route("**/api/v1/items/*/dispatches",route=>queueRoute(route).fulfill({json:{dispatches:[{id:summary.dispatchId,agentSessionId:id,agentKind:"codex",mode:"auto",nodeName:"Fixture",status:"launched",createdAt:stamp,itemKeys:[fixture.detailKey]}]}}));
  await page.route(/\/(?:merge-deliveries|integration-queue)(?:\?.*)?$/,route=>{
   if(!new URL(route.request().url()).searchParams.has("sessionId"))return queueRoute(route).fulfill({status:503,json:{title:"Project list unavailable"}});
@@ -30,6 +34,14 @@ for(const width of [320,1440])for(const surface of ["console","panel"] as const)
  const error=page.getByText("当前会话的交付状态更新失败。");await expect(error).toBeVisible();
  await expect(page.locator(".merge-delivery-notice.proposed")).toBeVisible();await expect(page.locator(".offline-banner")).toHaveCount(0);
  scopedFailure=false;await error.getByRole("button",{name:"重试",exact:true}).click();await expect(error).toHaveCount(0);
+ if(surface==="console"&&width===1440){
+  listFailure=true;await refreshFromConsoleStream(page);await page.clock.fastForward(1200);
+  const listError=page.getByRole("alert").filter({hasText:"会话列表暂未更新。"});
+  await expect(listError).toBeVisible();
+  await expect(messages).toContainText(body);
+  listFailure=false;await listError.getByRole("button",{name:"重试",exact:true}).click();
+  await expect(listError).toHaveCount(0);
+ }
  await expect(draft).toHaveValue("Keep my draft");expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
  await page.screenshot({path:info.outputPath(`recovery-${surface}-${width}.png`)});
  if(surface==="console"){

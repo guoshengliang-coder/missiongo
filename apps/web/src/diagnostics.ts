@@ -1,3 +1,5 @@
+import { consoleReadDiagnostics } from "./console-read-recovery";
+
 export const MAX_DIAGNOSTIC_LOG_BYTES = 256 * 1024;
 
 export function diagnosticLogBytes(value: string): number {
@@ -37,6 +39,8 @@ export function collectWebContext(): Readonly<Record<string, string>> {
     maxTouchPoints: String(navigator.maxTouchPoints),
     documentVisibility: document.visibilityState,
   };
+  const reads = consoleReadDiagnostics();
+  if (reads) context.consoleReads = reads;
   if (document.referrer) context.referrer = document.referrer.slice(0, 2_000);
   if (window.screen.orientation?.type) context.screenOrientation = window.screen.orientation.type;
   const deviceMemory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;

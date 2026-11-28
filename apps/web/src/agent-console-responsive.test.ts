@@ -135,7 +135,7 @@ describe("agent console responsive layout", () => {
   });
 
   it("renders unread badges from the all-product session feed", () => {
-    expect(appSource).toContain('queryFn: ({signal}) => api.listAgentSessions(undefined, signal)');
+    expect(appSource).toContain('observeConsoleRead("session_list", () => api.listAgentSessions(undefined, signal), signal)');
     expect(appSource).toContain('className="agent-unread-badge"');
     expect(appSource).not.toContain('agentSessionsQuery.data === undefined ? "–"');
     expect(appSource).toContain(
