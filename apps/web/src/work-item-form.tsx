@@ -45,6 +45,7 @@ import {
   diagnosticLogFile,
   MAX_DIAGNOSTIC_LOG_BYTES,
 } from "./diagnostics";
+import { consoleReadDiagnostics } from "./console-read-recovery";
 import { isAnnotatableImage } from "./image-annotation";
 import { validateAttachment } from "./attachment-validation";
 import type { CaptureDraft, EnvironmentDraft } from "./capture-draft";
@@ -136,7 +137,12 @@ export function environmentPayload(
   const sourceRevision = draft.sourceRevision.trim();
   const osVersion = draft.osVersion.trim();
   const deviceModel = draft.deviceModel.trim();
-  const metadata = draft.platform === "web" && collectCurrentWeb ? collectWebContext() : existingMetadata;
+  let metadata = existingMetadata;
+  if (collectCurrentWeb && draft.platform === "web") metadata = collectWebContext();
+  if (collectCurrentWeb && draft.platform === "android") {
+    const reads = consoleReadDiagnostics();
+    if (reads) metadata = { ...metadata, consoleReads: reads };
+  }
   if (!draft.platform) return undefined;
   return {
     platform: draft.platform,

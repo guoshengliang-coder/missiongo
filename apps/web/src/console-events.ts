@@ -2,6 +2,7 @@ import { clearArtifactAccountCache } from "./artifact-cache";
 import type { ConsoleChangeResource } from "@missiongo/contracts";
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
+import { clearConsoleReadDiagnostics, isConsoleReadRecoveryCandidate, recordConsoleReadEvent } from "./console-read-recovery";
 import { consoleRefresh } from "./console-refresh";
 import { changedSessionIdentities, type SessionIdentityPage } from "./session-identities";
 import { FOREGROUND_SYNC_STALE_MS, foregroundSyncTargets } from "./foreground-sync";
@@ -102,6 +103,9 @@ export function startConsoleEvents(client:QueryClient, fetcher:typeof fetch=(inp
   }));
   refresh.add(client.getQueryCache().findAll({predicate:q=>q.queryKey[0]!=="bootstrap" && resources.some(r=>changeAffects(q.queryKey,r,aliases.get(r)))}));
  };
+ const recoverFailedReads=()=>{
+  if(String(document.visibilityState)!=="hidden" && navigator.onLine!==false)refresh.recover(client.getQueryCache().findAll({predicate:isConsoleReadRecoveryCandidate}));
+ };
  const connect=async()=>{
   if(stopped||String(document.visibilityState)==="hidden"||navigator.onLine===false)return;
   const attempt=++generation;connecting=true;
@@ -117,7 +121,7 @@ export function startConsoleEvents(client:QueryClient, fetcher:typeof fetch=(inp
    if(response.status===401||response.status===403){stopped=true;refresh.stop();clearArtifactAccountCache(client);void client.cancelQueries().then(()=>{if(attempt!==generation)return;client.removeQueries({predicate:q=>q.queryKey[0]!=="bootstrap"});return client.resetQueries({queryKey:["bootstrap"]});});setConnection("disconnected");return;}
    if(!response.ok||!response.body||!response.headers.get("content-type")?.includes("text/event-stream"))throw new Error("Console stream unavailable");
    if(attempt!==generation||stopped){await response.body.cancel();return;}
-   connecting=false;connected=true;heartbeat();setConnection("connected");retry=0;window.dispatchEvent(new Event("missiongo:console-connected"));
+   connecting=false;connected=true;heartbeat();setConnection("connected");retry=0;recordConsoleReadEvent("stream_connected");recoverFailedReads();window.dispatchEvent(new Event("missiongo:console-connected"));
    const reader=response.body.getReader(),decoder=new TextDecoder(),frames=new EventFrames();
    try {
     while(!stopped) {
@@ -140,17 +144,20 @@ export function startConsoleEvents(client:QueryClient, fetcher:typeof fetch=(inp
    timer=setTimeout(()=>{timer=undefined;void connect();},Math.min(30_000,1000*2**Math.min(retry++,5)));
   } finally {clearTimeout(watchdog);}
  };
- const foreground=()=>{
+ const foreground=(event:Event)=>{
   if(stopped)return;
+  if(event.type==="visibilitychange")recordConsoleReadEvent(document.visibilityState==="hidden"?"hidden":"visible");
+  if(event.type==="online")recordConsoleReadEvent("online");
   if(String(document.visibilityState)==="hidden"){generation++;connected=false;connecting=false;controller?.abort();if(timer)clearTimeout(timer);timer=undefined;return;}
   if(timer)clearTimeout(timer);timer=undefined;
   refresh.resume();
+  recoverFailedReads();
   // Replayed SSE changes and foreground reads share the same key scheduler.
   const targets=foregroundSyncTargets(client.getQueryCache().getAll().map(q=>({queryKey:q.queryKey,active:q.isActive(),updatedAt:q.state.dataUpdatedAt})),Date.now());
   refresh.add(client.getQueryCache().findAll({predicate:q=>targets.includes(q.queryKey)}),true);
   if(!connected&&!connecting)void connect();
  };
- const offline=()=>{generation++;connecting=false;connected=false;if(timer)clearTimeout(timer);timer=undefined;controller?.abort();setConnection("disconnected");};
+ const offline=()=>{recordConsoleReadEvent("offline");generation++;connecting=false;connected=false;if(timer)clearTimeout(timer);timer=undefined;controller?.abort();setConnection("disconnected");};
  const listReturn=()=>refresh.add(client.getQueryCache().findAll({predicate:q=>q.queryKey[0]==="agent-sessions" && q.isActive()
   && (q.state.isInvalidated || q.state.dataUpdatedAt>0 && Date.now()-q.state.dataUpdatedAt>=FOREGROUND_SYNC_STALE_MS)}),true);
  document.addEventListener("visibilitychange",foreground);window.addEventListener("online",foreground);window.addEventListener("offline",offline);window.addEventListener("focus",foreground);
@@ -166,6 +173,7 @@ export function useConsoleEvents(client:QueryClient,accountId:string|undefined,i
  useEffect(()=>{
   if(previousAccount.current && previousAccount.current!==accountId){
    clearArtifactAccountCache(client);
+   clearConsoleReadDiagnostics();
    const predicate=(q:{queryKey:QueryKey})=>["agent-session","agent-sessions","agent-history-result","merge-deliveries"].includes(String(q.queryKey[0]));
    void client.cancelQueries({predicate});client.removeQueries({predicate});
   }
